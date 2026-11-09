@@ -66,3 +66,9 @@ describe.skipIf(!authorityReviewDir || !process.env.MACRO_AGSDL030_REPLAY_COMMAN
   test('retains all nine independent authority probes', () => expect(authorityProbes).toHaveLength(9));
   test.each(authorityProbes)('checks $name after successful replay on a copy', (probe) => copiedObservation(probe, probe.name === '036-positive-original', true));
 });
+const attributionReviewDir = process.env.MACRO_AGSDL030_ATTRIBUTION_REVIEW_DIR;
+const attributionProbes: Probe[] = attributionReviewDir ? JSON.parse(readFileSync(join(attributionReviewDir, 'new-clock-results.json'), 'utf8')) : [];
+describe.skipIf(!attributionReviewDir || !process.env.MACRO_AGSDL030_REPLAY_COMMAND)('native human work attribution', () => {
+  test('retains the positive control and both independent clock mutations', () => expect(attributionProbes).toHaveLength(3));
+  test.each(attributionProbes)('checks $name after successful replay on a copy', (probe) => copiedObservation(probe, probe.name === '040-ask-positive-control', true));
+});

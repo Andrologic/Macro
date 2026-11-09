@@ -78,7 +78,7 @@ function addContent(n: Fixture) {
   };
   return { occurrence, transported, native, save };
 }
-function addClock(n: Fixture, human = false) {
+function addClock(n: Fixture, human = false, options: { requestKind?: 'ask' | 'plan' | 'question'; emptyOpening?: boolean; associate?: boolean } = {}) {
   n.db.exec(readFileSync(join(import.meta.dir, '../../src-tauri/src/db/migrations/040_execution_flow_human_clock030.sql'), 'utf8'));
   const a = n.state.activations.find((a: any) => a.startEffectId), effect = JSON.parse((n.db.query('SELECT effect_json FROM engine_flow030_outbox WHERE effect_id=?').get(a.startEffectId) as any).effect_json);
   const attempt = JSON.parse((n.db.query('SELECT receipt_json FROM engine_flow030_handoffs WHERE effect_id=?').get(a.startEffectId) as any).receipt_json).workAttempt;
@@ -97,9 +97,11 @@ function addClock(n: Fixture, human = false) {
   };
   dispatch({ kind: 'admit', workId: a.id, timeoutMs: null, answerTimeoutMs: null, startedAtMs: '0' }, '0');
   let resolution: any, proofId: string | undefined;
+  const requestKind = options.requestKind ?? 'ask';
   if (human) {
-    dispatch({ kind: 'open', requestId: 'host-request', requestKind: 'ask', reviewer: 'person', workIds: [a.id] }, '0');
-    dispatch({ kind: 'answer', requestId: 'host-request', nativeReceiptId: 'host-submission', answer: { decision: 'no', comment: '' } }, '1');
+    dispatch({ kind: 'open', requestId: 'host-request', requestKind, reviewer: 'person', workIds: options.emptyOpening ? [] : [a.id] }, '0');
+    if (options.associate) dispatch({ kind: 'associate', requestId: 'host-request', workIds: [] }, '0');
+    dispatch({ kind: 'answer', requestId: 'host-request', nativeReceiptId: 'host-submission', answer: requestKind === 'question' ? null : { decision: 'no', comment: '' } }, '1');
     resolution = { ...last.pendingResolutions[0], reason: 'answer' }; proofId = events.at(-1)!.id;
     dispatch({ kind: 'ack', requestId: 'host-request' }, '1');
   }
@@ -108,8 +110,10 @@ function addClock(n: Fixture, human = false) {
   n.db.query('UPDATE engine_flow030_clock_works SET retired=1,snapshot_json=?').run(JSON.stringify(last.retiredClocks[0].snapshot));
   if (human) {
     const snapshot = last.requests[0];
-    n.db.query('INSERT INTO engine_flow030_human_requests VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(...ids, 'host-request', 'ask', '1', JSON.stringify(snapshot.workIds), '{}', snapshot.openedAtMs, JSON.stringify({ openedAtMs: snapshot.openedAtMs, timeoutMs: snapshot.answerTimeoutMs }), JSON.stringify(resolution), 'acknowledged');
-    n.db.query('INSERT INTO engine_flow030_human_submissions VALUES (?,?,?,?,?,?,?,?)').run(...ids, 'host-submission', 'host-request', '1', 'synthetic-person', '{"kind":"decision","decision":"no","comment":""}', 1);
+    const payload = requestKind === 'question' ? { nativeCallId: 'host-question-call', protocolReceiptId: 'host-question-receipt' } : requestKind === 'plan' ? { planId: 'host-plan', text: 'A presented plan.' } : {};
+    const answer = requestKind === 'question' ? { kind: 'question', answerJson: '"Answer."' } : { kind: 'decision', decision: 'no', comment: '' };
+    n.db.query('INSERT INTO engine_flow030_human_requests VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(...ids, 'host-request', requestKind, '1', JSON.stringify(snapshot.workIds), JSON.stringify(payload), snapshot.openedAtMs, JSON.stringify({ openedAtMs: snapshot.openedAtMs, timeoutMs: snapshot.answerTimeoutMs }), JSON.stringify(resolution), 'acknowledged');
+    n.db.query('INSERT INTO engine_flow030_human_submissions VALUES (?,?,?,?,?,?,?,?)').run(...ids, 'host-submission', 'host-request', '1', 'synthetic-person', JSON.stringify(answer), 1);
     n.db.query('INSERT INTO engine_flow030_human_resolution_proofs VALUES (?,?,?,?,?)').run(...ids, 'host-request', proofId, JSON.stringify(resolution));
   }
   n.mutable(); return { a, events, last };
@@ -158,6 +162,18 @@ describe.skipIf(!referenceDir || !process.env.MACRO_AGSDL030_REPLAY_COMMAND)('ho
   });
   test.each([false, true])('accepts native 040 journal and projections, human=%s', (human) => {
     const n = fixture(); addClock(n, human); expect(n.observe).not.toThrow();
+  });
+  test.each(['ask', 'plan', 'question'] as const)('refuses a native %s opened without a work, even with a coherent clock journal', (requestKind) => {
+    const n = fixture(); addClock(n, true, { requestKind, emptyOpening: true });
+    expect(n.observe).toThrow('human request initial work attribution');
+  });
+  test.each(['ask', 'plan'] as const)('refuses associate for a native %s', (requestKind) => {
+    const n = fixture(); addClock(n, true, { requestKind, associate: true });
+    expect(n.observe).toThrow('native reassociation requires a question');
+  });
+  test('preserves a protocol question legitimately reassociated to no works', () => {
+    const n = fixture(); addClock(n, true, { requestKind: 'question', associate: true });
+    expect(n.observe).not.toThrow();
   });
   test.each(['clock-ticket', 'clock-snapshot', 'clock-origin', 'clock-binding', 'request-deadline', 'resolution-proof', 'erased-resolution', 'submission-answer', 'submission-arbitration', 'delivery-reservation', 'orphan-control'])('refuses forged 040 evidence: %s', (mutation) => {
     const n = fixture(), c = addClock(n, true);
