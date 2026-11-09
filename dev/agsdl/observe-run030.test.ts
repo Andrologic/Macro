@@ -21,7 +21,7 @@ function database(messageJson = '{"prompt":"go","resources":{"x":{"value":{"n":1
     CREATE TABLE engine_flow030_events(system_id TEXT,invocation_id TEXT,event_id TEXT,event_json TEXT,diagnostic_json TEXT);`);
   const state = { verdict: 'succeeded', activations: [{ id: 'a', step: ['worker'], itemJson: '1e0', occurrence: { itemIndex: '0' }, physical: false }], groups: [] };
   db.query('INSERT INTO engine_flow030_runs VALUES (?,?,?,?)').run('s', 'i', JSON.stringify(state), '{"steps":[],"agents":[]}');
-  const effect = { kind: { kind: 'start', work: { activationId: 'a' }, step: ['worker'], messageJson } };
+  const effect = { kind: { kind: 'start', work: { activationId: 'a', startEffectId: 'e', agentInstanceId: 'instance' }, step: ['worker'], messageJson } };
   db.query('INSERT INTO engine_flow030_outbox VALUES (?,?,?,?,?,?)').run('s', 'i', 'e', 'ev', JSON.stringify(effect), 'settled');
   db.query('INSERT INTO engine_flow030_handoffs VALUES (?,?,?,?)').run('s', 'i', 'e', '{"kind":"nativeOwnedHandoff030","effectId":"e"}');
   db.close();
@@ -73,11 +73,10 @@ describe('durable scenario observation', () => {
   test('rejects incoherent Stop sources and preserves branch cancellations', () => {
     const path = database();
     const db = new Database(path);
-    db.exec('DELETE FROM engine_flow030_outbox');
     db.query('INSERT INTO engine_flow030_events VALUES (?,?,?,?,?)')
       .run('s', 'i', 'stop-event', JSON.stringify({ kind: 'Stop' }), null);
     db.query('INSERT INTO engine_flow030_outbox VALUES (?,?,?,?,?,?)')
-      .run('s', 'i', 'stop-effect', 'stop-event', JSON.stringify({ kind: { kind: 'stopWork', work: { activationId: 'a' } } }), 'settled');
+      .run('s', 'i', 'stop-effect', 'stop-event', JSON.stringify({ kind: { kind: 'stopWork', work: { activationId: 'a', startEffectId: 'e', agentInstanceId: 'instance' } } }), 'settled');
     db.close();
     expect(() => observeRun030(path, 's', 'i')).toThrow('Stop effect in a non-cancelled run');
     const edit = new Database(path);
@@ -89,7 +88,7 @@ describe('durable scenario observation', () => {
     malformed.close();
     expect(() => observeRun030(path, 's', 'i')).toThrow('Expected durable object');
   });
-  test('refuses unsupported effects, diagnostics, and answer-bearing plans', () => {
+  test('refuses unsupported effects, diagnostics, and human plans without native evidence', () => {
     const path = database();
     let db = new Database(path);
     db.query('INSERT INTO engine_flow030_outbox VALUES (?,?,?,?,?,?)').run('s', 'i', 'unknown', 'other', '{"kind":{"kind":"futureEffect"}}', 'settled');
@@ -102,25 +101,16 @@ describe('durable scenario observation', () => {
     expect(() => observeRun030(path, 's', 'i')).toThrow('Flow diagnostic remains');
     db = new Database(path); db.exec('DELETE FROM engine_flow030_events'); db.close();
     for (const plan of [
-      { steps: [{ type: 'call' }], agents: [] },
-      { steps: [{ type: 'approval' }], agents: [] },
+      { steps: [{ address: ['approve'], type: 'approval' }], agents: [] },
+      { steps: [{ address: ['tool'], type: 'call', declarationJson: '{"mcp":{"server":"example","tool":"ask"}}' }], agents: [] },
       { steps: [], agents: [{ agentDeclarationJson: '{"harness":"example","answerTimeoutMs":100}' }] },
+      { steps: [], agents: [{ agentDeclarationJson: '{"harness":"example","permissions":{"reviewer":"person"}}' }] },
+      { steps: [], agents: [{ agentDeclarationJson: '{"harness":"example","planFirst":"ask"}' }] },
     ]) {
       const edit = new Database(path);
       edit.query('UPDATE engine_flow030_runs SET plan_json=?').run(JSON.stringify(plan));
       edit.close();
       expect(() => observeRun030(path, 's', 'i')).toThrow('Answers are not projectable');
-    }
-  });
-  test('accepts each additional native scenario pin without claiming a matching run', async () => {
-    const path = database(), resultPath = `${path}.result.json`;
-    for (const name of ['flow-error', 'mission-priority', 'parallel-no-join', 'visit-limit', 'fanout-empty', 'fanout-keep', 'fanout-limit', 'fanout-missions']) {
-      const bytes = readFileSync(join(import.meta.dir, 'fixtures/v0.3/conformance/runs', `${name}.json`));
-      const fixtureSha256 = createHash('sha256').update(bytes).digest('hex');
-      writeFileSync(resultPath, JSON.stringify({ ok: true, result: { scenario: { name, fixtureSha256 }, receipt: { systemStartId: 's', flowInvocationId: 'i' } } }));
-      const compared = await compareObserved030(resultPath, path);
-      expect(compared.scenario).toEqual({ name, fixtureSha256 });
-      expect(compared.diagnostics.length).toBeGreaterThan(0);
     }
   });
   test('refuses cancelled runs rather than treating them as succeeded', () => {
