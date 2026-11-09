@@ -99,15 +99,17 @@ it('opens the signalled pure activation in the exact captured run without attrib
 
 it('opens the native 0.3 capture through receipt-attested scope without Start associations', async () => {
   const { configureWorkflowRunAccess030, configureProductionWorkflowRunAccess030, readWorkflowRun030, projectWorkflowAgentTasks030 } = await import('./workflowAgentTasks');
-  const { nativeAgentRunFixture030, nativeIntentFor030 } = await import('./agsdl/runAccess030.testSupport');
+  const { nativeAgentRunFixture030, nativeIntentFor030, nativeTransportFor030 } = await import('./agsdl/runAccess030.testSupport');
   const { staticReportForSource030 } = await import('./agsdl/staticSemantics030');
   const f = await nativeAgentRunFixture030();
+  const { transport } = nativeTransportFor030(f);
   const seen: string[] = [];
-  installTauriRuntimeMock(mock(async command => {
+  installTauriRuntimeMock(mock(async (command, args) => {
     seen.push(command);
     if(command === 'execution_read_snapshot') return f.capture;
     if(command === 'execution_list_runs030') return {runs:[f.summary],nextCursor:null};
     if(command === 'execution_read_intents') return [nativeIntentFor030(f)];
+    if(command === 'execution_read_run_correlation030') return transport.readExecutionRunCorrelation030(args?.scope, args?.systemStartId);
     if(command === 'execution_read_runtime_projection030') return f.runtime;
     if(command === 'execution_read_humans030') throw {code:'NOT_FOUND',message:'No legacy human row'};
     throw new Error(command);
@@ -121,6 +123,7 @@ it('opens the native 0.3 capture through receipt-attested scope without Start as
     expect(result?.access030).toBeDefined();
     expect(f.capture.associations).toEqual({});
     expect(seen).toContain('execution_read_intents');
+    expect(seen.filter(command => command === 'execution_read_run_correlation030')).toHaveLength(1);
     expect(seen).not.toContain('execution_read_projection');
     expect(seen).not.toContain('execution_pending_approvals');
     expect(staticReportForSource030(f.capture.authoredSource,result!.reports!)).toBeDefined();

@@ -41,19 +41,40 @@ export function nativeIntentFor030(f: Fixture, scope = { owner: f.capture.source
 export function nativeTransportFor030(...fixtures: Fixture[]) {
   const calls: string[] = [];
   const nativeScope = { owner: structuredClone(fixtures[0].capture.source.owner), conversationId: 'design-conversation' };
+  const retainedIntents = new Map(fixtures.map((f, index) => {
+    const intent = nativeIntentFor030(f, nativeScope);
+    if (index > 0 && intent.state.kind === 'admitted')
+      intent.state = { kind: 'closed', disposition: 'acknowledged', admission: intent.state.admission };
+    return [f.summary.systemStartId, intent] as const;
+  }));
+  const sameScope = (scope: typeof nativeScope, other: typeof nativeScope) =>
+    scope.conversationId === other.conversationId && scope.owner.projectId === other.owner.projectId &&
+    scope.owner.planId === other.owner.planId && scope.owner.branch === other.owner.branch;
   const transport: RunReadTransport030 = {
     async listExecutionRuns030() { calls.push('list'); return { runs: fixtures.map(item => item.summary), nextCursor: null }; },
     async readExecutionSnapshot030(id) { calls.push('snapshot'); return fixtures.find(item => item.capture.systemStartId === id)!.capture; },
     async readExecutionRuntimeProjection030(scope) { calls.push('runtime'); return fixtures.find(item => item.scope.systemStartId === scope.systemStartId)!.runtime; },
     async readExecutionHumans030() {
       calls.push('humans');
-      // The registered command reads a legacy Stored row; a true-flow Start
-      // is not in that table. NOT_FOUND does not attest an empty human queue.
+      // A true-flow Start has no legacy Stored row. This does not attest an empty human queue.
       throw { code: 'NOT_FOUND', message: 'True-flow has no legacy Stored row' };
     },
-    async readExecutionIntentsVersioned() { calls.push('intents'); return [nativeIntentFor030(fixtures[0], nativeScope)]; },
+    async readExecutionIntentsVersioned({ scope }) {
+      calls.push('intents');
+      return structuredClone([...retainedIntents.values()].filter(intent => intent.state.kind !== 'closed' && sameScope(intent.key.scope, scope)));
+    },
+    async readExecutionRunCorrelation030(scope, id) {
+      calls.push(`correlation:${id}`);
+      const intent = retainedIntents.get(id);
+      if (!fixtures.some(f => f.summary.systemStartId === id)) throw { code: 'NOT_FOUND', currentIntentKey: null };
+      if (!intent || !sameScope(intent.key.scope, scope)) throw { code: 'SCOPE_INVALID', currentIntentKey: null };
+      const state = intent.state;
+      const admission = state.kind === 'admitted' || (state.kind === 'closed' && state.disposition === 'acknowledged') ? state.admission : null;
+      if (admission?.kind !== 'start030') throw { code: 'STORAGE_UNCERTAIN', currentIntentKey: null };
+      return structuredClone({ key: intent.key, receipt: admission.receipt });
+    },
   };
-  return { transport, calls, scope: structuredClone(nativeScope) };
+  return { transport, calls, scope: structuredClone(nativeScope), retainedIntents };
 }
 
 /** Agent-only reducer states. Compose/join/ready states are not faked on an
@@ -93,3 +114,5 @@ export async function nativeAgentRunFixture030(id = 'agent-run', phase = 'done')
   ] };
   return f;
 }
+
+export { nativeRunFixture030 as fixture, nativeIntentFor030 as intentFor, nativeTransportFor030 as transportFor };

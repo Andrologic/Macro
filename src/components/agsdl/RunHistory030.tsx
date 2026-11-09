@@ -1,28 +1,43 @@
 import type { NativeFact030, RunRead030 } from '../../types/agsdlRunUi030';
-import { retainedRunValue030, type RunHistoryEntry030 } from '../../services/agsdl/runtimeProjection030';
+import { retainedRunValue030, type RunHistoryEntry030, type RunMonitorSnapshot030, type RunReadFailure030 } from '../../services/agsdl/runtimeProjection030';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
 
-export function RunHistory030({ history, selected, comparison, select, compare }: {
-  history: RunRead030<readonly RunHistoryEntry030[]>; selected?: string; comparison?: string;
+export function RunHistory030({ history, historyOrder, runFailures, selected, comparison, select, compare }: {
+  history: RunRead030<readonly RunHistoryEntry030[]>; historyOrder: RunMonitorSnapshot030['historyOrder']; runFailures: RunMonitorSnapshot030['runFailures']; selected?: string; comparison?: string;
   select: (id: string) => void; compare: (id: string | undefined) => void;
 }) {
   const { t } = useAgsdlTranslation();
   const tr = (key: string) => t(`agsdl.run030.${key}`);
-  const runs = retainedRunValue030(history) ?? [];
+  const captured = retainedRunValue030(history) ?? [];
+  const byId = new Map(captured.map(run => [run.scope.systemStartId, run]));
+  const runs = captured.filter(run => !Object.hasOwn(runFailures, run.scope.systemStartId));
+  const failures = Object.entries(runFailures);
+  const rows = [...new Set([...historyOrder, ...byId.keys(), ...Object.keys(runFailures)])]
+    .filter(id => byId.has(id) || Object.hasOwn(runFailures, id));
+  const failureReason = (failure: RunReadFailure030) => failure.code === 'STORAGE_UNCERTAIN' ? 'storageUncertain'
+    : failure.kind === 'notFound' ? 'notFound' : failure.kind === 'uncertain' ? 'uncertain'
+    : failure.kind === 'scope' ? 'scope' : failure.kind === 'conflict' ? 'conflict' : 'unavailable';
   const date = (fact: RunHistoryEntry030['chronology']) => fact.kind === 'available' ? fact.value.startedAt : tr('unknownDate');
   return <section aria-label={tr('history')} className="min-w-0 space-y-2">
     <h3 className="font-medium">{tr('history')}</h3>
     {history.kind === 'error' && <p role="alert">{tr('readFailed')}</p>}
     {history.kind !== 'ready' && history.kind !== 'error' && <p role="status">{tr(history.kind === 'stale' ? 'stale' : history.kind === 'loading' ? 'loading' : 'unavailable')}</p>}
-    {history.kind === 'ready' && runs.length === 0 && <p>{tr('noRuns')}</p>}
-    <ul className="space-y-1">{runs.map(run => <li key={run.scope.systemStartId}>
+    {history.kind === 'ready' && runs.length === 0 && failures.length === 0 && <p>{tr('noRuns')}</p>}
+    <ul className="space-y-1">{rows.map(id => {
+      const failure = Object.hasOwn(runFailures, id) ? runFailures[id] : undefined;
+      if (failure) return <li key={id} data-run-id={id} data-run-read-state="failed" className="rounded border border-border px-2 py-1">
+        <span className="block break-words">{id}</span>
+        <p role="status" className="text-muted-foreground">{tr(`readFailure.${failureReason(failure)}`)}</p>
+      </li>;
+      const run = byId.get(id)!;
+      return <li key={id} data-run-id={id}>
       <button type="button" aria-pressed={selected === run.scope.systemStartId} onClick={() => select(run.scope.systemStartId)}
         className="w-full rounded border border-border px-2 py-1 text-left hover:bg-accent aria-pressed:bg-accent">
         <span className="block break-words">{run.capture.systemStartId} · {tr(`verdict.${run.verdict ?? 'pending'}`)}</span>
         <span className="block text-muted-foreground">{date(run.chronology)} · {tr('physicalPending')}: {run.physicalPending}</span>
         {run.humans.kind === 'ready' ? run.humans.value.some(request => request.state.kind === 'open') && <span className="block">{tr('waitingHuman')}</span> : <span className="block">{tr('humanUnknown')}</span>}
       </button>
-    </li>)}</ul>
+    </li>; })}</ul>
     {selected && !runs.some(run => run.scope.systemStartId === selected) && <p>{tr('retainedSelection')} · {selected}</p>}
     <label className="flex min-w-0 flex-col gap-1">{tr('compare')}
       <select className="min-w-0 max-w-full rounded border border-border bg-card p-1" value={comparison ?? ''} onChange={event => compare(event.target.value || undefined)}>

@@ -82,7 +82,7 @@ function ScopedMonitor030({ access, initialRunId, currentSource, renderGraph, re
     <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-medium">{tr('monitor')}</h2>
       <button type="button" className="rounded border border-border px-2 py-1 hover:bg-accent" onClick={refresh}>{tr('refresh')}</button></div>
     {readFailed && <p role="alert">{tr('readFailed')}</p>}
-    <RunHistory030 history={snapshot.history} selected={selected} comparison={comparison} select={id => { setExplicit(id); if (comparison === id) setComparison(undefined); }} compare={setComparison} />
+    <RunHistory030 history={snapshot.history} historyOrder={snapshot.historyOrder} runFailures={snapshot.runFailures} selected={selected} comparison={comparison} select={id => { setExplicit(id); if (comparison === id) setComparison(undefined); }} compare={setComparison} />
     {!selected && history.length > 0 && <p role="status">{tr('selectionPending')}</p>}
     {left && right && <RunCaptureComparison030 left={left} right={right} />}
     {selected && !inspection && <p role="status">{tr(readState?.kind === 'error' ? 'readFailed' : readState?.kind === 'unavailable' ? 'unavailable' : 'loading')}</p>}

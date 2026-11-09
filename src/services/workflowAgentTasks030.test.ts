@@ -13,6 +13,7 @@ afterEach(() => { configureWorkflowRunAccess030(undefined); removeTauriRuntimeMo
 
 it('discovers actual 030 requests separately from legacy engine_systems and initializes production idempotently', async () => {
   const f = await nativeAgentRunFixture030(); const old = await workflowTaskFixture();
+  const { transport } = nativeTransportFor030(f);
   const seen: string[] = [];
   installTauriRuntimeMock(mock(async (command,args) => {
     seen.push(command);
@@ -20,6 +21,7 @@ it('discovers actual 030 requests separately from legacy engine_systems and init
     if (command === 'execution_list_runs030') return {runs:[f.summary],nextCursor:null};
     if (command === 'execution_read_snapshot') return args?.systemStartId === f.capture.systemStartId ? f.capture : old.snapshot;
     if (command === 'execution_read_intents') return [nativeIntentFor030(f)];
+    if (command === 'execution_read_run_correlation030') return transport.readExecutionRunCorrelation030(args?.scope, args?.systemStartId);
     if (command === 'execution_read_runtime_projection030') return f.runtime;
     if (command === 'execution_read_humans030') throw {code:'NOT_FOUND',message:'True-flow has no legacy Stored row'};
     if (command === 'execution_read_projection') return old.projection;
@@ -40,22 +42,36 @@ it('discovers actual 030 requests separately from legacy engine_systems and init
   expect(native.conversation_id).toBeNull(); expect(native.execution_targets).toEqual([]);
   expect(seen).toContain('execution_list_runs030');
   expect(seen).toContain('execution_read_intents');
+  expect(seen.filter(command => command === 'execution_read_run_correlation030')).toHaveLength(1);
   expect(tasks.filter(item=>item.workflow_execution?.systemStartId === old.snapshot.systemStartId)).toHaveLength(2);
   expect(f.capture.associations).toEqual({});
   expect(bundle.access.getSnapshot().runs[f.capture.systemStartId]).toMatchObject({kind:'ready',value:{state:{humans:{kind:'unavailable',gap:'human-flow-projection'}}}});
 });
 
-it('uses only receipt-attested intent correlation for captures without a conversation association', async () => {
-  const f = await nativeAgentRunFixture030(); const {transport,scope} = nativeTransportFor030(f);
+it('uses durable receipt-attested correlation independently of a new open intent for captures without associations', async () => {
+  const f = await nativeAgentRunFixture030(); const {transport,scope,retainedIntents} = nativeTransportFor030(f);
   configureWorkflowRunAccess030(candidate=>({access:createRunInspectionAccess030({...candidate,conversationId:candidate.conversationId!},transport)}));
   const first = await readWorkflowRun030(f.capture,scope.conversationId);
   expect(first.capture.associations).toEqual({});
   expect(first.state.scope.systemStartId).toBe(f.capture.systemStartId);
   const foreign = getWorkflowRunAccess030({...scope,conversationId:'another-conversation'})!;
   await expect(foreign.access.refreshRun(f.capture.systemStartId)).rejects.toMatchObject({code:'SCOPE_INVALID'});
-  transport.readExecutionIntentsVersioned = async()=> [{...nativeIntentFor030(f),state:{kind:'prepared'}}];
+  const retained = retainedIntents.get(f.capture.systemStartId)!;
+  if (retained.state.kind !== 'admitted') throw new Error('Expected an admitted native fixture');
+  retained.state = { kind: 'closed', disposition: 'acknowledged', admission: retained.state.admission };
+  const next = nativeIntentFor030(f);
+  if (next.payload.kind !== 'start') throw new Error('Expected a Start fixture');
+  next.key.intentId = 'next-intent'; next.payload.request.requestId = 'next-request';
+  if (next.payload.request.entry) next.payload.request.entry.deliveryId = 'next-entry';
+  next.state = { kind: 'prepared' };
+  transport.readExecutionIntentsVersioned = async()=> [next];
+  const reopened = createRunInspectionAccess030(scope,transport);
+  await reopened.refreshRun(f.capture.systemStartId);
+  expect(reopened.getSnapshot().runs[f.capture.systemStartId].kind).toBe('ready');
+  expect(reopened.getSnapshot().retainedAdmission).toEqual({kind:'available',value:null});
+  retainedIntents.delete(f.capture.systemStartId);
   const uncorrelated = createRunInspectionAccess030(scope,transport);
-  await expect(uncorrelated.refreshRun(f.capture.systemStartId)).rejects.toMatchObject({code:'SCOPE_UNAVAILABLE'});
+  await expect(uncorrelated.refreshRun(f.capture.systemStartId)).rejects.toMatchObject({code:'SCOPE_INVALID'});
 });
 
 it('covers exactly the nine phases published by Rust and keeps done physical work active', async () => {

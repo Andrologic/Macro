@@ -962,6 +962,14 @@
     "incomplete": "Vollständige Serie wird gelesen. Teilseiten zeigen nicht alle Arbeiten.",
     "unknownDate": "Datum unbekannt",
     "noRuns": "Keine Ausführungen in diesem Bereich",
+    "readFailure": {
+      "notFound": "Ausführung nicht gefunden",
+      "storageUncertain": "Der Zustand des Speichers ist ungewiss. Aktualisieren Sie zur erneuten Prüfung.",
+      "uncertain": "Der Zustand der Ausführung ist ungewiss. Aktualisieren Sie zur erneuten Prüfung.",
+      "scope": "Diese Ausführung ist in diesem Bereich nicht verfügbar.",
+      "conflict": "Die Ausführung hat sich geändert. Aktualisieren Sie, um den aktuellen Zustand zu lesen.",
+      "unavailable": "Die Ausführung konnte nicht gelesen werden. Aktualisieren Sie, um es erneut zu versuchen."
+    },
     "physicalPending": "Arbeiten vor physischem Abschluss",
     "waitingHuman": "Wartet auf eine Person",
     "humanUnknown": "Menschliche Wartezeiten sind nicht vollständig bekannt",
