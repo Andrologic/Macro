@@ -8,10 +8,12 @@ import type {
   RunDeliveryReceipt030,
   RunHumanSubmission030,
   RunHumanClock030,
+  RunHumanOccurrence030,
   RunHumanReceipt030,
   RunHumanRequest030,
   RunHumanResolution030,
   RunHumanState030,
+  RunOccurrence030,
   RunPreflight030,
   RunStartIntent030,
   RunStop030,
@@ -122,5 +124,20 @@ describe('AgSDL 0.3 public product contract', () => {
     expectTypeOf<RunHumanClock030['observedAtMs']>().toBeString();
     expectTypeOf<RunHumanClock030['works'][number]['machineRemainingMs']>().toEqualTypeOf<string | null>();
     expectTypeOf<RunHumanClock030['works'][number]['machinePaused']>().toBeBoolean();
+  });
+
+  test('human work UUIDs require an explicit attested occurrence mapping', () => {
+    expectTypeOf<Omit<RunHumanRequest030, 'occurrences'>>().not.toMatchTypeOf<RunHumanRequest030>();
+    expectTypeOf<RunHumanRequest030['occurrences'][number]>().toEqualTypeOf<RunHumanOccurrence030>();
+    type Available = Extract<RunHumanOccurrence030['activation'], { kind: 'available' }>;
+    type Unavailable = Extract<RunHumanOccurrence030['activation'], { kind: 'unavailable' }>;
+    expectTypeOf<Available['activationId']>().toEqualTypeOf<RunOccurrence030['activation']['id']>();
+    expectTypeOf<Extract<keyof Unavailable, 'activationId' | 'scope'>>().toBeNever();
+    expectTypeOf<Unavailable['gap']>().toEqualTypeOf<'human-occurrence-mapping'>();
+    const unresolved: RunHumanOccurrence030 = {
+      workId: 'public-work-1', activation: { kind: 'unavailable', gap: 'human-occurrence-mapping' },
+    };
+    expect(unresolved.activation).toEqual({ kind: 'unavailable', gap: 'human-occurrence-mapping' });
+    expect(unresolved.activation).not.toHaveProperty('activationId');
   });
 });
