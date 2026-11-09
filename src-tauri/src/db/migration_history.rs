@@ -58,6 +58,8 @@ pub(crate) const NAMES: &[&str] = &[
     "036_execution_flow_work_protocol030",
     "037_execution_route_attestations030",
     "038_execution_system_stop030",
+    "039_execution_call_protocol030",
+    "040_execution_flow_human_clock030",
 ];
 
 pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {
@@ -118,6 +120,8 @@ pub(crate) async fn canonical_versions(c: &mut SqliteConnection) -> DbResult<Vec
         || versions.contains(&36) && !versions.contains(&35)
         || versions.contains(&37) && !versions.contains(&36)
         || versions.contains(&38) && !versions.contains(&37)
+        || versions.contains(&39) && !versions.contains(&38)
+        || versions.contains(&40) && !versions.contains(&39)
     {
         return Err(DbError::Migration(
             "Inconsistent AgSDL migration history".into(),
@@ -192,6 +196,33 @@ pub(crate) async fn remove_reference_schema(
 ) -> DbResult<()> {
     // This connection is a disposable, empty reference. Reconstruct the
     // historical definition before removing the new foreign-key parent.
+    if !versions.contains(&40) {
+        for table in [
+            "engine_flow030_human_resolution_proofs",
+            "engine_flow030_human_submissions",
+            "engine_flow030_human_requests",
+            "engine_flow030_clock_controls",
+            "engine_flow030_clock_works",
+            "engine_flow030_handoff_clock",
+            "engine_flow030_clock_events",
+            "engine_flow030_clock",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS {table}")))
+                .execute(&mut *c)
+                .await?;
+        }
+    }
+    if !versions.contains(&39) {
+        for table in [
+            "engine_flow030_call_diagnostics",
+            "engine_flow030_call_causes",
+            "engine_flow030_calls",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS {table}")))
+                .execute(&mut *c)
+                .await?;
+        }
+    }
     if !versions.contains(&38) {
         sqlx::query("DROP TABLE IF EXISTS engine_flow030_system_stop_requests")
             .execute(&mut *c)

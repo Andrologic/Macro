@@ -3,6 +3,8 @@ import { successors } from "./projection";
 import type { AgsdlEnvelopeMetadata } from "./design";
 import { projectViewer030, type ViewerRoute030 } from "./viewer030";
 import { projectViewer020 } from "./viewer020";
+import { staticReportForSource030, type StaticOccurrence030, type StaticSemantics030 } from "./staticSemantics030";
+import type { AgsdlReport } from "../../types/agsdl";
 
 type Value = Record<string, unknown>;
 export interface ViewerReference {
@@ -33,6 +35,7 @@ export interface ViewerFlowInput {
   projection: string;
 }
 export interface ViewerCard {
+  static030?: StaticOccurrence030;
   edition030?: { maxVisitsJson?: string; ownerPath?: string; sourceJson: string; definitionJson?: string; agentPath?: string; routes: ViewerRoute030[] };
   path: string;
   id: string;
@@ -60,6 +63,7 @@ export interface ViewerCard {
   details: Value;
 }
 export interface ViewerGraph {
+  static030?: StaticSemantics030;
   errorRoutes030?: ViewerRoute030[];
   contract?: string;
   path: string;
@@ -83,8 +87,8 @@ const ports = (value: unknown): ViewerPort[] =>
   }));
 
 /** A reading model only. Unresolved and ambiguous references never become links. */
-export function projectViewer(source: string, metadata?: AgsdlEnvelopeMetadata) {
-  if (object(scanSource(source).tree).contract === "agsdl-0.3.0") return projectViewer030(source, metadata);
+export function projectViewer(source: string, metadata?: AgsdlEnvelopeMetadata, reports: readonly AgsdlReport[] = []) {
+  if (object(scanSource(source).tree).contract === "agsdl-0.3.0") return projectViewer030(source, metadata, staticReportForSource030(source, reports));
   const doc = readDocument(source);
   if (doc.contract === "agsdl-0.2.0") return projectViewer020(doc, source, metadata);
   if (doc.contract !== "agsdl-0.1.0")

@@ -9,7 +9,7 @@ import { useAgsdlTranslation } from './useAgsdlTranslation';
 
 export type WorkflowEdgeData = {
   route?: ViewerEdgeRoute;
-  /** The target's agent is shared by several steps, so the message may wait in its queue. */
+  /** Static queue delivery policy for a shared conversation; never an observed backlog. */
   queued?: boolean;
   connection: ViewerEdge;
   sourceTitle: string;
@@ -57,8 +57,15 @@ export function WorkflowEdgeSummary({ connection: edge, sourceTitle, targetTitle
       <ArrowDown size={13} aria-hidden="true" />
       {onTarget ? <button type="button" onClick={onTarget}>{targetTitle}</button> : <strong>{targetTitle}</strong>}
     </div>
-    {edge.route030 && <><small>{edge.route030.path}</small><pre className="agsdl-source-value">{edge.route030.valueJson}</pre></>}
-    {transfers.length > 0 && <section><small>{t('agsdl.link.payloadTitle')}</small><div className="agsdl-edge-payloads">{transfers.map(name => <span key={name}>{name}</span>)}</div></section>}
+    {edge.route030 && <>
+      <WorkflowEdgePreview connection={edge} sourceTitle={sourceTitle} />
+      <details className="agsdl-preview-advanced"><summary>{t('agsdl.graph030.advanced')}</summary>
+        <small>{edge.route030.path}</small>
+        {edge.route030.via?.map((path, index) => <small key={index}>{path}</small>)}
+        <pre className="agsdl-source-value">{edge.route030.valueJson}</pre>
+      </details>
+    </>}
+    {!edge.route030 && transfers.length > 0 && <section><small>{t('agsdl.link.payloadTitle')}</small><div className="agsdl-edge-payloads">{transfers.map(name => <span key={name}>{name}</span>)}</div></section>}
     {edge.exchangeOnly && <p className="agsdl-edge-note">{t('agsdl.link.exchangeHint')}</p>}
     {edge.dependency && <p className="agsdl-edge-note">{t('agsdl.link.dependencyHint')}</p>}
   </div>;
@@ -123,6 +130,7 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
     {preview && !menu && anchor && <WorkflowGraphPopup anchor={anchor} position={position} id={id} label={t('agsdl.viewer.connection')} onClose={close}
       onMouseEnter={() => clearTimeout(timer.current)} onMouseLeave={leave}>
       <WorkflowEdgePreview connection={data.connection} sourceTitle={data.sourceTitle} sourcePerformer={data.sourcePerformer} />
+      {data.queued && <p className="agsdl-edge-note">{t("agsdl.graph030.delivery.queue")}</p>}
     </WorkflowGraphPopup>}
     {menu && anchor && <WorkflowGraphPopup anchor={anchor} position={menu} label={t('agsdl.viewer.connection')} onClose={close} actions={[
       { label: t('agsdl.link.source'), icon: <Info size={14} />, run: data.inspectSource },

@@ -116,8 +116,8 @@ conversation. L'IA inspecte le contexte, pose les questions nécessaires et aide
 les propriétés prises en charge. L’en-tête du graphe propose « Enregistrer et
 exporter », puis l’agrandissement à droite. Un seul modal regroupe la conservation
 dans le projet, la création d’une copie blueprint et le téléchargement du document
-AgSDL ou d’une copie Macro complète. Les interfaces d’exécution et de fiche
-système restent retirées.
+AgSDL ou d’une copie Macro complète. Le moniteur 0.3 reste à raccorder au shell ;
+le contrat de consultation et d'actions est défini en section 7.1.
 La création depuis un blueprint reste disponible pour un plan vide. Cette
 conception ne lance pas les agents du graphe et ne crée pas de tâches Implement.
 
@@ -287,10 +287,11 @@ Macro contrôlés. Voir les profils [Codex](agsdl-codex-native.md) et
 
 Trois capacités restent distinctes :
 - la conception du document, décrite ci-dessous, disponible ;
-- le suivi des exécutions : l’ouverture lit seulement l’état natif, sans contrôle
-  préalable, lancement ni acquittement implicite. Une demande en attente reste
-  prioritaire ; sinon la dernière exécution du plan, du projet et de la branche
-  s’affiche et une autre peut être choisie. Tant qu’aucun contrôle n’a été
+- le suivi des exécutions, dont le parcours 0.3 reste à raccorder : l’ouverture
+  doit lire seulement l’état natif, sans contrôle
+  préalable, lancement ni acquittement implicite. La sélection suit uniquement
+  la [règle normative de sélection initiale du run](agsdl-030.md#sélection-initiale-du-run).
+  Une autre exécution peut ensuite être choisie. Tant qu’aucun contrôle n’a été
   demandé, la prise en charge s’affiche comme non vérifiée ;
 - le démarrage depuis le produit, fermé tant que sa qualification physique n’est
   pas faite.
@@ -360,6 +361,37 @@ Le parcours et les limites du visualisateur sont décrits dans
 définissent le propriétaire natif, le profil initial et les garanties. Le moteur
 est intégré, mais le produit ne démarre pas encore de document tant que sa
 qualification n’est pas faite.
+
+#### Contrat produit des exécutions 0.3
+
+Le [contrat UI/runtime 0.3](agsdl-030.md#contrat-produit-des-runs-03) définit les
+actions à raccorder et les DTO natifs manquants. Il ne vaut pas ouverture du
+lancement. Celui-ci reste fermé tant que le profil fournisseur, sa plateforme,
+ses versions et les propriétés demandées ne sont pas qualifiés. La validité
+du document, le préflight natif et cette autorisation restent séparés. Un
+catalogue Chat ou un scénario synthétique réussi ne les remplace pas.
+
+La direction d'interface conserve navigation des plans à gauche, conversation
+de conception au centre et canvas à droite. Une vue dédiée « Exécutions » doit
+présenter l'historique compact et l'inspecteur de la source capturée. L'ouvrir
+ne lance, ne préflight, n'acquitte et ne relance rien. Le canvas montre action
+et responsable ; les joins restent de petites pastilles et les détails
+techniques restent repliés.
+
+Le verdict, le Stop demandé, l'attente de fin physique, l'arrêt confirmé,
+l'incertitude et les demandes humaines sont des faits distincts. Une erreur
+traitée, un call d'issue `failed` ou un quorum `missed` ne deviennent pas un
+échec global déduit par l'UI. Chaque visite d'une étape reste inspectable par
+son activation native, avec instances, groupes, chemins et diagnostics connus.
+
+Start et livraison queue/steer réutilisent une intention durable et le même
+reçu après navigation. Une réponse humaine distingue choix du flow avec
+commentaire, permission d'action, plan et question attestée. Sa soumission ne
+signifie ni décision ni consommation. Un conflit conserve le brouillon et
+provoque une relecture ; un double envoi ne crée pas de second travail. Stop
+doit rester disponible pendant ces attentes. Une perte d'acquittement ou de
+host garde l'état incertain jusqu'à réconciliation native, sans replay
+automatique. Les capacités encore sans DTO attesté restent indisponibles.
 
 ### 7.2 Mode Implement
 

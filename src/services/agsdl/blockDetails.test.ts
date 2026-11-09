@@ -1,3 +1,5 @@
+import { projectViewer030 } from './viewer030';
+import { validateDocumentBytes } from './document';
 import { describe, expect, it } from "bun:test";
 import { blockDetails, durationText, edgeDetails, predicateText } from "./blockDetails";
 import type { ViewerCard } from "./viewer";
@@ -112,11 +114,46 @@ describe("block details read from AgSDL", () => {
     expect(isFailureEdge({ ...base, label: "onError" })).toBe(true);
   });
 
-  it("preserves the exact 0.3 visit limit and describes quorum without claiming all results", () => {
+  it("preserves the exact 0.3 visit limit only in advanced details", () => {
     const join = card("join", { quorum: { count: 2 }, maxVisits: 9007199254740992 }, {
       edition030: { sourceJson: "{}", maxVisitsJson: "9007199254740993", routes: [] },
     });
-    expect(blockDetails(join, declarations)).toContainEqual({ key: "mode", values: ["quorum"] });
-    expect(blockDetails(join, declarations)).toContainEqual({ key: "limit", values: ["9007199254740993"] });
+
+    expect(blockDetails(join, declarations)).toContainEqual({ key: "limit", values: ["9007199254740993"], advanced: true });
   });
+});
+
+it('explains source-bound quorum, origin, remaining and error scope without run state', () => {
+  const source = JSON.stringify({ contract: 'agsdl-0.3.0', id: 'business', agents: { a: { harness: 'example', permissions: 'read-only' } },
+    flow: { entry: 'split', onError: 'recover', steps: {
+      split: { type: 'call', title: 'Open review', command: 'echo ok', next: ['left','right'] },
+      left: { type: 'agent', agent: 'a', instance: 'new', next: { approve: 'join', reject: 'join' } },
+      right: { type: 'agent', agent: 'a', instance: 'new', next: { approve: 'join', reject: 'join' } },
+      join: { type: 'join', quorum: { count: 2, accept: ['approve'] }, remaining: 'finish', next: { reached: [], missed: [] } },
+      recover: { type: 'call', command: 'echo recover' },
+    } } });
+  const report = validateDocumentBytes(new TextEncoder().encode(source));
+  expect(report.valid).toBe(true);
+  const projected = projectViewer030(source, undefined, { source, report });
+  const cards = projected.graphs[0].cards;
+  const details = blockDetails(cards.find(card=>card.id==='join')!, [], cards);
+  expect(details).toContainEqual({ key: 'mode', values: [], message030: 'quorum.rule', params030: { threshold: '2' } });
+  expect(details.find(detail=>detail.message030==='join.origin')?.params030).toEqual({ name: 'Open review' });
+  expect(details.some(detail=>detail.message030==='remaining.finish')).toBe(true);
+  expect(blockDetails(cards.find(card=>card.id==='left')!, [], cards).some(detail=>detail.message030==='error.join')).toBe(true);
+  expect(blockDetails(cards[0], [], cards).some(detail=>detail.message030==='error.flow')).toBe(true);
+  const stale = projectViewer030(source).graphs[0].cards;
+  expect(blockDetails(stale.find(card=>card.id==='join')!, [], stale).some(detail=>detail.message030==='join.unreported')).toBe(true);
+  expect(details.some(detail=>detail.values.some(value=>value.includes('active')))).toBe(false);
+});
+
+it('exposes the exact failure tolerance and keeps unlimited failure handling distinct', () => {
+  const joinCard = (maxFailures?: string) => projectViewer030(`{"contract":"agsdl-0.3.0","id":"failure-limit","agents":{},"flow":{"entry":"gather","steps":{"gather":{"type":"join","failures":"keep"${maxFailures === undefined ? '' : `,"maxFailures":${maxFailures}`}}}}}`).graphs[0].cards[0];
+  for (const limit of ['1', '9007199254740993']) {
+    const details = blockDetails(joinCard(limit), []);
+    expect(details.find(detail => detail.message030 === 'join.keepLimited')?.params030).toEqual({ limit });
+    expect(details.some(detail => detail.message030 === 'join.keep')).toBe(false);
+  }
+  expect(blockDetails(joinCard(), []).some(detail => detail.message030 === 'join.keep')).toBe(true);
+  expect(blockDetails(joinCard(), []).some(detail => detail.message030 === 'join.keepLimited')).toBe(false);
 });

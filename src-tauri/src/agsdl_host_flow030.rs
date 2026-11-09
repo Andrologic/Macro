@@ -46,6 +46,7 @@ pub(crate) struct FlowHost030 {
     route_source_committing: Mutex<BTreeMap<(String, String), RouteSourceCommitMarker030>>,
     unadmitted: Mutex<BTreeMap<(String, String), Unadmitted030>>,
     controls: Mutex<BTreeMap<String, Arc<FlowControl030>>>,
+    joined_diagnostics: Mutex<BTreeMap<(String, String, String), JoinedOwnedAgent030>>,
     #[cfg(test)]
     stop_commit_hooks: Mutex<BTreeMap<String, Arc<CommitTestHook030>>>,
     #[cfg(test)]
@@ -553,6 +554,57 @@ impl FlowHost030 {
                 pending.remove(&request.request_id);
             }
         }
+    }
+    pub(crate) fn retain_diagnostic_join(&self, joined: &JoinedOwnedAgent030) -> Result<()> {
+        let attempt = joined.attempt();
+        let key = (
+            attempt.identity().system_start_id.clone(),
+            attempt.identity().flow_invocation_id.clone(),
+            attempt.work().activation_id.clone(),
+        );
+        let mut pending = self.joined_diagnostics.lock().map_err(|_| unavailable())?;
+        if let Some(existing) = pending.get(&key) {
+            if existing.request_id() != joined.request_id()
+                || serde_json::to_value(existing.attempt())? != serde_json::to_value(attempt)?
+            {
+                return Err(refused());
+            }
+        } else {
+            pending.insert(key, joined.clone());
+        }
+        Ok(())
+    }
+    fn forget_diagnostic_join(&self, joined: &JoinedOwnedAgent030) {
+        let attempt = joined.attempt();
+        let key = (
+            attempt.identity().system_start_id.clone(),
+            attempt.identity().flow_invocation_id.clone(),
+            attempt.work().activation_id.clone(),
+        );
+        if let Ok(mut pending) = self.joined_diagnostics.lock() {
+            if pending.get(&key).is_some_and(|existing| {
+                existing.request_id() == joined.request_id()
+                    && matches!((serde_json::to_value(existing.attempt()), serde_json::to_value(attempt)), (Ok(a), Ok(b)) if a == b)
+            }) {
+                pending.remove(&key);
+            }
+        }
+    }
+    pub(crate) fn diagnostic_join(
+        &self,
+        identity: &FlowIdentity030,
+        activation: &str,
+    ) -> Result<Option<JoinedOwnedAgent030>> {
+        Ok(self
+            .joined_diagnostics
+            .lock()
+            .map_err(|_| unavailable())?
+            .get(&(
+                identity.system_start_id.clone(),
+                identity.flow_invocation_id.clone(),
+                activation.into(),
+            ))
+            .cloned())
     }
     /// These capabilities were installed by native Start before COMMIT. A
     /// supplied system label cannot create retirement authority.
@@ -1267,7 +1319,7 @@ pub(crate) async fn apply_work_terminal_tx(
     lease: &HostStartLease,
     terminal: &AcceptedWorkTerminal030,
     joined: &JoinedOwnedAgent030,
-) -> Result<()> {
+) -> Result<Apply030> {
     let identity = terminal.identity();
     let attempt = terminal.attempt();
     let work = terminal.work();
@@ -1334,11 +1386,16 @@ pub(crate) async fn apply_work_terminal_tx(
     };
     // A diagnostic is persisted for the caller's transaction to commit. Its
     // later Stop cleanup still requires the native control path.
-    flow_store030::apply_tx(db, &authority, &event)
+    let applied = flow_store030::apply_tx(db, &authority, &event)
         .await
         .map_err(store_error)?;
+    if matches!(applied, Apply030::Diagnostic(_)) {
+        // Retention happens before the work COMMIT; it grants nothing unless
+        // the diagnostic and the exact native handoff are durable in SQL.
+        runtime.retain_diagnostic_join(joined)?;
+    }
     lease.ensure_live()?;
-    Ok(())
+    Ok(applied)
 }
 
 pub(crate) async fn apply_native_event(
@@ -2521,6 +2578,291 @@ struct NoAdmissionReceipt030 {
 impl FlowControl030 {
     pub(crate) fn identity(&self) -> &FlowIdentity030 {
         &self.identity
+    }
+
+    /// Settle only an already-stopping work item whose joined owner previously
+    /// produced a durable terminal diagnostic. No witness is reconstructed.
+    pub(crate) async fn settle_joined_diagnostic(
+        &self,
+        runtime: &FlowHost030,
+        pool: &SqlitePool,
+        joined: &JoinedOwnedAgent030,
+    ) -> Result<Apply030> {
+        let attempt = joined.attempt();
+        if attempt.identity() != &self.identity
+            || attempt.owner() != &self.owner
+            || attempt.generation() != self.generation
+            || joined.request_id()
+                != format!(
+                    "flow030:{}:{}",
+                    self.identity.system_start_id,
+                    attempt.start_effect_id()
+                )
+            || !runtime
+                .controls
+                .lock()
+                .map_err(|_| unavailable())?
+                .get(&self.identity.system_start_id)
+                .is_some_and(|c| std::ptr::eq(c.as_ref(), self))
+        {
+            return Err(refused());
+        }
+        let _admission = self.admission.clone().lock_owned().await;
+        let mut db = pool.acquire().await?;
+        sqlx::query("PRAGMA synchronous=FULL")
+            .execute(&mut *db)
+            .await?;
+        let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+        let view = flow_store030::read_tx(&mut tx, self, &self.identity)
+            .await
+            .map_err(store_error)?;
+        let activation = view
+            .state
+            .activations
+            .iter()
+            .find(|a| a.id == attempt.work().activation_id)
+            .ok_or_else(refused)?;
+        if !view.state.stopping
+            || activation.step != attempt.work().step
+            || activation.instance_id != attempt.work().agent_instance_id
+            || activation.start_effect_id.as_deref() != Some(attempt.start_effect_id())
+        {
+            return Err(refused());
+        }
+        let stop_effect_id = activation.stop_effect_id.as_ref().ok_or_else(refused)?;
+        let work = WorkRef030 {
+            activation_id: attempt.work().activation_id.clone(),
+            start_effect_id: attempt.start_effect_id().to_owned(),
+            agent_instance_id: attempt.work().agent_instance_id.clone(),
+        };
+        let handoff: String = sqlx::query_scalar("SELECT receipt_json FROM engine_flow030_handoffs WHERE system_id=? AND invocation_id=? AND effect_id=? AND owner_epoch=? AND generation=?")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(attempt.start_effect_id()).bind(&self.owner.owner_epoch).bind(&self.generation)
+            .fetch_optional(&mut *tx).await?.ok_or_else(refused)?;
+        let handoff: Value = serde_json::from_str(&handoff)?;
+        if handoff.get("kind").and_then(Value::as_str) != Some("nativeOwnedHandoff030")
+            || handoff.get("identity") != Some(&serde_json::to_value(&self.identity)?)
+            || handoff.get("effectId").and_then(Value::as_str) != Some(attempt.start_effect_id())
+            || handoff.get("ownerEpoch").and_then(Value::as_str)
+                != Some(self.owner.owner_epoch.as_str())
+            || handoff.get("generation").and_then(Value::as_str) != Some(self.generation.as_str())
+            || handoff.get("requestId").and_then(Value::as_str) != Some(joined.request_id())
+            || handoff.get("workAttempt") != Some(&serde_json::to_value(attempt)?)
+        {
+            return Err(refused());
+        }
+        let protocol_id = format!("physical:{}", attempt.provider_attempt_id());
+        let terminal_id = work_terminal_event_id030(&self.identity, &protocol_id)?;
+        let terminal = sqlx::query("SELECT event_json,diagnostic_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND event_id=? AND receipt_json IS NULL AND diagnostic_json IS NOT NULL")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&terminal_id).fetch_optional(&mut *tx).await?.ok_or_else(refused)?;
+        let terminal_event: Value = serde_json::from_str(terminal.get("event_json"))?;
+        if terminal_event.get("identity") != Some(&serde_json::to_value(&self.identity)?)
+            || terminal_event.get("eventId").and_then(Value::as_str) != Some(terminal_id.as_str())
+            || terminal_event.pointer("/kind/WorkResult/work")
+                != Some(&serde_json::to_value(&work)?)
+            || terminal_event
+                .pointer("/kind/WorkResult/physical/native_receipt_id")
+                .and_then(Value::as_str)
+                != Some(protocol_id.as_str())
+            || terminal_event
+                .pointer("/kind/WorkResult/physical/descendants_joined")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return Err(refused());
+        }
+        let work_event = sqlx::query("SELECT ticket_json,decision_json FROM engine_flow030_work_events WHERE system_id=? AND invocation_id=? AND activation_id=? AND event_id=? AND decision_json IS NOT NULL")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&work.activation_id).bind(&protocol_id).fetch_optional(&mut *tx).await?.ok_or_else(refused)?;
+        let ticket: Value = serde_json::from_str(work_event.get("ticket_json"))?;
+        let decision: Value = serde_json::from_str(work_event.get::<&str, _>("decision_json"))?;
+        let input: repository::work_protocol030::ProtocolEvent030 =
+            serde_json::from_value(ticket.get("input").cloned().ok_or_else(refused)?)?;
+        let authorization = sqlx::query("SELECT input_json,provider_attempt_id,native_call_id FROM engine_flow030_work_authorizations WHERE system_id=? AND invocation_id=? AND activation_id=? AND event_id=?")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&work.activation_id).bind(&protocol_id).fetch_optional(&mut *tx).await?.ok_or_else(refused)?;
+        let authorized: repository::work_protocol030::ProtocolEvent030 =
+            serde_json::from_str(authorization.get("input_json"))?;
+        let physical_event: Value = serde_json::from_str(&input.event_json)?;
+        if input != authorized
+            || !input.control
+            || input.native_call.is_some()
+            || authorization
+                .get::<Option<&str>, _>("provider_attempt_id")
+                .is_some()
+            || authorization
+                .get::<Option<&str>, _>("native_call_id")
+                .is_some()
+            || physical_event.get("eventId").and_then(Value::as_str) != Some(protocol_id.as_str())
+            || physical_event
+                .pointer("/event/kind")
+                .and_then(Value::as_str)
+                != Some("physicalEnded")
+            || physical_event
+                .pointer("/event/providerEnded")
+                .and_then(Value::as_bool)
+                != Some(true)
+            || physical_event
+                .pointer("/event/effectsEnded")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return Err(refused());
+        }
+        let context: repository::dto::EngineContext = serde_json::from_value(
+            ticket
+                .pointer("/input/context")
+                .cloned()
+                .ok_or_else(refused)?,
+        )?;
+        let receipt_raw = decision
+            .get("receiptJson")
+            .and_then(Value::as_str)
+            .ok_or_else(refused)?;
+        let receipt: Value = serde_json::from_str(receipt_raw)?;
+        if context.owner != self.owner
+            || context.work != *attempt.work()
+            || ticket.get("identity") != Some(&serde_json::to_value(&self.identity)?)
+            || ticket.get("generation").and_then(Value::as_str) != Some(self.generation.as_str())
+            || ticket.pointer("/input/eventId").and_then(Value::as_str)
+                != Some(protocol_id.as_str())
+            || physical_event.get("owner") != receipt.get("owner")
+            || receipt.pointer("/decision/kind").and_then(Value::as_str) != Some("finished")
+        {
+            return Err(refused());
+        }
+        crate::agsdl_host_work::reserved_check030(&context, receipt_raw)?;
+        let finished = receipt.get("decision").ok_or_else(refused)?;
+        let expected_result = match finished.get("outcome").and_then(Value::as_str) {
+            Some("success") => {
+                let output = finished.get("output").ok_or_else(refused)?;
+                let output_json = crate::agsdl_host_route_verifier030::accepted_output_json(output)
+                    .map_err(store_error)?;
+                let route_key = match output.get("choice") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(choice)) => Some(choice.clone()),
+                    _ => return Err(refused()),
+                };
+                repository::flow030::WorkResult030::Completed {
+                    output_json,
+                    route_key,
+                }
+            }
+            Some("failure") => {
+                let code = finished
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .filter(|code| {
+                        matches!(
+                            *code,
+                            "OUTPUT_INVALID"
+                                | "CHECK_FAILED"
+                                | "PLAN_REJECTED"
+                                | "TIMEOUT"
+                                | "STOPPED"
+                                | "REVOKED"
+                                | "AGENT_FAILED"
+                                | "HARNESS_REFUSED"
+                                | "INTERRUPTED"
+                        )
+                    })
+                    .ok_or_else(refused)?;
+                repository::flow030::WorkResult030::Failed {
+                    error: Failure030::new(code),
+                }
+            }
+            _ => return Err(refused()),
+        };
+        if terminal_event.pointer("/kind/WorkResult/result")
+            != Some(&serde_json::to_value(expected_result)?)
+        {
+            return Err(refused());
+        }
+        let row = sqlx::query("SELECT effect_json,status,settlement_json,owner_epoch FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=? AND effect_id=?")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(stop_effect_id).fetch_optional(&mut *tx).await?.ok_or_else(refused)?;
+        let effect: FlowEffect030 = serde_json::from_str(row.get("effect_json"))?;
+        if effect.id != *stop_effect_id
+            || effect.identity != self.identity
+            || row.get::<&str, _>("owner_epoch") != self.owner.owner_epoch
+            || !matches!(&effect.kind, FlowEffectKind030::StopWork {work: w, include_descendants: true} if w == &work)
+        {
+            return Err(refused());
+        }
+        let event_id = work_terminal_event_id030(
+            &self.identity,
+            &format!("joined-stop:{}", attempt.provider_attempt_id()),
+        )?;
+        let stored: Option<String> = sqlx::query_scalar("SELECT event_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND event_id=?")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&event_id).fetch_optional(&mut *tx).await?;
+        let expected_revision = match &stored {
+            Some(raw) => serde_json::from_str::<Value>(raw)?
+                .get("expectedRevision")
+                .and_then(Value::as_str)
+                .ok_or_else(refused)?
+                .to_owned(),
+            None => view.state.revision.clone(),
+        };
+        let event = FlowEvent030 {
+            identity: self.identity.clone(),
+            event_id,
+            expected_revision,
+            kind: FlowEventKind030::PhysicalEnded {
+                work,
+                stop_effect_id: Some(stop_effect_id.clone()),
+                evidence: PhysicalEvidence030 {
+                    native_receipt_id: protocol_id,
+                    descendants_joined: true,
+                },
+            },
+        };
+        if runtime
+            .event_committing
+            .lock()
+            .map_err(|_| unavailable())?
+            .get(&(
+                self.identity.system_start_id.clone(),
+                event.event_id.clone(),
+            ))
+            .is_some_and(|pending| pending != &event)
+        {
+            return Err(refused());
+        }
+        let settlement = serde_json::to_string(
+            &json!({"kind":"nativeJoinedDiagnosticStop030", "eventId":event.event_id, "startEffectId":attempt.start_effect_id(),"stopEffectId":stop_effect_id,"requestId":joined.request_id(),"ownerEpoch":self.owner.owner_epoch,"generation":self.generation,"workAttempt":attempt}),
+        )?;
+        if stored.is_some() {
+            if row.get::<&str, _>("status") != "settled"
+                || row.get::<Option<&str>, _>("settlement_json") != Some(settlement.as_str())
+            {
+                return Err(refused());
+            }
+            let result = flow_store030::apply_tx(&mut tx, self, &event)
+                .await
+                .map_err(store_error)?;
+            if !matches!(result, Apply030::Replayed(_)) {
+                return Err(refused());
+            }
+            tx.commit().await?;
+            runtime.acknowledge_event_commit(&event);
+            runtime.forget_diagnostic_join(joined);
+            return Ok(result);
+        }
+        if !activation.physical || row.get::<&str, _>("status") != "pending" {
+            return Err(uncertain());
+        }
+        let result = flow_store030::apply_tx(&mut tx, self, &event)
+            .await
+            .map_err(store_error)?;
+        if !matches!(result, Apply030::Applied(_)) {
+            return Err(refused());
+        }
+        let changed = sqlx::query("UPDATE engine_flow030_outbox SET status='settled',settlement_json=? WHERE system_id=? AND invocation_id=? AND effect_id=? AND owner_epoch=? AND status='pending'")
+            .bind(&settlement).bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(stop_effect_id).bind(&self.owner.owner_epoch).execute(&mut *tx).await?.rows_affected();
+        if changed != 1 {
+            return Err(refused());
+        }
+        runtime.begin_event_commit(&event)?;
+        tx.commit().await.map_err(|_| uncertain())?;
+        runtime.acknowledge_event_commit(&event);
+        runtime.forget_diagnostic_join(joined);
+        Ok(result)
     }
 
     /// Prove that this exact Start never crossed the owned executor's release

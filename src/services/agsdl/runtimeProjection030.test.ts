@@ -62,3 +62,30 @@ it('rejects unknown runtime discriminants instead of publishing hidden items', a
     await expect(loadRuntimeProjection030(scope,'flow',async()=>page,()=>true)).rejects.toThrow();
   }
 });
+
+import { initialRunSelection030 } from './runtimeProjection030';
+import { available, historyFixture030, humanFixture030, inspectionFixture030, monitorFixture030, ready } from './runInspection030.testSupport';
+it('applies explicit, newest attested human wait, retained admission, then newest run priority', () => {
+  const a = inspectionFixture030('a'), b = inspectionFixture030('b');
+  const base = monitorFixture030(a, b).snapshot;
+  expect(initialRunSelection030(base)).toBe('a');
+  const admitted = { ...base, retainedAdmission: available('b') };
+  expect(initialRunSelection030(admitted)).toBe('b');
+  const waiting = { ...admitted, history: ready([{ ...historyFixture030(a), humans: ready([humanFixture030(a)]) }, { ...historyFixture030(b), humans: ready([humanFixture030(b)]) }]) };
+  expect(initialRunSelection030(waiting)).toBe('a');
+  expect(initialRunSelection030(waiting, 'b')).toBe('b');
+  expect(initialRunSelection030(waiting, 'removed')).toBe('a');
+  expect(initialRunSelection030({ ...waiting, history: { kind: 'loading', retained: waiting.history.kind === 'ready' ? waiting.history.value : null } })).toBeUndefined();
+  expect(initialRunSelection030({ ...base, history: ready([{ ...historyFixture030(a), humans: { kind: 'unavailable', gap: 'human-flow-projection' } }, historyFixture030(b)]) })).toBeUndefined();
+  expect(initialRunSelection030({ ...base, retainedAdmission: { kind: 'unavailable', gap: 'chronology' } })).toBeUndefined();
+});
+
+it('selects an attested human wait across complete history and blocks only uncertain fallbacks', () => {
+  const recent = inspectionFixture030('recent'), old = inspectionFixture030('old');
+  const recentWaiting = { ...historyFixture030(recent), humans: ready([humanFixture030(recent)]) };
+  const olderUnknown = { ...historyFixture030(old), humans: { kind: 'unavailable' as const, gap: 'human-flow-projection' as const } };
+  const base = monitorFixture030(recent, old).snapshot;
+  expect(initialRunSelection030({ ...base, history: ready([recentWaiting, olderUnknown]) })).toBe('recent');
+  expect(initialRunSelection030({ ...base, history: ready([olderUnknown, recentWaiting, historyFixture030(inspectionFixture030('oldest'))]) })).toBe('recent');
+  expect(initialRunSelection030({ ...base, history: ready([historyFixture030(recent), olderUnknown]) })).toBeUndefined();
+});

@@ -1,11 +1,17 @@
 import { list, object, pointerPart, scanSource, text } from "./document";
 import type { AgsdlEnvelopeMetadata } from "./design";
 import type { ViewerCard, ViewerGraph, ViewerPromptSource, ViewerReference } from "./viewer";
+import { projectStaticSemantics030, type SourceBoundReport030 } from "./staticSemantics030";
 
 export interface ViewerRoute030 {
   /** Pointer to the authored target, including scalar targets and empty choices. */
   path: string;
   sourcePath: string;
+  sourceOccurrenceId?: string;
+  targetOccurrenceId?: string;
+  inherited?: boolean;
+  /** Authored output/handler boundaries crossed by an expanded connection. */
+  via?: string[];
   role: "normal" | "error";
   key?: string;
   targetKind: "step" | "output" | "terminal" | "unresolved";
@@ -19,10 +25,12 @@ export interface ViewerRoute030 {
 }
 
 /** Static source inspection only. Runtime normalization and message resolution belong to 05. */
-export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadata) {
+export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadata, report?: SourceBoundReport030) {
   const scanned = scanSource(source);
   const doc = object(scanned.tree);
   if (doc.contract !== "agsdl-0.3.0") throw new Error("Expected agsdl-0.3.0.");
+  const static030 = projectStaticSemantics030(source, report);
+  const occurrences = new Map(static030.occurrences.map(item => [item.occurrenceId, item]));
   const raw = (path: string) => {
     const span = scanned.spans.get(path);
     return span ? new TextDecoder().decode(scanned.bytes.subarray(span.start, span.end)) : undefined;
@@ -97,6 +105,7 @@ export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadat
     };
     const cards = Object.entries(steps).map(([id, value]) => {
       const step = object(value), card = base(`${path}/steps/${pointerPart(id)}`, id, step, text(step.type));
+      card.static030 = occurrences.get(card.path);
       if (step.type === "agent") {
         const parameter = text(object(step.agent).parameter);
         card.participant = parameter ? { label: parameter, source: "unknown", unresolved: !composition || !list(flow.parameters).includes(parameter) } : named("agents", step.agent);
@@ -110,6 +119,7 @@ export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadat
           ? routes(next, `${card.path}/next`, card.path, "normal")
           : Object.entries(object(next)).flatMap(([key, route]) => routes(route, `${card.path}/next/${pointerPart(key)}`, card.path, "normal", key));
       if (step.onError !== undefined) ownRoutes.push(...routes(step.onError, `${card.path}/onError`, card.path, "error"));
+      for (const route of ownRoutes) { route.sourceOccurrenceId = card.path; route.targetOccurrenceId = route.target; }
       card.edition030!.routes = ownRoutes;
       card.branches = ownRoutes.map(route => ({ path: route.path, label: route.key ?? (route.role === "error" ? "onError" : "next"), route030: route,
         reference: { label: route.targetName ?? "", target: route.target, source: "step", unresolved: route.targetKind === "unresolved" },
@@ -117,7 +127,7 @@ export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadat
       return card;
     });
     const entryName = text(flow.entry);
-    return { path, title: text(flow.title) || name, contract: "agsdl-0.3.0", cards, inputs: [], outputs: list(flow.outputs).map(name => ({ name: text(name), type: "" })),
+    return { path, static030, title: text(flow.title) || name, contract: "agsdl-0.3.0", cards, inputs: [], outputs: list(flow.outputs).map(name => ({ name: text(name), type: "" })),
       entry: { label: entryName, source: "step", target: Object.hasOwn(steps, entryName) ? `${path}/steps/${pointerPart(entryName)}` : undefined, unresolved: !Object.hasOwn(steps, entryName) },
       errorRoutes030: flow.onError === undefined ? [] : routes(flow.onError, `${path}/onError`, path, "error") };
   };

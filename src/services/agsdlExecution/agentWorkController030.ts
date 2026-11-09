@@ -243,6 +243,7 @@ export class AgentWorkController030 {
       this.planLock = 'awaitingPlan';
       return { kind: 'planRevision', planId: event.planId, comment: event.comment };
     }
+    if (this.planLock !== 'unlocked') return { kind: 'planRequired' };
     if (event.kind === 'turnEnded') {
       if (requiresSubmission030(this.contract)) return this.correction([{ pointer: '', rule: 'SUBMISSION_REQUIRED', message: 'Submit the required result before completing this work.' }]);
       return this.accept({ resultsJson: '{}' as ExactJsonText, choice: null, instructions: null });

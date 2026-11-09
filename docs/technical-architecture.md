@@ -447,6 +447,37 @@ Un document statiquement valide peut donc
 rester non exécutable dans Macro. La disponibilité produit est annoncée seulement
 après qualification des commandes réelles de l'application.
 
+Le contrat produit 0.3 est défini dans
+[`agsdlRunUi030.ts`](../src/types/agsdlRunUi030.ts) et son
+[raccord UI/runtime](agsdl-030.md#contrat-produit-des-runs-03). Ces types publics
+décrivent des vues et intentions à adapter, pas des DTO IPC déjà implémentés.
+Le lot UI 6 garde l'orchestration dans `useAgsdlExecutionStore` et les services
+IPC ; les composants capturent l'intention et rendent les faits natifs. Le
+moniteur 0.3 est encore isolé du shell au point de départ de ce contrat.
+L'UI ne conduit ni outbox, ni horloge, ni scheduler, ni relecture de commit
+native. Le lancement produit reste fermé jusqu'à qualification du profil
+fournisseur exact, indépendamment des preuves synthétiques du moteur.
+
+Les lecteurs choisissent explicitement le contrat 0.2 ou 0.3, les versions de
+capture et le profil. Les admissions `start`/`start030` restent distinctes ;
+le reçu `deliver030` demandé nécessite une extension native. Les entrées UI
+contiennent seulement scope public, identifiants publics, révision et réponse.
+Le natif alloue ou retrouve owner, génération, tentatives, tickets et reçus
+d'autorité. Une réponse humaine utilise le broker du vrai flow avec
+`{scope, requestId, expectedRevision, answer}`. Les résolveurs du Chat et les
+approvals historiques n'en sont pas des substituts.
+
+Les reçus et clés d'intention sont conservés nativement. Le store détache
+l'observation lors d'une navigation et relit ces mêmes clés au retour, sans
+soumission ni clôture implicite. Il publie uniquement des séries paginées
+cohérentes, garde les données périmées inspectables et conserve les brouillons
+en conflit. Les révisions humaine, runtime et source restent distinctes.
+Les données sans preuve sont explicitement indisponibles. Le verdict du flow
+ne fournit aucune preuve de fin physique ; `execution_stop` admet la demande
+initiale, tandis que `execution_ensure_stop` 0.3 reprend un Stop déjà durable.
+Les trous de projection humaine, livraison, Stop, diagnostic et chronologie
+ainsi que leurs propriétaires runtime sont inventoriés dans le contrat lié.
+
 ### 5.3 Découpage des panneaux
 
 L'interface est structurée autour de :

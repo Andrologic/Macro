@@ -110,6 +110,8 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
   for (const card of [...cards.filter(card => incoming.get(card.path) === 0), ...cards]) if (!state.has(card.path)) visit(card.path);
 
   // Steps framed together keep other blocks and connections outside their frame.
+  const frameDepth = (path: string) => frames.filter(members => members.includes(path)).length;
+  const maxFrameDepth = Math.max(1, ...cards.map(card => frameDepth(card.path)));
   const frameOf = new Map(frames.flatMap((members, index) => members.map(path => [path, index] as const)));
   // Longest path over the acyclic reading graph. A block reached from a frame starts below the whole frame.
   const forward = flow.filter(edge => !returns.has(edge));
@@ -291,8 +293,9 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
   for (const members of frames) {
     const ranks = members.flatMap(path => rank.has(path) ? [rank.get(path)!] : []);
     if (!ranks.length) continue;
-    before[Math.min(...ranks)] = VIEWER_FRAME.top + VIEWER_FRAME.heading;
-    after[Math.max(...ranks)] = VIEWER_FRAME.padding;
+    const depth = Math.max(...members.map(frameDepth));
+    before[Math.min(...ranks)] = Math.max(before[Math.min(...ranks)], depth * (VIEWER_FRAME.top + VIEWER_FRAME.heading));
+    after[Math.max(...ranks)] = Math.max(after[Math.max(...ranks)], depth * VIEWER_FRAME.padding);
   }
   // Allocate distinct bands per parallel group in each corridor, leaving the
   // ordinary routes their own channel. Rails do not expand unrelated rows.
@@ -437,11 +440,11 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     const node = nodes.get(card.path)!;
     return { card, position: { x: node.x - VIEWER_CARD_WIDTH / 2, y: rowTop[node.layer] }, height: cardHeight(card) };
   });
-  return { nodes: layout, edges, routes };
+  return { nodes: layout, edges, routes, maxFrameDepth };
 }
 
 /** Area covered by the blocks and the side rails, so fitting the graph never cuts a rail. */
-export function viewerLayoutBounds(layout: { nodes: ViewerLayoutNode[]; routes: Map<string, ViewerEdgeRoute> }) {
+export function viewerLayoutBounds(layout: { nodes: ViewerLayoutNode[]; routes: Map<string, ViewerEdgeRoute>; maxFrameDepth?: number }) {
   const xs = layout.nodes.flatMap(node => [node.position.x, node.position.x + VIEWER_CARD_WIDTH]);
   const ys = layout.nodes.flatMap(node => [node.position.y, node.position.y + node.height]);
   for (const route of layout.routes.values()) for (const step of route.steps) {
@@ -449,7 +452,7 @@ export function viewerLayoutBounds(layout: { nodes: ViewerLayoutNode[]; routes: 
     ys.push(step.y);
   }
   // Include marker tips and composition frames/headings around the geometry.
-  const margin = VIEWER_FRAME.top + VIEWER_FRAME.heading;
+  const margin = (layout.maxFrameDepth ?? 1) * (VIEWER_FRAME.top + VIEWER_FRAME.heading);
   const x = Math.min(...xs) - margin, y = Math.min(...ys) - margin;
   return { x, y, width: Math.max(...xs) - x + margin, height: Math.max(...ys) - y + margin };
 }

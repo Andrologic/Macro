@@ -93,7 +93,7 @@ export class HumanWaitRegistry030 {
     this.registered.add(workId);
     this.works.set(workId, { clock, answerTimeoutMs: answerTimeoutMs === null ? null : integer030(answerTimeoutMs, true) });
   }
-  /** Decisions survive every API call until09 persists and acknowledges them. */
+  /** Decisions survive every API call until the native host persists and acknowledges them. */
   pendingResolutions(): readonly HumanResolution030[] { return clone([...this.pending.values()]); }
   acknowledgeResolution(requestId: string): void {
     if (!this.get(requestId).resolution) fail('CORRELATION', '', 'Cannot acknowledge an unresolved request.');

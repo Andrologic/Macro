@@ -1,3 +1,5 @@
+mod agsdl_host_clock030;
+mod agsdl_host_human030;
 #[cfg(any(test, all(debug_assertions, feature = "browser-runtime-debug")))]
 mod browser_runtime_port;
 // AppKit's standard Quit item and Dock Quit call terminate:, bypassing
@@ -98,6 +100,7 @@ pub async fn run_agsdl_engine_isolation_qa() {
 }
 mod agsdl_host;
 mod agsdl_host_calls;
+mod agsdl_host_calls030;
 mod agsdl_host_capture;
 mod agsdl_host_catalogue;
 mod agsdl_host_claude;

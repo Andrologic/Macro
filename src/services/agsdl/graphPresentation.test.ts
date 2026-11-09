@@ -1,5 +1,8 @@
+import { projectViewer } from './viewer';
+import { expandCompositions } from './compositionExpansion';
+import { projectSystemOverview } from './systemOverview';
 import { describe, expect, it } from 'bun:test';
-import { graphBlockPerformer, graphBlockShape, graphGroups, graphNeighborhood, presentFocusedGraph, presentGraph } from './graphPresentation';
+import { graphBlockPerformer, graphBlockShape, graphConversationKey, graphDeliveryPolicy, graphSourcePath, graphGroups, graphNeighborhood, presentFocusedGraph, presentGraph } from './graphPresentation';
 import { layoutViewer, type ViewerEdge } from './graphLayout';
 import type { ViewerCard } from './viewer';
 const card = (path: string, group?: string): ViewerCard => ({ path, id: path, title: path, kind: 'invoke', mission: '', unresolved: false, inputs: [], outputs: [], branches: [], details: group ? { annotations: { macroGroup: group } } : {} });
@@ -97,4 +100,30 @@ describe('graph block reading', () => {
     expect(graphBlockShape(step('agent'))).toBe('card');
     expect(graphBlockShape(step('approval'))).toBe('card');
   });
+});
+
+it('uses semantic conversation identities across scopes and keeps new instances independent', () => {
+  const source = JSON.stringify({ contract: 'agsdl-0.3.0', id: 'identities', agents: { a: { harness: 'example' } },
+    flow: { entry: 'one', steps: {
+      one: { type: 'agent', agent: 'a', instance: 'review', next: 'two' },
+      two: { type: 'agent', agent: 'a', instance: 'other', next: 'fresh' },
+      fresh: { type: 'agent', agent: 'a', instance: 'new', next: 'use' },
+      use: { type: 'compose', composition: 'part', agents: { p: 'a' }, next: { done: [] } },
+    } }, compositions: { part: { parameters: ['p'], entry: 'inside', outputs: ['done'], steps: {
+      inside: { type: 'agent', agent: { parameter: 'p' }, instance: 'review', delivery: 'steer', next: { output: 'done' } },
+    } } } });
+  const projected = projectViewer(source);
+  const graph = projected.graphs[0];
+  const expanded = expandCompositions(graph.cards, projectSystemOverview(graph, []).edges, projected.graphs, new Set(['/flow/steps/use']), projected.declarations);
+  const [one, two, fresh, inside] = expanded.cards;
+  expect(graphConversationKey(one)).toBe(graphConversationKey(inside));
+  expect(graphConversationKey(two)).not.toBe(graphConversationKey(one));
+  expect(graphConversationKey(fresh)).toBeUndefined();
+  expect(graphDeliveryPolicy(one)).toBe('queue');
+  expect(graphDeliveryPolicy(inside)).toBe('steer');
+  expect(graphDeliveryPolicy(fresh)).toBeUndefined();
+  expect(graphSourcePath(inside)).toBe('/compositions/part/steps/inside');
+  expect(inside.path).not.toBe(graphSourcePath(inside));
+  expect(graphBlockPerformer(one, 'Review draft', [{ ...projected.declarations.find(card=>card.path==='/agents/a')!, title: 'Reviewer' }])).toBe('Reviewer');
+  expect(graphBlockPerformer({ ...one, participant: undefined }, 'Review')).toBeUndefined();
 });

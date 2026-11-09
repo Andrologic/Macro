@@ -50,3 +50,19 @@ it('does not invent a status for an unexecuted card', async () => {
   expect(await render()).toBeUndefined();
   expect(host.querySelector('[role="img"]')).toBeNull();
 });
+
+it('preserves repeated observed activations without collapsing their different outcomes', async () => {
+  await render();
+  await act(async () => root!.render(<WorkflowStatusBadge occurrences={[
+    { activationId: 'visit-one', state: 'completed' }, { activationId: 'visit-two', state: 'active' },
+  ]} />));
+  expect(host.textContent).toBe('2');
+  expect(host.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('2 visits');
+  expect(host.querySelector('[data-task-status-indicator-state]')).toBeNull();
+});
+
+it('shows the observed status when a step has one activation', async () => {
+  await render();
+  await act(async () => root!.render(<WorkflowStatusBadge occurrences={[{activationId:'one',state:'active'}]} />));
+  expect(host.querySelector('[data-task-status-indicator-state]')?.getAttribute('data-task-status-indicator-state')).toBe('running');
+});

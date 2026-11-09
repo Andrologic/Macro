@@ -3,7 +3,7 @@ import { ArrowDownToLine, ArrowUpFromLine, Sparkles, Wrench } from 'lucide-react
 import type { ViewerCard } from '../../services/agsdl/viewer';
 import type { TrackedTask } from '../../services/agsdl/taskTracking';
 import type { NativeCardActivation } from '../../services/agsdl/executionView';
-import { WorkflowStatusBadge } from './WorkflowStatusBadge';
+import { WorkflowStatusBadge, type WorkflowOccurrenceBadge030 } from './WorkflowStatusBadge';
 import { WorkflowGraphPopup, type GraphPopupAction } from './WorkflowGraphPopup';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
 import { WorkflowBlockPreview } from './WorkflowPreviews';
@@ -36,8 +36,8 @@ export function WorkflowBlockSummary({ card, incoming = [], outgoing = [] }: { c
   </>;
 }
 
-export function WorkflowBlockOverlay({ card, title, kindLabel, task, native, incoming, outgoing, details = [], actions, children, dismissSignal }: {
-  card: ViewerCard; title: string; kindLabel: string; task?: TrackedTask; native?: NativeCardActivation;
+export function WorkflowBlockOverlay({ card, title, kindLabel, task, native, occurrences, incoming, outgoing, details = [], actions, children, dismissSignal }: {
+  card: ViewerCard; title: string; kindLabel: string; task?: TrackedTask; native?: NativeCardActivation; occurrences?: readonly WorkflowOccurrenceBadge030[];
   incoming: string[]; outgoing: string[]; details?: BlockDetail[]; actions: GraphPopupAction[]; children: ReactElement<{ "aria-describedby"?: string }>; dismissSignal?: number;
 }) {
   const [anchor, setAnchor] = useState<HTMLDivElement | null>(null);
@@ -46,23 +46,29 @@ export function WorkflowBlockOverlay({ card, title, kindLabel, task, native, inc
   const [preview, setPreview] = useState(false);
   const [menu, setMenu] = useState<{ left: number; top: number }>();
   const id = useId();
+  const popupRef = useRef<HTMLDivElement>(null);
   const empty = card.details.contract === 'agsdl-0.2.0' && details.length === 0;
   const show = () => { clearTimeout(timer.current); if (!suppressed.current && !menu && !empty) timer.current = setTimeout(() => setPreview(true), 450); };
   const hide = () => { clearTimeout(timer.current); setPreview(false); };
-  const leave = () => { clearTimeout(timer.current); timer.current = setTimeout(() => setPreview(false), 120); };
+  const leave = () => { clearTimeout(timer.current); if (!popupRef.current?.contains(document.activeElement)) timer.current = setTimeout(() => setPreview(false), 120); };
   const close = () => { suppressed.current = true; hide(); setMenu(undefined); };
   useEffect(() => () => clearTimeout(timer.current), []);
   useEffect(() => { clearTimeout(timer.current); setPreview(false); setMenu(undefined); }, [dismissSignal]);
   return <div ref={setAnchor} className="agsdl-block-anchor"
     onMouseEnter={show} onMouseLeave={() => { leave(); suppressed.current = false; }}
-    onFocus={show} onBlur={() => { hide(); suppressed.current = false; }}
-    onClickCapture={() => { suppressed.current = true; hide(); }}
+    onFocus={show} onBlur={event => { if (popupRef.current?.contains(event.relatedTarget as Node) || event.currentTarget.contains(event.relatedTarget as Node)) return; hide(); suppressed.current = false; }}
+    onClickCapture={event => { if (event.currentTarget.contains(event.target as Node)) { suppressed.current = true; hide(); } }}
     onContextMenu={event => {
       event.preventDefault(); event.stopPropagation(); hide(); suppressed.current = true;
       const rect = event.currentTarget.getBoundingClientRect();
       setMenu(event.clientX || event.clientY ? { left: event.clientX, top: event.clientY } : { left: rect.left, top: rect.bottom });
     }}
     onKeyDown={event => {
+      if (card.edition030 && event.key === 'ArrowRight') {
+        event.preventDefault(); event.stopPropagation(); clearTimeout(timer.current); setPreview(true);
+        requestAnimationFrame(() => popupRef.current?.querySelector<HTMLElement>('summary, [tabindex]')?.focus());
+        return;
+      }
       if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
       event.preventDefault(); event.stopPropagation(); hide(); suppressed.current = true;
       const rect = event.currentTarget.getBoundingClientRect(); setMenu({ left: rect.left, top: rect.bottom });
@@ -70,7 +76,13 @@ export function WorkflowBlockOverlay({ card, title, kindLabel, task, native, inc
     {cloneElement(children, { "aria-describedby": preview ? id : undefined })}
     {preview && !menu && anchor && <WorkflowGraphPopup anchor={anchor} id={id} label={title} onClose={close} onMouseEnter={() => clearTimeout(timer.current)} onMouseLeave={leave}>
       {/* AgSDL 0.2 blocks show their configuration only; older documents keep the general summary. */}
-      {card.details.contract === 'agsdl-0.2.0' ? <WorkflowBlockPreview details={details} /> : <>
+      {card.edition030 ? <div ref={popupRef} tabIndex={-1} className="agsdl-preview030">
+        <WorkflowBlockPreview details={details} card={card} />
+        {occurrences?.length ? <ul className="agsdl-occurrence-list">{occurrences.map(occurrence => <li key={occurrence.activationId}>
+          <WorkflowStatusBadge native={{ state: occurrence.state, partial: occurrence.partial, activations: [] }} />
+          <span>{occurrence.title ?? occurrence.activationId}</span>
+        </li>)}</ul> : null}
+      </div> : card.details.contract === 'agsdl-0.2.0' ? <WorkflowBlockPreview details={details} /> : <>
         <header><WorkflowStatusBadge task={task} native={native} /><div><small>{kindLabel}</small><strong>{title}</strong></div></header>
         <WorkflowBlockSummary card={card} incoming={incoming} outgoing={outgoing} />
       </>}
