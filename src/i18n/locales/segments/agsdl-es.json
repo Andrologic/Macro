@@ -812,6 +812,8 @@
     "definitionChangeHint": "La definición del agente tiene cambios pendientes. Guarde y vuelva a abrir esta ficha antes de cambiar el agente responsable."
   },
   "human030": {
+    "planDetails": "Leer el plan completo",
+    "questionDetails": "Leer la pregunta completa",
     "messageDetails": "Leer el mensaje recibido exacto",
     "actionDetails": "Ver la acción solicitada",
     "draftHint": "Tu borrador se conserva separado de la respuesta registrada.",

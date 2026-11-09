@@ -812,6 +812,8 @@
     "definitionChangeHint": "Die Agentendefinition enthält ungespeicherte Änderungen. Speichern und öffnen Sie diese Ansicht erneut, bevor Sie den verantwortlichen Agenten ändern."
   },
   "human030": {
+    "planDetails": "Vollständigen Plan lesen",
+    "questionDetails": "Vollständige Frage lesen",
     "messageDetails": "Die genaue empfangene Nachricht lesen",
     "actionDetails": "Angeforderte Aktion ansehen",
     "draftHint": "Ihr Entwurf bleibt getrennt von der gespeicherten Antwort erhalten.",

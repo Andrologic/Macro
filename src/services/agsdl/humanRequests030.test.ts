@@ -129,3 +129,34 @@ it('retains a received native answer when readback is older than its receipt', a
   expect(result).toMatchObject({ current: { revision: '1', state: { kind: 'submitted' } }, readFailed: true });
   await expect(client.refresh({ ...request, revision: '2' })).rejects.toThrow('REVISION_CONFLICT');
 });
+
+for (const code of ['REQUEST_CLOSED', 'REVISION_CONFLICT'] as const) {
+  it(`keeps the ${code} revision floor through stale reads, draft edits and a new client`, async () => {
+    const request = humanFixture030();
+    const transport = humanTransportDouble030(request);
+    const storage = memoryDraftStorage030();
+    const submit = async (input: Parameters<typeof transport.submit>[0]) => {
+      transport.submissions.push(input);
+      return { kind: 'refused' as const, refusal: { code, currentRevision: '2', message: 'Demande en révision 2.' } };
+    };
+    const client = createHumanRequestClient030({ submit, read: transport.read, storage });
+    const answer = { kind: 'approval' as const, choice: 'réviser', comment: '  À conserver. ' };
+    client.saveDraft(request, { choice: answer.choice, text: answer.comment });
+    expect(await client.send(request, answer)).toMatchObject({ readFailed: true });
+    expect(client.blocked(request)).toBe(true);
+    await client.send(request, answer);
+    expect(transport.submissions).toHaveLength(1);
+    const reloaded = createHumanRequestClient030({ submit, read: transport.read, storage });
+    expect(reloaded.loadDraft(request)).toEqual({ choice: answer.choice, text: answer.comment });
+    reloaded.saveDraft(request, { choice: answer.choice, text: 'Brouillon modifié' });
+    await expect(reloaded.refresh(request)).rejects.toThrow('REVISION_CONFLICT');
+    await reloaded.send(request, answer);
+    expect(transport.submissions).toHaveLength(1);
+    transport.setCurrent({ ...request, revision: '1' });
+    await expect(reloaded.refresh(request)).rejects.toThrow('REVISION_CONFLICT');
+    transport.setCurrent({ ...request, revision: '2' });
+    const current = await reloaded.refresh(request);
+    expect(reloaded.blocked(current)).toBe(false);
+    expect(reloaded.loadDraft(current)?.text).toBe('Brouillon modifié');
+  });
+}

@@ -31,6 +31,7 @@ export function ExecutionHumanRequest({ request, labels, open, onAnswer, draft, 
     try { await onAnswer(answer); } catch { setFailed(true); } finally { sending.current = false; setBusy(false); }
   };
   const validChoice = request.kind === 'approval' && value.choice !== null && request.choices.some(item => item.value === value.choice);
+  const foldedDescription = labels.messageDetails && (request.kind === 'plan' || request.kind === 'question');
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (request.kind === 'approval' && validChoice) void send({ kind: 'approval', choice: value.choice!, comment: value.text });
@@ -38,10 +39,13 @@ export function ExecutionHumanRequest({ request, labels, open, onAnswer, draft, 
   };
   return <form onSubmit={submit} className="my-2 flex min-w-0 flex-col gap-2 rounded border border-border p-2 text-xs">
     <h3 className="break-words font-medium">{request.title}</h3>
-    {request.description && <p className="whitespace-pre-wrap break-words text-muted-foreground">{request.description}</p>}
+    {request.description && !foldedDescription && <p className="whitespace-pre-wrap break-words text-muted-foreground">{request.description}</p>}
     {labels.messageDetails ? <details>
       <summary className="cursor-pointer">{labels.messageDetails}</summary>
-      <p className="mt-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{request.message}</p>
+      <div tabIndex={0} className="mt-1 max-h-64 overflow-auto focus-visible:outline focus-visible:outline-1 focus-visible:outline-ring">
+        {request.description && foldedDescription && <p className="whitespace-pre-wrap break-words text-muted-foreground [overflow-wrap:anywhere]">{request.description}</p>}
+        <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{request.message}</p>
+      </div>
     </details> : <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{request.message}</p>}
     {request.kind === 'approval' && <>
       <label htmlFor={`${id}-choice`}>{labels.choice}</label>

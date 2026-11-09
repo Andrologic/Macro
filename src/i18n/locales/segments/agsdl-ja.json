@@ -812,6 +812,8 @@
     "definitionChangeHint": "エージェント定義に未保存の変更があります。担当エージェントを変更する前に、保存してこの画面を開き直してください。"
   },
   "human030": {
+    "planDetails": "計画の全文を読む",
+    "questionDetails": "質問の全文を読む",
     "messageDetails": "受信したメッセージの原文を読む",
     "actionDetails": "要求された操作を表示",
     "draftHint": "下書きは記録された回答とは別に保持されています。",

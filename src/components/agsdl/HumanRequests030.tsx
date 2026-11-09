@@ -51,11 +51,12 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
   const [outcome, setOutcome] = useState<HumanSendOutcome030['result']>(null);
   const working = useRef(false);
   let blocked = true;
+  let revisionStale = false;
   let storageUnavailable = false;
-  try { blocked = client.blocked(request); } catch { storageUnavailable = true; }
+  try { blocked = client.blocked(request); revisionStale = client.stale(request); } catch { storageUnavailable = true; }
   const content = request.content;
   const qualified = content.kind !== 'unclassified' && (content.kind !== 'question' || content.answerContract.kind === 'available');
-  const open = request.state.kind === 'open' && fresh && !readFailed && !blocked && !storageFailed && qualified && !busy;
+  const open = request.state.kind === 'open' && fresh && !readFailed && !revisionStale && !blocked && !storageFailed && !storageUnavailable && qualified && !busy;
   const view = runHumanView030(request, { plan: t('agsdl.human030.plan'), question: t('agsdl.human030.question'), unknown: t('agsdl.human030.unknown') });
 
   useEffect(() => {
@@ -123,7 +124,8 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
     </> : <p role="alert">{t('agsdl.human030.questionUnavailable')}</p>)}
     <ExecutionHumanRequest request={view} labels={{ choice: t('agsdl.human030.choice'), comment: t('agsdl.human030.comment'), answer: t('agsdl.human030.answer'),
       submit: t('agsdl.human030.submit'), approve: t('agsdl.human030.approve'), reject: t('agsdl.human030.reject'), failed: t('agsdl.human030.sendUncertain'),
-      messageDetails: content.kind === 'flowChoice' ? t('agsdl.human030.messageDetails') : content.kind === 'actionApproval' ? t('agsdl.human030.actionDetails') : undefined }}
+      messageDetails: content.kind === 'flowChoice' ? t('agsdl.human030.messageDetails') : content.kind === 'actionApproval' ? t('agsdl.human030.actionDetails')
+        : view.kind === 'plan' ? t('agsdl.human030.planDetails') : view.kind === 'question' ? t('agsdl.human030.questionDetails') : undefined }}
       open={open} onAnswer={send} draft={draft} onDraftChange={saveDraft} />
     {state.kind !== 'open' && (draft.choice !== null || draft.text !== '') && <p className="text-muted-foreground">{t('agsdl.human030.draftHint')}</p>}
     {resolution && <p data-human-reason>{t(`agsdl.human030.reason.${resolution.reason}`)}</p>}
@@ -137,7 +139,7 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
     </div>}
     {state.kind === 'open' && !storageUnavailable && (blocked || outcome?.kind === 'uncertain') && <p role="alert">{t('agsdl.human030.sendUncertain')}</p>}
     {(storageFailed || storageUnavailable) && <p role="alert">{t('agsdl.human030.storageFailed')}</p>}
-    {(!fresh || readFailed) && <p role="alert">{t('agsdl.human030.stale')}</p>}
+    {(!fresh || readFailed || revisionStale) && <p role="alert">{t('agsdl.human030.stale')}</p>}
     <div className="space-y-1 text-muted-foreground" data-human-clock>
       <p>{t('agsdl.human030.clockHint')}</p>
       {!clock ? <p>{t('agsdl.human030.clockUnavailable')}</p> : <>

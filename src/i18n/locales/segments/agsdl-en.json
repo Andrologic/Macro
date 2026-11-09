@@ -812,6 +812,8 @@
     "definitionChangeHint": "The agent definition has pending changes. Save, then reopen this panel before changing the responsible agent."
   },
   "human030": {
+    "planDetails": "Read the full plan",
+    "questionDetails": "Read the full question",
     "messageDetails": "Read the exact received message",
     "actionDetails": "View the requested action",
     "draftHint": "Your draft is kept separately from the recorded response.",

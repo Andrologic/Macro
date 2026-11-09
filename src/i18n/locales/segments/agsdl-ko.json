@@ -812,6 +812,8 @@
     "definitionChangeHint": "에이전트 정의에 저장하지 않은 변경 사항이 있습니다. 담당 에이전트를 바꾸기 전에 저장하고 이 화면을 다시 여세요."
   },
   "human030": {
+    "planDetails": "전체 계획 읽기",
+    "questionDetails": "전체 질문 읽기",
     "messageDetails": "수신한 메시지 원문 읽기",
     "actionDetails": "요청된 작업 보기",
     "draftHint": "초안은 기록된 답변과 별도로 유지됩니다.",

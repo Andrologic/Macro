@@ -145,10 +145,30 @@ export function createHumanRequestClient030({ submit, read, storage }: {
 }) {
   const pending = new Map<string, Promise<HumanSendOutcome030>>();
   const key = (request: RunHumanRequest030, suffix: string) => `macro.human030.${suffix}.${humanRequestKey030(request)}`;
+  const draftRecord = (request: RunHumanRequest030): Record<string, unknown> => {
+    const raw = storage.getItem(key(request, 'draft'));
+    const value: unknown = raw ? JSON.parse(raw) : null;
+    return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  };
+  const minimumRevision = (request: RunHumanRequest030): string | null => {
+    const minimum = draftRecord(request).minimumRevision;
+    if (minimum === undefined) return null;
+    if (typeof minimum !== 'string' || !/^(0|[1-9][0-9]*)$/.test(minimum)) throw new Error('Invalid retained revision');
+    return minimum;
+  };
+  const stale = (request: RunHumanRequest030) => {
+    const minimum = minimumRevision(request);
+    return minimum !== null && BigInt(request.revision) < BigInt(minimum);
+  };
+  const retainMinimum = (request: RunHumanRequest030, revision: string) => {
+    const previous = minimumRevision(request);
+    const minimum = previous !== null && BigInt(previous) > BigInt(revision) ? previous : revision;
+    storage.setItem(key(request, 'draft'), JSON.stringify({ ...draftRecord(request), minimumRevision: minimum }));
+  };
   const readCurrent = async (request: RunHumanRequest030) => {
     const current = await read({ scope: request.scope, requestId: request.id });
     if (humanRequestKey030(current) !== humanRequestKey030(request)) throw new Error('CORRELATION');
-    if (BigInt(current.revision) < BigInt(request.revision)) throw new Error('REVISION_CONFLICT');
+    if (BigInt(current.revision) < BigInt(request.revision) || stale(current)) throw new Error('REVISION_CONFLICT');
     return current;
   };
   return {
@@ -163,8 +183,10 @@ export function createHumanRequestClient030({ submit, read, storage }: {
       } catch { return null; }
     },
     saveDraft(request: RunHumanRequest030, draft: HumanFormDraft030) {
-      storage.setItem(key(request, 'draft'), JSON.stringify(draft));
+      const minimum = minimumRevision(request);
+      storage.setItem(key(request, 'draft'), JSON.stringify({ ...draft, ...(minimum === null ? {} : { minimumRevision: minimum }) }));
     },
+    stale,
     blocked(request: RunHumanRequest030) { return storage.getItem(key(request, 'attempt')) !== null; },
     async refresh(request: RunHumanRequest030) {
       const current = await readCurrent(request);
@@ -178,7 +200,7 @@ export function createHumanRequestClient030({ submit, read, storage }: {
       const input: RunHumanSubmission030 = { scope: request.scope, requestId: request.id,
         expectedRevision: request.revision, answer: runHumanAnswer030(request, answer) };
       // Persist before calling transport. Failure to persist must prevent sending.
-      const blocked = storage.getItem(key(request, 'attempt')) !== null;
+      const blocked = storage.getItem(key(request, 'attempt')) !== null || stale(request);
       if (!blocked) storage.setItem(key(request, 'attempt'), 'pending');
       const operation = (async (): Promise<HumanSendOutcome030> => {
         let result: HumanSendOutcome030['result'] = null;
@@ -192,6 +214,8 @@ export function createHumanRequestClient030({ submit, read, storage }: {
               fallback = { ...request, revision: receipt.revision, state: receipt.state };
             }
           } catch { result = { kind: 'uncertain', code: 'UNCERTAIN', receiptId: null }; }
+          if (result.kind === 'refused' && result.refusal.currentRevision !== null)
+            retainMinimum(request, result.refusal.currentRevision);
           storage.setItem(key(request, 'attempt'), result.kind);
         }
         try {

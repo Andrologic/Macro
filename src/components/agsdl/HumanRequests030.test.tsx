@@ -173,3 +173,47 @@ it('uses read-only reconciliation after ambiguous delivery and failed read witho
   await submit();
   expect(transport.submissions).toHaveLength(1);
 });
+
+it('keeps a refused request stale and disabled after remount until its announced revision is read', async () => {
+  const storage = memoryDraftStorage030();
+  const send = async (input: Parameters<typeof transport.submit>[0]) => {
+    transport.submissions.push(input);
+    return { kind: 'refused' as const, refusal: { code: 'REQUEST_CLOSED' as const, currentRevision: '2', message: 'Décision en révision 2.' } };
+  };
+  props.client = createHumanRequestClient030({ submit: send, read: transport.read, storage });
+  await render(); await choose('1'); await text('Mon brouillon exact'); await submit();
+  expect(host.textContent).toContain('Ces informations sont les dernières connues');
+  expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
+  await act(async () => root?.unmount()); root = undefined; host.remove();
+  props.client = createHumanRequestClient030({ submit: send, read: transport.read, storage });
+  await render();
+  expect(host.querySelector('textarea')!.value).toBe('Mon brouillon exact');
+  expect(host.textContent).toContain('Ces informations sont les dernières connues');
+  await submit();
+  const refresh = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Actualiser l’état')!;
+  await act(async () => refresh.click());
+  expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
+  expect(transport.submissions).toHaveLength(1);
+  transport.setCurrent({ ...humanFixture030(), revision: '2' });
+  await act(async () => refresh.click());
+  expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
+});
+
+for (const kind of ['plan', 'question'] as const) {
+  it(`keeps long ${kind} content exact inside a closed disclosure before the response controls`, async () => {
+    const message = ('Contenu exact, à relire.\n').repeat(100);
+    const description = ('Format exact de réponse.\n').repeat(80);
+    const content = kind === 'plan' ? { kind, plan: message } : { kind, question: message, expectedResponse: description,
+      answerContract: { kind: 'available' as const, value: { protocol: 'mcp/elicitation', schemaJson: '{}' } } };
+    await render(ready(humanFixture030({ id: kind, content })));
+    const form = host.querySelector('form')!;
+    const details = form.querySelector('details')!;
+    expect(details).not.toBeNull();
+    expect(details.open).toBe(false);
+    expect(details.querySelector('summary')?.textContent).toBeTruthy();
+    expect(Array.from(details.querySelectorAll('p')).some(p => p.textContent === message)).toBe(true);
+    if (kind === 'question') expect(Array.from(details.querySelectorAll('p')).some(p => p.textContent === description)).toBe(true);
+    expect(form.querySelector('textarea')!.closest('details')).toBeNull();
+    for (const button of form.querySelectorAll('button')) expect(button.closest('details')).toBeNull();
+  });
+}
