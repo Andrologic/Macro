@@ -46,6 +46,20 @@ pub fn reduce(
     if state.identity != event.identity || event.event_id.is_empty() {
         return Err(FlowInputError030::Identity);
     }
+    let mut decision_ordinals = std::collections::BTreeSet::new();
+    for group in &state.groups {
+        if let Some(ordinal) = &group.decided_ordinal {
+            if group.decision.is_none()
+                || !number::canonical(ordinal)
+                || ordinal == "0"
+                || !decision_ordinals.insert(ordinal)
+            {
+                return Err(FlowInputError030::InvalidState(
+                    "Invalid group decision ordinal".into(),
+                ));
+            }
+        }
+    }
     let plan_json = encoded(plan);
     if state.plan_json.as_ref().is_some_and(|p| p != &plan_json) {
         return Err(FlowInputError030::Identity);
@@ -1084,7 +1098,7 @@ impl Engine<'_> {
                     parent_context,
                 });
                 for gi in &closed {
-                    self.state.groups[*gi].decision = Some("closed".into());
+                    self.set_group_decision(*gi, "closed")?;
                     self.state.groups[*gi].continuation = None;
                     let join_activation = self.ai(&self.state.groups[*gi].activation_id.clone())?;
                     self.state.activations[join_activation].phase = "done".into();
@@ -1162,7 +1176,7 @@ impl Engine<'_> {
             if !inside {
                 self.state.activations[i].context = g.context.clone();
                 self.state.activations[i].phase = "barrier".into();
-                self.state.groups[gi].decision = Some("closed".into());
+                self.set_group_decision(gi, "closed")?;
                 self.state.groups[gi].continuation = Some(Continuation030::Route {
                     activation_id: a.id,
                     route: route_ref(&route),
@@ -1465,6 +1479,7 @@ impl Engine<'_> {
                 context: context.clone(),
                 branches,
                 decision: None,
+                decided_ordinal: None,
                 output_json: None,
                 error: None,
                 continuation: None,
@@ -1674,8 +1689,8 @@ impl Engine<'_> {
                 branches.insert(b.name.clone(), output);
             }
         }
+        self.set_group_decision(gi, decision)?;
         let group = &mut self.state.groups[gi];
-        group.decision = Some(decision.into());
         group.continuation = Some(Continuation030::Join);
         if decision == "failed" {
             // `fail` records the failure that triggered the threshold.
@@ -1685,6 +1700,25 @@ impl Engine<'_> {
         }
         self.exclude(gi, true)?;
         self.release(gi)
+    }
+    fn set_group_decision(&mut self, gi: usize, decision: &str) -> Result<()> {
+        if self.state.groups[gi].decision.is_some() {
+            return Err(FlowInputError030::InvalidState(
+                "Group already decided".into(),
+            ));
+        }
+        let maximum = self
+            .state
+            .groups
+            .iter()
+            .filter_map(|group| group.decided_ordinal.as_deref())
+            .max_by(|a, b| number::cmp(a, b))
+            .unwrap_or("0");
+        let ordinal = number::increment(maximum);
+        let group = &mut self.state.groups[gi];
+        group.decision = Some(decision.into());
+        group.decided_ordinal = Some(ordinal);
+        Ok(())
     }
     fn belongs(&self, context: &[Frame030], group: &str) -> bool {
         context.iter().any(|f|matches!(f,Frame030::Path{path_id, departed_groups} if !departed_groups.iter().any(|id| id == group) && self.state.paths[self.pi(path_id)].memberships.iter().any(|m| m.group_id == group && m.phase != "escaped" && m.phase != "withdrawn")))
@@ -2065,5 +2099,105 @@ impl Engine<'_> {
             });
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod decision_ordinal_tests {
+    use super::*;
+
+    fn group(id: &str) -> Group030 {
+        Group030 {
+            id: id.into(),
+            join: vec![],
+            origin_activation_id: "origin".into(),
+            activation_id: "join".into(),
+            context: vec![],
+            branches: vec![],
+            decision: None,
+            decided_ordinal: None,
+            output_json: None,
+            error: None,
+            continuation: None,
+            released: false,
+        }
+    }
+    fn plan() -> FlowPlan030 {
+        serde_json::from_value(json!({"format":"macro-agsdl-compiled-plan/2",
+            "versions":{"snapshot":"2","contract":"agsdl-0.3.0","compiler":"test","runtime":"test","registry":"test","profile":"macro-agsdl-030-v1"},
+            "source":{},"documentJson":"{}","agents":[],"entry":null,"scopes":[],"steps":[],"routes":[],"joins":[],"handlers":[],"graphlessSubmissionContracts":{}})).unwrap()
+    }
+    fn identity() -> FlowIdentity030 {
+        FlowIdentity030 {
+            system_start_id: "system".into(),
+            flow_invocation_id: "flow".into(),
+            snapshot_id: "snapshot".into(),
+            epoch: "capture".into(),
+        }
+    }
+    #[test]
+    fn decision_ordinals_follow_decision_order_not_group_order() {
+        let plan = plan();
+        let mut state = FlowState030::new(identity());
+        state.groups = vec![group("first"), group("second"), group("third")];
+        let mut engine = Engine {
+            plan: &plan,
+            state,
+            event_id: "event",
+            ordinal: 0,
+            effects: vec![],
+        };
+        engine.set_group_decision(1, "done").unwrap();
+        engine.set_group_decision(0, "closed").unwrap();
+        engine.set_group_decision(2, "reached").unwrap();
+        assert_eq!(
+            engine
+                .state
+                .groups
+                .iter()
+                .map(|g| g.decided_ordinal.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("2"), Some("1"), Some("3")]
+        );
+        assert!(engine.set_group_decision(0, "done").is_err());
+    }
+    #[test]
+    fn legacy_groups_decode_without_ordinal_and_invalid_ordinals_are_rejected() {
+        let mut old = serde_json::to_value(group("old")).unwrap();
+        old.as_object_mut()
+            .unwrap()
+            .insert("decision".into(), json!("done"));
+        assert!(!old.as_object().unwrap().contains_key("decidedOrdinal"));
+        let legacy: Group030 = serde_json::from_value(old).unwrap();
+        assert_eq!(legacy.decided_ordinal, None);
+        let mut state = FlowState030::new(identity());
+        let mut a = group("a");
+        a.decision = Some("done".into());
+        a.decided_ordinal = Some("1".into());
+        let mut b = group("b");
+        b.decision = Some("done".into());
+        b.decided_ordinal = Some("1".into());
+        state.groups = vec![a, b];
+        let event = FlowEvent030 {
+            identity: identity(),
+            event_id: "event".into(),
+            expected_revision: "0".into(),
+            kind: FlowEventKind030::Stop,
+        };
+        assert!(matches!(
+            reduce(&plan(), &state, &event),
+            Err(FlowInputError030::InvalidState(_))
+        ));
+        state.groups[1].decided_ordinal = Some("01".into());
+        assert!(matches!(
+            reduce(&plan(), &state, &event),
+            Err(FlowInputError030::InvalidState(_))
+        ));
+        state.groups[1].decided_ordinal = Some("2".into());
+        state.groups[1].decision = None;
+        assert!(matches!(
+            reduce(&plan(), &state, &event),
+            Err(FlowInputError030::InvalidState(_))
+        ));
     }
 }

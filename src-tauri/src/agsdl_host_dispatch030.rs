@@ -24,7 +24,7 @@ pub(crate) async fn resume_error_route030(
     reference: &PrepareRef030,
     cancelled: &CancellationToken,
 ) -> Result<Apply030> {
-    error_route030(host, pool, owner, reference, None, cancelled).await
+    resume_source_route030(host, pool, owner, reference, cancelled).await
 }
 
 /// A joined agent is process-local evidence for a newly committed failure.
@@ -37,10 +37,31 @@ pub(crate) async fn dispatch_joined_error_route030(
     joined: &JoinedOwnedAgent030,
     cancelled: &CancellationToken,
 ) -> Result<Apply030> {
-    error_route030(host, pool, owner, reference, Some(joined), cancelled).await
+    dispatch_source_route030(host, pool, owner, reference, Some(joined), cancelled).await
 }
 
-async fn error_route030(
+/// Read back only; an absent source remains unresolved even for joins.
+pub(crate) async fn resume_source_route030(
+    host: &HostState,
+    pool: &SqlitePool,
+    owner: &EngineOwner,
+    reference: &PrepareRef030,
+    cancelled: &CancellationToken,
+) -> Result<Apply030> {
+    source_route030(
+        host,
+        pool,
+        owner,
+        reference,
+        SourceRouteMode030::InspectOnly,
+        cancelled,
+    )
+    .await
+}
+
+/// Creation remains authenticated by the 037 writer. A join requires no
+/// fabricated agent witness; every other new source requires an exact join.
+pub(crate) async fn dispatch_source_route030(
     host: &HostState,
     pool: &SqlitePool,
     owner: &EngineOwner,
@@ -48,6 +69,34 @@ async fn error_route030(
     joined: Option<&JoinedOwnedAgent030>,
     cancelled: &CancellationToken,
 ) -> Result<Apply030> {
+    source_route030(
+        host,
+        pool,
+        owner,
+        reference,
+        SourceRouteMode030::Dispatch(joined),
+        cancelled,
+    )
+    .await
+}
+
+enum SourceRouteMode030<'a> {
+    InspectOnly,
+    Dispatch(Option<&'a JoinedOwnedAgent030>),
+}
+
+async fn source_route030(
+    host: &HostState,
+    pool: &SqlitePool,
+    owner: &EngineOwner,
+    reference: &PrepareRef030,
+    mode: SourceRouteMode030<'_>,
+    cancelled: &CancellationToken,
+) -> Result<Apply030> {
+    let joined = match &mode {
+        SourceRouteMode030::InspectOnly => None,
+        SourceRouteMode030::Dispatch(joined) => *joined,
+    };
     let attestor = RouteAttestor030::capture(host, owner).await?;
     let verifier = SqlRouteMaterialVerifier030::capture(host, owner).await?;
     let lease = host.start_lease().await?;
@@ -79,12 +128,12 @@ async fn error_route030(
     .ok_or_else(|| failure("CORRELATION", "route", "Captured flow is absent"))?;
     let capture: StartCapture030 = serde_json::from_str(&raw)?;
     let source = attestor
-        .inspect_error_source_tx(&mut tx, &lease, host.flow030(), &capture, reference)
+        .inspect_source_tx(&mut tx, &lease, host.flow030(), &capture, reference)
         .await?;
     let mut created = false;
     let source = match source {
         Some(source) => source,
-        None if pending.is_some() || joined.is_none() => {
+        None if pending.is_some() || matches!(mode, SourceRouteMode030::InspectOnly) => {
             return Err(failure(
                 "UNCERTAIN",
                 "route",
@@ -93,8 +142,15 @@ async fn error_route030(
         }
         None => {
             let source = attestor
-                .attest_error_source_tx(&mut tx, &lease, host.flow030(), &capture, reference)
+                .attest_source_tx(&mut tx, &lease, host.flow030(), &capture, reference)
                 .await?;
+            if joined.is_none() && !source.is_join_source() {
+                return Err(failure(
+                    "CORRELATION",
+                    "route",
+                    "Agent source requires joined ownership",
+                ));
+            }
             pending = Some(host.flow030().begin_route_source_commit(&source)?);
             created = true;
             source

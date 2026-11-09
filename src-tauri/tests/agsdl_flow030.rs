@@ -2490,3 +2490,40 @@ fn outer_stop_still_refuses_independent_sharing_beside_nested_groups() {
     t.physical_stops();
     assert_eq!(t.s.verdict.as_deref(), Some("cancelled"));
 }
+
+#[test]
+fn all_join_last_result_with_physical_proof_never_creates_stop() {
+    let mut t = launch(joined("all", "stop"));
+    t.finish("b", json!({"text":"B"}), None);
+    let work = t.work("a");
+    let instance_id = work.agent_instance_id.clone().unwrap();
+    let transition = t.send(FlowEventKind030::WorkResult {
+        work,
+        result: WorkResult030::Completed {
+            output_json: json!({"text":"A"}).to_string(),
+            route_key: None,
+        },
+        physical: Some(PhysicalEvidence030 {
+            native_receipt_id: "physical:joined-a".into(),
+            descendants_joined: true,
+        }),
+    });
+    assert_eq!(t.s.groups[0].decision.as_deref(), Some("done"));
+    assert!(t.s.groups[0].released);
+    assert!(transition
+        .effects
+        .iter()
+        .any(|e| matches!(e.kind, FlowEffectKind030::PrepareRoute { .. })));
+    assert!(!transition
+        .effects
+        .iter()
+        .any(|e| matches!(e.kind, FlowEffectKind030::StopWork { .. })));
+    let instance = t.s.instances.iter().find(|i| i.id == instance_id).unwrap();
+    assert!(instance.discarded);
+    assert!(t
+        .s
+        .instances
+        .iter()
+        .filter(|i| matches!(i.selector, Instance030::New))
+        .all(|i| i.discarded));
+}

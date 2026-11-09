@@ -143,6 +143,20 @@ impl FlowWorkAttempt030 {
     }
 }
 
+/// Correlation for the native terminal ledger, never an authority to emit it.
+pub(crate) fn work_terminal_event_id030(
+    identity: &FlowIdentity030,
+    protocol_event_id: &str,
+) -> Result<String> {
+    if protocol_event_id.is_empty() {
+        return Err(refused());
+    }
+    Ok(format!(
+        "work030:terminal:{:x}",
+        Sha256::digest(serde_json::to_vec(&(identity, protocol_event_id))?)
+    ))
+}
+
 /// Per-runtime, per-request interleaving, absent from production builds.
 #[cfg(test)]
 pub(crate) struct CommitTestHook030 {
@@ -1285,13 +1299,7 @@ pub(crate) async fn apply_work_terminal_tx(
     let view = flow_store030::read_tx(db, &authority, identity)
         .await
         .map_err(store_error)?;
-    let event_id = format!(
-        "work030:terminal:{:x}",
-        Sha256::digest(serde_json::to_vec(&(
-            identity,
-            terminal.protocol_event_id()
-        ))?)
-    );
+    let event_id = work_terminal_event_id030(identity, terminal.protocol_event_id())?;
     let recorded: Option<String> = sqlx::query_scalar(
         "SELECT event_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND event_id=?",
     )
@@ -1315,72 +1323,18 @@ pub(crate) async fn apply_work_terminal_tx(
         kind: FlowEventKind030::WorkResult {
             work: work.clone(),
             result: terminal.result().clone(),
-            physical: None,
-        },
-    };
-    let applied = flow_store030::apply_tx(db, &authority, &event)
-        .await
-        .map_err(store_error)?;
-    if matches!(applied, Apply030::Diagnostic(_)) {
-        // Preserve the durable diagnostic. Stop can later record cleanup under
-        // its opaque control; another mutation here would roll the diagnostic back.
-        lease.ensure_live()?;
-        return Ok(());
-    }
-    // The joined owner has already ended, including its registered cleanups.
-    // Record that fact in the work decision's transaction, before installing
-    // the shared COMMIT marker. No intermediate runtime state is published.
-    let view = flow_store030::read_tx(db, &authority, identity)
-        .await
-        .map_err(store_error)?;
-    let activation = view
-        .state
-        .activations
-        .iter()
-        .find(|activation| activation.id == work.activation_id)
-        .ok_or_else(refused)?;
-    if activation.start_effect_id.as_deref() != Some(work.start_effect_id.as_str())
-        || activation.instance_id != work.agent_instance_id
-    {
-        return Err(refused());
-    }
-    let event_id = format!(
-        "work030:physical:{:x}",
-        Sha256::digest(serde_json::to_vec(&(
-            identity,
-            terminal.protocol_event_id()
-        ))?)
-    );
-    let recorded: Option<String> = sqlx::query_scalar(
-        "SELECT event_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND event_id=?",
-    )
-    .bind(&identity.system_start_id)
-    .bind(&identity.flow_invocation_id)
-    .bind(&event_id)
-    .fetch_optional(&mut *db)
-    .await?;
-    let expected_revision = match recorded {
-        Some(raw) => serde_json::from_str::<Value>(&raw)?
-            .get("expectedRevision")
-            .and_then(Value::as_str)
-            .ok_or_else(refused)?
-            .to_owned(),
-        None => view.state.revision.clone(),
-    };
-    let ended = FlowEvent030 {
-        identity: identity.clone(),
-        event_id,
-        expected_revision,
-        kind: FlowEventKind030::PhysicalEnded {
-            work: work.clone(),
-            stop_effect_id: activation.stop_effect_id.clone(),
-            evidence: PhysicalEvidence030 {
+            // The sealed witness already proves the future and its cleanups
+            // ended. Apply that fact before the reducer routes this result,
+            // so closing a group does not cancel its completed last branch.
+            physical: Some(PhysicalEvidence030 {
                 native_receipt_id: terminal.protocol_event_id().to_owned(),
                 descendants_joined: true,
-            },
+            }),
         },
     };
-    flow_store030::apply_tx(db, &authority, &ended)
+    // A diagnostic is persisted for the caller's transaction to commit. Its
+    // later Stop cleanup still requires the native control path.
+    flow_store030::apply_tx(db, &authority, &event)
         .await
         .map_err(store_error)?;
     lease.ensure_live()?;

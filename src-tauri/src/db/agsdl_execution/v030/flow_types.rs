@@ -263,7 +263,23 @@ record!(Membership030 {group_id:String,branch:String,phase:String,result_json:Op
 record!(Path030 {id:String,memberships:Vec<Membership030>,batch_id:Option<String>,item_json:Option<String>,context:Vec<Frame030>,phase:String});
 record!(Batch030 {id:String,target:Address030,items:Vec<PreparedItem030>,path_ids:Vec<String>,concurrency_json:Option<String>,context:Vec<Frame030>,producer:Producer030});
 record!(GroupBranch030 {name:String,fanout:bool,path_ids:Vec<String>});
-record!(Group030 {id:String,join:Address030,origin_activation_id:String,activation_id:String,context:Vec<Frame030>,branches:Vec<GroupBranch030>,decision:Option<String>,output_json:Option<String>,error:Option<Failure030>,continuation:Option<Continuation030>,released:bool});
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Group030 {
+    pub id: String,
+    pub join: Address030,
+    pub origin_activation_id: String,
+    pub activation_id: String,
+    pub context: Vec<Frame030>,
+    pub branches: Vec<GroupBranch030>,
+    pub decision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_ordinal: Option<String>,
+    pub output_json: Option<String>,
+    pub error: Option<Failure030>,
+    pub continuation: Option<Continuation030>,
+    pub released: bool,
+}
 record!(RouteBarrier030 {activation_id:String,path_id:String,groups:Vec<String>,arrival_group:Option<String>,route:RouteRef030,producer:Producer030,parent_context:Vec<Frame030>});
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(

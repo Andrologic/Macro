@@ -3,11 +3,14 @@
 //! attestation; a digest checks correlation and is never a permission grant.
 use crate::agsdl_content::{ContentPayload, ResolvedContentReceipt};
 use crate::agsdl_host::HostState;
-use crate::agsdl_host_flow030::{NativeRouteMaterial030, RouteMaterialVerifier030};
+use crate::agsdl_host_flow030::{
+    work_terminal_event_id030, NativeRouteMaterial030, RouteMaterialVerifier030,
+};
 use crate::db::agsdl_execution::{
     dto::{EngineContext, EngineOwner},
     flow030::{
-        FlowEffect030, FlowEffectKind030, FlowPlan030, PrepareRef030, Producer030, Target030,
+        Continuation030, FlowEffect030, FlowEffectKind030, FlowPlan030, FlowState030,
+        PhysicalEvidence030, PrepareRef030, Producer030, Target030,
     },
     flow_store030::{CheckFuture, StoreError030},
     start030::StartCapture030,
@@ -167,8 +170,6 @@ impl SqlRouteMaterialVerifier030 {
         } else {
             match producer.kind.as_str() {
                 "agent" => "agentWork",
-                "call" => "call",
-                "approval" => "human",
                 "join" => "join",
                 _ => return Err(StoreError030::Authority),
             }
@@ -196,6 +197,15 @@ impl SqlRouteMaterialVerifier030 {
                 &self.generation,
             )
             .await?;
+        } else {
+            require(
+                row.get::<Option<&str>, _>("work_event_id").is_none()
+                    && source.get("producerAgent") == Some(&Value::Null)
+                    && source.pointer("/provenance/instructions") == Some(&json!([])),
+            )?;
+            if kind == "join" {
+                verify_join_source(db, capture, producer).await?;
+            }
         }
         verify_content(
             db,
@@ -226,6 +236,122 @@ impl RouteMaterialVerifier030 for SqlRouteMaterialVerifier030 {
     }
 }
 
+/// Select the unique successful terminal, never an intermediate acceptance.
+/// The durable Flow result must be the result of that same native 04 event.
+pub(crate) async fn unique_agent_work_event_tx(
+    db: &mut SqliteConnection,
+    capture: &StartCapture030,
+    producer: &Producer030,
+) -> Verified<String> {
+    let id = &capture.identity;
+    let rows = sqlx::query("SELECT event_id,decision_json FROM engine_flow030_work_events WHERE system_id=? AND invocation_id=? AND activation_id=? AND decision_json IS NOT NULL")
+        .bind(&id.system_start_id)
+        .bind(&id.flow_invocation_id)
+        .bind(&producer.activation_id)
+        .fetch_all(&mut *db)
+        .await?;
+    let mut terminals = Vec::new();
+    for row in rows {
+        let decision: Value = serde_json::from_str(row.get("decision_json"))?;
+        let receipt: Value = serde_json::from_str(string(&decision, "receiptJson")?)?;
+        let decision = receipt.get("decision").ok_or(StoreError030::Authority)?;
+        if decision.get("kind").and_then(Value::as_str) == Some("finished")
+            && decision.get("outcome").and_then(Value::as_str) == Some("success")
+        {
+            terminals.push(row.get::<String, _>("event_id"));
+        }
+    }
+    require(terminals.len() == 1)?;
+    let event_id = terminals.remove(0);
+    let terminal_id =
+        work_terminal_event_id030(id, &event_id).map_err(|_| StoreError030::Authority)?;
+    let row = sqlx::query("SELECT f.event_json,a.context_json,a.start_effect_id FROM engine_flow030_events f JOIN engine_flow030_work_admissions a ON a.system_id=f.system_id AND a.invocation_id=f.invocation_id AND a.activation_id=? WHERE f.system_id=? AND f.invocation_id=? AND f.event_id=? AND f.receipt_json IS NOT NULL AND f.diagnostic_json IS NULL")
+        .bind(&producer.activation_id)
+        .bind(&id.system_start_id)
+        .bind(&id.flow_invocation_id)
+        .bind(&terminal_id)
+        .fetch_optional(&mut *db)
+        .await?
+        .ok_or(StoreError030::Authority)?;
+    let context: EngineContext = serde_json::from_str(row.get("context_json"))?;
+    let event: Value = serde_json::from_str(row.get("event_json"))?;
+    let result = event
+        .pointer("/kind/WorkResult")
+        .ok_or(StoreError030::Authority)?;
+    require(
+        event.get("identity") == Some(&serde_json::to_value(id)?)
+            && event.get("eventId").and_then(Value::as_str) == Some(terminal_id.as_str())
+            && context.work.system_start_id == id.system_start_id
+            && context.work.flow_invocation_id == id.flow_invocation_id
+            && context.work.activation_id == producer.activation_id
+            && context.work.step == producer.step
+            && result.get("work")
+                == Some(&json!({
+                    "activationId": producer.activation_id,
+                    "startEffectId": row.get::<&str, _>("start_effect_id"),
+                    "agentInstanceId": context.work.agent_instance_id,
+                }))
+            && result.get("physical")
+                == Some(&serde_json::to_value(PhysicalEvidence030 {
+                    native_receipt_id: event_id.clone(),
+                    descendants_joined: true,
+                })?),
+    )?;
+    let output = result
+        .pointer("/result/Completed/output_json")
+        .and_then(Value::as_str)
+        .ok_or(StoreError030::Authority)?;
+    require(exact(output, &producer.output_json)?)?;
+    Ok(event_id)
+}
+
+async fn verify_join_source(
+    db: &mut SqliteConnection,
+    capture: &StartCapture030,
+    producer: &Producer030,
+) -> Verified<()> {
+    let raw: String = sqlx::query_scalar("SELECT state_json FROM engine_flow030_runs WHERE system_id=? AND invocation_id=? AND snapshot_id=? AND epoch=?")
+        .bind(&capture.identity.system_start_id)
+        .bind(&capture.identity.flow_invocation_id)
+        .bind(&capture.identity.snapshot_id)
+        .bind(&capture.identity.epoch)
+        .fetch_optional(&mut *db)
+        .await?
+        .ok_or(StoreError030::Authority)?;
+    let state: FlowState030 = serde_json::from_str(&raw)?;
+    let plan: FlowPlan030 = serde_json::from_str(&capture.compiled_plan_json)?;
+    require(state.identity == capture.identity && producer.kind == "join")?;
+    let groups = state
+        .groups
+        .iter()
+        .filter(|group| group.activation_id == producer.activation_id)
+        .collect::<Vec<_>>();
+    require(groups.len() == 1)?;
+    let group = groups[0];
+    require(
+        group.released
+            && plan
+                .steps
+                .iter()
+                .filter(|step| step.address == group.join && step.r#type == "join")
+                .count()
+                == 1
+            && plan
+                .joins
+                .iter()
+                .filter(|join| join.address == group.join)
+                .count()
+                == 1
+            && producer.step.as_ref() == Some(&group.join)
+            && matches!(
+                group.decision.as_deref(),
+                Some("done" | "incomplete" | "reached" | "missed")
+            )
+            && matches!(group.continuation, Some(Continuation030::Join))
+            && group.output_json.as_deref() == Some(producer.output_json.as_str()),
+    )
+}
+
 async fn verify_accepted_work(
     db: &mut SqliteConnection,
     capture: &StartCapture030,
@@ -236,6 +362,7 @@ async fn verify_accepted_work(
     generation: &str,
 ) -> Verified<()> {
     let id = &capture.identity;
+    require(unique_agent_work_event_tx(db, capture, producer).await? == event_id)?;
     let row = sqlx::query("SELECT e.ticket_json,e.decision_json,a.context_json,a.contract_json,a.owner_epoch,a.generation,a.capture_sha256 FROM engine_flow030_work_events e JOIN engine_flow030_work_admissions a USING(system_id,invocation_id,activation_id) WHERE e.system_id=? AND e.invocation_id=? AND e.event_id=? AND e.activation_id=?")
         .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(event_id).bind(&producer.activation_id).fetch_optional(&mut *db).await?.ok_or(StoreError030::Authority)?;
     require(
@@ -265,9 +392,8 @@ async fn verify_accepted_work(
     require(receipt.get("owner") == Some(&receipt_owner))?;
     let accepted = receipt.get("decision").ok_or(StoreError030::Authority)?;
     require(
-        accepted.get("kind").and_then(Value::as_str) == Some("accepted")
-            || (accepted.get("kind").and_then(Value::as_str) == Some("finished")
-                && accepted.get("outcome").and_then(Value::as_str) == Some("success")),
+        accepted.get("kind").and_then(Value::as_str) == Some("finished")
+            && accepted.get("outcome").and_then(Value::as_str) == Some("success"),
     )?;
     let output = accepted.get("output").ok_or(StoreError030::Authority)?;
     require(exact(
@@ -288,12 +414,15 @@ async fn verify_accepted_work(
         .pointer("/provenance/instructions")
         .and_then(Value::as_array)
         .ok_or(StoreError030::Authority)?;
-    if !instructions.is_empty() {
-        require(
-            agent.get("instructs") == Some(&Value::Bool(true))
-                && output.get("instructions").is_some_and(|v| !v.is_null()),
-        )?;
-    }
+    let expected_instructions = if output.get("instructions").is_some_and(|v| !v.is_null()) {
+        require(agent.get("instructs") == Some(&Value::Bool(true)))?;
+        vec![
+            json!({"pathJson":"[\"instructions\"]","producerAgent":name,"terminalId":producer.activation_id}),
+        ]
+    } else {
+        Vec::new()
+    };
+    require(instructions == &expected_instructions)?;
     Ok(())
 }
 

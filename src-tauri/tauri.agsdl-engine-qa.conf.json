@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Macro AgSDL Engine QA",
+  "identifier": "com.macro.desktop.qa.agsdl030",
+  "app": {
+    "windows": []
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "targets": [
+      "app"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    }
+  }
+}

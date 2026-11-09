@@ -624,6 +624,12 @@ async fn non_agent_start_cannot_mint_an_agent_attempt() {
     exercise_handoff(10).await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+#[cfg(feature = "agsdl-engine-qa")]
+async fn joined_terminal_uses_one_physical_work_result_and_exact_replay() {
+    exercise_handoff(11).await;
+}
+
 async fn exercise_handoff(mode: u8) {
     let temp = tempfile::TempDir::new().unwrap();
     let pool = crate::db::create_pool(&temp.path().join("flow.db"))
@@ -639,7 +645,7 @@ async fn exercise_handoff(mode: u8) {
     // Explicit fixture: retain the compiled plan shape but select the agent
     // entry to exercise native ownership without invoking a provider.
     #[cfg(feature = "agsdl-engine-qa")]
-    let example = if matches!(mode, 7..=9) {
+    let example = if matches!(mode, 7..=9 | 11) {
         Some(example_agent_capture(temp.path(), &identity).await)
     } else {
         None
@@ -998,7 +1004,7 @@ async fn exercise_handoff(mode: u8) {
         assert!(tasks.cancel_owned(&request_id).await.unwrap());
         return;
     }
-    if mode == 7 {
+    if mode == 7 || mode == 11 {
         let pool_for_work = pool.clone();
         let id_for_work = effect_id.clone();
         let host_for_work = incarnation.clone();
@@ -1047,7 +1053,7 @@ async fn exercise_handoff(mode: u8) {
             drop(admission);
             drop(lease);
             let _ = first_poll.send(attempt);
-            std::future::pending::<()>().await;
+            if mode == 7 { std::future::pending::<()>().await; }
         }).await.unwrap();
         let attempt = receipt.await.unwrap();
         assert_eq!(attempt.start_effect_id(), effect_id);
@@ -1090,7 +1096,7 @@ async fn exercise_handoff(mode: u8) {
                     "agentInstanceId": attempt.work().agent_instance_id,
                     "ownerEpoch": attempt.owner().owner_epoch},
                 "eventId":"fixture-event",
-                "event":{"kind":"visibleText","messageId":"fixture-message","textParts":["hello"]}
+                "event": if mode == 11 { serde_json::json!({"kind":"submit","callId":"fixture-call","argumentsJson":"{}"}) } else { serde_json::json!({"kind":"visibleText","messageId":"fixture-message","textParts":["hello"]}) }
             })
             .to_string(),
             native_call: Some(
@@ -1226,6 +1232,159 @@ async fn exercise_handoff(mode: u8) {
         .await
         .unwrap();
         assert_eq!(event_count, 1);
+        if mode == 11 {
+            let joined = crate::agsdl_host_dispatch030::join_owned_agent030(&tasks, &attempt)
+                .await
+                .unwrap();
+            let worker_host = incarnation.clone();
+            let worker = tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                let job = worker_host.work_protocol.next().await.unwrap();
+                let script = r#"import {evaluateHostWork030} from './src/services/agsdlExecution/hostWorkTransition030'; import {connectValueSchemaValidator030} from './src/services/agsdlExecution/valueSchemaPort030'; import {NumberToken,parse} from './src/vendor/agsdl/v0.3/json.mjs'; import {validate} from './src/vendor/agsdl/v0.3/valueschema.mjs'; const j=JSON.parse(await Bun.stdin.text()); const i=j.input; const v=connectValueSchemaValidator030({NumberToken,parse,validate}); process.stdout.write(JSON.stringify(evaluateHostWork030(i.context,i.eventId,i.expectedRevision,i.contractJson,i.stateJson,i.eventJson,i.optionsJson,v)));"#;
+                let mut child = crate::core::process::background_tokio_command("bun")
+                    .args(["-e", script])
+                    .current_dir(
+                        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                            .parent()
+                            .unwrap(),
+                    )
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(&serde_json::to_vec(&job).unwrap())
+                    .await
+                    .unwrap();
+                let output = child.wait_with_output().await.unwrap();
+                assert!(
+                    output.status.success(),
+                    "controller: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let result: crate::agsdl_host_work::HostWorkOutput030 =
+                    serde_json::from_slice(&output.stdout).unwrap();
+                worker_host
+                    .work_protocol
+                    .complete(
+                        &job.generation,
+                        crate::agsdl_host_work::HostWorkCompletion030 {
+                            ticket: job.ticket,
+                            generation: job.generation.clone(),
+                            input_digest: job.input_digest,
+                            output: result,
+                        },
+                    )
+                    .unwrap();
+            });
+            let before_state: String = sqlx::query_scalar(
+                "SELECT state_json FROM engine_flow030_runs WHERE system_id=? AND invocation_id=?",
+            )
+            .bind(&identity.system_start_id)
+            .bind(&identity.flow_invocation_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let before_revision = serde_json::from_str::<serde_json::Value>(&before_state).unwrap()
+                ["revision"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let terminal =
+                crate::db::agsdl_execution::flow_work_protocol030::finish_joined_agent030(
+                    &host, &pool, &joined, &cancel,
+                )
+                .await
+                .unwrap();
+            worker.await.unwrap();
+            let terminal_json: serde_json::Value =
+                serde_json::from_str(&terminal.receipt_json).unwrap();
+            assert_eq!(terminal_json["decision"]["kind"], "finished");
+            let rows: Vec<(String,)> = sqlx::query_as("SELECT event_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND event_id LIKE 'work030:terminal:%'")
+                .bind(&identity.system_start_id).bind(&identity.flow_invocation_id).fetch_all(&pool).await.unwrap();
+            assert_eq!(rows.len(), 1);
+            let output = &terminal_json["decision"]["output"];
+            let output_json =
+                crate::agsdl_host_route_verifier030::accepted_output_json(output).unwrap();
+            let protocol_event_id = format!("physical:{}", attempt.provider_attempt_id());
+            let event = FlowEvent030 {
+                identity: identity.clone(),
+                event_id: flow::work_terminal_event_id030(&identity, &protocol_event_id).unwrap(),
+                expected_revision: before_revision,
+                kind: FlowEventKind030::WorkResult {
+                    work: crate::db::agsdl_execution::flow030::WorkRef030 {
+                        activation_id: attempt.work().activation_id.clone(),
+                        start_effect_id: attempt.start_effect_id().to_owned(),
+                        agent_instance_id: attempt.work().agent_instance_id.clone(),
+                    },
+                    result: crate::db::agsdl_execution::flow030::WorkResult030::Completed {
+                        output_json,
+                        route_key: output
+                            .get("choice")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned),
+                    },
+                    physical: Some(crate::db::agsdl_execution::flow030::PhysicalEvidence030 {
+                        native_receipt_id: protocol_event_id,
+                        descendants_joined: true,
+                    }),
+                },
+            };
+            assert_eq!(
+                serde_json::to_value(&event).unwrap(),
+                serde_json::from_str::<serde_json::Value>(&rows[0].0).unwrap()
+            );
+            let before: (i64,) = sqlx::query_as(
+                "SELECT count(*) FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=?",
+            )
+            .bind(&identity.system_start_id)
+            .bind(&identity.flow_invocation_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            flow::apply_native_event(runtime, &host, &pool, &event)
+                .await
+                .unwrap();
+            let after: (i64,) = sqlx::query_as(
+                "SELECT count(*) FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=?",
+            )
+            .bind(&identity.system_start_id)
+            .bind(&identity.flow_invocation_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(before, after);
+            let mut stale = event.clone();
+            stale.event_id = "new-terminal-for-nonrunning".into();
+            let current: String = sqlx::query_scalar(
+                "SELECT state_json FROM engine_flow030_runs WHERE system_id=? AND invocation_id=?",
+            )
+            .bind(&identity.system_start_id)
+            .bind(&identity.flow_invocation_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            stale.expected_revision = serde_json::from_str::<FlowState030>(&current)
+                .unwrap()
+                .revision;
+            assert!(flow::apply_native_event(runtime, &host, &pool, &stale)
+                .await
+                .is_err());
+            let final_count: (i64,) = sqlx::query_as(
+                "SELECT count(*) FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=?",
+            )
+            .bind(&identity.system_start_id)
+            .bind(&identity.flow_invocation_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(before, final_count);
+            return;
+        }
         assert!(revoke_now(&incarnation));
         assert!(tasks.cancel_owned(&request_id).await.unwrap());
         return;

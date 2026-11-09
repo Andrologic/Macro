@@ -110,6 +110,181 @@ pub(crate) enum ExampleOutcome030 {
 
 pub(crate) struct ExampleAdapter030;
 
+// The QA anchor is fixed by the host, not by an inherited TMPDIR.
+fn qa_temporary_base() -> std::io::Result<std::path::PathBuf> {
+    #[cfg(unix)]
+    {
+        std::fs::canonicalize("/tmp")
+    }
+    #[cfg(not(unix))]
+    {
+        Err(std::io::Error::other(
+            "Native example QA has no trusted temporary base on this platform",
+        ))
+    }
+}
+
+fn check_qa_root_directory(directory: &std::path::Path) -> std::io::Result<()> {
+    let denied = || {
+        std::io::Error::other(
+            "Native example QA requires a private child of the fixed temporary base",
+        )
+    };
+    let directory = std::fs::canonicalize(directory)?;
+    let base = qa_temporary_base()?;
+    if directory.parent() != Some(base.as_path()) {
+        return Err(denied());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(&directory)?;
+        if metadata.mode() & 0o777 != 0o700 || metadata.uid() != unsafe { libc::geteuid() } {
+            return Err(denied());
+        }
+    }
+    check_qa_repository_boundary(&directory, None)
+}
+
+fn qa_git_marker(directory: &std::path::Path) -> std::io::Result<bool> {
+    fn exists(path: &std::path::Path) -> std::io::Result<bool> {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+    // Stat markers only. Do not open Git contents or invoke repository discovery,
+    // which could create or repair metadata outside this synthetic workspace.
+    Ok(exists(&directory.join(".git"))?
+        || (exists(&directory.join("HEAD"))?
+            && exists(&directory.join("objects"))?
+            && exists(&directory.join("refs"))?))
+}
+
+fn check_qa_repository_boundary(
+    directory: &std::path::Path,
+    workspace: Option<&std::path::Path>,
+) -> std::io::Result<()> {
+    let denied =
+        || std::io::Error::other("Native example QA refuses Git ancestry or workspace links");
+    let directory = std::fs::canonicalize(directory)?;
+    for ancestor in directory.ancestors() {
+        if qa_git_marker(ancestor)? {
+            return Err(denied());
+        }
+    }
+    let Some(workspace) = workspace else {
+        return Ok(());
+    };
+    let workspace = std::fs::canonicalize(workspace)?;
+    if !workspace.starts_with(&directory) {
+        return Err(denied());
+    }
+    let mut pending = vec![workspace];
+    while let Some(path) = pending.pop() {
+        if qa_git_marker(&path)? {
+            return Err(denied());
+        }
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let kind = std::fs::symlink_metadata(entry.path())?.file_type();
+            if kind.is_symlink() {
+                return Err(denied());
+            }
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else if !kind.is_file() {
+                return Err(denied());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_qa_registry(workspace: &std::path::Path) -> std::io::Result<()> {
+    let denied = || std::io::Error::other("Native example QA registry is not isolated");
+    let file = workspace.join(".macro/workspace.json");
+    let registry: serde_json::Value = serde_json::from_slice(&std::fs::read(file)?)?;
+    let projects = registry
+        .get("standaloneProjects")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(denied)?;
+    if projects.len() != 1
+        || projects[0].get("id").and_then(serde_json::Value::as_str) != Some("project")
+    {
+        return Err(denied());
+    }
+    for key in ["project_groups", "projectGroups"] {
+        if registry
+            .get(key)
+            .is_some_and(|v| v.as_array().is_none_or(|groups| !groups.is_empty()))
+        {
+            return Err(denied());
+        }
+    }
+    for project in projects {
+        let raw = project
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(denied)?;
+        let path = std::path::Path::new(raw);
+        let canonical = std::fs::canonicalize(path)?;
+        if !path.is_absolute()
+            || path != canonical
+            || !canonical.starts_with(workspace)
+            || canonical == workspace
+        {
+            return Err(denied());
+        }
+        check_qa_repository_boundary(&canonical, None)?;
+    }
+    Ok(())
+}
+
+fn check_qa_no_product_windows(config: &tauri::Config, main_present: bool) -> std::io::Result<()> {
+    if !config.app.windows.is_empty() || main_present {
+        return Err(std::io::Error::other(
+            "Native engine QA requires no product windows",
+        ));
+    }
+    Ok(())
+}
+
+// Inspect a supplied snapshot so tests never mutate process-global environment.
+fn check_qa_environment(
+    directory: &std::path::Path,
+    variables: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> std::io::Result<()> {
+    let denied = || std::io::Error::other("Native engine QA environment is not isolated");
+    let required = ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"];
+    let mut present = std::collections::BTreeSet::new();
+    for (key, value) in variables {
+        let key = key.to_string_lossy();
+        if key.starts_with("GIT_") {
+            return Err(denied());
+        }
+        if key.starts_with("XDG_") {
+            if !required.contains(&key.as_ref()) {
+                return Err(denied());
+            }
+            let raw_path = std::path::PathBuf::from(value);
+            if !raw_path.is_absolute() {
+                return Err(denied());
+            }
+            let path = std::fs::canonicalize(raw_path)?;
+            if !path.starts_with(directory) || path == directory {
+                return Err(denied());
+            }
+            present.insert(key.into_owned());
+        }
+    }
+    if required.iter().any(|key| !present.contains(*key)) {
+        return Err(denied());
+    }
+    Ok(())
+}
+
 /// Refuse to initialize the app with a real profile when the QA entry is used.
 pub(crate) fn validate_qa_isolation(app: &tauri::AppHandle) -> std::io::Result<()> {
     if std::env::var_os("MACRO_AGSDL_ENGINE_QA").as_deref() != Some(std::ffi::OsStr::new("1")) {
@@ -119,11 +294,19 @@ pub(crate) fn validate_qa_isolation(app: &tauri::AppHandle) -> std::io::Result<(
         || std::io::Error::other("Native example QA requires an isolated temporary profile");
     let directory =
         std::fs::canonicalize(std::env::var_os("MACRO_AGSDL_ENGINE_QA_DIR").ok_or_else(denied)?)?;
-    let temporary = std::fs::canonicalize(std::env::temp_dir())?;
-    if directory == temporary
-        || !directory.starts_with(&temporary)
-        || !app.config().identifier.starts_with("com.macro.desktop.qa.")
-    {
+    check_qa_root_directory(&directory)?;
+    check_qa_environment(&directory, std::env::vars_os())?;
+    check_qa_no_product_windows(app.config(), app.get_webview_window("main").is_some())?;
+    tracing::info!(
+        configured_windows = 0,
+        main_present = false,
+        "Native engine QA uses only the resident execution host"
+    );
+    if !app.config().identifier.starts_with("com.macro.desktop.qa.") {
+        return Err(denied());
+    }
+    let home = std::fs::canonicalize(std::env::var_os("HOME").ok_or_else(denied)?)?;
+    if !home.starts_with(&directory) {
         return Err(denied());
     }
     let config = std::fs::canonicalize(std::env::var_os("MACRO_CONFIG_DIR").ok_or_else(denied)?)?;
@@ -157,6 +340,7 @@ pub(crate) fn validate_qa_workspace(
     let denied = || std::io::Error::other("Native example QA effective workspace is not isolated");
     let directory =
         std::fs::canonicalize(std::env::var_os("MACRO_AGSDL_ENGINE_QA_DIR").ok_or_else(denied)?)?;
+    check_qa_root_directory(&directory)?;
     check_effective_workspace(
         &directory,
         &directory.join("workspace"),
@@ -192,12 +376,13 @@ fn check_effective_workspace(
     let effective = std::fs::canonicalize(workspace)?;
     if is_default
         || expected == directory
-        || !expected.starts_with(directory)
+        || !expected.starts_with(&directory)
         || effective != expected
     {
         return Err(denied());
     }
-    Ok(())
+    check_qa_repository_boundary(&directory, Some(&effective))?;
+    check_qa_registry(&effective)
 }
 
 /// A dedicated debug/feature QA process can opt in using a synthetic request
@@ -225,20 +410,13 @@ pub(crate) fn launch_if_requested(app: &tauri::AppHandle) {
                 .ok_or_else(|| failure("CORRELATION", "example", "QA directory is absent"))?;
             let directory = std::fs::canonicalize(directory)
                 .map_err(|_| failure("CORRELATION", "example", "QA directory is unavailable"))?;
-            let temporary = std::fs::canonicalize(std::env::temp_dir()).map_err(|_| {
+            check_qa_root_directory(&directory).map_err(|_| {
                 failure(
                     "CORRELATION",
                     "example",
-                    "Temporary directory is unavailable",
+                    "QA directory does not meet the fixed temporary boundary",
                 )
             })?;
-            if !directory.starts_with(&temporary) || directory == temporary {
-                return Err(failure(
-                    "CORRELATION",
-                    "example",
-                    "QA directory is outside the temporary directory",
-                ));
-            }
             let raw = tokio::fs::read(directory.join("request.json"))
                 .await
                 .map_err(|_| failure("CORRELATION", "example", "QA request is unavailable"))?;
@@ -380,6 +558,415 @@ pub(crate) async fn dispatch_start030(
         flow_work_protocol030::finish_joined_agent030(&host, pool, &joined, cancelled).await?;
     expect_kind(&decision, "finished")?;
     Ok(joined)
+}
+
+/// A started example remains owned by the registry while the native timeline
+/// decides when to deliver its result. The mailbox does not carry authority.
+struct ScriptedWork030 {
+    key: crate::agsdl_host_scenario030::WorkKey030,
+    attempt: FlowWorkAttempt030,
+    send: tokio::sync::oneshot::Sender<crate::agsdl_host_scenario030::ExampleResult030>,
+    result: tokio::sync::oneshot::Receiver<Result<()>>,
+}
+
+fn scripted_work_key030(
+    effect: &FlowEffect030,
+) -> Result<crate::agsdl_host_scenario030::WorkKey030> {
+    let FlowEffectKind030::Start {
+        step: Some(step),
+        item_json,
+        occurrence,
+        ..
+    } = &effect.kind
+    else {
+        return Err(failure("CORRELATION", "example", "Scripted start differs"));
+    };
+    let item = if item_json.is_some() {
+        Some(
+            occurrence
+                .as_ref()
+                .ok_or_else(|| failure("CORRELATION", "example", "Item occurrence is absent"))?
+                .item_index
+                .clone(),
+        )
+    } else {
+        None
+    };
+    Ok(crate::agsdl_host_scenario030::WorkKey030 {
+        step: step.clone(),
+        item,
+    })
+}
+
+async fn start_scripted_work030(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    config: &ConfigManager,
+    tasks: &StreamTasks,
+    owner: &crate::db::agsdl_execution::dto::EngineOwner,
+    effect: &FlowEffect030,
+    cancelled: &CancellationToken,
+) -> Result<ScriptedWork030> {
+    let host = app.state::<HostState>();
+    let inspection =
+        crate::agsdl_host_flow030::inspect_run(host.flow030(), &host, pool, owner).await?;
+    let prepared = crate::agsdl_host_work_admission030::prepare_effective_agent_work030(
+        config,
+        &inspection,
+        effect,
+    )
+    .await?;
+    let policy = crate::agsdl_host_work_admission030::AttestedWorkPolicy030::from_example(
+        prepared,
+        &ExampleAdapter030::observe(),
+    )?;
+    let project = inspection.capture.source.owner.project_id.clone();
+    let key = scripted_work_key030(effect)?;
+    let claim = crate::agsdl_host_flow030::claim_expected(
+        host.flow030(),
+        &host,
+        pool,
+        &effect.identity,
+        &effect.id,
+    )
+    .await?
+    .ok_or_else(|| {
+        failure(
+            "STALE_REFERENCE",
+            "example",
+            "Expected start is no longer first",
+        )
+    })?;
+    if claim.effect() != effect {
+        return Err(failure("CORRELATION", "example", "Claimed start differs"));
+    }
+    let (attempt_send, attempt_recv) = tokio::sync::oneshot::channel();
+    let (result_send, result_recv) = tokio::sync::oneshot::channel();
+    let (outcome_send, outcome_recv) = tokio::sync::oneshot::channel();
+    let (app, pool, config, tasks_owned, effect, cancelled) = (
+        app.clone(),
+        pool.clone(),
+        config.clone(),
+        tasks.clone(),
+        effect.clone(),
+        cancelled.clone(),
+    );
+    claim
+        .handoff_agent(tasks, policy, move |attempt| async move {
+            if attempt_send.send(attempt.clone()).is_err() {
+                return;
+            }
+            let outcome = match outcome_recv.await {
+                Ok(value) => value,
+                Err(_) => return,
+            };
+            let host = app.state::<HostState>();
+            let result = run_scripted_owned030(
+                &host,
+                &pool,
+                &config,
+                &tasks_owned,
+                &attempt,
+                &project,
+                &effect,
+                outcome,
+                &cancelled,
+            )
+            .await;
+            let _ = result_send.send(result);
+        })
+        .await?;
+    let attempt = attempt_recv.await.map_err(|_| {
+        failure(
+            "UNCERTAIN",
+            "example",
+            "Owned example attempt is unavailable",
+        )
+    })?;
+    Ok(ScriptedWork030 {
+        key,
+        attempt,
+        send: outcome_send,
+        result: result_recv,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_scripted_owned030(
+    host: &HostState,
+    pool: &SqlitePool,
+    config: &ConfigManager,
+    tasks: &StreamTasks,
+    attempt: &FlowWorkAttempt030,
+    project_id: &str,
+    effect: &FlowEffect030,
+    outcome: crate::agsdl_host_scenario030::ExampleResult030,
+    cancelled: &CancellationToken,
+) -> Result<()> {
+    let correlated = matches!(&effect.kind, FlowEffectKind030::Start {work, step, agent:Some(agent), ..}
+        if effect.identity == *attempt.identity() && effect.id == attempt.start_effect_id()
+            && work.start_effect_id == attempt.start_effect_id() && work.activation_id == attempt.work().activation_id
+            && work.agent_instance_id == attempt.work().agent_instance_id && step == &attempt.work().step && agent == attempt.agent());
+    if !correlated || cancelled.is_cancelled() {
+        return Err(failure("CORRELATION", "example", "Scripted work differs"));
+    }
+    match outcome {
+        crate::agsdl_host_scenario030::ExampleResult030::Failed(code) => {
+            let decision = emit(
+                host,
+                pool,
+                config,
+                tasks,
+                attempt,
+                project_id,
+                "failure",
+                serde_json::json!({"kind":"stop","reason":code}),
+                cancelled,
+            )
+            .await?;
+            expect_kind(&decision, "stopping")?;
+        }
+        crate::agsdl_host_scenario030::ExampleResult030::Returned { text, submit_json } => {
+            if let Some(text) = text {
+                let decision = emit(host, pool, config, tasks, attempt, project_id, "text", serde_json::json!({"kind":"visibleText","messageId":"example","textParts":[text]}), cancelled).await?;
+                expect_kind(&decision, "waiting")?;
+            }
+            let decision = emit(
+                host,
+                pool,
+                config,
+                tasks,
+                attempt,
+                project_id,
+                "submit",
+                serde_json::json!({"kind":"submit","callId":"example","argumentsJson":submit_json}),
+                cancelled,
+            )
+            .await?;
+            expect_kind(&decision, "accepted")?;
+        }
+    }
+    Ok(())
+}
+
+/// Drain eligible effects before the next timeline event. Agent starts are
+/// attached to owned parents and wait for the corresponding native mailbox.
+async fn quiesce_scenario030(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    config: &ConfigManager,
+    tasks: &StreamTasks,
+    owner: &crate::db::agsdl_execution::dto::EngineOwner,
+    works: &mut Vec<ScriptedWork030>,
+    joined: &std::collections::BTreeMap<String, crate::agsdl_host_dispatch030::JoinedOwnedAgent030>,
+    cancelled: &CancellationToken,
+) -> Result<crate::db::agsdl_execution::flow_store030::FlowView030> {
+    let host = app.state::<HostState>();
+    for _ in 0..256 {
+        if cancelled.is_cancelled() {
+            return Err(failure("INTERRUPTED", "example", "Scenario was cancelled"));
+        }
+        let inspection =
+            crate::agsdl_host_flow030::inspect_run(host.flow030(), &host, pool, owner).await?;
+        let mut next = None;
+        for row in &inspection.flow.effects {
+            let status = row.get("status").and_then(serde_json::Value::as_str);
+            if status == Some("uncertain") {
+                return Err(failure("UNCERTAIN", "example", "Effect is unresolved"));
+            }
+            if status != Some("pending") {
+                continue;
+            }
+            let effect: FlowEffect030 =
+                serde_json::from_value(row.get("effect").cloned().ok_or_else(|| {
+                    failure("CORRELATION", "example", "Effect payload is absent")
+                })?)?;
+            if crate::db::agsdl_execution::flow_store030::eligible(&inspection.flow.state, &effect)
+            {
+                next = Some(effect);
+                break;
+            }
+        }
+        let Some(effect) = next else {
+            return Ok(inspection.flow);
+        };
+        match &effect.kind {
+            FlowEffectKind030::Start { agent: Some(_), .. } => {
+                let key = scripted_work_key030(&effect)?;
+                if works.iter().any(|existing| existing.key == key) {
+                    return Err(failure(
+                        "CORRELATION",
+                        "example",
+                        "Scripted work key is ambiguous",
+                    ));
+                }
+                let work =
+                    start_scripted_work030(app, pool, config, tasks, owner, &effect, cancelled)
+                        .await?;
+                works.push(work);
+            }
+            FlowEffectKind030::PrepareRoute { reference, .. } => {
+                crate::agsdl_host_dispatch030::dispatch_source_route030(
+                    &host,
+                    pool,
+                    owner,
+                    reference,
+                    joined.get(&reference.activation_id),
+                    cancelled,
+                )
+                .await?;
+            }
+            FlowEffectKind030::Failure { .. }
+            | FlowEffectKind030::Return { .. }
+            | FlowEffectKind030::RunEnded { .. } => {
+                let claim = crate::agsdl_host_flow030::claim_expected(
+                    host.flow030(),
+                    &host,
+                    pool,
+                    &effect.identity,
+                    &effect.id,
+                )
+                .await?
+                .ok_or_else(|| {
+                    failure(
+                        "STALE_REFERENCE",
+                        "example",
+                        "Expected notification changed",
+                    )
+                })?;
+                let request_id = claim.request_id();
+                claim.handoff_host(tasks, async {}).await?;
+                if !tasks.cancel_owned(&request_id).await.map_err(|_| {
+                    failure("UNCERTAIN", "example", "Notification cleanup is unresolved")
+                })? {
+                    return Err(failure(
+                        "CORRELATION",
+                        "example",
+                        "Notification owner is absent",
+                    ));
+                }
+            }
+            _ => {
+                return Err(failure(
+                    "HARNESS_REFUSED",
+                    "example",
+                    "Effect is outside the pinned scenario",
+                ))
+            }
+        }
+    }
+    Err(failure(
+        "CORRELATION",
+        "example",
+        "Scenario dispatch exceeded its bound",
+    ))
+}
+
+async fn drive_scenario030(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    config: &ConfigManager,
+    tasks: &StreamTasks,
+    owner: &crate::db::agsdl_execution::dto::EngineOwner,
+    scenario: crate::agsdl_host_scenario030::PinnedScenario030,
+    cancelled: &CancellationToken,
+) -> Result<crate::db::agsdl_execution::flow_store030::FlowView030> {
+    use crate::agsdl_host_scenario030::TimelineEvent030;
+    let mut works: Vec<ScriptedWork030> = Vec::new();
+    let mut joined = std::collections::BTreeMap::new();
+    for event in scenario.timeline {
+        let view = quiesce_scenario030(
+            app, pool, config, tasks, owner, &mut works, &joined, cancelled,
+        )
+        .await?;
+        match event {
+            TimelineEvent030::Running(expected) => {
+                let mut actual = works
+                    .iter()
+                    .map(|w| (w.key.step.clone(), w.key.item.clone()))
+                    .collect::<Vec<_>>();
+                let mut expected = expected
+                    .into_iter()
+                    .map(|w| (w.step, w.item))
+                    .collect::<Vec<_>>();
+                actual.sort();
+                expected.sort();
+                let physical = view.state.activations.iter().filter(|a| a.physical).count();
+                if actual != expected
+                    || physical != works.len()
+                    || works.iter().any(|work| {
+                        !view
+                            .state
+                            .activations
+                            .iter()
+                            .any(|a| a.id == work.attempt.work().activation_id && a.physical)
+                    })
+                {
+                    return Err(failure(
+                        "CORRELATION",
+                        "example",
+                        "Running work differs from pinned timeline",
+                    ));
+                }
+            }
+            TimelineEvent030::Work { key, outcome } => {
+                let matches = works
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, work)| work.key == key)
+                    .map(|(i, _)| i)
+                    .collect::<Vec<_>>();
+                if matches.len() != 1 {
+                    return Err(failure(
+                        "CORRELATION",
+                        "example",
+                        "Timeline work is not unique",
+                    ));
+                }
+                let work = works.remove(matches[0]);
+                work.send
+                    .send(outcome)
+                    .map_err(|_| failure("UNCERTAIN", "example", "Owned work mailbox closed"))?;
+                let witness =
+                    crate::agsdl_host_dispatch030::join_owned_agent030(tasks, &work.attempt)
+                        .await?;
+                work.result.await.map_err(|_| {
+                    failure(
+                        "UNCERTAIN",
+                        "example",
+                        "Owned example completion is unavailable",
+                    )
+                })??;
+                let host = app.state::<HostState>();
+                let decision =
+                    flow_work_protocol030::finish_joined_agent030(&host, pool, &witness, cancelled)
+                        .await?;
+                expect_kind(&decision, "finished")?;
+                joined.insert(witness.attempt().work().activation_id.clone(), witness);
+            }
+        }
+    }
+    let view = quiesce_scenario030(
+        app, pool, config, tasks, owner, &mut works, &joined, cancelled,
+    )
+    .await?;
+    if !works.is_empty()
+        || view.state.verdict.is_none()
+        || view.state.activations.iter().any(|a| a.physical)
+        || view.effects.iter().any(|row| {
+            matches!(
+                row.get("status").and_then(serde_json::Value::as_str),
+                Some("pending" | "uncertain")
+            )
+        })
+    {
+        return Err(failure(
+            "UNCERTAIN",
+            "example",
+            "Scenario did not finish physically and durably",
+        ));
+    }
+    Ok(view)
 }
 
 /// Drive the exact in-process QA scenario using the same native store, owned
@@ -788,6 +1375,11 @@ pub(crate) async fn start_error_route030(
     if request.profile != "macro-agsdl-030-v1" {
         return Err(failure("CORRELATION", "example", "QA requires a 0.3 start"));
     }
+    let entry_json = request
+        .entry
+        .as_ref()
+        .map(|entry| entry.message_json.clone())
+        .ok_or_else(|| failure("CORRELATION", "example", "Pinned scenario entry is absent"))?;
     ExampleAdapter030::enable_qa_capture();
     validate_qa_project(&request.source).await?;
     crate::commands::workspace::workspace_list_projects(
@@ -813,9 +1405,34 @@ pub(crate) async fn start_error_route030(
     };
     let config = app.state::<ConfigManager>();
     let ai = app.state::<crate::ai::AiState>();
-    let view = match drive_error_route030(&app, &pool, &config, &ai.stream_tasks, &owner, cancelled)
+    let generic = std::env::var("MACRO_AGSDL_ENGINE_QA_CASE").as_deref() == Ok("scenario");
+    let mut scenario_pin = None;
+    let result = if generic {
+        let host = app.state::<HostState>();
+        let inspection =
+            crate::agsdl_host_flow030::inspect_run(host.flow030(), &host, &pool, &owner).await?;
+        let scenario = crate::agsdl_host_scenario030::PinnedScenario030::from_capture(
+            &inspection.capture.authored_source,
+            &entry_json,
+        )?;
+        scenario_pin = Some(serde_json::json!({
+            "name": scenario.name,
+            "fixtureSha256": scenario.fixture_sha256.clone(),
+        }));
+        drive_scenario030(
+            &app,
+            &pool,
+            &config,
+            &ai.stream_tasks,
+            &owner,
+            scenario,
+            cancelled,
+        )
         .await
-    {
+    } else {
+        drive_error_route030(&app, &pool, &config, &ai.stream_tasks, &owner, cancelled).await
+    };
+    let view = match result {
         Err(error)
             if error.code == "QA_ROLLBACK_PROVEN"
                 && QA_SOURCE_ROLLBACK_PROVEN.load(Ordering::SeqCst) =>
@@ -857,11 +1474,13 @@ pub(crate) async fn start_error_route030(
         &inspection.flow.state,
     )
     .map_err(|_| failure("CORRELATION", "example", "Runtime projection failed"))?;
-    Ok(
-        serde_json::json!({"receipt":receipt,"projection":projection,"events":inspection.flow.events,"effects":inspection.flow.effects,
-            "sourceCommitRecovery":QA_SOURCE_RECOVERED.load(Ordering::SeqCst),
-            "prepareRouteNotClaimed":QA_PREPARE_UNCLAIMED.load(Ordering::SeqCst)}),
-    )
+    let mut report = serde_json::json!({"receipt":receipt,"projection":projection,"events":inspection.flow.events,"effects":inspection.flow.effects,
+        "sourceCommitRecovery":QA_SOURCE_RECOVERED.load(Ordering::SeqCst),
+        "prepareRouteNotClaimed":QA_PREPARE_UNCLAIMED.load(Ordering::SeqCst)});
+    if let Some(pin) = scenario_pin {
+        report["scenario"] = pin;
+    }
+    Ok(report)
 }
 
 /// Restrict discovery to the synthetic QA registry first, then authenticate
@@ -883,6 +1502,9 @@ async fn validate_qa_project(
     if QA_APPROVED_WORKSPACE.get() != Some(&workspace) {
         return Err(refused());
     }
+    check_qa_root_directory(&root).map_err(|_| refused())?;
+    check_qa_repository_boundary(&root, Some(&workspace)).map_err(|_| refused())?;
+    check_qa_registry(&workspace).map_err(|_| refused())?;
     let metadata = std::fs::canonicalize(workspace.join(".macro")).map_err(|_| refused())?;
     let project = std::fs::canonicalize(workspace.join("project")).map_err(|_| refused())?;
     let plan = std::fs::canonicalize(project.join(".macro/branches/develop/plans/source"))
@@ -1201,31 +1823,31 @@ impl ExampleObservation030 {
             .get("agents")
             .and_then(serde_json::Value::as_object)
             .ok_or_else(|| failure("CORRELATION", "example", "Example agents are absent"))?;
-        let expected = [("dev", "workspace"), ("ops", "read-only")];
-        if agents.len() != expected.len()
-            || expected.iter().any(|(name, permissions)| {
-                agents.get(*name)
-                    != Some(&serde_json::json!({"harness":"example","permissions":permissions}))
+        if !crate::agsdl_host_scenario030::PinnedScenario030::recognizes_document(authored_source)?
+            || agents.is_empty()
+            || agents.values().any(|agent| {
+                agent.get("harness").and_then(serde_json::Value::as_str) != Some("example")
             })
         {
             return Err(failure(
                 "HARNESS_REFUSED",
                 "example",
-                "Example declarations are outside the QA scenario",
+                "Example declarations are outside the pinned QA scenarios",
             ));
         }
-        let module = serde_json::json!({
-            "name":"example", "version":VERSION, "contract":"agsdl-0.3.0", "harnessVersions":">=1.0.0 <2.0.0",
-            "properties":{"resources":{"support":"native"}},
-            "permissions":{
-                "read":{"allow":"sandbox","deny":"sandbox","ask":"sandbox","outside":"sandbox"},
-                "write":{"allow":"sandbox","deny":"sandbox","ask":"sandbox"},
-                "shell":{"allow":"sandbox","deny":"sandbox","ask":"sandbox"},
-                "network":{"allow":"sandbox","deny":"sandbox","ask":"sandbox"},
-                "mcp":{"allow":"sandbox","deny":"sandbox","ask":"sandbox"},
-                "delegate":{"allow":"sandbox","deny":"sandbox","ask":"sandbox"}
-            }
-        });
+        // This module describes the pinned conformance language. Only the
+        // separately observed capabilities qualify this in-process QA adapter.
+        let module =
+            include_str!("../../dev/agsdl/fixtures/v0.3/conformance/modules/example/module.json");
+        if format!("{:x}", Sha256::digest(module.as_bytes()))
+            != "95de087ea2d6a97fe36aabbc6ce0fd262c0831dc3f0aad52e2cc10949381db5f"
+        {
+            return Err(failure(
+                "HARNESS_REFUSED",
+                "example",
+                "Pinned example module differs",
+            ));
+        }
         let evidence = serde_json::json!({"adapterId":ADAPTER,"sourceSha256":source_sha256,"kind":"native-example-qa"}).to_string();
         let capabilities = [
             "result-submission",
@@ -1235,19 +1857,34 @@ impl ExampleObservation030 {
             "response-attribution",
             "resources",
             "delivery.queue",
+            "instance.new",
         ]
         .iter()
-        .map(|name| serde_json::json!({"name":name,"support":"native","evidenceJson":evidence}))
+        .map(|name| {
+            let capability_evidence = match *name {
+                "delivery.queue" => serde_json::json!({
+                    "adapterId":ADAPTER, "sourceSha256":source_sha256,
+                    "kind":"host-reducer-queue"
+                })
+                .to_string(),
+                "instance.new" => serde_json::json!({
+                    "adapterId":ADAPTER, "sourceSha256":source_sha256,
+                    "kind":"native-example-qa", "instance":"fresh-per-work"
+                })
+                .to_string(),
+                _ => evidence.clone(),
+            };
+            serde_json::json!({"name":name,"support":"native","evidenceJson":capability_evidence})
+        })
         .collect::<Vec<_>>();
-        let observed = expected.iter().map(|(name,_)| {
-            let agent = &agents[*name];
+        let observed = agents.iter().map(|(name, agent)| {
             serde_json::json!({"agentName":name,"agentDeclarationJson":agent.to_string(),"settingsJson":"{}",
                 "permissionsJson":serde_json::json!({"requested":agent["permissions"],"authority":"native-03-at-handoff"}).to_string(),
                 "scopeJson":scope.to_string(),"evidenceJson":evidence,
                 "provenanceJson":serde_json::json!({"sourceSha256":source_sha256,"agent":name}).to_string()})
         }).collect::<Vec<_>>();
         Ok(
-            serde_json::json!({"modules":[{"harness":"example","moduleJson":module.to_string()}],
+            serde_json::json!({"modules":[{"harness":"example","moduleJson":module}],
             "harnesses":[{"harness":"example","version":VERSION,"installation":"available","adapterId":ADAPTER,
                 "qualified":true,"capabilities":capabilities,
                 "models":[{"name":"in-process-example","efforts":[],"defaultEffort":null}],"defaultModel":"in-process-example"}],
@@ -1259,6 +1896,85 @@ impl ExampleObservation030 {
 mod isolation_tests {
     use super::*;
     use crate::core::config::{apply_runtime_workspace, AppConfig};
+
+    fn registry(workspace: &std::path::Path, project: &std::path::Path) {
+        std::fs::create_dir_all(workspace.join(".macro")).unwrap();
+        std::fs::create_dir_all(project).unwrap();
+        std::fs::write(
+            workspace.join(".macro/workspace.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "standaloneProjects":[{"id":"project","path":project}], "project_groups":[]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn reject_repository_boundaries() {
+        for case in [
+            "ancestor-directory",
+            "ancestor-file",
+            "bare-ancestor",
+            "nested-project",
+            "nested-link",
+        ] {
+            let temp = tempfile::tempdir_in(qa_temporary_base().unwrap()).unwrap();
+            let qa = temp.path().join("qa");
+            let workspace = qa.join("workspace");
+            let outside = temp.path().join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
+            registry(&workspace, &workspace.join("project"));
+            let sentinel = outside.join("workspace.json");
+            std::fs::write(&sentinel, b"unchanged synthetic metadata").unwrap();
+            match case {
+                "ancestor-directory" => std::fs::create_dir(temp.path().join(".git")).unwrap(),
+                "ancestor-file" => {
+                    std::fs::write(temp.path().join(".git"), b"gitdir: outside/not-opened").unwrap()
+                }
+                "bare-ancestor" => {
+                    std::fs::write(temp.path().join("HEAD"), b"ref: refs/heads/synthetic").unwrap();
+                    std::fs::create_dir(temp.path().join("objects")).unwrap();
+                    std::fs::create_dir(temp.path().join("refs")).unwrap();
+                }
+                "nested-project" => std::fs::write(
+                    workspace.join("project/.git"),
+                    b"gitdir: ../../../outside/not-opened",
+                )
+                .unwrap(),
+                "nested-link" => {
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(&outside, workspace.join("linked-outside")).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                check_effective_workspace(&qa, &workspace, &workspace, false).is_err(),
+                "{case}"
+            );
+            assert!(!qa.join("isolation.json").exists());
+            assert_eq!(
+                std::fs::read(&sentinel).unwrap(),
+                b"unchanged synthetic metadata"
+            );
+        }
+    }
+
+    fn reject_external_registry_and_nested_root() {
+        let temp = tempfile::tempdir_in(qa_temporary_base().unwrap()).unwrap();
+        let qa = temp.path().join("qa");
+        let workspace = qa.join("workspace");
+        let outside = temp.path().join("outside");
+        registry(&workspace, &outside);
+        let sentinel = outside.join("workspace.json");
+        std::fs::write(&sentinel, b"unchanged synthetic metadata").unwrap();
+        assert!(check_effective_workspace(&qa, &workspace, &workspace, false).is_err());
+        assert!(check_qa_root_directory(&qa).is_err());
+        assert_eq!(
+            std::fs::read(sentinel).unwrap(),
+            b"unchanged synthetic metadata"
+        );
+        assert!(!qa.join("isolation.json").exists());
+    }
 
     async fn approved_workspace(
         valid: bool,
@@ -1274,6 +1990,7 @@ mod isolation_tests {
         let config = qa.join("config");
         let fallback = temp.path().join("outside");
         std::fs::create_dir_all(&workspace).unwrap();
+        registry(&workspace, &workspace.join("project"));
         std::fs::create_dir_all(&config).unwrap();
         std::fs::create_dir_all(&fallback).unwrap();
         let mut runtime = serde_json::json!({"schemaVersion":1,"defaultWorkspace":workspace});
@@ -1334,10 +2051,12 @@ mod isolation_tests {
     pub(super) async fn run_checks() {
         reject_invalid_runtime_fallback().await;
         accept_approved_workspace().await;
-        let temp = tempfile::tempdir().unwrap();
-        let qa = temp.path().join("qa");
+        reject_repository_boundaries();
+        reject_external_registry_and_nested_root();
+        let temp = tempfile::tempdir_in(qa_temporary_base().unwrap()).unwrap();
+        let qa = temp.path().to_path_buf();
         let workspace = qa.join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
+        registry(&workspace, &workspace.join("project"));
         let old_flag = std::env::var_os("MACRO_AGSDL_ENGINE_QA");
         let old_dir = std::env::var_os("MACRO_AGSDL_ENGINE_QA_DIR");
         std::env::set_var("MACRO_AGSDL_ENGINE_QA", "1");
@@ -1366,6 +2085,74 @@ mod isolation_tests {
     #[tokio::test]
     async fn isolation_rejects_invalid_runtime_fallback_before_discovery() {
         reject_invalid_runtime_fallback().await;
+    }
+
+    #[test]
+    fn isolation_rejects_product_config_and_accepts_the_engine_overlay() {
+        let product: tauri::Config =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let engine: tauri::Config =
+            serde_json::from_str(include_str!("../tauri.agsdl-engine-qa.conf.json")).unwrap();
+        assert!(check_qa_no_product_windows(&product, false).is_err());
+        assert!(check_qa_no_product_windows(&engine, false).is_ok());
+        assert!(check_qa_no_product_windows(&engine, true).is_err());
+    }
+
+    #[test]
+    fn isolation_environment_requires_private_xdg_and_refuses_git_overrides() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let sentinel = outside.path().join("sentinel");
+        std::fs::write(&sentinel, b"unchanged").unwrap();
+        let mut environment = Vec::new();
+        for (key, name) in [
+            ("XDG_CONFIG_HOME", "config"),
+            ("XDG_DATA_HOME", "data"),
+            ("XDG_CACHE_HOME", "cache"),
+        ] {
+            let path = root.join(name);
+            std::fs::create_dir(&path).unwrap();
+            environment.push((std::ffi::OsString::from(key), path.into_os_string()));
+        }
+        check_qa_environment(&root, environment.clone()).unwrap();
+        for key in [
+            "GIT_DIR",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CEILING_DIRECTORIES",
+            "XDG_CONFIG_DIRS",
+            "XDG_STATE_HOME",
+            "XDG_RUNTIME_DIR",
+        ] {
+            let mut variables = environment.clone();
+            variables.push((key.into(), "synthetic".into()));
+            assert!(check_qa_environment(&root, variables).is_err(), "{key}");
+        }
+        for index in 0..environment.len() {
+            let mut missing = environment.clone();
+            missing.remove(index);
+            assert!(check_qa_environment(&root, missing).is_err());
+            let mut external = environment.clone();
+            external[index].1 = outside.path().as_os_str().to_owned();
+            assert!(check_qa_environment(&root, external).is_err());
+        }
+        #[cfg(unix)]
+        {
+            let link = root.join("outside-link");
+            std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+            let mut linked = environment;
+            linked[0].1 = link.into_os_string();
+            assert!(check_qa_environment(&root, linked).is_err());
+        }
+        assert_eq!(std::fs::read(sentinel).unwrap(), b"unchanged");
+    }
+
+    #[test]
+    fn isolation_rejects_git_context_before_discovery() {
+        reject_repository_boundaries();
+        reject_external_registry_and_nested_root();
     }
 
     #[tokio::test]
