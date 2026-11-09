@@ -144,6 +144,26 @@ impl Fixture {
             targets: vec![],
             inherited: false,
         }];
+        if serde_json::from_str::<serde_json::Value>(declaration)
+            .unwrap()
+            .get("onError")
+            .is_some()
+        {
+            plan.routes.push(Route030 {
+                source: vec!["tests".into()],
+                kind: "error".into(),
+                key: None,
+                declaration_json: "\"tests\"".into(),
+                inherited: false,
+                targets: vec![crate::db::agsdl_execution::flow030::Target030::Step {
+                    address: vec!["tests".into()],
+                    message_json: None,
+                    each_path_json: None,
+                    concurrency_json: None,
+                    max_json: None,
+                }],
+            });
+        }
         let plan_json = serde_json::to_string(&plan).unwrap();
         let capture = StartCapture030 {
             identity: id.clone(),
@@ -315,7 +335,7 @@ pub(crate) fn command(code: i32, stdout: &str) -> CallEvent030 {
 
 /// Run precisely the existing normalizer, preserving JSON tokens inside its
 /// string payload. The command is Bun's pure worker, never the authored call.
-pub(crate) async fn worker_once(broker: &CallDataBroker030) {
+pub(crate) async fn worker_completion(broker: &CallDataBroker030) -> HostRouteCompletion030 {
     let job = broker.next().await.unwrap();
     let script = r#"import {prepareCall030,commandOutput030,mcpOutput030} from './src/services/agsdlExecution/calls030';
 const j=JSON.parse(await Bun.stdin.text()), i=JSON.parse(j.inputJson); let result;
@@ -348,18 +368,19 @@ process.stdout.write(JSON.stringify(result));"#;
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    HostRouteCompletion030 {
+        ticket: job.ticket,
+        generation: job.generation.clone(),
+        input_digest: job.input_digest,
+        output: crate::agsdl_host_route030::HostRouteOutput030::Ready {
+            result_json: String::from_utf8(output.stdout).unwrap(),
+        },
+    }
+}
+pub(crate) async fn worker_once(broker: &CallDataBroker030) {
+    let completion = worker_completion(broker).await;
     broker
-        .complete(
-            &job.generation,
-            HostRouteCompletion030 {
-                ticket: job.ticket,
-                generation: job.generation.clone(),
-                input_digest: job.input_digest,
-                output: crate::agsdl_host_route030::HostRouteOutput030::Ready {
-                    result_json: String::from_utf8(output.stdout).unwrap(),
-                },
-            },
-        )
+        .complete(&completion.generation.clone(), completion)
         .unwrap();
 }
 pub(crate) async fn prepare(f: &Fixture, broker: &CallDataBroker030, attempt: &CallAttempt030) {
@@ -368,7 +389,7 @@ pub(crate) async fn prepare(f: &Fixture, broker: &CallDataBroker030, attempt: &C
         prepare_call030(&f.pool, &f.authority, broker, attempt, &cancel),
         worker_once(broker)
     );
-    result.unwrap();
+    assert!(matches!(result.unwrap(), CallPreparation030::Ready));
 }
 pub(crate) async fn joined(
     f: &Fixture,
@@ -436,7 +457,7 @@ async fn command_normalizer_and_native_terminal_are_durable_and_idempotent() {
     assert_eq!(state.events.len(), 2);
     for _ in 0..3 {
         assert_eq!(
-            read_call_receipt030(&f.pool, &f.authority, &f.id, joined.attempt.work())
+            read_call_receipt030(&f.pool, &f.authority, &f.id, joined.attempt().work())
                 .await
                 .unwrap(),
             Some(receipt.clone())
@@ -464,7 +485,7 @@ async fn json_invalid_is_output_invalid_even_for_failed_exit() {
         assert_eq!(error.code, "OUTPUT_INVALID");
         assert_eq!(f.state().await.verdict.as_deref(), Some("failed"));
         assert_eq!(
-            read_call_receipt030(&f.pool, &f.authority, &f.id, joined.attempt.work())
+            read_call_receipt030(&f.pool, &f.authority, &f.id, joined.attempt().work())
                 .await
                 .unwrap(),
             Some(receipt)
@@ -666,4 +687,262 @@ async fn call_timeline_event_rejects_outcome_physical_facts_and_fractional_exit_
             exit_code: 1
         }
     );
+}
+
+#[tokio::test]
+async fn stop_uses_joined_physical_end_when_normalizer_is_unavailable() {
+    for stop_after_raw_commit in [false, true] {
+        let f = Fixture::new(r#"{"type":"call","command":"never execute"}"#).await;
+        let broker = CallDataBroker030::default();
+        let joined = joined(&f, &broker, command(0, "late output")).await;
+        let cancel = CancellationToken::new();
+        let receipt = if stop_after_raw_commit {
+            let finish = finish_joined_call030(&f.pool, &f.authority, &broker, &joined, &cancel);
+            let stop_and_close = async {
+                let _ = broker.next().await.unwrap();
+                assert_eq!(
+                    sqlx::query_scalar::<_, String>("SELECT status FROM engine_flow030_calls")
+                        .fetch_one(&f.pool)
+                        .await
+                        .unwrap(),
+                    "received"
+                );
+                f.stop().await;
+                broker.close();
+                cancel.cancel();
+            };
+            let (result, ()) = tokio::join!(finish, stop_and_close);
+            result.unwrap()
+        } else {
+            f.stop().await;
+            broker.close();
+            cancel.cancel();
+            finish_joined_call030(&f.pool, &f.authority, &broker, &joined, &cancel)
+                .await
+                .unwrap()
+        };
+        assert_eq!(receipt.status(), "stopped");
+        assert!(receipt.work_result().unwrap().is_none());
+        assert!(!f.state().await.activations[0].physical);
+        assert_eq!(f.state().await.verdict.as_deref(), Some("cancelled"));
+        assert_eq!(
+            read_call_receipt030(&f.pool, &f.authority, &f.id, joined.attempt().work())
+                .await
+                .unwrap(),
+            Some(receipt)
+        );
+    }
+}
+
+#[tokio::test]
+async fn terminal_commit_sets_full_on_its_own_connection_after_normalization() {
+    let f = Fixture::new(r#"{"type":"call","command":"never execute"}"#).await;
+    let broker = CallDataBroker030::default();
+    let joined = joined(&f, &broker, command(0, "done")).await;
+    // One connection makes the interleaving deterministic: after raw receipt
+    // commit, return that connection with WAL NORMAL before terminal acquire.
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with((*f.pool.connect_options()).clone())
+        .await
+        .unwrap();
+    let cancel = CancellationToken::new();
+    let finish = finish_joined_call030(&pool, &f.authority, &broker, &joined, &cancel);
+    let worker = async {
+        let completion = worker_completion(&broker).await;
+        sqlx::query("PRAGMA synchronous=NORMAL")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("PRAGMA synchronous")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        broker
+            .complete(&completion.generation.clone(), completion)
+            .unwrap();
+    };
+    let (receipt, ()) = tokio::join!(finish, worker);
+    assert_eq!(receipt.unwrap().status(), "succeeded");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("PRAGMA synchronous")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        2
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn mcp_operand_failure_is_durable_before_handoff_and_selects_on_error() {
+    let f = Fixture::new(r#"{"type":"call","mcp":{"server":"server","tool":"tool"},"arguments":{"n":{"path":["missing"]}},"onError":"tests"}"#).await;
+    let broker = CallDataBroker030::default();
+    let attempt = f.reserve().await;
+    let cancel = CancellationToken::new();
+    let (prepared, ()) = tokio::join!(
+        prepare_call030(&f.pool, &f.authority, &broker, &attempt, &cancel),
+        worker_once(&broker)
+    );
+    let CallPreparation030::Failed { receipt } = prepared.unwrap() else {
+        panic!("Missing durable operand failure")
+    };
+    let Some(flow030::WorkResult030::Failed { error }) = receipt.work_result().unwrap() else {
+        panic!()
+    };
+    assert_eq!(error.code, "OPERAND");
+    assert_eq!(receipt.status(), "failed");
+    assert!(!f.state().await.activations[0].physical);
+    assert_eq!(f.state().await.activations[0].phase, "preparing");
+    let rows: Vec<String> = sqlx::query_scalar("SELECT effect_json FROM engine_flow030_outbox")
+        .fetch_all(&f.pool)
+        .await
+        .unwrap();
+    assert!(rows.iter().any(|raw| matches!(serde_json::from_str::<FlowEffect030>(raw).unwrap().kind,
+        flow030::FlowEffectKind030::PrepareRoute { reference,producer } if reference.route.kind == "error"
+            && serde_json::from_str::<serde_json::Value>(&producer.output_json).unwrap()["error"]["code"] == "OPERAND")));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_flow030_handoffs")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(
+        launch_synthetic030(&f.pool, &f.authority, &attempt, control())
+            .await
+            .is_err()
+    );
+    broker.close();
+    let before = f.state().await;
+    assert_eq!(
+        read_call_receipt030(&f.pool, &f.authority, &f.id, attempt.work())
+            .await
+            .unwrap(),
+        Some(receipt)
+    );
+    assert_eq!(f.state().await, before);
+}
+
+#[test]
+fn joined_witness_struct_literal_is_rejected_by_the_rust_compiler() {
+    // Compile the actual sealed module, not a copy of its field definitions.
+    // Production-only dependencies are absent in this small privacy harness;
+    // the QA-only join impl is cfg-disabled. A positive control prevents a
+    // missing import/syntax error from making the negative case pass by chance.
+    let source = include_str!("agsdl_host_calls030.rs");
+    let start = source.find("mod joined {").unwrap();
+    let end = source
+        .find("pub(crate) use joined::JoinedCall030;")
+        .unwrap()
+        + "pub(crate) use joined::JoinedCall030;".len();
+    let actual = &source[start..end];
+    let prefix = "#![allow(dead_code)]\n#[derive(Debug)] struct CallAttempt030;\n#[derive(Debug)] struct CancellationToken; impl CancellationToken { async fn cancelled(&self){} }\nmod protocol { #[derive(Debug)] pub enum CallEnd030 { Stopped } }\nmod owner { use super::{CallAttempt030,protocol,CancellationToken};\n";
+    let control = "}\nfn inspect(w: &owner::JoinedCall030) { let _=(w.attempt(),w.end(),w.receipt_id()); }\nfn main(){}\n";
+    let attack = "}\nfn main(){ let _=owner::JoinedCall030 { attempt:CallAttempt030,end:protocol::CallEnd030::Stopped,receipt_id:String::from(\"forged\"),stop:CancellationToken }; }\n";
+    let tmp = tempfile::TempDir::new().unwrap();
+    let compile = |tail: &str| {
+        let file = tmp.path().join("proof.rs");
+        std::fs::write(&file, [prefix, actual, tail].concat()).unwrap();
+        crate::core::process::background_command("rustc")
+            .args([
+                "--edition=2021",
+                "--crate-name=call_join_privacy",
+                "--emit=metadata",
+            ])
+            .arg(&file)
+            .arg("-o")
+            .arg(tmp.path().join("proof.rmeta"))
+            .output()
+            .unwrap()
+    };
+    let positive = compile(control);
+    assert!(
+        positive.status.success(),
+        "{}",
+        String::from_utf8_lossy(&positive.stderr)
+    );
+    let negative = compile(attack);
+    let error = String::from_utf8_lossy(&negative.stderr);
+    assert!(!negative.status.success());
+    assert!(error.contains("E0451"), "{error}");
+    for field in ["attempt", "end", "receipt_id", "stop"] {
+        assert!(error.contains(field), "{error}");
+    }
+}
+
+#[tokio::test]
+async fn genuine_deferred_foreign_key_commit_failure_keeps_the_call_fenced() {
+    let f = Fixture::new(r#"{"type":"call","command":"never execute"}"#).await;
+    let broker = CallDataBroker030::default();
+    let joined = joined(&f, &broker, command(0, "must roll back")).await;
+    sqlx::raw_sql("CREATE TABLE call_commit_parent(id INTEGER PRIMARY KEY);\nCREATE TABLE call_commit_child(id INTEGER REFERENCES call_commit_parent(id) DEFERRABLE INITIALLY DEFERRED);\nCREATE TRIGGER call_commit_fault AFTER UPDATE OF status ON engine_flow030_calls WHEN NEW.status='terminal' BEGIN INSERT INTO call_commit_child(id) VALUES(42); END;")
+        .execute(&f.pool).await.unwrap();
+    let cancel = CancellationToken::new();
+    let (result, ()) = tokio::join!(
+        finish_joined_call030(&f.pool, &f.authority, &broker, &joined, &cancel),
+        worker_once(&broker)
+    );
+    assert_eq!(result.unwrap_err().code, "COMMIT_UNCERTAIN");
+    // The deferred constraint fails at COMMIT, after marker installation. SQLx
+    // rolls back the terminal state and reducer event together, retaining raw.
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status FROM engine_flow030_calls")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap(),
+        "received"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_flow030_events WHERE event_id=?")
+            .bind(format!("call:{}:terminal", joined.attempt().call_id()))
+            .fetch_one(&f.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(f.state().await.activations[0].physical);
+    assert!(f.authority.call_commits().require_clear(&f.id).is_err());
+    assert!(inspect_call_commit030(&f.pool, &f.authority, &f.id)
+        .await
+        .is_err());
+    assert!(f.authority.call_commits().require_clear(&f.id).is_err());
+    assert!(
+        launch_synthetic030(&f.pool, &f.authority, joined.attempt(), control())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn native_stop_signal_interrupts_a_normalizer_that_never_answers() {
+    let f = Fixture::new(r#"{"type":"call","command":"never execute"}"#).await;
+    let broker = CallDataBroker030::default();
+    let attempt = f.reserve().await;
+    prepare(&f, &broker, &attempt).await;
+    f.handoff(&attempt).await;
+    let control = control();
+    let stop = control.stop.clone();
+    let (driver, owned) = launch_synthetic030(&f.pool, &f.authority, &attempt, control)
+        .await
+        .unwrap();
+    driver.send(command(0, "returned before stop")).unwrap();
+    let joined = owned.join().await.unwrap();
+    let cancel = CancellationToken::new();
+    let finish = finish_joined_call030(&f.pool, &f.authority, &broker, &joined, &cancel);
+    let stop_without_worker_answer = async {
+        let _unanswered_job = broker.next().await.unwrap();
+        f.stop().await;
+        stop.cancel();
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(finish, stop_without_worker_answer)
+    })
+    .await
+    .expect("Physical Stop must not wait for a normalizer response");
+    assert_eq!(result.unwrap().status(), "stopped");
+    assert!(!f.state().await.activations[0].physical);
 }

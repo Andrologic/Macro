@@ -11,7 +11,7 @@ use super::{
     start030::StartCapture030,
     validate_json, Result,
 };
-use crate::agsdl_host_calls030::{CallAuthority030, CallEvent030, PreparedCall030};
+use crate::agsdl_host_calls030::{CallAuthority030, CallEvent030, JoinedCall030, PreparedCall030};
 use serde::{Deserialize, Serialize};
 use serde_json::{value::RawValue, Value};
 use sha2::{Digest, Sha256};
@@ -152,6 +152,7 @@ pub(crate) enum CallEnd030 {
     Returned { event: CallEvent030 },
     Stopped,
     TimedOut,
+    PreparationFailed,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -160,21 +161,60 @@ pub(crate) enum CallEnd030 {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-pub(crate) enum CallPhysical030 {
+enum CallPhysical030 {
     NotStarted {
         receipt_id: String,
     },
     /// Debug-only executor with no external IO or descendants. This is NOT an
     /// attestation about local process trees or remote server cancellation.
+    #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
     SyntheticJoined {
         receipt_id: String,
     },
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ReceivedCall030 {
-    pub end: CallEnd030,
-    pub physical: CallPhysical030,
+struct ReceivedCall030 {
+    end: CallEnd030,
+    physical: CallPhysical030,
+}
+#[derive(Deserialize)]
+#[serde(
+    remote = "ReceivedCall030",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
+struct StoredReceived030 {
+    end: CallEnd030,
+    physical: CallPhysical030,
+}
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct ReceivedRecord030(#[serde(with = "StoredReceived030")] ReceivedCall030);
+fn decode_received(raw: &str) -> Result<ReceivedCall030> {
+    Ok(serde_json::from_str::<ReceivedRecord030>(raw)?.0)
+}
+// Data read from SQL never becomes a join capability. Only the opaque witness
+// from OwnedSyntheticCall030::join can authorize receive/finish for launched IO.
+fn received_from_join(joined: &JoinedCall030) -> Result<ReceivedCall030> {
+    #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+    {
+        require(
+            !joined.receipt_id().is_empty(),
+            "Joined call receipt id missing",
+        )?;
+        Ok(ReceivedCall030 {
+            end: joined.end().clone(),
+            physical: CallPhysical030::SyntheticJoined {
+                receipt_id: joined.receipt_id().into(),
+            },
+        })
+    }
+    #[cfg(not(all(feature = "agsdl-engine-qa", debug_assertions)))]
+    {
+        let _ = joined;
+        Err(denied("No qualified joined call transport"))
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -210,7 +250,10 @@ impl CallResult030 {
             }
             Self::Failed { code } => {
                 require(
-                    matches!(code.as_str(), "OUTPUT_INVALID" | "CALL_FAILED" | "TIMEOUT"),
+                    matches!(
+                        code.as_str(),
+                        "OUTPUT_INVALID" | "CALL_FAILED" | "TIMEOUT" | "OPERAND"
+                    ),
                     "Call failure invalid",
                 )?;
                 Some(WorkResult030::Failed {
@@ -241,6 +284,7 @@ pub(crate) struct CallReceipt030 {
 struct StoredReceipt030 {
     #[serde(with = "StoredAttempt030")]
     attempt: CallAttempt030,
+    #[serde(with = "StoredReceived030")]
     received: ReceivedCall030,
     result: CallResult030,
     event_id: String,
@@ -256,8 +300,8 @@ impl CallReceipt030 {
     pub(crate) fn attempt(&self) -> &CallAttempt030 {
         &self.attempt
     }
-    pub(crate) fn received(&self) -> &ReceivedCall030 {
-        &self.received
+    pub(crate) fn matches_joined(&self, joined: &JoinedCall030) -> Result<bool> {
+        Ok(self.attempt == *joined.attempt() && self.received == received_from_join(joined)?)
     }
     pub(crate) fn event_id(&self) -> &str {
         &self.event_id
@@ -269,8 +313,9 @@ impl CallReceipt030 {
     /// has been checked, or from an acknowledged native terminal commit.
     pub(crate) fn physical(&self) -> PhysicalEvidence030 {
         let receipt_id = match &self.received.physical {
-            CallPhysical030::NotStarted { receipt_id }
-            | CallPhysical030::SyntheticJoined { receipt_id } => receipt_id,
+            CallPhysical030::NotStarted { receipt_id } => receipt_id,
+            #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+            CallPhysical030::SyntheticJoined { receipt_id } => receipt_id,
         };
         PhysicalEvidence030 {
             native_receipt_id: receipt_id.clone(),
@@ -641,6 +686,10 @@ fn select_raw(input: &str, path: &str) -> Result<Box<RawValue>> {
                 .remove(&name)
                 .ok_or_else(|| denied("MCP selection property absent"))?
         } else if value.get().starts_with('[') {
+            require(
+                !part.get().starts_with('-'),
+                "MCP selection index is negative",
+            )?;
             let array: Vec<Box<RawValue>> = serde_json::from_str(value.get())?;
             let index = if crate::db::exact_json::equal(part.get(), "0")? {
                 0
@@ -658,6 +707,77 @@ fn select_raw(input: &str, path: &str) -> Result<Box<RawValue>> {
         };
     }
     Ok(value)
+}
+
+/// Independently verify a ticketed OPERAND against the captured MCP operands.
+/// A worker failure string alone cannot manufacture a failure or physical proof.
+pub(crate) fn require_operand_failure(attempt: &CallAttempt030) -> Result<()> {
+    let step: Object = serde_json::from_str(attempt.declaration_json())?;
+    require(
+        step.contains_key("mcp") && !step.contains_key("command"),
+        "Only MCP operands can fail preparation",
+    )?;
+    let args: Object = match step.get("arguments") {
+        Some(raw) => serde_json::from_str(raw.get())?,
+        None => BTreeMap::new(),
+    };
+    for raw in args.values() {
+        let operand: Object = serde_json::from_str(raw.get())?;
+        if operand.len() != 1 {
+            return Ok(());
+        }
+        if let Some(path) = operand.get("path") {
+            if select_raw(attempt.input_json(), path.get()).is_err() {
+                return Ok(());
+            }
+        } else if !operand.contains_key("value") {
+            return Ok(());
+        }
+    }
+    Err(denied("OPERAND does not match the captured call input"))
+}
+async fn require_no_handoff_tx(db: &mut SqliteConnection, attempt: &CallAttempt030) -> Result<()> {
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_flow030_handoffs WHERE system_id=? AND invocation_id=? AND effect_id=?)")
+        .bind(&attempt.identity.system_start_id).bind(&attempt.identity.flow_invocation_id).bind(&attempt.effect.id).fetch_one(db).await?;
+    require(
+        !exists,
+        "Preparation failure cannot borrow a physical handoff",
+    )
+}
+pub(crate) async fn fail_preparation_tx<A: CallAuthority030>(
+    db: &mut SqliteConnection,
+    authority: &A,
+    attempt: &CallAttempt030,
+) -> Result<CallReceipt030> {
+    let state = verify_attempt_tx(db, authority, attempt, false).await?;
+    let row = row_tx(db, attempt).await?;
+    require(
+        row.get::<&str, _>("status") == "reserved",
+        "Preparation failure arrived after admission",
+    )?;
+    require_operand_failure(attempt)?;
+    require_no_handoff_tx(db, attempt).await?;
+    let received = ReceivedCall030 {
+        end: CallEnd030::PreparationFailed,
+        physical: CallPhysical030::NotStarted {
+            receipt_id: uuid::Uuid::new_v4().to_string(),
+        },
+    };
+    let stopped = call_stopped(&state, attempt)?;
+    let receipt = CallReceipt030 {
+        attempt: attempt.clone(),
+        received,
+        result: if stopped {
+            CallResult030::Stopped
+        } else {
+            CallResult030::failure("OPERAND")
+        },
+        event_id: format!("call:{}:terminal", attempt.call_id),
+    };
+    apply_terminal_tx(db, authority, &state, &receipt).await?;
+    sqlx::query("UPDATE engine_flow030_calls SET status='terminal',received_json=?,receipt_json=? WHERE call_id=? AND status='reserved'")
+        .bind(serde_json::to_string(&receipt.received)?).bind(serde_json::to_string(&receipt)?).bind(&attempt.call_id).execute(db).await?;
+    Ok(receipt)
 }
 
 pub(crate) async fn prepare_tx<A: CallAuthority030>(
@@ -894,24 +1014,23 @@ fn validate_result(
 pub(crate) async fn receive_tx<A: CallAuthority030>(
     db: &mut SqliteConnection,
     authority: &A,
-    attempt: &CallAttempt030,
-    received: &ReceivedCall030,
+    joined: &JoinedCall030,
 ) -> Result<PreparedCall030> {
+    let attempt = joined.attempt();
+    let received = received_from_join(joined)?;
     // A late native receipt can be retained after Stop, but cannot route success.
-    verify_attempt_tx(db, authority, attempt, false).await?;
+    let state = verify_attempt_tx(db, authority, attempt, false).await?;
     let row = row_tx(db, attempt).await?;
     let prepared: PreparedCall030 = serde_json::from_str(
         row.get::<Option<&str>, _>("prepared_json")
             .ok_or_else(|| denied("Call was not prepared"))?,
     )?;
-    if let CallEnd030::Returned { event } = &received.end {
-        validate_event(&prepared, event)?;
+    if !call_stopped(&state, attempt)? {
+        if let CallEnd030::Returned { event } = &received.end {
+            validate_event(&prepared, event)?;
+        }
     }
-    require(
-        matches!(&received.physical, CallPhysical030::SyntheticJoined { receipt_id } if !receipt_id.is_empty()),
-        "Call lacks a joined executor",
-    )?;
-    let raw = serde_json::to_string(received)?;
+    let raw = serde_json::to_string(&received)?;
     match row.get::<&str, _>("status") {
         "launched" => {
             sqlx::query("UPDATE engine_flow030_calls SET status='received',received_json=? WHERE call_id=? AND status='launched'")
@@ -975,13 +1094,37 @@ async fn apply_terminal_tx<A: CallAuthority030>(
     }
 }
 
+fn call_stopped(state: &FlowState030, attempt: &CallAttempt030) -> Result<bool> {
+    let activation = state
+        .activations
+        .iter()
+        .find(|a| a.id == attempt.work().activation_id)
+        .ok_or_else(|| denied("Call visit absent"))?;
+    Ok(state.stopping || activation.stop_effect_id.is_some())
+}
+/// Stop cleanup depends on an actual join and native state, never on JS.
+pub(crate) async fn finish_stopped_tx<A: CallAuthority030>(
+    db: &mut SqliteConnection,
+    authority: &A,
+    joined: &JoinedCall030,
+) -> Result<Option<CallReceipt030>> {
+    let state = verify_attempt_tx(db, authority, joined.attempt(), false).await?;
+    if !call_stopped(&state, joined.attempt())? {
+        return Ok(None);
+    }
+    Ok(Some(
+        finish_tx(db, authority, joined, CallResult030::Stopped).await?,
+    ))
+}
+
 pub(crate) async fn finish_tx<A: CallAuthority030>(
     db: &mut SqliteConnection,
     authority: &A,
-    attempt: &CallAttempt030,
-    received: &ReceivedCall030,
+    joined: &JoinedCall030,
     mut result: CallResult030,
 ) -> Result<CallReceipt030> {
+    let attempt = joined.attempt();
+    let received = received_from_join(joined)?;
     let state = verify_attempt_tx(db, authority, attempt, false).await?;
     let row = row_tx(db, attempt).await?;
     if row.get::<&str, _>("status") == "terminal" {
@@ -989,7 +1132,7 @@ pub(crate) async fn finish_tx<A: CallAuthority030>(
             .await?
             .ok_or_else(|| denied("Call terminal receipt missing"))?;
         require(
-            receipt.received == *received && receipt.result == result,
+            receipt.received == received && receipt.result == result,
             "Conflicting call terminal",
         )?;
         return Ok(receipt);
@@ -997,7 +1140,7 @@ pub(crate) async fn finish_tx<A: CallAuthority030>(
     require(
         row.get::<&str, _>("status") == "received"
             && row.get::<Option<&str>, _>("received_json")
-                == Some(serde_json::to_string(received)?.as_str()),
+                == Some(serde_json::to_string(&received)?.as_str()),
         "Call terminal raw receipt differs",
     )?;
     let activation = state
@@ -1017,7 +1160,7 @@ pub(crate) async fn finish_tx<A: CallAuthority030>(
                 .ok_or_else(|| denied("Call request missing"))?,
         )?;
         validate_prepared(attempt, &prepared)?;
-        validate_result(&prepared, received, &result)?;
+        validate_result(&prepared, &received, &result)?;
     }
     let receipt = CallReceipt030 {
         attempt: attempt.clone(),
@@ -1094,7 +1237,7 @@ pub(crate) async fn read_receipt_tx<A: CallAuthority030>(
         row.get::<Option<&str>, _>("receipt_json")
             .ok_or_else(|| denied("Call terminal has no receipt"))?,
     )?;
-    let received: ReceivedCall030 = serde_json::from_str(
+    let received = decode_received(
         row.get::<Option<&str>, _>("received_json")
             .ok_or_else(|| denied("Call terminal has no physical receipt"))?,
     )?;
@@ -1148,7 +1291,18 @@ pub(crate) async fn read_receipt_tx<A: CallAuthority030>(
         actual == serde_json::to_value(expected)?,
         "Call reducer result or physical proof differs",
     )?;
-    if !matches!(receipt.result, CallResult030::Stopped) {
+    if matches!(received.end, CallEnd030::PreparationFailed)
+        && !matches!(receipt.result, CallResult030::Stopped)
+    {
+        require(
+            matches!(receipt.result, CallResult030::Failed { ref code } if code == "OPERAND")
+                && matches!(received.physical, CallPhysical030::NotStarted { ref receipt_id } if !receipt_id.is_empty())
+                && row.get::<Option<&str>, _>("prepared_json").is_none(),
+            "Preparation failure proof differs",
+        )?;
+        require_operand_failure(&attempt)?;
+        require_no_handoff_tx(db, &attempt).await?;
+    } else if !matches!(receipt.result, CallResult030::Stopped) {
         let prepared: PreparedCall030 = serde_json::from_str(
             row.get::<Option<&str>, _>("prepared_json")
                 .ok_or_else(|| denied("Call prepared request absent"))?,
@@ -1183,6 +1337,6 @@ pub(crate) async fn require_live_mcp_tx<A: CallAuthority030>(
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "agsdl-engine-qa", debug_assertions))]
 #[path = "call_protocol030_tests.rs"]
 mod tests;

@@ -166,7 +166,15 @@ pub(crate) enum PreparedCall030 {
 }
 
 /// Sealed return from the trusted pure-computation mailbox, not Deserialize.
-struct PreparedData030(PreparedCall030);
+enum PreparedData030 {
+    Ready(PreparedCall030),
+    OperandFailed,
+}
+#[derive(Debug)]
+pub(crate) enum CallPreparation030 {
+    Ready,
+    Failed { receipt: CallReceipt030 },
+}
 struct NormalizedData030(protocol::CallResult030);
 
 /// Uses the existing ticket/generation/digest/issued-once mailbox discipline.
@@ -208,10 +216,19 @@ impl CallDataBroker030 {
         #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
         enum Reply {
             Prepared { prepared: PreparedCall030 },
+            Failed { code: String },
         }
-        let Reply::Prepared { prepared } = serde_json::from_str(&raw)?;
-        protocol::validate_prepared(attempt, &prepared)?;
-        Ok(PreparedData030(prepared))
+        match serde_json::from_str(&raw)? {
+            Reply::Prepared { prepared } => {
+                protocol::validate_prepared(attempt, &prepared)?;
+                Ok(PreparedData030::Ready(prepared))
+            }
+            Reply::Failed { code } if code == "OPERAND" => {
+                protocol::require_operand_failure(attempt)?;
+                Ok(PreparedData030::OperandFailed)
+            }
+            _ => Err(protocol::denied("Unattested call preparation failure")),
+        }
     }
 
     async fn normalize(
@@ -318,15 +335,26 @@ pub(crate) async fn prepare_call030<A: CallAuthority030>(
     broker: &CallDataBroker030,
     attempt: &CallAttempt030,
     cancel: &CancellationToken,
-) -> Result<()> {
+) -> Result<CallPreparation030> {
     let prepared = broker.prepare(attempt, cancel).await?;
     let _gate = authority.admission_lock().lock_owned().await;
     authority.call_commits().require_clear(attempt.identity())?;
     let mut db = pool.acquire().await?;
+    sqlx::query("PRAGMA synchronous=FULL")
+        .execute(&mut *db)
+        .await?;
     let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-    protocol::prepare_tx(&mut tx, authority, attempt, &prepared.0).await?;
+    let decision = match prepared {
+        PreparedData030::Ready(prepared) => {
+            protocol::prepare_tx(&mut tx, authority, attempt, &prepared).await?;
+            CallPreparation030::Ready
+        }
+        PreparedData030::OperandFailed => CallPreparation030::Failed {
+            receipt: protocol::fail_preparation_tx(&mut tx, authority, attempt).await?,
+        },
+    };
     commit_call_tx(tx, authority, attempt).await?;
-    Ok(())
+    Ok(decision)
 }
 
 /// Private native attribution for N-HUMAN. Obtain it only while this exact
@@ -345,28 +373,64 @@ pub(crate) trait CallHumanPort030: Send + Sync {
     async fn human_close(&self, ticket: &str, answer: &Result<String>) -> Result<()>;
 }
 
-/// Only produced after joining a native-owned synthetic executor. No public
-/// constructor or deserializer can turn transport booleans into physical proof.
-#[derive(Debug)]
-pub(crate) struct JoinedCall030 {
-    attempt: CallAttempt030,
-    received: protocol::ReceivedCall030,
-}
-impl JoinedCall030 {
-    pub(crate) fn attempt(&self) -> &CallAttempt030 {
-        &self.attempt
+// Kept in a private child module so even this module's transport/data paths
+// cannot construct a join witness. The sole constructor is the actual join.
+mod joined {
+    use super::{protocol, CallAttempt030, CancellationToken};
+
+    #[derive(Debug)]
+    pub(crate) struct JoinedCall030 {
+        attempt: CallAttempt030,
+        end: protocol::CallEnd030,
+        receipt_id: String,
+        stop: CancellationToken,
+    }
+    impl JoinedCall030 {
+        pub(crate) fn attempt(&self) -> &CallAttempt030 {
+            &self.attempt
+        }
+        pub(crate) fn end(&self) -> &protocol::CallEnd030 {
+            &self.end
+        }
+        pub(crate) fn receipt_id(&self) -> &str {
+            &self.receipt_id
+        }
+        /// A wake-up only. SQL must still attest Stop before physical cleanup.
+        pub(crate) async fn stopped(&self) {
+            self.stop.cancelled().await;
+        }
+    }
+    #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+    impl super::OwnedSyntheticCall030 {
+        pub(crate) async fn join(mut self) -> super::Result<JoinedCall030> {
+            // Await the retained handle so cancellation drops/cancels its owner.
+            let end = self
+                .task
+                .as_mut()
+                .ok_or_else(|| protocol::denied("Call already joined"))?
+                .await
+                .map_err(|_| protocol::uncertain())?;
+            self.task.take();
+            Ok(JoinedCall030 {
+                attempt: self.attempt.clone(),
+                end,
+                receipt_id: uuid::Uuid::new_v4().to_string(),
+                stop: self.control.stop.clone(),
+            })
+        }
     }
 }
+pub(crate) use joined::JoinedCall030;
 
 /// QA transport only: its task owns one typed receiver and has no processes,
 /// network sessions or descendants. Dropping the receiver of its result does
 /// not start another call. Dropping the owner cancels the task, leaving SQL
 /// launched/uncertain until a native supervisor reconciles the join.
-#[cfg(any(test, all(debug_assertions, feature = "agsdl-engine-qa")))]
+#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
 pub(crate) struct SyntheticCallDriver030 {
     sender: oneshot::Sender<CallEvent030>,
 }
-#[cfg(any(test, all(debug_assertions, feature = "agsdl-engine-qa")))]
+#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
 impl SyntheticCallDriver030 {
     pub(crate) fn send(self, event: CallEvent030) -> Result<()> {
         self.sender
@@ -374,13 +438,13 @@ impl SyntheticCallDriver030 {
             .map_err(|_| protocol::denied("Synthetic call is no longer active"))
     }
 }
-#[cfg(any(test, all(debug_assertions, feature = "agsdl-engine-qa")))]
+#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
 pub(crate) struct OwnedSyntheticCall030 {
     attempt: CallAttempt030,
     control: Control,
     task: Option<tokio::task::JoinHandle<protocol::CallEnd030>>,
 }
-#[cfg(any(test, all(debug_assertions, feature = "agsdl-engine-qa")))]
+#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
 impl Drop for OwnedSyntheticCall030 {
     fn drop(&mut self) {
         if self.task.is_some() {
@@ -388,33 +452,9 @@ impl Drop for OwnedSyntheticCall030 {
         }
     }
 }
-#[cfg(any(test, all(debug_assertions, feature = "agsdl-engine-qa")))]
-impl OwnedSyntheticCall030 {
-    pub(crate) async fn join(mut self) -> Result<JoinedCall030> {
-        // Retain the handle in self while awaiting: cancelling this await must
-        // cancel the still-owned executor rather than detach a live receiver.
-        let end = self
-            .task
-            .as_mut()
-            .ok_or_else(|| protocol::denied("Call already joined"))?
-            .await
-            .map_err(|_| protocol::uncertain())?;
-        self.task.take();
-        Ok(JoinedCall030 {
-            attempt: self.attempt.clone(),
-            received: protocol::ReceivedCall030 {
-                end,
-                physical: protocol::CallPhysical030::SyntheticJoined {
-                    receipt_id: uuid::Uuid::new_v4().to_string(),
-                },
-            },
-        })
-    }
-}
-
 /// Call only from the future transferred by DispatchLease030::handoff_host.
 /// The durable 033 handoff is rechecked before consuming launch exactly once.
-#[cfg(any(test, all(debug_assertions, feature = "agsdl-engine-qa")))]
+#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
 pub(crate) async fn launch_synthetic030<A: CallAuthority030>(
     pool: &SqlitePool,
     authority: &A,
@@ -468,7 +508,7 @@ pub(crate) async fn finish_joined_call030<A: CallAuthority030>(
         let _gate = authority.admission_lock().lock_owned().await;
         authority
             .call_commits()
-            .require_clear(joined.attempt.identity())?;
+            .require_clear(joined.attempt().identity())?;
         let mut db = pool.acquire().await?;
         sqlx::query("PRAGMA synchronous=FULL")
             .execute(&mut *db)
@@ -477,48 +517,55 @@ pub(crate) async fn finish_joined_call030<A: CallAuthority030>(
         if let Some(receipt) = protocol::read_receipt_tx(
             &mut tx,
             authority,
-            joined.attempt.identity(),
-            joined.attempt.work(),
+            joined.attempt().identity(),
+            joined.attempt().work(),
         )
         .await?
         {
             protocol::require(
-                receipt.attempt() == &joined.attempt && receipt.received() == &joined.received,
+                receipt.matches_joined(joined)?,
                 "Joined call conflicts with its terminal receipt",
             )?;
             tx.commit().await?;
             return Ok(receipt);
         }
-        let prepared =
-            protocol::receive_tx(&mut tx, authority, &joined.attempt, &joined.received).await?;
-        commit_call_tx(tx, authority, &joined.attempt).await?;
+        let prepared = protocol::receive_tx(&mut tx, authority, joined).await?;
+        // Stop is a native decision. Its already joined physical end needs
+        // no resident worker, including when that worker has been closed.
+        if let Some(receipt) = protocol::finish_stopped_tx(&mut tx, authority, joined).await? {
+            commit_call_tx(tx, authority, joined.attempt()).await?;
+            return Ok(receipt);
+        }
+        commit_call_tx(tx, authority, joined.attempt()).await?;
         prepared
     };
-    let result = match &joined.received.end {
-        protocol::CallEnd030::Returned { event } => {
-            broker
-                .normalize(&joined.attempt, &prepared, event, cancel)
-                .await?
-                .0
+    let result = match joined.end() {
+        protocol::CallEnd030::Returned { event } => tokio::select! { biased;
+            _ = joined.stopped() => Err(protocol::denied("Native call stop signalled")),
+            result = broker.normalize(joined.attempt(), &prepared, event, cancel) => result.map(|result| result.0),
+        },
+        protocol::CallEnd030::Stopped => Ok(protocol::CallResult030::Stopped),
+        protocol::CallEnd030::TimedOut => Ok(protocol::CallResult030::failure("TIMEOUT")),
+        protocol::CallEnd030::PreparationFailed => {
+            return Err(protocol::denied("Preparation failure is not a joined call"))
         }
-        protocol::CallEnd030::Stopped => protocol::CallResult030::Stopped,
-        protocol::CallEnd030::TimedOut => protocol::CallResult030::failure("TIMEOUT"),
     };
     let _gate = authority.admission_lock().lock_owned().await;
     authority
         .call_commits()
-        .require_clear(joined.attempt.identity())?;
+        .require_clear(joined.attempt().identity())?;
     let mut db = pool.acquire().await?;
+    sqlx::query("PRAGMA synchronous=FULL")
+        .execute(&mut *db)
+        .await?;
     let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-    let receipt = protocol::finish_tx(
-        &mut tx,
-        authority,
-        &joined.attempt,
-        &joined.received,
-        result,
-    )
-    .await?;
-    commit_call_tx(tx, authority, &joined.attempt).await?;
+    let receipt =
+        if let Some(receipt) = protocol::finish_stopped_tx(&mut tx, authority, joined).await? {
+            receipt
+        } else {
+            protocol::finish_tx(&mut tx, authority, joined, result?).await?
+        };
+    commit_call_tx(tx, authority, joined.attempt()).await?;
     Ok(receipt)
 }
 
@@ -555,6 +602,6 @@ pub(crate) async fn read_call_receipt030<A: CallAuthority030>(
     Ok(receipt)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "agsdl-engine-qa", debug_assertions))]
 #[path = "agsdl_host_calls030_tests.rs"]
 pub(crate) mod tests;

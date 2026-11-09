@@ -26,20 +26,35 @@ async fn duplicate_raw_receipt_is_idempotent_but_contradictory_receipt_is_refuse
         .fetch_one(&mut *tx)
         .await
         .unwrap();
-    let received: ReceivedCall030 = serde_json::from_str(&raw).unwrap();
-    receive_tx(&mut tx, &f.authority, joined.attempt(), &received)
-        .await
-        .unwrap();
-    let mut conflicting = received.clone();
+    assert_eq!(
+        decode_received(&raw).unwrap(),
+        received_from_join(&joined).unwrap()
+    );
+    receive_tx(&mut tx, &f.authority, &joined).await.unwrap();
+    tx.commit().await.unwrap();
+    // The private SQL DTO is not a write capability. An adversarial ledger
+    // containing different raw data must reject the genuine join witness.
+    let other = Fixture::new(r#"{"type":"call","command":"never execute"}"#).await;
+    let other_broker = calls::CallDataBroker030::default();
+    let other_joined =
+        fixtures::joined(&other, &other_broker, fixtures::command(0, "original")).await;
+    let mut conflicting = received_from_join(&other_joined).unwrap();
     conflicting.end = CallEnd030::Returned {
         event: fixtures::command(1, "different"),
     };
-    assert!(
-        receive_tx(&mut tx, &f.authority, joined.attempt(), &conflicting)
-            .await
-            .is_err()
-    );
-    tx.commit().await.unwrap();
+    sqlx::query(
+        "UPDATE engine_flow030_calls SET status='received',received_json=? WHERE call_id=?",
+    )
+    .bind(serde_json::to_string(&conflicting).unwrap())
+    .bind(other_joined.attempt().call_id())
+    .execute(&other.pool)
+    .await
+    .unwrap();
+    let mut tx = other.pool.begin().await.unwrap();
+    assert!(receive_tx(&mut tx, &other.authority, &other_joined)
+        .await
+        .is_err());
+    tx.rollback().await.unwrap();
     let receipt = fixtures::finish(&f, &broker, &joined).await;
     assert_eq!(receipt.status(), "succeeded");
 }
@@ -196,7 +211,16 @@ async fn stop_race_retains_raw_receipt_but_only_publishes_physical_end() {
     let broker = calls::CallDataBroker030::default();
     let joined = fixtures::joined(&f, &broker, fixtures::command(0, "late success")).await;
     f.stop().await;
-    let receipt = fixtures::finish(&f, &broker, &joined).await;
+    broker.close();
+    let receipt = calls::finish_joined_call030(
+        &f.pool,
+        &f.authority,
+        &broker,
+        &joined,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
     assert_eq!(receipt.status(), "stopped");
     assert!(receipt.work_result().unwrap().is_none());
     let state = f.state().await;
@@ -316,4 +340,32 @@ async fn unknown_commit_fence_requires_exact_readback_and_never_relaunches() {
         Some(receipt)
     );
     assert_eq!(f.state().await, before);
+}
+
+#[tokio::test]
+async fn operand_failure_requires_an_actual_unreadable_native_operand() {
+    let valid = Fixture::new(
+        r#"{"type":"call","mcp":{"server":"server","tool":"tool"},"arguments":{"n":{"value":42}}}"#,
+    )
+    .await;
+    let attempt = valid.reserve().await;
+    assert!(require_operand_failure(&attempt).is_err());
+    let mut tx = valid.pool.begin().await.unwrap();
+    assert!(fail_preparation_tx(&mut tx, &valid.authority, &attempt)
+        .await
+        .is_err());
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status FROM engine_flow030_calls")
+            .fetch_one(&valid.pool)
+            .await
+            .unwrap(),
+        "reserved"
+    );
+    assert!(
+        calls::read_call_receipt030(&valid.pool, &valid.authority, &valid.id, attempt.work())
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
