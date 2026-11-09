@@ -24,11 +24,19 @@ async fn fixture() -> (tempfile::TempDir, PathBuf, FlowEvent030) {
     ] {
         sqlx::raw_sql(schema).execute(&mut db).await.unwrap();
     }
-    let plan: FlowPlan030 = parse(
+    let mut plan: FlowPlan030 = parse(
         "fixture",
         include_str!("../../../../tests/fixtures/agsdl030_compiled_plan.json"),
     )
     .unwrap();
+    // A single agent Start with an empty normal continuation is enough for the reader tests.
+    plan.entry = Some(vec!["left".into()]);
+    plan.routes
+        .iter_mut()
+        .find(|route| route.source == ["left"])
+        .unwrap()
+        .targets
+        .clear();
     let identity = FlowIdentity030 {
         system_start_id: "system".into(),
         flow_invocation_id: "invocation".into(),
@@ -37,7 +45,7 @@ async fn fixture() -> (tempfile::TempDir, PathBuf, FlowEvent030) {
     };
     let event = FlowEvent030 {
         identity: identity.clone(),
-        event_id: "enter".into(),
+        event_id: "start:enter".into(),
         expected_revision: "0".into(),
         kind: FlowEventKind030::Enter {
             message_json: "{}".into(),
@@ -59,14 +67,16 @@ async fn fixture() -> (tempfile::TempDir, PathBuf, FlowEvent030) {
         .bind(json!({"identity":identity,"enter":transition.receipt}).to_string()).execute(&mut db).await.unwrap();
     sqlx::query("INSERT INTO engine_flow030_owners VALUES('system','invocation','snapshot','capture','owner','generation','live',?)")
         .bind("a".repeat(64)).execute(&mut db).await.unwrap();
-    sqlx::query("INSERT INTO engine_flow030_events VALUES('system','invocation','enter',?,?,NULL)")
-        .bind(json!(event).to_string())
-        .bind(json!(transition.receipt).to_string())
-        .execute(&mut db)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO engine_flow030_events VALUES('system','invocation','start:enter',?,?,NULL)",
+    )
+    .bind(json!(event).to_string())
+    .bind(json!(transition.receipt).to_string())
+    .execute(&mut db)
+    .await
+    .unwrap();
     for effect in transition.effects {
-        sqlx::query("INSERT INTO engine_flow030_outbox VALUES('system','invocation',?,'enter',?,'owner','pending',NULL)")
+        sqlx::query("INSERT INTO engine_flow030_outbox VALUES('system','invocation',?,'start:enter',?,'owner','pending',NULL)")
             .bind(&effect.id).bind(json!(effect).to_string()).execute(&mut db).await.unwrap();
     }
     db.close().await.unwrap();
@@ -86,6 +96,165 @@ async fn mutate(path: &Path, sql: &'static str) {
     db.close().await.unwrap();
 }
 
+fn agent_handoff(effect: &FlowEffect030) -> Value {
+    let FlowEffectKind030::Start {
+        work,
+        step,
+        agent: Some(agent),
+        ..
+    } = &effect.kind
+    else {
+        panic!("agent Start fixture")
+    };
+    json!({"kind":"nativeOwnedHandoff030","identity":effect.identity,"effectId":effect.id,"ownerEpoch":"owner","generation":"generation","requestId":format!("flow030:system:{}",effect.id),
+        "workAttempt":{"identity":effect.identity,"owner":{"systemStartId":"system","ownerEpoch":"owner"},"generation":"generation","work":{"systemStartId":"system","flowInvocationId":"invocation","activationId":work.activation_id,"step":step,"agentInstanceId":work.agent_instance_id},"startEffectId":effect.id,"agent":agent,"providerAttemptId":"provider-attempt"}})
+}
+
+async fn settled_agent(path: &Path) -> FlowEffect030 {
+    let mut db = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(path))
+        .await
+        .unwrap();
+    let raw: String = sqlx::query_scalar("SELECT effect_json FROM engine_flow030_outbox")
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+    let effect: FlowEffect030 = parse("effect", &raw).unwrap();
+    let receipt = agent_handoff(&effect).to_string();
+    sqlx::query("INSERT INTO engine_flow030_handoffs VALUES('system','invocation',?,'owner','generation',?)").bind(&effect.id).bind(&receipt).execute(&mut db).await.unwrap();
+    sqlx::query("UPDATE engine_flow030_outbox SET status='settled',settlement_json=?")
+        .bind(receipt)
+        .execute(&mut db)
+        .await
+        .unwrap();
+    db.close().await.unwrap();
+    effect
+}
+
+#[tokio::test]
+async fn agent_handoff_requires_attempt_even_without_work_authorizations() {
+    let (_directory, path, _) = fixture().await;
+    settled_agent(&path).await;
+    assert!(verify_path030(&path, "system", "invocation").await.ok);
+    mutate(&path, "DROP TRIGGER engine_flow030_handoff_immutable; UPDATE engine_flow030_outbox SET settlement_json=json_remove(settlement_json,'$.workAttempt'); UPDATE engine_flow030_handoffs SET receipt_json=json_remove(receipt_json,'$.workAttempt')").await;
+    let verdict = verify_path030(&path, "system", "invocation").await;
+    assert_eq!(verdict.divergence.unwrap().field, "handoff.workAttempt");
+}
+
+#[tokio::test]
+async fn retained_authorizations_and_attempts_require_settled_start_and_handoff() {
+    for status in ["pending", "uncertain", "settled"] {
+        for provider_attempt in [None, Some("provider-attempt")] {
+            let (_directory, path, _) = fixture().await;
+            let effect = settled_agent(&path).await;
+            let FlowEffectKind030::Start { work, .. } = &effect.kind else {
+                unreachable!()
+            };
+            let mut db = SqliteConnection::connect_with(
+                &SqliteConnectOptions::new()
+                    .filename(&path)
+                    .foreign_keys(false),
+            )
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO engine_flow030_work_authorizations VALUES('system','invocation','authorization',?,'{}',?,?)")
+                .bind(&work.activation_id).bind(provider_attempt).bind(provider_attempt.map(|_| "native-call"))
+                .execute(&mut db).await.unwrap();
+            sqlx::raw_sql(
+                "DROP TRIGGER engine_flow030_handoff_retained; DELETE FROM engine_flow030_handoffs",
+            )
+            .execute(&mut db)
+            .await
+            .unwrap();
+            if status != "settled" {
+                sqlx::query("UPDATE engine_flow030_outbox SET status=?,settlement_json=NULL")
+                    .bind(status)
+                    .execute(&mut db)
+                    .await
+                    .unwrap();
+            }
+            db.close().await.unwrap();
+            let verdict = verify_path030(&path, "system", "invocation").await;
+            assert_eq!(
+                verdict.divergence.unwrap().field,
+                "start.workEvidence",
+                "{status} {provider_attempt:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn work_result_alone_requires_a_settled_start_and_handoff() {
+    let (_directory, path, _) = fixture().await;
+    let effect = settled_agent(&path).await;
+    let FlowEffectKind030::Start { work, .. } = effect.kind else {
+        unreachable!()
+    };
+    let mut db = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
+        .await
+        .unwrap();
+    let plan: FlowPlan030 = parse(
+        "plan",
+        &sqlx::query_scalar::<_, String>("SELECT plan_json FROM engine_flow030_runs")
+            .fetch_one(&mut db)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let state: FlowState030 = parse(
+        "state",
+        &sqlx::query_scalar::<_, String>("SELECT state_json FROM engine_flow030_runs")
+            .fetch_one(&mut db)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let event = FlowEvent030 {
+        identity: state.identity.clone(),
+        event_id: "result".into(),
+        expected_revision: state.revision.clone(),
+        kind: FlowEventKind030::WorkResult {
+            work,
+            result: WorkResult030::Completed {
+                output_json: "{}".into(),
+                route_key: None,
+            },
+            physical: Some(PhysicalEvidence030 {
+                native_receipt_id: "physical-end".into(),
+                descendants_joined: true,
+            }),
+        },
+    };
+    let transition = reduce(&plan, &state, &event).unwrap();
+    sqlx::query("UPDATE engine_flow030_runs SET state_json=?")
+        .bind(json!(transition.state).to_string())
+        .execute(&mut db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO engine_flow030_events VALUES('system','invocation','result',?,?,NULL)",
+    )
+    .bind(json!(event).to_string())
+    .bind(json!(transition.receipt).to_string())
+    .execute(&mut db)
+    .await
+    .unwrap();
+    for effect in transition.effects {
+        sqlx::query("INSERT INTO engine_flow030_outbox VALUES('system','invocation',?,'result',?,'owner','pending',NULL)").bind(&effect.id).bind(json!(effect).to_string()).execute(&mut db).await.unwrap();
+    }
+    db.close().await.unwrap();
+    assert!(verify_path030(&path, "system", "invocation").await.ok);
+    mutate(&path,"DROP TRIGGER engine_flow030_handoff_retained; DELETE FROM engine_flow030_handoffs; UPDATE engine_flow030_outbox SET status='pending',settlement_json=NULL WHERE event_id='start:enter'").await;
+    assert_eq!(
+        verify_path030(&path, "system", "invocation")
+            .await
+            .divergence
+            .unwrap()
+            .field,
+        "start.workEvidence"
+    );
+}
+
 #[tokio::test]
 async fn minimal_pending_uncertain_and_handoff_settled_are_consistent() {
     let (_directory, path, _) = fixture().await;
@@ -103,7 +272,7 @@ async fn minimal_pending_uncertain_and_handoff_settled_are_consistent() {
             .unwrap(),
     )
     .unwrap();
-    let receipt = json!({"kind":"nativeOwnedHandoff030","identity":effect.identity,"effectId":effect.id,"ownerEpoch":"owner","generation":"generation","requestId":format!("flow030:system:{}",effect.id)}).to_string();
+    let receipt = agent_handoff(&effect).to_string();
     sqlx::query("INSERT INTO engine_flow030_handoffs VALUES('system','invocation',?,'owner','generation',?)").bind(&effect.id).bind(&receipt).execute(&mut db).await.unwrap();
     sqlx::query("UPDATE engine_flow030_outbox SET status='settled',settlement_json=?")
         .bind(receipt)
@@ -155,15 +324,72 @@ async fn reader_keeps_wal_events_and_never_writes_database() {
     let mut db = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
         .await
         .unwrap();
-    sqlx::raw_sql("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; UPDATE engine_flow030_runs SET state_json=json_set(state_json,'$.revision','99')").execute(&mut db).await.unwrap();
-    let wal = path.with_extension("sqlite-wal");
-    let before = (std::fs::read(&path).unwrap(), std::fs::read(&wal).unwrap());
-    assert!(!verify_path030(&path, "system", "invocation").await.ok);
-    assert_eq!(
-        before,
-        (std::fs::read(&path).unwrap(), std::fs::read(&wal).unwrap())
-    );
+    sqlx::raw_sql(
+        "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE wal_probe(value TEXT)",
+    )
+    .execute(&mut db)
+    .await
+    .unwrap();
+    for valid in [true, false] {
+        if !valid {
+            sqlx::query(
+                "UPDATE engine_flow030_runs SET state_json=json_set(state_json,'$.revision','99')",
+            )
+            .execute(&mut db)
+            .await
+            .unwrap();
+        }
+        for with_shm in [true, false] {
+            let copy = path.with_file_name(format!("wal-{valid}-{with_shm}.sqlite"));
+            copy_sqlite(&path, &copy);
+            if !with_shm {
+                std::fs::remove_file(companion(&copy, "-shm")).unwrap();
+            }
+            let fingerprints = |path: &Path| {
+                ["", "-wal", "-shm"].map(|suffix| {
+                    let file = companion(path, suffix);
+                    match std::fs::read(file) {
+                        Ok(bytes) => Some(bytes),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                        Err(error) => panic!("snapshot: {error}"),
+                    }
+                })
+            };
+            let before = fingerprints(&copy);
+            assert!(before[1].as_ref().is_some_and(|wal| !wal.is_empty()));
+            assert_eq!(
+                verify_path030(&copy, "system", "invocation").await.ok,
+                valid
+            );
+            assert_eq!(fingerprints(&copy), before, "valid={valid} shm={with_shm}");
+        }
+    }
     db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn unexpected_sqlite_storage_types_return_negative_json() {
+    for mutation in [
+        "DROP TRIGGER engine_flow030_capture_immutable; UPDATE engine_flow030_runs SET snapshot_id=cast(snapshot_id AS BLOB)",
+        "DROP TABLE engine_flow030_runs; CREATE TABLE engine_flow030_runs(system_id TEXT,invocation_id TEXT,snapshot_id INTEGER,epoch TEXT,source_json TEXT,plan_json TEXT,state_json TEXT); INSERT INTO engine_flow030_runs VALUES('system','invocation',1,'capture','{}','{}','{}')",
+        "UPDATE engine_flow030_events SET event_id=cast(event_id AS BLOB)",
+        "UPDATE engine_flow030_outbox SET owner_epoch=cast(owner_epoch AS BLOB)",
+    ] {
+        let (_directory,path,_) = fixture().await;
+        mutate(&path,mutation).await;
+        let verdict = verify_path030(&path,"system","invocation").await;
+        assert!(!verdict.ok,"accepted {mutation}");
+        assert_eq!(json!(verdict)["divergence"]["field"],"database");
+    }
+}
+
+#[tokio::test]
+async fn initial_enter_identity_cannot_be_renamed_coherently() {
+    let (_directory, path, _) = fixture().await;
+    // Rename every affected core occurrence, including receipt and generated IDs.
+    mutate(&path,"DROP TRIGGER engine_start030_immutable; UPDATE engine_flow030_runs SET state_json=replace(state_json,'start:enter','forged:enter'); UPDATE engine_flow030_events SET event_id='forged:enter',event_json=replace(event_json,'start:enter','forged:enter'),receipt_json=replace(receipt_json,'start:enter','forged:enter'); UPDATE engine_flow030_outbox SET event_id='forged:enter',effect_id=replace(effect_id,'start:enter','forged:enter'),effect_json=replace(effect_json,'start:enter','forged:enter'); UPDATE engine_start030_requests SET receipt_json=replace(receipt_json,'start:enter','forged:enter')").await;
+    let verdict = verify_path030(&path, "system", "invocation").await;
+    assert_eq!(verdict.divergence.unwrap().field, "start.enter.eventId");
 }
 
 #[tokio::test]

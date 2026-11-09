@@ -5,14 +5,17 @@ use super::flow030::*;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{sqlite::SqliteConnectOptions, Connection, Row, SqliteConnection};
-use std::path::Path;
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 /// Host evidence still requires its own verifier, even when replay succeeds.
 pub(crate) const OUTSIDE_REPLAY: &[&str] = &[
     "031-032: Start delivery registry and UI intents",
     "033/035: native owner fencing, generation lifecycle, handoff and no-admission authentication (only settlement correlation is checked)",
     "034: engine_flow030_preparations, engine_flow030_occurrence_provenance",
-    "036: engine_flow030_work_admissions, engine_flow030_work_authorizations, engine_flow030_work_state, engine_flow030_work_events, engine_flow030_work_checks (only provider-attempt settlement correlation is checked)",
+    "036: engine_flow030_work_admissions, engine_flow030_work_authorizations, engine_flow030_work_state, engine_flow030_work_events, engine_flow030_work_checks (only Start settlement and provider-attempt correlation are checked)",
     "037: engine_flow030_route_source_attestations, engine_flow030_route_content_contexts, engine_flow030_route_content_receipts",
     "038: engine_flow030_system_stop_requests",
     "039: engine_flow030_calls, engine_flow030_call_causes, engine_flow030_call_diagnostics",
@@ -36,6 +39,20 @@ pub(crate) struct ReplayVerdict030 {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub divergence: Option<Divergence030>,
     pub outside_replay: &'static [&'static str],
+}
+
+impl ReplayVerdict030 {
+    pub(crate) fn panic() -> Self {
+        Self {
+            ok: false,
+            divergence: Some(mismatch(
+                "verifier.panic",
+                "completed verification",
+                "unexpected verifier panic",
+            )),
+            outside_replay: OUTSIDE_REPLAY,
+        }
+    }
 }
 
 type Result<T> = std::result::Result<T, Divergence030>;
@@ -206,17 +223,31 @@ struct StartReceiptRead {
     enter: Option<FlowReceipt030>,
 }
 
-/// Open an existing SQLite file with SQLITE_OPEN_READONLY (mode=ro). Immutable
-/// is safe only without a nonempty WAL: SQLite otherwise silently ignores it.
-/// Copy a live database and its -wal/-shm together before using this verifier.
+fn companion(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+fn snapshot_error(error: std::io::Error) -> Divergence030 {
+    mismatch(
+        "database.snapshot",
+        "readable private snapshot",
+        error.to_string(),
+    )
+}
+
+/// Open with SQLITE_OPEN_READONLY (mode=ro). Without a WAL, immutable mode
+/// prevents companion writes. With a nonempty WAL, SQLite may write the SHM
+/// even in read-only mode, so only a private temporary copy is opened by SQLite.
+/// The caller must quiesce a live writer before copying its database files.
 pub(crate) async fn verify_path030(
     path: &Path,
     system_id: &str,
     invocation_id: &str,
 ) -> ReplayVerdict030 {
     let result = async {
-        let mut wal = path.as_os_str().to_os_string();
-        wal.push("-wal");
+        let wal = companion(path, "-wal");
         let immutable = match std::fs::metadata(&wal) {
             Ok(meta) => meta.len() == 0,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
@@ -228,8 +259,28 @@ pub(crate) async fn verify_path030(
                 ))
             }
         };
+        let snapshot = if immutable {
+            None
+        } else {
+            let directory = tempfile::Builder::new()
+                .prefix("macro-agsdl-replay-")
+                .tempdir()
+                .map_err(snapshot_error)?;
+            let copy = directory.path().join("journal.sqlite");
+            std::fs::copy(path, &copy).map_err(snapshot_error)?;
+            std::fs::copy(&wal, companion(&copy, "-wal")).map_err(snapshot_error)?;
+            match std::fs::copy(companion(path, "-shm"), companion(&copy, "-shm")) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(snapshot_error(error)),
+            }
+            Some(directory)
+        };
+        let read_path = snapshot
+            .as_ref()
+            .map(|directory| directory.path().join("journal.sqlite"));
         let options = SqliteConnectOptions::new()
-            .filename(path)
+            .filename(read_path.as_deref().unwrap_or(path))
             .read_only(true)
             .immutable(immutable)
             .pragma("query_only", "ON");
@@ -257,29 +308,40 @@ async fn verify(db: &mut SqliteConnection, system: &str, invocation: &str) -> Re
     let identity = FlowIdentity030 {
         system_start_id: system.into(),
         flow_invocation_id: invocation.into(),
-        snapshot_id: run.get("snapshot_id"),
-        epoch: run.get("epoch"),
+        snapshot_id: run.try_get("snapshot_id").map_err(storage)?,
+        epoch: run.try_get("epoch").map_err(storage)?,
     };
-    let plan: FlowPlan030 = parse("run.plan", run.get("plan_json"))?;
-    let source: Value = parse("run.source", run.get("source_json"))?;
+    let plan: FlowPlan030 = parse("run.plan", run.try_get("plan_json").map_err(storage)?)?;
+    let source: Value = parse("run.source", run.try_get("source_json").map_err(storage)?)?;
     equal("run.source", &plan.source, &source)?;
-    let stored: FlowState030 = parse("run.state", run.get("state_json"))?;
+    let stored: FlowState030 = parse("run.state", run.try_get("state_json").map_err(storage)?)?;
     equal("run.identity", &identity, &stored.identity)?;
     let start = sqlx::query("SELECT snapshot_id,capture_epoch,capture_json,request_json,receipt_json FROM engine_start030_requests WHERE system_id=? AND invocation_id=?")
         .bind(system).bind(invocation).fetch_optional(&mut *db).await.map_err(storage)?
         .ok_or_else(|| mismatch("start.capture", "stored capture", Value::Null))?;
-    let capture: CaptureRead = parse("start.capture", start.get("capture_json"))?;
-    let request: StartRead = parse("start.request", start.get("request_json"))?;
-    let start_receipt: StartReceiptRead = parse("start.receipt", start.get("receipt_json"))?;
+    let capture: CaptureRead = parse(
+        "start.capture",
+        start.try_get("capture_json").map_err(storage)?,
+    )?;
+    let request: StartRead = parse(
+        "start.request",
+        start.try_get("request_json").map_err(storage)?,
+    )?;
+    let start_receipt: StartReceiptRead = parse(
+        "start.receipt",
+        start.try_get("receipt_json").map_err(storage)?,
+    )?;
     equal(
         "start.snapshotId",
         &identity.snapshot_id,
-        &start.get::<String, _>("snapshot_id"),
+        &start.try_get::<String, _>("snapshot_id").map_err(storage)?,
     )?;
     equal(
         "start.epoch",
         &identity.epoch,
-        &start.get::<String, _>("capture_epoch"),
+        &start
+            .try_get::<String, _>("capture_epoch")
+            .map_err(storage)?,
     )?;
     equal("start.identity", &identity, &capture.identity)?;
     equal("start.receipt.identity", &identity, &start_receipt.identity)?;
@@ -307,22 +369,31 @@ async fn verify(db: &mut SqliteConnection, system: &str, invocation: &str) -> Re
         .bind(system).bind(invocation).fetch_all(&mut *db).await.map_err(storage)?;
     let mut state = FlowState030::new(identity);
     let mut produced = Vec::new();
+    let mut work_results = BTreeSet::new();
     for (index, row) in events.iter().enumerate() {
-        let event_id: String = row.get("event_id");
+        let event_id: String = row.try_get("event_id").map_err(storage)?;
         let result = (|| {
-            let diagnostic: Option<String> = row.get("diagnostic_json");
+            let diagnostic: Option<String> = row.try_get("diagnostic_json").map_err(storage)?;
             equal("event.diagnostic", &None::<String>, &diagnostic)?;
-            let receipt: Option<String> = row.get("receipt_json");
+            let receipt: Option<String> = row.try_get("receipt_json").map_err(storage)?;
             let receipt: FlowReceipt030 = parse(
                 "event.receipt",
                 receipt
                     .as_deref()
                     .ok_or_else(|| mismatch("event.receipt", "accepted event", Value::Null))?,
             )?;
-            let event = parse::<ReadEvent>("event", row.get("event_json"))?.0;
+            let event = parse::<ReadEvent>("event", row.try_get("event_json").map_err(storage)?)?.0;
             equal("event.id", &event_id, &event.event_id)?;
+            if let FlowEventKind030::WorkResult { work, .. } = &event.kind {
+                work_results.insert(work.start_effect_id.clone());
+            }
             if index == 0 {
                 if let Some(entry) = &request.entry {
+                    equal(
+                        "start.enter.eventId",
+                        &"start:enter",
+                        &event.event_id.as_str(),
+                    )?;
                     equal(
                         "start.enter",
                         &json!(FlowEventKind030::Enter {
@@ -366,17 +437,20 @@ async fn verify(db: &mut SqliteConnection, system: &str, invocation: &str) -> Re
                 equal(
                     "outbox.eventId",
                     &event_id,
-                    &row.get::<String, _>("event_id"),
+                    &row.try_get::<String, _>("event_id").map_err(storage)?,
                 )?;
                 equal(
                     "outbox.effectId",
                     &effect.id,
-                    &row.get::<String, _>("effect_id"),
+                    &row.try_get::<String, _>("effect_id").map_err(storage)?,
                 )?;
                 equal(
                     "outbox.effect",
                     effect,
-                    &parse::<FlowEffect030>("outbox.effect", row.get("effect_json"))?,
+                    &parse::<FlowEffect030>(
+                        "outbox.effect",
+                        row.try_get("effect_json").map_err(storage)?,
+                    )?,
                 )?;
                 produced.push(effect.clone());
             }
@@ -394,10 +468,11 @@ async fn verify(db: &mut SqliteConnection, system: &str, invocation: &str) -> Re
     equal("outbox.count", &produced.len(), &outbox.len())?;
     equal("run.state", &state, &stored)?;
     for (effect, row) in produced.iter().zip(&outbox) {
-        verify_settlement(db, &state, effect, row)
+        let event_id: String = row.try_get("event_id").map_err(storage)?;
+        verify_settlement(db, &state, &work_results, effect, row)
             .await
             .map_err(|mut error| {
-                error.event_id = Some(row.get("event_id"));
+                error.event_id = Some(event_id);
                 error
             })?;
     }
@@ -407,12 +482,13 @@ async fn verify(db: &mut SqliteConnection, system: &str, invocation: &str) -> Re
 async fn verify_settlement(
     db: &mut SqliteConnection,
     state: &FlowState030,
+    work_results: &BTreeSet<String>,
     effect: &FlowEffect030,
     row: &sqlx::sqlite::SqliteRow,
 ) -> Result<()> {
     let id = &effect.identity;
-    let status: &str = row.get("status");
-    let settlement: Option<String> = row.get("settlement_json");
+    let status: &str = row.try_get("status").map_err(storage)?;
+    let settlement: Option<String> = row.try_get("settlement_json").map_err(storage)?;
     let owner: Option<String> = sqlx::query_scalar(
         "SELECT owner_epoch FROM engine_flow030_owners WHERE system_id=? AND invocation_id=?",
     )
@@ -424,12 +500,28 @@ async fn verify_settlement(
     equal(
         "outbox.ownerEpoch",
         &owner,
-        &Some(row.get::<String, _>("owner_epoch")),
+        &Some(row.try_get::<String, _>("owner_epoch").map_err(storage)?),
     )?;
     let handoff = sqlx::query("SELECT owner_epoch,generation,receipt_json FROM engine_flow030_handoffs WHERE system_id=? AND invocation_id=? AND effect_id=?")
         .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&effect.id).fetch_optional(&mut *db).await.map_err(storage)?;
     let no_admission: Option<String> = sqlx::query_scalar("SELECT proof_json FROM engine_flow030_no_admissions WHERE system_id=? AND invocation_id=? AND start_effect_id=?")
         .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&effect.id).fetch_optional(&mut *db).await.map_err(storage)?;
+    if let FlowEffectKind030::Start { work, .. } = &effect.kind {
+        // These rows are committed with/after handoff. Their existence cannot
+        // be reconciled with a pending/uncertain Start or erased handoff.
+        let evidence: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_flow030_work_admissions WHERE system_id=?1 AND invocation_id=?2 AND (activation_id=?3 OR start_effect_id=?4)) OR EXISTS(SELECT 1 FROM engine_flow030_work_authorizations WHERE system_id=?1 AND invocation_id=?2 AND activation_id=?3) OR EXISTS(SELECT 1 FROM engine_flow030_work_state WHERE system_id=?1 AND invocation_id=?2 AND activation_id=?3) OR EXISTS(SELECT 1 FROM engine_flow030_work_events WHERE system_id=?1 AND invocation_id=?2 AND activation_id=?3) OR EXISTS(SELECT 1 FROM engine_flow030_work_checks WHERE system_id=?1 AND invocation_id=?2 AND activation_id=?3)")
+            .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&work.activation_id).bind(&effect.id)
+            .fetch_one(&mut *db).await.map_err(storage)?;
+        if (evidence != 0 || work_results.contains(&effect.id))
+            && (status != "settled" || handoff.is_none())
+        {
+            return Err(mismatch(
+                "start.workEvidence",
+                "settled Start with recorded handoff",
+                json!({"status":status,"handoff":handoff.is_some()}),
+            ));
+        }
+    }
     let prepared = match &effect.kind {
         FlowEffectKind030::PrepareRoute { reference, .. } => state.preparation_receipts.iter().find_map(|(receipt, prepare)| (prepare == &reference.prepare_id).then(|| json!({"kind":"nativeRoutePrepared030","prepareId":prepare,"nativeReceiptId":receipt}))),
         _ => None,
@@ -463,7 +555,10 @@ async fn verify_settlement(
         equal("outbox.noAdmission", &false, &no_admission.is_some())?;
         equal(
             "outbox.settlement",
-            &parse::<Value>("handoff.receipt", handoff.get("receipt_json"))?,
+            &parse::<Value>(
+                "handoff.receipt",
+                handoff.try_get("receipt_json").map_err(storage)?,
+            )?,
             &receipt,
         )?;
         equal(
@@ -475,17 +570,21 @@ async fn verify_settlement(
         equal("handoff.effectId", &json!(effect.id), &receipt["effectId"])?;
         equal(
             "handoff.ownerEpoch",
-            &json!(row.get::<String, _>("owner_epoch")),
+            &json!(row.try_get::<String, _>("owner_epoch").map_err(storage)?),
             &receipt["ownerEpoch"],
         )?;
         equal(
             "handoff.row.ownerEpoch",
-            &json!(handoff.get::<String, _>("owner_epoch")),
+            &json!(handoff
+                .try_get::<String, _>("owner_epoch")
+                .map_err(storage)?),
             &receipt["ownerEpoch"],
         )?;
         equal(
             "handoff.generation",
-            &json!(handoff.get::<String, _>("generation")),
+            &json!(handoff
+                .try_get::<String, _>("generation")
+                .map_err(storage)?),
             &receipt["generation"],
         )?;
         equal(
@@ -493,7 +592,25 @@ async fn verify_settlement(
             &json!(format!("flow030:{}:{}", id.system_start_id, effect.id)),
             &receipt["requestId"],
         )?;
+        let agent_start = matches!(
+            &effect.kind,
+            FlowEffectKind030::Start { agent: Some(_), .. }
+        );
+        if agent_start && !receipt.get("workAttempt").is_some_and(Value::is_object) {
+            return Err(mismatch(
+                "handoff.workAttempt",
+                "required agent Start attempt",
+                &receipt["workAttempt"],
+            ));
+        }
         if let Some(attempt) = receipt.get("workAttempt") {
+            if !agent_start {
+                return Err(mismatch(
+                    "handoff.workAttempt",
+                    "agent Start effect",
+                    &effect.kind,
+                ));
+            }
             let FlowEffectKind030::Start {
                 work, step, agent, ..
             } = &effect.kind
@@ -534,6 +651,16 @@ async fn verify_settlement(
                 &json!({"systemStartId":id.system_start_id,"flowInvocationId":id.flow_invocation_id,"activationId":work.activation_id,"agentInstanceId":work.agent_instance_id,"step":step}),
                 &attempt["work"],
             )?;
+            if !attempt["providerAttemptId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+            {
+                return Err(mismatch(
+                    "handoff.workAttempt.providerAttemptId",
+                    "nonempty provider attempt identity",
+                    &attempt["providerAttemptId"],
+                ));
+            }
             // This is only a settlement cross-reference, not verification of 036.
             let attempts: Vec<String> = sqlx::query_scalar("SELECT DISTINCT provider_attempt_id FROM engine_flow030_work_authorizations WHERE system_id=? AND invocation_id=? AND activation_id=? AND provider_attempt_id IS NOT NULL")
                 .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&work.activation_id).fetch_all(&mut *db).await.map_err(storage)?;
@@ -624,7 +751,7 @@ async fn verify_settlement(
         equal("noAdmission.work", &json!(work), &receipt["work"])?;
         equal(
             "noAdmission.ownerEpoch",
-            &json!(row.get::<String, _>("owner_epoch")),
+            &json!(row.try_get::<String, _>("owner_epoch").map_err(storage)?),
             &receipt["ownerEpoch"],
         )?;
     } else {

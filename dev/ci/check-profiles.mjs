@@ -32,6 +32,10 @@ const rustTestCheck = step('Run locked Rust tests for all targets', 'cargo', [
   '--',
   '--test-threads=1',
 ]);
+const replayCheck = step('Check locked AgSDL replay target', 'cargo', [
+  'check', '--manifest-path', 'src-tauri/tests/replay030/Cargo.toml',
+  '--locked', '--all-targets', '--profile', 'replay', '--jobs', '2',
+]);
 const rustDocTestCheck = step('Run locked Rust doc tests', 'cargo', [
   'test',
   '--manifest-path',
@@ -47,7 +51,7 @@ const generatedContractChecks = ['config', 'ipc'].map((domain) => step(
 ));
 const processRecoveryCheck = step('Verify native process interruption recovery', 'bun', ['run', 'test:native:process-recovery']);
 const headlessHttpCheck = step('Verify headless HTTP transport', 'bun', ['run', 'test:e2e:headless']);
-const nativeChecks = [sidecarCheck, ...generatedContractChecks, rustTestCheck, rustDocTestCheck, headlessHttpCheck];
+const nativeChecks = [sidecarCheck, ...generatedContractChecks, replayCheck, rustTestCheck, rustDocTestCheck, headlessHttpCheck];
 
 const windowsNativeCheck = step('Check all Windows native targets', 'cargo', [
   'check',
@@ -81,13 +85,13 @@ export function stepsForProfile(profile, options = {}) {
     case 'native':
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks, ...processRecovery];
     case 'native-core':
-      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, rustTestCheck, rustDocTestCheck, headlessHttpCheck, ...processRecovery];
+      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, replayCheck, rustTestCheck, rustDocTestCheck, headlessHttpCheck, ...processRecovery];
     case 'sidecar':
       return [...install, copilotTypecheck, sidecarCheck];
     case 'windows':
-      return [...install, workflowStep, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, windowsNativeCheck, headlessHttpCheck];
+      return [...install, workflowStep, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, replayCheck, windowsNativeCheck, headlessHttpCheck];
     case 'windows-core':
-      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, windowsNativeCheck, headlessHttpCheck];
+      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, replayCheck, windowsNativeCheck, headlessHttpCheck];
     case 'full': {
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks, ...processRecovery];
     }

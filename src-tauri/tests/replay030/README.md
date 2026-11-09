@@ -3,6 +3,9 @@
 This standalone target builds the production reader and reducer without desktop
 packaging, provider SDKs or a Tauri runtime. It uses the same source as the Cargo
 example `agsdl_flow030_replay` in the desktop manifest.
+Its dependency versions and checksums match the desktop lock. The native CI
+profiles check this target with `cargo check --locked --all-targets`; the CI
+profile tests also reject dependency versions absent from the desktop lock.
 
 With `CARGO_TARGET_DIR` set to the desired build cache:
 
@@ -16,8 +19,11 @@ divergence or unreadable database, and 2 for invalid command-line arguments.
 The `outsideReplay` field lists the host evidence that still needs validation.
 No schema migrations or host execution code run. The reader opens SQLite with
 `mode=ro`, enables `query_only`, and uses a read transaction. It enables immutable
-mode only when there is no nonempty WAL. For a live database, first make a
-consistent copy together with its `-wal` and `-shm` companions.
+mode only when there is no nonempty WAL. With a nonempty WAL, it first copies
+the database and its available `-wal` and `-shm` companions into a private
+temporary directory, then opens only that copy. No SQLite operation opens the
+original in that case, so even a missing SHM is never created beside it. Quiesce
+a live writer first so the copied database and WAL form a consistent snapshot.
 
 Each accepted event is reduced from the initial state in journal `rowid` order.
 Its receipt, retained event record, and ordered outbox effects are checked at
@@ -25,7 +31,11 @@ that point. The schema stores only the latest state, so the full typed state is
 compared after the last event. Settlement checks correlate status and receipt
 with consumed preparations, handoffs, retained joined-stop events or no-admission
 proofs. They cannot prove physical execution or reconstruct a claim history that
-was never journaled.
+was never journaled. An agent Start handoff requires its native work attempt.
+Recorded work evidence or a WorkResult requires a settled Start with a retained
+handoff. The initial Enter event must keep its native `start:enter` identity.
+Unexpected SQLite storage types and residual verifier panics yield a negative
+JSON verdict and exit status 1.
 
 Run the synthetic tests with:
 
