@@ -24,6 +24,8 @@ the database and its available `-wal` and `-shm` companions into a private
 temporary directory, then opens only that copy. No SQLite operation opens the
 original in that case, so even a missing SHM is never created beside it. Quiesce
 a live writer first so the copied database and WAL form a consistent snapshot.
+On Unix, the directory is created with mode `0700` and each copied file with
+mode `0600`. These modes apply at creation, before journal bytes are written.
 
 Each accepted event is reduced from the initial state in journal `rowid` order.
 Its receipt, retained event record, and ordered outbox effects are checked at
@@ -33,9 +35,16 @@ with consumed preparations, handoffs, retained joined-stop events or no-admissio
 proofs. They cannot prove physical execution or reconstruct a claim history that
 was never journaled. An agent Start handoff requires its native work attempt.
 Recorded work evidence or a WorkResult requires a settled Start with a retained
-handoff. The initial Enter event must keep its native `start:enter` identity.
+handoff. PhysicalEnded requires a settled Start with either its handoff or a
+correlated native no-admission proof, plus a settled, correlated StopWork when
+the event names one. The initial Enter event keeps its native `start:enter` identity.
 Unexpected SQLite storage types and residual verifier panics yield a negative
 JSON verdict and exit status 1.
+
+Durable `UNSPECIFIED_SHARED_CANCELLATION` diagnostics are recomputed with the
+reducer. They must have the exact diagnostic payload, no receipt, no state
+advance and no produced effects. As in `apply_tx`, later events are blocked
+except Stop and physical proofs after Stop. A conforming diagnostic is accepted.
 
 Run the synthetic tests with:
 
@@ -52,6 +61,9 @@ No corpus files are tracked in this repository.
 ```sh
 cargo test --locked --manifest-path src-tauri/tests/replay030/Cargo.toml --profile replay -j 2 -- real_r6_and_audit_mutations_on_copies --ignored
 ```
+
+The ignored `real_r6_physical_only_pending_and_uncertain_are_rejected` test uses
+`AGSDL_REPLAY_R6_DIR` to reproduce the four physical-only audit mutations.
 
 The corpus test requires every baseline to pass and every semantic mutation to
 the run, journal or outbox to fail. Host-only mutations may pass replay; the

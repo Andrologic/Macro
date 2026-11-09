@@ -237,6 +237,41 @@ fn snapshot_error(error: std::io::Error) -> Divergence030 {
     )
 }
 
+fn private_snapshot(path: &Path) -> std::io::Result<tempfile::TempDir> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("macro-agsdl-replay-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Passed to mkdir itself, before any journal bytes are copied.
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    let directory = builder.tempdir()?;
+    let copy = directory.path().join("journal.sqlite");
+    for suffix in ["", "-wal", "-shm"] {
+        let source = match std::fs::File::open(companion(path, suffix)) {
+            Ok(file) => Some(file),
+            Err(error) if suffix == "-shm" && error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut destination = options.open(companion(&copy, suffix))?;
+        if let Some(mut source) = source {
+            // fs::copy would preserve permissive source modes. Stream into an
+            // exclusively created 0600 file instead. Precreate even a missing
+            // SHM so SQLite never chooses a more permissive creation mode.
+            std::io::copy(&mut source, &mut destination)?;
+        }
+    }
+    Ok(directory)
+}
+
 /// Open with SQLITE_OPEN_READONLY (mode=ro). Without a WAL, immutable mode
 /// prevents companion writes. With a nonempty WAL, SQLite may write the SHM
 /// even in read-only mode, so only a private temporary copy is opened by SQLite.
@@ -262,19 +297,7 @@ pub(crate) async fn verify_path030(
         let snapshot = if immutable {
             None
         } else {
-            let directory = tempfile::Builder::new()
-                .prefix("macro-agsdl-replay-")
-                .tempdir()
-                .map_err(snapshot_error)?;
-            let copy = directory.path().join("journal.sqlite");
-            std::fs::copy(path, &copy).map_err(snapshot_error)?;
-            std::fs::copy(&wal, companion(&copy, "-wal")).map_err(snapshot_error)?;
-            match std::fs::copy(companion(path, "-shm"), companion(&copy, "-shm")) {
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(snapshot_error(error)),
-            }
-            Some(directory)
+            Some(private_snapshot(path).map_err(snapshot_error)?)
         };
         let read_path = snapshot
             .as_ref()
@@ -370,22 +393,25 @@ async fn verify(db: &mut SqliteConnection, system: &str, invocation: &str) -> Re
     let mut state = FlowState030::new(identity);
     let mut produced = Vec::new();
     let mut work_results = BTreeSet::new();
+    let mut physical_ends = Vec::new();
+    let mut blocked = false;
     for (index, row) in events.iter().enumerate() {
         let event_id: String = row.try_get("event_id").map_err(storage)?;
         let result = (|| {
             let diagnostic: Option<String> = row.try_get("diagnostic_json").map_err(storage)?;
-            equal("event.diagnostic", &None::<String>, &diagnostic)?;
             let receipt: Option<String> = row.try_get("receipt_json").map_err(storage)?;
-            let receipt: FlowReceipt030 = parse(
-                "event.receipt",
-                receipt
-                    .as_deref()
-                    .ok_or_else(|| mismatch("event.receipt", "accepted event", Value::Null))?,
-            )?;
             let event = parse::<ReadEvent>("event", row.try_get("event_json").map_err(storage)?)?.0;
             equal("event.id", &event_id, &event.event_id)?;
-            if let FlowEventKind030::WorkResult { work, .. } = &event.kind {
-                work_results.insert(work.start_effect_id.clone());
+            if blocked
+                && !matches!(&event.kind, FlowEventKind030::Stop)
+                && !(state.stopping
+                    && matches!(&event.kind, FlowEventKind030::PhysicalEnded { .. }))
+            {
+                return Err(mismatch(
+                    "event.blocked",
+                    "Stop or physical proof after Stop",
+                    json!(event.kind),
+                ));
             }
             if index == 0 {
                 if let Some(entry) = &request.entry {
@@ -401,20 +427,77 @@ async fn verify(db: &mut SqliteConnection, system: &str, invocation: &str) -> Re
                         }),
                         &json!(event.kind),
                     )?;
-                    equal(
-                        "start.receipt.enter",
-                        &Some(receipt.clone()),
-                        &start_receipt.enter,
-                    )?;
                 }
             }
             // Corrupt plans can violate internal reducer assumptions. A forensic
             // executable must return a negative verdict even for such captures.
-            let transition = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let reduced = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 reduce(&plan, &state, &event)
             }))
-            .map_err(|_| mismatch("event.reduce", "accepted transition", "reducer panic"))?
-            .map_err(|error| mismatch("event.reduce", "accepted transition", error.to_string()))?;
+            .map_err(|_| mismatch("event.reduce", "accepted transition", "reducer panic"))?;
+            let transition = match reduced {
+                Ok(transition) => transition,
+                Err(FlowInputError030::UnspecifiedSharedCancellation {
+                    closing_join,
+                    affected_joins,
+                }) => {
+                    equal("event.receipt", &None::<String>, &receipt)?;
+                    let expected = json!({"code":"UNSPECIFIED_SHARED_CANCELLATION","closingJoin":closing_join,"affectedJoins":affected_joins,"retryable":false});
+                    let raw = diagnostic
+                        .as_deref()
+                        .ok_or_else(|| mismatch("event.diagnostic", &expected, Value::Null))?;
+                    equal(
+                        "event.diagnostic",
+                        &expected,
+                        &parse::<Value>("event.diagnostic", raw)?,
+                    )?;
+                    equal(
+                        "diagnostic.retainedEvent",
+                        &false,
+                        &stored.events.contains_key(&event_id),
+                    )?;
+                    for effect in &outbox {
+                        let producer: String = effect.try_get("event_id").map_err(storage)?;
+                        if producer == event_id {
+                            return Err(mismatch(
+                                "diagnostic.outbox",
+                                "no effect from a rejected event",
+                                effect.try_get::<String, _>("effect_id").map_err(storage)?,
+                            ));
+                        }
+                    }
+                    blocked = true;
+                    return Ok(());
+                }
+                Err(error) => {
+                    return Err(mismatch(
+                        "event.reduce",
+                        "accepted transition or exact durable diagnostic",
+                        error.to_string(),
+                    ))
+                }
+            };
+            equal("event.diagnostic", &None::<String>, &diagnostic)?;
+            let receipt: FlowReceipt030 = parse(
+                "event.receipt",
+                receipt
+                    .as_deref()
+                    .ok_or_else(|| mismatch("event.receipt", "accepted event", Value::Null))?,
+            )?;
+            if index == 0 && request.entry.is_some() {
+                equal(
+                    "start.receipt.enter",
+                    &Some(receipt.clone()),
+                    &start_receipt.enter,
+                )?;
+            }
+            match &event.kind {
+                FlowEventKind030::WorkResult { work, .. } => {
+                    work_results.insert(work.start_effect_id.clone());
+                }
+                FlowEventKind030::PhysicalEnded { .. } => physical_ends.push(event.clone()),
+                _ => {}
+            }
             equal("event.receipt", &transition.receipt, &receipt)?;
             let retained = stored
                 .events
@@ -475,6 +558,116 @@ async fn verify(db: &mut SqliteConnection, system: &str, invocation: &str) -> Re
                 error.event_id = Some(event_id);
                 error
             })?;
+    }
+    for event in &physical_ends {
+        verify_physical_end(db, event).await.map_err(|mut error| {
+            error.event_id = Some(event.event_id.clone());
+            error
+        })?;
+    }
+    Ok(())
+}
+
+async fn verify_physical_end(db: &mut SqliteConnection, event: &FlowEvent030) -> Result<()> {
+    let FlowEventKind030::PhysicalEnded {
+        work,
+        stop_effect_id,
+        evidence,
+    } = &event.kind
+    else {
+        unreachable!("physical end list")
+    };
+    let id = &event.identity;
+    let start = sqlx::query("SELECT status,settlement_json FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=? AND effect_id=?")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&work.start_effect_id).fetch_one(&mut *db).await.map_err(storage)?;
+    let status: String = start.try_get("status").map_err(storage)?;
+    equal("physicalEnded.start.status", &"settled", &status.as_str())?;
+    let handoff: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_flow030_handoffs WHERE system_id=? AND invocation_id=? AND effect_id=?)")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&work.start_effect_id).fetch_one(&mut *db).await.map_err(storage)?;
+    if handoff == 0 {
+        let row = sqlx::query("SELECT owner_epoch,generation,proof_json FROM engine_flow030_no_admissions WHERE system_id=? AND invocation_id=? AND start_effect_id=?")
+            .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&work.start_effect_id).fetch_optional(&mut *db).await.map_err(storage)?
+            .ok_or_else(|| mismatch("physicalEnded.start.proof", "Start handoff or native no-admission proof", Value::Null))?;
+        let proof: Value = parse(
+            "physicalEnded.noAdmission",
+            row.try_get("proof_json").map_err(storage)?,
+        )?;
+        equal(
+            "physicalEnded.noAdmission.identity",
+            &json!(id),
+            &proof["identity"],
+        )?;
+        equal(
+            "physicalEnded.noAdmission.work",
+            &json!(work),
+            &proof["work"],
+        )?;
+        equal(
+            "physicalEnded.noAdmission.nativeReceiptId",
+            &json!(evidence.native_receipt_id),
+            &proof["nativeReceiptId"],
+        )?;
+        equal(
+            "physicalEnded.noAdmission.ownerEpoch",
+            &json!(row.try_get::<String, _>("owner_epoch").map_err(storage)?),
+            &proof["ownerEpoch"],
+        )?;
+        equal(
+            "physicalEnded.noAdmission.generation",
+            &json!(row.try_get::<String, _>("generation").map_err(storage)?),
+            &proof["generation"],
+        )?;
+        if !matches!(
+            proof["reason"].as_str(),
+            Some("unclaimed" | "unreleasedNativeClaim")
+        ) {
+            return Err(mismatch(
+                "physicalEnded.noAdmission.reason",
+                "native non-admission reason",
+                &proof["reason"],
+            ));
+        }
+    }
+    if let Some(stop) = stop_effect_id {
+        let row = sqlx::query("SELECT status,effect_json,settlement_json FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=? AND effect_id=?")
+            .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(stop).fetch_one(&mut *db).await.map_err(storage)?;
+        let status: String = row.try_get("status").map_err(storage)?;
+        equal("physicalEnded.stop.status", &"settled", &status.as_str())?;
+        let effect: FlowEffect030 = parse(
+            "physicalEnded.stop.effect",
+            row.try_get("effect_json").map_err(storage)?,
+        )?;
+        equal(
+            "physicalEnded.stop.work",
+            &json!(FlowEffectKind030::StopWork {
+                work: work.clone(),
+                include_descendants: true
+            }),
+            &json!(effect.kind),
+        )?;
+        let raw: Option<String> = row.try_get("settlement_json").map_err(storage)?;
+        let receipt: Value = parse(
+            "physicalEnded.stop.settlement",
+            raw.as_deref().ok_or_else(|| {
+                mismatch(
+                    "physicalEnded.stop.settlement",
+                    "recorded stop settlement",
+                    Value::Null,
+                )
+            })?,
+        )?;
+        if matches!(
+            receipt["kind"].as_str(),
+            Some("nativeJoinedGroupStop030" | "nativeJoinedDiagnosticStop030")
+        ) {
+            equal(
+                "physicalEnded.stop.eventId",
+                &json!(event.event_id),
+                &receipt["eventId"],
+            )?;
+        }
+        // Other stop settlements are already correlated to this exact effect
+        // and handoff by verify_settlement, before physical proofs are checked.
     }
     Ok(())
 }
