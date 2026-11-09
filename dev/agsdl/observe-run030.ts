@@ -297,8 +297,8 @@ export function observeRun030(databasePath: string, systemId: string, invocation
     for (const [id] of startsByActivation) {
       if (steps.get(address(byId.get(id)!.step))?.type === 'approval' && !approvals.has(id)) throw new Error('Approval request is absent');
     }
-    // Compose visits are admissions of a body, not physical Start effects. Keep
-    // them separate: the v0.3.0 fixtures disagree about wrapper start counts.
+    // A compose visit starts one work (its body), without a physical Start
+    // effect or handoff for the wrapper. Use the native admitted visit count.
     const composeVisits: Obj = {};
     for (const [target, step] of steps) if (step.type === 'compose') {
       const n = record(state.visits)[stringify(step.address)];
@@ -321,7 +321,7 @@ export function observeRun030(databasePath: string, systemId: string, invocation
       return { join: address(group.join), outcome: string(group.decision), branches: record(output.branches) };
     });
     db.exec('COMMIT');
-    const counts: Obj = Object.fromEntries(Object.entries(starts).map(([key, value]) => [key, new NumberToken(String(value))]));
+    const counts: Obj = { ...Object.fromEntries(Object.entries(starts).map(([key, value]) => [key, new NumberToken(String(value))])), ...composeVisits };
     return stringify({ run: state.verdict, starts: counts, messages, joins, failures, cancelled, answers, ...(Object.keys(composeVisits).length ? { composeVisits } : {}) });
   } finally { db.close(); }
 }
