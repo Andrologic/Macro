@@ -807,6 +807,8 @@
         "review": "Review the affected part of the design."
       }
     },
-    "exactHint": "Advanced values stay available in the exact JSON tab."
+    "exactHint": "Advanced values stay available in the exact JSON tab.",
+    "ownerChangeHint": "The responsible agent has changed. Its definition fields are locked. Save, then reopen this panel to edit the new agent.",
+    "definitionChangeHint": "The agent definition has pending changes. Save, then reopen this panel before changing the responsible agent."
   }
 }

@@ -807,6 +807,8 @@
         "review": "Revisar la parte afectada del diseño."
       }
     },
-    "exactHint": "Los demás valores siguen disponibles en la pestaña JSON exacto."
+    "exactHint": "Los demás valores siguen disponibles en la pestaña JSON exacto.",
+    "ownerChangeHint": "El agente responsable ha cambiado. Sus propiedades están bloqueadas. Guarde y vuelva a abrir esta ficha para editar el nuevo agente.",
+    "definitionChangeHint": "La definición del agente tiene cambios pendientes. Guarde y vuelva a abrir esta ficha antes de cambiar el agente responsable."
   }
 }

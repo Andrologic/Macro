@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { authoringFields030, patchAuthoringValue030, updateAuthoringField030 } from "./authoringFields030";
+import { authoringFields030, authoringValues030, patchAuthoringValue030, updateAuthoringField030 } from "./authoringFields030";
 import { componentProperties, propertyChanges } from "./componentProperties";
 import { applyChanges } from "./document";
 import { projectViewer030 } from "./viewer030";
@@ -79,4 +79,19 @@ it("keeps nested content editable when cleared and refuses malformed integer tok
   const count = authoringFields030(join.fields).find(field => field.label === "count")!;
   const values = join.fields.map(field => field.value);
   expect(updateAuthoringField030(values, count, "02")).toBe(values);
+});
+
+it("keeps raw line drafts until save and preserves exact JSON edits without normalization", () => {
+ const { fields } = properties("/flow/steps/vote");
+ const values = fields.map(field => field.value);
+ const accept = authoringFields030(fields).find(field => field.label === "accept")!;
+ const lineInputs = { [`${accept.index}:${accept.path}`]: "yes\n\nno\n" };
+ const raw = authoringValues030(fields, values, lineInputs);
+ expect(raw[accept.index]).toContain('"accept":["yes","","no",""]');
+ expect(raw[accept.index]).toContain('"count":9007199254740993');
+ const saved = authoringValues030(fields, raw, lineInputs, true);
+ expect(saved[accept.index]).toContain('"accept":["yes","no"]');
+ expect(saved[accept.index]).toContain('"unknown":9007199254740993');
+ // The JSON tab is exact, even when an authored list contains an empty value.
+ expect(authoringValues030(fields, raw, {}, true)).toEqual(raw);
 });

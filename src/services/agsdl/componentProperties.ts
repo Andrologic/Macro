@@ -137,7 +137,20 @@ export function componentProperties(source: string, card: ViewerCard): Component
   return { fields, shared: Boolean(agent) || path.startsWith("/definitions/"), unsupported };
 }
 
+/** A reassignment and edits to the captured agent definition must be separate transactions. */
+export function agentPropertyLocks030(fields: ComponentProperty[], values: string[]) {
+  const changed = (field: ComponentProperty, index: number) => field.exactJson && (values[index] ?? field.value) !== field.value;
+  const referenceChanged = fields.some((field, index) => field.label === "agent" && !field.path.startsWith("/agents/") && changed(field, index));
+  const definitionChanged = fields.some((field, index) => field.path.startsWith("/agents/") && changed(field, index));
+  return {
+    referenceChanged, definitionChanged,
+    locked: (index: number) => referenceChanged && fields[index].path.startsWith("/agents/") || definitionChanged && fields[index].label === "agent" && !fields[index].path.startsWith("/agents/"),
+  };
+}
+
 export function propertyChanges(fields: ComponentProperty[], values: string[]): AgsdlChange[] {
+  const locks = agentPropertyLocks030(fields, values);
+  if (locks.referenceChanged && locks.definitionChanged) throw new Error("agsdl.authoring030.ownerChangeHint");
   if (fields.some(field => field.exactJson)) return fields.flatMap((field, index): AgsdlChange[] => {
     const value = values[index];
     if (field.readonly || value === undefined || value === field.value) return [];
@@ -215,5 +228,5 @@ function properties030(source: string, card: ViewerCard): ComponentProperties {
     const span = parsed.spans.get(ownerPath);
     if (span) fields.push({ path: ownerPath, label: "route", value: new TextDecoder().decode(parsed.bytes.subarray(span.start, span.end)), exactJson: true, optional: false });
   }
-  return { fields, shared: !!card.edition030?.agentPath || ["Agent", "Resource", "Skill", "McpServer", "Composition"].includes(card.kind), unsupported: !fields.length };
+  return { fields, shared: ownerPath.startsWith("/compositions/") || !!card.edition030?.agentPath || ["Agent", "Resource", "Skill", "McpServer", "Composition"].includes(card.kind), unsupported: !fields.length };
 }

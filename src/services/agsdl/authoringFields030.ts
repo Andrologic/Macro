@@ -105,6 +105,18 @@ export function updateAuthoringField030(values: string[], field: AuthoringField0
   const valueJson = input === "" && (!field.path || field.kind === "integer") ? undefined
     : field.kind === "integer" ? input
     : input === "" && field.label === "destination" && field.path.split("/").length === 2 && field.group === "choices" ? "[]"
-    : JSON.stringify(field.kind === "lines" ? input.split("\n").filter(Boolean) : input);
+    : JSON.stringify(field.kind === "lines" ? input.split("\n") : input);
   return values.map((value, index) => index === field.index ? patchAuthoringValue030(value, field.path, valueJson) : value);
+}
+
+/** Keep line-entry drafts separate from exact JSON edits; normalize only when saving. */
+export function authoringValues030(fields: ComponentProperty[], values: string[], lineInputs: Record<string, string>, normalize = false): string[] {
+  const result = [...values];
+  for (const field of authoringFields030(fields, values)) {
+    const input = lineInputs[`${field.index}:${field.path}`];
+    if (field.kind !== "lines" || input === undefined || (!normalize && input === field.value)) continue;
+    const lines = input.split("\n");
+    result[field.index] = patchAuthoringValue030(result[field.index], field.path, JSON.stringify(normalize ? lines.filter(Boolean) : lines));
+  }
+  return result;
 }

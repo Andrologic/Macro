@@ -7,8 +7,9 @@ import { agsdlSessionKey, useAgsdlStore } from "../../stores/useAgsdlStore";
 
 const target = { branchName: "develop", planId: "exact-ui" }, key = agsdlSessionKey(target);
 const source = '{"contract":"agsdl-0.3.0","id":"example","agents":{"a":{"harness":"codex","permissions":"read-only"}}}';
+const originalSave = useAgsdlStore.getState().save;
 let root: Root | undefined, host: HTMLDivElement;
-afterEach(() => { act(() => root?.unmount()); host?.remove(); mock.restore(); useAgsdlStore.setState({ sessions: {} }); });
+afterEach(() => { act(() => root?.unmount()); host?.remove(); mock.restore(); useAgsdlStore.setState({ sessions: {}, save: originalSave }); });
 const mount = async (documentSource = source, path = "/agents/a") => {
  useAgsdlStore.setState({ sessions: { [key]: { source: documentSource, annexes: {}, version: "initial", persistedRevision: 1, dirty: false, saving: false, status: "draft", history: [], future: [], reports: [], error: null } } });
  host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host);
@@ -87,4 +88,80 @@ it("saves a statically invalid document as a draft and keeps JSON and business f
  expect(save).toHaveBeenCalledTimes(1);
  expect(useAgsdlStore.getState().sessions[key].source).toContain('"instructions":"Draft instructions"');
  expect(useAgsdlStore.getState().sessions[key].source).not.toContain('"harness"');
+});
+
+it("locks the captured agent definition during reassignment and edits B only after reopening", async () => {
+ const documentSource = JSON.stringify({ contract: "agsdl-0.3.0", id: "reassign", agents: {
+  a: { harness: "codex", permissions: "read-only", instructions: "Instructions A" },
+  b: { harness: "codex", permissions: "read-only", instructions: "Instructions B" },
+ }, flow: { entry: "one", steps: { one: { type: "agent", agent: "a" }, other: { type: "agent", agent: "a" } } } });
+ await mount(documentSource, "/flow/steps/one");
+ const save = spyOn(useAgsdlStore.getState(), "save").mockResolvedValue(undefined);
+ fill("Responsible agent", "b");
+ expect(inputFor("Standing instructions").disabled).toBe(true);
+ expect(document.body.querySelector('[role="status"]')?.textContent).toContain("Save, then reopen");
+ const agentJson = Array.from(document.body.querySelectorAll("label")).find(label => label.querySelector("small")?.textContent === "/agents/a/instructions")!.querySelector("textarea")!;
+ expect(agentJson.disabled).toBe(true);
+ expect(document.body.querySelector<HTMLFieldSetElement>("fieldset")!.disabled).toBe(true);
+ // Even an artificial event on the disabled control must not produce a patch for A.
+ fill("Standing instructions", "Must not reach A");
+ await act(async () => document.body.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+ const reassigned = JSON.parse(useAgsdlStore.getState().sessions[key].source);
+ expect(reassigned.flow.steps.one.agent).toBe("b");
+ expect(reassigned.flow.steps.other.agent).toBe("a");
+ expect(reassigned.agents.a.instructions).toBe("Instructions A");
+ expect(reassigned.agents.b.instructions).toBe("Instructions B");
+ const currentSource = useAgsdlStore.getState().sessions[key].source;
+ const card = projectViewer030(currentSource).graphs[0].cards[0];
+ await act(async () => root!.render(<ComponentDetailsDialog title="Agent" target={target} card={card} onClose={() => {}}><p>Details</p></ComponentDetailsDialog>));
+ act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Edit component"]')!.click());
+ expect(inputFor("Standing instructions").value).toBe("Instructions B");
+ expect(inputFor("Standing instructions").disabled).toBe(false);
+ fill("Standing instructions", "Updated B");
+ expect(inputFor("Responsible agent").disabled).toBe(true);
+ await act(async () => document.body.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+ const updated = JSON.parse(useAgsdlStore.getState().sessions[key].source);
+ expect(updated.agents.a.instructions).toBe("Instructions A");
+ expect(updated.agents.b.instructions).toBe("Updated B");
+ expect(save).toHaveBeenCalledTimes(2);
+});
+
+function typeCharacters(label: string, text: string) {
+ let typed = inputFor(label).value;
+ for (const character of text) {
+  typed += character;
+  act(() => {
+   const input = inputFor(label);
+   input.dispatchEvent(new KeyboardEvent("keydown", { key: character === "\n" ? "Enter" : character, bubbles: true }));
+   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, typed);
+   input.dispatchEvent(new InputEvent("input", { data: character, inputType: character === "\n" ? "insertLineBreak" : "insertText", bubbles: true }));
+  });
+  expect(inputFor(label).value).toBe(typed);
+ }
+}
+it("preserves Enter and blank lines while typing choices and data paths, then normalizes on save", async () => {
+ const documentSource = JSON.stringify({ contract: "agsdl-0.3.0", id: "line-entry", agents: {}, flow: { entry: "vote", steps: {
+  vote: { type: "join", quorum: { count: 1, accept: [] }, next: { step: "done", message: { resources: { answer: { from: [] } } } } },
+  done: { type: "call", command: "echo" },
+ } } });
+ await mount(documentSource, "/flow/steps/vote");
+ spyOn(useAgsdlStore.getState(), "save").mockResolvedValue(undefined);
+ typeCharacters("Accepted choices, one per line", "yes\n\nno\n");
+ typeCharacters("Selected data path, one name per line · answer", "branches\nreview\n");
+ // Another field edit must not prematurely normalize the line drafts.
+ fill("Work title", "Gather reviews");
+ expect(inputFor("Accepted choices, one per line").value).toBe("yes\n\nno\n");
+ expect(useAgsdlStore.getState().sessions[key].source).toBe(documentSource);
+ await act(async () => document.body.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+ const vote = JSON.parse(useAgsdlStore.getState().sessions[key].source).flow.steps.vote;
+ expect(vote.quorum.accept).toEqual(["yes", "no"]);
+ expect(vote.next.message.resources.answer.from).toEqual(["branches", "review"]);
+});
+it("warns that a call in a reused composition changes both uses", async () => {
+ const documentSource = JSON.stringify({ contract: "agsdl-0.3.0", id: "shared", agents: {},
+  flow: { entry: "first", steps: { first: { type: "compose", composition: "common", next: { done: "second" } }, second: { type: "compose", composition: "common", next: { done: [] } } } },
+  compositions: { common: { entry: "work", steps: { work: { type: "call", command: "echo", next: { output: "done" } } }, outputs: ["done"] } },
+ });
+ await mount(documentSource, "/compositions/common/steps/work");
+ expect(document.body.querySelector("form")?.textContent).toContain("Changes to shared definitions also affect other components");
 });

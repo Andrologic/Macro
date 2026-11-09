@@ -807,6 +807,8 @@
         "review": "Betroffenen Teil des Entwurfs prüfen."
       }
     },
-    "exactHint": "Weitere Werte bleiben im Reiter für exaktes JSON verfügbar."
+    "exactHint": "Weitere Werte bleiben im Reiter für exaktes JSON verfügbar.",
+    "ownerChangeHint": "Der verantwortliche Agent wurde geändert. Seine Definition ist gesperrt. Speichern und öffnen Sie diese Ansicht erneut, um den neuen Agenten zu bearbeiten.",
+    "definitionChangeHint": "Die Agentendefinition enthält ungespeicherte Änderungen. Speichern und öffnen Sie diese Ansicht erneut, bevor Sie den verantwortlichen Agenten ändern."
   }
 }
