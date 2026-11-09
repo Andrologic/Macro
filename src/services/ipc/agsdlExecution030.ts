@@ -3,6 +3,7 @@ import type { StartRequest } from '../agsdlExecution/contracts';
 import type { EngineVersions030, ExecutionProfile030 } from '../agsdlExecution/contracts030';
 import type { RunListRequest030, RunPage030, RuntimeProjectionContinuation030, RuntimeProjectionPage030, RuntimeProjectionQuery030 } from '../../types/generated/ipc';
 import { invoke } from '../tauriRuntimeBridge';
+import type { ExecutionIntentScope, ExecutionRunCorrelation030 } from '../../types/generated/ipc';
 
 /** This transport does not qualify Start 030. Native admission remains authoritative. */
 export type StartRequest030 = Omit<StartRequest, 'profile'> & { readonly profile: ExecutionProfile030 };
@@ -56,4 +57,12 @@ export function readExecutionRuntimeProjection030(
 /** Uses the distinct 030 cursor and never treats a historical run as 030. */
 export function listExecutionRuns030(request: RunListRequest030): Promise<RunPage030> {
   return invoke('execution_list_runs030', { request });
+}
+
+/** Attests the retained Start intent, including after acknowledgement and closure. */
+export function readExecutionRunCorrelation030(
+  scope: ExecutionIntentScope,
+  systemStartId: string,
+): Promise<ExecutionRunCorrelation030> {
+  return invoke('execution_read_run_correlation030', { scope, systemStartId });
 }

@@ -50,6 +50,10 @@ object!(PublicStartReceipt030 {
     versions: EngineVersions,
     entry_delivery_id: Option<String>
 });
+object!(ExecutionRunCorrelation030 {
+    key: ExecutionIntentKey,
+    receipt: PublicStartReceipt030
+});
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(
     tag = "kind",
@@ -655,6 +659,66 @@ pub(crate) async fn read_open(
     }
     tx.commit().await?;
     Ok(result)
+}
+
+/// Historical attestation, including acknowledged tombstones. This deferred
+/// transaction only reads retained facts and never reconciles or admits work.
+pub(crate) async fn read_run_correlation030(
+    pool: &SqlitePool,
+    scope: &ExecutionIntentScope,
+    system_start_id: &str,
+) -> IntentResult<ExecutionRunCorrelation030> {
+    use ExecutionIntentErrorCode::*;
+    validate_key(&ExecutionIntentKey {
+        scope: scope.clone(),
+        intent_id: system_start_id.into(),
+    })?;
+    let mut connection = pool.acquire().await?;
+    let mut tx = connection.begin().await?;
+    conversation(&mut tx, scope).await?;
+    let rows = sqlx::query("SELECT * FROM engine_ui_intents WHERE admission_system030_id=? AND project_id=? AND plan_id=? AND branch=? AND conversation_id=? LIMIT 2")
+        .bind(system_start_id).bind(&scope.owner.project_id).bind(&scope.owner.plan_id)
+        .bind(&scope.owner.branch).bind(&scope.conversation_id)
+        .fetch_all(&mut *tx).await?;
+    if rows.len() > 1 {
+        return Err(error(StorageUncertain));
+    }
+    let Some(row) = rows.into_iter().next() else {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM engine_start030_requests WHERE system_id=?)",
+        )
+        .bind(system_start_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        return Err(error(if exists { ScopeInvalid } else { NotFound }));
+    };
+    let row = retained(row)?;
+    // Authenticate the retained owner and public request constraints as well as
+    // the persisted request/capture/receipt checks performed by public().
+    validate_payload(&row.key, &row.payload).map_err(|_| error(StorageUncertain))?;
+    let link = IntentAdmissionLink {
+        key: row.key.clone(),
+        payload: row.payload.clone(),
+    };
+    verify_attached030(&mut tx, &link, system_start_id)
+        .await
+        .map_err(storage)?;
+    let intent = public(&mut tx, row).await?;
+    let receipt = match intent.state {
+        ExecutionIntentState::Admitted {
+            admission: ExecutionIntentAdmission::Start030 { receipt },
+        }
+        | ExecutionIntentState::Closed {
+            disposition: ExecutionIntentDisposition::Acknowledged,
+            admission: Some(ExecutionIntentAdmission::Start030 { receipt }),
+        } => receipt,
+        _ => return Err(error(StorageUncertain)),
+    };
+    tx.commit().await?;
+    Ok(ExecutionRunCorrelation030 {
+        key: intent.key,
+        receipt,
+    })
 }
 fn code<T: Serialize>(value: T) -> IntentResult<String> {
     serde_json::from_value(serde_json::to_value(value)?).map_err(Into::into)
