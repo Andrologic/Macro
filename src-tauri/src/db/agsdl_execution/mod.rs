@@ -1,6 +1,7 @@
 //! Native transactional repository. No runtime mutator is exposed through IPC.
 //! The future native supervisor owns CaptureAuthority, RouteAuthority and epochs.
 pub(crate) mod approvals;
+pub(crate) mod call_protocol030;
 pub(crate) mod capture;
 pub(crate) mod card_associations;
 pub(crate) mod diagnostics;

@@ -37,21 +37,6 @@ async fn fixture_with_second_work(
     let pool = crate::db::create_pool(&tmp.path().join("human.db"))
         .await
         .unwrap();
-    if let Some(path) = std::env::var_os("MACRO_AGSDL030_CALL_MIGRATION_FIXTURE") {
-        let migration = std::fs::read_to_string(path).unwrap();
-        // Read-only repository DDL copied into the test context. No user
-        // values are interpolated and this pool belongs to a fresh TempDir.
-        sqlx::raw_sql(sqlx::AssertSqlSafe(migration))
-            .execute(&pool)
-            .await
-            .unwrap();
-    }
-    sqlx::raw_sql(include_str!(
-        "db/migrations/040_execution_flow_human_clock030.sql"
-    ))
-    .execute(&pool)
-    .await
-    .unwrap();
     let attempt = FlowWorkAttempt030::registry_fixture030("provider-attempt");
     let id = attempt.identity().clone();
     let owner = attempt.owner().clone();
@@ -1343,14 +1328,25 @@ async fn real_commit_failure_rolls_back_resolution_and_allows_exact_ticket_readb
 }
 
 #[tokio::test]
-#[ignore = "requires a read-only external copy of the N-CALLS migration"]
 async fn combines_call_039_and_human_clock_040_without_schema_conflict() {
-    assert!(std::env::var_os("MACRO_AGSDL030_CALL_MIGRATION_FIXTURE").is_some());
     let f = fixture("call", Some(60000), Some(100)).await;
+    let migrations: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT version,name FROM schema_migrations WHERE version>=39 ORDER BY version",
+    )
+    .fetch_all(&f.broker.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        migrations,
+        vec![
+            (39, "039_execution_call_protocol030".into()),
+            (40, "040_execution_flow_human_clock030".into())
+        ]
+    );
     let tables: i64 = sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('engine_flow030_calls','engine_flow030_call_causes','engine_flow030_call_diagnostics','engine_flow030_clock','engine_flow030_handoff_clock')").fetch_one(&f.broker.pool).await.unwrap();
     assert_eq!(
         tables, 5,
-        "Use the current 039 fixture, including native causes and diagnostics"
+        "The real registry must install both call 039 and human clock 040"
     );
     let work = f
         .broker
