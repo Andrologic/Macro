@@ -43,7 +43,7 @@ fn exact(left: &str, right: &str) -> Verified<bool> {
 }
 
 /// Keep accepted numeric lexemes verbatim rather than decoding/re-encoding them.
-fn accepted_output_json(output: &Value) -> Verified<String> {
+pub(crate) fn accepted_output_json(output: &Value) -> Verified<String> {
     #[derive(Serialize)]
     struct Output<'a> {
         text: &'a str,
@@ -323,19 +323,6 @@ async fn verify_content(
     generation: &str,
     capture_sha: &str,
 ) -> Verified<()> {
-    // Compatibility for an entirely empty legacy cache conveys no authority.
-    let legacy: Value = serde_json::from_str(raw)?;
-    if legacy.get("format").is_none() {
-        require(
-            legacy.get("identity").is_some_and(Value::is_object)
-                && legacy
-                    .get("receipts")
-                    .and_then(Value::as_array)
-                    .is_some_and(Vec::is_empty)
-                && legacy.as_object().is_some_and(|o| o.len() == 2),
-        )?;
-        return Ok(());
-    }
     let envelope: ContentEnvelope030 = serde_json::from_str(raw)?;
     require(envelope.format == "macro-agsdl-route-content/1")?;
     let routes = plan

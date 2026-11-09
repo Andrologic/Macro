@@ -8,6 +8,153 @@ use crate::db::agsdl_execution::{
 };
 use sha2::{Digest, Sha256};
 
+/// Real 02 compilation and 03 policy for the in-process example adapter.
+/// SQL flow/owner rows in the calling tests remain explicit fixtures.
+#[cfg(feature = "agsdl-engine-qa")]
+async fn example_agent_capture(
+    root: &std::path::Path,
+    identity: &FlowIdentity030,
+) -> (StartCapture030, crate::config::ConfigManager) {
+    use tokio::io::AsyncWriteExt;
+    let workspace = root.join("agent-workspace");
+    let metadata = root.join("agent-metadata");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&metadata).unwrap();
+    let manager = crate::config::ConfigManager::initialize(root.join("agent-config"))
+        .await
+        .unwrap();
+    manager
+        .register_project_root("project", metadata)
+        .await
+        .unwrap();
+    let document: serde_json::Value = serde_json::from_str(include_str!(
+        "../../dev/agsdl/fixtures/v0.3/conformance/runs/error-route.json"
+    ))
+    .unwrap();
+    let authored = document["document"].to_string();
+    let source_sha = format!("{:x}", Sha256::digest(authored.as_bytes()));
+    let source: crate::db::agsdl_execution::dto::EngineSourceRevision = serde_json::from_value(serde_json::json!({
+        "owner":{"projectId":"project","planId":"source","branch":"develop"},"revision":"1","sourceSha256":source_sha
+    })).unwrap();
+    let root_id = crate::fs::operations::workspace_root_identity(&workspace)
+        .unwrap()
+        .observation_key()
+        .unwrap();
+    let scope = serde_json::json!({"projectId":"project","root":workspace,"rootIdentity":root_id,"sourceOwner":source.owner});
+    let observation = crate::agsdl_host_example030::ExampleAdapter030::observe()
+        .registry(&document["document"], &authored, &source_sha, &scope)
+        .unwrap();
+    let mut registry = observation;
+    registry["format"] = serde_json::json!("macro-agsdl-registry/030");
+    registry["version"] = serde_json::json!(format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_json::to_vec(&registry).unwrap())
+    ));
+    registry["hostCapabilities"] = serde_json::json!([]);
+    let ticket = serde_json::json!({"authoredSource":authored,"source":source,"registry":registry});
+    let script = r#"import {compileHost030} from './src/services/agsdlExecution/hostCompilation'; const j=JSON.parse(await Bun.stdin.text()); process.stdout.write(await compileHost030(j.authoredSource,j.source,j.registry));"#;
+    let mut child = crate::core::process::background_tokio_command("bun")
+        .args(["-e", script])
+        .current_dir(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap(),
+        )
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(&ticket).unwrap())
+        .await
+        .unwrap();
+    let output = child.wait_with_output().await.unwrap();
+    assert!(
+        output.status.success(),
+        "compiler: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let compiled: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let plan = compiled["compiledPlanJson"]
+        .as_str()
+        .expect("real compiler plan")
+        .to_owned();
+    let tools = manager.lock_execution_tools("project").await.unwrap();
+    let permissions = crate::agsdl_host_tools::permissions("Implement", false, &tools.tools)
+        .unwrap()
+        .to_string();
+    drop(tools);
+    let capture = StartCapture030 { identity: identity.clone(), source, versions: serde_json::from_value(serde_json::from_str::<serde_json::Value>(&plan).unwrap()["versions"].clone()).unwrap(),
+        authored_source: authored, compiled_plan_json: plan, registry_json: registry.to_string(),
+        private_capture_json: serde_json::json!({"format":"macro-native-flow-capture/030","callPermissionsJson":permissions,"callScopeJson":scope.to_string()}).to_string() };
+    (capture, manager)
+}
+
+#[cfg(feature = "agsdl-engine-qa")]
+async fn example_policy_for_refusal(
+    root: &std::path::Path,
+    identity: &FlowIdentity030,
+) -> crate::agsdl_host_work_admission030::AttestedWorkPolicy030 {
+    use crate::db::agsdl_execution::{
+        flow030::{self, FlowEvent030, FlowEventKind030},
+        flow_store030::FlowView030,
+    };
+    let (capture, manager) = example_agent_capture(root, identity).await;
+    let plan: FlowPlan030 = serde_json::from_str(&capture.compiled_plan_json).unwrap();
+    let transition = flow030::reduce(
+        &plan,
+        &FlowState030::new(identity.clone()),
+        &FlowEvent030 {
+            identity: identity.clone(),
+            event_id: "fixture-enter".into(),
+            expected_revision: "0".into(),
+            kind: FlowEventKind030::Enter {
+                message_json: r#"{"prompt":"Start."}"#.into(),
+            },
+        },
+    )
+    .unwrap();
+    let effect = transition
+        .effects
+        .iter()
+        .find(|e| {
+            matches!(
+                &e.kind,
+                flow030::FlowEffectKind030::Start { agent: Some(_), .. }
+            )
+        })
+        .unwrap()
+        .clone();
+    let inspection = flow::NativeFlowInspection030 {
+        owner: EngineOwner {
+            system_start_id: identity.system_start_id.clone(),
+            owner_epoch: "owner".into(),
+        },
+        capture,
+        flow: FlowView030 {
+            state: transition.state,
+            events: vec![],
+            effects: vec![serde_json::json!({"status":"pending","effect":effect})],
+        },
+    };
+    let prepared = crate::agsdl_host_work_admission030::prepare_effective_agent_work030(
+        &manager,
+        &inspection,
+        &effect,
+    )
+    .await
+    .unwrap();
+    crate::agsdl_host_work_admission030::AttestedWorkPolicy030::from_example(
+        prepared,
+        &crate::agsdl_host_example030::ExampleAdapter030::observe(),
+    )
+    .unwrap()
+}
+
 #[tokio::test]
 async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
     use crate::db::agsdl_execution::{
@@ -203,6 +350,17 @@ process.stdout.write(await compileHost030(job.authoredSource,job.source,JSON.par
     assert!(graphless_state.plan_json.is_none());
     assert!(graphless_state.events.is_empty());
     assert!(!graphless_state.entered);
+    let public = crate::commands::agsdl_execution::public_start030(&request, &retained);
+    assert_eq!(
+        public.system_start_id,
+        retained.receipt.identity.system_start_id
+    );
+    assert_eq!(
+        public.flow_invocation_id,
+        retained.receipt.identity.flow_invocation_id
+    );
+    assert_eq!(public.snapshot.source, retained.capture.source);
+    assert_eq!(public.snapshot.versions, retained.capture.versions);
     let snapshot = crate::commands::agsdl_execution::read_public_snapshot(
         &pool,
         &retained.receipt.identity.system_start_id,
@@ -443,21 +601,25 @@ async fn released_effect_remains_owned_until_cancelled_and_joined() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[cfg(feature = "agsdl-engine-qa")]
 async fn agent_handoff_commits_the_exact_attempt_before_first_poll() {
     exercise_handoff(7).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[cfg(feature = "agsdl-engine-qa")]
 async fn failed_agent_handoff_never_polls_the_attempt() {
     exercise_handoff(8).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[cfg(feature = "agsdl-engine-qa")]
 async fn agent_revocation_after_commit_refuses_first_poll() {
     exercise_handoff(9).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[cfg(feature = "agsdl-engine-qa")]
 async fn non_agent_start_cannot_mint_an_agent_attempt() {
     exercise_handoff(10).await;
 }
@@ -476,25 +638,31 @@ async fn exercise_handoff(mode: u8) {
     let original_plan = include_str!("../tests/fixtures/agsdl030_compiled_plan.json");
     // Explicit fixture: retain the compiled plan shape but select the agent
     // entry to exercise native ownership without invoking a provider.
-    let agent_plan = if matches!(mode, 7..=9) {
-        let mut value: serde_json::Value = serde_json::from_str(original_plan).unwrap();
-        value["entry"] = serde_json::json!(["left"]);
-        value["scopes"][0]["entry"] = serde_json::json!(["left"]);
-        Some(serde_json::to_string(&value).unwrap())
+    #[cfg(feature = "agsdl-engine-qa")]
+    let example = if matches!(mode, 7..=9) {
+        Some(example_agent_capture(temp.path(), &identity).await)
     } else {
         None
     };
-    let plan_json = agent_plan.as_deref().unwrap_or(original_plan);
-    let plan: FlowPlan030 = serde_json::from_str(plan_json).unwrap();
-    let capture = StartCapture030 {
-        identity: identity.clone(),
-        source: serde_json::from_value(plan.source.clone()).unwrap(),
-        versions: serde_json::from_value(serde_json::to_value(&plan.versions).unwrap()).unwrap(),
-        authored_source: "{}".into(),
-        compiled_plan_json: plan_json.into(),
-        registry_json: "{}".into(),
-        private_capture_json: "{}".into(),
+    #[cfg(not(feature = "agsdl-engine-qa"))]
+    let example: Option<(StartCapture030, crate::config::ConfigManager)> = None;
+    let capture = if let Some((capture, _)) = &example {
+        capture.clone()
+    } else {
+        let plan: FlowPlan030 = serde_json::from_str(original_plan).unwrap();
+        StartCapture030 {
+            identity: identity.clone(),
+            source: serde_json::from_value(plan.source.clone()).unwrap(),
+            versions: serde_json::from_value(serde_json::to_value(&plan.versions).unwrap())
+                .unwrap(),
+            authored_source: "{}".into(),
+            compiled_plan_json: original_plan.into(),
+            registry_json: "{}".into(),
+            private_capture_json: "{}".into(),
+        }
     };
+    let plan_json = capture.compiled_plan_json.as_str();
+    let plan: FlowPlan030 = serde_json::from_str(plan_json).unwrap();
     let capture_json = serde_json::to_string(&capture).unwrap();
     let capture_sha = format!("{:x}", Sha256::digest(capture_json.as_bytes()));
     let state_json = serde_json::to_string(&FlowState030::new(identity.clone())).unwrap();
@@ -530,7 +698,7 @@ async fn exercise_handoff(mode: u8) {
         .bind("owner")
         .bind("generation")
         .bind("live")
-        .bind(capture_sha)
+        .bind(&capture_sha)
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -550,7 +718,7 @@ async fn exercise_handoff(mode: u8) {
         ready: AtomicBool::new(true),
         retired: Default::default(),
         loads: AtomicUsize::new(0),
-        owners: Mutex::new(BTreeMap::from([("system".into(), owner)])),
+        owners: Mutex::new(BTreeMap::from([("system".into(), owner.clone())])),
         qa_request: Mutex::new(None),
     });
     let host = HostState(
@@ -699,6 +867,39 @@ async fn exercise_handoff(mode: u8) {
         runtime.acknowledge_work_commit(&marker).unwrap(); // Fixture cleanup only.
         return;
     }
+    let mut agent_policy: Option<crate::agsdl_host_work_admission030::AttestedWorkPolicy030> = None;
+    #[cfg(feature = "agsdl-engine-qa")]
+    if let Some((_, manager)) = &example {
+        let inspection = flow::inspect_run(runtime, &host, &pool, &owner)
+            .await
+            .unwrap();
+        let effect: crate::db::agsdl_execution::flow030::FlowEffect030 = serde_json::from_value(
+            inspection
+                .flow
+                .effects
+                .iter()
+                .find(|row| row["status"] == "pending")
+                .unwrap()["effect"]
+                .clone(),
+        )
+        .unwrap();
+        let prepared = crate::agsdl_host_work_admission030::prepare_effective_agent_work030(
+            manager,
+            &inspection,
+            &effect,
+        )
+        .await
+        .unwrap();
+        agent_policy = Some(
+            crate::agsdl_host_work_admission030::AttestedWorkPolicy030::from_example(
+                prepared,
+                &crate::agsdl_host_example030::ExampleAdapter030::observe(),
+            )
+            .unwrap(),
+        );
+    } else if mode == 10 {
+        agent_policy = Some(example_policy_for_refusal(temp.path(), &identity).await);
+    }
     let claim = flow::claim_next(runtime, &host, &pool, &identity)
         .await
         .unwrap()
@@ -710,10 +911,14 @@ async fn exercise_handoff(mode: u8) {
         let constructed = Arc::new(AtomicBool::new(false));
         let observed = constructed.clone();
         let result = claim
-            .handoff_agent(&tasks, move |_| {
-                observed.store(true, Ordering::SeqCst);
-                async {}
-            })
+            .handoff_agent(
+                &tasks,
+                agent_policy.take().expect("native example policy"),
+                move |_| {
+                    observed.store(true, Ordering::SeqCst);
+                    async {}
+                },
+            )
             .await;
         assert!(result.is_err());
         assert!(!constructed.load(Ordering::SeqCst));
@@ -744,13 +949,17 @@ async fn exercise_handoff(mode: u8) {
         let operation = async {
             if mode == 9 {
                 claim
-                    .handoff_agent(&tasks, |_| async move {
-                        observed.store(true, Ordering::SeqCst);
-                    })
+                    .handoff_agent(
+                        &tasks,
+                        agent_policy.take().expect("native example policy"),
+                        |_| async move {
+                            observed.store(true, Ordering::SeqCst);
+                        },
+                    )
                     .await
             } else {
                 claim
-                    .handoff(&tasks, async move {
+                    .handoff_host(&tasks, async move {
                         observed.store(true, Ordering::SeqCst);
                     })
                     .await
@@ -778,7 +987,7 @@ async fn exercise_handoff(mode: u8) {
     if mode == 6 {
         let (started, done) = tokio::sync::oneshot::channel();
         claim
-            .handoff(&tasks, async move {
+            .handoff_host(&tasks, async move {
                 let _ = started.send(());
                 std::future::pending::<()>().await;
             })
@@ -797,7 +1006,7 @@ async fn exercise_handoff(mode: u8) {
         let request_for_work = request_id.clone();
         let gate_for_work = host.admission_lock();
         let (first_poll, receipt) = tokio::sync::oneshot::channel();
-        claim.handoff_agent(&tasks, move |attempt| async move {
+        claim.handoff_agent(&tasks, agent_policy.take().expect("native example policy"), move |attempt| async move {
             let raw: String = sqlx::query_scalar(
                 "SELECT receipt_json FROM engine_flow030_handoffs WHERE system_id='system' AND effect_id=?",
             )
@@ -843,12 +1052,180 @@ async fn exercise_handoff(mode: u8) {
         let attempt = receipt.await.unwrap();
         assert_eq!(attempt.start_effect_id(), effect_id);
         assert_eq!(attempt.identity(), &identity);
-        assert_eq!(attempt.agent(), "worker");
+        assert_eq!(attempt.agent(), "dev");
         assert_eq!(
             attempt.work().step.as_deref(),
-            Some(["left".to_string()].as_slice())
+            Some(["build".to_string()].as_slice())
         );
         assert!(!attempt.provider_attempt_id().is_empty());
+        // The handoff writer creates this admission from the real 03 policy;
+        // the test never inserts its own grant.
+        let context_raw: String = sqlx::query_scalar("SELECT context_json FROM engine_flow030_work_admissions WHERE system_id=? AND invocation_id=? AND activation_id=?")
+            .bind(&identity.system_start_id).bind(&identity.flow_invocation_id).bind(&attempt.work().activation_id)
+            .fetch_one(&pool).await.unwrap();
+        let context: crate::db::agsdl_execution::dto::EngineContext =
+            serde_json::from_str(&context_raw).unwrap();
+        let contract = crate::agsdl_host_work::captured_work_contract030(
+            &crate::agsdl_host_work::CapturedWorkPlan030 {
+                system_start_id: &identity.system_start_id,
+                source: &capture.source,
+                versions: &capture.versions,
+                compiled_plan_json: &capture.compiled_plan_json,
+            },
+            attempt.work(),
+            attempt.agent(),
+        )
+        .unwrap();
+        let durable_contract: String = sqlx::query_scalar("SELECT contract_json FROM engine_flow030_work_admissions WHERE system_id=? AND invocation_id=? AND activation_id=?")
+            .bind(&identity.system_start_id).bind(&identity.flow_invocation_id).bind(&attempt.work().activation_id)
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(durable_contract, contract);
+        let input = crate::db::agsdl_execution::work_protocol030::ProtocolEvent030 {
+            context,
+            event_id: "fixture-event".into(),
+            expected_revision: "0".into(),
+            event_json: serde_json::json!({
+                "owner": {"systemStartId": attempt.owner().system_start_id,
+                    "activationId": attempt.work().activation_id,
+                    "agentInstanceId": attempt.work().agent_instance_id,
+                    "ownerEpoch": attempt.owner().owner_epoch},
+                "eventId":"fixture-event",
+                "event":{"kind":"visibleText","messageId":"fixture-message","textParts":["hello"]}
+            })
+            .to_string(),
+            native_call: Some(
+                crate::db::agsdl_execution::work_protocol030::NativeCall030 {
+                    provider_attempt_id: attempt.provider_attempt_id().into(),
+                    native_call_id: "fixture-call".into(),
+                },
+            ),
+            control: false,
+        };
+        let lease = host.start_lease().await.unwrap();
+        let admission = host.admission_lock().lock_owned().await;
+        let mut tx = pool.begin().await.unwrap();
+        crate::db::agsdl_execution::flow_work_protocol030::verify_agent_attempt_tx(
+            &mut tx, &lease, &identity, &attempt, &input,
+        )
+        .await
+        .unwrap();
+        let mut foreign = input.clone();
+        foreign.native_call.as_mut().unwrap().provider_attempt_id = "foreign-attempt".into();
+        assert!(
+            crate::db::agsdl_execution::flow_work_protocol030::verify_agent_attempt_tx(
+                &mut tx, &lease, &identity, &attempt, &foreign,
+            )
+            .await
+            .is_err()
+        );
+        let mut foreign_step = input.clone();
+        foreign_step.context.work.step = Some(vec!["foreign".into()]);
+        let mut foreign_instance = input.clone();
+        foreign_instance.context.work.agent_instance_id = Some("foreign".into());
+        let mut foreign_epoch = input.clone();
+        foreign_epoch.context.owner.owner_epoch = "foreign".into();
+        for altered in [&foreign_step, &foreign_instance, &foreign_epoch] {
+            assert!(
+                crate::db::agsdl_execution::flow_work_protocol030::verify_agent_attempt_tx(
+                    &mut tx, &lease, &identity, &attempt, altered,
+                )
+                .await
+                .is_err()
+            );
+        }
+        tx.rollback().await.unwrap();
+        drop(admission);
+        drop(lease);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        assert!(
+            crate::db::agsdl_execution::flow_work_protocol030::transition(
+                &host, &pool, &identity, &input, &cancel,
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            crate::db::agsdl_execution::flow_work_protocol030::transition_agent(
+                &host, &pool, &attempt, &foreign, &cancel,
+            )
+            .await
+            .is_err()
+        );
+        let event_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM engine_flow030_work_events")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(event_count, 0);
+        sqlx::query("INSERT INTO engine_flow030_work_authorizations VALUES (?,?,?,?,?,?,?)")
+            .bind(&identity.system_start_id)
+            .bind(&identity.flow_invocation_id)
+            .bind(&input.event_id)
+            .bind(&input.context.work.activation_id)
+            .bind(serde_json::to_string(&input).unwrap())
+            .bind(attempt.provider_attempt_id())
+            .bind("fixture-call")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let worker_host = incarnation.clone();
+        let worker = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let job = worker_host.work_protocol.next().await.unwrap();
+            let script = r#"import {evaluateHostWork030} from './src/services/agsdlExecution/hostWorkTransition030'; import {connectValueSchemaValidator030} from './src/services/agsdlExecution/valueSchemaPort030'; import {NumberToken,parse} from './src/vendor/agsdl/v0.3/json.mjs'; import {validate} from './src/vendor/agsdl/v0.3/valueschema.mjs'; const j=JSON.parse(await Bun.stdin.text()); const i=j.input; const v=connectValueSchemaValidator030({NumberToken,parse,validate}); process.stdout.write(JSON.stringify(evaluateHostWork030(i.context,i.eventId,i.expectedRevision,i.contractJson,i.stateJson,i.eventJson,i.optionsJson,v)));"#;
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap();
+            let mut child = crate::core::process::background_tokio_command("bun")
+                .args(["-e", script])
+                .current_dir(root)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(&serde_json::to_vec(&job).unwrap())
+                .await
+                .unwrap();
+            let output = child.wait_with_output().await.unwrap();
+            assert!(
+                output.status.success(),
+                "controller: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let result: crate::agsdl_host_work::HostWorkOutput030 =
+                serde_json::from_slice(&output.stdout).unwrap();
+            worker_host
+                .work_protocol
+                .complete(
+                    &job.generation,
+                    crate::agsdl_host_work::HostWorkCompletion030 {
+                        ticket: job.ticket,
+                        generation: job.generation.clone(),
+                        input_digest: job.input_digest,
+                        output: result,
+                    },
+                )
+                .unwrap();
+        });
+        let decision = crate::db::agsdl_execution::flow_work_protocol030::transition_agent(
+            &host, &pool, &attempt, &input, &cancel,
+        )
+        .await
+        .unwrap();
+        worker.await.unwrap();
+        assert!(!decision.receipt_json.is_empty());
+        let event_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM engine_flow030_work_events WHERE decision_json IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(event_count, 1);
         assert!(revoke_now(&incarnation));
         assert!(tasks.cancel_owned(&request_id).await.unwrap());
         return;
@@ -856,13 +1233,17 @@ async fn exercise_handoff(mode: u8) {
     let (started, done) = tokio::sync::oneshot::channel();
     let result = if mode == 8 {
         claim
-            .handoff_agent(&tasks, |_| async move {
-                let _ = started.send(());
-            })
+            .handoff_agent(
+                &tasks,
+                agent_policy.take().expect("native example policy"),
+                |_| async move {
+                    let _ = started.send(());
+                },
+            )
             .await
     } else {
         claim
-            .handoff(&tasks, async move {
+            .handoff_host(&tasks, async move {
                 let _ = started.send(());
             })
             .await

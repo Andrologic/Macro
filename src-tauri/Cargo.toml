@@ -18,6 +18,11 @@ name = "agsdl-content-helper-qa"
 path = "src/bin/agsdl_content_helper_qa.rs"
 required-features = ["agsdl-content-qa"]
 
+[[bin]]
+name = "agsdl-engine-isolation-qa"
+path = "src/bin/agsdl_engine_isolation_qa.rs"
+required-features = ["agsdl-engine-qa"]
+
 [[test]]
 name = "lsp_core"
 path = "tests/lsp_core.rs"
@@ -39,6 +44,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [features]
 browser-runtime-debug = ["dep:tauri-remote-ui"]
 agsdl-content-qa = []
+agsdl-engine-qa = []
+custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
 tauri-build = { version = "=2.7.4", features = [] }

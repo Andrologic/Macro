@@ -435,7 +435,7 @@ pub(crate) async fn observation(
         // Bundled modules describe the language; they do not qualify an adapter.
         // Retain the native observation hash, but publish no agent or capability
         // evidence until the 0.3 native authorities can provide it.
-        let registry = json!({
+        let mut registry = json!({
             "format":"macro-agsdl-registry/030",
             "modules":[
                 {"harness":"codex", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/codex/module.json")},
@@ -445,8 +445,33 @@ pub(crate) async fn observation(
             ],
             "harnesses":harnesses, "agents":[], "hostCapabilities":[]
         });
+        #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+        if crate::agsdl_host_example030::ExampleAdapter030::qa_capture_enabled() {
+            let observed = crate::agsdl_host_example030::ExampleAdapter030::observe().registry(
+                &document,
+                &source.source,
+                &source.revision.source_sha256,
+                &scope,
+            )?;
+            for field in ["modules", "harnesses", "agents"] {
+                let entries = observed
+                    .get(field)
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        failure(
+                            "CORRELATION",
+                            "example",
+                            "Native example observation differs",
+                        )
+                    })?;
+                registry
+                    .get_mut(field)
+                    .and_then(Value::as_array_mut)
+                    .ok_or_else(|| failure("CORRELATION", "example", "Native registry differs"))?
+                    .extend(entries.iter().cloned());
+            }
+        }
         let digest = Sha256::digest(serde_json::to_vec(&(&observation, &registry))?);
-        let mut registry = registry;
         registry["version"] = json!(format!("sha256:{digest:x}"));
         // These are transport-only inputs, not part of the captured registry.
         registry["callPermissions"] = observation["callPermissions"].clone();

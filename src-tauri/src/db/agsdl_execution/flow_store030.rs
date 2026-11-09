@@ -171,7 +171,7 @@ pub(crate) async fn apply_tx<A: Authority030>(
     Ok(Apply030::Applied(transition.receipt))
 }
 
-fn eligible(state: &FlowState030, effect: &FlowEffect030) -> bool {
+pub(crate) fn eligible(state: &FlowState030, effect: &FlowEffect030) -> bool {
     if effect.identity != state.identity {
         return false;
     }

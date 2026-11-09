@@ -1,6 +1,7 @@
 //! Host-owned content effects. A receipt records bytes; it never grants access.
+#[cfg(feature = "agsdl-content-qa")]
 pub(crate) mod file_helper;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "agsdl-content-qa"))]
 mod macos_launcher;
 #[cfg(all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions))]
 pub(crate) mod qa;
@@ -13,18 +14,21 @@ mod qa_cases;
     debug_assertions
 ))]
 mod qa_runner_tests;
+#[cfg(feature = "agsdl-content-qa")]
 mod resolve;
+#[cfg(feature = "agsdl-content-qa")]
 mod skills;
-#[cfg(test)]
+#[cfg(all(test, feature = "agsdl-content-qa"))]
 mod tests;
 
+#[cfg(feature = "agsdl-content-qa")]
 pub(crate) use resolve::*;
+#[cfg(feature = "agsdl-content-qa")]
 pub(crate) use skills::*;
 
-use crate::agsdl_permissions::{
-    evaluate_effective, ActionRequest, Effect, EffectivePolicy, ExecutionPurpose,
-    PermissionDecision,
-};
+#[cfg(feature = "agsdl-content-qa")]
+use crate::agsdl_permissions::{evaluate_effective, ActionRequest, Effect};
+use crate::agsdl_permissions::{EffectivePolicy, ExecutionPurpose, PermissionDecision};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::future::Future;
@@ -128,6 +132,7 @@ impl ContentContext {
         })
     }
 
+    #[cfg(feature = "agsdl-content-qa")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn capture(
         capture_id: String,
@@ -191,6 +196,7 @@ impl ContentContext {
         }
     }
 
+    #[cfg(feature = "agsdl-content-qa")]
     async fn admit(
         &self,
         request: ActionRequest,

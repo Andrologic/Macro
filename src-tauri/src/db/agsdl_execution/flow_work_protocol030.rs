@@ -54,6 +54,41 @@ struct Binding030 {
     flow_revision: String,
     contract_json: String,
     options_json: String,
+    agent: String,
+    start_effect_id: String,
+}
+
+/// A terminal work decision correlated to one native agent attempt. This
+/// capability is internal to the host and cannot be reconstructed from IPC.
+/// Its constructor is intentionally kept in this module, next to the 04
+/// decision validation and durable work transaction.
+pub(crate) struct AcceptedWorkTerminal030 {
+    attempt: crate::agsdl_host_flow030::FlowWorkAttempt030,
+    work: super::flow030::WorkRef030,
+    protocol_event_id: String,
+    result: super::flow030::WorkResult030,
+}
+
+impl AcceptedWorkTerminal030 {
+    pub(crate) fn identity(&self) -> &FlowIdentity030 {
+        self.attempt.identity()
+    }
+
+    pub(crate) fn work(&self) -> &super::flow030::WorkRef030 {
+        &self.work
+    }
+
+    pub(crate) fn protocol_event_id(&self) -> &str {
+        &self.protocol_event_id
+    }
+
+    pub(crate) fn result(&self) -> &super::flow030::WorkResult030 {
+        &self.result
+    }
+
+    pub(crate) fn attempt(&self) -> &crate::agsdl_host_flow030::FlowWorkAttempt030 {
+        &self.attempt
+    }
 }
 fn denied(message: &str) -> super::dto::EngineFailure {
     failure("CORRELATION", "flowWork030", message)
@@ -239,10 +274,195 @@ async fn binding(
     lease.ensure_live()?;
     Ok(Binding030 {
         context,
-        flow_revision: flow.revision,
+        flow_revision: flow.revision.clone(),
         contract_json: contract,
         options_json: options,
+        agent: agent.into(),
+        start_effect_id: start_id.clone(),
     })
+}
+
+/// Revalidate a native capability against the immutable SQL handoff and the
+/// captured work admission in the caller's transaction. Decoded receipt JSON
+/// never creates a capability and this check does not grant tool permissions.
+pub(crate) async fn verify_agent_attempt_tx(
+    db: &mut SqliteConnection,
+    lease: &HostStartLease,
+    id: &FlowIdentity030,
+    attempt: &crate::agsdl_host_flow030::FlowWorkAttempt030,
+    input: &ProtocolEvent030,
+) -> Result<()> {
+    let bound = binding(
+        db,
+        lease,
+        id,
+        &input.context.work.activation_id,
+        input.control,
+    )
+    .await?;
+    require(
+        attempt.identity() == id
+            && attempt.owner() == &bound.context.owner
+            && attempt.generation() == lease.generation()
+            && attempt.work() == &bound.context.work
+            && attempt.start_effect_id() == bound.start_effect_id
+            && attempt.agent() == bound.agent
+            && input.context == bound.context
+            && if input.control {
+                input.native_call.is_none()
+            } else {
+                input
+                    .native_call
+                    .as_ref()
+                    .is_some_and(|call| call.provider_attempt_id == attempt.provider_attempt_id())
+            },
+        "Native agent attempt differs from the admitted work",
+    )?;
+    let raw: String = sqlx::query_scalar("SELECT receipt_json FROM engine_flow030_handoffs WHERE system_id=? AND invocation_id=? AND effect_id=? AND owner_epoch=? AND generation=?")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(attempt.start_effect_id())
+        .bind(&bound.context.owner.owner_epoch).bind(lease.generation())
+        .fetch_optional(&mut *db).await?.ok_or_else(|| denied("Native handoff receipt missing"))?;
+    validate_json(&raw)?;
+    let receipt: serde_json::Value = serde_json::from_str(&raw)?;
+    require(
+        receipt.get("kind").and_then(serde_json::Value::as_str) == Some("nativeOwnedHandoff030")
+            && receipt.get("identity") == Some(&serde_json::to_value(id)?)
+            && receipt.get("effectId").and_then(serde_json::Value::as_str)
+                == Some(attempt.start_effect_id())
+            && receipt
+                .get("ownerEpoch")
+                .and_then(serde_json::Value::as_str)
+                == Some(bound.context.owner.owner_epoch.as_str())
+            && receipt
+                .get("generation")
+                .and_then(serde_json::Value::as_str)
+                == Some(lease.generation())
+            && receipt
+                .get("requestId")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+            && receipt.get("workAttempt") == Some(&serde_json::to_value(attempt)?),
+        "Native agent handoff receipt differs",
+    )?;
+    lease.ensure_live()?;
+    Ok(())
+}
+
+/// Authorize only the physical-end event produced by the native join
+/// supervisor. Provider events require their own owned-operation evidence.
+async fn authorize_joined_event_tx(
+    db: &mut SqliteConnection,
+    lease: &HostStartLease,
+    attempt: &crate::agsdl_host_flow030::FlowWorkAttempt030,
+    joined: &crate::agsdl_host_dispatch030::JoinedOwnedAgent030,
+    input: &ProtocolEvent030,
+) -> Result<()> {
+    require(
+        serde_json::to_value(joined.attempt())? == serde_json::to_value(attempt)?,
+        "Physical join belongs to another attempt",
+    )?;
+    verify_agent_attempt_tx(db, lease, attempt.identity(), attempt, input).await?;
+    require(
+        input.control && input.native_call.is_none(),
+        "Physical event has a provider call",
+    )?;
+    let raw = json(input)?;
+    let existing = sqlx::query("SELECT activation_id,input_json,provider_attempt_id,native_call_id FROM engine_flow030_work_authorizations WHERE system_id=? AND invocation_id=? AND event_id=?")
+        .bind(&attempt.identity().system_start_id).bind(&attempt.identity().flow_invocation_id)
+        .bind(&input.event_id).fetch_optional(&mut *db).await?;
+    if let Some(row) = existing {
+        require(
+            row.get::<&str, _>("activation_id") == attempt.work().activation_id
+                && row.get::<&str, _>("input_json") == raw
+                && row.get::<Option<&str>, _>("provider_attempt_id").is_none()
+                && row.get::<Option<&str>, _>("native_call_id").is_none(),
+            "Physical event authorization differs",
+        )?;
+        return Ok(());
+    }
+    opaque(&input.event_id)?;
+    lease.ensure_live()?;
+    sqlx::query("INSERT INTO engine_flow030_work_authorizations(system_id,invocation_id,event_id,activation_id,input_json,provider_attempt_id,native_call_id) VALUES(?,?,?,?,?,NULL,NULL)")
+        .bind(&attempt.identity().system_start_id).bind(&attempt.identity().flow_invocation_id)
+        .bind(&input.event_id).bind(&attempt.work().activation_id).bind(raw)
+        .execute(&mut *db).await?;
+    Ok(())
+}
+
+/// The permit can only be consumed inside the already-owned native parent.
+/// The bytes authorized here are exactly those attached to that parent.
+async fn authorize_owned_event_tx(
+    db: &mut SqliteConnection,
+    lease: &HostStartLease,
+    attempt: &crate::agsdl_host_flow030::FlowWorkAttempt030,
+    input: &ProtocolEvent030,
+    operation: &crate::ai::stream_tasks::OwnedOperation030,
+    policies: &crate::agsdl_host_work_admission030::PolicyLeases030,
+) -> Result<()> {
+    verify_agent_attempt_tx(db, lease, attempt.identity(), attempt, input).await?;
+    let call = input
+        .native_call
+        .as_ref()
+        .ok_or_else(|| denied("Native operation attribution is absent"))?;
+    require(
+        !input.control
+            && operation.identity == *attempt.identity()
+            && operation.context == input.context
+            && operation.generation == attempt.generation()
+            && operation.agent == attempt.agent()
+            && operation.provider_attempt_id == attempt.provider_attempt_id()
+            && operation.operation_id == call.native_call_id
+            && operation.request_json == input.event_json,
+        "Owned operation differs from the work event",
+    )?;
+    let row = sqlx::query(
+        "SELECT capture_json FROM engine_start030_requests WHERE system_id=? AND invocation_id=?",
+    )
+    .bind(&attempt.identity().system_start_id)
+    .bind(&attempt.identity().flow_invocation_id)
+    .fetch_optional(&mut *db)
+    .await?
+    .ok_or_else(|| denied("Work capture is absent"))?;
+    let capture: super::start030::StartCapture030 = serde_json::from_str(row.get("capture_json"))?;
+    require(
+        capture.source.owner.project_id == policies.project_id(),
+        "Policy project differs",
+    )?;
+    let evidence: String = sqlx::query_scalar("SELECT policy_evidence_json FROM engine_flow030_work_admissions WHERE system_id=? AND invocation_id=? AND activation_id=?")
+        .bind(&attempt.identity().system_start_id).bind(&attempt.identity().flow_invocation_id)
+        .bind(&attempt.work().activation_id).fetch_one(&mut *db).await?;
+    let evidence: serde_json::Value = serde_json::from_str(&evidence)?;
+    require(
+        evidence
+            .get("hostCeilingDigest")
+            .and_then(serde_json::Value::as_str)
+            == Some(policies.ceiling_fingerprint()),
+        "Approved host policy changed",
+    )?;
+    let raw = json(input)?;
+    let existing = sqlx::query("SELECT activation_id,input_json,provider_attempt_id,native_call_id FROM engine_flow030_work_authorizations WHERE system_id=? AND invocation_id=? AND event_id=?")
+        .bind(&attempt.identity().system_start_id).bind(&attempt.identity().flow_invocation_id).bind(&input.event_id)
+        .fetch_optional(&mut *db).await?;
+    if let Some(row) = existing {
+        require(
+            row.get::<&str, _>("activation_id") == attempt.work().activation_id
+                && row.get::<&str, _>("input_json") == raw
+                && row.get::<Option<&str>, _>("provider_attempt_id")
+                    == Some(call.provider_attempt_id.as_str())
+                && row.get::<Option<&str>, _>("native_call_id")
+                    == Some(call.native_call_id.as_str()),
+            "Owned event authorization differs",
+        )?;
+        return Ok(());
+    }
+    opaque(&input.event_id)?;
+    opaque(&call.native_call_id)?;
+    lease.ensure_live()?;
+    sqlx::query("INSERT INTO engine_flow030_work_authorizations(system_id,invocation_id,event_id,activation_id,input_json,provider_attempt_id,native_call_id) VALUES(?,?,?,?,?,?,?)")
+        .bind(&attempt.identity().system_start_id).bind(&attempt.identity().flow_invocation_id)
+        .bind(&input.event_id).bind(&attempt.work().activation_id).bind(raw)
+        .bind(&call.provider_attempt_id).bind(&call.native_call_id).execute(&mut *db).await?;
+    Ok(())
 }
 
 async fn reserve_tx(
@@ -449,6 +669,205 @@ pub(crate) async fn transition(
     input: &ProtocolEvent030,
     cancelled: &CancellationToken,
 ) -> Result<ProtocolDecision030> {
+    if input.native_call.is_some() {
+        return Err(denied("Native provider event requires its owned attempt"));
+    }
+    transition_inner(host, pool, id, None, None, None, input, cancelled).await
+}
+
+/// Provider events must carry the opaque capability minted at native Start.
+/// The capability and its immutable handoff are rechecked in both transactions.
+#[cfg(test)]
+pub(crate) async fn transition_agent(
+    host: &HostState,
+    pool: &SqlitePool,
+    attempt: &crate::agsdl_host_flow030::FlowWorkAttempt030,
+    input: &ProtocolEvent030,
+    cancelled: &CancellationToken,
+) -> Result<ProtocolDecision030> {
+    transition_inner(
+        host,
+        pool,
+        attempt.identity(),
+        Some(attempt),
+        None,
+        None,
+        input,
+        cancelled,
+    )
+    .await
+}
+
+/// Consume an exact operation attached to this native parent before reserving
+/// the corresponding controller event. Policy leases are released before the
+/// controller mailbox is awaited.
+pub(crate) async fn transition_owned_agent030(
+    host: &HostState,
+    pool: &SqlitePool,
+    attempt: &crate::agsdl_host_flow030::FlowWorkAttempt030,
+    input: &ProtocolEvent030,
+    permit: crate::ai::stream_tasks::OwnedOperationPermit030,
+    policies: crate::agsdl_host_work_admission030::PolicyLeases030,
+    cancelled: &CancellationToken,
+) -> Result<ProtocolDecision030> {
+    let operation = permit
+        .into_operation()
+        .map_err(|_| denied("Owned operation is unavailable"))?;
+    transition_inner(
+        host,
+        pool,
+        attempt.identity(),
+        Some(attempt),
+        None,
+        Some((operation, policies)),
+        input,
+        cancelled,
+    )
+    .await
+}
+
+/// Only the supervisor holding the actual join witness may submit the final
+/// physical event. This is not an IPC entry point and cannot mint a witness.
+pub(crate) async fn finish_joined_agent030(
+    host: &HostState,
+    pool: &SqlitePool,
+    joined: &crate::agsdl_host_dispatch030::JoinedOwnedAgent030,
+    cancelled: &CancellationToken,
+) -> Result<ProtocolDecision030> {
+    let attempt = joined.attempt();
+    let lease = host.start_lease().await?;
+    let gate = host.admission_lock().lock_owned().await;
+    host.flow030().available(attempt.identity())?;
+    let mut db = pool.acquire().await?;
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+    let bound = binding(
+        &mut tx,
+        &lease,
+        attempt.identity(),
+        &attempt.work().activation_id,
+        true,
+    )
+    .await?;
+    let revision: String = sqlx::query_scalar("SELECT revision FROM engine_flow030_work_state WHERE system_id=? AND invocation_id=? AND activation_id=?")
+        .bind(&attempt.identity().system_start_id).bind(&attempt.identity().flow_invocation_id)
+        .bind(&attempt.work().activation_id).fetch_one(&mut *tx).await?;
+    let event_id = format!("physical:{}", attempt.provider_attempt_id());
+    let event_json = serde_json::json!({"eventId":event_id,"owner":{
+        "systemStartId":attempt.work().system_start_id,"activationId":attempt.work().activation_id,
+        "agentInstanceId":attempt.work().agent_instance_id,"ownerEpoch":attempt.owner().owner_epoch},
+        "event":{"kind":"physicalEnded","providerEnded":true,"effectsEnded":true}}).to_string();
+    let input = ProtocolEvent030 {
+        context: bound.context,
+        event_id,
+        expected_revision: revision,
+        event_json,
+        native_call: None,
+        control: true,
+    };
+    tx.commit().await?;
+    drop(db);
+    drop(gate);
+    drop(lease);
+    transition_inner(
+        host,
+        pool,
+        attempt.identity(),
+        Some(attempt),
+        Some(joined),
+        None,
+        &input,
+        cancelled,
+    )
+    .await
+}
+
+fn accepted_terminal030(
+    attempt: &crate::agsdl_host_flow030::FlowWorkAttempt030,
+    joined: &crate::agsdl_host_dispatch030::JoinedOwnedAgent030,
+    ticket: &FlowWorkTicket030,
+    decision: &ProtocolDecision030,
+) -> Result<Option<AcceptedWorkTerminal030>> {
+    require(
+        serde_json::to_value(joined.attempt())? == serde_json::to_value(attempt)?
+            && ticket.identity == *attempt.identity()
+            && ticket.input.context.work == *attempt.work(),
+        "Joined work attribution differs",
+    )?;
+    crate::agsdl_host_work::reserved_check030(&ticket.input.context, &decision.receipt_json)?;
+    let receipt: serde_json::Value = serde_json::from_str(&decision.receipt_json)?;
+    let verdict = receipt
+        .get("decision")
+        .ok_or_else(|| denied("Work decision is absent"))?;
+    if verdict.get("kind").and_then(serde_json::Value::as_str) != Some("finished") {
+        return Ok(None);
+    }
+    let result = match verdict.get("outcome").and_then(serde_json::Value::as_str) {
+        Some("success") => {
+            let output = verdict
+                .get("output")
+                .ok_or_else(|| denied("Work output is absent"))?;
+            let output_json = crate::agsdl_host_route_verifier030::accepted_output_json(output)
+                .map_err(|_| denied("Work output is invalid"))?;
+            let route_key = match output.get("choice") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(choice)) => Some(choice.clone()),
+                _ => return Err(denied("Work choice is invalid")),
+            };
+            super::flow030::WorkResult030::Completed {
+                output_json,
+                route_key,
+            }
+        }
+        Some("failure") => {
+            let code = verdict
+                .get("code")
+                .and_then(serde_json::Value::as_str)
+                .filter(|code| {
+                    matches!(
+                        *code,
+                        "OUTPUT_INVALID"
+                            | "CHECK_FAILED"
+                            | "PLAN_REJECTED"
+                            | "TIMEOUT"
+                            | "STOPPED"
+                            | "REVOKED"
+                            | "AGENT_FAILED"
+                            | "HARNESS_REFUSED"
+                            | "INTERRUPTED"
+                    )
+                })
+                .ok_or_else(|| denied("Work failure code is invalid"))?;
+            super::flow030::WorkResult030::Failed {
+                error: super::flow030::Failure030::new(code),
+            }
+        }
+        _ => return Err(denied("Work outcome is not supported")),
+    };
+    Ok(Some(AcceptedWorkTerminal030 {
+        attempt: attempt.clone(),
+        work: super::flow030::WorkRef030 {
+            activation_id: attempt.work().activation_id.clone(),
+            start_effect_id: attempt.start_effect_id().to_owned(),
+            agent_instance_id: attempt.work().agent_instance_id.clone(),
+        },
+        protocol_event_id: ticket.input.event_id.clone(),
+        result,
+    }))
+}
+
+async fn transition_inner(
+    host: &HostState,
+    pool: &SqlitePool,
+    id: &FlowIdentity030,
+    attempt: Option<&crate::agsdl_host_flow030::FlowWorkAttempt030>,
+    joined: Option<&crate::agsdl_host_dispatch030::JoinedOwnedAgent030>,
+    owned: Option<(
+        crate::ai::stream_tasks::OwnedOperation030,
+        crate::agsdl_host_work_admission030::PolicyLeases030,
+    )>,
+    input: &ProtocolEvent030,
+    cancelled: &CancellationToken,
+) -> Result<ProtocolDecision030> {
     let lease = host.start_lease().await?;
     let gate = host.admission_lock().lock_owned().await;
     host.flow030().available(id)?;
@@ -457,6 +876,15 @@ pub(crate) async fn transition(
         .execute(&mut *db)
         .await?;
     let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+    if let Some(attempt) = attempt {
+        verify_agent_attempt_tx(&mut tx, &lease, id, attempt, input).await?;
+        if let Some(joined) = joined {
+            authorize_joined_event_tx(&mut tx, &lease, attempt, joined, input).await?;
+        }
+        if let Some((operation, policies)) = &owned {
+            authorize_owned_event_tx(&mut tx, &lease, attempt, input, operation, policies).await?;
+        }
+    }
     let reservation = reserve_tx(&mut tx, &lease, id, input).await?;
     lease.ensure_live()?;
     tx.commit().await.map_err(|_| uncertain())?;
@@ -468,6 +896,7 @@ pub(crate) async fn transition(
     drop(db);
     drop(gate);
     drop(lease);
+    drop(owned);
     let output = host
         .evaluate_flow_work030(
             HostWorkInput030 {
@@ -512,7 +941,32 @@ pub(crate) async fn transition(
         .execute(&mut *db)
         .await?;
     let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+    if let Some(attempt) = attempt {
+        verify_agent_attempt_tx(&mut tx, &lease, id, attempt, input).await?;
+    }
     commit_tx(&mut tx, &lease, &ticket, &decision).await?;
+    let receipt: serde_json::Value = serde_json::from_str(&decision.receipt_json)?;
+    if receipt
+        .pointer("/decision/kind")
+        .and_then(serde_json::Value::as_str)
+        == Some("finished")
+    {
+        let terminal = accepted_terminal030(
+            attempt.ok_or_else(|| denied("Terminal decision has no native attempt"))?,
+            joined.ok_or_else(|| denied("Terminal decision has no physical join"))?,
+            &ticket,
+            &decision,
+        )?
+        .ok_or_else(|| denied("Terminal decision differs"))?;
+        crate::agsdl_host_flow030::apply_work_terminal_tx(
+            host.flow030(),
+            &mut tx,
+            &lease,
+            &terminal,
+            joined.ok_or_else(|| denied("Terminal decision has no physical join"))?,
+        )
+        .await?;
+    }
     lease.ensure_live()?;
     // Hash the exact bytes actually stored, not a reconstructed ticket or
     // decision. The shared admission gate prevents other run mutations until

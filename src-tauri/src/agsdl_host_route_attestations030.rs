@@ -1,8 +1,10 @@
 //! Native 037 writers. JSON cache entries are transport, never read authority.
 //! The caller owns admission and the outer SQL transaction through commit. No
 //! file/provider IO occurs in a SQL writer; content is resolved beforehand by 11.
+#[cfg(feature = "agsdl-content-qa")]
+use crate::agsdl_content::resolve_content;
 use crate::agsdl_content::{
-    resolve_content, ContentContext, ContentContextBinding, ContentUse, ResolvedContentReceipt,
+    ContentContext, ContentContextBinding, ContentUse, ResolvedContentReceipt,
 };
 use crate::agsdl_host::{HostStartLease, HostState};
 use crate::agsdl_host_flow030::{FlowHost030, NativeRouteMaterial030, RouteMaterialVerifier030};
@@ -13,8 +15,8 @@ use crate::db::agsdl_execution::{
     dto::EngineOwner,
     failure,
     flow030::{
-        FlowEffect030, FlowEffectKind030, FlowPlan030, FlowState030, PrepareRef030, Producer030,
-        Target030,
+        FlowEffect030, FlowEffectKind030, FlowIdentity030, FlowPlan030, FlowState030,
+        PrepareRef030, Producer030, Target030,
     },
     flow_store030::CheckFuture,
     json_lexemes030::document_tokens_equal,
@@ -86,8 +88,68 @@ pub(crate) struct AttestedRouteSource030 {
     producer: Producer030,
     owner: EngineOwner,
     generation: String,
+    preparation_effect_id: String,
     source_json: String,
     native_receipt_id: String,
+}
+/// A process-local COMMIT correlation, not a dispatch or content capability.
+/// Only a native source can construct it; model/IPC JSON cannot recreate it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RouteSourceCommitMarker030 {
+    reference: PrepareRef030,
+    owner: EngineOwner,
+    generation: String,
+    row_sha256: String,
+}
+impl RouteSourceCommitMarker030 {
+    pub(crate) fn identity(&self) -> &FlowIdentity030 {
+        &self.reference.identity
+    }
+    pub(crate) fn reference(&self) -> &PrepareRef030 {
+        &self.reference
+    }
+    pub(crate) fn owner(&self) -> &EngineOwner {
+        &self.owner
+    }
+    pub(crate) fn generation(&self) -> &str {
+        &self.generation
+    }
+}
+impl AttestedRouteSource030 {
+    pub(crate) fn commit_marker(&self) -> Result<RouteSourceCommitMarker030> {
+        // Other producer kinds need their own exact readback before using the
+        // common barrier. This path only admits native error sources today.
+        require(self.reference.route.kind == "error" && !self.native_receipt_id.is_empty())?;
+        let row = json!({
+            "system_id": self.capture.identity.system_start_id,
+            "invocation_id": self.capture.identity.flow_invocation_id,
+            "prepare_id": self.reference.prepare_id,
+            "preparation_effect_id": self.preparation_effect_id,
+            "owner_epoch": self.owner.owner_epoch,
+            "generation": self.generation,
+            "capture_sha256": sha(&serde_json::to_vec(&self.capture)?),
+            "native_receipt_id": self.native_receipt_id,
+            "receipt_kind": "error",
+            "work_event_id": null,
+            "producer_json": serde_json::to_string(&self.producer)?,
+            "source_json": self.source_json,
+        });
+        Ok(RouteSourceCommitMarker030 {
+            reference: self.reference.clone(),
+            owner: self.owner.clone(),
+            generation: self.generation.clone(),
+            row_sha256: sha(&serde_json::to_vec(&row)?),
+        })
+    }
+    /// Transport for a native source without captured content reads. The SQL
+    /// verifier rechecks this source before the pure helper may consume it.
+    pub(crate) fn source_only_material(&self) -> NativeRouteMaterial030 {
+        NativeRouteMaterial030 {
+            source_json: self.source_json.clone(),
+            content_receipts_json: json!({"format":"macro-agsdl-route-content/1","occurrences":[]})
+                .to_string(),
+        }
+    }
 }
 /// Owns the actual context and the actual 11 resolution results. There is no
 /// constructor accepting deserialized receipts or a callback that supplies them.
@@ -135,8 +197,17 @@ impl RouteAttestor030 {
         capture: &StartCapture030,
         reference: &PrepareRef030,
     ) -> Result<(Producer030, String)> {
-        self.live(lease)?;
         runtime.available(&capture.identity)?;
+        self.current_source_tx(db, lease, capture, reference).await
+    }
+    async fn current_source_tx(
+        &self,
+        db: &mut SqliteConnection,
+        lease: &HostStartLease,
+        capture: &StartCapture030,
+        reference: &PrepareRef030,
+    ) -> Result<(Producer030, String)> {
+        self.live(lease)?;
         require(
             reference.identity == capture.identity
                 && self.owner.system_start_id == capture.identity.system_start_id,
@@ -192,7 +263,133 @@ impl RouteAttestor030 {
         Ok((preparation.producer.clone(), matching.remove(0)))
     }
 
-    /// Persists one agent terminal source. Calls, humans, joins and errors need
+    /// An error route takes its source from the native reducer's pending
+    /// preparation, never from an agent result or a helper's JSON cache.
+    pub(crate) async fn attest_error_source_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        lease: &HostStartLease,
+        runtime: &FlowHost030,
+        capture: &StartCapture030,
+        reference: &PrepareRef030,
+    ) -> Result<AttestedRouteSource030> {
+        let mut save = tx.begin().await?;
+        let (producer, effect_id) = self
+            .current_tx(&mut save, lease, runtime, capture, reference)
+            .await?;
+        require(reference.route.kind == "error")?;
+        let source_json = Self::error_source_json(&producer);
+        let native_receipt_id = uuid::Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO engine_flow030_route_source_attestations(system_id,invocation_id,prepare_id,preparation_effect_id,owner_epoch,generation,capture_sha256,native_receipt_id,receipt_kind,work_event_id,producer_json,source_json) VALUES(?,?,?,?,?,?,?,?,'error',NULL,?,?)")
+            .bind(&capture.identity.system_start_id).bind(&capture.identity.flow_invocation_id)
+            .bind(&reference.prepare_id).bind(&effect_id).bind(&self.owner.owner_epoch)
+            .bind(&self.generation).bind(sha(&serde_json::to_vec(capture)?)).bind(&native_receipt_id)
+            .bind(serde_json::to_string(&producer)?).bind(&source_json)
+            .execute(&mut *save).await?;
+        let material = NativeRouteMaterial030 {
+            source_json: source_json.clone(),
+            content_receipts_json: json!({"format":"macro-agsdl-route-content/1","occurrences":[]})
+                .to_string(),
+        };
+        self.verifier
+            .attest_tx(&mut save, capture, reference, &producer, &material)
+            .await
+            .map_err(verification_error)?;
+        self.live(lease)?;
+        runtime.available(&capture.identity)?;
+        save.commit().await?;
+        Ok(AttestedRouteSource030 {
+            capture: capture.clone(),
+            reference: reference.clone(),
+            producer,
+            owner: self.owner.clone(),
+            generation: self.generation.clone(),
+            preparation_effect_id: effect_id,
+            source_json,
+            native_receipt_id,
+        })
+    }
+
+    fn error_source_json(producer: &Producer030) -> String {
+        json!({
+            "terminalId": producer.activation_id,
+            "producerStep": producer.step,
+            "producerAgent": null,
+            "kind": "error",
+            "outputJson": producer.output_json,
+            "provenance": {"instructions": []}
+        })
+        .to_string()
+    }
+
+    /// Recover an existing source while its native preparation is still pending.
+    /// This only reads the caller's SQL snapshot and never clears a COMMIT
+    /// barrier. Absence is not evidence of rollback and never authorizes retry.
+    pub(crate) async fn inspect_error_source_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        lease: &HostStartLease,
+        runtime: &FlowHost030,
+        capture: &StartCapture030,
+        reference: &PrepareRef030,
+    ) -> Result<Option<AttestedRouteSource030>> {
+        runtime.available_for_route_source_readback(reference)?;
+        let (producer, effect_id) = self
+            .current_source_tx(tx, lease, capture, reference)
+            .await?;
+        require(reference.route.kind == "error")?;
+        let row = sqlx::query("SELECT preparation_effect_id,owner_epoch,generation,capture_sha256,native_receipt_id,receipt_kind,work_event_id,producer_json,source_json FROM engine_flow030_route_source_attestations WHERE system_id=? AND invocation_id=? AND prepare_id=?")
+            .bind(&capture.identity.system_start_id)
+            .bind(&capture.identity.flow_invocation_id)
+            .bind(&reference.prepare_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+        let Some(row) = row else {
+            self.live(lease)?;
+            runtime.available_for_route_source_readback(reference)?;
+            return Ok(None);
+        };
+        let source_json = Self::error_source_json(&producer);
+        let native_receipt_id: String = row.get("native_receipt_id");
+        require(
+            row.get::<&str, _>("preparation_effect_id") == effect_id
+                && row.get::<&str, _>("owner_epoch") == self.owner.owner_epoch
+                && row.get::<&str, _>("generation") == self.generation
+                && row.get::<&str, _>("capture_sha256") == sha(&serde_json::to_vec(capture)?)
+                && !native_receipt_id.is_empty()
+                && row.get::<&str, _>("receipt_kind") == "error"
+                && row.get::<Option<&str>, _>("work_event_id").is_none()
+                && row.get::<&str, _>("producer_json") == serde_json::to_string(&producer)?
+                && row.get::<&str, _>("source_json") == source_json,
+        )?;
+        let material = NativeRouteMaterial030 {
+            source_json: source_json.clone(),
+            content_receipts_json: json!({"format":"macro-agsdl-route-content/1","occurrences":[]})
+                .to_string(),
+        };
+        self.verifier
+            .attest_tx(tx, capture, reference, &producer, &material)
+            .await
+            .map_err(verification_error)?;
+        self.live(lease)?;
+        runtime.available_for_route_source_readback(reference)?;
+        let source = AttestedRouteSource030 {
+            capture: capture.clone(),
+            reference: reference.clone(),
+            producer,
+            owner: self.owner.clone(),
+            generation: self.generation.clone(),
+            preparation_effect_id: effect_id,
+            source_json,
+            native_receipt_id,
+        };
+        if let Some(marker) = runtime.pending_route_source_commit(reference)? {
+            require(marker == source.commit_marker()?)?;
+        }
+        Ok(Some(source))
+    }
+
+    /// Persists one agent terminal source. Calls, humans and joins need
     /// their own native terminal authority; they cannot borrow an agent event.
     /// A savepoint makes a rejected attestation leave no partial source row.
     pub(crate) async fn attest_agent_source_tx(
@@ -278,6 +475,7 @@ impl RouteAttestor030 {
             producer,
             owner: self.owner.clone(),
             generation: self.generation.clone(),
+            preparation_effect_id: effect_id,
             source_json,
             native_receipt_id,
         })
@@ -285,6 +483,7 @@ impl RouteAttestor030 {
 
     /// The caller obtains the context from the native recipient policy owner.
     /// This function performs actual 11 resolution, never JSON cache replay.
+    #[cfg(feature = "agsdl-content-qa")]
     pub(crate) async fn resolve_occurrence(
         &self,
         source: &AttestedRouteSource030,
@@ -510,6 +709,6 @@ fn transport_receipt(
             "mediaType":p.media_type,"sha256":p.sha256,"policyDigest":p.policy_digest}}))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "agsdl-content-qa"))]
 #[path = "agsdl_host_route_attestations030_tests.rs"]
 mod tests;

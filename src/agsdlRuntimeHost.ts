@@ -5,7 +5,7 @@ import { prepareCall } from './services/agsdlExecution/constraints';
 import { assessNativeToolPolicy } from './services/agsdlExecution/nativeToolPolicy';
 import { executionHostFailed, executionHostCompleteCompile, executionHostNextCompile, executionHostReady } from './services/tauriIpc';
 import { compilePlan } from './services/agsdlExecution/compiler';
-import { encodeHostCompilation } from './services/agsdlExecution/hostCompilation';
+import { compileHost030, encodeHostCompilation } from './services/agsdlExecution/hostCompilation';
 import { captureSourceRevision } from './services/agsdlExecution/metadata';
 import { buildNativeRegistry, type NativeRegistryObservation } from './services/agsdlExecution/nativeRegistry';
 import { normalizeMessage } from './services/agsdlExecution/content';
@@ -13,6 +13,7 @@ import { ConformanceError, decode, record } from './services/agsdlExecution/exac
 import { captureRegistry } from './services/agsdlExecution/registry';
 import { createHostWorkPort030 } from './services/agsdlExecution/hostWorkPort030';
 import { runHostWorkPump030 } from './services/agsdlExecution/hostWorkPump030';
+import { createHostRoutePort030 } from './services/agsdlExecution/hostRouteBroker030';
 import { connectValueSchemaValidator030 } from './services/agsdlExecution/valueSchemaPort030';
 import { NumberToken, parse } from './vendor/agsdl/v0.3/json.mjs';
 import { validate } from './vendor/agsdl/v0.3/valueschema.mjs';
@@ -43,6 +44,9 @@ async function start(): Promise<void> {
   void runHostWorkPump030(createHostWorkPort030(generation, validator)).catch(async () => {
     await executionHostFailed().catch(() => undefined);
   });
+  void runHostWorkPump030(createHostRoutePort030(generation)).catch(async () => {
+    await executionHostFailed().catch(() => undefined);
+  });
   try {
     for (;;) {
       const job = await executionHostNextCompile();
@@ -50,6 +54,11 @@ async function start(): Promise<void> {
       // Only the registry transport envelope uses ordinary JSON. Authored source,
       // declarations, schemas, settings and exact values retain their original strings.
       const observation = JSON.parse(job.registryJson);
+      if (observation.format === 'macro-agsdl-registry/030') {
+        const encoded = await compileHost030(job.authoredSource, captureSourceRevision(job.source), observation);
+        await executionHostCompleteCompile(job.ticket, encoded);
+        continue;
+      }
       let registry;
       try {
         registry = observation.format === 'macro-native-registry-observation/1'

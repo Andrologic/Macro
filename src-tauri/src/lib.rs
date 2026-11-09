@@ -91,8 +91,11 @@ mod native_quit_consent {
     }
 }
 
-#[cfg(feature = "agsdl-content-qa")]
 pub(crate) mod agsdl_content;
+#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+pub async fn run_agsdl_engine_isolation_qa() {
+    agsdl_host_example030::run_isolation_checks030().await;
+}
 mod agsdl_host;
 mod agsdl_host_calls;
 mod agsdl_host_capture;
@@ -101,19 +104,21 @@ mod agsdl_host_claude;
 mod agsdl_host_codex;
 mod agsdl_host_compiler;
 mod agsdl_host_confinement;
+mod agsdl_host_dispatch030;
+#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+mod agsdl_host_example030;
 mod agsdl_host_flow030;
 mod agsdl_host_harness030;
 mod agsdl_host_projection030;
 mod agsdl_host_provider;
 mod agsdl_host_route030;
-#[cfg(feature = "agsdl-content-qa")]
 mod agsdl_host_route_attestations030;
-#[cfg(feature = "agsdl-content-qa")]
 mod agsdl_host_route_verifier030;
 mod agsdl_host_stop030;
 mod agsdl_host_tasks;
 mod agsdl_host_tools;
 mod agsdl_host_work;
+mod agsdl_host_work_admission030;
 mod agsdl_intent_coordinator;
 pub(crate) mod agsdl_permissions;
 mod app_quit_state;
@@ -587,6 +592,8 @@ pub fn run() {
         .manage(commands::workspace::ProjectOperationStore::default())
         .manage(commands::terminal::TerminalSessionStore::default())
         .setup(move |app| {
+            #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+            agsdl_host_example030::validate_qa_isolation(app.handle())?;
             commands::pilot_secrets::setup(app.handle());
             agsdl_host::install(app.handle())?;
             match app_updates::staged_update_requires_native_confirmation(app.handle()) {
@@ -751,6 +758,11 @@ pub fn run() {
             // - WorkspaceMetadataRoot: stable root used for workspace metadata CRUD
             // - WorkspaceRoot: runtime root used by file tools/debug execution context
             let workspace_path = config.workspace_path.clone();
+            #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+            agsdl_host_example030::validate_qa_workspace(
+                &workspace_path,
+                config.workspace_path_source.is_default(),
+            )?;
             if config.workspace_path_source.is_default() && !cfg!(debug_assertions) {
                 std::fs::create_dir_all(&workspace_path).map_err(|error| {
                     std::io::Error::other(format!(
@@ -805,6 +817,9 @@ pub fn run() {
                     }
                 }
             });
+
+            #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+            agsdl_host_example030::launch_if_requested(app.handle());
 
             Ok(())
         })

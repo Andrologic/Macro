@@ -137,6 +137,34 @@ impl HostStartLease {
         self.ensure_live()?;
         runtime.acknowledge_work_commit(marker)
     }
+
+    pub(crate) fn acknowledge_route_source_commit(
+        &self,
+        runtime: &crate::agsdl_host_flow030::FlowHost030,
+        marker: &crate::agsdl_host_route_attestations030::RouteSourceCommitMarker030,
+    ) -> Result<()> {
+        let _handoff = self.host.handoff.lock().map_err(|_| {
+            failure(
+                "RUNTIME_UNAVAILABLE",
+                "route",
+                "Host admission is unavailable",
+            )
+        })?;
+        self.ensure_live()?;
+        if marker.generation() != self.host.generation
+            || marker.identity().system_start_id != marker.owner().system_start_id
+            || self
+                .host
+                .owners
+                .lock()
+                .map_err(|_| failure("RUNTIME_UNAVAILABLE", "route", "Host ownership unavailable"))?
+                .get(&marker.owner().system_start_id)
+                != Some(marker.owner())
+        {
+            return Err(failure("AUTHORITY", "route", "Native route owner changed"));
+        }
+        runtime.acknowledge_route_source_commit(marker)
+    }
     /// Pure route preparation is still untrusted data until the native owner
     /// verifies and commits its receipt against the current flow transaction.
     pub(crate) async fn prepare_route030(
