@@ -44,7 +44,7 @@ export function subscribeRunAttention030(registrations: readonly WorkflowRunRegi
   const subscriptions = registrations.map(({ access, scope }) => {
     const check = () => {
       const snapshot = access.getSnapshot();
-      if (snapshot.history.kind === 'stale' || snapshot.history.kind === 'loading') return;
+      if (snapshot.history.kind !== 'ready') return;
       for (const read of Object.values(snapshot.runs)) {
         if (read.kind !== 'ready' || read.value.state.humans.kind !== 'ready') continue;
         const { capture } = read.value;

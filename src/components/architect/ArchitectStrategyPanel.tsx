@@ -26,6 +26,7 @@ export function WorkflowRunView030({ bundle, currentSource, target }: {
   const { t } = useAgsdlTranslation();
   const host = useRef<HTMLDivElement>(null);
   const { access } = bundle;
+  const registry = useSyncExternalStore(subscribeWorkflowRunAccess030, workflowRunAccessSnapshot030, workflowRunAccessSnapshot030);
   const focusedTarget = useRef<string>(undefined);
   const bridge = useRef<RunGraphBridge030>(undefined);
   const snapshot = useSyncExternalStore(access.subscribe.bind(access), access.getSnapshot.bind(access), access.getSnapshot.bind(access));
@@ -54,7 +55,7 @@ export function WorkflowRunView030({ bundle, currentSource, target }: {
     const requests = stale ? { kind: 'stale' as const, revision: run.state.revision,
       retained: retainedRunValue030(run.state.humans) ?? [], refusal: stale.refusal }
       : pending ? { kind: 'loading' as const, retained: retainedRunValue030(run.state.humans) } : run.state.humans;
-    const registration = workflowRunAccessSnapshot030().find(item => item.access === access);
+    const registration = registry.find(item => item.access === access);
     return humanClient
       ? <HumanRequests030 requests={requests} client={humanClient} onOpenRequest={request => openWorkflowRun030({ ...request, conversationId: registration?.scope.conversationId })}
           onOpenOccurrence={activation => {
@@ -65,6 +66,10 @@ export function WorkflowRunView030({ bundle, currentSource, target }: {
       : <p role="status">{t('agsdl.shell030.humanUnavailable')}</p>;
   };
   return <div ref={host} className="flex h-full min-h-0 min-w-0 flex-col">
+    {bundle.catalogError && <div role="alert" className="border-b border-border p-3 text-xs">
+      <p>{t('agsdl.run030.readFailed')}</p><details><summary>{t('agsdl.run030.captureDetails')}</summary>
+        <p>{bundle.catalogError.code}: {bundle.catalogError.message}</p></details>
+    </div>}
     {exact ? <ExecutionMonitor030 key={target ? JSON.stringify(target) : access.scopeKey} access={access}
       initialRunId={target?.scope.systemStartId} currentSource={currentSource} renderHumans={humans} renderGraph={value => { bridge.current = value; return null; }} />
       : <p role="status" className="p-3 text-xs">{t('agsdl.shell030.exactUnavailable')}</p>}

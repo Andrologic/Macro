@@ -14,8 +14,8 @@ it('maps only attested facts, keeps exact revisions and exposes missing facts wi
   const read = access.getSnapshot().runs.run;
   expect(read.kind).toBe('ready');
   const inspection = retainedRunValue030(read)!;
-  expect(inspection.state).toMatchObject({ revision: f.summary.revision, verdict: 'succeeded', ownerStatus: 'live',
-    stopping: true, physicalPending: '1', stop: { kind: 'unavailable', gap: 'stop-proof' },
+  expect(inspection.state).toMatchObject({ revision: f.summary.revision, verdict: null, ownerStatus: 'live',
+    stopping: false, physicalPending: '1', stop: { kind: 'unavailable', gap: 'stop-proof' },
     uncertainties: { kind: 'unavailable', gap: 'uncertainty' }, humans: { kind: 'unavailable', gap: 'human-flow-projection' },
     diagnostics: { kind: 'unavailable', gap: 'diagnostics' }, chronology: { kind: 'unavailable', gap: 'chronology' } });
   expect(retainedRunValue030(inspection.state.occurrences)?.[0].details).toEqual({ kind: 'unavailable', gap: 'occurrence-details' });
@@ -369,4 +369,50 @@ it('rejects first read failures with distinct conflict, scope, transport and unc
     await access.refreshHistory();
     expect(access.getSnapshot().history.kind).toBe('ready');
   }
+});
+
+it('publishes an explicit first-read error outside Tauri and can subsequently recover', async () => {
+  const f=await fixture();const {scope,transport}=transportFor(f);
+  const {removeTauriRuntimeMock}=await import('../../test-utils/tauriRuntime');removeTauriRuntimeMock();
+  const offline=createRunInspectionAccess030(scope);
+  await expect(offline.refreshHistory()).rejects.toMatchObject({kind:'transport'});
+  expect(offline.getSnapshot().history.kind).toBe('error');
+  const history=offline.getSnapshot().history;
+  if(history.kind!=='error')throw new Error('Expected an error state');
+  expect(history.error.message.length).toBeGreaterThan(0);
+  let fail=true;transport.listExecutionRuns030=async()=>{if(fail)throw new Error('Offline');return {runs:[f.summary],nextCursor:null};};
+  const access=createRunInspectionAccess030(scope,transport);
+  await expect(access.refreshHistory()).rejects.toBeDefined();
+  expect(access.getSnapshot().history.kind).toBe('error');
+  fail=false;await access.refreshHistory();expect(access.getSnapshot().history.kind).toBe('ready');
+});
+
+it('uses reducer-compatible selectors, path ancestry, terminal states and missing true-flow human rows in its shared fixtures', async () => {
+  const {nativeAgentRunFixture030}=await import('./runAccess030.testSupport');
+  const {validateDocumentBytes}=await import('./document');
+  const fixtures=[await fixture(),...await Promise.all(['done','running','stopping','queued','preparing'].map(phase=>nativeAgentRunFixture030(`agent-${phase}`,phase)))];
+  for(const f of fixtures){
+    const document=JSON.parse(f.capture.authoredSource);
+    expect(validateDocumentBytes(new TextEncoder().encode(f.capture.authoredSource)).valid).toBe(true);
+    const instances=new Map(f.runtime.items.flatMap(item=>item.kind==='instance'?[[item.value.id,item.value] as const]:[]));
+    const activations=f.runtime.items.flatMap(item=>item.kind==='activation'?[item.value]:[]);
+    for(const a of activations){
+      expect(a.pathIds).toEqual(a.context.flatMap(frame=>frame.kind==='path'?[frame.pathId]:[]));
+      expect(a.composeActivationIds).toEqual(a.context.flatMap(frame=>frame.kind==='compose'?[frame.activationId]:[]));
+      if(a.context.length===0)expect(a.nearestFanoutIndex).toBeNull();
+      const step=a.step?.length===1?document.flow.steps[a.step[0]]:undefined;
+      if(a.phase==='body')expect(step?.type).toBe('compose');
+      if(a.phase==='group')expect(step?.type).toBe('join');
+      if(step?.type==='agent'&&a.instanceId)expect(instances.get(a.instanceId)?.selectorKind).toBe(step.instance??'shared');
+    }
+    for(const i of instances.values()){
+      if(i.discarded){expect(i.selectorKind).toBe('new');expect(i.currentActivationId).toBeNull();expect(i.queueActivationIds).toEqual([]);}
+      if(i.queueActivationIds.length)expect(activations.find(a=>a.id===i.currentActivationId)?.physical).toBe(true);
+    }
+    if(f.summary.verdict!==null)expect(activations.every(a=>a.phase==='done'&&!a.physical)).toBe(true);
+    const {transport}=transportFor(f);
+    await expect(transport.readExecutionHumans030(f.scope)).rejects.toMatchObject({code:'NOT_FOUND'});
+  }
+  await expect(nativeAgentRunFixture030('invalid','body')).rejects.toThrow('Agent fixture phase');
+  await expect(nativeAgentRunFixture030('invalid','group')).rejects.toThrow('Agent fixture phase');
 });

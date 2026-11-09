@@ -14,6 +14,7 @@ import { compareSequence, sameWork } from './agsdlExecution/invariants';
 import { runCaptureKey030 } from './agsdl/runGraphProjection030';
 import { retainedRunValue030 } from './agsdl/runtimeProjection030';
 import { createRunInspectionAccess030 } from './agsdl/runAccess030';
+import { toServiceError } from './contracts/errors';
 import { createReadOnlyHumanRequestClient030 } from './agsdl/humanReadAccess030';
 import { object, readDocument } from './agsdl/document';
 
@@ -30,6 +31,7 @@ export interface WorkflowRunScope030 {
 export interface WorkflowRunAccess030 {
   access: RunInspectionAccess030;
   humanClient?: HumanRequestClient030;
+  catalogError?: { code: string; message: string };
   humanClientForRun?: (run: RunInspection030) => HumanRequestClient030 | undefined;
 }
 export interface WorkflowRunRegistration030 extends WorkflowRunAccess030 { scope: WorkflowRunScope030 }
@@ -254,7 +256,7 @@ export function projectWorkflowAgentTasks030(plan: ArchitectPlanRecord, inspecti
     const phases = items.map(item => phaseStates[item.activation.phase] ?? 'uncertain');
     const taskState: WorkflowAgentTaskState = attention ? 'approval' : active ? state.stopping ? 'stopRequested' : 'active'
       : phases.includes('uncertain') ? 'uncertain' : phases.includes('stopRequested') ? 'stopRequested'
-      : instance.discarded ? 'stopped' : phases.includes('active') ? 'active' : instance.queueActivationIds.length > 0 || phases.includes('queued') ? 'queued'
+      : phases.includes('active') ? 'active' : instance.queueActivationIds.length > 0 || phases.includes('queued') ? 'queued'
       : phases.length ? 'completed' : 'idle';
     const reference: WorkflowAgentTaskReference = {
       systemStartId: capture.systemStartId as SystemStartId, source: capture.source as SourceRevision,
@@ -321,6 +323,20 @@ export function retainWorkflowTaskOrder(previous: readonly CatalogedImplementTas
   });
 }
 
+function hasWorkflowSource030(plan: ArchitectPlanRecord): boolean {
+  if (!plan.agsdl?.source) return false;
+  try { return readDocument(plan.agsdl.source).contract === 'agsdl-0.3.0'; }
+  catch { return false; }
+}
+function setWorkflowCatalogError030(bundle: WorkflowRunAccess030, error: unknown): void {
+  const failure = error === undefined ? undefined : toServiceError(error);
+  const next = failure && { code: failure.code, message: failure.message };
+  if (bundle.catalogError?.code === next?.code && bundle.catalogError?.message === next?.message) return;
+  bundle.catalogError = next;
+  runAccesses030 = [...runAccesses030];
+  runAccessListeners030.forEach(listener => listener());
+}
+
 /** Full native pagination is required before deriving completion or absence.
  * No status is persisted outside SQLite and no execution is dispatched here. */
 export async function loadWorkflowAgentTasks(plans: ArchitectPlanRecord[], projectIds: string[] | null,
@@ -352,15 +368,25 @@ export async function loadWorkflowAgentTasks(plans: ArchitectPlanRecord[], proje
         if (after && cursors.has(after)) throw new Error('Repeated workflow cursor');
         if (after) cursors.add(after);
       } while (after);
-      if (plan.conversationId) {
-        const bundle = getWorkflowRunAccess030({ owner, conversationId: plan.conversationId });
-        if (!bundle) throw new Error('Run inspection access unavailable');
-        await bundle.access.refreshHistory();
-        const history = bundle.access.getSnapshot().history;
-        if (history.kind !== 'ready') throw new Error('Incomplete workflow history');
-        for (const run of history.value) {
-          const inspection = await readWorkflowRun030(run.capture, plan.conversationId);
-          for (const task of projectWorkflowAgentTasks030(plan, inspection)) tasks.set(task.id, task);
+      if (plan.conversationId && hasWorkflowSource030(plan)) {
+        let bundle: WorkflowRunAccess030 | undefined;
+        try {
+          bundle = getWorkflowRunAccess030({ owner, conversationId: plan.conversationId });
+          if (!bundle) throw new Error('Run inspection access unavailable');
+          await bundle.access.refreshHistory();
+          const history = bundle.access.getSnapshot().history;
+          if (history.kind !== 'ready') throw new Error('Incomplete workflow history');
+          let runError: unknown;
+          for (const run of history.value) {
+            try {
+              const inspection = await readWorkflowRun030(run.capture, plan.conversationId);
+              for (const task of projectWorkflowAgentTasks030(plan, inspection)) tasks.set(task.id, task);
+            } catch (error) { runError = error; }
+          }
+          setWorkflowCatalogError030(bundle, runError);
+        } catch (error) {
+          // A failed 030 reader must not discard independently loaded legacy tasks.
+          if (bundle) setWorkflowCatalogError030(bundle, error);
         }
       }
     }

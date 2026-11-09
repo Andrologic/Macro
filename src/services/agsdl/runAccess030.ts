@@ -74,9 +74,8 @@ function failed<T>(previous: RunRead030<T>, error: unknown): RunRead030<T> {
   const retained = retainedRunValue030(previous);
   if (retained !== null && (previous.kind === 'ready' || previous.kind === 'stale'))
     return { kind: 'stale', revision: previous.revision, retained, refusal: refusal(error) };
-  // RunRead has no first-error variant. Keep the prior state and reject the
-  // refresh with RunInspectionReadError030 instead of inventing a DTO gap.
-  return previous;
+  const failure = new RunInspectionReadError030(error);
+  return { kind: 'error', error: { code: failure.code, message: failure.message } };
 }
 
 /** One immutable observation scope per adapter. All refreshes are serialized;

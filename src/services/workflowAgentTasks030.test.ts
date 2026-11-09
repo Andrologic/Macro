@@ -33,7 +33,7 @@ it('discovers actual 030 requests separately from legacy engine_systems and init
   expect(workflowRunAccessSnapshot030()).toBe(registry);
   expect(getWorkflowRunAccess030({owner:f.capture.source.owner,conversationId:plan.conversationId})).toBe(bundle);
   expect(seen).toEqual([]);
-  const tasks = await loadWorkflowAgentTasks([old.plan,plan],null);
+  const tasks = await loadWorkflowAgentTasks([old.plan,{...plan,agsdl:{revision:1,source:f.capture.authoredSource,annexes:{}}}],null);
   expect(tasks).toHaveLength(3);
   const native = tasks.find(item=>item.workflow_execution?.systemStartId === f.capture.systemStartId)!;
   expect(native.status).toBe('Completed');
@@ -62,7 +62,7 @@ it('covers exactly the nine phases published by Rust and keeps done physical wor
   const rust = readFileSync(new URL('../../src-tauri/src/db/agsdl_execution/discovery030.rs',import.meta.url),'utf8');
   const vocabulary = rust.slice(rust.indexOf('activation.phase.as_str()'),rust.indexOf('"Flow 0.3 discovery activation phase'));
   expect(Object.keys(workflowPhaseStates030).sort()).toEqual([...vocabulary.matchAll(/"([a-z]+)"/g)].map(item=>item[1]).sort());
-  const statuses = {ready:'InProgress',queued:'Pending',running:'InProgress',body:'InProgress',group:'InProgress',done:'Completed',preparing:'InProgress',barrier:'InProgress',stopping:'Blocked'} as const;
+  const statuses = {queued:'InProgress',running:'InProgress',done:'Completed',preparing:'InProgress',stopping:'Blocked'} as const;
   for (const [phase,status] of Object.entries(statuses)) {
     const f = await nativeAgentRunFixture030(`native-${phase}`,phase); const {transport,scope} = nativeTransportFor030(f);
     const access = createRunInspectionAccess030(scope,transport); await access.refreshRun(f.capture.systemStartId);
@@ -71,7 +71,41 @@ it('covers exactly the nine phases published by Rust and keeps done physical wor
     if(phase === 'done') {
       const inspection = read.value;
       const occurrences = inspection.state.occurrences; if(occurrences.kind !== 'ready') throw new Error('Occurrences not ready');
-      expect(projectWorkflowAgentTasks030(plan,{...inspection,state:{...inspection.state,occurrences:{...occurrences,value:occurrences.value.map(item=>({...item,activation:{...item.activation,physical:true}}))}}})[0].status).toBe('InProgress');
+      expect(projectWorkflowAgentTasks030(plan,{...inspection,state:{...inspection.state,verdict:null,physicalPending:'1',instances:inspection.state.instances.map(instance=>({...instance,discarded:false,currentActivationId:'activation-1'})),occurrences:{...occurrences,value:occurrences.value.map(item=>({...item,activation:{...item.activation,physical:true}}))}}})[0].status).toBe('InProgress');
     }
   }
+});
+
+it('never reads 030 intents for conversations without a 030 source and always loads their historical tasks', async () => {
+  const old = await workflowTaskFixture(); let factories = 0;
+  configureWorkflowRunAccess030(() => { factories++; throw new Error('No 030 reader should be created'); });
+  for (const agsdl of [undefined, old.plan.agsdl, {revision:1,source:'{',annexes:{}}]) {
+    const tasks = await loadWorkflowAgentTasks([{...old.plan,conversationId:'design-conversation',agsdl}],null,old.ports);
+    expect(tasks).toHaveLength(2);
+    expect(tasks.every(item=>item.workflow_execution?.systemStartId===old.snapshot.systemStartId)).toBe(true);
+  }
+  expect(factories).toBe(0);
+});
+
+it('keeps a native 030 scope failure local while returning the independently read historical tasks', async () => {
+  const old=await workflowTaskFixture();const f=await nativeAgentRunFixture030();const {transport,scope}=nativeTransportFor030(f);
+  transport.readExecutionIntentsVersioned=async()=>{throw {code:'SCOPE_INVALID',message:'Native intent scope rejected'};};
+  configureWorkflowRunAccess030(candidate=>({access:createRunInspectionAccess030({...candidate,conversationId:candidate.conversationId!},transport)}));
+  const legacyPorts={...old.ports,runs:async(request:Parameters<typeof old.ports.runs>[0])=>request.owner.projectId==='project'?{runs:[old.summary],nextCursor:null}:{runs:[],nextCursor:null}};
+  const nativePlan={...plan,agsdl:{revision:1,source:f.capture.authoredSource,annexes:{}}};
+  const tasks=await loadWorkflowAgentTasks([nativePlan,old.plan],null,legacyPorts);
+  expect(tasks).toHaveLength(2);
+  expect(tasks.every(item=>item.workflow_execution?.systemStartId===old.snapshot.systemStartId)).toBe(true);
+  expect(getWorkflowRunAccess030(scope)?.catalogError).toMatchObject({code:'SCOPE_INVALID',message:'Native intent scope rejected'});
+  transport.readExecutionIntentsVersioned=async()=>[nativeIntentFor030(f)];
+  expect(await loadWorkflowAgentTasks([nativePlan,old.plan],null,legacyPorts)).toHaveLength(3);
+  expect(getWorkflowRunAccess030(scope)?.catalogError).toBeUndefined();
+});
+
+it('treats physical_end retirement of a new instance as normal completion, independent of its discarded flag', async () => {
+  const f=await nativeAgentRunFixture030();const {transport,scope}=nativeTransportFor030(f);
+  const access=createRunInspectionAccess030(scope,transport);await access.refreshRun(f.capture.systemStartId);
+  const read=access.getSnapshot().runs[f.capture.systemStartId];if(read.kind!=='ready')throw new Error('Run not ready');
+  expect(read.value.state).toMatchObject({verdict:'succeeded',physicalPending:'0',instances:[{selectorKind:'new',discarded:true,currentActivationId:null,queueActivationIds:[]}]});
+  expect(projectWorkflowAgentTasks030(plan,read.value)[0]).toMatchObject({status:'Completed',is_blocked:false});
 });

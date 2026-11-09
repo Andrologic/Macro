@@ -47,7 +47,7 @@ async function qualifiedRetainedRequest() {
   const {f,access}=await observedNativeRun();const snapshot=access.getSnapshot();
   const read=snapshot.runs[f.capture.systemStartId]; if(read.kind!=='ready')throw new Error('No native observation');
   const request=humanFixture030({scope:{systemStartId:f.capture.systemStartId,source:f.capture.source},
-    occurrences:[{workId:'human-work',activation:{kind:'available',scope:f.scope,activationId:'activation-1'}}]});
+    occurrences:[{workId:'public-human-work',activation:{kind:'available',scope:f.scope,activationId:'activation-1'}}]});
   const inspection={...read.value,state:{...read.value.state,humans:{kind:'ready' as const,revision:request.revision,value:[request]}}};
   const observed=new RunInspectionDouble030({...snapshot,runs:{[f.capture.systemStartId]:{...read,value:inspection}}});
   const client=createHumanRequestClient030({storage:memoryDraftStorage030(),read:async()=>request,submit:async()=>{throw new Error('No submission authorized');}});
@@ -79,4 +79,37 @@ it('shares attention deduplication through remount and never refocuses a request
   await mount(observed,client,target);
   expect(notification).toHaveBeenCalledTimes(1);
   stop();
+});
+
+it('shows a local 030 catalog failure without hiding historical tasks',async()=>{
+  const {loadWorkflowAgentTasks,configureWorkflowRunAccess030,getWorkflowRunAccess030}=await import('../../services/workflowAgentTasks');
+  const {workflowTaskFixture}=await import('../../services/workflowAgentTasks.fixtures');
+  const old=await workflowTaskFixture();const f=await nativeAgentRunFixture030();const {transport,scope}=nativeTransportFor030(f);
+  transport.readExecutionIntentsVersioned=async()=>{throw {code:'SCOPE_INVALID',message:'Native intent scope rejected'};};
+  configureWorkflowRunAccess030(candidate=>({access:createRunInspectionAccess030({...candidate,conversationId:candidate.conversationId!},transport)}));
+  try{
+    const plans=[old.plan,{...old.plan,id:'sample-plan',projectIds:['sample-project'],conversationId:'design-conversation',agsdl:{revision:1,source:f.capture.authoredSource,annexes:{}}}];
+    const ports={...old.ports,runs:async(request:Parameters<typeof old.ports.runs>[0])=>request.owner.projectId==='project'?{runs:[old.summary],nextCursor:null}:{runs:[],nextCursor:null}};
+    expect(await loadWorkflowAgentTasks(plans,null,ports)).toHaveLength(2);
+    host=document.createElement('div');document.body.append(host);root=createRoot(host);
+    await act(async()=>root!.render(<WorkflowRunView030 bundle={getWorkflowRunAccess030(scope)!} />));
+    expect(host.querySelector('[role="alert"]')).not.toBeNull();
+    expect(host.textContent).toContain('SCOPE_INVALID');
+    expect(host.textContent).toContain('Native intent scope rejected');
+  }finally{
+    await act(async()=>root?.unmount());root=undefined;
+    configureWorkflowRunAccess030(undefined);
+  }
+});
+
+it('renders a failed first native read as an error instead of an indefinite loading history',async()=>{
+  const {f}=await observedNativeRun();
+  const {removeTauriRuntimeMock}=await import('../../test-utils/tauriRuntime');removeTauriRuntimeMock();
+  const access=createRunInspectionAccess030({owner:f.scope.source.owner,conversationId:'design-conversation'});
+  const client=createReadOnlyHumanRequestClient030(f.scope,memoryDraftStorage030());
+  await mount(access,client);
+  expect(access.getSnapshot().history.kind).toBe('error');
+  expect(host.querySelector('[role="alert"]')).not.toBeNull();
+  expect(host.textContent).toContain(i18n.t('agsdl.run030.readFailed',{ns:'agsdl'}));
+  expect(host.textContent).not.toContain(i18n.t('agsdl.run030.loading',{ns:'agsdl'}));
 });

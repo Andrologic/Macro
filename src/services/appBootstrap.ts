@@ -422,7 +422,7 @@ export const waitForDatabaseInitialization: AppBootstrapInit = async (context) =
   }
 };
 
-const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
+export const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
   startSubscriptions: (context) => {
     const scope = createLifecycleScope();
     try {
@@ -443,9 +443,9 @@ const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
     ]);
   },
   initializeDatabaseCritical: waitForDatabaseInitialization,
-  initializeAppCritical: async () => {
+  initializeAppCritical: async context => {
     configureProductionWorkflowRunAccess030();
-    await useAppStore.getState().initializeCritical();
+    await useAppStore.getState().initializeCritical(context);
   },
   resumeAppAfterInitialize: useAppStore.getState().resumeAfterInitialize,
   initializeChatCritical: useChatStore.getState().initializeCritical,
