@@ -29,30 +29,35 @@ const own = (o: Obj, key: string) => Object.hasOwn(o, key);
 const object = (v: unknown): v is Obj => isObject(v);
 const integer = (v: unknown, min: number) => v instanceof NumberToken && isInteger(v) && compareNumbers(v, min) >= 0;
 const text = (v: unknown) => typeof v === 'string' && v.length > 0;
+const addressPattern = /^[A-Za-z][A-Za-z0-9_-]{0,63}(\/[A-Za-z][A-Za-z0-9_-]{0,63})*$/;
+const codePattern = /^[A-Z][A-Z_]*$/;
+// Compare the full match too: JavaScript $ also matches before a final newline.
+const address = (v: unknown) => typeof v === 'string' && addressPattern.exec(v)?.[0] === v;
+const failureCode = (v: unknown) => typeof v === 'string' && codePattern.exec(v)?.[0] === v;
 const hasKeys = (o: Obj, keys: string[]) => keys.every((k) => own(o, k));
 const onlyKeys = (o: Obj, keys: string[]) => Object.keys(o).every((k) => keys.includes(k));
-const isComments = (v: ExactValue) => Array.isArray(v) && v.every((x) => object(x) && text(x.step) && text(x.comment));
+const isComments = (v: ExactValue, expected: boolean) => Array.isArray(v) && v.every((x) => object(x) && address(x.step) && text(x.comment) && (!expected || onlyKeys(x, ['step', 'comment'])));
 const optItem = (o: Obj) => !own(o, 'item') || integer(o.item, 0);
 const optNth = (o: Obj) => !own(o, 'nth') || (integer(o.nth, 1) && Number.isSafeInteger(Number((o.nth as NumberToken).raw)));
-const validMessage = (o: Obj, expected: boolean) => text(o.to) && optItem(o) && (!expected || optNth(o)) &&
+const validMessage = (o: Obj, expected: boolean) => address(o.to) && optItem(o) && (!expected || optNth(o)) &&
   (!own(o, 'prompt') || o.prompt === null || typeof o.prompt === 'string') &&
-  (!own(o, 'resources') || object(o.resources)) && (!own(o, 'comments') || isComments(o.comments)) &&
+  (!own(o, 'resources') || object(o.resources)) && (!own(o, 'comments') || isComments(o.comments, expected)) &&
   (!expected || onlyKeys(o, ['to', 'item', 'nth', 'prompt', 'resources', 'element', 'comments']));
 const outcomes = ['done', 'incomplete', 'reached', 'missed'];
-const validJoin = (o: Obj, expected: boolean) => text(o.join) && typeof o.outcome === 'string' && outcomes.includes(o.outcome) &&
+const validJoin = (o: Obj, expected: boolean) => address(o.join) && typeof o.outcome === 'string' && outcomes.includes(o.outcome) &&
   (!expected || optNth(o)) && (!own(o, 'branches') || object(o.branches)) &&
   (!expected || onlyKeys(o, ['join', 'nth', 'outcome', 'branches']));
 const validEntry = (o: Obj, key: string, expected: boolean) => {
   const keys = key === 'failures' ? ['step', 'item', 'code'] : key === 'cancelled' ? ['step', 'item'] : ['work', 'item', 'answer'];
   return optItem(o) && (!expected || onlyKeys(o, keys)) && (key === 'answers'
-    ? text(o.work) && o.answer === 'no'
-    : text(o.step) && (key !== 'failures' || text(o.code)));
+    ? address(o.work) && o.answer === 'no'
+    : address(o.step) && (key !== 'failures' || failureCode(o.code)));
 };
 const fields = ['run', 'starts', 'messages', 'joins', 'failures', 'cancelled', 'answers'];
 function validRoot(v: ExactValue, expected: boolean): v is Obj {
   if (!object(v) || (expected && !onlyKeys(v, fields)) || !hasKeys(v, expected ? ['run'] : fields) ||
     (v.run !== 'succeeded' && v.run !== 'failed')) return false;
-  if (own(v, 'starts') && (!object(v.starts) || !Object.entries(v.starts).every(([k, n]) => text(k) && integer(n, expected ? 1 : 0)))) return false;
+  if (own(v, 'starts') && (!object(v.starts) || !Object.entries(v.starts).every(([k, n]) => address(k) && integer(n, expected ? 1 : 0)))) return false;
   for (const key of fields.slice(2)) {
     if (!own(v, key)) continue;
     const entries = v[key];

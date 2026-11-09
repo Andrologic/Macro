@@ -59,6 +59,35 @@ describe('run expectation comparison', () => {
     expect(codes({ run: 'succeeded' }, { ...base, answers: null })).toEqual(['INVALID_OBSERVED']);
   });
 
+  test('rejects invalid address and failure-code formats on either input', () => {
+    const malformed = [
+      { starts: { 'invalid address': 1 } },
+      { messages: [{ to: 'invalid address' }] },
+      { messages: [{ to: 'a\n' }] },
+      { messages: [{ to: 'a'.repeat(65) }] },
+      { messages: [{ to: '1invalid' }] },
+      { messages: [{ to: 'a', comments: [{ step: 'invalid address', comment: 'x' }] }] },
+      { joins: [{ join: 'invalid address', outcome: 'done' }] },
+      { failures: [{ step: 'invalid address', code: 'AGENT_FAILED' }] },
+      { failures: [{ step: 'a', code: 'lowercase' }] },
+      { failures: [{ step: 'a', code: 'AGENT_FAILED\n' }] },
+      { cancelled: [{ step: 'invalid address' }] },
+      { answers: [{ work: 'invalid address', answer: 'no' }] },
+    ];
+    for (const patch of malformed) {
+      expect(codes({ run: 'succeeded', ...patch })).toEqual(['INVALID_EXPECTED']);
+      expect(codes({ run: 'succeeded' }, withObserved(patch))).toEqual(['INVALID_OBSERVED']);
+    }
+    const valid = withObserved({ starts: { ['a'.repeat(64)]: 1 }, messages: [{ to: 'outer/inner_1-2' }], failures: [{ step: 'outer/inner_1-2', code: 'AGENT_FAILED' }] });
+    expect(compare({ run: 'succeeded', starts: valid.starts, messages: [{ to: 'outer/inner_1-2' }], failures: valid.failures }, valid)).toEqual([]);
+  });
+
+  test('rejects extra expected comment properties while retaining observed extras', () => {
+    const observed = withObserved({ messages: [{ to: 'a', comments: [{ step: 's', comment: 'x', extra: true }] }] });
+    expect(codes({ run: 'succeeded', messages: [{ to: 'a', comments: [{ step: 's', comment: 'x', extra: true }] }] }, observed)).toEqual(['INVALID_EXPECTED']);
+    expect(compare({ run: 'succeeded', messages: [{ to: 'a', comments: [{ step: 's', comment: 'x' }] }] }, observed)).toEqual([]);
+  });
+
   test('checks a published delivery-steer expectation against a normalized observation', () => {
     const fixture = JSON.parse(readFileSync(new URL('./fixtures/v0.3/conformance/runs/delivery-steer.json', import.meta.url), 'utf8'));
     const observed = withObserved({ starts: { start: 1, work: 1, ping: 1 }, messages: [{ to: 'nudge', prompt: 'Also update the changelog.' }] });
