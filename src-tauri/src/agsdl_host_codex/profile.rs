@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 pub(crate) const ADAPTER: &str = "codex-app-server-v1";
-pub(crate) const VERSION: &str = "0.163.0";
+pub(crate) const VERSION: &str = "0.167.0";
 pub(crate) const PROVIDER: &str = "codex-native";
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -229,7 +229,7 @@ pub(crate) fn prepare(manager: &ConfigManager) -> Result<Profile> {
         failure(
             "CODEX_NOT_INSTALLED",
             "engine",
-            "Codex CLI 0.163.0 is required",
+            "Codex CLI 0.167.x is required",
         )
     })?;
     let directory = manager.root().join("native-engines").join("codex-v1");
@@ -308,6 +308,9 @@ impl Profile {
         })?;
         let mut tool_files = serde_json::Map::new();
         tool_files.insert(":minimal".into(), json!("read"));
+        // Named profiles otherwise inherit writable temporary directories.
+        tool_files.insert(":tmpdir".into(), json!("read"));
+        tool_files.insert(":slash_tmp".into(), json!("read"));
         tool_files.insert(self.bootstrap.to_string_lossy().into_owned(), json!("read"));
         tool_files.insert(
             root.to_string_lossy().into_owned(),
@@ -384,6 +387,17 @@ impl Profile {
             "policyDigest":format!("sha256:{:x}",Sha256::digest(serde_json::to_vec(&self.settings(Path::new(scope["root"].as_str().ok_or_else(|| failure("CORRELATION","scope","Scope root absent"))?),read_only)?)?))}).to_string())
     }
 }
+fn qualified_version(version: &str) -> bool {
+    version
+        .strip_prefix("0.167.")
+        .is_some_and(|patch| !patch.is_empty() && patch.bytes().all(|byte| byte.is_ascii_digit()))
+}
+fn qualified_platform() -> bool {
+    cfg!(any(
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))
+}
 pub(crate) async fn status(manager: &ConfigManager) -> CodexStatus {
     let profile = match prepare(manager) {
         Ok(profile) => profile,
@@ -398,11 +412,15 @@ pub(crate) async fn status(manager: &ConfigManager) -> CodexStatus {
     let Ok(Ok(output)) = output else {
         return result;
     };
-    if String::from_utf8_lossy(&output.stdout).trim() != format!("codex-cli {VERSION}") {
+    let observed = String::from_utf8_lossy(&output.stdout);
+    let Some(version) = observed.trim().strip_prefix("codex-cli ") else {
+        return result;
+    };
+    if !qualified_version(version) {
         return result;
     }
-    result.version = Some(VERSION.into());
-    if !cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+    result.version = Some(version.into());
+    if !qualified_platform() {
         result.code = "CODEX_PLATFORM_UNQUALIFIED".into();
         return result;
     }
@@ -500,6 +518,15 @@ pub(crate) fn verify_layers(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    #[test]
+    fn only_qualified_codex_patch_versions_are_accepted() {
+        for version in ["0.167.0", "0.167.12"] {
+            assert!(qualified_version(version));
+        }
+        for version in ["0.163.0", "0.168.0", "0.167.", "0.167.0-beta", "0.167.0.1"] {
+            assert!(!qualified_version(version));
+        }
+    }
     #[test]
     fn bootstrap_is_stable_and_changes_are_refused_without_deleting_data() {
         let private = tempfile::tempdir().unwrap();

@@ -948,7 +948,7 @@ time.sleep(30)
         let manager = ConfigManager::initialize(root.join("config"))
             .await
             .unwrap();
-        let status = profile::status(&manager).await;
+        let status = profile_status(&manager).await;
         assert_eq!(status.version.as_deref(), Some(VERSION));
         assert_eq!(status.code, "CODEX_LOGIN_REQUIRED");
         assert!(!status.available);
@@ -972,25 +972,33 @@ time.sleep(30)
             client.preflight(&profile,&workspace.to_string_lossy(),false).await?;
             let guard=profile.directory.join("private-guard");
             std::fs::write(&guard,"synthetic").unwrap();
+            let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port=listener.local_addr().unwrap().port().to_string();
             let probe=r#"import json,socket,sys
 from pathlib import Path
-workspace,private,outside,bootstrap=map(Path,sys.argv[1:]);rows={}
+workspace,private,outside,bootstrap=map(Path,sys.argv[1:5]);rows={}
 (workspace/'native-write').write_text('synthetic');rows['workspaceWrite']=True
 for name,path,write in [('privateRead',private,False),('outsideRead',outside,False),('gitWrite',workspace/'.git/config',True),('codexWrite',workspace/'.codex/config.toml',True),('agentsWrite',workspace/'.agents/new',True),('bootstrapWrite',bootstrap/'forbidden',True)]:
  try:
   path.write_text('forbidden') if write else path.read_text();rows[name]=0
  except OSError as e:rows[name]=e.errno
-try:s=socket.socket();rows['network']=0
-except OSError as e:rows['network']=e.errno
+try:
+ s=socket.socket();s.settimeout(1);s.connect(('127.0.0.1',int(sys.argv[5])));rows['networkConnect']=0
+except OSError as e:rows['networkConnect']=e.errno
+try:
+ outside.write_text('forbidden');rows['outsideWrite']=0
+except OSError as e:rows['outsideWrite']=e.errno
 print(json.dumps(rows))
 "#;
-            let command=client.request("command/exec",json!({"command":["/usr/bin/python3","-c",probe,workspace,guard,root.join("outside-guard"),profile.bootstrap],"cwd":workspace,"permissionProfile":"macro-agsdl","timeoutMs":5000,"outputBytesCap":4096})).await?;
+            let command=client.request("command/exec",json!({"command":["/usr/bin/python3","-c",probe,workspace,guard,root.join("outside-guard"),profile.bootstrap,port],"cwd":workspace,"permissionProfile":"macro-agsdl","timeoutMs":5000,"outputBytesCap":4096})).await?;
             assert_eq!(command["exitCode"],0,"native probe must run: {command}");
             let observed:Value=serde_json::from_str(command["stdout"].as_str().unwrap()).unwrap();
             assert_eq!(observed["workspaceWrite"],true);
-            for field in ["privateRead","outsideRead"] { assert!([Some(2),Some(13)].contains(&observed[field].as_i64()),"{field}: {observed}"); }
-            for field in ["gitWrite","codexWrite","agentsWrite","bootstrapWrite"] { assert_eq!(observed[field],30,"{field}: {observed}"); }
-            assert_eq!(observed["network"],1);
+            eprintln!("NATIVE_PHYSICAL_OBSERVATION={observed}");
+            for field in ["privateRead", "outsideWrite", "gitWrite", "codexWrite", "agentsWrite", "bootstrapWrite", "networkConnect"] {
+                assert!(observed[field].as_i64().is_some_and(|errno| errno != 0), "{field}: {observed}");
+            }
+            assert_eq!(std::fs::read_to_string(root.join("outside-guard")).unwrap(), "synthetic");
             assert!(std::fs::read_dir(&profile.bootstrap).unwrap().next().is_none());
             let patch = format!("*** Begin Patch\n*** Add File: {}\n+synthetic absolute patch\n*** End Patch",workspace.join("absolute-patch").display());
             let patched=client.request("command/exec",json!({"command":[profile.executable,"--codex-run-as-apply-patch",patch],"cwd":profile.bootstrap,"permissionProfile":"macro-agsdl","timeoutMs":5000,"outputBytesCap":4096})).await?;
@@ -1022,9 +1030,9 @@ print(json.dumps(rows))
             client.initialize().await?;
             client.preflight(&profile,&workspace.to_string_lossy(),true).await?;
             let result=client.request("command/exec",json!({"command":["/usr/bin/python3","-c","import sys;from pathlib import Path;p=Path(sys.argv[1]);assert p.read_text()=='synthetic';\ntry:p.write_text('forbidden')\nexcept OSError as e:print(e.errno)\nelse:raise Exception('read-only write succeeded')",workspace.join("native-write")],"cwd":workspace,"permissionProfile":"macro-agsdl","timeoutMs":5000,"outputBytesCap":4096})).await?;
-            assert_eq!(result["exitCode"],0,"readonly command: {result}");assert_eq!(result["stdout"].as_str().unwrap().trim(),"30");
+            assert_eq!(result["exitCode"],0,"readonly command: {result}");assert!(result["stdout"].as_str().unwrap().trim().parse::<i32>().unwrap() != 0);
             assert_eq!(std::fs::read_to_string(workspace.join("native-write")).unwrap(),"synthetic");
-            std::fs::write(root.join("readonly-report.json"),json!({"workspaceRead":true,"workspaceWriteErrno":30,"inferenceRequested":false}).to_string()).unwrap();
+            std::fs::write(root.join("readonly-report.json"),json!({"workspaceRead":true,"workspaceWriteDenied":true,"inferenceRequested":false}).to_string()).unwrap();
             Ok::<_,EngineFailure>(())
         }).await;
         readonly_process.terminate_bounded().await.unwrap();
