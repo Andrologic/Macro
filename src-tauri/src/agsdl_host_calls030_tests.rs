@@ -101,13 +101,6 @@ async fn fixture_parts() -> (
     let pool = crate::db::create_pool(&temp.path().join("calls.db"))
         .await
         .unwrap();
-    // Registration belongs to the integrator's DB migration registry.
-    sqlx::raw_sql(include_str!(
-        "db/migrations/039_execution_call_protocol030.sql"
-    ))
-    .execute(&pool)
-    .await
-    .unwrap();
     let id = FlowIdentity030 {
         system_start_id: "system".into(),
         flow_invocation_id: "flow".into(),
@@ -142,7 +135,10 @@ impl Fixture {
             instance: None,
             delivery: None,
             max_visits_json: None,
-            timeout_ms_json: None,
+            timeout_ms_json: serde_json::from_str::<serde_json::Value>(declaration)
+                .unwrap()
+                .get("timeoutMs")
+                .map(ToString::to_string),
             submission_contract_json: None,
         }];
         plan.routes = vec![Route030 {
@@ -539,6 +535,43 @@ impl Fixture {
     }
 }
 
+// Synthetic durable 040 rows exercise the call verifier independently of a clock.
+async fn clock_decision(f: &Fixture, attempt: &CallAttempt030, variant: &str) {
+    let mut reference = attempt.work().clone();
+    let mut generation = attempt.generation().to_owned();
+    let mut owner = attempt.owner_epoch().to_owned();
+    let mut identity = attempt.identity().clone();
+    if variant == "activation" {
+        reference.activation_id.push_str("-foreign");
+    }
+    if variant == "visit" {
+        reference.start_effect_id.push_str("-foreign-visit");
+        sqlx::query("INSERT INTO engine_flow030_outbox SELECT system_id,invocation_id,?,event_id,effect_json,owner_epoch,status,settlement_json FROM engine_flow030_outbox WHERE effect_id=?")
+            .bind(&reference.start_effect_id).bind(&attempt.work().start_effect_id).execute(&f.pool).await.unwrap();
+        sqlx::query("INSERT INTO engine_flow030_handoffs SELECT system_id,invocation_id,?,owner_epoch,generation,receipt_json FROM engine_flow030_handoffs WHERE effect_id=?")
+            .bind(&reference.start_effect_id).bind(&attempt.work().start_effect_id).execute(&f.pool).await.unwrap();
+    }
+    if variant == "generation" {
+        generation.push_str("-foreign");
+    }
+    if variant == "owner" {
+        owner.push_str("-foreign");
+    }
+    if variant == "snapshot" {
+        identity.snapshot_id.push_str("-foreign");
+    }
+    let work = json!({"identity":identity,"owner":{"systemStartId":identity.system_start_id,"ownerEpoch":owner},
+        "generation":generation,"reference":reference,"kind":"call","providerAttemptId":null});
+    sqlx::query("INSERT INTO engine_flow030_clock_works(system_id,invocation_id,activation_id,start_effect_id,owner_epoch,generation,kind,work_json,admitted_ms,timeout_json) VALUES(?,?,?,?,?,?,'call',?,'0',?)")
+        .bind(&f.id.system_start_id).bind(&f.id.flow_invocation_id).bind(&reference.activation_id)
+        .bind(&reference.start_effect_id).bind(owner).bind(generation).bind(work.to_string())
+        .bind(if variant == "no-budget" { None } else { Some("100") })
+        .execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO engine_flow030_clock_controls(system_id,invocation_id,activation_id,receipt_id,reason,observed_ms) VALUES(?,?,?,?,'TIMEOUT','100')")
+        .bind(&f.id.system_start_id).bind(&f.id.flow_invocation_id).bind(&reference.activation_id)
+        .bind(uuid::Uuid::new_v4().to_string()).execute(&f.pool).await.unwrap();
+}
+
 pub(crate) async fn finish_terminal(
     pool: &SqlitePool,
     authority: &TestAuthority,
@@ -873,17 +906,18 @@ async fn unqualified_call_and_command_as_agent_are_refused_without_reservation()
 
 #[tokio::test]
 async fn machine_timeout_requires_native_join_before_publishing_failure() {
-    let f = Fixture::new(r#"{"type":"call","command":"never execute"}"#).await;
+    let f = Fixture::new(r#"{"type":"call","command":"never execute","timeoutMs":100}"#).await;
     let broker = CallDataBroker030::default();
     let attempt = f.reserve().await;
     prepare(&f, &broker, &attempt).await;
     f.handoff(&attempt).await;
+    clock_decision(&f, &attempt, "valid").await;
     let control = control();
     let timeout = control.machine_timeout.clone();
     let (_driver, owned) = launch_synthetic030(&f.pool, &f.authority, &attempt, control)
         .await
         .unwrap();
-    record_call_cause030(&f.pool, &f.authority, &attempt, CallStopCause030::Timeout)
+    record_call_cause030(&f.pool, &f.authority, &attempt)
         .await
         .unwrap();
     timeout.cancel();
@@ -1199,21 +1233,22 @@ async fn native_stop_signal_interrupts_a_normalizer_that_never_answers() {
 
 #[tokio::test]
 async fn persisted_timeout_wins_over_returned_before_machine_notification() {
-    let f = Fixture::new(r#"{"type":"call","command":"never execute"}"#).await;
+    let f = Fixture::new(r#"{"type":"call","command":"never execute","timeoutMs":100}"#).await;
     let broker = CallDataBroker030::default();
     let attempt = f.reserve().await;
     prepare(&f, &broker, &attempt).await;
     f.handoff(&attempt).await;
+    clock_decision(&f, &attempt, "valid").await;
     let control = control();
     let notification = control.machine_timeout.clone();
     let (driver, owned) = launch_synthetic030(&f.pool, &f.authority, &attempt, control)
         .await
         .unwrap();
-    let cause = record_call_cause030(&f.pool, &f.authority, &attempt, CallStopCause030::Timeout)
+    let cause = record_call_cause030(&f.pool, &f.authority, &attempt)
         .await
         .unwrap();
     assert_eq!(
-        record_call_cause030(&f.pool, &f.authority, &attempt, CallStopCause030::Timeout)
+        record_call_cause030(&f.pool, &f.authority, &attempt)
             .await
             .unwrap(),
         cause
@@ -1259,7 +1294,7 @@ async fn persisted_timeout_wins_over_returned_before_machine_notification() {
 
 #[tokio::test]
 async fn durable_timeout_interrupts_pending_normalization_after_raw_commit() {
-    let f = Fixture::new(r#"{"type":"call","command":"never execute"}"#).await;
+    let f = Fixture::new(r#"{"type":"call","command":"never execute","timeoutMs":100}"#).await;
     let broker = CallDataBroker030::default();
     let attempt = f.reserve().await;
     prepare(&f, &broker, &attempt).await;
@@ -1275,7 +1310,8 @@ async fn durable_timeout_interrupts_pending_normalization_after_raw_commit() {
     let finish = finish_terminal(&f.pool, &f.authority, &broker, &joined, &cancel);
     let expire = async {
         let _unanswered = broker.next().await.unwrap();
-        record_call_cause030(&f.pool, &f.authority, &attempt, CallStopCause030::Timeout)
+        clock_decision(&f, &attempt, "valid").await;
+        record_call_cause030(&f.pool, &f.authority, &attempt)
             .await
             .unwrap();
         notification.cancel();
@@ -1451,4 +1487,191 @@ async fn mcp_negative_zero_index_agrees_between_typescript_preparation_and_nativ
     assert!(arguments_json.contains("9007199254740993"));
     protocol::validate_prepared(&attempt, &prepared).unwrap();
     assert!(protocol::require_operand_failure(&attempt).is_err());
+}
+
+#[tokio::test]
+async fn timeout_without_clock_decision_is_refused() {
+    let f = Fixture::new(r#"{"type":"call","command":"never execute","timeoutMs":100}"#).await;
+    let broker = CallDataBroker030::default();
+    let attempt = f.reserve().await;
+    prepare(&f, &broker, &attempt).await;
+    f.handoff(&attempt).await;
+    let (_driver, _owned) = launch_synthetic030(&f.pool, &f.authority, &attempt, control())
+        .await
+        .unwrap();
+    assert!(record_call_cause030(&f.pool, &f.authority, &attempt)
+        .await
+        .is_err());
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_flow030_call_causes")
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn timeout_without_budget_or_for_foreign_clock_work_is_refused() {
+    for variant in [
+        "no-budget",
+        "unauthored-budget",
+        "activation",
+        "visit",
+        "generation",
+        "owner",
+        "snapshot",
+    ] {
+        let declaration = if variant == "unauthored-budget" {
+            r#"{"type":"call","command":"never execute"}"#
+        } else {
+            r#"{"type":"call","command":"never execute","timeoutMs":100}"#
+        };
+        let f = Fixture::new(declaration).await;
+        let broker = CallDataBroker030::default();
+        let attempt = f.reserve().await;
+        prepare(&f, &broker, &attempt).await;
+        f.handoff(&attempt).await;
+        let (_driver, _owned) = launch_synthetic030(&f.pool, &f.authority, &attempt, control())
+            .await
+            .unwrap();
+        clock_decision(&f, &attempt, variant).await;
+        assert!(
+            record_call_cause030(&f.pool, &f.authority, &attempt)
+                .await
+                .is_err(),
+            "{variant}"
+        );
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_flow030_call_causes")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "{variant}");
+    }
+}
+
+#[tokio::test]
+async fn timeout_cannot_be_written_after_a_normal_terminal() {
+    let f = Fixture::new(r#"{"type":"call","command":"never execute","timeoutMs":100}"#).await;
+    let broker = CallDataBroker030::default();
+    let joined = joined(&f, &broker, command(0, "done")).await;
+    let receipt = finish(&f, &broker, &joined).await;
+    assert_eq!(receipt.status(), "succeeded");
+    clock_decision(&f, joined.attempt(), "valid").await;
+    assert!(
+        record_call_cause030(&f.pool, &f.authority, joined.attempt())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        read_call_receipt030(&f.pool, &f.authority, &f.id, joined.attempt().work())
+            .await
+            .unwrap(),
+        Some(receipt)
+    );
+}
+
+#[tokio::test]
+async fn concurrent_clock_timeout_and_stop_always_publish_stop() {
+    let f = Fixture::new(r#"{"type":"call","command":"never execute","timeoutMs":100}"#).await;
+    let broker = CallDataBroker030::default();
+    let attempt = f.reserve().await;
+    prepare(&f, &broker, &attempt).await;
+    f.handoff(&attempt).await;
+    let (driver, owned) = launch_synthetic030(&f.pool, &f.authority, &attempt, control())
+        .await
+        .unwrap();
+    clock_decision(&f, &attempt, "valid").await;
+    let stop = async {
+        let _guard = f.authority.gate.lock().await;
+        f.stop().await;
+    };
+    let (cause, ()) =
+        tokio::join!(biased; record_call_cause030(&f.pool, &f.authority, &attempt), stop);
+    assert!(
+        cause.is_ok(),
+        "The timeout attestation must commit before the queued Stop"
+    );
+    assert!(record_call_cause030(&f.pool, &f.authority, &attempt)
+        .await
+        .is_err());
+    driver.send(command(0, "late return")).unwrap();
+    let joined = owned.join().await.unwrap();
+    broker.close();
+    let receipt = finish_terminal(
+        &f.pool,
+        &f.authority,
+        &broker,
+        &joined,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(receipt.status(), "stopped");
+    assert!(receipt.work_result().unwrap().is_none());
+    assert!(!f.state().await.activations[0].physical);
+}
+
+#[test]
+fn timeout_proof_fields_cannot_be_constructed_outside_protocol() {
+    let source = include_str!("db/agsdl_execution/call_protocol030.rs");
+    let start = source.find("pub(crate) struct CallStopCause030 {").unwrap();
+    let end = start + source[start..].find('}').unwrap() + 1;
+    let actual = &source[start..end];
+    let tmp = tempfile::TempDir::new().unwrap();
+    let compile = |tail: &str| {
+        let file = tmp.path().join("proof.rs");
+        std::fs::write(
+            &file,
+            format!("#![allow(dead_code)]\nmod protocol {{ {actual} }}\n{tail}"),
+        )
+        .unwrap();
+        crate::core::process::background_command("rustc")
+            .args([
+                "--edition=2021",
+                "--crate-name=call_timeout_privacy",
+                "--emit=metadata",
+            ])
+            .arg(&file)
+            .arg("-o")
+            .arg(tmp.path().join("proof.rmeta"))
+            .output()
+            .unwrap()
+    };
+    assert!(
+        compile("fn inspect(_: &protocol::CallStopCause030) {} fn main() {}")
+            .status
+            .success()
+    );
+    let result=compile("fn main(){ let _=protocol::CallStopCause030 { clock_receipt_id:String::new(),observed_ms:String::new(),timeout_json:String::new() }; }");
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("E0451"));
+}
+
+#[tokio::test]
+async fn clock_commit_before_supervisor_attestation_already_overrides_late_return() {
+    let f = Fixture::new(r#"{"type":"call","command":"never execute","timeoutMs":100}"#).await;
+    let broker = CallDataBroker030::default();
+    let joined = joined(&f, &broker, command(0, "late")).await;
+    clock_decision(&f, joined.attempt(), "valid").await;
+    // No call cause API and no timeout notification have run yet.
+    broker.close();
+    let receipt = finish_terminal(
+        &f.pool,
+        &f.authority,
+        &broker,
+        &joined,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let Some(flow030::WorkResult030::Failed { error }) = receipt.work_result().unwrap() else {
+        panic!()
+    };
+    assert_eq!(error.code, "TIMEOUT");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_flow030_call_causes")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap(),
+        1
+    );
 }

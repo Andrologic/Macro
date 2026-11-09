@@ -238,6 +238,8 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (36, "036_execution_flow_work_protocol030".into()),
             (37, "037_execution_route_attestations030".into()),
             (38, "038_execution_system_stop030".into()),
+            (39, "039_execution_call_protocol030".into()),
+            (40, "040_execution_flow_human_clock030".into()),
         ]
     );
 }
@@ -324,7 +326,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&38)
+        Some(&40)
     );
 }
 
@@ -1431,7 +1433,7 @@ async fn joins_both_published_v10_histories_without_replacing_stamps_or_data() {
                 .fetch_one(&upgraded)
                 .await
                 .unwrap(),
-            38
+            40
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1624,7 +1626,7 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        38
+        40
     );
     assert_eq!(
         sqlx::query("PRAGMA foreign_key_check")
@@ -1693,7 +1695,7 @@ async fn admission018_upgrades_v17_and_rolls_back_failed_stamp() {
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        38
+        40
     );
     assert!(sqlx::query("PRAGMA foreign_key_check")
         .fetch_all(&upgraded)
@@ -1948,4 +1950,46 @@ async fn intent032_rebuild_rolls_back_and_refuses_case_variant_inbound_foreign_k
             .await
             .unwrap();
     assert_eq!(schema, old_schema);
+}
+
+#[tokio::test]
+async fn upgrades_038_to_call_039_then_clock_040_and_reopens_without_replay() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("call-clock-upgrade.db");
+    let pool = create_pool(&path).await.unwrap();
+    {
+        let mut c = pool.acquire().await.unwrap();
+        let versions: Vec<i64> = (1..=38).collect();
+        migration_history::remove_reference_schema(&mut c, &versions)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version>38")
+            .execute(&mut *c)
+            .await
+            .unwrap();
+    }
+    pool.close().await;
+    let pool = create_pool(&path).await.unwrap();
+    let stamps: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT version,name FROM schema_migrations WHERE version>=39 ORDER BY version",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        stamps,
+        vec![
+            (39, "039_execution_call_protocol030".into()),
+            (40, "040_execution_flow_human_clock030".into())
+        ]
+    );
+    let schemas:Vec<(String,String)>=sqlx::query_as("SELECT name,sql FROM sqlite_master WHERE name LIKE 'engine_flow030_%' AND sql IS NOT NULL ORDER BY name").fetch_all(&pool).await.unwrap();
+    assert!(schemas.iter().any(|(n, _)| n == "engine_flow030_calls"));
+    assert!(schemas
+        .iter()
+        .any(|(n, _)| n == "engine_flow030_clock_controls"));
+    pool.close().await;
+    let pool = create_pool(&path).await.unwrap();
+    let reopened:Vec<(String,String)>=sqlx::query_as("SELECT name,sql FROM sqlite_master WHERE name LIKE 'engine_flow030_%' AND sql IS NOT NULL ORDER BY name").fetch_all(&pool).await.unwrap();
+    assert_eq!(schemas, reopened);
 }

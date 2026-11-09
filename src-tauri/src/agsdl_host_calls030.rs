@@ -19,7 +19,6 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) use protocol::{
     CallAttempt030, CallCauseReceipt030, CallDiagnostic030, CallReceipt030, CallSettlement030,
-    CallStopCause030,
 };
 
 /// Implemented by the native flow/policy owner. The same admission exclusion
@@ -631,14 +630,14 @@ pub(crate) async fn stop_before_launch030<A: CallAuthority030>(
     Ok(receipt)
 }
 
-/// Persist the clock broker's native decision BEFORE cancelling machine work.
-/// This API does not implement a clock or accept client/model timestamps. Its
-/// transaction includes the exact cause in the ordinary unknown-commit fence.
+/// Attest the clock broker's already committed TIMEOUT before cancelling work.
+/// The 040 clock decision is re-read on this transaction; call admission alone
+/// cannot authorize expiration. No reason, proof or timestamp comes from a caller.
+/// This transaction includes the exact cause in the unknown-commit fence.
 pub(crate) async fn record_call_cause030<A: CallAuthority030>(
     pool: &SqlitePool,
     authority: &A,
     attempt: &CallAttempt030,
-    cause: CallStopCause030,
 ) -> Result<CallCauseReceipt030> {
     let _gate = authority.admission_lock().lock_owned().await;
     authority.call_commits().require_clear(attempt.identity())?;
@@ -647,7 +646,7 @@ pub(crate) async fn record_call_cause030<A: CallAuthority030>(
         .execute(&mut *db)
         .await?;
     let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-    let receipt = protocol::record_cause_tx(&mut tx, authority, attempt, cause).await?;
+    let receipt = protocol::record_cause_tx(&mut tx, authority, attempt).await?;
     commit_call_tx(tx, authority, attempt).await?;
     Ok(receipt)
 }

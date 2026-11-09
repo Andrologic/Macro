@@ -376,12 +376,15 @@ impl CallDiagnostic030 {
         self.candidate.matches_joined(joined)
     }
 }
-/// Native-only typed cause; deliberately not Deserialize/IPC. The clock broker
-/// records this decision before signalling machine_timeout and joining work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// Timeout attestation is distinct from call admission. Its fields and
+/// constructor are private; even native callers cannot choose a Timeout enum.
+/// Only a re-read of the authoritative 040 clock decision constructs this proof.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum CallStopCause030 {
-    Timeout,
+pub(crate) struct CallStopCause030 {
+    clock_receipt_id: String,
+    observed_ms: String,
+    timeout_json: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -392,11 +395,105 @@ pub(crate) struct CallCauseReceipt030 {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredClockProof030 {
+    clock_receipt_id: String,
+    observed_ms: String,
+    timeout_json: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredCause030 {
     #[serde(with = "StoredAttempt030")]
     attempt: CallAttempt030,
     cause_id: String,
-    cause: String,
+    cause: StoredClockProof030,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClockWorkBinding030 {
+    identity: FlowIdentity030,
+    owner: super::dto::EngineOwner,
+    generation: String,
+    reference: WorkRef030,
+    kind: String,
+    provider_attempt_id: Option<String>,
+}
+impl CallStopCause030 {
+    /// This reads the 040 rows on the writer's transaction, not a supplied
+    /// timeout reason, timer token, or an old proof transported by a caller.
+    async fn from_clock_tx(db: &mut SqliteConnection, attempt: &CallAttempt030) -> Result<Self> {
+        let row=sqlx::query("SELECT c.receipt_id,c.reason,c.observed_ms,w.start_effect_id,w.owner_epoch,w.generation,w.kind,w.work_json,w.admitted_ms,w.timeout_json FROM engine_flow030_clock_controls c JOIN engine_flow030_clock_works w USING(system_id,invocation_id,activation_id) WHERE c.system_id=? AND c.invocation_id=? AND c.activation_id=?")
+            .bind(&attempt.identity.system_start_id).bind(&attempt.identity.flow_invocation_id)
+            .bind(&attempt.work().activation_id).fetch_optional(&mut *db).await?
+            .ok_or_else(|| denied("TIMEOUT has no durable clock decision for this activation"))?;
+        require(
+            row.get::<&str, _>("reason") == "TIMEOUT"
+                && row.get::<&str, _>("start_effect_id") == attempt.work().start_effect_id
+                && row.get::<&str, _>("owner_epoch") == attempt.owner_epoch()
+                && row.get::<&str, _>("generation") == attempt.generation()
+                && row.get::<&str, _>("kind") == "call",
+            "Clock decision belongs to another work, visit or generation",
+        )?;
+        let binding: ClockWorkBinding030 = serde_json::from_str(row.get("work_json"))?;
+        require(
+            binding.identity == *attempt.identity()
+                && binding.owner.system_start_id == attempt.identity.system_start_id
+                && binding.owner.owner_epoch == attempt.owner_epoch()
+                && binding.generation == attempt.generation()
+                && binding.reference == *attempt.work()
+                && binding.kind == "call"
+                && binding.provider_attempt_id.is_none(),
+            "Clock work does not attest this native call",
+        )?;
+        let timeout = row
+            .get::<Option<&str>, _>("timeout_json")
+            .ok_or_else(|| denied("Clock work has no machine timeout budget"))?;
+        require(
+            crate::db::exact_json::positive_integer(timeout).is_some(),
+            "Clock timeout budget is not a positive exact integer",
+        )?;
+        let declaration: Object = serde_json::from_str(attempt.declaration_json())?;
+        let declared = declaration
+            .get("timeoutMs")
+            .ok_or_else(|| denied("Call has no authored timeoutMs"))?;
+        require(
+            crate::db::exact_json::equal(declared.get(), timeout)?,
+            "Clock timeout differs from captured call budget",
+        )?;
+        let capture: String=sqlx::query_scalar("SELECT capture_json FROM engine_start030_requests WHERE system_id=? AND invocation_id=?")
+            .bind(&attempt.identity.system_start_id).bind(&attempt.identity.flow_invocation_id).fetch_one(&mut *db).await?;
+        let capture: StartCapture030 = serde_json::from_str(&capture)?;
+        let plan: FlowPlan030 = serde_json::from_str(&capture.compiled_plan_json)?;
+        let budget = plan
+            .steps
+            .iter()
+            .find(|s| s.address == attempt.address())
+            .and_then(|s| s.timeout_ms_json.as_deref())
+            .ok_or_else(|| denied("Captured call has no machine timeout budget"))?;
+        require(
+            crate::db::exact_json::equal(budget, timeout)?,
+            "Clock budget differs from native compiled admission",
+        )?;
+        let receipt_id: &str = row.get("receipt_id");
+        let observed: &str = row.get("observed_ms");
+        let admitted: &str = row.get("admitted_ms");
+        super::decimal(observed)?;
+        super::decimal(admitted)?;
+        require(
+            !receipt_id.is_empty()
+                && observed
+                    .parse::<u64>()
+                    .ok()
+                    .zip(admitted.parse::<u64>().ok())
+                    .is_some_and(|(o, a)| o >= a),
+            "Clock decision receipt or observation is invalid",
+        )?;
+        Ok(Self {
+            clock_receipt_id: receipt_id.into(),
+            observed_ms: observed.into(),
+            timeout_json: timeout.into(),
+        })
+    }
 }
 impl CallCauseReceipt030 {
     pub(crate) fn cause_id(&self) -> &str {
@@ -404,6 +501,9 @@ impl CallCauseReceipt030 {
     }
     pub(crate) fn attempt(&self) -> &CallAttempt030 {
         &self.attempt
+    }
+    pub(crate) fn clock_receipt_id(&self) -> &str {
+        &self.cause.clock_receipt_id
     }
 }
 async fn read_cause_tx(
@@ -413,18 +513,23 @@ async fn read_cause_tx(
     let raw: Option<String> =
         sqlx::query_scalar("SELECT cause_json FROM engine_flow030_call_causes WHERE call_id=?")
             .bind(attempt.call_id())
-            .fetch_optional(db)
+            .fetch_optional(&mut *db)
             .await?;
     let Some(raw) = raw else { return Ok(None) };
     let stored: StoredCause030 = serde_json::from_str(&raw)?;
+    let proof = CallStopCause030::from_clock_tx(db, attempt).await?;
     require(
-        stored.attempt == *attempt && stored.cause == "timeout" && !stored.cause_id.is_empty(),
-        "Call cause attribution differs",
+        stored.attempt == *attempt
+            && !stored.cause_id.is_empty()
+            && stored.cause.clock_receipt_id == proof.clock_receipt_id
+            && stored.cause.observed_ms == proof.observed_ms
+            && stored.cause.timeout_json == proof.timeout_json,
+        "Call cause no longer matches the attested clock decision",
     )?;
     Ok(Some(CallCauseReceipt030 {
         attempt: stored.attempt,
         cause_id: stored.cause_id,
-        cause: CallStopCause030::Timeout,
+        cause: proof,
     }))
 }
 async fn require_admission_tx(db: &mut SqliteConnection, id: &FlowIdentity030) -> Result<()> {
@@ -439,7 +544,6 @@ pub(crate) async fn record_cause_tx<A: CallAuthority030>(
     db: &mut SqliteConnection,
     authority: &A,
     attempt: &CallAttempt030,
-    cause: CallStopCause030,
 ) -> Result<CallCauseReceipt030> {
     verify_attempt_tx(db, authority, attempt, true).await?;
     let row = row_tx(db, attempt).await?;
@@ -450,6 +554,7 @@ pub(crate) async fn record_cause_tx<A: CallAuthority030>(
     if let Some(receipt) = read_cause_tx(db, attempt).await? {
         return Ok(receipt);
     }
+    let cause = CallStopCause030::from_clock_tx(db, attempt).await?;
     let receipt = CallCauseReceipt030 {
         attempt: attempt.clone(),
         cause_id: uuid::Uuid::new_v4().to_string(),
@@ -461,6 +566,29 @@ pub(crate) async fn record_cause_tx<A: CallAuthority030>(
         .execute(db)
         .await?;
     Ok(receipt)
+}
+
+/// Settlement also checks the source decision itself: a return may win the
+/// admission lock between the clock's COMMIT and the supervisor's notification.
+/// Never attach a newly arrived cause to an already published terminal.
+async fn settlement_cause_tx<A: CallAuthority030>(
+    db: &mut SqliteConnection,
+    authority: &A,
+    attempt: &CallAttempt030,
+) -> Result<Option<CallCauseReceipt030>> {
+    if let Some(cause) = read_cause_tx(db, attempt).await? {
+        return Ok(Some(cause));
+    }
+    if row_tx(db, attempt).await?.get::<&str, _>("status") == "terminal" {
+        return Ok(None);
+    }
+    let decided: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_flow030_clock_controls WHERE system_id=? AND invocation_id=? AND activation_id=? AND reason='TIMEOUT')")
+        .bind(&attempt.identity.system_start_id).bind(&attempt.identity.flow_invocation_id)
+        .bind(&attempt.work().activation_id).fetch_one(&mut *db).await?;
+    if !decided {
+        return Ok(None);
+    }
+    Ok(Some(record_cause_tx(db, authority, attempt).await?))
 }
 
 /// Retained before submitting COMMIT. Its constructor hashes exact SQL bytes
@@ -1165,7 +1293,9 @@ pub(crate) async fn receive_tx<A: CallAuthority030>(
         row.get::<Option<&str>, _>("prepared_json")
             .ok_or_else(|| denied("Call was not prepared"))?,
     )?;
-    if !call_stopped(&state, attempt)? && read_cause_tx(db, attempt).await?.is_none() {
+    if !call_stopped(&state, attempt)?
+        && settlement_cause_tx(db, authority, attempt).await?.is_none()
+    {
         if let CallEnd030::Returned { event } = &received.end {
             validate_event(&prepared, event)?;
         }
@@ -1275,7 +1405,10 @@ pub(crate) async fn finish_controlled_tx<A: CallAuthority030>(
     let state = verify_attempt_tx(db, authority, joined.attempt(), false).await?;
     let result = if call_stopped(&state, joined.attempt())? {
         CallResult030::Stopped
-    } else if read_cause_tx(db, joined.attempt()).await?.is_some() {
+    } else if settlement_cause_tx(db, authority, joined.attempt())
+        .await?
+        .is_some()
+    {
         CallResult030::failure("TIMEOUT")
     } else {
         return Ok(None);
@@ -1309,7 +1442,7 @@ pub(crate) async fn finish_tx<A: CallAuthority030>(
     let row = row_tx(db, attempt).await?;
     if call_stopped(&state, attempt)? {
         result = CallResult030::Stopped;
-    } else if read_cause_tx(db, attempt).await?.is_some() {
+    } else if settlement_cause_tx(db, authority, attempt).await?.is_some() {
         result = CallResult030::failure("TIMEOUT");
     }
 
