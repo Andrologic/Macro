@@ -742,7 +742,7 @@ pub(crate) struct NativePlanLock030 {
     state: std::sync::Arc<tokio::sync::RwLock<PlanGate030>>,
 }
 pub(crate) struct PlanEffectPermit030 {
-    _guard: tokio::sync::OwnedRwLockReadGuard<PlanGate030>,
+    _guard: Option<tokio::sync::OwnedRwLockReadGuard<PlanGate030>>,
 }
 impl NativePlanLock030 {
     fn new(work: &PreparedAgentWork030) -> Self {
@@ -780,6 +780,14 @@ impl NativePlanLock030 {
                 "Plan lock blocks this effect",
             ));
         }
+        // A read may itself wait for a person. It must not keep a shared
+        // state guard that blocks presentation or resolution of the plan.
+        let guard = if read_only {
+            drop(guard);
+            None
+        } else {
+            Some(guard)
+        };
         Ok(PlanEffectPermit030 { _guard: guard })
     }
     pub(crate) async fn presented(&self, work: &FlowWorkAttempt030, plan_id: &str) -> Result<()> {

@@ -608,8 +608,14 @@ async fn native_plan_gate_rejects_mutation_until_correlated_person_accepts() {
     pump(&f).await;
     let gate = NativePlanLock030::fixture030(&f.attempt);
     assert!(gate.authorize(&f.attempt, false).await.is_err());
-    drop(gate.authorize(&f.attempt, true).await.unwrap());
-    gate.presented(&f.attempt, "p1").await.unwrap();
+    let read_permit = gate.authorize(&f.attempt, true).await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        gate.presented(&f.attempt, "p1"),
+    )
+    .await
+    .expect("An in-flight read must not block plan presentation")
+    .unwrap();
     let request = f
         .broker
         .open(
@@ -640,7 +646,14 @@ async fn native_plan_gate_rejects_mutation_until_correlated_person_accepts() {
         .unwrap();
     pump(&f).await;
     let declined = f.broker.take_resolution(&f.host, &request).await.unwrap();
-    gate.resolve(&f.attempt, &declined).await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        gate.resolve(&f.attempt, &declined),
+    )
+    .await
+    .expect("An in-flight read must not block a human decision")
+    .unwrap();
+    drop(read_permit);
     assert!(gate.authorize(&f.attempt, false).await.is_err());
     f.broker.acknowledge(&f.host, &declined).await.unwrap();
     pump(&f).await;
