@@ -10,6 +10,8 @@ export interface ComponentProperty {
   label: string;
   value: string;
   options?: PropertyOption[];
+  /** Declared step targets in the real source owner’s flow or composition. */
+  destinations030?: PropertyOption[];
   readonly?: boolean;
   /** A new relation is appended only when the optional reference is selected. */
   relationSource?: string;
@@ -227,6 +229,15 @@ function properties030(source: string, card: ViewerCard): ComponentProperties {
   else if (card.kind === "Route") {
     const span = parsed.spans.get(ownerPath);
     if (span) fields.push({ path: ownerPath, label: "route", value: new TextDecoder().decode(parsed.bytes.subarray(span.start, span.end)), exactJson: true, optional: false });
+  }
+  const scopePath = /^(\/flow|\/compositions\/[^/]+)(?:\/|$)/.exec(ownerPath)?.[1];
+  if (scopePath) {
+    let scope: unknown = parsed.tree;
+    for (const part of scopePath.split("/").slice(1)) scope = object(scope)[part.replaceAll("~1", "/").replaceAll("~0", "~")];
+    const destinations = Object.entries(object(object(scope).steps))
+      .filter(([, step]) => ["agent", "call", "approval", "compose", "join"].includes(text(object(step).type)))
+      .map(([name, step]) => ({ value: name, label: text(object(step).title) || name }));
+    for (const field of fields) if (["next", "route"].includes(field.label)) field.destinations030 = destinations;
   }
   return { fields, shared: ownerPath.startsWith("/compositions/") || !!card.edition030?.agentPath || ["Agent", "Resource", "Skill", "McpServer", "Composition"].includes(card.kind), unsupported: !fields.length };
 }
