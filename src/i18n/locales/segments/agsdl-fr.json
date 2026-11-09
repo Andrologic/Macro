@@ -713,7 +713,8 @@
     "fanout": "Pour chaque élément",
     "repetition": "Répétition",
     "provenance": "Origine",
-    "routeVia": "Cette route traverse la sortie d’un sous-processus.",
+    "errorVia": "Le problème remonte vers un recours du processus ou du sous-processus englobant.",
+    "routeVia": "Cette route emprunte une sortie déclarée d’un sous-processus.",
     "labels": {
       "conversation": "Conversation de travail",
       "delivery": "Règle de livraison",
@@ -733,19 +734,20 @@
       "legend": "Messages à tour de rôle, règle prévue"
     },
     "quorum": {
-      "one": "Continuer dès qu’un avis favorable est arrivé.",
-      "rule": "Continuer dès que {{threshold}} avis favorables sont arrivés."
+      "one": "Décider dès qu’un avis favorable est arrivé.",
+      "rule": "Décider dès que {{threshold}} avis favorables sont arrivés."
     },
     "join": {
       "all": "Attendre toutes les branches démarrées.",
       "origin": "Le groupe commence à « {{name}} ». Seules les branches réellement démarrées comptent.",
       "unreported": "L’origine du groupe n’est pas disponible dans un rapport de validation correspondant.",
+      "keepLimited": "Limite d’échecs tolérés : {{limit}}. Tout échec supplémentaire fait échouer le groupe immédiatement.",
       "keep": "Conserver les échecs et attendre les autres branches."
     },
     "remaining": {
-      "stop": "Arrêter les autres branches, puis continuer une fois leur arrêt terminé.",
-      "finish": "Continuer immédiatement. Les autres terminent ; leurs résultats tardifs ne comptent plus dans la décision.",
-      "wait": "Laisser les autres terminer, puis continuer. Leurs résultats tardifs ne comptent plus dans la décision."
+      "stop": "Après la décision, arrêter les autres branches. Poursuivre une fois leur arrêt effectif.",
+      "finish": "Après la décision, poursuivre immédiatement. Les autres terminent ; leurs résultats tardifs ne comptent plus dans la décision.",
+      "wait": "Après la décision, laisser les autres terminer, puis poursuivre. Leurs résultats tardifs ne comptent plus dans la décision."
     },
     "error": {
       "local": "Suivre le recours propre à cette étape.",

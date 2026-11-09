@@ -139,7 +139,10 @@ function blockDetails030(card: ViewerCard, declarations: ViewerCard[], steps: Vi
     const origin = join.originOccurrenceId && name(join.originOccurrenceId);
     if (origin) add('after', 'join.origin', { name: origin });
     else add('after', 'join.unreported');
-    if (join.failures === 'keep' && join.mode === 'all') add('effect', 'join.keep');
+    if (join.failures === 'keep' && join.mode === 'all') {
+      if (join.maxFailuresJson !== undefined) add('effect', 'join.keepLimited', { limit: join.maxFailuresJson });
+      else add('effect', 'join.keep');
+    }
   }
   const error = occurrence?.error;
   if (error) {

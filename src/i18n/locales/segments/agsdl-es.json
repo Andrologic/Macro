@@ -713,7 +713,8 @@
     "fanout": "Para cada elemento",
     "repetition": "Repetición",
     "provenance": "Origen",
-    "routeVia": "Esta ruta cruza la salida de un subproceso.",
+    "errorVia": "El problema se propaga hacia una ruta de recuperación del proceso o subproceso contenedor.",
+    "routeVia": "Esta ruta sigue una salida declarada de un subproceso.",
     "labels": {
       "conversation": "Conversación",
       "delivery": "Regla de entrega",
@@ -733,19 +734,20 @@
       "legend": "Mensajes por turnos, regla prevista"
     },
     "quorum": {
-      "one": "Continuar en cuanto llegue una respuesta favorable.",
-      "rule": "Continuar al recibir {{threshold}} respuestas favorables."
+      "one": "Decidir en cuanto llegue una respuesta favorable.",
+      "rule": "Decidir en cuanto lleguen {{threshold}} respuestas favorables."
     },
     "join": {
       "all": "Esperar a todas las ramas iniciadas.",
       "origin": "El grupo comienza en «{{name}}». Solo cuentan las ramas realmente iniciadas.",
       "unreported": "El origen del grupo no está disponible en un informe de validación correspondiente.",
+      "keepLimited": "Límite de fallos tolerados: {{limit}}. Cualquier fallo adicional hace fallar el grupo de inmediato.",
       "keep": "Conservar los fallos y esperar a las otras ramas."
     },
     "remaining": {
-      "stop": "Detener las otras ramas y continuar cuando se hayan detenido.",
-      "finish": "Continuar de inmediato. Las otras terminan; sus resultados tardíos no cuentan para la decisión.",
-      "wait": "Dejar que las otras terminen y después continuar. Sus resultados tardíos no cuentan para la decisión."
+      "stop": "Tras la decisión, detener las otras ramas. Continuar cuando se hayan detenido efectivamente.",
+      "finish": "Tras la decisión, continuar de inmediato. Las otras terminan; sus resultados tardíos no cuentan para la decisión.",
+      "wait": "Tras la decisión, dejar que las otras terminen y después continuar. Sus resultados tardíos no cuentan para la decisión."
     },
     "error": {
       "local": "Seguir la ruta de recuperación de esta etapa.",

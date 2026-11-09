@@ -713,7 +713,8 @@
     "fanout": "For each item",
     "repetition": "Repetition",
     "provenance": "Origin",
-    "routeVia": "This route crosses a subprocess boundary.",
+    "errorVia": "The error propagates to a recovery route in the enclosing process or subprocess.",
+    "routeVia": "This route follows a declared subprocess output.",
     "labels": {
       "conversation": "Conversation",
       "delivery": "Delivery rule",
@@ -733,19 +734,20 @@
       "legend": "Messages take turns, declared rule"
     },
     "quorum": {
-      "one": "Continue as soon as one favourable response arrives.",
-      "rule": "Continue once {{threshold}} favourable responses have arrived."
+      "one": "Decide as soon as one favourable response arrives.",
+      "rule": "Decide as soon as {{threshold}} favourable responses arrive."
     },
     "join": {
       "all": "Wait for every branch that was started.",
       "origin": "The group starts at \"{{name}}\". Only branches actually started count.",
       "unreported": "The group origin is not available from a matching validation report.",
+      "keepLimited": "Failure limit: {{limit}}. Any failure beyond it fails the group immediately.",
       "keep": "Keep failures and wait for the other branches."
     },
     "remaining": {
-      "stop": "Stop the other branches, then continue once they have stopped.",
-      "finish": "Continue immediately. The others finish; their later results do not count toward the decision.",
-      "wait": "Let the others finish, then continue. Their later results do not count toward the decision."
+      "stop": "After the decision, stop the other branches. Continue once they have actually stopped.",
+      "finish": "After the decision, continue immediately. The others finish; their later results do not count toward the decision.",
+      "wait": "After the decision, let the others finish, then continue. Their later results do not count toward the decision."
     },
     "error": {
       "local": "Use this step’s own recovery route.",

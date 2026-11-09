@@ -146,3 +146,14 @@ it('explains source-bound quorum, origin, remaining and error scope without run 
   expect(blockDetails(stale.find(card=>card.id==='join')!, [], stale).some(detail=>detail.message030==='join.unreported')).toBe(true);
   expect(details.some(detail=>detail.values.some(value=>value.includes('active')))).toBe(false);
 });
+
+it('exposes the exact failure tolerance and keeps unlimited failure handling distinct', () => {
+  const joinCard = (maxFailures?: string) => projectViewer030(`{"contract":"agsdl-0.3.0","id":"failure-limit","agents":{},"flow":{"entry":"gather","steps":{"gather":{"type":"join","failures":"keep"${maxFailures === undefined ? '' : `,"maxFailures":${maxFailures}`}}}}}`).graphs[0].cards[0];
+  for (const limit of ['1', '9007199254740993']) {
+    const details = blockDetails(joinCard(limit), []);
+    expect(details.find(detail => detail.message030 === 'join.keepLimited')?.params030).toEqual({ limit });
+    expect(details.some(detail => detail.message030 === 'join.keep')).toBe(false);
+  }
+  expect(blockDetails(joinCard(), []).some(detail => detail.message030 === 'join.keep')).toBe(true);
+  expect(blockDetails(joinCard(), []).some(detail => detail.message030 === 'join.keepLimited')).toBe(false);
+});

@@ -67,7 +67,7 @@ export function WorkflowEdgePreview({ connection, sourceTitle, sourcePerformer }
     <dl className="agsdl-preview-list">
       <div><dt>{t('agsdl.preview.whenLabel')}</dt><dd>{when}</dd></div>
       {connection.route030?.eachJson !== undefined && <div><dt>{t('agsdl.graph030.repetition')}</dt><dd>{t('agsdl.graph030.fanout')}</dd></div>}
-      {connection.route030?.via?.length ? <div><dt>{t('agsdl.graph030.provenance')}</dt><dd>{t('agsdl.graph030.routeVia')}</dd></div> : null}
+      {connection.route030?.via?.length ? <div><dt>{t('agsdl.graph030.provenance')}</dt><dd>{t(connection.route030.inherited && connection.route030.role === 'error' ? 'agsdl.graph030.errorVia' : 'agsdl.graph030.routeVia')}</dd></div> : null}
       {transmits.length > 0 && <div><dt>{t('agsdl.preview.transmits')}</dt><dd>{transmits.join(', ')}</dd></div>}
     </dl>
   </div>;
