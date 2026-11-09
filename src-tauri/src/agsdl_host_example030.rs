@@ -1590,6 +1590,69 @@ async fn validate_qa_project(
     Ok(())
 }
 
+/// QA admission has no external effects. Recheck the native opt-in, approved
+/// workspace, captured owner/scope and exact pinned declaration in SQL callers.
+pub(crate) fn qualify_synthetic_call030(
+    capture: &crate::db::agsdl_execution::start030::StartCapture030,
+    effect: &FlowEffect030,
+    declaration: &str,
+) -> Result<()> {
+    let denied = || {
+        failure(
+            "AUTHORITY",
+            "call",
+            "Synthetic call is outside native QA capture",
+        )
+    };
+    if !ExampleAdapter030::qa_capture_enabled() || effect.identity != capture.identity {
+        return Err(denied());
+    }
+    let private: serde_json::Value = serde_json::from_str(&capture.private_capture_json)?;
+    let scope: serde_json::Value =
+        serde_json::from_str(private["callScopeJson"].as_str().ok_or_else(denied)?)?;
+    let root = std::path::Path::new(scope["root"].as_str().ok_or_else(denied)?);
+    let approved = QA_APPROVED_WORKSPACE.get().ok_or_else(denied)?;
+    if !root.starts_with(approved)
+        || scope["sourceOwner"] != serde_json::to_value(&capture.source.owner)?
+        || scope["projectId"].as_str() != Some(&capture.source.owner.project_id)
+    {
+        return Err(denied());
+    }
+    let _: serde_json::Value =
+        serde_json::from_str(private["callPermissionsJson"].as_str().ok_or_else(denied)?)?;
+    let plan: crate::db::agsdl_execution::flow030::FlowPlan030 =
+        serde_json::from_str(&capture.compiled_plan_json)?;
+    let FlowEffectKind030::Start {
+        step: Some(address),
+        agent: None,
+        ..
+    } = &effect.kind
+    else {
+        return Err(denied());
+    };
+    if plan
+        .steps
+        .iter()
+        .filter(|s| {
+            s.address == *address && s.r#type == "call" && s.declaration_json == declaration
+        })
+        .count()
+        != 1
+    {
+        return Err(denied());
+    }
+    let call: serde_json::Value = serde_json::from_str(declaration)?;
+    if !call["command"].is_string()
+        || call.get("mcp").is_some()
+        || !crate::agsdl_host_scenario030::PinnedScenario030::recognizes_document(
+            &capture.authored_source,
+        )?
+    {
+        return Err(denied());
+    }
+    Ok(())
+}
+
 impl ExampleAdapter030 {
     /// This opt-in is called only by the native QA entry, never by IPC.
     pub(crate) fn enable_qa_capture() {
