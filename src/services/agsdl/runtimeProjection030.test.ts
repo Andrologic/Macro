@@ -79,3 +79,13 @@ it('applies explicit, newest attested human wait, retained admission, then newes
   expect(initialRunSelection030({ ...base, history: ready([{ ...historyFixture030(a), humans: { kind: 'unavailable', gap: 'human-flow-projection' } }, historyFixture030(b)]) })).toBeUndefined();
   expect(initialRunSelection030({ ...base, retainedAdmission: { kind: 'unavailable', gap: 'chronology' } })).toBeUndefined();
 });
+
+it('ignores unknown older waits once the highest-priority human wait is attested', () => {
+  const recent = inspectionFixture030('recent'), old = inspectionFixture030('old');
+  const recentWaiting = { ...historyFixture030(recent), humans: ready([humanFixture030(recent)]) };
+  const olderUnknown = { ...historyFixture030(old), humans: { kind: 'unavailable' as const, gap: 'human-flow-projection' as const } };
+  const base = monitorFixture030(recent, old).snapshot;
+  expect(initialRunSelection030({ ...base, history: ready([recentWaiting, olderUnknown]) })).toBe('recent');
+  expect(initialRunSelection030({ ...base, history: ready([olderUnknown, recentWaiting]) })).toBeUndefined();
+  expect(initialRunSelection030({ ...base, history: ready([historyFixture030(recent), olderUnknown]) })).toBeUndefined();
+});

@@ -841,7 +841,6 @@
     "currentDocument": "現在のドキュメント",
     "inspector": "実行の詳細",
     "steps": "記録されたフローのステップ",
-    "occurrenceCount": "{{count}} 件の実行箇所",
     "occurrences": "実行箇所",
     "externalWork": "フロー外の作業",
     "visit": "訪問",
@@ -957,6 +956,33 @@
       "BRANCH_FAILED": "分岐が作業の失敗を報告しました。処理状況は別に表示されます。",
       "OUTPUT_INVALID": "生成された結果が期待される形式に適合しませんでした。",
       "other": "ランタイムがこの診断情報を報告しました。"
-    }
+    },
+    "activation": "アクティベーション",
+    "diagnosticStep": "ステップ",
+    "selectedDiagnostics": "選択した訪問の診断と、訪問が確認されていない診断。",
+    "runLevelDiagnostic": "実行全体の診断です。実行箇所との関連付けは未確認です。",
+    "inspectOccurrence": "この訪問を確認",
+    "cause": "報告された原因",
+    "inspectCause": "原因となった訪問を確認",
+    "handler": "実行された復旧ステップ",
+    "notReported": "報告なし",
+    "noReportedItems": "項目の報告なし",
+    "termsHelp": "用語の説明",
+    "physicalHelp": "物理的な終了とは、作業と追跡対象の子作業の終了をランタイムが確認した状態です。停止要求だけでは終了確認になりません。",
+    "ownerHelp": "実行ホストは実行とその観測を担当するプロセスです。失効したホストは作業を継続できません。",
+    "occurrenceHelp": "実行箇所はステップへの記録された1回の訪問です。同じステップへの複数の訪問は別々に扱います。",
+    "summarySentence": {
+      "succeeded": "フローは成功しました。",
+      "failed": "フローは失敗しました。",
+      "cancelled": "フローはキャンセルされました。",
+      "pending": "フローの最終結果はまだありません。",
+      "stopping": "一部の作業は停止中で、終了はまだ確認されていません。",
+      "active": "一部の作業はまだ進行中です。",
+      "uncertain": "停止状態はまだ不確実です。",
+      "human": "人の応答がまだ必要です。"
+    },
+    "occurrenceCount_zero": "実行箇所なし",
+    "occurrenceCount_one": "{{count}} 件の実行箇所",
+    "occurrenceCount_other": "{{count}} 件の実行箇所"
   }
 }

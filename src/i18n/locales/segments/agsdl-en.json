@@ -841,7 +841,6 @@
     "currentDocument": "Current document",
     "inspector": "Run inspector",
     "steps": "Steps in the captured flow",
-    "occurrenceCount": "Recorded occurrences: {{count}}",
     "occurrences": "Step occurrences",
     "externalWork": "Work outside the flow",
     "visit": "Visit",
@@ -957,6 +956,33 @@
       "BRANCH_FAILED": "A branch reported a work failure. Its handling is shown separately.",
       "OUTPUT_INVALID": "The produced result did not satisfy the expected contract.",
       "other": "The runtime reported this diagnostic."
-    }
+    },
+    "activation": "Activation",
+    "diagnosticStep": "Step",
+    "selectedDiagnostics": "Diagnostics for the selected visit, plus diagnostics without an attested visit.",
+    "runLevelDiagnostic": "Run-level diagnostic. No occurrence association is attested.",
+    "inspectOccurrence": "Inspect this visit",
+    "cause": "Reported cause",
+    "inspectCause": "Inspect the cause visit",
+    "handler": "Followed recovery step",
+    "notReported": "Not reported",
+    "noReportedItems": "No items reported",
+    "termsHelp": "Explain these terms",
+    "physicalHelp": "Physical completion means the runtime has confirmed that the work and its tracked descendants have ended. A stop request alone does not confirm this.",
+    "ownerHelp": "The runtime host owns and observes this run. A revoked host can no longer continue its work.",
+    "occurrenceHelp": "An occurrence is one recorded visit to a step. Repeated visits stay separate, even when they share the same step.",
+    "summarySentence": {
+      "succeeded": "The flow succeeded.",
+      "failed": "The flow failed.",
+      "cancelled": "The flow was cancelled.",
+      "pending": "The flow has no final verdict yet.",
+      "stopping": "Some work is still stopping and its physical completion has not been confirmed.",
+      "active": "Some work is still active.",
+      "uncertain": "The stop remains uncertain.",
+      "human": "A person still needs to respond."
+    },
+    "occurrenceCount_zero": "No recorded occurrences",
+    "occurrenceCount_one": "Recorded occurrence: {{count}}",
+    "occurrenceCount_other": "Recorded occurrences: {{count}}"
   }
 }

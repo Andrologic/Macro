@@ -102,3 +102,76 @@ it('detaches read observation on unmount', async () => {
   window.dispatchEvent(new Event('focus'));
   expect(access.reads).toHaveLength(reads);
 });
+
+it('ties diagnostics to attested visits, retains run-level facts and navigates to the cause', async () => {
+  const run = inspectionFixture030();
+  const base = run.state.diagnostics.kind === 'ready' ? run.state.diagnostics.value[0] : undefined;
+  const diagnostics = [
+    { ...base!, id: 'visit-one', message: 'First visit failed', causeId: 'visit-two', effectsJson: available('{"file":"report.txt","bytes":900719925474099312345}') },
+    { ...base!, id: 'visit-two', activationId: 'activation-2', message: 'Second visit cause' },
+    { ...base!, id: 'run-level', activationId: 'not-attested', message: 'Run-level issue' },
+  ];
+  const access = monitorFixture030({ ...run, state: { ...run.state, diagnostics: ready(diagnostics) } });
+  let bridge: RunGraphBridge030 | undefined;
+  await mount(access, { renderGraph: (value: RunGraphBridge030) => { bridge = value; return null; } });
+  await act(async () => bridge!.selectOccurrence(bridge!.occurrences[0].key));
+  const article = host.querySelector('[data-diagnostic-id="visit-one"]')!;
+  expect(article.querySelector('button')?.textContent).toContain('Inspect this visit · Review · Visit 1');
+  expect([...article.querySelectorAll('p')].map(p => p.textContent).join(' ')).toContain('Followed recovery step: vote');
+  expect(article.querySelector('div')?.textContent).toContain('Second visit cause');
+  expect([...article.querySelectorAll('dd')].map(dd => dd.textContent)).toEqual(['report.txt', '900719925474099312345']);
+  expect(host.querySelector('[data-diagnostic-id="visit-two"]')).toBeNull();
+  expect(host.querySelector('[data-diagnostic-id="run-level"]')?.textContent).toContain('No occurrence association is attested.');
+  await click('Inspect the cause visit');
+  expect(bridge!.selectedOccurrenceKey).toBe(bridge!.occurrences[1].key);
+  expect(host.querySelector('[data-diagnostic-id="visit-one"]')).toBeNull();
+  expect(host.querySelector('[data-diagnostic-id="visit-two"]')).not.toBeNull();
+  expect(host.querySelector('[data-diagnostic-id="run-level"]')).not.toBeNull();
+});
+
+it('passes availability, completeness, revision and staleness to the graph, including outer conflicts', async () => {
+  const run = inspectionFixture030();
+  const access = monitorFixture030(run); let bridge: RunGraphBridge030 | undefined;
+  await mount(access, { renderGraph: (value: RunGraphBridge030) => { bridge = value; return null; } });
+  expect(bridge!.occurrenceRead).toEqual({ availability: 'ready', complete: true, revision: '9', stale: false, projectionAvailable: true });
+  for (const [occurrences, expected] of [
+    [{ kind: 'loading', retained: null }, { availability: 'loading', complete: false, revision: null, stale: false }],
+    [{ kind: 'unavailable', gap: 'occurrence-details' }, { availability: 'unavailable', complete: false, revision: null, stale: false }],
+    [ready([], '10'), { availability: 'ready', complete: true, revision: '10', stale: false }],
+    [{ kind: 'stale', revision: '8', retained: [], refusal: { code: 'REVISION_CONFLICT', message: 'Changed', currentRevision: '9' } }, { availability: 'ready', complete: true, revision: '8', stale: true }],
+  ] as const) {
+    await act(async () => access.publish({ ...access.snapshot, runs: { 'run-current': ready({ ...run, state: { ...run.state, occurrences } }) } }));
+    expect(bridge!.occurrences).toHaveLength(0);
+    expect(bridge!.occurrenceRead).toEqual({ ...expected, projectionAvailable: true });
+  }
+  await act(async () => access.publish({ ...access.snapshot, runs: { 'run-current': { kind: 'stale', revision: '9', retained: run,
+    refusal: { code: 'REVISION_CONFLICT', message: 'Changed', currentRevision: '10' } } } }));
+  expect(bridge!.occurrenceRead).toMatchObject({ availability: 'ready', complete: true, revision: '9', stale: true });
+  await act(async () => access.publish({ ...access.snapshot, runs: { 'run-current': { kind: 'loading', retained: run } } }));
+  expect(bridge!.occurrenceRead).toMatchObject({ availability: 'loading', complete: false, revision: '9', stale: true });
+});
+
+it('explains the coexistence of success, stopping work and a human wait', async () => {
+  const run = inspectionFixture030(); const human = humanFixture030(run);
+  await mount(monitorFixture030({ ...run, state: { ...run.state, humans: ready([human]) } }));
+  expect(host.textContent).toContain('The flow succeeded. Some work is still stopping and its physical completion has not been confirmed. The stop remains uncertain. A person still needs to respond.');
+  expect(host.querySelector('[title^="Physical completion"]')).not.toBeNull();
+  expect(host.querySelector('[title^="The runtime host"]')).not.toBeNull();
+  expect(host.querySelector('[title^="An occurrence"]')).not.toBeNull();
+});
+
+import i18n from '../../i18n';
+it('uses real zero, singular and plural occurrence labels in all six locales', () => {
+  const expected: Record<string, string[]> = {
+    en: ['No recorded occurrences', 'Recorded occurrence: 1', 'Recorded occurrences: 2'],
+    fr: ['Aucune occurrence', '1 occurrence', '2 occurrences'],
+    es: ['Ninguna ocurrencia', '1 ocurrencia', '2 ocurrencias'],
+    de: ['Keine Vorkommen', '1 Vorkommen', '2 Vorkommen'],
+    ja: ['実行箇所なし', '1 件の実行箇所', '2 件の実行箇所'],
+    ko: ['실행 항목 없음', '실행 항목 1개', '실행 항목 2개'],
+  };
+  for (const [locale, labels] of Object.entries(expected)) {
+    const t = i18n.getFixedT(locale, 'agsdl');
+    expect([0, 1, 2].map(count => t('agsdl.run030.occurrenceCount', { count }))).toEqual(labels);
+  }
+});

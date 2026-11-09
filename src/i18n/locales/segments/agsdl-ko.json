@@ -841,7 +841,6 @@
     "currentDocument": "현재 문서",
     "inspector": "실행 검사",
     "steps": "캡처된 흐름의 단계",
-    "occurrenceCount": "실행 항목 {{count}}개",
     "occurrences": "실행 항목",
     "externalWork": "흐름 외부 작업",
     "visit": "방문",
@@ -957,6 +956,33 @@
       "BRANCH_FAILED": "분기가 작업 실패를 보고했습니다. 처리 상태는 별도로 표시됩니다.",
       "OUTPUT_INVALID": "생성된 결과가 예상 계약을 충족하지 못했습니다.",
       "other": "런타임이 이 진단을 보고했습니다."
-    }
+    },
+    "activation": "활성화",
+    "diagnosticStep": "단계",
+    "selectedDiagnostics": "선택한 방문의 진단 및 방문이 확인되지 않은 진단입니다.",
+    "runLevelDiagnostic": "실행 수준 진단입니다. 실행 항목과의 연결이 확인되지 않았습니다.",
+    "inspectOccurrence": "이 방문 검사",
+    "cause": "보고된 원인",
+    "inspectCause": "원인이 된 방문 검사",
+    "handler": "실행된 복구 단계",
+    "notReported": "보고되지 않음",
+    "noReportedItems": "보고된 항목 없음",
+    "termsHelp": "용어 설명",
+    "physicalHelp": "실제 종료는 런타임이 작업과 추적 중인 하위 작업의 종료를 확인한 상태입니다. 중지 요청만으로는 종료를 확인할 수 없습니다.",
+    "ownerHelp": "실행 호스트는 실행과 관측을 담당하는 프로세스입니다. 해제된 호스트는 작업을 계속할 수 없습니다.",
+    "occurrenceHelp": "실행 항목은 단계에 대한 기록된 한 번의 방문입니다. 같은 단계를 여러 번 방문해도 각각 구분됩니다.",
+    "summarySentence": {
+      "succeeded": "흐름이 성공했습니다.",
+      "failed": "흐름이 실패했습니다.",
+      "cancelled": "흐름이 취소되었습니다.",
+      "pending": "흐름의 최종 결과가 아직 없습니다.",
+      "stopping": "일부 작업이 중지 중이며 종료가 아직 확인되지 않았습니다.",
+      "active": "일부 작업이 아직 진행 중입니다.",
+      "uncertain": "중지 상태가 아직 불확실합니다.",
+      "human": "사람의 응답이 아직 필요합니다."
+    },
+    "occurrenceCount_zero": "실행 항목 없음",
+    "occurrenceCount_one": "실행 항목 {{count}}개",
+    "occurrenceCount_other": "실행 항목 {{count}}개"
   }
 }

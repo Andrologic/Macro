@@ -3,20 +3,21 @@ import type { RunRead030, RunOccurrence030 } from '../../types/agsdlRunUi030';
 import type { RunInspection030 } from '../../services/agsdl/runtimeProjection030';
 import { retainedRunValue030 } from '../../services/agsdl/runtimeProjection030';
 import { projectStaticSemantics030 } from '../../services/agsdl/staticSemantics030';
-import { runStepLabels030, normalRunOutcome030, runCaptureKey030, projectRunGraph030, type RunGraphOccurrence030 } from '../../services/agsdl/runGraphProjection030';
+import { runEffectFacts030, runGraphReadState030, runStepLabels030, normalRunOutcome030, runCaptureKey030, projectRunGraph030, type RunGraphOccurrence030 } from '../../services/agsdl/runGraphProjection030';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
 
 /** The shell canvas consumes this bridge without replacing static or native ids. */
 export interface RunGraphBridge030 {
   readonly capture: RunInspection030['capture'];
   readonly occurrences: readonly RunGraphOccurrence030[];
+  readonly occurrenceRead: ReturnType<typeof runGraphReadState030> & { readonly projectionAvailable: boolean };
   readonly selectedStepId?: string;
   readonly selectedOccurrenceKey?: string;
   selectStep(id: string): void;
   selectOccurrence(key: string): void;
 }
-export function RunInspector030({ inspection, selectedStepId, selectedOccurrenceKey, selectStep, selectOccurrence, renderGraph }: {
-  inspection: RunInspection030; selectedStepId?: string; selectedOccurrenceKey?: string;
+export function RunInspector030({ inspection, selectedStepId, selectedOccurrenceKey, selectStep, selectOccurrence, renderGraph, stale = false, refreshing = false }: {
+  inspection: RunInspection030; stale?: boolean; refreshing?: boolean; selectedStepId?: string; selectedOccurrenceKey?: string;
   selectStep: (id: string) => void; selectOccurrence: (key: string) => void;
   renderGraph?: (bridge: RunGraphBridge030) => ReactNode;
 }) {
@@ -44,10 +45,11 @@ export function RunInspector030({ inspection, selectedStepId, selectedOccurrence
   const activation = selected?.occurrence.activation;
   const normalOutcome = selected ? normalRunOutcome030(selected.occurrence) : null;
   const diagnostics = retainedRunValue030(state.diagnostics);
+  const visibleDiagnostics = diagnostics?.filter(diagnostic => !selected || diagnostic.activationId === selected.activationId || !graph.some(item => item.activationId === diagnostic.activationId));
   const humans = retainedRunValue030(state.humans);
   const openHumans = humans?.filter(request => request.state.kind === 'open') ?? [];
   return <section aria-label={tr('inspector')} className="min-w-0 space-y-3">
-    {renderGraph?.({ capture, occurrences: graph, selectedStepId, selectedOccurrenceKey, selectStep, selectOccurrence: selectVisit })}
+    {renderGraph?.({ capture, occurrences: graph, occurrenceRead: { ...runGraphReadState030(state.occurrences, stale, refreshing), projectionAvailable: semantics !== null }, selectedStepId, selectedOccurrenceKey, selectStep, selectOccurrence: selectVisit })}
     {(state.humans.kind !== 'ready' || openHumans.length > 0) && <section><h3 className="font-medium">{tr('humanWaits')}</h3>{status(state.humans)}
       {openHumans.map(request => <div key={request.id}>
         {request.occurrences.map(mapping => {
@@ -67,7 +69,7 @@ export function RunInspector030({ inspection, selectedStepId, selectedOccurrence
         {stepLabels.get(step.occurrenceId)} · {state.occurrences.kind === 'ready' ? t('agsdl.run030.occurrenceCount', { count: graph.filter(item => item.staticOccurrenceId === step.occurrenceId).length }) : tr(state.occurrences.kind === 'stale' ? 'staleShort' : 'loading')}
       </button>)}</div>
     </section>
-    <section><h3 className="font-medium">{tr('occurrences')}</h3>{status(state.occurrences)}
+    <section><h3 className="font-medium" title={tr('occurrenceHelp')}>{tr('occurrences')}</h3>{status(state.occurrences)}
       <ol className="space-y-1">{visible.map(item => <li key={item.key}><button type="button" className={button} aria-pressed={selectedOccurrenceKey === item.key} onClick={() => selectVisit(item.key)}>
         {visitLabel(item)}
         {' · '}{tr(`phase.${knownPhase(item.occurrence.activation.phase)}`)}
@@ -92,16 +94,35 @@ export function RunInspector030({ inspection, selectedStepId, selectedOccurrence
       </details>
     </section>}
     <section><h3 className="font-medium">{tr('diagnostics')}</h3>{status(state.diagnostics)}
-      {diagnostics?.map(diagnostic => <article key={diagnostic.id} className="my-1 rounded border border-border p-2">
-        <p>{tr(`disposition.${diagnostic.disposition}`)}</p>
-        <p>{tr(`diagnosticCode.${['CALL_FAILED', 'TIMEOUT', 'BRANCH_FAILED', 'OUTPUT_INVALID'].includes(diagnostic.code) ? diagnostic.code : 'other'}`)}</p>
-        <p className="break-words">{diagnostic.message}</p>
-        <details><summary>{tr('technicalDetails')}</summary>
-          <pre className="whitespace-pre-wrap break-all">{JSON.stringify(diagnostic, null, 2)}</pre>
-        </details>
-        {diagnostic.effectsJson.kind === 'available' && <ExactContent label={tr('effects')} value={diagnostic.effectsJson.value} />}
-      </article>)}
-      {state.diagnostics.kind === 'ready' && diagnostics?.length === 0 && <p>{tr('noDiagnostics')}</p>}
+      {selected && <p>{tr('selectedDiagnostics')}</p>}
+      {visibleDiagnostics?.map(diagnostic => {
+        const attached = diagnostic.activationId === null ? undefined : graph.find(item => item.activationId === diagnostic.activationId);
+        const cause = diagnostic.causeId === null ? undefined : diagnostics?.find(item => item.id === diagnostic.causeId);
+        const causeOccurrence = cause?.activationId ? graph.find(item => item.activationId === cause.activationId) : undefined;
+        const effects = diagnostic.effectsJson.kind === 'available' ? runEffectFacts030(diagnostic.effectsJson.value) : null;
+        return <article key={diagnostic.id} data-diagnostic-id={diagnostic.id} className="my-1 space-y-1 rounded border border-border p-2">
+          {attached ? <>
+            <button type="button" className={button} onClick={() => selectVisit(attached.key)}>
+              {tr('inspectOccurrence')} · {visitLabel(attached)} · {tr('visit')} {attached.occurrence.details.kind === 'available' ? attached.occurrence.details.value.visit ?? tr('unknown') : tr('unknown')}
+            </button>
+            <p className="break-all">{tr('activation')}: {attached.activationId}</p>
+          </> : <p>{tr('runLevelDiagnostic')}</p>}
+          {diagnostic.step && <p>{tr('diagnosticStep')}: {diagnostic.step.join(' / ')}</p>}
+          <p>{tr(`disposition.${diagnostic.disposition}`)}</p>
+          <p>{tr(`diagnosticCode.${['CALL_FAILED', 'TIMEOUT', 'BRANCH_FAILED', 'OUTPUT_INVALID'].includes(diagnostic.code) ? diagnostic.code : 'other'}`)}</p>
+          <p className="break-words">{diagnostic.message}</p>
+          <div><span>{tr('cause')}: </span>{diagnostic.causeId === null ? tr('notReported') : <>
+            <span className="break-words">{cause ? cause.message : diagnostic.causeId}</span>
+            {causeOccurrence && <button type="button" className={button} onClick={() => selectVisit(causeOccurrence.key)}>{tr('inspectCause')} · {visitLabel(causeOccurrence)}</button>}
+          </>}</div>
+          <p>{tr('handler')}: {diagnostic.handlerStep?.join(' / ') ?? tr('notReported')}</p>
+          <div><h4>{tr('effects')}</h4>{effects ? <dl>{effects.map((fact, index) => <div key={index} className="break-words">
+            <dt>{fact.path || tr('result')}</dt><dd>{fact.value ?? tr('noReportedItems')}</dd>
+          </div>)}</dl> : <p>{tr('unavailable')}</p>}</div>
+          <details><summary>{tr('technicalDetails')}</summary><pre className="whitespace-pre-wrap break-all">{JSON.stringify(diagnostic, null, 2)}</pre></details>
+        </article>;
+      })}
+      {state.diagnostics.kind === 'ready' && visibleDiagnostics?.length === 0 && <p>{tr('noDiagnostics')}</p>}
     </section>
   </section>;
 }

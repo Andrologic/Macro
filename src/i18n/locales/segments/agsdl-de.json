@@ -841,7 +841,6 @@
     "currentDocument": "Aktuelles Dokument",
     "inspector": "Ausführungsinspektor",
     "steps": "Schritte des erfassten Ablaufs",
-    "occurrenceCount": "{{count}} Vorkommen",
     "occurrences": "Vorkommen",
     "externalWork": "Arbeit außerhalb des Ablaufs",
     "visit": "Besuch",
@@ -957,6 +956,33 @@
       "BRANCH_FAILED": "Ein Zweig hat einen Arbeitsfehler gemeldet. Seine Behandlung wird gesondert angezeigt.",
       "OUTPUT_INVALID": "Das Ergebnis erfüllte den erwarteten Vertrag nicht.",
       "other": "Das Laufzeitsystem hat diese Diagnose gemeldet."
-    }
+    },
+    "activation": "Aktivierung",
+    "diagnosticStep": "Schritt",
+    "selectedDiagnostics": "Diagnosen des ausgewählten Besuchs und Diagnosen ohne belegten Besuch.",
+    "runLevelDiagnostic": "Diagnose der Ausführung. Keine Zuordnung zu einem Vorkommen ist belegt.",
+    "inspectOccurrence": "Diesen Besuch untersuchen",
+    "cause": "Gemeldete Ursache",
+    "inspectCause": "Ursprünglichen Besuch untersuchen",
+    "handler": "Ausgeführter Wiederherstellungsschritt",
+    "notReported": "Nicht gemeldet",
+    "noReportedItems": "Keine Einträge gemeldet",
+    "termsHelp": "Diese Begriffe erklären",
+    "physicalHelp": "Physischer Abschluss bedeutet, dass das Laufzeitsystem das Ende der Arbeit und ihrer verfolgten Nachfolger bestätigt hat. Eine Stoppanforderung allein bestätigt dies nicht.",
+    "ownerHelp": "Der Laufzeithost ist der für diese Ausführung und ihre Beobachtung zuständige Prozess. Ein widerrufener Host darf seine Arbeit nicht fortsetzen.",
+    "occurrenceHelp": "Ein Vorkommen ist ein erfasster Besuch eines Schritts. Wiederholte Besuche bleiben getrennt, auch beim selben Schritt.",
+    "summarySentence": {
+      "succeeded": "Der Ablauf war erfolgreich.",
+      "failed": "Der Ablauf ist fehlgeschlagen.",
+      "cancelled": "Der Ablauf wurde abgebrochen.",
+      "pending": "Für den Ablauf liegt noch kein Endergebnis vor.",
+      "stopping": "Einige Arbeiten werden noch gestoppt; ihr Abschluss ist noch nicht bestätigt.",
+      "active": "Einige Arbeiten sind noch aktiv.",
+      "uncertain": "Der Stopp bleibt ungewiss.",
+      "human": "Eine Person muss noch antworten."
+    },
+    "occurrenceCount_zero": "Keine Vorkommen",
+    "occurrenceCount_one": "{{count}} Vorkommen",
+    "occurrenceCount_other": "{{count}} Vorkommen"
   }
 }

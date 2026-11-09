@@ -1,5 +1,5 @@
-import type { RunOccurrence030, RunScope030 } from '../../types/agsdlRunUi030';
-import { scanSource } from './document';
+import type { RunOccurrence030, RunScope030, RunRead030 } from '../../types/agsdlRunUi030';
+import { object, pointerPart, scanSource } from './document';
 import type { StaticSemantics030 } from './staticSemantics030';
 
 /** Capture identity deliberately excludes runtime revision, so refresh keeps selection. */
@@ -52,4 +52,35 @@ export function runStepLabels030(source: string, semantics: StaticSemantics030):
     const title: unknown = span ? JSON.parse(decoder.decode(scanned.bytes.subarray(span.start, span.end))) : null;
     return [step.occurrenceId, typeof title === 'string' && title.length > 0 ? title : step.address?.join(' / ') ?? step.sourcePath];
   }));
+}
+
+/** Read status accompanies the rows, including a retained complete old revision. */
+export function runGraphReadState030(read: RunRead030<readonly RunOccurrence030[]>, stale = false, refreshing = false) {
+  return {
+    availability: refreshing ? 'loading' as const : read.kind === 'stale' ? 'ready' as const : read.kind,
+    complete: !refreshing && (read.kind === 'ready' || read.kind === 'stale'),
+    revision: read.kind === 'ready' || read.kind === 'stale' ? read.revision : null,
+    stale: stale || refreshing || read.kind === 'stale' || (read.kind === 'loading' && read.retained !== null),
+  };
+}
+
+/** Arbitrary effect fields have no public ontology. Show their exact scalar values
+ * as labelled facts, preserving decimal wire text rather than rounding via Number. */
+export function runEffectFacts030(source: string): { path: string; value: string | null }[] | null {
+  try {
+    const scanned = scanSource(source), decoder = new TextDecoder();
+    const facts: { path: string; value: string | null }[] = [];
+    const visit = (node: unknown, pointer: string, labels: string[]) => {
+      const entries = Array.isArray(node) ? node.map((value, index) => [String(index), value] as const) : Object.entries(object(node));
+      if (entries.length > 0) {
+        for (const [key, value] of entries) visit(value, `${pointer}/${pointerPart(key)}`, [...labels, key]);
+      } else {
+        const span = scanned.spans.get(pointer);
+        const raw = span ? decoder.decode(scanned.bytes.subarray(span.start, span.end)) : '';
+        facts.push({ path: labels.join(' / '), value: raw === '[]' || raw === '{}' ? null : typeof node === 'string' ? node : raw });
+      }
+    };
+    visit(scanned.tree, '', []);
+    return facts;
+  } catch { return null; }
 }

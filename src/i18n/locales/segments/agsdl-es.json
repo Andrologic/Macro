@@ -841,7 +841,6 @@
     "currentDocument": "Documento actual",
     "inspector": "Inspector de ejecución",
     "steps": "Pasos del flujo capturado",
-    "occurrenceCount": "{{count}} ocurrencia(s)",
     "occurrences": "Ocurrencias",
     "externalWork": "Trabajo fuera del flujo",
     "visit": "Visita",
@@ -957,6 +956,33 @@
       "BRANCH_FAILED": "Una rama informó de un fallo de trabajo. Su tratamiento se muestra por separado.",
       "OUTPUT_INVALID": "El resultado no cumplió el contrato esperado.",
       "other": "El motor informó de este diagnóstico."
-    }
+    },
+    "activation": "Activación",
+    "diagnosticStep": "Paso",
+    "selectedDiagnostics": "Diagnósticos de la visita seleccionada y diagnósticos sin visita verificada.",
+    "runLevelDiagnostic": "Diagnóstico de la ejecución. No hay asociación verificada con una ocurrencia.",
+    "inspectOccurrence": "Inspeccionar esta visita",
+    "cause": "Causa indicada",
+    "inspectCause": "Inspeccionar la visita de origen",
+    "handler": "Paso de recuperación seguido",
+    "notReported": "No indicado",
+    "noReportedItems": "Ningún elemento indicado",
+    "termsHelp": "Explicar estos términos",
+    "physicalHelp": "La finalización física significa que el motor confirmó el fin del trabajo y sus descendientes supervisados. Una solicitud de parada no basta para confirmarlo.",
+    "ownerHelp": "El host de ejecución es el proceso responsable de la ejecución y su observación. Un host revocado ya no puede continuar su trabajo.",
+    "occurrenceHelp": "Una ocurrencia es una visita registrada a un paso. Las visitas repetidas se mantienen separadas aunque correspondan al mismo paso.",
+    "summarySentence": {
+      "succeeded": "El flujo finalizó correctamente.",
+      "failed": "El flujo falló.",
+      "cancelled": "El flujo se canceló.",
+      "pending": "El flujo aún no tiene un resultado final.",
+      "stopping": "Hay trabajos en proceso de parada y su finalización aún no se ha confirmado.",
+      "active": "Hay trabajos que siguen activos.",
+      "uncertain": "La parada sigue siendo incierta.",
+      "human": "Una persona aún debe responder."
+    },
+    "occurrenceCount_zero": "Ninguna ocurrencia",
+    "occurrenceCount_one": "{{count}} ocurrencia",
+    "occurrenceCount_other": "{{count}} ocurrencias"
   }
 }

@@ -90,9 +90,15 @@ function ScopedMonitor030({ access, initialRunId, currentSource, renderGraph, re
       {stale && <p role="status" className="rounded border border-border p-2">{tr('stale')}</p>}
       <section className="space-y-1 rounded border border-border p-2" aria-label={tr('summary')}>
         <h3 className="font-medium">{tr(`verdict.${state.verdict ?? 'pending'}`)}</h3>
+        <p>{[tr(`summarySentence.${state.verdict ?? 'pending'}`),
+          ...(/^[1-9][0-9]*$/.test(state.physicalPending) ? [tr(state.stopping ? 'summarySentence.stopping' : 'summarySentence.active')] : []),
+          ...(state.stop.kind === 'available' && state.stop.value.kind === 'uncertain' ? [tr('summarySentence.uncertain')] : []),
+          ...(state.humans.kind === 'ready' && state.humans.value.some(request => request.state.kind === 'open') ? [tr('summarySentence.human')] : []),
+        ].join(' ')}</p>
         <p>{tr('stopLabel')}: {state.stop.kind === 'available' ? tr(`stop.${state.stop.value.kind}`) : tr('unavailable')}</p>
-        <p>{tr('physicalPending')}: {state.physicalPending}</p>
-        <p>{tr('owner')}: {tr(`ownerState.${state.ownerStatus}`)}</p>
+        <p title={tr('physicalHelp')}>{tr('physicalPending')}: {state.physicalPending}</p>
+        <p title={tr('ownerHelp')}>{tr('owner')}: {tr(`ownerState.${state.ownerStatus}`)}</p>
+        <details><summary>{tr('termsHelp')}</summary><p>{tr('physicalHelp')}</p><p>{tr('ownerHelp')}</p><p>{tr('occurrenceHelp')}</p></details>
         {state.humans.kind === 'ready' ? state.humans.value.some(request => request.state.kind === 'open') && <p>{tr('waitingHuman')}</p> : <p>{tr('humanUnknown')}</p>}
         {renderHumans?.(inspection)}
         {state.uncertainties.kind === 'available' ? state.uncertainties.value.map(item => <details key={item.id}><summary>{tr(`uncertainty.${item.state}`)}</summary><pre className="whitespace-pre-wrap break-all">{JSON.stringify(item, null, 2)}</pre></details>) : <p>{tr('uncertaintyUnavailable')}</p>}
@@ -100,7 +106,7 @@ function ScopedMonitor030({ access, initialRunId, currentSource, renderGraph, re
         <ExactContent label={tr('capturedSource')} value={inspection.capture.authoredSource} />
         {currentSource !== undefined && <ExactContent label={tr('currentDocument')} value={currentSource} />}
       </section>
-      <RunInspector030 inspection={inspection} selectedStepId={selection.step} selectedOccurrenceKey={selection.occurrence}
+      <RunInspector030 inspection={inspection} stale={stale} refreshing={readState?.kind === 'loading'} selectedStepId={selection.step} selectedOccurrenceKey={selection.occurrence}
         selectStep={step => choose({ step, occurrence: undefined })} selectOccurrence={occurrence => choose({ occurrence })} renderGraph={renderGraph} />
       <details><summary>{tr('runtimeDetails')}</summary>
         {occurrences === null || state.occurrences.kind !== 'ready' || state.occurrences.revision !== state.revision ? <p>{tr('incomplete')}</p> : <RuntimeProjectionView030

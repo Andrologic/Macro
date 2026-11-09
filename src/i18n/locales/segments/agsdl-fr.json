@@ -841,7 +841,6 @@
     "currentDocument": "Document courant",
     "inspector": "Inspection de l’exécution",
     "steps": "Étapes du parcours capturé",
-    "occurrenceCount": "{{count}} occurrence(s)",
     "occurrences": "Occurrences",
     "externalWork": "Travail hors du parcours",
     "visit": "Visite",
@@ -957,6 +956,33 @@
       "BRANCH_FAILED": "Une branche a signalé un échec de travail. Son traitement est indiqué séparément.",
       "OUTPUT_INVALID": "Le résultat produit ne respectait pas le contrat attendu.",
       "other": "Le moteur a signalé ce diagnostic."
-    }
+    },
+    "activation": "Activation native",
+    "diagnosticStep": "Étape",
+    "selectedDiagnostics": "Diagnostics de la visite sélectionnée et diagnostics sans visite attestée.",
+    "runLevelDiagnostic": "Diagnostic du run. Aucun rattachement à une occurrence n’est attesté.",
+    "inspectOccurrence": "Inspecter cette visite",
+    "cause": "Cause signalée",
+    "inspectCause": "Inspecter la visite à l’origine",
+    "handler": "Étape de recours suivie",
+    "notReported": "Non signalé",
+    "noReportedItems": "Aucun élément signalé",
+    "termsHelp": "Comprendre ces termes",
+    "physicalHelp": "La fin physique signifie que le moteur a confirmé la fin du travail et de ses descendants suivis. Une demande d’arrêt ne suffit pas à le confirmer.",
+    "ownerHelp": "L’hôte d’exécution est le processus responsable du run et de son observation. Un hôte révoqué ne peut plus poursuivre ses travaux.",
+    "occurrenceHelp": "Une occurrence est une visite enregistrée d’une étape. Plusieurs visites restent distinctes, même si elles concernent la même étape.",
+    "summarySentence": {
+      "succeeded": "Le parcours a réussi.",
+      "failed": "Le parcours a échoué.",
+      "cancelled": "Le parcours a été annulé.",
+      "pending": "Le parcours n’a pas encore de verdict final.",
+      "stopping": "Des travaux sont encore en cours d’arrêt et leur fin n’est pas encore confirmée.",
+      "active": "Des travaux sont encore actifs.",
+      "uncertain": "L’arrêt reste incertain.",
+      "human": "Une personne doit encore répondre."
+    },
+    "occurrenceCount_zero": "Aucune occurrence",
+    "occurrenceCount_one": "{{count}} occurrence",
+    "occurrenceCount_other": "{{count}} occurrences"
   }
 }
