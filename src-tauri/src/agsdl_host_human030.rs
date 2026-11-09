@@ -540,7 +540,7 @@ impl HumanBroker030 {
                 payload["planId"].as_str().is_some_and(|s| !s.is_empty())
                     && payload["text"]
                         .as_str()
-                        .is_some_and(|s| !s.trim().is_empty()),
+                        .is_some_and(|s| !human_comment_is_empty030(s)),
                 "Plan content absent",
             )?;
         }
