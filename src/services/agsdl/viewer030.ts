@@ -1,8 +1,7 @@
 import { list, object, pointerPart, scanSource, text } from "./document";
 import type { AgsdlEnvelopeMetadata } from "./design";
 import type { ViewerCard, ViewerGraph, ViewerPromptSource, ViewerReference } from "./viewer";
-import { projectStaticSemantics030 } from "./staticSemantics030";
-import type { Report030 } from "../../vendor/agsdl/v0.3/reader.mjs";
+import { projectStaticSemantics030, type SourceBoundReport030 } from "./staticSemantics030";
 
 export interface ViewerRoute030 {
   /** Pointer to the authored target, including scalar targets and empty choices. */
@@ -26,7 +25,7 @@ export interface ViewerRoute030 {
 }
 
 /** Static source inspection only. Runtime normalization and message resolution belong to 05. */
-export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadata, report?: Report030) {
+export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadata, report?: SourceBoundReport030) {
   const scanned = scanSource(source);
   const doc = object(scanned.tree);
   if (doc.contract !== "agsdl-0.3.0") throw new Error("Expected agsdl-0.3.0.");

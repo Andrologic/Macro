@@ -3,6 +3,12 @@ import { demoPlans } from "../../demo/fixtures";
 import { expandCompositions, expandedStepPath, originalStepPath } from "./compositionExpansion";
 import { projectSystemOverview } from "./systemOverview";
 import { projectViewer } from "./viewer";
+import { projectViewer030 } from "./viewer030";
+import { validateDocumentBytes } from "./document";
+
+const viewerWithReport030 = (source: string) => projectViewer030(source, undefined, {
+  source, report: validateDocumentBytes(new TextEncoder().encode(source)),
+});
 
 it("unfolds a composition step into its steps, run by the bound agent and leaving through the step's routes", () => {
   const plan = demoPlans.find(item => item.id === "demo-crisis")!;
@@ -53,8 +59,8 @@ const use = "/flow/steps/use";
 const childUse = expandedStepPath(use, "/compositions/parent/steps/child");
 const workUse = expandedStepPath(childUse, "/compositions/leaf/steps/work");
 const expandNested = (source: string) => {
-  const projected = projectViewer(source), graph = projected.graphs[0];
-  expect(graph.static030!.report.valid).toBe(true);
+  const projected = viewerWithReport030(source), graph = projected.graphs[0];
+  expect(graph.static030!.report!.valid).toBe(true);
   const overview = projectSystemOverview(graph, []);
   return { projected, ...expandCompositions(overview.cards, overview.edges, projected.graphs, new Set([use, childUse]), projected.declarations) };
 };
@@ -93,15 +99,15 @@ it("respects local errors and the nearest compose handler before propagating a h
 });
 
 it("leaves unopened descendants folded and guards invalid recursive composition drafts", () => {
-  const projected = projectViewer(nestedSource());
+  const projected = viewerWithReport030(nestedSource());
   const overview = projectSystemOverview(projected.graphs[0], []);
   const folded = expandCompositions(overview.cards, overview.edges, projected.graphs, new Set([use]), projected.declarations);
   expect(folded.frames).toHaveLength(1);
   expect(folded.cards.some(card => card.path === childUse && card.kind === "compose")).toBe(true);
   const source = JSON.parse(nestedSource());
   source.compositions.leaf.steps.work = { type: "compose", composition: "parent", agents: { p: "worker" }, next: { done: { output: "done" } } };
-  const draft = projectViewer(JSON.stringify(source));
-  expect(draft.graphs[0].static030!.report.valid).toBe(false);
+  const draft = viewerWithReport030(JSON.stringify(source));
+  expect(draft.graphs[0].static030!.report!.valid).toBe(false);
   const initial = projectSystemOverview(draft.graphs[0], []);
   const result = expandCompositions(initial.cards, initial.edges, draft.graphs, new Set([use, childUse, workUse]), draft.declarations);
   expect(result.frames).toHaveLength(2);
@@ -136,7 +142,7 @@ it("propagates errors from a composition's join, not from the join's branches", 
   });
   const { cards, edges, projected } = expandNested(raw);
   const path = (name: string) => expandedStepPath(use, `/compositions/pipeline/steps/${name}`);
-  expect(projected.graphs[0].static030!.report.joins["use/gather"]).toEqual({ origin: "use/split", branches: ["left", "right"] });
+  expect(projected.graphs[0].static030!.report!.joins["use/gather"]).toEqual({ origin: "use/split", branches: ["left", "right"] });
   expect(edges.filter(edge => edge.route030?.inherited).map(edge => edge.source)).toEqual([path("split"), path("gather")]);
   expect(cards.find(card => card.path === path("gather"))!.static030!.join).toMatchObject({ originOccurrenceId: path("split") });
   expect(cards.find(card => card.path === path("left"))!.static030!.error).toEqual({ kind: "join", joinOccurrenceIds: [path("gather")] });
@@ -147,8 +153,8 @@ it("keeps repeated composition occurrences separate and reconnects loops to expa
   source.flow.steps.use.next = { done: "second" };
   source.flow.steps.second = { type: "compose", composition: "parent", agents: { p: "worker" }, next: { done: "before" } };
   delete source.flow.steps.after;
-  const projected = projectViewer(JSON.stringify(source)), graph = projected.graphs[0];
-  expect(graph.static030!.report.valid).toBe(true);
+  const projected = viewerWithReport030(JSON.stringify(source)), graph = projected.graphs[0];
+  expect(graph.static030!.report!.valid).toBe(true);
   const overview = projectSystemOverview(graph, []);
   const second = "/flow/steps/second", child = expandedStepPath(second, "/compositions/parent/steps/child");
   const work = expandedStepPath(child, "/compositions/leaf/steps/work");
@@ -176,9 +182,9 @@ it("does not invent inherited errors for an unused template whose join boundarie
     gather: { type: "join", next: { output: "done" } },
   };
   source.compositions.leaf.entry = "split";
-  const projected = projectViewer(JSON.stringify(source));
+  const projected = viewerWithReport030(JSON.stringify(source));
   const graph = projected.graphs.find(graph => graph.path === "/compositions/parent")!;
-  expect(graph.static030!.report.valid).toBe(true);
+  expect(graph.static030!.report!.valid).toBe(true);
   const overview = projectSystemOverview(graph, []);
   const compose = "/compositions/parent/steps/child";
   const result = expandCompositions(overview.cards, overview.edges, projected.graphs, new Set([compose]), projected.declarations);
@@ -186,3 +192,21 @@ it("does not invent inherited errors for an unused template whose join boundarie
   expect(result.cards.find(card => card.id === "gather")!.static030!.join!.originOccurrenceId).toBeNull();
   expect(result.edges.some(edge => edge.route030?.inherited)).toBe(false);
 });
+
+for (const kind of ["call", "agent"] as const) {
+  for (const explicitMessage of [false, true]) {
+    it(`preserves a ${kind} body's default transfer through nested outputs, explicit message: ${explicitMessage}`, () => {
+      const source = JSON.parse(nestedSource());
+      source.compositions.leaf.steps.work = {
+        ...(kind === "call" ? { type: "call", command: "echo result" } : { type: "agent", agent: { parameter: "q" } }),
+        next: { output: "done" },
+      };
+      source.flow.steps.after = { type: "agent", agent: "worker" };
+      source.flow.steps.use.next.done = explicitMessage ? { step: "after", message: { resources: {} } } : "after";
+      const { edges } = expandNested(JSON.stringify(source));
+      const edge = edges.find(edge => edge.source === workUse && edge.target === "/flow/steps/after")!;
+      expect(edge.transfers).toEqual([explicitMessage ? "message" : kind === "call" ? "resources.result" : "resources.text · results"]);
+      expect(edge.route030?.messageJson).toBe(explicitMessage ? '{"resources":{}}' : undefined);
+    });
+  }
+}

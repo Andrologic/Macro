@@ -53,6 +53,8 @@ export function expandCompositions(cards: ViewerCard[], edges: ViewerEdge[], gra
     }))];
     const leave = (branch: Branch, route: Branch, source: ViewerCard, inherited = false): Branch => ({
       ...route, label: branch.label, reference: { ...route.reference, target: target(route.reference.target) },
+      // Without an explicit message, the body producer supplies the compose output's default message.
+      ...(route.route030 && route.route030.messageJson === undefined ? { transfers: branch.transfers ?? route.transfers } : {}),
       ...(route.route030 ? { route030: { ...route.route030, sourcePath: source.static030?.sourcePath ?? originalStepPath(source.path),
         sourceOccurrenceId: source.path, target: target(route.reference.target), targetOccurrenceId: target(route.reference.target),
         role: inherited ? "error" : branch.route030?.role ?? route.route030.role,

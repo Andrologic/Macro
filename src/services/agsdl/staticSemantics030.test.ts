@@ -7,7 +7,7 @@ const source = (flow: unknown, compositions = {}) => JSON.stringify({ contract: 
 const project = (raw: string) => {
   const report = validateDocumentBytes(new TextEncoder().encode(raw));
   expect(report.valid).toBe(true);
-  const result = projectStaticSemantics030(raw, report);
+  const result = projectStaticSemantics030(raw, { source: raw, report });
   expect(result.report).toBe(report);
   return result;
 };
@@ -68,7 +68,7 @@ describe("static semantics 0.3", () => {
       work: { type: "agent", agent: "worker", instance: "new", next: { yes: "gather", no: "gather" } },
       gather: { type: "join", quorum: { count: 2, accept: ["yes"] }, remaining: "finish", next: { reached: [], missed: [] } },
     } }));
-    expect(result.report.joins.gather).toEqual({ origin: "split", branches: ["work"] });
+    expect(result.report!.joins.gather).toEqual({ origin: "split", branches: ["work"] });
     const join = result.occurrences.find(item => item.occurrenceId === "/flow/steps/gather")!.join!;
     expect(join).toMatchObject({ originOccurrenceId: "/flow/steps/split", mode: "quorum", quorumCountJson: "2", accept: ["yes"], remaining: "finish", failures: "keep" });
     expect(join.branches).toEqual([{ name: "work", targetOccurrenceId: "/flow/steps/work", memberOccurrenceIds: ["/flow/steps/work"], fanout: true }]);
@@ -94,7 +94,7 @@ it("keeps authored join policies for unused templates without inventing an origi
     } },
   } });
   const result = project(raw);
-  expect(result.report.joins).toEqual({});
+  expect(result.report!.joins).toEqual({});
   expect(result.occurrences.find(item => item.sourcePath.endsWith("/gather"))!.join).toMatchObject({
     originOccurrenceId: null, branches: [], mode: "all", remaining: "wait", failures: "keep", maxFailuresJson: "1",
   });
@@ -103,7 +103,7 @@ it("keeps authored join policies for unused templates without inventing an origi
 it("keeps malformed authoring drafts readable without applying validated graph rules", () => {
   for (const flow of [null, {}, { steps: null }, { entry: "a", steps: { a: null } }, { entry: "a", onError: "recover", steps: { a: null } }]) {
     const result = projectStaticSemantics030(source(flow));
-    expect(result.report.valid).toBe(false);
+    expect(result.report).toBeNull();
     expect(result.flowErrorCovered).toEqual([]);
   }
 });
@@ -124,7 +124,17 @@ it("retains a fan-out declared on the global error handler", () => {
   const result = project(source({ entry: "a", onError: { step: "handler", each: ["error", "details"], max: 8 }, steps: {
     a: call(), handler: { type: "agent", agent: "worker", instance: "new", next: "gather" }, gather: { type: "join" },
   } }));
-  expect(result.report.joins.gather).toEqual({ origin: "a", branches: ["handler"] });
+  expect(result.report!.joins.gather).toEqual({ origin: "a", branches: ["handler"] });
   expect(result.occurrences.find(item => item.join)!.join!.branches[0].fanout).toBe(true);
   expect(result.flowErrorCovered).toEqual(["/flow/steps/a"]);
+});
+
+it("drops a directly supplied report when its source bytes do not match", () => {
+  const raw = source({ entry: "split", steps: {
+    split: call(["left", "right"]), left: call("gather"), right: call("gather"), gather: { type: "join" },
+  } });
+  const report = validateDocumentBytes(new TextEncoder().encode(raw));
+  const result = projectStaticSemantics030(`${raw}\n`, { source: raw, report });
+  expect(result.report).toBeNull();
+  expect(result.occurrences.find(item => item.join)!.join!.originOccurrenceId).toBeNull();
 });

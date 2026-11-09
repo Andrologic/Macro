@@ -1,6 +1,28 @@
 import { Graph } from "../../vendor/agsdl/v0.3/graph.mjs";
 import type { Report030 } from "../../vendor/agsdl/v0.3/reader.mjs";
-import { list, object, pointerPart, scanSource, text, validateDocumentBytes } from "./document";
+import type { AgsdlReport } from "../../types/agsdl";
+import { list, object, pointerPart, scanSource, text } from "./document";
+import { locationsForSource } from "./reader030WorkerProtocol";
+
+/** Native report paired with the exact source captured at validation time. */
+export interface SourceBoundReport030 {
+  source: string;
+  report: Report030;
+}
+
+/** Only worker reports associated with these exact source bytes supply join origins. */
+export function staticReportForSource030(source: string, reports: readonly AgsdlReport[]): SourceBoundReport030 | undefined {
+  for (const report of reports) {
+    if (report.contract !== "agsdl-0.3.0" || locationsForSource(report, source) === undefined || typeof report.documentReportJson !== "string") continue;
+    try {
+      const native = JSON.parse(report.documentReportJson) as Report030;
+      if (native.contract === "agsdl-0.3.0") return { source, report: native };
+    } catch {
+      // An unavailable/unreadable report leaves the projection unassessed.
+    }
+  }
+  return undefined;
+}
 
 /** Design identities only. A visit, activation or actual instance needs a runtime identity. */
 export interface StaticAgent030 {
@@ -20,7 +42,7 @@ export interface StaticJoinBranch030 {
   fanout: boolean;
 }
 export interface StaticJoin030 {
-  /** Null when the validator did not report an instantiated use of this template. */
+  /** Null until the validator reports an origin for this source owner. */
   originOccurrenceId: string | null;
   branches: StaticJoinBranch030[];
   mode: "all" | "quorum";
@@ -34,7 +56,7 @@ export type StaticError030 =
   | { kind: "local" | "flow"; ownerPath: string; ownerOccurrenceId: string }
   | { kind: "join"; joinOccurrenceIds: string[] } // Nearest enclosing join first.
   | { kind: "compose"; ownerOccurrenceId: string }
-  | { kind: "unreported" } // A template's join boundaries are absent from the validator report.
+  | { kind: "unreported" } // No matching report or reported join boundaries for this scope.
   | { kind: "unhandled" };
 export interface StaticOccurrence030 {
   occurrenceId: string;
@@ -52,8 +74,8 @@ export interface StaticSemantics030 {
   contract: "agsdl-0.3.0";
   occurrences: StaticOccurrence030[];
   flowErrorCovered: string[];
-  /** The existing validator's report, including its authoritative join origins. */
-  report: Report030;
+  /** Matching worker report and authoritative join origins; null while unavailable/stale. */
+  report: Report030 | null;
 }
 
 /** Resolve only declared bindings. An unbound template parameter stays unbound. */
@@ -63,12 +85,12 @@ export function resolveStaticAgent030(ref: unknown, bindings: Readonly<Record<st
   return Object.hasOwn(bindings, parameter) ? bindings[parameter] : undefined;
 }
 
-/** The supplied report must describe these exact source bytes. No join inference is performed here. */
-export function projectStaticSemantics030(source: string, report?: Report030): StaticSemantics030 {
+/** Source inspection only. A missing/stale worker report never triggers synchronous validation. */
+export function projectStaticSemantics030(source: string, report?: SourceBoundReport030): StaticSemantics030 {
   const scanned = scanSource(source), doc = object(scanned.tree);
   if (doc.contract !== "agsdl-0.3.0") throw new Error("Expected agsdl-0.3.0.");
-  const validated = report ?? validateDocumentBytes(scanned.bytes);
-  const shaped = !validated.diagnostics.some(item => item.code === "SHAPE" || item.code === "PARSE");
+  const validated = report?.source === source ? report.report : null;
+  const shaped = validated !== null && !validated.diagnostics.some(item => item.code === "SHAPE" || item.code === "PARSE");
   const raw = (path: string) => {
     const span = scanned.spans.get(path);
     return span ? new TextDecoder().decode(scanned.bytes.subarray(span.start, span.end)) : undefined;
@@ -123,7 +145,7 @@ export function projectStaticSemantics030(source: string, report?: Report030): S
   const byAddress = new Map(occurrences.filter(item => item.address).map(item => [item.address!.join("/"), item]));
   // Report entries address expanded uses. Reusable templates use the same source owner's result.
   const bySource = new Map<string, Report030["joins"][string]>();
-  for (const [address, info] of Object.entries(validated.joins)) {
+  for (const [address, info] of Object.entries(validated?.joins ?? {})) {
     const owner = byAddress.get(address);
     if (owner) bySource.set(owner.sourcePath, info);
   }
@@ -134,7 +156,7 @@ export function projectStaticSemantics030(source: string, report?: Report030): S
     const local = new Map(scope.cards.map(item => [declarations.get(item.occurrenceId)!.name, item]));
     for (const card of scope.cards) {
       if (!card.join) continue;
-      const info = (card.address ? validated.joins[card.address.join("/")] : undefined) ?? bySource.get(card.sourcePath);
+      const info = (card.address ? validated?.joins[card.address.join("/")] : undefined) ?? bySource.get(card.sourcePath);
       if (!info) continue;
       const origin = info.origin.split("/").at(-1)!;
       const originCard = local.get(origin);
@@ -179,7 +201,7 @@ export function projectStaticSemantics030(source: string, report?: Report030): S
     const size = (id: string) => byId.get(id)!.join!.branches.find(branch => branch.memberOccurrenceIds.includes(card.occurrenceId))!.memberOccurrenceIds.length;
     joins?.sort((left, right) => size(left) - size(right) || (left < right ? -1 : left > right ? 1 : 0));
     card.error = Object.hasOwn(step, "onError") ? { kind: "local", ownerPath: `${card.sourcePath}/onError`, ownerOccurrenceId: card.occurrenceId }
-      : unreportedScopes.has(card.scopeId) ? { kind: "unreported" }
+      : !validated || unreportedScopes.has(card.scopeId) ? { kind: "unreported" }
       : memberships.has(card.occurrenceId) ? { kind: "join", joinOccurrenceIds: memberships.get(card.occurrenceId)! }
       : card.parentOccurrenceId ? { kind: "compose", ownerOccurrenceId: card.parentOccurrenceId }
       : card.scopeId === "/flow" && covered.has(card.address![0]) ? { kind: "flow", ownerPath: "/flow/onError", ownerOccurrenceId: "/flow" }
