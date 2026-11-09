@@ -754,7 +754,8 @@
       "accept": "Akzeptierte Antworten, eine pro Zeile",
       "destination": "Fortfahren bei",
       "joinMode": "Zusammenführungsregel",
-      "agentDescription": "Aufgabe des Agenten"
+      "agentDescription": "Aufgabe des Agenten",
+      "dataPath": "Datenpfad, ein Name pro Zeile"
     },
     "options": {
       "agent": "Agentenauftrag",

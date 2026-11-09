@@ -754,7 +754,8 @@
       "accept": "Choix acceptés, un par ligne",
       "destination": "Continuer vers",
       "joinMode": "Règle de regroupement",
-      "agentDescription": "Rôle de l’agent"
+      "agentDescription": "Rôle de l’agent",
+      "dataPath": "Données sélectionnées, un nom par ligne"
     },
     "options": {
       "agent": "Mission d’un agent",

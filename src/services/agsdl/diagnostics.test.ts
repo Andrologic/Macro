@@ -2,6 +2,7 @@ import { expect, it } from "bun:test";
 import { localizeDiagnostics } from "./diagnostics";
 import { createLegacyExample as createExample } from "./examples";
 import { projectViewer } from "./viewer";
+import { rememberSourceLocations } from "./reader030WorkerProtocol";
 import { scanSource } from "./document";
 import type { AgsdlReport } from "../../types/agsdl";
 
@@ -18,6 +19,7 @@ it("localizes UTF-8 byte offsets, relations and deferrals without inventing ambi
     { rule: "relation", outcome: "fail", details: "Relation", location: { pointer: "/relations/0/target" } },
     { rule: "missing", outcome: "fail", details: "Unknown", location: { pointer: "/graphs/999" } },
   ] }, { input: "annex", unit: "test", verdict: "fail", findings: [{ rule: "annex", outcome: "fail", details: "Other source", location: { pointer: path } }] }] };
+  rememberSourceLocations(report, source, scanSource(source).spans);
   const issues = localizeDiagnostics(source, [report], cards);
   expect(issues).toHaveLength(5);
   expect(issues[0].path).toBe(path);
@@ -43,6 +45,7 @@ it("retains root, hidden scope, missing property and module diagnostics with rec
     { rule: "SCHEMA", path: "/agents/a/instructions" },
   ];
   const report: AgsdlReport = { operation: "validate", results: [{ input: "primary", unit: "document", verdict: "fail", findings: findings.map(({ rule, path }) => ({ rule, details: rule, outcome: "fail", severity: rule === "HARNESS_UNVERIFIED" ? "warning" : "error", location: { pointer: path } })) }] };
+  rememberSourceLocations(report, source, scanSource(source).spans);
   const issues = localizeDiagnostics(source, [report], cards);
   expect(issues).toHaveLength(5);
   expect(issues.map(issue => diagnosticOwner030(source, issue, cards).path)).toEqual(["agsdl:document", "/flow", "/compositions/hidden", "/agents/a", "/agents/a"]);

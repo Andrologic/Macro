@@ -41,7 +41,7 @@ export function authoringFields030(fields: ComponentProperty[], values = fields.
       else if (Array.isArray(item)) item.forEach((source, i) => content(source, `${path}/${i}`, label, group, `${i + 1}`));
       else if (Array.isArray(object(item).from)) {
         const from = object(item).from as unknown[];
-        if (from.every(segment => typeof segment === "string")) add("selection", group, "lines", `${path}/from`, from, undefined, name);
+        if (from.every(segment => typeof segment === "string")) add("dataPath", group, "lines", `${path}/from`, from, undefined, name);
       } else for (const key of ["value", "uri", "ref"]) {
         if (typeof object(item)[key] === "string") add(key === "value" ? label : key, group, key === "value" ? "multiline" : "text", `${path}/${key}`, object(item)[key], undefined, name);
       }

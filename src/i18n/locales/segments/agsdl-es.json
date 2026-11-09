@@ -754,7 +754,8 @@
       "accept": "Opciones aceptadas, una por línea",
       "destination": "Continuar en",
       "joinMode": "Regla de reunión",
-      "agentDescription": "Responsabilidad del agente"
+      "agentDescription": "Responsabilidad del agente",
+      "dataPath": "Ruta de datos, un nombre por línea"
     },
     "options": {
       "agent": "Misión de agente",

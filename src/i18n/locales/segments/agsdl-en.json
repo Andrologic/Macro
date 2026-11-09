@@ -754,7 +754,8 @@
       "accept": "Accepted choices, one per line",
       "destination": "Continue at",
       "joinMode": "Gathering rule",
-      "agentDescription": "Agent’s responsibility"
+      "agentDescription": "Agent’s responsibility",
+      "dataPath": "Selected data path, one name per line"
     },
     "options": {
       "agent": "Agent mission",

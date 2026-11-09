@@ -754,7 +754,8 @@
       "accept": "採用する選択肢、1行に1つ",
       "destination": "続行先",
       "joinMode": "集約ルール",
-      "agentDescription": "エージェントの役割"
+      "agentDescription": "エージェントの役割",
+      "dataPath": "選択データのパス、1行に1つ"
     },
     "options": {
       "agent": "エージェントへの任務",

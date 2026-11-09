@@ -754,7 +754,8 @@
       "accept": "승인할 선택지, 한 줄에 하나",
       "destination": "다음 대상",
       "joinMode": "집계 규칙",
-      "agentDescription": "에이전트 역할"
+      "agentDescription": "에이전트 역할",
+      "dataPath": "선택한 데이터 경로, 한 줄에 이름 하나"
     },
     "options": {
       "agent": "에이전트 임무",

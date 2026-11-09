@@ -16,11 +16,9 @@ export interface LocalizedDiagnostic {
 
 /** Only a real source span or an unambiguous AgSDL key can establish a location. */
 export function localizeDiagnostics(source: string, reports: AgsdlReport[], cards: ViewerCard[]): LocalizedDiagnostic[] {
-  let parsed: ReturnType<typeof scanSource> | undefined;
-  try { parsed = scanSource(source); } catch { /* Parse findings still belong in the global list. */ }
-  if (!parsed || has030Contract(source)) {
+  if (has030Contract(source)) {
     return reports.flatMap(report => {
-      const locations = locationsForSource(report, source) ?? parsed?.spans;
+      const locations = locationsForSource(report, source);
       return report.results.flatMap(result => result.findings.map(finding => {
         const path = result.input === "primary" ? finding.location.pointer : undefined;
         const span = path === undefined ? undefined : locations?.get(path);
@@ -36,8 +34,14 @@ export function localizeDiagnostics(source: string, reports: AgsdlReport[], card
       }));
     });
   }
-  const doc = readDocument(source);
-  const { spans } = scanSource(source);
+  let doc: ReturnType<typeof readDocument>, spans: ReturnType<typeof scanSource>["spans"];
+  try { doc = readDocument(source); spans = scanSource(source).spans; }
+  catch {
+    return reports.flatMap(report => report.results.flatMap(result => result.findings.map(finding => ({
+      rule: finding.rule, details: finding.details, severity: finding.severity, step: finding.step,
+      path: result.input === "primary" ? finding.location.pointer : undefined, targets: [],
+    }))));
+  }
   const definitions = list(doc.definitions).map(object);
   const uniqueDefinition = (key: unknown): string | undefined => {
     if (!text(object(key).id)) return;
