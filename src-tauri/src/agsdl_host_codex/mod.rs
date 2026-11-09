@@ -1,7 +1,7 @@
 //! Codex's native tools follow Codex's captured sandbox. Macro owns admission,
 //! private references, response validation, terminal transactions and physical end.
-mod profile;
-mod protocol;
+pub(crate) mod profile;
+pub(crate) mod protocol;
 use crate::agsdl_host::HostState;
 use crate::ai::AiState;
 use crate::config::ConfigManager;

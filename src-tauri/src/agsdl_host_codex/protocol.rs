@@ -56,7 +56,7 @@ impl Client {
             )
         })
     }
-    async fn next(&mut self) -> Result<Value> {
+    pub(crate) async fn next(&mut self) -> Result<Value> {
         let mut bytes = Vec::new();
         loop {
             let chunk =
@@ -100,6 +100,17 @@ impl Client {
     pub async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         let id = self.begin_request(method, params).await?;
         self.response(id).await
+    }
+    pub(crate) async fn notification(&mut self) -> Result<Value> {
+        if !self.pending.is_empty() {
+            let value = self.pending.remove(0);
+            self.pending_bytes = self
+                .pending_bytes
+                .saturating_sub(serde_json::to_vec(&value)?.len());
+            Ok(value)
+        } else {
+            self.next().await
+        }
     }
     async fn response(&mut self, id: u64) -> Result<Value> {
         loop {

@@ -106,6 +106,7 @@ mod agsdl_host_capture;
 mod agsdl_host_catalogue;
 mod agsdl_host_claude;
 mod agsdl_host_codex;
+mod agsdl_host_codex030;
 mod agsdl_host_compiler;
 mod agsdl_host_confinement;
 mod agsdl_host_dispatch030;
