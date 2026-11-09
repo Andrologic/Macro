@@ -761,7 +761,9 @@
     {
       "upstream": "conformance/runs/approval-comments.json",
       "path": "dev/agsdl/fixtures/v0.3/conformance/runs/approval-comments.json",
-      "sha256": "3d8f6655d0ed9f567b7a6770f3a7899bb5b279a653a7661b951c0bfac437acf2"
+      "sha256": "bca5a84096e1c65545dfe358e3ad12695de75cd1b7187de47b9b63459a858d56",
+      "commit": "f5551b8af9e099787a85e391b3ce458927f3ccd2",
+      "reason": "Correct compose visit starts under spec/flow.md execution model rule 1; v0.3.0 fixtures omit the compose work."
     },
     {
       "upstream": "conformance/runs/approval.json",
@@ -791,7 +793,9 @@
     {
       "upstream": "conformance/runs/compose-body-failure.json",
       "path": "dev/agsdl/fixtures/v0.3/conformance/runs/compose-body-failure.json",
-      "sha256": "910709be5053ce395f0c85a8b94e9e3e7157e7290da3a2d357699fd470506fb4"
+      "sha256": "343e688b307fa98144b2b19f7e418fbdc5f34c943f121401f1c933e761748a5c",
+      "commit": "f5551b8af9e099787a85e391b3ce458927f3ccd2",
+      "reason": "Correct compose visit starts under spec/flow.md execution model rule 1; v0.3.0 fixtures omit the compose work."
     },
     {
       "upstream": "conformance/runs/composition.json",

@@ -674,3 +674,46 @@ mod intent_tests {
             .unwrap();
     }
 }
+
+/// Persists receipt arbitration even if the invoking UI disappears.
+#[tauri::command]
+pub async fn execution_submit_human030(
+    app: tauri::AppHandle,
+    input: crate::agsdl_host_human030::HumanSubmission030,
+) -> repository::Result<String> {
+    tokio::spawn(async move {
+        let state = app.state::<DbPool>();
+        let host = app.state::<crate::agsdl_host::HostState>();
+        let pool = pool(&state).await?;
+        let owner = {
+            let lease = host.start_lease().await?;
+            lease.owner(&input.scope.system_start_id)?
+        };
+        let inspection =
+            crate::agsdl_host_flow030::inspect_run(host.flow030(), &host, &pool, &owner).await?;
+        let broker = host
+            .flow030()
+            .humans
+            .broker(&host, &pool, &inspection.capture.identity)
+            .await?;
+        let receipt = broker
+            .submit(
+                &host,
+                input,
+                crate::agsdl_host_human030::HumanOrigin030::Person,
+            )
+            .await?;
+        broker
+            .pump(&host, &tokio_util::sync::CancellationToken::new())
+            .await?;
+        Ok(receipt)
+    })
+    .await
+    .map_err(|_| {
+        repository::failure(
+            "UNCERTAIN",
+            "human",
+            "Native submission did not acknowledge",
+        )
+    })?
+}

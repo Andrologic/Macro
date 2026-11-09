@@ -9,7 +9,9 @@
     "createUpdaterArtifacts": false,
     "targets": [
       "app"
-    ]
+    ],
+    "externalBin": [],
+    "resources": {}
   },
   "plugins": {
     "updater": {

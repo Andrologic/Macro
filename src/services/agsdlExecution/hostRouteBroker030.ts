@@ -1,3 +1,4 @@
+import { evaluateHostHumanClock030 } from './hostHumanClock030';
 import { commandOutput030, mcpOutput030, prepareCall030, type PreparedCall030, type CommandReceipt030, type McpReceipt030 } from './calls030';
 import type { RouteSource030 } from './routes030';
 import type { ExactJsonText } from './contracts';
@@ -64,6 +65,10 @@ export function createHostRoutePort030(generation: string): HostWorkPumpPort030<
       if (job.generation !== generation) throw new Error('Route mailbox generation changed.');
       try {
         const parsed = JSON.parse(job.inputJson) as NativeRouteInput030 & { content?: unknown; contentForOccurrence?: unknown };
+        if ('operation' in parsed && parsed.operation === 'humanClock') {
+          const { input } = parsed as unknown as { input: { owner: Parameters<typeof evaluateHostHumanClock030>[0]; eventId: string; expectedRevision: string; stateJson: string; eventJson: string; optionsJson: string } };
+          return { kind: 'ready', resultJson: JSON.stringify(evaluateHostHumanClock030(input.owner, input.eventId, input.expectedRevision, input.stateJson, input.eventJson, JSON.parse(input.optionsJson))) };
+        }
         if ('operation' in parsed && (parsed.operation === 'prepare' || parsed.operation === 'normalize')) {
           return { kind: 'ready', resultJson: evaluateCallData030(parsed as unknown as Parameters<typeof evaluateCallData030>[0]) };
         }

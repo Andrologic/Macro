@@ -1,7 +1,9 @@
-//! Read-only consistency proof for the durable 030 reducer journal.
-//! This does not authenticate host inputs or re-run the compiler, providers,
-//! preparation/content policies, work protocol, calls, human decisions or clock.
+//! Read-only replay of flow transitions and durable human/clock arbitration.
+//! This does not authenticate live host inputs or re-run the compiler, providers,
+//! preparation/content policies, work protocol, calls or protocol schema validators.
 use super::flow030::*;
+#[path = "replay_human030.rs"]
+mod human;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{sqlite::SqliteConnectOptions, Connection, Row, SqliteConnection};
@@ -19,7 +21,6 @@ pub(crate) const OUTSIDE_REPLAY: &[&str] = &[
     "037: engine_flow030_route_source_attestations, engine_flow030_route_content_contexts, engine_flow030_route_content_receipts",
     "038: engine_flow030_system_stop_requests",
     "039: engine_flow030_calls, engine_flow030_call_causes, engine_flow030_call_diagnostics",
-    "040: engine_flow030_clock*, engine_flow030_human*, engine_flow030_handoff_clock",
 ];
 
 #[derive(Debug, Serialize)]
@@ -37,6 +38,8 @@ pub(crate) struct Divergence030 {
 pub(crate) struct ReplayVerdict030 {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub human_projection: Option<human::HumanProjection030>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub divergence: Option<Divergence030>,
     pub outside_replay: &'static [&'static str],
 }
@@ -45,6 +48,7 @@ impl ReplayVerdict030 {
     pub(crate) fn panic() -> Self {
         Self {
             ok: false,
+            human_projection: None,
             divergence: Some(mismatch(
                 "verifier.panic",
                 "completed verification",
@@ -322,7 +326,13 @@ pub(crate) async fn verify_path030(
             .await
             .map_err(storage)?;
         let mut tx = db.begin().await.map_err(storage)?;
-        let result = verify(&mut tx, system_id, invocation_id).await;
+        let result = async {
+            verify(&mut tx, system_id, invocation_id).await?;
+            let row=sqlx::query("SELECT state_json,plan_json FROM engine_flow030_runs WHERE system_id=? AND invocation_id=?").bind(system_id).bind(invocation_id).fetch_one(&mut *tx).await.map_err(storage)?;
+            let state:FlowState030=parse("human.state",row.get("state_json"))?;
+            let plan:FlowPlan030=parse("human.plan",row.get("plan_json"))?;
+            human::verify(&mut tx,&state,&plan).await.map_err(|e|mismatch("human.readback","valid native clock and human proofs",e.to_string()))
+        }.await;
         tx.rollback().await.map_err(storage)?;
         db.close().await.map_err(storage)?;
         result
@@ -330,6 +340,7 @@ pub(crate) async fn verify_path030(
     .await;
     ReplayVerdict030 {
         ok: result.is_ok(),
+        human_projection: result.as_ref().ok().cloned(),
         divergence: result.err(),
         outside_replay: OUTSIDE_REPLAY,
     }

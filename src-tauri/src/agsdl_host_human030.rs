@@ -62,28 +62,9 @@ pub(crate) struct HumanSubmission030 {
     pub expected_revision: String,
     pub answer: HumanAnswer030,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub(crate) enum HumanAnswer030 {
-    Decision {
-        decision: String,
-        comment: String,
-    },
-    Approval {
-        choice: String,
-        comment: String,
-    },
-    /// The Call adapter must validate the exact answer against its attested
-    /// protocol schema before delivering; a JSON object is not that proof.
-    Question {
-        answer_json: String,
-    },
-}
+#[path = "db/agsdl_execution/v030/human_answer030.rs"]
+mod answer;
+pub(crate) use answer::HumanAnswer030;
 #[derive(Clone, Copy)]
 pub(crate) enum HumanOrigin030 {
     Person,
@@ -100,7 +81,7 @@ impl HumanOrigin030 {
     }
 }
 /// Constructed only after a durable handoff has been authenticated. Not IPC.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OwnedHumanWork030 {
     identity: FlowIdentity030,
@@ -277,7 +258,7 @@ impl HumanBroker030 {
         .await?;
         let state: FlowState030 = serde_json::from_str(&raw)?;
         require(
-            state.identity == self.identity && !state.stopping && state.verdict.is_none(),
+            state.identity == self.identity && !state.stopping,
             "Flow is stopped or terminal",
         )?;
         Ok(capture)
@@ -637,8 +618,8 @@ impl HumanBroker030 {
         tx.commit().await?;
         Ok(())
     }
-    /// Call after physical retirement, before the flow terminal commit. It preserves the final
-    /// budget snapshot and historical requests while removing pause links.
+    /// Retire the clock after joining the work, including terminal flow cleanup.
+    /// Preserve its final budget and historical requests while removing pause links.
     pub(crate) async fn retire(&self, host: &HostState, work: &OwnedHumanWork030) -> Result<()> {
         require(
             work.identity == self.identity
@@ -1175,3 +1156,7 @@ impl HumanBroker030 {
 #[cfg(test)]
 #[path = "agsdl_host_human030_tests.rs"]
 mod tests;
+
+#[path = "agsdl_host_human030_runtime.rs"]
+mod runtime;
+pub(crate) use runtime::HumanRuntime030;

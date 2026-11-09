@@ -90,6 +90,7 @@ pub(crate) async fn dispatch_source_route030(
 
 #[derive(Clone, Copy)]
 pub(crate) enum SourceOwnership030<'a> {
+    Host,
     Agent(&'a JoinedOwnedAgent030),
     Call(&'a crate::agsdl_host_calls030::JoinedCall030),
     Join,
@@ -166,6 +167,10 @@ async fn source_route030(
     if matches!(mode, SourceRouteMode030::Dispatch(_)) {
         use crate::agsdl_host_route_attestations030::SourceOwnershipKind030;
         match (&mode, source.ownership_kind()) {
+            (
+                SourceRouteMode030::Dispatch(SourceOwnership030::Host),
+                SourceOwnershipKind030::Host,
+            ) => {}
             (
                 SourceRouteMode030::Dispatch(SourceOwnership030::Agent(_)),
                 SourceOwnershipKind030::Agent,

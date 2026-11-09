@@ -956,6 +956,7 @@ pub fn run() {
             crate::agsdl_host_tools::execution_host_invoke_tool,
             commands::agsdl_execution::execution_start,
             commands::agsdl_execution::execution_read_runtime_projection030,
+            commands::agsdl_execution::execution_submit_human030,
             commands::agsdl_execution::execution_stage_intent,
             commands::agsdl_execution::execution_read_intents,
             commands::agsdl_execution::execution_read_run_correlation030,

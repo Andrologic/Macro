@@ -110,3 +110,19 @@ it('normalizes native command tickets before routes and keeps normal failed dist
   expect(JSON.parse(invalid.resultJson)).toEqual({ kind: 'failed', code: 'OUTPUT_INVALID' });
   await expect(port.evaluate({ ...job(input), generation: 'retired' })).rejects.toThrow('generation changed');
 });
+
+it('transports human clock jobs through the authenticated native route mailbox', async () => {
+  const owner = { systemStartId: 'system', ownerEpoch: 'epoch' };
+  const input = { owner, eventId: 'admit', expectedRevision: '0', stateJson: '', optionsJson: '{"maxSliceMs":2147483647}',
+    eventJson: JSON.stringify({ owner, eventId: 'admit', nowMs: '1700000000000', event: { kind: 'admit', workId: 'work', timeoutMs: '60000', answerTimeoutMs: '600000', startedAtMs: '1700000000000' } }) };
+  const job: HostRouteJob030 = { ticket: 'human-ticket', generation: 'generation', inputDigest: 'digest', inputJson: JSON.stringify({ operation: 'humanClock', input }) };
+  const port = createHostRoutePort030('generation');
+  const output = await port.evaluate(job);
+  if (output.kind !== 'ready') throw new Error('Human clock evaluation failed');
+  const receipt = JSON.parse(JSON.parse(output.resultJson).receiptJson);
+  expect(receipt.clocks).toHaveLength(1);
+  expect(receipt.nextWakeMs).toBe(60000);
+  await port.complete(job, output);
+  expect(invoke).toHaveBeenLastCalledWith('execution_host_complete_route030', { completion: { ticket: job.ticket, generation: job.generation, inputDigest: job.inputDigest, output } });
+  await expect(port.evaluate({ ...job, generation: 'retired' })).rejects.toThrow('generation changed');
+});
