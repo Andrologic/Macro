@@ -47,7 +47,19 @@ export class RunInspectionReadError030 extends MacroServiceError {
 export interface RunAccessSnapshot030 extends RunMonitorSnapshot030 {
   /** Discovery is owner-scoped. Omitted runs retain an explicit scope reason. */
   readonly excludedRuns: Readonly<Record<string, RunRefusal030<'consult'>>>;
+  /** Per-run read failures never stand in for scope exclusions or missing facts. */
+  readonly runFailures: Readonly<Record<string, RunReadFailure030>>;
 }
+export interface RunReadFailure030 {
+  readonly kind: RunInspectionReadError030['kind'];
+  readonly code: string;
+  readonly message: string;
+  readonly revision: string | null;
+}
+type CorrelationRead030 =
+  | { readonly kind: 'attested'; readonly value: ExecutionRunCorrelation030 }
+  | { readonly kind: 'excluded'; readonly refusal: RunRefusal030<'consult'> }
+  | { readonly kind: 'failed'; readonly error: RunInspectionReadError030 };
 export interface RunAccess030 extends RunInspectionAccess030 {
   getSnapshot(): RunAccessSnapshot030;
 }
@@ -80,13 +92,27 @@ function failed<T>(previous: RunRead030<T>, error: unknown): RunRead030<T> {
   // refresh with RunInspectionReadError030 instead of inventing a DTO gap.
   return previous;
 }
+function readFailure(error: unknown, revision: string | null): RunReadFailure030 {
+  const decoded = new RunInspectionReadError030(error);
+  return { kind: decoded.kind, code: decoded.code, message: decoded.message, revision };
+}
+/** Canonical primitive tuple, independent of the DTO's object key ordering. */
+function discoveryKey(run: PublicRunSummary030): string {
+  const { owner, revision, sourceSha256 } = run.source;
+  const versions = run.versions;
+  return JSON.stringify([run.systemStartId, run.snapshotId, run.flowInvocationId, run.revision,
+    owner.projectId, owner.planId, owner.branch, revision, sourceSha256,
+    versions.snapshot, versions.contract, versions.profile, versions.compiler, versions.runtime, versions.registry,
+    run.ownerStatus, run.stopping, run.verdict, run.physicalPending, run.phaseCounts.map(item => [item.phase, item.count])]);
+}
 
 /** One immutable observation scope per adapter. All refreshes are serialized;
  * no earlier refresh can overwrite a later one. This performs reads only.
  * History revision is an opaque tuple of native per-run revisions, not a claim
  * that discovery and the human/runtime projections share a native revision.
- * Refresh failures reject with RunInspectionReadError030. An intent failure
- * alone leaves complete history ready; excludedRuns explains unattested runs.
+ * Discovery failures reject with RunInspectionReadError030. Per-run failures
+ * are published in runFailures without rejecting history. An independent
+ * intent failure rejects only after publishing the completed history.
  */
 export function createRunInspectionAccess030(scope: ExecutionIntentScope,
   transport: RunReadTransport030 = nativeTransport): RunAccess030 {
@@ -95,9 +121,12 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     typeof expected.conversationId === 'string' && expected.conversationId.length > 0, 'SCOPE_INVALID');
   const scopeKey = JSON.stringify([expected.owner.projectId, expected.owner.planId, expected.owner.branch, expected.conversationId]);
   let snapshot: RunAccessSnapshot030 = freeze({ history: { kind: 'loading', retained: null },
-    retainedAdmission: unavailable('qualification'), runs: {}, excludedRuns: {} });
+    retainedAdmission: unavailable('qualification'), runs: {}, excludedRuns: {}, runFailures: {} });
   const listeners = new Set<() => void>();
   const retainedSummaries = new Map<string, PublicRunSummary030>();
+  // This adapter owns exactly one scopeKey. Successful immutable proofs are
+  // indexed by run and discovery; failures are deliberately never cached.
+  const correlationCache = new Map<string, { discovery: string; value: ExecutionRunCorrelation030 }>();
   const publish = (next: RunAccessSnapshot030) => {
     snapshot = freeze(structuredClone(next));
     listeners.forEach(listener => listener());
@@ -128,6 +157,9 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
       after = page.nextCursor;
       if (after !== null) cursors.add(after);
     } while (after !== null);
+    const discoveries = new Map(runs.map(run => [run.systemStartId, discoveryKey(run)]));
+    for (const [id, cached] of correlationCache)
+      if (discoveries.get(id) !== cached.discovery) correlationCache.delete(id);
     return runs;
   }
   async function captureFor(run: PublicRunSummary030, correlation: ExecutionRunCorrelation030): Promise<RunCapture030> {
@@ -179,29 +211,37 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
       request.associations.conversationId === undefined && request.associations.workspaceId === undefined);
     return { kind: 'available', value: receipt.systemStartId };
   }
-  async function correlations(runs: readonly PublicRunSummary030[]) {
-    const attested = new Map<string, ExecutionRunCorrelation030>();
-    const excludedRuns: Record<string, RunRefusal030<'consult'>> = Object.create(null);
-    for (const run of runs) {
-      let correlation: ExecutionRunCorrelation030;
-      try {
-        correlation = await transport.readExecutionRunCorrelation030(structuredClone(expected), run.systemStartId);
-      } catch (error) {
-        const failure = new RunInspectionReadError030(error);
-        if (failure.code !== 'SCOPE_INVALID') throw failure;
-        excludedRuns[run.systemStartId] = refusal(failure);
-        continue;
-      }
-      const { key, receipt } = correlation;
+  async function correlation(run: PublicRunSummary030): Promise<CorrelationRead030> {
+    const discovery = discoveryKey(run);
+    const cached = correlationCache.get(run.systemStartId);
+    if (cached?.discovery === discovery) return { kind: 'attested', value: structuredClone(cached.value) };
+    try {
+      const value = await transport.readExecutionRunCorrelation030(structuredClone(expected), run.systemStartId);
+      const { key, receipt } = value;
       requireFact(typeof key.intentId === 'string' && key.intentId.length > 0 && sameOwner(key.scope.owner, expected.owner) &&
         key.scope.conversationId === expected.conversationId, 'CORRELATION', 'Native run correlation scope differs');
       requireFact(sameHumanScope030(receipt, run) && receipt.flowInvocationId === run.flowInvocationId &&
         sameVersions(receipt.versions, run.versions) && (receipt.entryDeliveryId === null ||
         (typeof receipt.entryDeliveryId === 'string' && receipt.entryDeliveryId.length > 0)),
       'CORRELATION', 'Native run correlation receipt differs');
-      attested.set(run.systemStartId, structuredClone(correlation));
+      correlationCache.set(run.systemStartId, { discovery, value: structuredClone(value) });
+      return { kind: 'attested', value };
+    } catch (error) {
+      const failure = new RunInspectionReadError030(error);
+      return failure.code === 'SCOPE_INVALID' ? { kind: 'excluded', refusal: refusal(failure) } : { kind: 'failed', error: failure };
     }
-    return { attested, excludedRuns };
+  }
+  async function correlations(runs: readonly PublicRunSummary030[]) {
+    const results = new Map<string, CorrelationRead030>();
+    let next = 0;
+    // Bound concurrent native SQL reads; retain discovery order at publication.
+    await Promise.all(Array.from({ length: Math.min(4, runs.length) }, async () => {
+      while (next < runs.length) {
+        const run = runs[next++];
+        results.set(run.systemStartId, await correlation(run));
+      }
+    }));
+    return results;
   }
   /** Discovery alone can disprove freshness. Publish that fact before any
    * later capture or intent read can fail, without publishing partial runs. */
@@ -237,20 +277,30 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
         let retainedAdmission: NativeFact030<string | null>;
         try { retainedAdmission = await admission(runs); }
         catch (error) { retainedAdmission = unavailable('qualification'); admissionError = new RunInspectionReadError030(error); }
-        const { attested, excludedRuns } = await correlations(runs);
+        const results = await correlations(runs);
+        const excludedRuns: Record<string, RunRefusal030<'consult'>> = Object.create(null);
+        const runFailures: Record<string, RunReadFailure030> = Object.create(null);
         for (const run of runs) {
-          const correlation = attested.get(run.systemStartId);
-          if (!correlation) continue;
-          const capture = await captureFor(run, correlation);
-          history.push(await historyEntry(run, capture));
+          const result = results.get(run.systemStartId)!;
+          if (result.kind === 'excluded') { excludedRuns[run.systemStartId] = result.refusal; continue; }
+          try {
+            if (result.kind === 'failed') throw result.error;
+            const capture = await captureFor(run, result.value);
+            history.push(await historyEntry(run, capture));
+          } catch (error) { runFailures[run.systemStartId] = readFailure(error, run.revision); }
         }
-        const retainedRuns = Object.fromEntries(Object.entries(snapshot.runs).filter(([id]) => history.some(item => item.scope.systemStartId === id)));
+        const retainedRuns = Object.fromEntries(Object.entries(snapshot.runs).filter(([id]) =>
+          history.some(item => item.scope.systemStartId === id) || Object.hasOwn(runFailures, id)));
+        for (const [id, error] of Object.entries(runFailures)) {
+          const retained = retainedRuns[id] && retainedRunValue030(retainedRuns[id]);
+          if (retained) retainedRuns[id] = { kind: 'stale', revision: retained.state.revision, retained, refusal: refusal(error) };
+        }
         for (const entry of history) retainedSummaries.set(entry.scope.systemStartId,
           structuredClone(runs.find(run => run.systemStartId === entry.scope.systemStartId)!));
         publish({ history: { kind: 'ready', revision: JSON.stringify(history.map(item => {
           const run = runs.find(run => run.systemStartId === item.scope.systemStartId)!;
           return [run.systemStartId, run.snapshotId, run.revision];
-        })), value: history }, retainedAdmission, runs: retainedRuns, excludedRuns });
+        })), value: history }, retainedAdmission, runs: retainedRuns, excludedRuns, runFailures });
       } catch (error) {
         publish({ ...snapshot, history: failed(previous, error), retainedAdmission: unavailable('qualification') });
         throw new RunInspectionReadError030(error);
@@ -262,6 +312,7 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     refreshRun: systemStartId => enqueue(async () => {
       const previous = Object.hasOwn(snapshot.runs, systemStartId) ? snapshot.runs[systemStartId] : { kind: 'loading' as const, retained: null };
       let admissionError: RunInspectionReadError030 | undefined;
+      let revision: string | null = null;
       publish({ ...snapshot, runs: { ...snapshot.runs, [systemStartId]: { kind: 'loading', retained: retainedRunValue030(previous) } } });
       try {
         const runs = await summaries();
@@ -274,15 +325,17 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
           publish({ ...snapshot, retainedAdmission: unavailable('qualification') });
           admissionError = failure;
         }
-        const { attested, excludedRuns } = await correlations(runs);
-        publish({ ...snapshot, excludedRuns });
         const summary = runs.find(run => run.systemStartId === systemStartId);
         requireFact(summary, 'NOT_FOUND');
-        const exclusion = excludedRuns[systemStartId];
-        requireFact(!exclusion, exclusion?.code, exclusion?.message);
-        const correlation = attested.get(systemStartId);
-        requireFact(correlation);
-        const capture = await captureFor(summary, correlation);
+        revision = summary.revision;
+        const result = await correlation(summary);
+        const excludedRuns = { ...snapshot.excludedRuns }, runFailures = { ...snapshot.runFailures };
+        delete excludedRuns[systemStartId]; delete runFailures[systemStartId];
+        if (result.kind === 'excluded') excludedRuns[systemStartId] = result.refusal;
+        publish({ ...snapshot, excludedRuns, runFailures });
+        if (result.kind === 'failed') throw result.error;
+        if (result.kind === 'excluded') throw new MacroServiceError(result.refusal.code, result.refusal.message);
+        const capture = await captureFor(summary, result.value);
         verifyRetained(summary);
         const scope = { systemStartId, source: summary.source, snapshotId: summary.snapshotId };
         const runtime = await loadRuntimeProjection030(scope, summary.flowInvocationId, transport.readExecutionRuntimeProjection030, () => true);
@@ -302,7 +355,16 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
         retainedSummaries.set(systemStartId, structuredClone(summary));
         publish({ ...snapshot, runs: { ...snapshot.runs, [systemStartId]: { kind: 'ready', revision: runtime.revision, value } } });
       } catch (error) {
-        publish({ ...snapshot, runs: { ...snapshot.runs, [systemStartId]: failed(previous, error) } });
+        const failure = new RunInspectionReadError030(error);
+        const runFailures = { ...snapshot.runFailures }, excludedRuns = { ...snapshot.excludedRuns };
+        if (failure.code !== 'SCOPE_INVALID') {
+          runFailures[systemStartId] = readFailure(failure, revision);
+          delete excludedRuns[systemStartId];
+        }
+        const runs = { ...snapshot.runs }, retained = retainedRunValue030(previous);
+        if (retained) runs[systemStartId] = { kind: 'stale', revision: retained.state.revision, retained, refusal: refusal(error) };
+        else delete runs[systemStartId];
+        publish({ ...snapshot, runFailures, excludedRuns, runs });
         throw new RunInspectionReadError030(error);
       }
       // The run remains inspectable through durable native attestation, while

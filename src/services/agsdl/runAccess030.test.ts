@@ -127,7 +127,7 @@ it('reads an acknowledged closed intent after restart without any in-memory atte
   expect(afterRestart.getSnapshot().retainedAdmission).toEqual({ kind: 'available', value: null });
   await afterRestart.refreshRun('run');
   expect(afterRestart.getSnapshot().runs.run.kind).toBe('ready');
-  expect(calls.filter(call => call === 'correlation:run')).toHaveLength(3);
+  expect(calls.filter(call => call === 'correlation:run')).toHaveLength(2);
   expect(retainedIntents.get('run')).toEqual(retainedRow);
 });
 
@@ -145,25 +145,27 @@ it('excludes a run from another conversation with SCOPE_INVALID and performs no 
   expect(calls).not.toContain('humans');
 });
 
-it('propagates NOT_FOUND and STORAGE_UNCERTAIN correlation failures without silently excluding or trusting cached runs', async () => {
+it('publishes typed per-run correlation failures and retries them after a discovery change', async () => {
   for (const [code, kind] of [['NOT_FOUND', 'notFound'], ['STORAGE_UNCERTAIN', 'uncertain']] as const) {
     const f = await fixture(), { transport, scope } = transportFor(f);
     const readCorrelation = transport.readExecutionRunCorrelation030;
     transport.readExecutionRunCorrelation030 = async () => { throw { code, currentIntentKey: null }; };
     const access = createRunInspectionAccess030(scope, transport);
-    await expect(access.refreshHistory()).rejects.toMatchObject({ code, kind });
-    expect(access.getSnapshot().history.kind).not.toBe('ready');
+    await access.refreshHistory();
+    expect(access.getSnapshot().history).toMatchObject({ kind: 'ready', value: [] });
+    expect(access.getSnapshot().runFailures.run).toMatchObject({ code, kind });
     expect(access.getSnapshot().excludedRuns).toEqual({});
     await expect(access.refreshRun('run')).rejects.toMatchObject({ code, kind });
-    expect(access.getSnapshot().runs.run.kind).not.toBe('ready');
+    expect(access.getSnapshot().runs.run?.kind).not.toBe('loading');
     transport.readExecutionRunCorrelation030 = readCorrelation;
     await access.refreshHistory();
     await access.refreshRun('run');
-    const oldHistory = retainedRunValue030(access.getSnapshot().history);
     const oldRun = retainedRunValue030(access.getSnapshot().runs.run);
+    f.summary.revision = '9007199254740994';
     transport.readExecutionRunCorrelation030 = async () => { throw { code, currentIntentKey: null }; };
-    await expect(access.refreshHistory()).rejects.toMatchObject({ code, kind });
-    expect(access.getSnapshot().history).toMatchObject({ kind: 'stale', retained: oldHistory });
+    await access.refreshHistory();
+    expect(access.getSnapshot().history).toMatchObject({ kind: 'ready', value: [] });
+    expect(access.getSnapshot().runFailures.run).toMatchObject({ code, kind });
     await expect(access.refreshRun('run')).rejects.toMatchObject({ code, kind });
     expect(access.getSnapshot().runs.run).toMatchObject({ kind: 'stale', retained: oldRun });
     expect(access.getSnapshot().excludedRuns).toEqual({});
@@ -185,10 +187,11 @@ it('refuses foreign correlation keys or receipts even when the open intent remai
     mutate(correlation);
     transport.readExecutionRunCorrelation030 = async () => correlation;
     const access = createRunInspectionAccess030(scope, transport);
-    await expect(access.refreshHistory()).rejects.toMatchObject({ kind: 'scope', code: 'CORRELATION' });
-    expect(access.getSnapshot().history.kind).not.toBe('ready');
+    await access.refreshHistory();
+    expect(access.getSnapshot().history).toMatchObject({ kind: 'ready', value: [] });
+    expect(access.getSnapshot().runFailures.run).toMatchObject({ kind: 'scope', code: 'CORRELATION' });
     await expect(access.refreshRun('run')).rejects.toMatchObject({ kind: 'scope', code: 'CORRELATION' });
-    expect(access.getSnapshot().runs.run.kind).not.toBe('ready');
+    expect(access.getSnapshot().runs.run?.kind).not.toBe('ready');
   }
 });
 
@@ -276,7 +279,7 @@ it('isolates project, plan, branch and conversation using native intent receipts
   }
 });
 
-it('invalidates retained projections when history advances and preserves stale history on read failure', async () => {
+it('invalidates retained projections when history advances and isolates a human read failure', async () => {
   const f = await fixture(), { transport, scope } = transportFor(f);
   const access = createRunInspectionAccess030(scope, transport);
   await access.refreshHistory();
@@ -285,8 +288,10 @@ it('invalidates retained projections when history advances and preserves stale h
   await access.refreshHistory();
   expect(access.getSnapshot().runs.run.kind).toBe('stale');
   transport.readExecutionHumans030 = async () => { throw { code: 'CONFLICT', message: 'Human cursor changed' }; };
-  await expect(access.refreshHistory()).rejects.toMatchObject({ kind: 'conflict', code: 'CONFLICT' });
-  expect(access.getSnapshot().history).toMatchObject({ kind: 'stale', refusal: { code: 'CONFLICT' } });
+  await access.refreshHistory();
+  expect(access.getSnapshot().history.kind).toBe('ready');
+  expect(access.getSnapshot().runFailures.run).toMatchObject({ kind: 'conflict', code: 'CONFLICT' });
+  expect(access.getSnapshot().runs.run.kind).toBe('stale');
 });
 
 it('accepts only a source-, version-, scope- and flow-bound start030 admission', async () => {
@@ -314,7 +319,7 @@ it('rejects altered source bytes, captures, verdicts and physical counts', async
     mutate(f);
     const access = createRunInspectionAccess030(scope, transport);
     await expect(access.refreshRun('run')).rejects.toBeDefined();
-    expect(access.getSnapshot().runs.run).not.toMatchObject({ kind: 'unavailable', gap: 'qualification' });
+    expect(access.getSnapshot().runs.run).toBeUndefined();
   }
 });
 
@@ -356,8 +361,9 @@ it('rejects a history revision regression and marks owner revocation stale even 
   const access = createRunInspectionAccess030(scope, transport);
   await access.refreshHistory();
   f.summary.revision = '1';
-  await expect(access.refreshHistory()).rejects.toMatchObject({ kind: 'conflict', code: 'REVISION_CONFLICT' });
-  expect(access.getSnapshot().history).toMatchObject({ kind: 'stale', refusal: { code: 'REVISION_CONFLICT' } });
+  await access.refreshHistory();
+  expect(access.getSnapshot().history.kind).toBe('ready');
+  expect(access.getSnapshot().runFailures.run).toMatchObject({ kind: 'conflict', code: 'REVISION_CONFLICT' });
   f.summary.revision = f.runtime.revision;
   await access.refreshRun('run');
   f.summary.ownerStatus = 'revoked';
@@ -458,7 +464,12 @@ it('marks retained projections stale immediately after newer discovery even when
       throw { code: 'STORAGE', message: 'Capture unavailable' };
     };
     const reading = refresh === 'history' ? access.refreshHistory() : access.refreshRun('run');
-    await expect(reading).rejects.toMatchObject({ kind: 'transport', code: 'STORAGE' });
+    if (refresh === 'run') await expect(reading).rejects.toMatchObject({ kind: 'transport', code: 'STORAGE' });
+    else {
+      await reading;
+      expect(access.getSnapshot().history.kind).toBe('ready');
+      expect(access.getSnapshot().runFailures.run).toMatchObject({ kind: 'transport', code: 'STORAGE' });
+    }
     expect(access.getSnapshot().runs.run).toMatchObject({ kind: 'stale', revision: '9007199254740993', retained });
   }
 });
@@ -508,10 +519,131 @@ it('rejects first read failures with distinct conflict, scope, transport and unc
     await expect(access.refreshHistory()).rejects.toMatchObject({ code, kind, message: `Native ${code}` });
     expect(access.getSnapshot().history).not.toMatchObject({ kind: 'unavailable', gap: 'qualification' });
     await expect(access.refreshRun('run')).rejects.toMatchObject({ code, kind });
-    expect(access.getSnapshot().runs.run).not.toMatchObject({ kind: 'unavailable', gap: 'qualification' });
+    expect(access.getSnapshot().runs.run).toBeUndefined();
     // A rejected operation never poisons the refresh queue.
     transport.listExecutionRuns030 = async () => ({ runs: [f.summary], nextCursor: null });
     await access.refreshHistory();
     expect(access.getSnapshot().history.kind).toBe('ready');
   }
+});
+
+it('isolates the first or last failing correlation across three runs and inspects only the requested healthy run', async () => {
+  for (const badId of ['first', 'last']) for (const [code, kind] of [['NOT_FOUND', 'notFound'], ['STORAGE_UNCERTAIN', 'uncertain']] as const) {
+    const fixtures = await Promise.all(['first', 'middle', 'last'].map(id => fixture(id)));
+    const { transport, scope } = transportFor(...fixtures);
+    const nativeRead = transport.readExecutionRunCorrelation030, reads: string[] = [];
+    let failing = true;
+    transport.readExecutionRunCorrelation030 = async (query, id) => {
+      reads.push(id);
+      if (failing && id === badId) throw { code, currentIntentKey: null };
+      return nativeRead(query, id);
+    };
+    const access = createRunInspectionAccess030(scope, transport);
+    await access.refreshHistory();
+    expect(reads).toEqual(['first', 'middle', 'last']);
+    expect(access.getSnapshot().history.kind).toBe('ready');
+    expect(retainedRunValue030(access.getSnapshot().history)?.map(item => item.scope.systemStartId))
+      .toEqual(['first', 'middle', 'last'].filter(id => id !== badId));
+    expect(access.getSnapshot().runFailures[badId]).toMatchObject({ code, kind, revision: '9007199254740993' });
+    expect(access.getSnapshot().excludedRuns).toEqual({});
+    await access.refreshRun('middle');
+    expect(access.getSnapshot().runs.middle.kind).toBe('ready');
+    expect(reads).toHaveLength(3);
+    expect(access.getSnapshot().runFailures[badId].kind).toBe(kind);
+
+    // A fresh adapter has no proof cache: direct inspection still reads only
+    // middle, so an earlier/later failing run cannot block this operation.
+    const direct = createRunInspectionAccess030(scope, transport);
+    await direct.refreshRun('middle');
+    expect(reads.slice(3)).toEqual(['middle']);
+    expect(direct.getSnapshot().runs.middle.kind).toBe('ready');
+    await access.refreshHistory();
+    expect(reads.slice(4)).toEqual([badId]);
+    await expect(access.refreshRun(badId)).rejects.toMatchObject({ code, kind });
+    expect(access.getSnapshot().runs[badId]?.kind).not.toBe('loading');
+    expect(access.getSnapshot().runFailures[badId].kind).toBe(kind);
+    failing = false;
+    await access.refreshHistory();
+    expect(retainedRunValue030(access.getSnapshot().history)?.map(item => item.scope.systemStartId)).toEqual(['first', 'middle', 'last']);
+    expect(access.getSnapshot().runFailures).toEqual({});
+  }
+});
+
+it('reduces three-run history, selection and comparison cycles to three cold calls, zero warm calls and one changed call', async () => {
+  const fixtures = await Promise.all(['first', 'middle', 'last'].map(id => fixture(id)));
+  const { transport, scope, calls } = transportFor(...fixtures);
+  const access = createRunInspectionAccess030(scope, transport);
+  const count = () => calls.filter(call => call.startsWith('correlation:')).length;
+  const cycle = async () => {
+    const previous = count();
+    await access.refreshHistory();
+    await access.refreshRun('middle');
+    await access.refreshRun('last');
+    return count() - previous;
+  };
+  expect([await cycle(), await cycle(), await cycle()]).toEqual([3, 0, 0]);
+  fixtures[1].summary.revision = '9007199254740994';
+  fixtures[1].runtime.revision = fixtures[1].summary.revision;
+  expect(await cycle()).toBe(1);
+  expect(calls.filter(call => call.startsWith('correlation:'))).toEqual(['correlation:first', 'correlation:middle', 'correlation:last', 'correlation:middle']);
+  expect(access.getSnapshot().runs.middle).toMatchObject({ kind: 'ready', revision: '9007199254740994' });
+
+  // A different conversation cannot reuse proofs from the original scope.
+  const other = createRunInspectionAccess030({ ...scope, conversationId: 'another-conversation' }, transport);
+  const before = count();
+  await other.refreshHistory();
+  expect(count() - before).toBe(3);
+  expect(other.getSnapshot().history).toMatchObject({ kind: 'ready', value: [] });
+  expect(Object.keys(other.getSnapshot().excludedRuns)).toHaveLength(3);
+  expect(await cycle()).toBe(0);
+});
+
+it('invalidates only the changed proof for source, capture, flow or version changes and never caches its transient error', async () => {
+  const mutations: ((run: PublicRunSummary030) => void)[] = [
+    run => { run.source.revision = '99'; },
+    run => { run.source.sourceSha256 = 'b'.repeat(64); },
+    run => { run.snapshotId = 'another-capture'; },
+    run => { run.flowInvocationId = 'another-flow'; },
+    run => { run.versions = { ...run.versions, runtime: 'another-runtime' }; },
+  ];
+  for (const mutate of mutations) {
+    const fixtures = await Promise.all(['first', 'middle', 'last'].map(id => fixture(id)));
+    const { transport, scope } = transportFor(...fixtures);
+    const nativeRead = transport.readExecutionRunCorrelation030, reads: string[] = [];
+    let failing = false;
+    transport.readExecutionRunCorrelation030 = async (query, id) => {
+      reads.push(id);
+      if (failing && id === 'middle') throw { code: 'STORAGE_UNCERTAIN', currentIntentKey: null };
+      return nativeRead(query, id);
+    };
+    const access = createRunInspectionAccess030(scope, transport);
+    await access.refreshHistory();
+    mutate(fixtures[1].summary); failing = true;
+    await access.refreshHistory();
+    expect(reads.slice(3)).toEqual(['middle']);
+    expect(access.getSnapshot().history.kind).toBe('ready');
+    expect(retainedRunValue030(access.getSnapshot().history)?.map(item => item.scope.systemStartId)).toEqual(['first', 'last']);
+    expect(access.getSnapshot().runFailures.middle).toMatchObject({ kind: 'uncertain', code: 'STORAGE_UNCERTAIN' });
+    await access.refreshRun('last');
+    expect(access.getSnapshot().runs.last.kind).toBe('ready');
+    await access.refreshHistory();
+    expect(reads.slice(3)).toEqual(['middle', 'middle']);
+  }
+});
+
+it('bounds concurrent cold correlation reads to four and keeps native history order', async () => {
+  const fixtures = await Promise.all(['a', 'b', 'c', 'd', 'e', 'f'].map(id => fixture(id)));
+  const { transport, scope } = transportFor(...fixtures);
+  const nativeRead = transport.readExecutionRunCorrelation030;
+  let active = 0, maximum = 0;
+  transport.readExecutionRunCorrelation030 = async (query, id) => {
+    active++; maximum = Math.max(maximum, active);
+    try { await Promise.resolve(); return await nativeRead(query, id); }
+    finally { active--; }
+  };
+  const access = createRunInspectionAccess030(scope, transport);
+  await access.refreshHistory();
+  expect(maximum).toBe(4);
+  expect(active).toBe(0);
+  expect(retainedRunValue030(access.getSnapshot().history)?.map(item => item.scope.systemStartId)).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
 });
