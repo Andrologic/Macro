@@ -289,9 +289,9 @@ Trois capacités restent distinctes :
 - la conception du document, décrite ci-dessous, disponible ;
 - le suivi des exécutions, dont le parcours 0.3 reste à raccorder : l’ouverture
   doit lire seulement l’état natif, sans contrôle
-  préalable, lancement ni acquittement implicite. Une demande en attente reste
-  prioritaire ; sinon la dernière exécution du plan, du projet et de la branche
-  s’affiche et une autre peut être choisie. Tant qu’aucun contrôle n’a été
+  préalable, lancement ni acquittement implicite. La sélection suit uniquement
+  la [règle normative de sélection initiale du run](agsdl-030.md#sélection-initiale-du-run).
+  Une autre exécution peut ensuite être choisie. Tant qu’aucun contrôle n’a été
   demandé, la prise en charge s’affiche comme non vérifiée ;
 - le démarrage depuis le produit, fermé tant que sa qualification physique n’est
   pas faite.

@@ -53,7 +53,7 @@ export type NativeFact030<T> =
   | { readonly kind: 'unavailable'; readonly gap: NativeDtoGap030 };
 export type NativeDtoGap030 =
   | 'qualification' | 'delivery' | 'human-flow-projection' | 'human-purpose'
-  | 'human-receipt' | 'question-validator' | 'stop-proof' | 'diagnostics'
+  | 'human-receipt' | 'human-resolution' | 'human-clock-observation' | 'question-validator' | 'stop-proof' | 'diagnostics'
   | 'occurrence-details' | 'chronology' | 'uncertainty';
 
 export type RunVerdict030 = 'succeeded' | 'failed' | 'cancelled' | null;
@@ -161,14 +161,47 @@ export type RunHumanAnswer030 =
   | { readonly kind: 'approval'; readonly choice: string; readonly comment: string }
   | { readonly kind: 'decision'; readonly decision: 'yes' | 'no'; readonly comment: string }
   | { readonly kind: 'question'; readonly answerJson: RunJson030 };
+/** Native readback only; never accepted as an input from the UI. */
+export interface RunAttestedHumanAnswer030 {
+  readonly answer: RunHumanAnswer030;
+  readonly origin: 'person' | 'syntheticPerson' | 'automaticTimeout';
+  readonly receivedAtMs: string;
+}
+export type RunHumanResolution030 = {
+  readonly receiptId: string;
+  readonly resolvedAtMs: string;
+  readonly accepted: boolean;
+} & (
+  | { readonly reason: 'person'; readonly answer: RunAttestedHumanAnswer030 & { readonly origin: 'person' | 'syntheticPerson' } }
+  | { readonly reason: 'answerTimeout'; readonly answer: RunAttestedHumanAnswer030 & { readonly origin: 'automaticTimeout' } }
+  /** Null means that closure produced no answer, not that an answer was lost. */
+  | { readonly reason: 'approvalTimeout' | 'revocation' | 'stop' | 'workEnded'; readonly answer: RunAttestedHumanAnswer030 | null }
+);
+type ResolvedHumanState030 = {
+  /** Immutable native history, retained through consumption and later readback. */
+  readonly resolution: RunHumanResolution030;
+};
 export type RunHumanState030 =
   | { readonly kind: 'open' }
-  | { readonly kind: 'submitted'; readonly receiptId: string }
-  | { readonly kind: 'resolved'; readonly receiptId: string; readonly reason: 'answer' | 'answerTimeout' | 'approvalTimeout'; readonly accepted: boolean }
-  | { readonly kind: 'consumed'; readonly receiptId: string; readonly resolutionReceiptId: string }
-  | { readonly kind: 'expired'; readonly reason: 'answerTimeout' | 'approvalTimeout' }
-  | { readonly kind: 'cancelled'; readonly reason: 'stop' | 'ownerLost' | 'workEnded' }
-  | { readonly kind: 'uncertain'; readonly receiptId: string | null };
+  | { readonly kind: 'submitted'; readonly receiptId: string; readonly answer: RunAttestedHumanAnswer030 }
+  | (ResolvedHumanState030 & { readonly kind: 'resolved'; readonly receiptId: string })
+  | (ResolvedHumanState030 & { readonly kind: 'consumed'; readonly receiptId: string; readonly resolutionReceiptId: string })
+  | (ResolvedHumanState030 & { readonly kind: 'expired' })
+  | (ResolvedHumanState030 & { readonly kind: 'cancelled' })
+  | { readonly kind: 'uncertain'; readonly receiptId: string | null; readonly phase: 'beforeResolution' }
+  | (ResolvedHumanState030 & { readonly kind: 'uncertain'; readonly receiptId: string | null; readonly phase: 'afterResolution' });
+/** All times are exact native monotone values from the same host incarnation. */
+export interface RunHumanClock030 {
+  readonly openedAtMs: string;
+  readonly observedAtMs: string;
+  readonly timeoutMs: string | null;
+  readonly works: readonly {
+    readonly workId: string;
+    readonly machineElapsedMs: string;
+    readonly machineRemainingMs: string | null;
+    readonly machinePaused: boolean;
+  }[];
+}
 export interface RunHumanRequest030 {
   readonly scope: Readonly<HumanScope030>;
   readonly id: string;
@@ -176,13 +209,8 @@ export interface RunHumanRequest030 {
   readonly workIds: readonly string[];
   readonly content: RunHumanContent030;
   readonly state: RunHumanState030;
-  /** Same-generation monotone values; no client wall-clock arbitration. */
-  readonly clock: NativeFact030<{
-    readonly openedAtMs: string; readonly timeoutMs: string | null;
-    readonly works: readonly {
-      readonly workId: string; readonly machineElapsedMs: string; readonly machinePaused: boolean;
-    }[];
-  }>;
+  /** Refresh native observations; paused machine budgets never decrease. */
+  readonly clock: NativeFact030<RunHumanClock030>;
 }
 export type RunHumanSubmission030<A extends RunHumanAnswer030 = RunHumanAnswer030> = {
   readonly scope: Readonly<HumanScope030>;

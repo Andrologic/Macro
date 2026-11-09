@@ -150,9 +150,8 @@ L'édition est explicite avant de choisir lecteur et commandes. Les captures
 `deliver030` est une extension demandée, pas une admission déjà disponible.
 
 L'ouverture d'Exécutions lit l'historique et les intentions retenues du même
-projet, plan, branche et conversation. Elle conserve la sélection explicite ;
-à défaut, elle privilégie le run d'une admission retenue puis le dernier run du
-scope. Elle ne compile, ne préflight, n'acquitte et ne soumet rien. La vue montre
+projet, plan, branche et conversation. Elle ne compile, ne préflight,
+n'acquitte et ne soumet rien. La vue montre
 « Document courant » et « Source capturée » séparément. Une édition du document
 ne remplace jamais la capture d'un run.
 
@@ -162,6 +161,22 @@ sélection et brouillons humains indexés par scope et demande. Ces brouillons
 doivent aussi être restaurables après rechargement de la page par le lot UI 8.
 Une perte du host est différente d'une navigation : ses anciennes continuations
 sont révoquées et les IO ambiguës restent incertaines.
+
+### Sélection initiale du run
+
+Cette section est la règle normative de sélection. Sans sélection explicite
+encore valide dans le scope, l'ouverture choisit dans cet ordre :
+
+1. Un run qui attend une personne, avec une demande ouverte attestée.
+2. Le run de l'admission retenue, si elle possède un reçu de run valide.
+3. Le dernier run du scope.
+
+S'il existe plusieurs runs en attente humaine, leur ordre dans l'historique
+natif, du plus récent au plus ancien, les départage. La lecture doit qualifier
+la présence d'attentes sur l'historique du scope avant d'appliquer un repli ;
+une page partielle ou un DTO humain indisponible ne prouve pas leur absence.
+Le rafraîchissement conserve une sélection explicite valide et ne détourne
+pas l'utilisateur de l'occurrence consultée.
 
 ### Actions et commandes natives
 
@@ -257,6 +272,33 @@ une réponse reçue exactement à l'échéance perd. La soumission, son arbitrag
 sa remise à l'exécuteur sont trois faits distincts. Une remise réservée mais
 non acquittée reste incertaine, sans second envoi automatique.
 
+La demande relue et son reçu conservent la même réponse attestée dans leur
+état : choix ou décision et commentaire exacts, ou JSON de question, origine
+`person`, `syntheticPerson` ou `automaticTimeout`, et instant monotone natif
+`receivedAtMs`. Après résolution, ils portent aussi le reçu de résolution,
+`resolvedAtMs`, l'acceptation et le motif `person`, `answerTimeout`,
+`approvalTimeout`, `revocation`, `stop` ou `workEnded`. Cet historique reste
+immuable dans les états résolu, consommé, expiré, annulé et incertain après
+résolution. Une fermeture sans réponse native porte explicitement `null` ;
+une réponse personnelle ou un refus automatique `answerTimeout` ne le peut
+pas. Le brouillon UI ne remplace jamais cette réponse lors d'une relecture.
+Sans ces faits, le raccord reste indisponible, trou G5 à livrer par N-HUMAN.
+
+`RunHumanClock030.observedAtMs` est l'instant monotone d'observation de l'hôte,
+dans la même incarnation que `openedAtMs`. À cette observation, le délai humain
+restant vaut `max(0, openedAtMs + timeoutMs - observedAtMs)`, avec calcul entier
+exact ; `timeoutMs: null` signifie absence de délai. Le natif fournit aussi le
+budget machine restant de chaque travail dans `machineRemainingMs`, ou `null`
+sans limite. Lorsque `machinePaused` est vrai pendant l'attente humaine, ce
+budget ne décroît pas ; le délai humain, lui, continue de courir.
+
+La vue relit ces observations à l'ouverture, au retour de navigation, lors d'un
+changement de demande ou de pause, et à chaque rafraîchissement du run visible.
+Entre deux observations, elle affiche la dernière durée attestée sans la faire
+décroître avec l'horloge du navigateur. Une lecture échouée marque cette donnée
+périmée ; elle ne provoque aucune expiration. Les instants de deux incarnations
+ne sont jamais soustraits. N-HUMAN doit fournir ces données, trou G11.
+
 Les dates d'historique et la comparaison utilisent la source, son empreinte,
 les versions, le profil et la provenance capturés. Une date absente s'affiche
 inconnue. Le temps monotone perdu après crash n'est pas reconstitué ; la reprise
@@ -270,12 +312,13 @@ transparente des échéances entre générations n'est pas qualifiée.
 | G2, livraison | Cible shared/named, mode queue/steer, révision, intention/admission `deliver030`, reçu relisible, retrait et preuve de consommation | Livraison lot 1 et fournisseurs lot 7. L'actuel `ExecutionExternalDelivery` ne porte ni instance ni mode 0.3 et l'admission `deliver` reste historique. |
 | G3, humain du vrai flow | Projection publique sur `engine_flow030_human_*`, identité publique et révision natives, associations aux occurrences | Humain U avec N-HUMAN H/B ; I/09 raccorde migration/pump. `public030.rs` vise encore le stockage historique au commit de base. |
 | G4, finalité humaine | Discriminant choix de flow / permission d'action, message exact capturé et action réellement présentée | Humain U / N-HUMAN. Le `kind: approval` actuel ne justifie pas de choisir l'un des deux dans l'UI. |
-| G5, reçu humain | Nouvelle commande publique, reçu/instant natifs, état soumis/résolu/consommé/expiré/annulé, motif et acquittement de remise | Humain U / N-HUMAN H/B ; I/09. Ne pas reprendre la révision historique calculée par addition de deux booléens ; le nouveau stockage fournit sa révision propre. |
+| G5, reçu et historique humains | Nouvelle commande publique, réponse attestée relisible sur demande et reçu, choix/commentaire ou JSON exact, origine et instant natifs ; motif et reçu de résolution conservés après consommation, expiration, annulation ou incertitude | N-HUMAN H/B avec humain U pour la projection ; I/09. Les états sans cet historique restent indisponibles. Ne pas reprendre la révision historique calculée par addition de deux booléens. |
 | G6, question | Schéma/protocole public attesté, disponibilité du validateur natif, refus typé sans validateur | Humain U / N-HUMAN, N-CALLS pour identité/port MCP. Le JSON public ne reconstitue pas le validateur natif. |
 | G7, arrêt | Reçu Stop public relisible, progression physique, confirmation attestée et incertitude | Fournisseurs lot 5 et N-OBS ; I/09. `stopping` et `physicalPending` ne suffisent pas à fabriquer un reçu `stopped`. |
 | G8, diagnostic | Lecture 0.3 paginée, code/message d'origine, occurrence, cause, handler, disposition et effets connus | N-OBS avec fournisseurs lot 5 et terminaux N-HUMAN/N-CALLS. Le lecteur historique `execution_read_diagnostic` ne prouve pas cette couverture. |
 | G9, occurrence et chronologie | Message/émetteur réellement reçus, output exact, visite, appartenance au flow, provenance et dates attestées | N-OBS ; N-CALLS et N-HUMAN fournissent leurs reçus, livraison lot 3 fournit ses identités. La projection actuelle fournit déjà activation, instance, groupe et chemins. |
 | G10, incertitude | Identité publique du fait ambigu, scope/révision, reçus corrélés et issue de réconciliation sans capacité de replay | Fournisseurs lots 1/5 et N-OBS ; I/09 expose la lecture proposée. L'absence de ligne ne débloque pas un claim ambigu. |
+| G11, observation d'horloge | `observedAtMs` monotone natif, budget machine restant par travail et état de pause, cohérents avec la demande et la même incarnation | N-HUMAN H/B avec humain U pour la projection ; I/09. Une navigation déclenche une nouvelle observation, sans reconstruire le temps depuis l'horloge du navigateur. |
 
 Pour intégrer une action, son propriétaire runtime fournit DTO Rust, refus
 fermés, relecture idempotente et tests de concurrence/perte d'acquittement. I/09
