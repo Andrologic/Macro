@@ -979,6 +979,11 @@ fn forensic_event_reader_covers_all_native_variants_and_rejects_unknown_fields()
                 error: Failure030::new("FAILED"),
             },
         },
+        FlowEventKind030::SteerConsumed {
+            effect_id: "effect".into(),
+            work: work.clone(),
+            delivery_activation_id: "delivery".into(),
+        },
         FlowEventKind030::PhysicalEnded {
             work,
             stop_effect_id: None,
@@ -1228,18 +1233,49 @@ async fn steer_consumption_must_correlate_exact_delivery_work_message_and_checkp
         occurrence: None,
         sender: None,
     };
-    let receipt = json!({"work":work,"deliveryActivationId":"delivery","messageJson":"{\"prompt\":\"Update.\"}","consumedAfterEventId":event.event_id});
-    assert!(verify_steer_settlement(&transition.state, &effect, &receipt).is_ok());
+    let consumed = FlowEvent030 {
+        identity: event.identity.clone(),
+        event_id: "consumed".into(),
+        expected_revision: transition.state.revision.clone(),
+        kind: FlowEventKind030::SteerConsumed {
+            effect_id: effect.id.clone(),
+            work: work.clone(),
+            delivery_activation_id: "delivery".into(),
+        },
+    };
+    let mut state = transition.state.clone();
+    state.steer_deliveries.push(SteerRecord030 {
+        effect_id: effect.id.clone(),
+        work: work.clone(),
+        delivery_activation_id: "delivery".into(),
+        status: "consumed".into(),
+        resolved_event_id: Some("consumed".into()),
+        reason: None,
+    });
+    state.events.insert(
+        "consumed".into(),
+        EventRecord030 {
+            event_json: json!(consumed).to_string(),
+            receipt: FlowReceipt030 {
+                event_id: "consumed".into(),
+                revision: "2".into(),
+                effect_ids: vec![],
+            },
+        },
+    );
+    let receipt = json!({"work":work,"deliveryActivationId":"delivery","messageJson":"{\"prompt\":\"Update.\"}","consumedAfterEventId":event.event_id,"consumedEventId":"consumed"});
+    assert!(verify_steer_settlement(&state, &effect, &receipt).is_ok());
     for key in [
         "work",
         "deliveryActivationId",
         "messageJson",
         "consumedAfterEventId",
+        "consumedEventId",
     ] {
         let mut forged = receipt.clone();
         forged[key] = json!("foreign");
         assert!(
-            verify_steer_settlement(&transition.state, &effect, &forged).is_err(),
+            verify_steer_settlement(&state, &effect, &forged).is_err(),
             "{key}"
         );
     }

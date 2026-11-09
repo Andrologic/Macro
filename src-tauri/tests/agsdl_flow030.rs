@@ -1159,6 +1159,12 @@ fn shared_fifo_steer_bypasses_queue_and_does_not_visit() {
             .count(),
         2
     );
+    let pending = t.s.steer_deliveries[0].clone();
+    t.send(FlowEventKind030::SteerConsumed {
+        effect_id: pending.effect_id,
+        work: pending.work,
+        delivery_activation_id: pending.delivery_activation_id,
+    });
     t.finish("work", json!({}), None);
     assert_eq!(t.running("q1"), 1);
     assert_eq!(t.running("q2"), 0);
@@ -1210,6 +1216,20 @@ fn graphless_queue_steer_and_named_instance() {
         .effects
         .iter()
         .any(|e| matches!(e.kind, FlowEffectKind030::Steer { .. })));
+    let pending = t.s.steer_deliveries[0].clone();
+    t.send(FlowEventKind030::SteerConsumed {
+        effect_id: pending.effect_id,
+        work: pending.work,
+        delivery_activation_id: pending.delivery_activation_id,
+    });
+    assert_eq!(
+        t.s.activations
+            .iter()
+            .find(|a| a.sender.as_deref() == Some("third"))
+            .unwrap()
+            .phase,
+        "done"
+    );
     let a =
         t.s.activations
             .iter()
@@ -2674,4 +2694,126 @@ fn nested_join_failure_propagates_to_outer_error_handler() {
     assert!(t.s.preparations.iter().any(|p| p.status == "pending"
         && p.reference.route.source == address("join")
         && p.reference.route.kind == "error"));
+}
+
+// Synthetic IR fixtures adapt the Apache-2.0 AgSDL delivery examples.
+// Their upstream license is preserved in dev/agsdl/fixtures/v0.3/LICENSE.
+#[test]
+fn pending_steer_absorbs_only_after_consumption_before_a_missed_finish_quorum() {
+    let p: FlowPlan030 = serde_json::from_str(include_str!(
+        "fixtures/agsdl030_pending_steer_quorum_plan.json"
+    ))
+    .unwrap();
+    let mut t = launch(p);
+    let effect = t
+        .effects
+        .iter()
+        .find(|e| matches!(&e.kind, FlowEffectKind030::Steer { .. }))
+        .unwrap()
+        .clone();
+    assert!(steer_effect_eligible030(&t.s, &effect));
+    assert_eq!(
+        t.s.groups[0].decision, None,
+        "An offered message has not ended its branch"
+    );
+    let pending = t.s.steer_deliveries[0].clone();
+    t.send(FlowEventKind030::SteerConsumed {
+        effect_id: pending.effect_id,
+        work: pending.work.clone(),
+        delivery_activation_id: pending.delivery_activation_id,
+    });
+    assert_eq!(t.s.groups[0].decision.as_deref(), Some("missed"));
+    assert_eq!(t.s.steer_deliveries[0].status, "consumed");
+    assert_eq!(t.running("a"), 1);
+    assert!(!steer_effect_eligible030(&t.s, &effect));
+    assert!(
+        !accepts_steer030(&t.s, &pending.work),
+        "Absorption has already delivered before the group stops counting"
+    );
+    t.finish("a", json!({"choice":"yes"}), Some("yes"));
+    t.prepare(None);
+    t.finish("after", json!({}), None);
+    assert_eq!(t.s.verdict.as_deref(), Some("succeeded"));
+    assert_eq!(t.s.visits_at(&address("b")), "0");
+}
+
+#[test]
+fn recipient_completion_re_admits_an_unconsumed_steer_instead_of_ending_the_run() {
+    let p = serde_json::from_str(include_str!(
+        "fixtures/agsdl030_pending_steer_completion_plan.json"
+    ))
+    .unwrap();
+    let mut t = launch(p);
+    t.finish("ping", json!({}), None);
+    t.prepare(None);
+    let pending = t.s.steer_deliveries[0].clone();
+    let effect = t
+        .effects
+        .iter()
+        .find(|e| e.id == pending.effect_id)
+        .unwrap()
+        .clone();
+    assert!(steer_effect_eligible030(&t.s, &effect));
+    t.finish(
+        "work",
+        json!({"text":"Finished before mailbox consumption"}),
+        None,
+    );
+    assert_eq!(
+        t.s.verdict, None,
+        "The unconsumed message keeps the run alive"
+    );
+    assert_eq!(t.running("nudge"), 1);
+    assert_eq!(t.s.steer_deliveries[0].status, "fallback");
+    assert_eq!(
+        t.s.steer_deliveries[0].reason.as_deref(),
+        Some("recipient-ended")
+    );
+    assert!(!steer_effect_eligible030(&t.s, &effect));
+    let stale = FlowEvent030 {
+        identity: t.s.identity.clone(),
+        event_id: "late-consumption".into(),
+        expected_revision: t.s.revision.clone(),
+        kind: FlowEventKind030::SteerConsumed {
+            effect_id: pending.effect_id,
+            work: pending.work,
+            delivery_activation_id: pending.delivery_activation_id,
+        },
+    };
+    assert!(matches!(
+        reduce(&t.p, &t.s, &stale),
+        Err(FlowInputError030::StaleReference)
+    ));
+    t.finish("nudge", json!({"text":"Delivered as its own work"}), None);
+    assert_eq!(t.s.verdict.as_deref(), Some("succeeded"));
+    assert_eq!(t.s.visits_at(&address("nudge")), "1");
+}
+
+#[test]
+fn an_overtaken_steer_waits_behind_earlier_instance_queue_messages() {
+    let mut p = plan();
+    for name in ["start", "work", "queued", "ping", "nudge"] {
+        step(&mut p, name, "agent");
+    }
+    route(&mut p, "start", None, &["work", "queued", "ping"]);
+    route(&mut p, "ping", None, &["nudge"]);
+    for name in ["work", "queued"] {
+        shared(&mut p, name, "dev", "queue");
+    }
+    shared(&mut p, "nudge", "dev", "steer");
+    let mut t = launch(p);
+    t.finish("ping", json!({}), None);
+    t.prepare(None);
+    t.finish("work", json!({}), None);
+    assert_eq!(t.running("queued"), 1);
+    assert_eq!(t.running("nudge"), 0);
+    assert!(t
+        .s
+        .activations
+        .iter()
+        .any(|a| a.step == Some(address("nudge")) && a.phase == "queued"));
+    t.finish("queued", json!({}), None);
+    assert_eq!(t.running("nudge"), 1);
+    t.finish("nudge", json!({}), None);
+    assert_eq!(t.s.verdict.as_deref(), Some("succeeded"));
 }

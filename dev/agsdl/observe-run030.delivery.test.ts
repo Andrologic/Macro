@@ -18,6 +18,8 @@ describe.skipIf(!referenceDir || !process.env.MACRO_AGSDL030_REPLAY_COMMAND)('na
   });
 
   test.each([
+    "UPDATE engine_flow030_outbox SET settlement_json=json_set(settlement_json,'$.kind','nativeSteerSuperseded030') WHERE json_extract(effect_json,'$.kind.kind')='steer'",
+    "UPDATE engine_flow030_outbox SET settlement_json=json_set(settlement_json,'$.consumedEventId','foreign') WHERE json_extract(effect_json,'$.kind.kind')='steer'",
     "UPDATE engine_flow030_outbox SET settlement_json=json_set(settlement_json,'$.kind','nativeOwnedHandoff030') WHERE json_extract(effect_json,'$.kind.kind')='steer'",
     "UPDATE engine_flow030_outbox SET settlement_json=json_set(settlement_json,'$.messageJson','{}') WHERE json_extract(effect_json,'$.kind.kind')='steer'",
     "UPDATE engine_flow030_outbox SET settlement_json=json_set(settlement_json,'$.work.startEffectId','foreign') WHERE json_extract(effect_json,'$.kind.kind')='steer'",

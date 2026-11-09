@@ -178,6 +178,11 @@ enum KindRead {
         #[serde(with = "PreparedRead")]
         result: PreparedResult030,
     },
+    SteerConsumed {
+        effect_id: String,
+        work: WorkRef030,
+        delivery_activation_id: String,
+    },
     PhysicalEnded {
         work: WorkRef030,
         stop_effect_id: Option<String>,
@@ -576,14 +581,13 @@ async fn verify(db: &mut SqliteConnection, system: &str, invocation: &str) -> Re
             if let Some(deliveries) = steer_checkpoints.get(&event_id) {
                 for (effect, receipt) in deliveries {
                     let FlowEffectKind030::Steer {
-                        work,
                         delivery_activation_id,
                         ..
                     } = &effect.kind
                     else {
                         return Err(mismatch("steer.effect", "Steer effect", &effect.kind));
                     };
-                    if !accepts_steer030(&state, work)
+                    if !steer_effect_eligible030(&state, effect)
                         || !state
                             .activations
                             .iter()
@@ -773,6 +777,45 @@ fn verify_steer_settlement(
             &json!(message_json),
             &receipt["messageJson"],
         )?;
+        let consumed_id = receipt["consumedEventId"].as_str().ok_or_else(|| {
+            mismatch(
+                "steer.consumedEventId",
+                "accepted consumption event",
+                Value::Null,
+            )
+        })?;
+        let consumed = state.events.get(consumed_id).ok_or_else(|| {
+            mismatch(
+                "steer.consumedEventId",
+                "accepted consumption event",
+                consumed_id,
+            )
+        })?;
+        let event = parse::<ReadEvent>("steer.consumedEvent", &consumed.event_json)?.0;
+        equal(
+            "steer.consumedEvent",
+            &json!(FlowEventKind030::SteerConsumed {
+                effect_id: effect.id.clone(),
+                work: work.clone(),
+                delivery_activation_id: delivery_activation_id.clone()
+            }),
+            &json!(event.kind),
+        )?;
+        let delivery = state
+            .steer_deliveries
+            .iter()
+            .find(|d| d.effect_id == effect.id)
+            .ok_or_else(|| mismatch("steer.record", "replayed delivery", Value::Null))?;
+        equal(
+            "steer.consumedStatus",
+            &"consumed",
+            &delivery.status.as_str(),
+        )?;
+        equal(
+            "steer.consumedRecord",
+            &Some(consumed_id.to_owned()),
+            &delivery.resolved_event_id,
+        )?;
         let checkpoint = receipt["consumedAfterEventId"]
             .as_str()
             .and_then(|id| state.events.get(id));
@@ -783,6 +826,11 @@ fn verify_steer_settlement(
                 &receipt["consumedAfterEventId"],
             ));
         }
+        equal(
+            "steer.checkpointRevision",
+            &event.expected_revision,
+            &checkpoint.unwrap().receipt.revision,
+        )?;
     }
     Ok(())
 }
@@ -834,6 +882,20 @@ async fn verify_settlement(
         FlowEffectKind030::PrepareRoute { reference, .. } => state.preparation_receipts.iter().find_map(|(receipt, prepare)| (prepare == &reference.prepare_id).then(|| json!({"kind":"nativeRoutePrepared030","prepareId":prepare,"nativeReceiptId":receipt}))),
         _ => None,
     };
+    if let FlowEffectKind030::Steer { .. } = &effect.kind {
+        if state.steer_deliveries.iter().any(|d| {
+            d.effect_id == effect.id
+                && d.status != "pending"
+                && !(d.status == "withdrawn" && status == "uncertain")
+        }) && status != "settled"
+        {
+            return Err(mismatch(
+                "steer.resolution",
+                "settled delivery resolution",
+                status,
+            ));
+        }
+    }
     if status != "settled" {
         if !matches!(status, "pending" | "uncertain")
             || settlement.is_some()
@@ -855,6 +917,31 @@ async fn verify_settlement(
             .as_deref()
             .ok_or_else(|| mismatch("outbox.settlement", "recorded settlement", Value::Null))?,
     )?;
+    if let FlowEffectKind030::Steer {
+        work,
+        delivery_activation_id,
+        ..
+    } = &effect.kind
+    {
+        let delivery = state
+            .steer_deliveries
+            .iter()
+            .find(|d| d.effect_id == effect.id)
+            .ok_or_else(|| mismatch("steer.record", "replayed delivery", Value::Null))?;
+        if matches!(delivery.status.as_str(), "fallback" | "withdrawn") {
+            let expected = json!({"kind":"nativeSteerSuperseded030", "effectId":effect.id,
+                "deliveryActivationId":delivery_activation_id, "work":work, "eventId":delivery.resolved_event_id,
+                "resolution":delivery.status, "reason":delivery.reason});
+            equal("steer.superseded", &expected, &receipt)?;
+            equal("steer.superseded.handoff", &false, &handoff.is_some())?;
+            equal(
+                "steer.superseded.noAdmission",
+                &false,
+                &no_admission.is_some(),
+            )?;
+            return Ok(());
+        }
+    }
     if let Some(expected) = prepared {
         equal("outbox.settlement", &expected, &receipt)?;
         equal("outbox.handoff", &false, &handoff.is_some())?;

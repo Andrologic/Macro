@@ -851,7 +851,9 @@ impl Authority030 for Authority<'_> {
                         .find(|a| a.id == *delivery_activation_id)
                         .ok_or(StoreError030::Authority)?;
                     if active.start_effect_id.as_deref() != Some(&work.start_effect_id)
-                        || !crate::db::agsdl_execution::flow030::accepts_steer030(&state, work)
+                        || !crate::db::agsdl_execution::flow030::steer_effect_eligible030(
+                            &state, effect,
+                        )
                         || active.instance_id != work.agent_instance_id
                         || active.instance_id != delivery.instance_id
                         || active.agent != delivery.agent
@@ -947,6 +949,10 @@ impl Authority030 for Authority<'_> {
 #[cfg(test)]
 #[path = "agsdl_host_no_admission030_tests.rs"]
 mod no_admission_tests;
+
+#[cfg(test)]
+#[path = "agsdl_host_steer030_tests.rs"]
+mod steer_tests;
 
 struct StartGuard {
     _source: LockedExecutionSource,
@@ -1408,7 +1414,10 @@ pub(crate) async fn apply_native_event(
     event: &FlowEvent030,
 ) -> Result<Apply030> {
     // Prepared has a dedicated atomic path with its occurrence witnesses.
-    if matches!(&event.kind, FlowEventKind030::Prepared { .. }) {
+    if matches!(
+        &event.kind,
+        FlowEventKind030::Prepared { .. } | FlowEventKind030::SteerConsumed { .. }
+    ) {
         return Err(refused());
     }
     let lease = host.start_lease().await?;
@@ -2204,10 +2213,31 @@ impl DispatchLease030<'_> {
             .map_err(store_error)?;
         let head: String = sqlx::query_scalar("SELECT event_id FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND diagnostic_json IS NULL ORDER BY rowid DESC LIMIT 1")
             .bind(&self.effect.identity.system_start_id).bind(&self.effect.identity.flow_invocation_id).fetch_one(&mut *tx).await?;
+        let revision: String = sqlx::query_scalar("SELECT state_json ->> '$.revision' FROM engine_flow030_runs WHERE system_id=? AND invocation_id=?")
+            .bind(&self.effect.identity.system_start_id).bind(&self.effect.identity.flow_invocation_id).fetch_one(&mut *tx).await?;
+        let event = FlowEvent030 {
+            identity: self.effect.identity.clone(),
+            event_id: format!(
+                "steer030:consumed:{:x}",
+                Sha256::digest(self.effect.id.as_bytes())
+            ),
+            expected_revision: revision,
+            kind: FlowEventKind030::SteerConsumed {
+                effect_id: self.effect.id.clone(),
+                work: work.clone(),
+                delivery_activation_id: delivery_activation_id.clone(),
+            },
+        };
+        let applied = flow_store030::apply_tx(&mut tx, &authority, &event)
+            .await
+            .map_err(store_error)?;
+        if !matches!(applied, Apply030::Applied(_)) {
+            return Err(uncertain());
+        }
         let receipt = json!({"kind":"nativeSteerConsumed030", "effectId":self.effect.id,
             "identity":self.effect.identity, "ownerEpoch":self.owner.owner_epoch, "generation":self.lease.generation(),
             "work":work, "deliveryActivationId":delivery_activation_id, "messageJson":message_json,
-            "consumedAfterEventId":head});
+            "consumedAfterEventId":head, "consumedEventId":event.event_id});
         sqlx::query("INSERT INTO engine_flow030_handoffs(system_id,invocation_id,effect_id,owner_epoch,generation,receipt_json) VALUES(?,?,?,?,?,?)")
             .bind(&self.effect.identity.system_start_id).bind(&self.effect.identity.flow_invocation_id).bind(&self.effect.id)
             .bind(&self.owner.owner_epoch).bind(self.lease.generation()).bind(receipt.to_string()).execute(&mut *tx).await?;
@@ -2220,8 +2250,10 @@ impl DispatchLease030<'_> {
         )
         .await
         .map_err(store_error)?;
+        self.runtime.begin_event_commit(&event)?;
         tx.commit().await.map_err(|_| uncertain())?;
         self.lease.ensure_live().map_err(|_| uncertain())?;
+        self.runtime.acknowledge_event_commit(&event);
         Ok(())
     }
 

@@ -214,6 +214,8 @@ export interface SteerConsumption030 {
   messageJson: string;
   // Native journal head captured under the admission fence when consumed.
   consumedAfterEventId: string;
+  // Accepted reducer acknowledgment, committed with the mailbox receipt.
+  consumedEventId: string;
 }
 // Migration 034. These rows commit atomically with the accepted Prepared event.
 export interface PreparationRow030 {
@@ -406,6 +408,7 @@ function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: Effec
       require(receipt.kind === 'nativeSteerConsumed030' && same(receipt.work, effect.kind.work)
         && receipt.deliveryActivationId === effect.kind.deliveryActivationId && receipt.messageJson === effect.kind.messageJson
         && typeof receipt.consumedAfterEventId === 'string' && events.has(receipt.consumedAfterEventId)
+        && typeof receipt.consumedEventId === 'string' && events.has(receipt.consumedEventId)
         && receipt.workAttempt === undefined && receipt.requestId === undefined, 'steer consumption handoff');
       continue;
     }
@@ -1439,6 +1442,9 @@ export function observeRun030(databasePath: string, systemId: string, invocation
           const settlement = db.query('SELECT settlement_json FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=? AND effect_id=?').get(systemId, invocationId, row.effect_id) as { settlement_json: string | null };
           if (!settlement.settlement_json) throw new Error('Steer consumption is absent');
           const receipt = record(raw(settlement.settlement_json));
+          // The replayed fallback/withdrawal has its own recorded resolution;
+          // only the eventual Start or consumed offer is an actual delivery.
+          if (!synthetic && receipt.kind === 'nativeSteerSuperseded030') continue;
           if (receipt.kind !== 'nativeSteerConsumed030' || receipt.effectId !== row.effect_id
             || receipt.deliveryActivationId !== kind.deliveryActivationId || receipt.messageJson !== kind.messageJson
             || kind.deliveryActivationId === work.activationId || !same(receipt.work, work)
