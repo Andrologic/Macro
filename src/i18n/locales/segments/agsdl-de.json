@@ -983,6 +983,14 @@
     },
     "occurrenceCount_zero": "Keine Vorkommen",
     "occurrenceCount_one": "{{count}} Vorkommen",
-    "occurrenceCount_other": "{{count}} Vorkommen"
+    "occurrenceCount_other": "{{count}} Vorkommen",
+    "noKnownEffects": "Keine bekannten Auswirkungen verfügbar. Weitere Felder stehen in den technischen Details.",
+    "effectWorkContinues": "Die Arbeit wird fortgesetzt",
+    "effectWorkDoesNotContinue": "Die Arbeit wird nicht fortgesetzt",
+    "effectLabel": {
+      "filesWritten": "Geschriebene Dateien",
+      "workContinues": "Fortsetzung der Arbeit"
+    },
+    "occurrenceCount_many": "{{count}} Vorkommen"
   }
 }

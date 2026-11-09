@@ -107,7 +107,7 @@ it('ties diagnostics to attested visits, retains run-level facts and navigates t
   const run = inspectionFixture030();
   const base = run.state.diagnostics.kind === 'ready' ? run.state.diagnostics.value[0] : undefined;
   const diagnostics = [
-    { ...base!, id: 'visit-one', message: 'First visit failed', causeId: 'visit-two', effectsJson: available('{"file":"report.txt","bytes":900719925474099312345}') },
+    { ...base!, id: 'visit-one', message: 'First visit failed', causeId: 'visit-two', effectsJson: available('{"filesWritten":["report.txt"],"bytes":900719925474099312345}') },
     { ...base!, id: 'visit-two', activationId: 'activation-2', message: 'Second visit cause' },
     { ...base!, id: 'run-level', activationId: 'not-attested', message: 'Run-level issue' },
   ];
@@ -119,7 +119,8 @@ it('ties diagnostics to attested visits, retains run-level facts and navigates t
   expect(article.querySelector('button')?.textContent).toContain('Inspect this visit · Review · Visit 1');
   expect([...article.querySelectorAll('p')].map(p => p.textContent).join(' ')).toContain('Followed recovery step: vote');
   expect(article.querySelector('div')?.textContent).toContain('Second visit cause');
-  expect([...article.querySelectorAll('dd')].map(dd => dd.textContent)).toEqual(['report.txt', '900719925474099312345']);
+  expect([...article.querySelectorAll('dd')].map(dd => dd.textContent)).toEqual(['report.txt']);
+  expect(article.querySelector('pre')?.textContent).toContain('900719925474099312345');
   expect(host.querySelector('[data-diagnostic-id="visit-two"]')).toBeNull();
   expect(host.querySelector('[data-diagnostic-id="run-level"]')?.textContent).toContain('No occurrence association is attested.');
   await click('Inspect the cause visit');
@@ -161,17 +162,59 @@ it('explains the coexistence of success, stopping work and a human wait', async 
 });
 
 import i18n from '../../i18n';
-it('uses real zero, singular and plural occurrence labels in all six locales', () => {
+it('covers every Intl plural category for zero, one, two and one million in all six locales', () => {
   const expected: Record<string, string[]> = {
-    en: ['No recorded occurrences', 'Recorded occurrence: 1', 'Recorded occurrences: 2'],
-    fr: ['Aucune occurrence', '1 occurrence', '2 occurrences'],
-    es: ['Ninguna ocurrencia', '1 ocurrencia', '2 ocurrencias'],
-    de: ['Keine Vorkommen', '1 Vorkommen', '2 Vorkommen'],
-    ja: ['実行箇所なし', '1 件の実行箇所', '2 件の実行箇所'],
-    ko: ['실행 항목 없음', '실행 항목 1개', '실행 항목 2개'],
+    en: ['No recorded occurrences', 'Recorded occurrence: 1', 'Recorded occurrences: 2', 'Recorded occurrences: 1000000'],
+    fr: ['Aucune occurrence', '1 occurrence', '2 occurrences', '1000000 occurrences'],
+    es: ['Ninguna ocurrencia', '1 ocurrencia', '2 ocurrencias', '1000000 ocurrencias'],
+    de: ['Keine Vorkommen', '1 Vorkommen', '2 Vorkommen', '1000000 Vorkommen'],
+    ja: ['実行箇所なし', '1 件の実行箇所', '2 件の実行箇所', '1000000 件の実行箇所'],
+    ko: ['실행 항목 없음', '실행 항목 1개', '실행 항목 2개', '실행 항목 1000000개'],
   };
   for (const [locale, labels] of Object.entries(expected)) {
     const t = i18n.getFixedT(locale, 'agsdl');
-    expect([0, 1, 2].map(count => t('agsdl.run030.occurrenceCount', { count }))).toEqual(labels);
+    const counts = [0, 1, 2, 1000000];
+    const rules = new Intl.PluralRules(locale);
+    expect([...new Set(counts.map(count => rules.select(count)))].sort()).toEqual(rules.resolvedOptions().pluralCategories.sort());
+    for (const count of counts) expect(i18n.getResource(locale, 'agsdl', `agsdl.run030.occurrenceCount_${rules.select(count)}`)).toBeDefined();
+    expect(counts.map(count => t('agsdl.run030.occurrenceCount', { count }))).toEqual(labels);
   }
+});
+
+it('uses the business handler title and readable known effects while keeping unknown fields folded', async () => {
+  const run = inspectionFixture030();
+  const base = run.state.diagnostics.kind === 'ready' ? run.state.diagnostics.value[0] : undefined;
+  const capture = { ...run.capture, authoredSource: run.capture.authoredSource.replace('"vote":{"type":"join"', '"vote":{"title":"Réunir les avis","type":"join"') };
+  await mount(monitorFixture030({ ...run, capture, state: { ...run.state, diagnostics: ready([
+    { ...base!, effectsJson: available('{"filesWritten":["review.txt","report.txt"],"workContinues":true,"internalField":{"ticket":"opaque"}}') },
+  ]) } }));
+  const article = host.querySelector('[data-diagnostic-id="diagnostic-handled"]')!;
+  expect([...article.querySelectorAll('p')].map(p => p.textContent).join(' ')).toContain('Followed recovery step: Réunir les avis');
+  expect([...article.querySelectorAll('dt')].map(dt => dt.textContent)).toEqual(['Written files', 'Work continuation']);
+  expect([...article.querySelectorAll('li')].map(li => li.textContent)).toEqual(['review.txt', 'report.txt']);
+  expect([...article.querySelectorAll('dd')].map(dd => dd.textContent)).toEqual(['review.txtreport.txt', 'The work continues']);
+  const technical = article.querySelector('details')!;
+  expect(technical.open).toBe(false);
+  expect(technical.textContent).toContain('internalField');
+  const plain = article.cloneNode(true) as HTMLElement; plain.querySelectorAll('details').forEach(node => node.remove());
+  expect(plain.textContent).not.toContain('internalField');
+  expect(plain.textContent).not.toContain('filesWritten / 0');
+});
+
+it('clears the previous static filter when the graph selects external work and marks its row', async () => {
+  const run = inspectionFixture030();
+  const originals = run.state.occurrences.kind === 'ready' ? run.state.occurrences.value : [];
+  const external = { ...originals[0], activation: { ...originals[0].activation, id: 'external-activation', step: null, agent: 'External reviewer' },
+    details: originals[0].details.kind === 'available' ? available({ ...originals[0].details.value, occurrenceId: 'external-occurrence' }) : originals[0].details };
+  const access = monitorFixture030({ ...run, state: { ...run.state, occurrences: ready([...originals, external]) } });
+  let bridge: RunGraphBridge030 | undefined;
+  await mount(access, { renderGraph: (value: RunGraphBridge030) => { bridge = value; return null; } });
+  await act(async () => bridge!.selectStep('/flow/steps/review'));
+  expect(bridge!.selectedStepId).toBe('/flow/steps/review');
+  expect([...host.querySelectorAll('ol button')].some(button => button.textContent?.includes('External reviewer'))).toBe(false);
+  const key = bridge!.occurrences.find(item => item.activationId === external.activation.id)!.key;
+  await act(async () => bridge!.selectOccurrence(key));
+  expect(bridge!.selectedStepId).toBeUndefined();
+  expect(bridge!.selectedOccurrenceKey).toBe(key);
+  expect(host.querySelector('ol button[aria-pressed="true"]')?.textContent).toContain('External reviewer');
 });

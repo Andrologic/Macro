@@ -983,6 +983,14 @@
     },
     "occurrenceCount_zero": "Ninguna ocurrencia",
     "occurrenceCount_one": "{{count}} ocurrencia",
-    "occurrenceCount_other": "{{count}} ocurrencias"
+    "occurrenceCount_other": "{{count}} ocurrencias",
+    "noKnownEffects": "No hay efectos conocidos disponibles. Los campos adicionales están en los detalles técnicos.",
+    "effectWorkContinues": "El trabajo continúa",
+    "effectWorkDoesNotContinue": "El trabajo no continúa",
+    "effectLabel": {
+      "filesWritten": "Archivos escritos",
+      "workContinues": "Continuación del trabajo"
+    },
+    "occurrenceCount_many": "{{count}} ocurrencias"
   }
 }

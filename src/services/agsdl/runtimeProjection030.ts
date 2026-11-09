@@ -109,11 +109,11 @@ export function initialRunSelection030(snapshot: RunMonitorSnapshot030, explicit
   if (explicit && history?.some(run => run.scope.systemStartId === explicit)) return explicit;
   if (snapshot.history.kind !== 'ready') return undefined;
   const runs = snapshot.history.value;
-  for (const run of runs) {
-    // An unknown older run cannot outrank an already attested newer wait.
-    if (run.humans.kind !== 'ready') return undefined;
-    if (run.humans.value.some(request => request.state.kind === 'open')) return run.scope.systemStartId;
-  }
+  // Choose the newest attested wait even when another run's waits are unknown.
+  const waiting = runs.find(run => run.humans.kind === 'ready' && run.humans.value.some(request => request.state.kind === 'open'));
+  if (waiting) return waiting.scope.systemStartId;
+  // Unknown waits only prevent falling back to an admission or the newest run.
+  if (runs.some(run => run.humans.kind !== 'ready')) return undefined;
   if (snapshot.retainedAdmission.kind !== 'available') return undefined;
   const admission = snapshot.retainedAdmission.value;
   return runs.find(run => run.scope.systemStartId === admission)?.scope.systemStartId ?? runs[0]?.scope.systemStartId;

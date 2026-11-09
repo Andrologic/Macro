@@ -13,12 +13,12 @@ export interface RunGraphBridge030 {
   readonly occurrenceRead: ReturnType<typeof runGraphReadState030> & { readonly projectionAvailable: boolean };
   readonly selectedStepId?: string;
   readonly selectedOccurrenceKey?: string;
-  selectStep(id: string): void;
+  selectStep(id: string | undefined): void;
   selectOccurrence(key: string): void;
 }
 export function RunInspector030({ inspection, selectedStepId, selectedOccurrenceKey, selectStep, selectOccurrence, renderGraph, stale = false, refreshing = false }: {
   inspection: RunInspection030; stale?: boolean; refreshing?: boolean; selectedStepId?: string; selectedOccurrenceKey?: string;
-  selectStep: (id: string) => void; selectOccurrence: (key: string) => void;
+  selectStep: (id: string | undefined) => void; selectOccurrence: (key: string) => void;
   renderGraph?: (bridge: RunGraphBridge030) => ReactNode;
 }) {
   const { t } = useAgsdlTranslation();
@@ -32,10 +32,15 @@ export function RunInspector030({ inspection, selectedStepId, selectedOccurrence
   const graph = useMemo(() => semantics ? projectRunGraph030(state.scope, semantics, raw ?? []) : [], [semantics, state.scope, raw]);
   const selectVisit = (key: string) => {
     const item = graph.find(occurrence => occurrence.key === key);
-    if (item?.staticOccurrenceId) selectStep(item.staticOccurrenceId);
+    if (!item) return;
+    selectStep(item.staticOccurrenceId ?? undefined);
     selectOccurrence(key);
   };
   const visitLabel = (item: RunGraphOccurrence030) => (item.staticOccurrenceId && stepLabels.get(item.staticOccurrenceId)) || item.occurrence.activation.step?.join(' / ') || item.occurrence.activation.agent || tr('externalWork');
+  const stepLabel = (address: readonly string[]) => {
+    const step = semantics?.occurrences.find(item => item.address !== null && JSON.stringify(item.address) === JSON.stringify(address));
+    return (step && stepLabels.get(step.occurrenceId)) || address.join(' / ');
+  };
   const selected = graph.find(item => item.key === selectedOccurrenceKey);
   const visible = selectedStepId ? graph.filter(item => item.staticOccurrenceId === selectedStepId) : graph;
   const steps = semantics?.occurrences.filter(item => item.address !== null) ?? [];
@@ -115,10 +120,13 @@ export function RunInspector030({ inspection, selectedStepId, selectedOccurrence
             <span className="break-words">{cause ? cause.message : diagnostic.causeId}</span>
             {causeOccurrence && <button type="button" className={button} onClick={() => selectVisit(causeOccurrence.key)}>{tr('inspectCause')} · {visitLabel(causeOccurrence)}</button>}
           </>}</div>
-          <p>{tr('handler')}: {diagnostic.handlerStep?.join(' / ') ?? tr('notReported')}</p>
-          <div><h4>{tr('effects')}</h4>{effects ? <dl>{effects.map((fact, index) => <div key={index} className="break-words">
-            <dt>{fact.path || tr('result')}</dt><dd>{fact.value ?? tr('noReportedItems')}</dd>
-          </div>)}</dl> : <p>{tr('unavailable')}</p>}</div>
+          <p>{tr('handler')}: {diagnostic.handlerStep ? stepLabel(diagnostic.handlerStep) : tr('notReported')}</p>
+          <div><h4>{tr('effects')}</h4>{effects === null ? <p>{tr('unavailable')}</p> : effects.length === 0 ? <p>{tr('noKnownEffects')}</p> :
+            <dl>{effects.map(fact => <div key={fact.kind} className="break-words">
+              <dt>{tr(`effectLabel.${fact.kind}`)}</dt>
+              <dd>{fact.kind === 'filesWritten' ? fact.files.length === 0 ? tr('noReportedItems') : <ul>{fact.files.map((file, index) => <li key={index}>{file}</li>)}</ul>
+                : tr(fact.value ? 'effectWorkContinues' : 'effectWorkDoesNotContinue')}</dd>
+            </div>)}</dl>}</div>
           <details><summary>{tr('technicalDetails')}</summary><pre className="whitespace-pre-wrap break-all">{JSON.stringify(diagnostic, null, 2)}</pre></details>
         </article>;
       })}

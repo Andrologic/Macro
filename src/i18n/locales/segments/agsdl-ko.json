@@ -983,6 +983,14 @@
     },
     "occurrenceCount_zero": "실행 항목 없음",
     "occurrenceCount_one": "실행 항목 {{count}}개",
-    "occurrenceCount_other": "실행 항목 {{count}}개"
+    "occurrenceCount_other": "실행 항목 {{count}}개",
+    "noKnownEffects": "알려진 효과가 없습니다. 추가 필드는 기술 상세에서 확인할 수 있습니다.",
+    "effectWorkContinues": "작업이 계속됩니다",
+    "effectWorkDoesNotContinue": "작업이 계속되지 않습니다",
+    "effectLabel": {
+      "filesWritten": "기록된 파일",
+      "workContinues": "작업 계속 여부"
+    },
+    "occurrenceCount_many": "실행 항목 {{count}}개"
   }
 }

@@ -983,6 +983,14 @@
     },
     "occurrenceCount_zero": "No recorded occurrences",
     "occurrenceCount_one": "Recorded occurrence: {{count}}",
-    "occurrenceCount_other": "Recorded occurrences: {{count}}"
+    "occurrenceCount_other": "Recorded occurrences: {{count}}",
+    "noKnownEffects": "No recognized effects are available. Additional fields are in the technical details.",
+    "effectWorkContinues": "The work continues",
+    "effectWorkDoesNotContinue": "The work does not continue",
+    "effectLabel": {
+      "filesWritten": "Written files",
+      "workContinues": "Work continuation"
+    },
+    "occurrenceCount_many": "Recorded occurrences: {{count}}"
   }
 }

@@ -983,6 +983,14 @@
     },
     "occurrenceCount_zero": "実行箇所なし",
     "occurrenceCount_one": "{{count}} 件の実行箇所",
-    "occurrenceCount_other": "{{count}} 件の実行箇所"
+    "occurrenceCount_other": "{{count}} 件の実行箇所",
+    "noKnownEffects": "認識できる効果はありません。追加の項目は技術的な詳細で確認できます。",
+    "effectWorkContinues": "作業は継続します",
+    "effectWorkDoesNotContinue": "作業は継続しません",
+    "effectLabel": {
+      "filesWritten": "書き込まれたファイル",
+      "workContinues": "作業の継続"
+    },
+    "occurrenceCount_many": "{{count}} 件の実行箇所"
   }
 }

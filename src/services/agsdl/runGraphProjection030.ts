@@ -1,5 +1,5 @@
 import type { RunOccurrence030, RunScope030, RunRead030 } from '../../types/agsdlRunUi030';
-import { object, pointerPart, scanSource } from './document';
+import { object, scanSource } from './document';
 import type { StaticSemantics030 } from './staticSemantics030';
 
 /** Capture identity deliberately excludes runtime revision, so refresh keeps selection. */
@@ -64,23 +64,20 @@ export function runGraphReadState030(read: RunRead030<readonly RunOccurrence030[
   };
 }
 
-/** Arbitrary effect fields have no public ontology. Show their exact scalar values
- * as labelled facts, preserving decimal wire text rather than rounding via Number. */
-export function runEffectFacts030(source: string): { path: string; value: string | null }[] | null {
+export type RunEffectFact030 =
+  | { readonly kind: 'filesWritten'; readonly files: readonly string[] }
+  | { readonly kind: 'workContinues'; readonly value: boolean };
+
+/** Present only recognized, correctly shaped effects. Unknown fields stay in the
+ * original diagnostic JSON, without assigning them an invented product meaning. */
+export function runEffectFacts030(source: string): RunEffectFact030[] | null {
   try {
-    const scanned = scanSource(source), decoder = new TextDecoder();
-    const facts: { path: string; value: string | null }[] = [];
-    const visit = (node: unknown, pointer: string, labels: string[]) => {
-      const entries = Array.isArray(node) ? node.map((value, index) => [String(index), value] as const) : Object.entries(object(node));
-      if (entries.length > 0) {
-        for (const [key, value] of entries) visit(value, `${pointer}/${pointerPart(key)}`, [...labels, key]);
-      } else {
-        const span = scanned.spans.get(pointer);
-        const raw = span ? decoder.decode(scanned.bytes.subarray(span.start, span.end)) : '';
-        facts.push({ path: labels.join(' / '), value: raw === '[]' || raw === '{}' ? null : typeof node === 'string' ? node : raw });
-      }
-    };
-    visit(scanned.tree, '', []);
+    const effects = object(scanSource(source).tree);
+    const facts: RunEffectFact030[] = [];
+    if (Array.isArray(effects.filesWritten) && effects.filesWritten.every(file => typeof file === 'string')) {
+      facts.push({ kind: 'filesWritten', files: effects.filesWritten });
+    }
+    if (typeof effects.workContinues === 'boolean') facts.push({ kind: 'workContinues', value: effects.workContinues });
     return facts;
   } catch { return null; }
 }
