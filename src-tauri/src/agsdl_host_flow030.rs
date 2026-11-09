@@ -2763,6 +2763,17 @@ impl FlowControl030 {
         let view = flow_store030::read_tx(&mut tx, self, &self.identity)
             .await
             .map_err(store_error)?;
+        // A revoked generation may record cleanup after the global Stop has
+        // fenced routing. Before that Stop, a group claim must not release a
+        // fresh continuation through the cleanup-only control authority.
+        if claim.is_some() && !view.state.stopping {
+            let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_flow030_owners WHERE system_id=? AND invocation_id=? AND owner_epoch=? AND generation=? AND status='live')")
+                .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id)
+                .bind(&self.owner.owner_epoch).bind(&self.generation).fetch_one(&mut *tx).await?;
+            if !live {
+                return Err(refused());
+            }
+        }
         let activation = view
             .state
             .activations

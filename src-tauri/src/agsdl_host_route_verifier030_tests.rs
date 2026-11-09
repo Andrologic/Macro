@@ -253,3 +253,6 @@ fn call_failure_is_explicitly_refused_until_call_authority_is_integrated() {
     plan.steps[0].r#type = "agent".into();
     assert!(reject_unintegrated_call(&plan, &Some(address)).is_ok());
 }
+
+#[path = "agsdl_host_path_failure030_tests.rs"]
+mod path_failure_tests;

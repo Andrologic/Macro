@@ -1890,6 +1890,15 @@ async fn validated_work_result_diagnostic_retains_join_for_real_stop_cleanup() {
 /// and dispatch joins the actual owned registry and its delayed cleanup.
 #[tokio::test]
 async fn dispatch_stop_waits_for_cleanup_before_one_real_group_continuation() {
+    exercise_real_group_stop(false).await;
+}
+
+#[tokio::test]
+async fn generation_revoked_during_group_join_never_releases_the_continuation() {
+    exercise_real_group_stop(true).await;
+}
+
+async fn exercise_real_group_stop(revoke_during_join: bool) {
     use crate::db::agsdl_execution::flow030::{
         DeliveryOccurrence030, PreparedBatch030, PreparedItem030, PreparedResult030, Target030,
         WorkResult030,
@@ -2290,6 +2299,36 @@ async fn dispatch_stop_waits_for_cleanup_before_one_real_group_continuation() {
         reduce(&plan, &waiting, &late),
         Err(crate::db::agsdl_execution::flow030::FlowInputError030::StaleReference)
     ));
+    if revoke_during_join {
+        revoke_generation(&pool, "generation").await.unwrap();
+        release.send(()).unwrap();
+        assert!(dispatch.await.is_err());
+        let raw: String = sqlx::query_scalar("SELECT state_json FROM engine_flow030_runs")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let after: FlowState030 = serde_json::from_str(&raw).unwrap();
+        assert!(
+            !after
+                .groups
+                .iter()
+                .find(|g| g.join == vec!["j2".to_string()])
+                .unwrap()
+                .released
+        );
+        assert!(!after
+            .preparations
+            .iter()
+            .any(|p| p.producer.step == Some(vec!["j2".into()])));
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM engine_flow030_outbox WHERE effect_id=?")
+                .bind(&effect.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "uncertain");
+        return;
+    }
     release.send(()).unwrap();
     assert!(matches!(dispatch.await.unwrap(), Apply030::Applied(_)));
     let after = control.read(&pool).await.unwrap().state;
