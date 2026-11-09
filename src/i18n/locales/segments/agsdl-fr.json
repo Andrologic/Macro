@@ -704,5 +704,57 @@
       "exchange": "Lors d’un échange de données",
       "dependency": "Après le bloc précédent"
     }
+  },
+  "graph030": {
+    "keyboardHint": "Flèche droite ouvre l’aperçu et les détails avancés. Maj+F10 ouvre les actions.",
+    "advanced": "Détails avancés",
+    "declaredOnly": "Configuration déclarée. La disponibilité et l’activité nécessitent des observations d’exécution.",
+    "occurrences": "{{count}} passages",
+    "fanout": "Pour chaque élément",
+    "repetition": "Répétition",
+    "provenance": "Origine",
+    "routeVia": "Cette route traverse la sortie d’un sous-processus.",
+    "labels": {
+      "conversation": "Conversation de travail",
+      "delivery": "Règle de livraison",
+      "quorum": "Décision",
+      "join": "Regroupement",
+      "remaining": "Autres branches",
+      "error": "En cas de problème"
+    },
+    "conversation": {
+      "shared": "Même conversation tout au long du processus.",
+      "named": "Conversation « {{name}} », réutilisée dans tout le processus.",
+      "new": "Une conversation distincte à chaque passage."
+    },
+    "delivery": {
+      "queue": "Les messages attendent leur tour. C’est une règle de livraison, pas une file observée.",
+      "steer": "Un message peut rejoindre un travail en cours. Cette règle ne prouve pas qu’un travail est actif.",
+      "legend": "Messages à tour de rôle, règle prévue"
+    },
+    "quorum": {
+      "one": "Continuer dès qu’un avis favorable est arrivé.",
+      "rule": "Continuer dès que {{threshold}} avis favorables sont arrivés."
+    },
+    "join": {
+      "all": "Attendre toutes les branches démarrées.",
+      "origin": "Le groupe commence à « {{name}} ». Seules les branches réellement démarrées comptent.",
+      "unreported": "L’origine du groupe n’est pas disponible dans un rapport de validation correspondant.",
+      "keep": "Conserver les échecs et attendre les autres branches."
+    },
+    "remaining": {
+      "stop": "Arrêter les autres branches, puis continuer une fois leur arrêt terminé.",
+      "finish": "Continuer immédiatement. Les autres terminent ; leurs résultats tardifs ne comptent plus dans la décision.",
+      "wait": "Laisser les autres terminer, puis continuer. Leurs résultats tardifs ne comptent plus dans la décision."
+    },
+    "error": {
+      "local": "Suivre le recours propre à cette étape.",
+      "flow": "Suivre le recours global du processus.",
+      "join": "Le problème remonte d’abord au regroupement « {{name}} ».",
+      "compose": "Le problème remonte d’abord au sous-processus « {{name}} ».",
+      "unreported": "La validation n’a pas encore établi la portée du recours.",
+      "unhandled": "Aucun recours n’est déclaré ici.",
+      "inheritedRoute": "Suivre un recours hérité du processus ou du sous-processus englobant."
+    }
   }
 }

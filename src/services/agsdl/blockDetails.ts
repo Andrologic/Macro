@@ -8,7 +8,7 @@ const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 /** Configuration facts a block preview shows, in a fixed order. Values are AgSDL names or display titles. */
 export type BlockDetailKey = "instructions" | "steers" | "model" | "uses" | "receives" | "produces" | "limit"
   | "after" | "arguments" | "effect" | "action" | "targets" | "context" | "timeout" | "validity" | "test" | "mode" | "accept" | "agents" | "transmits";
-export interface BlockDetail { key: BlockDetailKey; values: string[] }
+export interface BlockDetail { key: BlockDetailKey; values: string[]; message030?: string; params030?: Record<string, string>; advanced?: boolean }
 
 /** Operands read as their path (`data.exitCode`) or their literal value (`0`, `"portal"`). */
 export function operandText(operand: unknown): string {
@@ -36,6 +36,7 @@ export function durationText(ms: unknown): string {
 
 /** Reads the configuration of one step from the projected document; never invents a value. */
 export function blockDetails(card: ViewerCard, declarations: ViewerCard[], steps: ViewerCard[] = []): BlockDetail[] {
+  if (card.edition030) return blockDetails030(card, declarations, steps);
   const byPath = new Map(declarations.map(item => [item.path, item]));
   const title = (path: string, fallback: string) => byPath.get(path)?.title || fallback;
   const details: BlockDetail[] = [];
@@ -100,8 +101,7 @@ export function blockDetails(card: ViewerCard, declarations: ViewerCard[], steps
   const fields = object(context.value);
   if (Object.keys(fields).length && Object.hasOwn(context, "value")) add("context", Object.entries(fields).map(([name, value]) => `${name} = ${JSON.stringify(value)}`));
   else if (Object.hasOwn(scope, "context")) add("context", [operandText(scope.context)]);
-  if (card.edition030?.maxVisitsJson !== undefined) add("limit", [card.edition030.maxVisitsJson]);
-  else if (typeof step.maxVisits === "number") add("limit", [String(step.maxVisits)]);
+  if (typeof step.maxVisits === "number") add("limit", [String(step.maxVisits)]);
   return details;
 }
 
@@ -113,4 +113,46 @@ export function edgeDetails(edge: ViewerEdge): EdgeDetails {
     : edge.label === "onError" ? "error" : ["next", "success", ""].includes(edge.label) ? "next"
       : ["true", "false", "approved", "denied"].includes(edge.label) ? edge.label as EdgeDetails["route"] : "choice";
   return { route, ...(route === "choice" ? { choice: edge.route030?.key ?? edge.label } : {}), transmits: list(edge.transfers).map(String) };
+}
+
+/** Business facts come from the source-bound semantic projection, never inferred run activity. */
+function blockDetails030(card: ViewerCard, declarations: ViewerCard[], steps: ViewerCard[]): BlockDetail[] {
+  const facts: BlockDetail[] = [];
+  const add = (key: BlockDetailKey, message030: string, params030: Record<string, string> = {}) =>
+    facts.push({ key, values: [], message030, params030 });
+  const occurrence = card.static030;
+  const owners = [...steps, ...declarations];
+  const name = (id: string) => (owners.find(item => (item.static030?.occurrenceId ?? item.path) === id)
+    ?? owners.find(item => item.path === id.slice(id.lastIndexOf('#') + 1)))?.title;
+  const agent = occurrence?.agent;
+  if (agent) {
+    add('agents', `conversation.${agent.instance}`, { name: agent.name ?? '' });
+    if (agent.delivery) add('transmits', `delivery.${agent.delivery}`);
+  }
+  const join = occurrence?.join;
+  if (join) {
+    if (join.mode === 'quorum') {
+      add('mode', join.quorumCountJson === '1' ? 'quorum.one' : 'quorum.rule', { threshold: join.quorumCountJson ?? '?' });
+      facts.push({ key: 'accept', values: join.accept });
+    } else add('mode', 'join.all');
+    add('after', `remaining.${join.remaining}`);
+    const origin = join.originOccurrenceId && name(join.originOccurrenceId);
+    if (origin) add('after', 'join.origin', { name: origin });
+    else add('after', 'join.unreported');
+    if (join.failures === 'keep' && join.mode === 'all') add('effect', 'join.keep');
+  }
+  const error = occurrence?.error;
+  if (error) {
+    const owner = error.kind === 'join' ? name(error.joinOccurrenceIds[0])
+      : error.kind === 'compose' ? name(error.ownerOccurrenceId) : undefined;
+    add('context', `error.${error.kind}`, { name: owner ?? '' });
+  }
+  if (typeof card.details.description === 'string') facts.unshift({ key: 'instructions', values: [card.details.description] });
+  const technical = (key: BlockDetailKey, values: string[]) => {
+    if (values.length) facts.push({ key, values, advanced: true });
+  };
+  technical('uses', [...(card.capabilities?.skills ?? []), ...(card.tools ?? []).map(tool => tool.label)]);
+  technical('produces', card.outputs.map(output => `${output.name} (${output.type})`));
+  if (card.edition030?.maxVisitsJson) technical('limit', [card.edition030.maxVisitsJson]);
+  return facts;
 }

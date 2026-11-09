@@ -704,5 +704,57 @@
       "exchange": "Bei einem Datenaustausch",
       "dependency": "Nach dem vorherigen Block"
     }
+  },
+  "graph030": {
+    "keyboardHint": "Pfeil rechts öffnet Vorschau und erweiterte Details. Umschalt+F10 öffnet die Aktionen.",
+    "advanced": "Erweiterte Details",
+    "declaredOnly": "Deklarierte Konfiguration. Verfügbarkeit und Aktivität erfordern Beobachtungen eines Laufs.",
+    "occurrences": "{{count}} Durchläufe",
+    "fanout": "Für jedes Element",
+    "repetition": "Wiederholung",
+    "provenance": "Ursprung",
+    "routeVia": "Dieser Pfad führt über den Ausgang eines Teilprozesses.",
+    "labels": {
+      "conversation": "Unterhaltung",
+      "delivery": "Zustellregel",
+      "quorum": "Entscheidung",
+      "join": "Zusammenführung",
+      "remaining": "Andere Zweige",
+      "error": "Bei einem Problem"
+    },
+    "conversation": {
+      "shared": "Dieselbe Unterhaltung im gesamten Prozess.",
+      "named": "Unterhaltung „{{name}}“, im gesamten Prozess wiederverwendet.",
+      "new": "Eine eigene Unterhaltung bei jedem Durchlauf."
+    },
+    "delivery": {
+      "queue": "Nachrichten warten, bis sie an der Reihe sind. Dies ist eine Zustellregel, keine beobachtete Warteschlange.",
+      "steer": "Eine Nachricht kann sich laufender Arbeit anschließen. Diese Regel belegt keine aktive Arbeit.",
+      "legend": "Nachrichten nacheinander, geplante Regel"
+    },
+    "quorum": {
+      "one": "Fortfahren, sobald eine zustimmende Antwort eingegangen ist.",
+      "rule": "Fortfahren, sobald {{threshold}} zustimmende Antworten eingegangen sind."
+    },
+    "join": {
+      "all": "Auf alle gestarteten Zweige warten.",
+      "origin": "Die Gruppe beginnt bei „{{name}}“. Nur tatsächlich gestartete Zweige zählen.",
+      "unreported": "Der Gruppenursprung liegt aus keinem passenden Validierungsbericht vor.",
+      "keep": "Fehler bewahren und auf die anderen Zweige warten."
+    },
+    "remaining": {
+      "stop": "Andere Zweige stoppen und nach deren Ende fortfahren.",
+      "finish": "Sofort fortfahren. Die anderen enden regulär; spätere Ergebnisse zählen nicht für die Entscheidung.",
+      "wait": "Die anderen regulär beenden lassen und dann fortfahren. Spätere Ergebnisse zählen nicht für die Entscheidung."
+    },
+    "error": {
+      "local": "Dem eigenen Fehlerpfad dieses Schritts folgen.",
+      "flow": "Dem globalen Fehlerpfad des Prozesses folgen.",
+      "join": "Das Problem erreicht zuerst die Zusammenführung „{{name}}“.",
+      "compose": "Das Problem erreicht zuerst den Teilprozess „{{name}}“.",
+      "unreported": "Die Validierung hat den Geltungsbereich des Fehlerpfads noch nicht bestimmt.",
+      "unhandled": "Hier ist kein Fehlerpfad deklariert.",
+      "inheritedRoute": "Einem geerbten Fehlerpfad des Prozesses oder des umgebenden Teilprozesses folgen."
+    }
   }
 }

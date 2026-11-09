@@ -704,5 +704,57 @@
       "exchange": "On a data exchange",
       "dependency": "After the previous block"
     }
+  },
+  "graph030": {
+    "keyboardHint": "Press Right Arrow for the preview and advanced details, or Shift+F10 for actions.",
+    "advanced": "Advanced details",
+    "declaredOnly": "Declared configuration. Availability and activity require run observations.",
+    "occurrences": "{{count}} visits",
+    "fanout": "For each item",
+    "repetition": "Repetition",
+    "provenance": "Origin",
+    "routeVia": "This route crosses a subprocess boundary.",
+    "labels": {
+      "conversation": "Conversation",
+      "delivery": "Delivery rule",
+      "quorum": "Decision",
+      "join": "Gathering",
+      "remaining": "Other branches",
+      "error": "If something fails"
+    },
+    "conversation": {
+      "shared": "Same conversation throughout the process.",
+      "named": "Conversation \"{{name}}\", reused throughout the process.",
+      "new": "A separate conversation for each visit."
+    },
+    "delivery": {
+      "queue": "Messages wait their turn. This is a delivery rule, not an observed queue.",
+      "steer": "A message can join work already in progress. This rule does not prove that any work is running.",
+      "legend": "Messages take turns, declared rule"
+    },
+    "quorum": {
+      "one": "Continue as soon as one favourable response arrives.",
+      "rule": "Continue once {{threshold}} favourable responses have arrived."
+    },
+    "join": {
+      "all": "Wait for every branch that was started.",
+      "origin": "The group starts at \"{{name}}\". Only branches actually started count.",
+      "unreported": "The group origin is not available from a matching validation report.",
+      "keep": "Keep failures and wait for the other branches."
+    },
+    "remaining": {
+      "stop": "Stop the other branches, then continue once they have stopped.",
+      "finish": "Continue immediately. The others finish; their later results do not count toward the decision.",
+      "wait": "Let the others finish, then continue. Their later results do not count toward the decision."
+    },
+    "error": {
+      "local": "Use this step’s own recovery route.",
+      "flow": "Use the process-wide recovery route.",
+      "join": "The failure reaches the enclosing gathering \"{{name}}\" first.",
+      "compose": "The failure reaches the enclosing subprocess \"{{name}}\" first.",
+      "unreported": "Recovery scope has not yet been established by validation.",
+      "unhandled": "No recovery is declared here.",
+      "inheritedRoute": "Use an inherited recovery route from the process or its enclosing subprocess."
+    }
   }
 }

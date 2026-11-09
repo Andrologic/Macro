@@ -84,8 +84,30 @@ export function graphBlockShape(card: ViewerCard): GraphBlockShape {
   return 'card';
 }
 
+/** The canvas uses occurrence identities; editing always targets the source owner. */
+export const graphSourcePath = (card: ViewerCard) => card.static030?.sourcePath ?? card.edition030?.ownerPath ?? card.path.slice(card.path.lastIndexOf('#') + 1);
+
+/** Null conversation keys deliberately leave fresh and unbound instances independent. */
+export function graphConversationKey(card: ViewerCard): string | undefined {
+  if (card.kind !== 'agent') return undefined;
+  if (card.edition030) return card.static030?.agent?.conversationKey ?? undefined;
+  return typeof card.details.agent === 'string' ? `${card.path.slice(0, card.path.lastIndexOf('/'))}\u0000${card.details.agent}` : undefined;
+}
+
+/** A configured policy says nothing about messages actually waiting in a run. */
+export function graphDeliveryPolicy(card: ViewerCard): 'queue' | 'steer' | undefined {
+  if (card.edition030) return card.static030?.agent?.delivery ?? undefined;
+  return card.kind === 'agent' ? card.details.delivery === 'steering' ? 'steer' : 'queue' : undefined;
+}
+
 /** Who performs the step, as declared in AgSDL: the agent, the called binding, the approver or the composition. */
-export function graphBlockPerformer(card: ViewerCard, shownTitle: string): string | undefined {
+export function graphBlockPerformer(card: ViewerCard, shownTitle: string, declarations: ViewerCard[] = []): string | undefined {
+  if (card.edition030) {
+    if (card.kind !== 'agent') return undefined;
+    const owner = card.static030?.agent?.agentPath ?? card.edition030.agentPath ?? card.participant?.target;
+    const label = declarations.find(item => item.path === owner)?.title ?? card.participant?.label;
+    return label?.trim() && label.trim() !== shownTitle.trim() ? label.trim() : undefined;
+  }
   const reference = card.kind === 'agent' ? card.participant
     : card.kind === 'call' ? card.tools?.[0]
       : card.kind === 'approval' ? card.approvalBinding

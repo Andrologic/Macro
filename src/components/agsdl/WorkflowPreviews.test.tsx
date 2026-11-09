@@ -32,3 +32,12 @@ it('describes a connection by the choice that takes it, without naming its targe
   expect(view.textContent).toContain('accept');
   expect(view.textContent).not.toContain('publish');
 });
+
+it('explains fan-out and inherited recovery without exposing source syntax in the preview', async () => {
+  const view = await render(<WorkflowEdgePreview sourceTitle="Review" connection={{ id:'fanout',source:'a',target:'b',label:'onError',dependency:false,
+    route030:{path:'/flow/onError',sourcePath:'/flow/steps/a',targetKind:'step',role:'error',inherited:true,eachJson:'["error","details"]',via:['/flow/onError']}, transfers:['resources.error'] }} />);
+  expect(view.textContent).toContain('For each item');
+  expect(view.textContent).toContain('inherited');
+  expect(view.textContent).not.toContain('resources.error');
+  expect(view.textContent).not.toContain('/flow/onError');
+});
