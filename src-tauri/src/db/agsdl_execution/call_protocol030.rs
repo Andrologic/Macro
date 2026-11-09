@@ -1750,6 +1750,91 @@ pub(crate) async fn read_receipt_tx<A: CallAuthority030>(
     Ok(Some(receipt))
 }
 
+/// SQL-only route reader. It cannot reserve, launch, settle or qualify a call.
+/// The route owner checks its process-local commit fence before this read.
+pub(crate) async fn read_route_receipt_tx(
+    db: &mut SqliteConnection,
+    capture: &StartCapture030,
+    owner: &super::dto::EngineOwner,
+    generation: &str,
+    work: &WorkRef030,
+) -> Result<Option<CallReceipt030>> {
+    struct Reader<'a> {
+        capture: &'a StartCapture030,
+        owner: &'a super::dto::EngineOwner,
+        generation: &'a str,
+        fence: crate::agsdl_host_calls030::CallCommitFence030,
+    }
+    impl flow_store030::Authority030 for Reader<'_> {
+        fn owner<'a>(
+            &'a self,
+            db: &'a mut SqliteConnection,
+            id: &'a FlowIdentity030,
+        ) -> flow_store030::CheckFuture<'a> {
+            Box::pin(async move {
+                if *id != self.capture.identity || self.owner.system_start_id != id.system_start_id
+                {
+                    return Err(StoreError030::Authority);
+                }
+                let raw: Option<String> = sqlx::query_scalar("SELECT capture_json FROM engine_start030_requests WHERE system_id=? AND invocation_id=?")
+                    .bind(&id.system_start_id).bind(&id.flow_invocation_id).fetch_optional(db).await?;
+                if raw.as_deref() != Some(serde_json::to_string(self.capture)?.as_str()) {
+                    return Err(StoreError030::Authority);
+                }
+                Ok(())
+            })
+        }
+        fn effect<'a>(
+            &'a self,
+            _: &'a mut SqliteConnection,
+            _: &'a FlowEffect030,
+        ) -> flow_store030::CheckFuture<'a> {
+            Box::pin(async { Err(StoreError030::Authority) })
+        }
+        fn settlement<'a>(
+            &'a self,
+            _: &'a mut SqliteConnection,
+            _: &'a FlowEffect030,
+            _: &'a Value,
+        ) -> flow_store030::CheckFuture<'a> {
+            Box::pin(async { Err(StoreError030::Authority) })
+        }
+        fn owner_epoch(&self) -> &str {
+            &self.owner.owner_epoch
+        }
+    }
+    impl CallAuthority030 for Reader<'_> {
+        fn generation(&self) -> &str {
+            self.generation
+        }
+        fn ensure_live(&self) -> Result<()> {
+            Ok(())
+        }
+        fn call_commits(&self) -> &crate::agsdl_host_calls030::CallCommitFence030 {
+            &self.fence
+        }
+        fn admission_lock(&self) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+            unreachable!("SQL reader cannot acquire admission")
+        }
+        fn qualify_tx<'a>(
+            &'a self,
+            _: &'a mut SqliteConnection,
+            _: &'a StartCapture030,
+            _: &'a FlowEffect030,
+            _: &'a str,
+        ) -> flow_store030::CheckFuture<'a> {
+            Box::pin(async { Err(StoreError030::Authority) })
+        }
+    }
+    let reader = Reader {
+        capture,
+        owner,
+        generation,
+        fence: Default::default(),
+    };
+    read_receipt_tx(db, &reader, &capture.identity, work).await
+}
+
 /// N-HUMAN must use this in its own admission transaction before opening or
 /// changing an MCP association. This does not implement a human broker.
 pub(crate) async fn require_live_mcp_tx<A: CallAuthority030>(

@@ -4,6 +4,7 @@ use crate::db::agsdl_execution::flow030::{reduce, Activation030, Failure030, Flo
 
 pub(super) enum PathFailureOrigin030 {
     AgentWork,
+    Call,
     FailedJoin,
     PreparedFailure,
     AdmissionLimit,
@@ -37,7 +38,11 @@ impl PathFailureOrigin030 {
                 == Some(activation.id.as_str())
                 && activation.start_effect_id.is_some(),
         )?;
-        Ok(Self::AgentWork)
+        Ok(if activation.agent.is_none() {
+            Self::Call
+        } else {
+            Self::AgentWork
+        })
     }
 }
 

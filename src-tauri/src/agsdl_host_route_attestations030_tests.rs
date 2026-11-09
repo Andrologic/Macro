@@ -1492,7 +1492,7 @@ async fn agent_error_without_joined_witness_is_rejected_before_commit() {
         &pool,
         &owner,
         &reference,
-        None,
+        crate::agsdl_host_dispatch030::SourceOwnership030::Join,
         &CancellationToken::new(),
     )
     .await;
@@ -1500,7 +1500,7 @@ async fn agent_error_without_joined_witness_is_rejected_before_commit() {
         .err()
         .expect("agent error without ownership was accepted");
     assert_eq!(error.code, "CORRELATION");
-    assert_eq!(error.message, "Agent source requires joined ownership");
+    assert_eq!(error.message, "Route source ownership kind differs");
     let count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM engine_flow030_route_source_attestations")
             .fetch_one(&pool)
@@ -1703,4 +1703,184 @@ async fn source_readback_is_fenced_after_generation_retirement_for_all_kinds() {
         assert_eq!(source.commit_marker().unwrap(), marker);
         tx.rollback().await.unwrap();
     }
+}
+
+#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+#[tokio::test]
+async fn call_sources_attest_normal_and_error_with_independent_sql_readback() {
+    use crate::agsdl_host_calls030::{tests as calls, CallDataBroker030};
+    for error in [false, true] {
+        let f = calls::Fixture::new(if error {
+            r#"{"type":"call","command":"never execute","parse":"json","onError":"tests"}"#
+        } else {
+            r#"{"type":"call","command":"never execute","next":"tests"}"#
+        })
+        .await;
+        let broker = CallDataBroker030::default();
+        let witness = calls::joined(
+            &f,
+            &broker,
+            calls::command(0, if error { "invalid json" } else { "done" }),
+        )
+        .await;
+        let receipt = calls::finish(&f, &broker, &witness).await;
+        let owner = EngineOwner {
+            system_start_id: f.id.system_start_id.clone(),
+            owner_epoch: "owner".into(),
+        };
+        let host = crate::agsdl_host::route_attestation_test_host030(owner.clone(), "generation");
+        let capture_raw: String =
+            sqlx::query_scalar("SELECT capture_json FROM engine_start030_requests")
+                .fetch_one(&f.pool)
+                .await
+                .unwrap();
+        let capture: StartCapture030 = serde_json::from_str(&capture_raw).unwrap();
+        let raw: String = sqlx::query_scalar("SELECT state_json FROM engine_flow030_runs")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+        let state: FlowState030 = serde_json::from_str(&raw).unwrap();
+        let reference = state
+            .preparations
+            .iter()
+            .find(|p| p.status == "pending")
+            .unwrap()
+            .reference
+            .clone();
+        // A joined owner from another call cannot authorize a new 037 source,
+        // even when both synthetic databases use the same system/work labels.
+        let other = calls::Fixture::new(r#"{"type":"call","command":"never execute"}"#).await;
+        let other_witness = calls::joined(
+            &other,
+            &CallDataBroker030::default(),
+            calls::command(0, "done"),
+        )
+        .await;
+        assert!(!receipt.matches_joined(&other_witness).unwrap());
+        assert!(crate::agsdl_host_dispatch030::dispatch_source_route030(
+            &host,
+            &f.pool,
+            &owner,
+            &reference,
+            crate::agsdl_host_dispatch030::SourceOwnership030::Call(&other_witness),
+            &CancellationToken::new()
+        )
+        .await
+        .is_err());
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM engine_flow030_route_source_attestations")
+                .fetch_one(&f.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
+        let writer = RouteAttestor030::capture(&host, &owner).await.unwrap();
+        let verifier = SqlRouteMaterialVerifier030::capture(&host, &owner)
+            .await
+            .unwrap();
+        let lease = host.start_lease().await.unwrap();
+        let _gate = host.admission_lock().lock_owned().await;
+        let mut tx = f.pool.begin().await.unwrap();
+        let source = writer
+            .attest_source_tx(&mut tx, &lease, host.flow030(), &capture, &reference)
+            .await
+            .unwrap();
+        assert!(source.ownership_kind() == SourceOwnershipKind030::Call);
+        let material = source.source_only_material();
+        verifier
+            .attest_tx(&mut tx, &capture, &reference, source.producer(), &material)
+            .await
+            .unwrap();
+        let readback = writer
+            .inspect_source_tx(&mut tx, &lease, host.flow030(), &capture, &reference)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(source.commit_marker().unwrap() == readback.commit_marker().unwrap());
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM engine_flow030_route_source_attestations")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(count, 1);
+        let row = sqlx::query(
+            "SELECT receipt_kind,work_event_id FROM engine_flow030_route_source_attestations",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        assert_eq!(
+            row.get::<&str, _>("receipt_kind"),
+            if error { "error" } else { "call" }
+        );
+        assert!(row.get::<Option<&str>, _>("work_event_id").is_none());
+        tx.commit().await.unwrap();
+        drop(_gate);
+        drop(lease);
+        assert!(crate::agsdl_host_dispatch030::dispatch_source_route030(
+            &host,
+            &f.pool,
+            &owner,
+            &reference,
+            crate::agsdl_host_dispatch030::SourceOwnership030::Call(&other_witness),
+            &CancellationToken::new()
+        )
+        .await
+        .is_err());
+        assert!(host.flow030().available(&f.id).is_ok());
+    }
+}
+
+#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+#[tokio::test]
+async fn failed_group_accepts_only_the_native_call_failure_receipt() {
+    use crate::agsdl_host_calls030::{tests as calls, CallDataBroker030};
+    let f = calls::Fixture::branch_failure().await;
+    let broker = CallDataBroker030::default();
+    let witness = calls::joined(&f, &broker, calls::command(0, "invalid json")).await;
+    calls::finish(&f, &broker, &witness).await;
+    let owner = EngineOwner {
+        system_start_id: f.id.system_start_id.clone(),
+        owner_epoch: "owner".into(),
+    };
+    let host = crate::agsdl_host::route_attestation_test_host030(owner.clone(), "generation");
+    let raw: String = sqlx::query_scalar("SELECT capture_json FROM engine_start030_requests")
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    let capture: StartCapture030 = serde_json::from_str(&raw).unwrap();
+    let raw: String = sqlx::query_scalar("SELECT state_json FROM engine_flow030_runs")
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    let state: FlowState030 = serde_json::from_str(&raw).unwrap();
+    let reference = state
+        .preparations
+        .iter()
+        .find(|p| p.status == "pending" && p.producer.kind == "join")
+        .unwrap()
+        .reference
+        .clone();
+    let writer = RouteAttestor030::capture(&host, &owner).await.unwrap();
+    let verifier = SqlRouteMaterialVerifier030::capture(&host, &owner)
+        .await
+        .unwrap();
+    let lease = host.start_lease().await.unwrap();
+    let _gate = host.admission_lock().lock_owned().await;
+    let mut tx = f.pool.begin().await.unwrap();
+    let source = writer
+        .attest_source_tx(&mut tx, &lease, host.flow030(), &capture, &reference)
+        .await
+        .unwrap();
+    assert!(source.is_join_source());
+    verifier
+        .attest_tx(
+            &mut tx,
+            &capture,
+            &reference,
+            source.producer(),
+            &source.source_only_material(),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
 }

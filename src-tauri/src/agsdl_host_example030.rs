@@ -837,7 +837,10 @@ async fn quiesce_scenario030(
                     pool,
                     owner,
                     reference,
-                    joined.get(&reference.activation_id),
+                    joined.get(&reference.activation_id).map_or(
+                        crate::agsdl_host_dispatch030::SourceOwnership030::Join,
+                        crate::agsdl_host_dispatch030::SourceOwnership030::Agent,
+                    ),
                     cancelled,
                 )
                 .await?;
