@@ -132,3 +132,18 @@ it('requires an explicit project for a system spanning multiple project owners',
     expect(scopes).toEqual([{owner:{projectId:'project-b',planId:'layout-test',branch:'main'},conversationId:undefined}]);
   } finally { await act(async () => configureWorkflowRunAccess030(undefined)); }
 });
+
+it('inspects the selected document owner when its execution branch differs', async () => {
+  const { configureWorkflowRunAccess030 } = await import('../../services/workflowAgentTasks');
+  const { monitorFixture030 } = await import('../../services/agsdl/runInspection030.testSupport');
+  const scopes: unknown[] = [];
+  configureWorkflowRunAccess030(scope => { scopes.push(scope); return { access: monitorFixture030() }; });
+  try {
+    await mount();
+    act(() => useAppStore.setState({ selectedProjectId: 'selected-project', activePlanContext: {
+      ...useAppStore.getState().activePlanContext!, targetBranchesByProjectId: { 'selected-project': 'main' },
+    } }));
+    await act(async () => (container!.querySelectorAll('nav button')[1] as HTMLButtonElement).click());
+    expect(scopes).toEqual([{ owner: { projectId: 'selected-project', planId: 'layout-test', branch: 'develop' }, conversationId: undefined }]);
+  } finally { await act(async () => configureWorkflowRunAccess030(undefined)); }
+});

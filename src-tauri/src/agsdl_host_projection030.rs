@@ -1,5 +1,5 @@
-//! Versioned, content-free projection. Native host ownership authenticates the
-//! read; a continuation never survives a flow revision or scope change.
+//! Versioned, content-free projection of retained runs, including after restart.
+//! A continuation never survives a flow revision or scope change.
 use crate::agsdl_host::HostState;
 use crate::db::agsdl_execution::{
     dto::EngineSourceRevision,
@@ -12,7 +12,7 @@ use crate::db::agsdl_execution::{
     Result,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 use ts_rs::TS;
 
 const PAGE_SIZE: usize = 100;
@@ -143,21 +143,32 @@ fn page(
 }
 
 pub(crate) async fn read(
-    host: &HostState,
+    _host: &HostState,
     pool: &SqlitePool,
     query: RuntimeProjectionQuery030,
     continuation: Option<RuntimeProjectionContinuation030>,
 ) -> Result<RuntimeProjectionPage030> {
-    let lease = host.start_lease().await?;
-    let owner = lease.owner(&query.system_start_id)?;
-    drop(lease);
-    let inspection =
-        crate::agsdl_host_flow030::inspect_run(host.flow030(), host, pool, &owner).await?;
-    if inspection.capture.source != query.source
+    // Observation does not require a live executor or grant authority to resume.
+    // Read capture and state together so a page describes one committed revision.
+    let row = sqlx::query("SELECT s.capture_json,r.plan_json,r.state_json,r.source_json,r.snapshot_id,r.epoch FROM engine_start030_requests s JOIN engine_flow030_runs r ON r.system_id=s.system_id AND r.invocation_id=s.invocation_id WHERE s.system_id=?")
+        .bind(&query.system_start_id).fetch_optional(pool).await?
+        .ok_or_else(|| failure("NOT_FOUND", "systemStartId", "Native flow capture is absent"))?;
+    let capture: crate::db::agsdl_execution::start030::StartCapture030 =
+        serde_json::from_str(row.try_get("capture_json")?)?;
+    let state: crate::db::agsdl_execution::flow030::FlowState030 =
+        serde_json::from_str(row.try_get("state_json")?)?;
+    let source: EngineSourceRevision = serde_json::from_str(row.try_get("source_json")?)?;
+    if capture.source != query.source
+        || capture.identity.system_start_id != query.system_start_id
+        || state.identity != capture.identity
+        || source != capture.source
+        || row.try_get::<String, _>("snapshot_id")? != capture.identity.snapshot_id
+        || row.try_get::<String, _>("epoch")? != capture.identity.epoch
+        || row.try_get::<String, _>("plan_json")? != capture.compiled_plan_json
         || query
             .snapshot_id
             .as_ref()
-            .is_some_and(|id| *id != inspection.capture.identity.snapshot_id)
+            .is_some_and(|id| *id != capture.identity.snapshot_id)
     {
         return Err(failure(
             "CORRELATION",
@@ -168,17 +179,16 @@ pub(crate) async fn read(
     let scope = RuntimeProjectionScope030 {
         system_start_id: query.system_start_id,
         source: query.source,
-        snapshot_id: inspection.capture.identity.snapshot_id.clone(),
+        snapshot_id: capture.identity.snapshot_id,
     };
-    let plan: FlowPlan030 = serde_json::from_str(&inspection.capture.compiled_plan_json)?;
-    let projection = runtime_projection030::project_runtime030(&plan, &inspection.flow.state)
-        .map_err(|_| {
-            failure(
-                "CORRELATION",
-                "projection",
-                "Captured flow projection is invalid",
-            )
-        })?;
+    let plan: FlowPlan030 = serde_json::from_str(&capture.compiled_plan_json)?;
+    let projection = runtime_projection030::project_runtime030(&plan, &state).map_err(|_| {
+        failure(
+            "CORRELATION",
+            "projection",
+            "Captured flow projection is invalid",
+        )
+    })?;
     page(scope, continuation, projection)
 }
 

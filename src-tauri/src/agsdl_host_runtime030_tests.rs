@@ -1208,6 +1208,40 @@ async fn execution_start_attaches_supervisor_and_completes_write_review() {
     assert_eq!(executor.starts.load(Ordering::SeqCst), 2);
     assert!(!f.interrupted(&receipt.system_start_id).await);
 
+    // A fresh host has no resident owner for this run. Historical observation
+    // must still work, without reattaching a supervisor or starting an agent.
+    let fresh_host = crate::agsdl_host::route_attestation_test_host030(
+        EngineOwner {
+            system_start_id: "another-run".into(),
+            owner_epoch: "0".into(),
+        },
+        "new-generation",
+    );
+    let query = crate::agsdl_host_projection030::RuntimeProjectionQuery030 {
+        system_start_id: receipt.system_start_id.clone(),
+        source: result.capture.source.clone(),
+        snapshot_id: Some(result.capture.identity.snapshot_id.clone()),
+    };
+    let historical =
+        crate::agsdl_host_projection030::read(&fresh_host, &f.fixture.pool, query.clone(), None)
+            .await
+            .unwrap();
+    assert_eq!(historical.verdict.as_deref(), Some("succeeded"));
+    assert_eq!(
+        historical.flow_invocation_id,
+        result.capture.identity.flow_invocation_id
+    );
+    let mut wrong_scope = query;
+    wrong_scope.source.owner.branch = "another-branch".into();
+    assert_eq!(
+        crate::agsdl_host_projection030::read(&fresh_host, &f.fixture.pool, wrong_scope, None)
+            .await
+            .unwrap_err()
+            .code,
+        "CORRELATION"
+    );
+    assert_eq!(executor.starts.load(Ordering::SeqCst), 2);
+
     let root = f.fixture._temp.path().canonicalize().unwrap();
     let dir = root.join("workspace/project/.macro/branches/develop/plans/source");
     let mut plan: Value =
