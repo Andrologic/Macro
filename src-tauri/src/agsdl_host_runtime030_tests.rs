@@ -1167,6 +1167,16 @@ async fn execution_start_attaches_supervisor_and_completes_write_review() {
     crate::secrets::init(secret_root.path()).unwrap();
     let executor = Arc::new(fake_executor());
     let f = CommandFixture::new(executor.clone(), true).await;
+    // No repository is required by Start or history, even beneath another repo.
+    let parent_repo = git2::Repository::init(f.fixture._temp.path()).unwrap();
+    let workspace = f
+        .fixture
+        ._temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("workspace");
+    assert!(!workspace.join(".git").exists());
     let receipt = tokio::time::timeout(std::time::Duration::from_secs(15), f.start())
         .await
         .unwrap()
@@ -1207,6 +1217,23 @@ async fn execution_start_attaches_supervisor_and_completes_write_review() {
     );
     assert_eq!(executor.starts.load(Ordering::SeqCst), 2);
     assert!(!f.interrupted(&receipt.system_start_id).await);
+    let history = crate::commands::agsdl_execution::list_runs030_scoped(
+        &f.fixture.pool,
+        &workspace,
+        crate::db::agsdl_execution::discovery030::RunListRequest030 {
+            owner: receipt.snapshot.source.owner.clone(),
+            after: None,
+            limit: Some(20),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(history.runs.len(), 1);
+    assert_eq!(history.runs[0].system_start_id, receipt.system_start_id);
+    assert!(!parent_repo
+        .path()
+        .join(crate::git::MACRO_WORKTREE_DIR_NAME)
+        .exists());
 
     // A fresh host has no resident owner for this run. Historical observation
     // must still work, without reattaching a supervisor or starting an agent.

@@ -37,7 +37,13 @@ pub struct ExecutionPreflight {
 }
 
 pub(crate) fn metadata_root(workspace: &Path) -> Result<PathBuf> {
-    if git2::Repository::discover(workspace).is_ok() {
+    if git2::Repository::open_ext(
+        workspace,
+        git2::RepositoryOpenFlags::NO_SEARCH,
+        std::iter::empty::<&Path>(),
+    )
+    .is_ok()
+    {
         crate::git::find_existing_macro_metadata_worktree_root(workspace).ok_or_else(|| {
             failure(
                 "SOURCE_UNAVAILABLE",

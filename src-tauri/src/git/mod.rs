@@ -1158,11 +1158,15 @@ impl GitState {
             return Ok(repo.clone());
         }
 
-        let repo = Repository::discover(&canonical)
-            .or_else(|_| Repository::open(&canonical))
-            .map_err(|e| BackendError::GitRepositoryNotFound {
-                message: format!("{}", e),
-            })?;
+        // A selected workspace owns only its repository, never an ancestor's.
+        let repo = Repository::open_ext(
+            &canonical,
+            git2::RepositoryOpenFlags::NO_SEARCH,
+            std::iter::empty::<&Path>(),
+        )
+        .map_err(|e| BackendError::GitRepositoryNotFound {
+            message: format!("{}", e),
+        })?;
         let repo_arc = Arc::new(Mutex::new(repo));
         repos.insert(canonical, repo_arc.clone());
         Ok(repo_arc)
@@ -1629,6 +1633,19 @@ mod tests {
         }
 
         repo
+    }
+
+    #[test]
+    fn workspace_without_git_never_opens_or_creates_parent_metadata() {
+        let temp = TempDir::new().unwrap();
+        let parent = init_repo(temp.path());
+        let workspace = temp.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let state = GitState::new();
+        assert!(state.open_repo(&workspace).is_err());
+        assert!(state.resolve_macro_metadata_root(&workspace).is_err());
+        assert!(!parent.path().join(MACRO_WORKTREE_DIR_NAME).exists());
+        assert!(find_existing_macro_metadata_worktree_root(&workspace).is_none());
     }
 
     #[test]
