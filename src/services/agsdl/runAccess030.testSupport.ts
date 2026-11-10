@@ -20,7 +20,7 @@ export async function nativeRunFixture030(id = 'run') {
   capture.source.sourceSha256 = await sourceDigest(capture.authoredSource);
   const scope = { ...template.state.scope, source: capture.source };
   const summary: PublicRunSummary030 = { ...scope, flowInvocationId: 'flow', versions: capture.versions,
-    revision: '9007199254740993', stopping: false, verdict: null, ownerStatus: 'live',
+    revision: '9007199254740993', stopping: false, verdict: null, ownerStatus: 'live', interruptedAt: null,
     phaseCounts: [{ phase: 'done', count: '1' }, { phase: 'running', count: '1' }], physicalPending: '1' };
   const runtime: RuntimeProjectionPage030 = { scope, flowInvocationId: 'flow', revision: summary.revision,
     stopping: summary.stopping, verdict: summary.verdict, total: '2', items: [

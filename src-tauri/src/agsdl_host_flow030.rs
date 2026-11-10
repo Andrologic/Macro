@@ -34,6 +34,7 @@ use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
+use tauri::Manager;
 use tokio::sync::OwnedMutexGuard;
 
 /// Process-local exclusion for a Start whose COMMIT has not been acknowledged.
@@ -994,6 +995,7 @@ struct Start<'a> {
     git: &'a crate::git::GitState,
     intent_scope: Option<&'a ExecutionIntentScope>,
     captured: Mutex<Option<(Arc<CompilationCapture>, StartCapture030)>>,
+    reserve_supervisor: bool,
 }
 impl Start<'_> {
     async fn source(&self, request: &EngineStartRequest) -> Result<LockedExecutionSource> {
@@ -1068,6 +1070,11 @@ impl StartAuthority030 for Start<'_> {
     }
     fn begin_commit(&self, request: &EngineStartRequest, identity: &FlowIdentity030) -> Result<()> {
         self.runtime.begin(request, identity)?;
+        if self.reserve_supervisor {
+            self.runtime
+                .supervisors
+                .reserve(&identity.system_start_id)?;
+        }
         // Retirement must know this owner even if the commit reply or caller is lost.
         let owner = EngineOwner {
             system_start_id: identity.system_start_id.clone(),
@@ -1094,6 +1101,26 @@ impl StartAuthority030 for Start<'_> {
     }
     async fn capture(&self, request: &EngineStartRequest) -> Result<StartCapture030> {
         self.lease.ensure_live()?;
+        let source = self.source(request).await?;
+        if self.reserve_supervisor
+            && crate::db::exact_json::value(&source.source)?
+                .get("flow")
+                .is_none()
+        {
+            return Err(failure(
+                "UNSUPPORTED_030_FEATURE",
+                "/flow",
+                "A flow is required for this run.",
+            ));
+        }
+        if let Some(diagnostic) = capture::product_slice030(&source.source, None) {
+            return Err(failure(
+                &diagnostic.code,
+                &diagnostic.pointer,
+                &diagnostic.message,
+            ));
+        }
+        drop(source);
         let compiled = Arc::new(
             capture::compile_input(
                 self.host,
@@ -1113,6 +1140,16 @@ impl StartAuthority030 for Start<'_> {
             )
             .await?,
         );
+        let preflight = compiled.public();
+        if !preflight.runtime_supported {
+            if let Some(diagnostic) = preflight.diagnostics.first() {
+                return Err(failure(
+                    &diagnostic.code,
+                    &diagnostic.pointer,
+                    &diagnostic.message,
+                ));
+            }
+        }
         let source = self.source(request).await?;
         let material = compiled.start_material030(&source, request, self.lease.generation())?;
         let capture = StartCapture030 {
@@ -1210,6 +1247,7 @@ impl StartAuthority030 for Start<'_> {
 }
 
 pub(crate) async fn start_linked(
+    app: Option<&tauri::AppHandle>,
     runtime: &FlowHost030,
     host: &HostState,
     manager: &ConfigManager,
@@ -1230,9 +1268,68 @@ pub(crate) async fn start_linked(
         git,
         intent_scope: link.map(|l| &l.key.scope),
         captured: Mutex::new(None),
+        reserve_supervisor: app.is_some(),
     };
-    let result = start030::start_linked(pool, request, &authority, link).await?;
-    lease.ensure_live().map_err(|_| uncertain())?;
+    let result = match start030::start_linked(pool, request, &authority, link).await {
+        Ok(result) => result,
+        Err(error) => {
+            let system = authority.captured.lock().ok().and_then(|captured| {
+                captured
+                    .as_ref()
+                    .map(|(_, capture)| capture.identity.system_start_id.clone())
+            });
+            if let Some(system) = system {
+                if app.is_some() {
+                    interrupt_run030(pool, &system).await?;
+                }
+                runtime.supervisors.fail_reservation(&system, error.clone());
+            }
+            return Err(error);
+        }
+    };
+    if lease.ensure_live().is_err() {
+        runtime
+            .supervisors
+            .fail_reservation(&result.receipt.identity.system_start_id, uncertain());
+        return Err(uncertain());
+    }
+    let created_here = authority
+        .captured
+        .lock()
+        .map_err(|_| unavailable())?
+        .as_ref()
+        .is_some_and(|(_, capture)| capture.identity == result.receipt.identity);
+    if created_here {
+        if let Some(app) = app {
+            let ai = app.state::<crate::ai::AiState>();
+            let config = manager.clone();
+            let executors = crate::agsdl_host_runtime030::Executors030 {
+                agents: Arc::new(crate::agsdl_host_codex030::CodexExecutor030::new(
+                    config.clone(),
+                )),
+                calls: None,
+                humans: None,
+                clock: None,
+            };
+            if let Err(error) = crate::agsdl_host_runtime030::spawn_supervisor030(
+                app.clone(),
+                pool.clone(),
+                config,
+                ai.stream_tasks.clone(),
+                EngineOwner {
+                    system_start_id: result.receipt.identity.system_start_id.clone(),
+                    owner_epoch: "0".into(),
+                },
+                executors,
+            ) {
+                interrupt_run030(pool, &result.receipt.identity.system_start_id).await?;
+                runtime
+                    .supervisors
+                    .fail_reservation(&result.receipt.identity.system_start_id, error.clone());
+                return Err(error);
+            }
+        }
+    }
     Ok(result)
 }
 
@@ -1258,6 +1355,7 @@ pub(crate) async fn inspect_start_linked(
         git,
         intent_scope: link.map(|l| &l.key.scope),
         captured: Mutex::new(None),
+        reserve_supervisor: false,
     };
     let result = start030::inspect_linked(pool, request, &authority, link).await?;
     if let StartInspection030::Committed(ref retained) = result {
@@ -2651,12 +2749,42 @@ async fn claim_selected<'a>(
 pub(crate) async fn revoke_generation(pool: &SqlitePool, generation: &str) -> Result<()> {
     let mut db = pool.acquire().await?;
     let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+    sqlx::query("INSERT OR IGNORE INTO engine_flow030_interruptions(system_id) SELECT o.system_id FROM engine_flow030_owners o JOIN engine_flow030_runs r ON r.system_id=o.system_id AND r.invocation_id=o.invocation_id WHERE o.generation=? AND json_extract(r.state_json,'$.verdict') IS NULL")
+        .bind(generation).execute(&mut *tx).await?;
     sqlx::query(
         "UPDATE engine_flow030_owners SET status='revoked' WHERE generation=? AND status='live'",
     )
     .bind(generation)
     .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn interrupt_run030(pool: &SqlitePool, system: &str) -> Result<()> {
+    let mut db = pool.acquire().await?;
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+    sqlx::query("INSERT OR IGNORE INTO engine_flow030_interruptions(system_id) SELECT o.system_id FROM engine_flow030_owners o JOIN engine_flow030_runs r ON r.system_id=o.system_id AND r.invocation_id=o.invocation_id WHERE o.system_id=? AND json_extract(r.state_json,'$.verdict') IS NULL")
+        .bind(system).execute(&mut *tx).await?;
+    sqlx::query(
+        "UPDATE engine_flow030_owners SET status='revoked' WHERE system_id=? AND status='live'",
+    )
+    .bind(system)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Fence unfinished runs left by an earlier application process.
+pub(crate) async fn interrupt_previous_runs030(pool: &SqlitePool) -> Result<()> {
+    let mut db = pool.acquire().await?;
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+    sqlx::query("INSERT OR IGNORE INTO engine_flow030_interruptions(system_id) SELECT o.system_id FROM engine_flow030_owners o JOIN engine_flow030_runs r ON r.system_id=o.system_id AND r.invocation_id=o.invocation_id WHERE json_extract(r.state_json,'$.verdict') IS NULL")
+        .execute(&mut *tx).await?;
+    sqlx::query("UPDATE engine_flow030_owners SET status='revoked' WHERE status='live'")
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(())
 }

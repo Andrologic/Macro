@@ -19,7 +19,7 @@ function snapshot030(snapshot: PublicSnapshot): PublicSnapshot030 {
     compiler: versions.compiler, runtime: versions.runtime, registry: versions.registry } };
 }
 
-/** The existing native command currently refuses 030 until its host is qualified. */
+/** Native admission validates the 0.3 execution slice. */
 export async function startExecution030(request: StartRequest030): Promise<PublicStartReceipt030> {
   const receipt = await invoke<PublicStartReceipt>('execution_start', { request });
   const snapshot = snapshot030(receipt.snapshot);
@@ -77,4 +77,9 @@ export function submitExecutionHuman030(input: {
     | { kind: 'question'; answerJson: string };
 }): Promise<string> {
   return invoke('execution_submit_human030', { input });
+}
+
+/** Stop a 0.3 run and wait until its native work has ended. */
+export function stopExecution030(request: import('../agsdlExecution/contracts').StopRequest): Promise<import('../agsdlExecution/contracts').PublicStopState> {
+  return import('./agsdlExecution').then(({ stopExecution }) => stopExecution(request));
 }

@@ -370,3 +370,118 @@ async fn rejects_changed_initial_event_and_missing_recorded_plan() {
         );
     }
 }
+
+#[tokio::test]
+async fn startup_marks_only_unfinished_runs_interrupted_and_fences_them() {
+    let (_temp, pool) = database().await;
+    let scope = owner("project", "develop");
+    seed(&pool, "unfinished", scope.clone(), "live", false).await;
+    seed(&pool, "finished", scope.clone(), "live", false).await;
+    sqlx::query("UPDATE engine_flow030_runs SET state_json=json_set(state_json,'$.verdict','succeeded') WHERE system_id='system-finished'")
+        .execute(&pool).await.unwrap();
+    crate::agsdl_host_flow030::interrupt_previous_runs030(&pool)
+        .await
+        .unwrap();
+    crate::agsdl_host_flow030::interrupt_previous_runs030(&pool)
+        .await
+        .unwrap();
+    let page = list_runs030(&pool, request(scope, None, 20)).await.unwrap();
+    let unfinished = page
+        .runs
+        .iter()
+        .find(|run| run.system_start_id == "system-unfinished")
+        .unwrap();
+    assert!(unfinished.interrupted_at.is_some());
+    assert_eq!(unfinished.owner_status, "revoked");
+    let finished = page
+        .runs
+        .iter()
+        .find(|run| run.system_start_id == "system-finished")
+        .unwrap();
+    assert!(finished.interrupted_at.is_none());
+    assert_eq!(finished.verdict.as_deref(), Some("succeeded"));
+}
+
+#[tokio::test]
+async fn failed_supervisor_marks_only_its_unfinished_run() {
+    let (_temp, pool) = database().await;
+    let scope = owner("project", "develop");
+    seed(&pool, "failed", scope.clone(), "live", false).await;
+    seed(&pool, "other", scope.clone(), "live", false).await;
+    crate::agsdl_host_flow030::interrupt_run030(&pool, "system-failed")
+        .await
+        .unwrap();
+    let page = list_runs030(&pool, request(scope.clone(), None, 20))
+        .await
+        .unwrap();
+    let failed = page
+        .runs
+        .iter()
+        .find(|run| run.system_start_id == "system-failed")
+        .unwrap();
+    assert!(failed.interrupted_at.is_some());
+    assert_eq!(failed.owner_status, "revoked");
+    let other = page
+        .runs
+        .iter()
+        .find(|run| run.system_start_id == "system-other")
+        .unwrap();
+    assert!(other.interrupted_at.is_none());
+    assert_eq!(other.owner_status, "live");
+    crate::agsdl_host_flow030::revoke_generation(&pool, "native-generation")
+        .await
+        .unwrap();
+    let page = list_runs030(&pool, request(scope, None, 20)).await.unwrap();
+    let other = page
+        .runs
+        .iter()
+        .find(|run| run.system_start_id == "system-other")
+        .unwrap();
+    assert_eq!(other.owner_status, "revoked");
+    assert!(other.interrupted_at.is_some());
+}
+
+#[tokio::test]
+async fn interrupted_run_survives_process_kill_and_database_reopen() {
+    const CHILD_ROOT: &str = "MACRO_030_KILL_TEST_ROOT";
+    if let Some(root) = std::env::var_os(CHILD_ROOT) {
+        let root = std::path::PathBuf::from(root);
+        let pool = create_pool(&root.join("restart.db")).await.unwrap();
+        seed(&pool, "killed", owner("project", "develop"), "live", false).await;
+        std::fs::write(root.join("ready"), b"ready").unwrap();
+        std::future::pending::<()>().await;
+        return;
+    }
+    let temp = TempDir::new().unwrap();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "db::agsdl_execution::discovery030::tests::interrupted_run_survives_process_kill_and_database_reopen", "--nocapture"])
+        .env(CHILD_ROOT, temp.path())
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .spawn().unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !temp.path().join("ready").exists() && tokio::time::Instant::now() < deadline {
+        if child.try_wait().unwrap().is_some() {
+            panic!("restart fixture exited before starting");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let ready = temp.path().join("ready").exists();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(ready, "restart fixture did not start");
+    let pool = create_pool(&temp.path().join("restart.db")).await.unwrap();
+    crate::agsdl_host_flow030::interrupt_previous_runs030(&pool)
+        .await
+        .unwrap();
+    let page = list_runs030(&pool, request(owner("project", "develop"), None, 20))
+        .await
+        .unwrap();
+    assert_eq!(page.runs.len(), 1);
+    assert!(page.runs[0].interrupted_at.is_some());
+    assert_eq!(page.runs[0].owner_status, "revoked");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM engine_start030_requests")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+}

@@ -5,7 +5,7 @@ use crate::agsdl_host_flow030 as flow;
 use crate::agsdl_host_runtime030::*;
 use crate::agsdl_host_work_admission030::{AttestedWorkPolicy030, PreparedEffectiveAgentWork030};
 use crate::db::agsdl_execution::{
-    flow030::{FlowEvent030, FlowEventKind030, FlowIdentity030, FlowState030},
+    flow030::{FlowEffect030, FlowEvent030, FlowEventKind030, FlowIdentity030, FlowState030},
     start030::StartCapture030,
 };
 use serde_json::{json, Value};
@@ -43,6 +43,99 @@ async fn bun(script: &str, value: &impl serde::Serialize) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).unwrap()
+}
+// Fake native observation; persistence and entry use the production Start transaction.
+struct FixtureStart030 {
+    capture: StartCapture030,
+}
+impl crate::db::agsdl_execution::flow_store030::Authority030 for FixtureStart030 {
+    fn owner<'a>(
+        &'a self,
+        db: &'a mut sqlx::SqliteConnection,
+        id: &'a FlowIdentity030,
+    ) -> crate::db::agsdl_execution::flow_store030::CheckFuture<'a> {
+        Box::pin(async move {
+            let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_flow030_owners WHERE system_id=? AND invocation_id=? AND owner_epoch='owner' AND generation='generation' AND status='live')")
+                .bind(&id.system_start_id).bind(&id.flow_invocation_id).fetch_one(db).await?;
+            if exists {
+                Ok(())
+            } else {
+                Err(crate::db::agsdl_execution::flow_store030::StoreError030::Authority)
+            }
+        })
+    }
+    fn effect<'a>(
+        &'a self,
+        _: &'a mut sqlx::SqliteConnection,
+        _: &'a FlowEffect030,
+    ) -> crate::db::agsdl_execution::flow_store030::CheckFuture<'a> {
+        Box::pin(async { Err(crate::db::agsdl_execution::flow_store030::StoreError030::Authority) })
+    }
+    fn settlement<'a>(
+        &'a self,
+        _: &'a mut sqlx::SqliteConnection,
+        _: &'a FlowEffect030,
+        _: &'a Value,
+    ) -> crate::db::agsdl_execution::flow_store030::CheckFuture<'a> {
+        Box::pin(async { Err(crate::db::agsdl_execution::flow_store030::StoreError030::Authority) })
+    }
+    fn owner_epoch(&self) -> &str {
+        "owner"
+    }
+}
+impl crate::db::agsdl_execution::start030::StartAuthority030 for FixtureStart030 {
+    type SourceGuard = ();
+    fn require_clear(
+        &self,
+        _: &crate::db::agsdl_execution::dto::EngineStartRequest,
+    ) -> crate::db::agsdl_execution::Result<()> {
+        Ok(())
+    }
+    fn begin_commit(
+        &self,
+        _: &crate::db::agsdl_execution::dto::EngineStartRequest,
+        _: &FlowIdentity030,
+    ) -> crate::db::agsdl_execution::Result<()> {
+        Ok(())
+    }
+    fn commit_acknowledged(
+        &self,
+        _: &crate::db::agsdl_execution::dto::EngineStartRequest,
+        _: &FlowIdentity030,
+    ) {
+    }
+    async fn capture(
+        &self,
+        _: &crate::db::agsdl_execution::dto::EngineStartRequest,
+    ) -> crate::db::agsdl_execution::Result<StartCapture030> {
+        Ok(self.capture.clone())
+    }
+    async fn lock_source(
+        &self,
+        _: &crate::db::agsdl_execution::dto::EngineStartRequest,
+    ) -> crate::db::agsdl_execution::Result<()> {
+        Ok(())
+    }
+    async fn bind_capture_tx(
+        &self,
+        db: &mut sqlx::SqliteConnection,
+        _: &crate::db::agsdl_execution::dto::EngineStartRequest,
+        capture: &StartCapture030,
+    ) -> crate::db::agsdl_execution::Result<()> {
+        let raw = serde_json::to_vec(capture)?;
+        sqlx::query("INSERT INTO engine_flow030_owners VALUES (?,?,?,?,?,?,?,?)")
+            .bind(&capture.identity.system_start_id)
+            .bind(&capture.identity.flow_invocation_id)
+            .bind(&capture.identity.snapshot_id)
+            .bind(&capture.identity.epoch)
+            .bind("owner")
+            .bind("generation")
+            .bind("live")
+            .bind(format!("{:x}", Sha256::digest(raw)))
+            .execute(db)
+            .await?;
+        Ok(())
+    }
 }
 struct Fixture {
     _temp: tempfile::TempDir,
@@ -117,42 +210,15 @@ impl Fixture {
         let capture = StartCapture030 { identity:identity.clone(), source:serde_json::from_value(source.clone()).unwrap(), versions:serde_json::from_value(serde_json::from_str::<Value>(&plan).unwrap()["versions"].clone()).unwrap(),
             authored_source:authored, compiled_plan_json:plan.clone(), registry_json:registry.to_string(), private_capture_json:json!({"format":"macro-native-flow-capture/030","callPermissionsJson":permissions,"callScopeJson":scope.to_string()}).to_string() };
         let pool = crate::db::create_pool(&root.join("run.db")).await.unwrap();
-        let raw = serde_json::to_string(&capture).unwrap();
-        sqlx::query("INSERT INTO engine_flow030_runs VALUES (?,?,?,?,?,?,?)")
-            .bind("system")
-            .bind("flow")
-            .bind("snapshot")
-            .bind("capture")
-            .bind(source.to_string())
-            .bind(plan)
-            .bind(serde_json::to_string(&FlowState030::new(identity.clone())).unwrap())
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO engine_start030_requests VALUES (?,?,?,?,?,?,?,?)")
-            .bind("request")
-            .bind("{}")
-            .bind("system")
-            .bind("flow")
-            .bind("snapshot")
-            .bind("capture")
-            .bind(&raw)
-            .bind("{}")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO engine_flow030_owners VALUES (?,?,?,?,?,?,?,?)")
-            .bind("system")
-            .bind("flow")
-            .bind("snapshot")
-            .bind("capture")
-            .bind("owner")
-            .bind("generation")
-            .bind("live")
-            .bind(format!("{:x}", Sha256::digest(raw.as_bytes())))
-            .execute(&pool)
-            .await
-            .unwrap();
+        let request = serde_json::from_value(json!({"source":source,"profile":"macro-agsdl-030-v1", "associations":{}, "requestId":"request", "entry":{"deliveryId":"delivery", "messageJson":"{\"prompt\":\"Start\"}"}})).unwrap();
+        crate::db::agsdl_execution::start030::start_linked(
+            &pool,
+            &request,
+            &FixtureStart030 { capture },
+            None,
+        )
+        .await
+        .unwrap();
         let owner = EngineOwner {
             system_start_id: "system".into(),
             owner_epoch: "owner".into(),
@@ -182,21 +248,6 @@ impl Fixture {
         ));
         host.flow030()
             .install_runtime_fixture_control(&host, owner.clone(), identity.clone());
-        flow::apply_native_event(
-            host.flow030(),
-            &host,
-            &pool,
-            &FlowEvent030 {
-                identity: identity.clone(),
-                event_id: "enter".into(),
-                expected_revision: "0".into(),
-                kind: FlowEventKind030::Enter {
-                    message_json: "{\"prompt\":\"Start\"}".into(),
-                },
-            },
-        )
-        .await
-        .unwrap();
         Self {
             _temp: temp,
             host,
@@ -900,4 +951,229 @@ async fn qualified_codex_registry_and_policy_run_the_write_review_demo() {
                 .message_json
                 .as_deref()
                 .is_some_and(|message| message.contains("Synthetic draft"))));
+}
+
+#[tokio::test]
+async fn production_start_path_drives_write_review_with_a_fake_executor() {
+    let _secret_guard = crate::secrets::lock_test_store();
+    let secret_root = tempfile::tempdir().unwrap();
+    crate::secrets::init(secret_root.path()).unwrap();
+    use crate::db::agsdl_execution::dto::{
+        EngineAssociations, EngineEntry, EngineSourceOwner, EngineStartRequest,
+    };
+    use crate::workspace::metadata::{ProjectDto, WorkspaceState};
+    let document = json!({"contract":"agsdl-0.3.0","id":"codex-demo","agents":{
+        "writer":{"harness":"codex","permissions":"workspace","model":{"name":"fixture","effort":"high"}},
+        "reviewer":{"harness":"codex","permissions":"read-only"}},
+        "flow":{"entry":"write","steps":{
+            "write":{"type":"agent","agent":"writer","maxVisits":3,"next":"review"},
+            "review":{"type":"agent","agent":"reviewer","maxVisits":3,"next":{"approve":[],"revise":"write"}}}}});
+    let mut fixture = Fixture::with_document(document.clone()).await;
+    let root = fixture._temp.path().canonicalize().unwrap();
+    let workspace = root.join("workspace");
+    let metadata = workspace.join(".macro");
+    let project = workspace.join("project");
+    let dir = project.join(".macro/branches/develop/plans/source");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&metadata).unwrap();
+    let registered: ProjectDto = serde_json::from_value(json!({
+        "id":"project", "name":"Synthetic", "path":project, "created_at":"2026-01-01", "status":"active",
+        "directEdit":true, "gitSetupState":"not_git", "metadata":{"description":"", "tags":[], "team_members":[], "api_contracts":[], "dependencies":[]}
+    })).unwrap();
+    let mut state = WorkspaceState::default();
+    state.standalone_projects.push(registered);
+    std::fs::write(
+        metadata.join("workspace.json"),
+        serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(dir.join("plan.json"), serde_json::to_vec(&json!({
+        "id":"source", "projectIds":["project"], "revision":1, "updatedAt":"time", "agsdl":{"source":document.to_string()}
+    })).unwrap()).unwrap();
+    let scope = EngineSourceOwner {
+        project_id: "project".into(),
+        plan_id: "source".into(),
+        branch: "develop".into(),
+    };
+    let locked = crate::workspace::architect::lock_execution_source_owner(
+        &workspace, &metadata, &scope, None,
+    )
+    .await
+    .unwrap();
+    let request = EngineStartRequest {
+        source: locked.revision.clone(),
+        profile: "macro-agsdl-030-v1".into(),
+        associations: EngineAssociations::default(),
+        request_id: "production-start".into(),
+        entry: Some(EngineEntry {
+            delivery_id: "delivery".into(),
+            message_json: "{\"prompt\":\"Start\"}".into(),
+        }),
+    };
+    drop(locked);
+    let observed = crate::agsdl_host_codex::CodexObservation030 {
+        profile: crate::agsdl_host_codex::Profile {
+            executable: root.join("synthetic-codex"),
+            directory: root.join("profile"),
+            home: root.join("profile/home"),
+            bootstrap: root.join("bootstrap"),
+            digest: "synthetic-profile".into(),
+        },
+        version: "0.167.0".into(),
+        models: vec![
+            json!({"name":"fixture","efforts":["medium","high"],"defaultEffort":"medium","isDefault":true}),
+        ],
+        account_digest: "synthetic-account".into(),
+    };
+    crate::agsdl_host_capture::test_codex_observations030()
+        .lock()
+        .unwrap()
+        .insert(workspace.clone(), observed);
+    fixture.pool = crate::db::create_pool(&root.join("production-start.db"))
+        .await
+        .unwrap();
+    let compiler = fixture.incarnation.clone();
+    let worker = tokio::spawn(async move {
+        let job = compiler.compiler.next().await.unwrap();
+        let script = "import {compileHost030} from './src/services/agsdlExecution/hostCompilation';const j=JSON.parse(await Bun.stdin.text());process.stdout.write(await compileHost030(j.authoredSource,j.source,JSON.parse(j.registryJson)));";
+        let mut child = crate::core::process::background_tokio_command("bun")
+            .args(["-e", script])
+            .current_dir(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .unwrap(),
+            )
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&serde_json::to_vec(&job).unwrap())
+            .await
+            .unwrap();
+        let output = child.wait_with_output().await.unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        compiler
+            .compiler
+            .complete(
+                &job.generation,
+                &job.ticket,
+                String::from_utf8(output.stdout).unwrap(),
+            )
+            .unwrap();
+    });
+    let retained = flow::start_linked(
+        None,
+        fixture.host.flow030(),
+        &fixture.host,
+        &fixture.config,
+        &fixture.pool,
+        &workspace,
+        &crate::git::GitState::new(),
+        &request,
+        None,
+    )
+    .await
+    .unwrap();
+    fixture.identity = retained.receipt.identity;
+    fixture.owner = EngineOwner {
+        system_start_id: fixture.identity.system_start_id.clone(),
+        owner_epoch: "0".into(),
+    };
+    let pumps = fixture.pumps();
+    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let executors = Executors030 {
+        agents: Arc::new(FakeExecutor {
+            starts: starts.clone(),
+            started: Default::default(),
+            cleanup: None,
+            cancelled: Default::default(),
+            submitted: None,
+            independent_finish: false,
+        }),
+        calls: None,
+        humans: None,
+        clock: None,
+    };
+    let (_wake, receiver) = watch::channel(0);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        supervise_with_emitter030(
+            None,
+            &fixture.host,
+            &fixture.pool,
+            &fixture.config,
+            &tasks,
+            &fixture.owner,
+            &executors,
+            receiver,
+            &CancellationToken::new(),
+            fixture.emitter(&tasks),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    for pump in pumps {
+        pump.abort();
+    }
+    let result = flow::inspect_run(
+        fixture.host.flow030(),
+        &fixture.host,
+        &fixture.pool,
+        &fixture.owner,
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.flow.state.verdict.as_deref(), Some("succeeded"));
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+
+    let mut unsupported = document.clone();
+    unsupported["flow"]["steps"]["write"]["timeoutMs"] = json!(1000);
+    std::fs::write(dir.join("plan.json"), serde_json::to_vec(&json!({
+        "id":"source", "projectIds":["project"], "revision":2, "updatedAt":"later", "agsdl":{"source":unsupported.to_string()}
+    })).unwrap()).unwrap();
+    let locked = crate::workspace::architect::lock_execution_source_owner(
+        &workspace, &metadata, &scope, None,
+    )
+    .await
+    .unwrap();
+    let mut refused = request.clone();
+    refused.source = locked.revision.clone();
+    refused.request_id = "unsupported-start".into();
+    drop(locked);
+    let failure = flow::start_linked(
+        None,
+        fixture.host.flow030(),
+        &fixture.host,
+        &fixture.config,
+        &fixture.pool,
+        &workspace,
+        &crate::git::GitState::new(),
+        &refused,
+        None,
+    )
+    .await
+    .err()
+    .expect("timeout must be refused");
+    assert_eq!(failure.code, "UNSUPPORTED_030_FEATURE");
+    worker.await.unwrap();
+    crate::agsdl_host_capture::test_codex_observations030()
+        .lock()
+        .unwrap()
+        .remove(&workspace);
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM engine_start030_requests")
+        .fetch_one(&fixture.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
 }

@@ -78,3 +78,10 @@ it('submits exact human answers with public scope and native revision only', asy
   expect(await ipc.submitExecutionHuman030(input)).toBe('native-receipt');
   expect(invoke).toHaveBeenLastCalledWith('execution_submit_human030', { input });
 });
+
+it('waits for the native system stop command', async () => {
+  response = { kind: 'requested', requestId: 'stop' };
+  const stop = { systemStartId: 'run', requestId: 'stop' } as import('../agsdlExecution/contracts').StopRequest;
+  expect(await ipc.stopExecution030(stop)).toEqual({ kind: 'requested', requestId: 'stop' });
+  expect(invoke).toHaveBeenLastCalledWith('execution_stop', { request: { ...stop, activationId: null } });
+});

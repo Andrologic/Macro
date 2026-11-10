@@ -240,6 +240,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (38, "038_execution_system_stop030".into()),
             (39, "039_execution_call_protocol030".into()),
             (40, "040_execution_flow_human_clock030".into()),
+            (41, "041_execution_flow_interrupted030".into()),
         ]
     );
 }
@@ -326,7 +327,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&40)
+        Some(&41)
     );
 }
 
@@ -1433,7 +1434,7 @@ async fn joins_both_published_v10_histories_without_replacing_stamps_or_data() {
                 .fetch_one(&upgraded)
                 .await
                 .unwrap(),
-            40
+            41
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1626,7 +1627,7 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        40
+        41
     );
     assert_eq!(
         sqlx::query("PRAGMA foreign_key_check")
@@ -1695,7 +1696,7 @@ async fn admission018_upgrades_v17_and_rolls_back_failed_stamp() {
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        40
+        41
     );
     assert!(sqlx::query("PRAGMA foreign_key_check")
         .fetch_all(&upgraded)
@@ -1980,7 +1981,8 @@ async fn upgrades_038_to_call_039_then_clock_040_and_reopens_without_replay() {
         stamps,
         vec![
             (39, "039_execution_call_protocol030".into()),
-            (40, "040_execution_flow_human_clock030".into())
+            (40, "040_execution_flow_human_clock030".into()),
+            (41, "041_execution_flow_interrupted030".into())
         ]
     );
     let schemas:Vec<(String,String)>=sqlx::query_as("SELECT name,sql FROM sqlite_master WHERE name LIKE 'engine_flow030_%' AND sql IS NOT NULL ORDER BY name").fetch_all(&pool).await.unwrap();

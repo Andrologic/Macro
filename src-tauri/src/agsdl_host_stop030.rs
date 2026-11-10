@@ -23,6 +23,7 @@ pub(crate) async fn request(
 ) -> Result<PublicStopState> {
     let admitted =
         crate::agsdl_host_flow030::request_system_stop030(runtime, pool, request).await?;
+    runtime.supervisors.wake(&request.system_start_id);
     let _physical_pending = reconcile(runtime, pool, tasks, admitted.control()).await?;
     Ok(PublicStopState::Requested {
         request_id: admitted.receipt().request_id.clone(),

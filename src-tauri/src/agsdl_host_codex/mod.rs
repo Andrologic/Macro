@@ -142,6 +142,7 @@ pub(crate) fn qualified_version030(version: &str) -> bool {
     profile::qualified_version(version)
 }
 
+#[derive(Clone)]
 pub(crate) struct CodexObservation030 {
     pub profile: Profile,
     pub version: String,

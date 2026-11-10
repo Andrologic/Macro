@@ -416,6 +416,49 @@ struct SupervisorHandle030 {
 #[derive(Default)]
 pub(crate) struct RuntimeRegistry030(Mutex<BTreeMap<String, SupervisorHandle030>>);
 impl RuntimeRegistry030 {
+    pub(crate) fn reserve(&self, system: &str) -> Result<()> {
+        let mut handles = self.0.lock().map_err(|_| {
+            failure(
+                "RUNTIME_UNAVAILABLE",
+                "runtime",
+                "Supervisor registry is unavailable",
+            )
+        })?;
+        if handles.contains_key(system) {
+            return Err(failure(
+                "CORRELATION",
+                "runtime",
+                "Run already has a supervisor",
+            ));
+        }
+        let (wake, _) = watch::channel(0);
+        handles.insert(
+            system.into(),
+            SupervisorHandle030 {
+                wake,
+                cancel: CancellationToken::new(),
+                task: None,
+                outcome: None,
+            },
+        );
+        Ok(())
+    }
+    pub(crate) fn fail_reservation(
+        &self,
+        system: &str,
+        error: crate::db::agsdl_execution::dto::EngineFailure,
+    ) {
+        if let Ok(mut handles) = self.0.lock() {
+            if let Some(handle) = handles.get_mut(system) {
+                if handle.task.is_none() && handle.outcome.is_none() {
+                    handle.outcome = Some(Err(error));
+                    handle
+                        .wake
+                        .send_modify(|revision| *revision = revision.wrapping_add(1));
+                }
+            }
+        }
+    }
     pub(crate) fn wake(&self, system: &str) {
         if let Ok(handles) = self.0.lock() {
             if let Some(handle) = handles.get(system) {
@@ -430,6 +473,37 @@ impl RuntimeRegistry030 {
             if let Some(handle) = handles.get(system) {
                 handle.cancel.cancel();
             }
+        }
+    }
+    pub(crate) async fn wait(&self, system: &str) -> Result<()> {
+        let mut wake = {
+            let handles = self.0.lock().map_err(|_| {
+                failure(
+                    "RUNTIME_UNAVAILABLE",
+                    "runtime",
+                    "Supervisor registry is unavailable",
+                )
+            })?;
+            handles
+                .get(system)
+                .ok_or_else(|| {
+                    failure(
+                        "RUNTIME_UNAVAILABLE",
+                        "runtime",
+                        "Run supervisor is unavailable",
+                    )
+                })?
+                .wake
+                .subscribe()
+        };
+        loop {
+            wake.borrow_and_update();
+            if let Some(outcome) = self.outcome(system) {
+                return outcome;
+            }
+            wake.changed()
+                .await
+                .map_err(|_| failure("INTERRUPTED", "runtime", "Supervisor wake channel closed"))?;
         }
     }
     pub(crate) fn outcome(&self, system: &str) -> Option<Result<()>> {
@@ -628,18 +702,24 @@ pub(crate) fn spawn_supervisor030(
             "Supervisor registry is unavailable",
         )
     })?;
-    if handles.contains_key(&owner.system_start_id) {
+    let handle = handles.get_mut(&owner.system_start_id).ok_or_else(|| {
+        failure(
+            "RUNTIME_UNAVAILABLE",
+            "runtime",
+            "Supervisor reservation is unavailable",
+        )
+    })?;
+    if handle.task.is_some() || handle.outcome.is_some() {
         return Err(failure(
             "CORRELATION",
             "runtime",
             "Run already has a supervisor",
         ));
     }
-    let (wake, receiver) = watch::channel(0);
-    let cancel = CancellationToken::new();
+    let receiver = handle.wake.subscribe();
+    let cancel = handle.cancel.clone();
     let (task_app, system, task_cancel) =
         (app.clone(), owner.system_start_id.clone(), cancel.clone());
-    let system_key = system.clone();
     let task = tokio::spawn(async move {
         let host = task_app.state::<HostState>();
         let outcome = supervise030(
@@ -654,22 +734,22 @@ pub(crate) fn spawn_supervisor030(
             &task_cancel,
         )
         .await;
+        if outcome.is_err() {
+            if let Err(error) = flow::interrupt_run030(&pool, &system).await {
+                tracing::error!("Failed to mark interrupted execution: {}", error.message);
+            }
+        }
         if let Ok(mut handles) = host.flow030().supervisors.0.lock() {
             if let Some(handle) = handles.get_mut(&system) {
                 handle.outcome = Some(outcome);
                 handle.task = None;
+                handle
+                    .wake
+                    .send_modify(|revision| *revision = revision.wrapping_add(1));
             }
         };
     });
-    handles.insert(
-        system_key,
-        SupervisorHandle030 {
-            wake,
-            cancel,
-            task: Some(task),
-            outcome: None,
-        },
-    );
+    handle.task = Some(task);
     Ok(())
 }
 
@@ -904,4 +984,26 @@ pub(crate) async fn emit_work_event030(
         host, pool, attempt, &input, permit, policies, cancelled,
     )
     .await
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stop_waits_for_a_reserved_supervisor_and_observes_attachment_failure() {
+        let registry = Arc::new(RuntimeRegistry030::default());
+        registry.reserve("run").unwrap();
+        let waiting = {
+            let registry = registry.clone();
+            tokio::spawn(async move { registry.wait("run").await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        registry.fail_reservation(
+            "run",
+            failure("INTERRUPTED", "runtime", "attachment failed"),
+        );
+        assert_eq!(waiting.await.unwrap().unwrap_err().code, "INTERRUPTED");
+    }
 }

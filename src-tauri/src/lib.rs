@@ -805,18 +805,27 @@ pub fn run() {
             // Initialize database asynchronously
             tauri::async_runtime::spawn(async move {
                 match db::init_db(&app_handle).await {
-                    Ok(pool) => match ai::chatgpt::recover_auth_mutations(&pool).await {
-                        Ok(()) => match pool_state.set_ready(pool).await {
-                            Ok(()) => tracing::info!("Database initialized successfully"),
-                            Err(error) => tracing::error!(
-                                "Failed to validate database opening: {}",
-                                error.message
-                            ),
+                    Ok(pool) => match agsdl_host_flow030::interrupt_previous_runs030(&pool).await {
+                        Ok(()) => match ai::chatgpt::recover_auth_mutations(&pool).await {
+                            Ok(()) => match pool_state.set_ready(pool).await {
+                                Ok(()) => tracing::info!("Database initialized successfully"),
+                                Err(error) => tracing::error!(
+                                    "Failed to validate database opening: {}",
+                                    error.message
+                                ),
+                            },
+                            Err(error) => {
+                                pool_state.set_failed(error.clone()).await;
+                                tracing::error!(
+                                    "Failed to recover durable authentication mutations: {error}"
+                                );
+                            }
                         },
                         Err(error) => {
-                            pool_state.set_failed(error.clone()).await;
+                            pool_state.set_failed(error.message.clone()).await;
                             tracing::error!(
-                                "Failed to recover durable authentication mutations: {error}"
+                                "Failed to mark interrupted executions: {}",
+                                error.message
                             );
                         }
                     },

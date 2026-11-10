@@ -37,6 +37,7 @@ pub async fn execution_start(
         let workspace = workspace_state.0.read().await.clone();
         if request.profile == "macro-agsdl-030-v1" {
             let retained = crate::agsdl_host_flow030::start_linked(
+                Some(&app),
                 host.flow030(),
                 &host,
                 &manager,
@@ -108,8 +109,18 @@ pub async fn execution_stop(
         return owned_stop(async move {
             let host = app.state::<crate::agsdl_host::HostState>();
             let ai = app.state::<crate::ai::AiState>();
-            crate::agsdl_host_stop030::request(host.flow030(), &pool, &ai.stream_tasks, &request)
-                .await
+            let result = crate::agsdl_host_stop030::request(
+                host.flow030(),
+                &pool,
+                &ai.stream_tasks,
+                &request,
+            )
+            .await?;
+            host.flow030()
+                .supervisors
+                .wait(&request.system_start_id)
+                .await?;
+            Ok(result)
         })
         .await;
     }
@@ -210,13 +221,19 @@ pub async fn execution_ensure_stop(
                 ));
             }
             let ai = app.state::<crate::ai::AiState>();
-            return crate::agsdl_host_stop030::ensure(
+            let result = crate::agsdl_host_stop030::ensure(
                 host.flow030(),
                 &pool,
                 &ai.stream_tasks,
                 &request.system_start_id,
             )
-            .await;
+            .await?;
+            host.flow030().supervisors.wake(&request.system_start_id);
+            host.flow030()
+                .supervisors
+                .wait(&request.system_start_id)
+                .await?;
+            return Ok(result);
         }
         let gate = host.admission_gate().await;
         repository::ensure_stop(
@@ -557,6 +574,7 @@ async fn submit_retained(
             let git = app.state::<crate::git::GitState>();
             if request.profile == "macro-agsdl-030-v1" {
                 crate::agsdl_host_flow030::start_linked(
+                    Some(&app),
                     host.flow030(),
                     &host,
                     &manager,

@@ -41,6 +41,7 @@ pub struct PublicRunSummary030 {
     pub stopping: bool,
     pub verdict: Option<String>,
     pub owner_status: String,
+    pub interrupted_at: Option<String>,
     pub phase_counts: Vec<PhaseCount030>,
     pub physical_pending: String,
 }
@@ -194,6 +195,7 @@ fn validated_summary(
         stopping: state.stopping,
         verdict: state.verdict,
         owner_status: status,
+        interrupted_at: row.try_get("interrupted_at")?,
         phase_counts: counts
             .into_iter()
             .map(|(phase, count)| PhaseCount030 {
@@ -248,7 +250,7 @@ pub(crate) async fn list_runs030(
             before: 0,
         }
     };
-    let rows = sqlx::query("SELECT s.rowid AS seq,s.request_id,s.request_json,s.capture_json,s.receipt_json,s.system_id,s.invocation_id,s.snapshot_id,s.capture_epoch, r.system_id AS run_system,r.invocation_id AS run_invocation,r.snapshot_id AS run_snapshot,r.epoch AS run_epoch,r.source_json AS run_source,r.plan_json AS run_plan,r.state_json AS run_state, o.system_id AS owner_system,o.invocation_id AS owner_invocation,o.snapshot_id AS owner_snapshot,o.capture_epoch AS owner_capture_epoch,o.status AS owner_status,o.capture_sha256 AS owner_capture_hash FROM engine_start030_requests s LEFT JOIN engine_flow030_runs r ON r.system_id=s.system_id AND r.invocation_id=s.invocation_id LEFT JOIN engine_flow030_owners o ON o.system_id=s.system_id WHERE s.rowid<=? AND (?=0 OR s.rowid<?) AND json_extract(s.capture_json,'$.source.owner.projectId')=? AND json_extract(s.capture_json,'$.source.owner.planId')=? AND json_extract(s.capture_json,'$.source.owner.branch')=? ORDER BY s.rowid DESC LIMIT ?")
+    let rows = sqlx::query("SELECT s.rowid AS seq,s.request_id,s.request_json,s.capture_json,s.receipt_json,s.system_id,s.invocation_id,s.snapshot_id,s.capture_epoch, r.system_id AS run_system,r.invocation_id AS run_invocation,r.snapshot_id AS run_snapshot,r.epoch AS run_epoch,r.source_json AS run_source,r.plan_json AS run_plan,r.state_json AS run_state, o.system_id AS owner_system,o.invocation_id AS owner_invocation,o.snapshot_id AS owner_snapshot,o.capture_epoch AS owner_capture_epoch,o.status AS owner_status,o.capture_sha256 AS owner_capture_hash, i.interrupted_at AS interrupted_at FROM engine_start030_requests s LEFT JOIN engine_flow030_runs r ON r.system_id=s.system_id AND r.invocation_id=s.invocation_id LEFT JOIN engine_flow030_owners o ON o.system_id=s.system_id LEFT JOIN engine_flow030_interruptions i ON i.system_id=s.system_id WHERE s.rowid<=? AND (?=0 OR s.rowid<?) AND json_extract(s.capture_json,'$.source.owner.projectId')=? AND json_extract(s.capture_json,'$.source.owner.planId')=? AND json_extract(s.capture_json,'$.source.owner.branch')=? ORDER BY s.rowid DESC LIMIT ?")
         .bind(cursor.upper).bind(cursor.before).bind(cursor.before)
         .bind(&cursor.owner.project_id).bind(&cursor.owner.plan_id).bind(&cursor.owner.branch)
         .bind(i64::from(limit)+1).fetch_all(&mut *tx).await?;

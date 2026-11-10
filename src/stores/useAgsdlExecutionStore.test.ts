@@ -142,7 +142,7 @@ it('loads a 0.3 human projection separately and retains it as stale after a read
   readSnapshot030 = async id => ({ systemStartId: id, source: capturedSource, authoredSource, associations: {},
     versions: { snapshot: '2', contract: 'agsdl-0.3.0', profile: 'macro-agsdl-030-v1', compiler: 'c', runtime: 'r', registry: 'g' } });
   readHumans030 = async scope => ({ scope, cursor: '', total: '1', nextPage: null, requests: [{ id: 'request', revision: '0', status: 'open', workIds: [], content: { kind: 'question', question: 'Q', expectedResponse: 'unknown' } }] });
-  store.setState({ runs030: [{ systemStartId:'run-030', flowInvocationId:'flow', source:capturedSource, versions:{snapshot:'2',contract:'agsdl-0.3.0',profile:'macro-agsdl-030-v1',compiler:'c',runtime:'r',registry:'g'}, snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0' }] });
+  store.setState({ runs030: [{ systemStartId:'run-030', flowInvocationId:'flow', source:capturedSource, versions:{snapshot:'2',contract:'agsdl-0.3.0',profile:'macro-agsdl-030-v1',compiler:'c',runtime:'r',registry:'g'}, snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active', interruptedAt: null,phaseCounts:[],physicalPending:'0' }] });
   readRuntime030 = async scope => ({scope:{...scope,snapshotId:'capture'},flowInvocationId:'flow',revision:'1',stopping:false,verdict:null,total:'0',items:[],nextPage:null});
   await store.getState().select030('run-030');
   expect(store.getState().snapshot030?.systemStartId).toBe('run-030');
@@ -165,7 +165,7 @@ it('does not install delayed 0.3 data after changing the selected run', async ()
   const capturedSource = { owner, revision: '1', sourceSha256: await sourceDigest(authoredSource) };
   readSnapshot030 = async id => ({ systemStartId: id, source: capturedSource, authoredSource, associations: {},
     versions: { snapshot: '2', contract: 'agsdl-0.3.0', profile: 'macro-agsdl-030-v1', compiler: 'c', runtime: 'r', registry: 'g' } });
-  store.setState({ runs030: [{ systemStartId:'old-030', flowInvocationId:'flow', source:capturedSource, versions:{snapshot:'2',contract:'agsdl-0.3.0',profile:'macro-agsdl-030-v1',compiler:'c',runtime:'r',registry:'g'}, snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0' }] });
+  store.setState({ runs030: [{ systemStartId:'old-030', flowInvocationId:'flow', source:capturedSource, versions:{snapshot:'2',contract:'agsdl-0.3.0',profile:'macro-agsdl-030-v1',compiler:'c',runtime:'r',registry:'g'}, snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active', interruptedAt: null,phaseCounts:[],physicalPending:'0' }] });
   readRuntime030 = async scope => ({scope:{...scope,snapshotId:'capture'},flowInvocationId:'flow',revision:'1',stopping:false,verdict:null,total:'0',items:[],nextPage:null});
   let release!: (page: HumanPage030) => void;
   let requested!: HumanScope030;
@@ -185,7 +185,7 @@ it('does not publish a partial 0.3 selection when a projection continuation conf
   const { sourceDigest } = await import('../services/agsdlExecution/compiler');
   const capturedSource = { owner, revision:'1', sourceSha256:await sourceDigest(authoredSource) };
   const versions = { snapshot:'2' as const, contract:'agsdl-0.3.0' as const, profile:'macro-agsdl-030-v1' as const, compiler:'c', runtime:'r', registry:'g' };
-  store.setState({runs030:[{systemStartId:'run-030',flowInvocationId:'flow',source:capturedSource,versions,snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0'}]});
+  store.setState({runs030:[{systemStartId:'run-030',flowInvocationId:'flow',source:capturedSource,versions,snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active', interruptedAt: null,phaseCounts:[],physicalPending:'0'}]});
   readSnapshot030 = async id => ({systemStartId:id,source:capturedSource,authoredSource,versions,associations:{}});
   readHumans030 = async scope => ({scope,cursor:'',total:'0',requests:[],nextPage:null});
   readRuntime030 = async (query, next) => {
@@ -203,7 +203,7 @@ it('rejects a 0.3 run summary whose captured versions differ before reading its 
   const { sourceDigest } = await import('../services/agsdlExecution/compiler');
   const capturedSource = { owner, revision:'1', sourceSha256:await sourceDigest(authoredSource) };
   const versions = { snapshot:'2' as const, contract:'agsdl-0.3.0' as const, profile:'macro-agsdl-030-v1' as const, compiler:'c', runtime:'r', registry:'g' };
-  store.setState({runs030:[{systemStartId:'run-030',flowInvocationId:'flow',source:capturedSource,versions:{...versions,runtime:'different'},snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0'}]});
+  store.setState({runs030:[{systemStartId:'run-030',flowInvocationId:'flow',source:capturedSource,versions:{...versions,runtime:'different'},snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active', interruptedAt: null,phaseCounts:[],physicalPending:'0'}]});
   readSnapshot030 = async id => ({systemStartId:id,source:capturedSource,authoredSource,versions,associations:{}});
   let reads = 0;
   readRuntime030 = async () => { reads++; throw new Error('Unexpected projection read'); };
@@ -632,7 +632,7 @@ it('keeps an explicitly selected runtime while observing another admitted intent
   readSnapshot030 = async id => ({systemStartId:id,source:captured,authoredSource:text,associations:{},versions});
   readHumans030 = async scope => ({scope,cursor:'',total:'0',requests:[],nextPage:null});
   readRuntime030 = async query => ({scope:{...query,snapshotId:'capture'},flowInvocationId:'flow',revision:'1',stopping:false,verdict:null,total:'0',items:[],nextPage:null});
-  store.setState({runs030:[{systemStartId:'selected',flowInvocationId:'flow',source:captured,versions,snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0'}]});
+  store.setState({runs030:[{systemStartId:'selected',flowInvocationId:'flow',source:captured,versions,snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active', interruptedAt: null,phaseCounts:[],physicalPending:'0'}]});
   await store.getState().select030('selected');
   expect(store.getState().runtime030).toBeDefined();
   await store.getState().refresh();
@@ -645,7 +645,7 @@ it('marks a retained runtime projection stale when its summary becomes incompati
   const { sourceDigest } = await import('../services/agsdlExecution/compiler');
   const captured = {owner,revision:'1',sourceSha256:await sourceDigest(text)};
   const versions = {snapshot:'2' as const,contract:'agsdl-0.3.0' as const,profile:'macro-agsdl-030-v1' as const,compiler:'c',runtime:'r',registry:'g'};
-  const run = {systemStartId:'run',flowInvocationId:'flow',source:captured,versions,snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0'};
+  const run = {systemStartId:'run',flowInvocationId:'flow',source:captured,versions,snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active', interruptedAt: null,phaseCounts:[],physicalPending:'0'};
   store.setState({runs030:[run]});
   readSnapshot030 = async id => ({systemStartId:id,source:captured,authoredSource:text,associations:{},versions});
   readHumans030 = async scope => ({scope,cursor:'',total:'0',requests:[],nextPage:null});
@@ -663,7 +663,7 @@ it('refreshes a retained native flow after its summary leaves the current list p
   const { sourceDigest } = await import('../services/agsdlExecution/compiler');
   const captured = { owner, revision:'1', sourceSha256:await sourceDigest(text) };
   const versions = {snapshot:'2' as const,contract:'agsdl-0.3.0' as const,profile:'macro-agsdl-030-v1' as const,compiler:'c',runtime:'r',registry:'g'};
-  const run = {systemStartId:'older',flowInvocationId:'flow',source:captured,versions,snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0'};
+  const run = {systemStartId:'older',flowInvocationId:'flow',source:captured,versions,snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active', interruptedAt: null,phaseCounts:[],physicalPending:'0'};
   readSnapshot030 = async id => ({systemStartId:id,source:captured,authoredSource:text,associations:{},versions});
   readHumans030 = async scope => ({scope,cursor:'',total:'0',requests:[],nextPage:null});
   let reads = 0;
@@ -767,7 +767,7 @@ it('does not reuse an observed receipt when its captured document failed verific
 
 it('pages 0.3 history independently, retaining the 0.2 list and rejecting a repeated cursor atomically', async () => {
   const versions = {snapshot:'2',contract:'agsdl-0.3.0',profile:'macro-agsdl-030-v1',compiler:'c',runtime:'r',registry:'g'};
-  const run = (id: string) => ({systemStartId:id,flowInvocationId:`flow-${id}`,snapshotId:`snapshot-${id}`,source,versions,revision:'1',stopping:false,verdict:null,ownerStatus:'revoked',phaseCounts:[],physicalPending:'0'});
+  const run = (id: string) => ({systemStartId:id,flowInvocationId:`flow-${id}`,snapshotId:`snapshot-${id}`,source,versions,revision:'1',stopping:false,verdict:null,ownerStatus:'revoked', interruptedAt: null,phaseCounts:[],physicalPending:'0'});
   const calls: RunListRequest030[] = [];
   listRuns030 = async request => { calls.push(request); return request.after === null ? {runs:[run('a')],nextCursor:'cursor030'} : {runs:[run('b')],nextCursor:'cursor030'}; };
   const legacy = store.getState().runs;
@@ -791,7 +791,7 @@ it('pages 0.3 history independently, retaining the 0.2 list and rejecting a repe
 
 it('rejects a foreign 0.3 owner and duplicate page without publishing partial history', async () => {
   const versions = {snapshot:'2',contract:'agsdl-0.3.0',profile:'macro-agsdl-030-v1',compiler:'c',runtime:'r',registry:'g'};
-  const run = {systemStartId:'a',flowInvocationId:'flow',snapshotId:'capture',source,versions,revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0'};
+  const run = {systemStartId:'a',flowInvocationId:'flow',snapshotId:'capture',source,versions,revision:'1',stopping:false,verdict:null,ownerStatus:'active', interruptedAt: null,phaseCounts:[],physicalPending:'0'};
   listRuns030 = async () => ({runs:[run],nextCursor:'next'});
   await store.getState().refreshRuns030();
   listRuns030 = async () => ({runs:[run],nextCursor:null});
@@ -823,7 +823,7 @@ it('marks retained runtime stale immediately when a history page contradicts its
   const { sourceDigest } = await import('../services/agsdlExecution/compiler');
   const source = {owner,revision:'1',sourceSha256:await sourceDigest(authoredSource)};
   const versions = {snapshot:'2' as const,contract:'agsdl-0.3.0' as const,profile:'macro-agsdl-030-v1' as const,compiler:'c',runtime:'r',registry:'g'};
-  const run = {systemStartId:'retained',flowInvocationId:'flow',snapshotId:'capture',source,versions,revision:'1',stopping:false,verdict:null,ownerStatus:'revoked',phaseCounts:[],physicalPending:'0'};
+  const run = {systemStartId:'retained',flowInvocationId:'flow',snapshotId:'capture',source,versions,revision:'1',stopping:false,verdict:null,ownerStatus:'revoked', interruptedAt: null,phaseCounts:[],physicalPending:'0'};
   readSnapshot030 = async id => ({systemStartId:id,source,versions,authoredSource,associations:{}});
   readHumans030 = async scope => ({scope,cursor:'',total:'0',requests:[],nextPage:null});
   readRuntime030 = async scope => ({scope:{...scope,snapshotId:'capture'},flowInvocationId:'flow',revision:'1',stopping:false,verdict:null,total:'0',items:[],nextPage:null});
@@ -850,7 +850,7 @@ it('marks retained runtime stale immediately when a history page contradicts its
 });
 it('retains a failed history indicator after an unrelated successful operation until the list is read again', async () => {
   const versions = {snapshot:'2' as const,contract:'agsdl-0.3.0' as const,profile:'macro-agsdl-030-v1' as const,compiler:'c',runtime:'r',registry:'g'};
-  const run = {systemStartId:'run',flowInvocationId:'flow',snapshotId:'capture',source,versions,revision:'1',stopping:false,verdict:null,ownerStatus:'revoked',phaseCounts:[],physicalPending:'0'};
+  const run = {systemStartId:'run',flowInvocationId:'flow',snapshotId:'capture',source,versions,revision:'1',stopping:false,verdict:null,ownerStatus:'revoked', interruptedAt: null,phaseCounts:[],physicalPending:'0'};
   store.setState({runs030:[run],snapshot030:{systemStartId:'run',source,versions,authoredSource:'{}',associations:{}}});
   listRuns030 = async () => { throw new Error('Read failed'); };
   await store.getState().refreshRuns030();

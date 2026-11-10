@@ -3,4 +3,4 @@ import type { EngineSourceRevision } from "./EngineSourceRevision";
 import type { EngineVersions } from "./EngineVersions";
 import type { PhaseCount030 } from "./PhaseCount030";
 
-export type PublicRunSummary030 = { systemStartId: string, flowInvocationId: string, snapshotId: string, source: EngineSourceRevision, versions: EngineVersions, revision: string, stopping: boolean, verdict: string | null, ownerStatus: string, phaseCounts: Array<PhaseCount030>, physicalPending: string, };
+export type PublicRunSummary030 = { systemStartId: string, flowInvocationId: string, snapshotId: string, source: EngineSourceRevision, versions: EngineVersions, revision: string, stopping: boolean, verdict: string | null, ownerStatus: string, interruptedAt: string | null, phaseCounts: Array<PhaseCount030>, physicalPending: string, };

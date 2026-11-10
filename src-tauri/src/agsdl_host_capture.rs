@@ -223,6 +223,18 @@ pub(crate) fn execution_scope(
     Ok(scope)
 }
 
+#[cfg(test)]
+pub(crate) fn test_codex_observations030() -> &'static std::sync::Mutex<
+    std::collections::HashMap<PathBuf, crate::agsdl_host_codex::CodexObservation030>,
+> {
+    static OBSERVATIONS: std::sync::OnceLock<
+        std::sync::Mutex<
+            std::collections::HashMap<PathBuf, crate::agsdl_host_codex::CodexObservation030>,
+        >,
+    > = std::sync::OnceLock::new();
+    OBSERVATIONS.get_or_init(Default::default)
+}
+
 pub(crate) async fn observation(
     manager: &ConfigManager,
     workspace: &Path,
@@ -249,12 +261,24 @@ pub(crate) async fn observation(
             &serde_json::to_value(host_permissions)?,
             "/agsdlHostPermissions",
         )?;
-        let observed = crate::agsdl_host_codex::observe_catalogue030(
-            manager,
-            &scope,
-            project.user_read_only || project.is_read_only,
-        )
-        .await?;
+        #[cfg(test)]
+        let synthetic = test_codex_observations030()
+            .lock()
+            .unwrap()
+            .get(workspace)
+            .cloned();
+        #[cfg(not(test))]
+        let synthetic: Option<crate::agsdl_host_codex::CodexObservation030> = None;
+        let observed = if synthetic.is_some() {
+            synthetic
+        } else {
+            crate::agsdl_host_codex::observe_catalogue030(
+                manager,
+                &scope,
+                project.user_read_only || project.is_read_only,
+            )
+            .await?
+        };
         if observed.is_none() {
             let status = crate::agsdl_host_codex::profile_status(manager).await;
             return Err(failure(
@@ -637,6 +661,140 @@ pub(crate) struct StartCaptureMaterial030 {
     pub generation: String,
 }
 
+pub(crate) fn product_slice030(
+    authored: &str,
+    compiled: Option<&str>,
+) -> Option<PreflightDiagnostic> {
+    let document = exact_json::value(authored).ok()?;
+    if document.get("contract").and_then(Value::as_str) != Some("agsdl-0.3.0") {
+        return None;
+    }
+    let issue = |pointer: String, message: &str| {
+        Some(PreflightDiagnostic {
+            code: "UNSUPPORTED_030_FEATURE".into(),
+            pointer,
+            message: message.into(),
+        })
+    };
+    for field in ["skills", "mcpServers"] {
+        if document.get(field).is_some() {
+            return issue(
+                format!("/{field}"),
+                "This document feature is not yet supported.",
+            );
+        }
+    }
+    for (name, agent) in document.get("agents")?.as_object()? {
+        let pointer = format!("/agents/{}", name.replace('~', "~0").replace('/', "~1"));
+        if agent.get("harness").and_then(Value::as_str) != Some("codex") {
+            return issue(
+                format!("{pointer}/harness"),
+                "Only the Codex harness is supported for this run.",
+            );
+        }
+        for field in ["answerTimeoutMs", "completionCheck", "skills", "mcpServers"] {
+            if agent.get(field).is_some() {
+                return issue(
+                    format!("{pointer}/{field}"),
+                    "This agent feature is not yet supported.",
+                );
+            }
+        }
+        if agent.pointer("/permissions/reviewer").is_some()
+            || agent
+                .pointer("/permissions/rules")
+                .and_then(Value::as_array)
+                .is_some_and(|rules| {
+                    rules
+                        .iter()
+                        .any(|rule| rule.get("effect").and_then(Value::as_str) == Some("ask"))
+                })
+        {
+            return issue(
+                format!("{pointer}/permissions"),
+                "Human approval is not yet supported.",
+            );
+        }
+        if agent.get("planFirst").and_then(Value::as_str) == Some("ask") {
+            return issue(
+                format!("{pointer}/planFirst"),
+                "Human approval is not yet supported.",
+            );
+        }
+    }
+    for (name, step) in document
+        .pointer("/flow/steps")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        let pointer = format!("/flow/steps/{}", name.replace('~', "~0").replace('/', "~1"));
+        if step.get("type").and_then(Value::as_str) != Some("agent") {
+            return issue(pointer, "Only agent steps are supported for this run.");
+        }
+        for field in ["timeoutMs", "answerTimeoutMs"] {
+            if step.get(field).is_some() {
+                return issue(
+                    format!("{pointer}/{field}"),
+                    "Timeouts are not yet supported.",
+                );
+            }
+        }
+        if step.get("delivery").and_then(Value::as_str) == Some("steer") {
+            return issue(
+                format!("{pointer}/delivery"),
+                "Steer delivery is not yet supported.",
+            );
+        }
+    }
+    let plan = exact_json::value(compiled?).ok()?;
+    for step in plan.get("steps")?.as_array()? {
+        let pointer = format!(
+            "/flow/steps/{}",
+            step.get("address")?
+                .as_array()?
+                .last()?
+                .as_str()?
+                .replace('~', "~0")
+                .replace('/', "~1")
+        );
+        if step.get("type").and_then(Value::as_str) != Some("agent") {
+            return issue(pointer, "Only agent steps are supported for this run.");
+        }
+        let declaration = exact_json::value(step.get("declarationJson")?.as_str()?).ok()?;
+        for field in ["timeoutMs", "answerTimeoutMs"] {
+            if declaration.get(field).is_some() {
+                return issue(
+                    format!("{pointer}/{field}"),
+                    "Timeouts are not yet supported.",
+                );
+            }
+        }
+        if declaration.get("delivery").and_then(Value::as_str) == Some("steer") {
+            return issue(
+                format!("{pointer}/delivery"),
+                "Steer delivery is not yet supported.",
+            );
+        }
+    }
+    for route in plan.get("routes")?.as_array()? {
+        let targets = route.get("targets")?.as_array()?;
+        if targets.len() > 1
+            || targets.iter().any(|target| {
+                !target.get("eachPathJson").is_none_or(Value::is_null)
+                    || !target.get("concurrencyJson").is_none_or(Value::is_null)
+                    || !target.get("maxJson").is_none_or(Value::is_null)
+            })
+        {
+            return issue(
+                "/flow".into(),
+                "Parallel routes and fan-out are not yet supported.",
+            );
+        }
+    }
+    None
+}
+
 impl CompilationCapture {
     /// Called only under the fresh metadata lock.
     /// This prepares data; the host still authenticates content and authority.
@@ -797,6 +955,13 @@ impl CompilationCapture {
             )?
         {
             return Err(refuse());
+        }
+        if let Some(diagnostic) = product_slice030(&self.authored_source, Some(plan_json)) {
+            return Err(failure(
+                &diagnostic.code,
+                &diagnostic.pointer,
+                &diagnostic.message,
+            ));
         }
         Ok(StartCaptureMaterial030 {
             source: self.source.clone(),
@@ -977,8 +1142,14 @@ impl CompilationCapture {
                 }
             })
             .collect();
-        let native_diagnostics =
+        let mut native_diagnostics =
             local_harness_diagnostics030(&self.authored_source, &self.native_registry_json);
+        let product_diagnostic = product_slice030(
+            &self.authored_source,
+            self.result.get("compiledPlanJson").and_then(Value::as_str),
+        );
+        let product_supported = product_diagnostic.is_none();
+        native_diagnostics.extend(product_diagnostic);
         let incomplete = findings.len().saturating_add(native_diagnostics.len()) > 64;
         let mut combined: Vec<_> = native_diagnostics.into_iter().take(64).collect();
         let remaining = 64usize.saturating_sub(combined.len());
@@ -996,7 +1167,8 @@ impl CompilationCapture {
                 .result
                 .pointer("/runtime/supported")
                 .and_then(Value::as_bool)
-                == Some(true),
+                == Some(true)
+                && product_supported,
             registry_version: self
                 .result
                 .pointer("/runtime/registryVersion")
@@ -1810,5 +1982,44 @@ mod start_material030_tests {
         capture.result = original;
         capture.result["entryValidation"]["shapeValid"] = false.into();
         assert!(prepare(&capture, &request).is_err());
+    }
+}
+
+#[cfg(test)]
+mod product_slice030_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn rejects_out_of_slice_before_native_start() {
+        let base = json!({"contract":"agsdl-0.3.0", "agents":{"writer":{"harness":"codex"}},
+            "flow":{"entry":"write","steps":{"write":{"type":"agent","agent":"writer"}}}});
+        for (pointer, value) in [
+            ("/flow/steps/write/type", json!("call")),
+            ("/flow/steps/write/type", json!("approval")),
+            ("/flow/steps/write/timeoutMs", json!(10)),
+            ("/flow/steps/write/delivery", json!("steer")),
+            ("/agents/writer/harness", json!("claude")),
+        ] {
+            let mut document = base.clone();
+            let (parent, key) = pointer.rsplit_once('/').unwrap();
+            document
+                .pointer_mut(parent)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert(key.into(), value);
+            let diagnostic = product_slice030(&document.to_string(), None).unwrap();
+            assert_eq!(diagnostic.code, "UNSUPPORTED_030_FEATURE");
+            assert!(diagnostic.pointer.starts_with(parent), "{diagnostic:?}");
+        }
+        assert!(product_slice030(&base.to_string(), None).is_none());
+        let plan = json!({"steps": [], "routes": [{"targets": [{"eachPathJson":"[]"}]}]});
+        assert_eq!(
+            product_slice030(&base.to_string(), Some(&plan.to_string()))
+                .unwrap()
+                .code,
+            "UNSUPPORTED_030_FEATURE"
+        );
     }
 }

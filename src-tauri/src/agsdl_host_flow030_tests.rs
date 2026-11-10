@@ -325,6 +325,7 @@ process.stdout.write(await compileHost030(job.authoredSource,job.source,JSON.par
     let runtime = host.flow030();
     let git = crate::git::GitState::new();
     let retained = flow::start_linked(
+        None,
         runtime,
         &host,
         &manager,
@@ -424,6 +425,7 @@ process.stdout.write(await compileHost030(job.authoredSource,job.source,JSON.par
     )
     .unwrap();
     let replay = flow::start_linked(
+        None,
         runtime,
         &host,
         &manager,
