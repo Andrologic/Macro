@@ -108,6 +108,9 @@ function ArchitectViewer({ target, planStatus }: { target: AgsdlTarget; planStat
   const projectIds = Object.keys(projectBranches ?? {});
   const [chosenProject, setChosenProject] = useState('');
   const projectId = selectedProjectId ?? (projectIds.includes(chosenProject) ? chosenProject : projectIds.length === 1 ? projectIds[0] : undefined);
+  // The selected project's document is loaded from target.branchName. A plan's
+  // per-project execution branch can differ from that metadata owner.
+  const runBranch = selectedProjectId ? target.branchName : projectBranches?.[projectId ?? ''] ?? target.branchName;
   const conversationId = useChatStore(state => state.conversations.find(item => item.id === state.selectedConversationId && item.scope_mode === "Architect")?.id);
   const source = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]?.source);
   const registrations = useSyncExternalStore(subscribeWorkflowRunAccess030, workflowRunAccessSnapshot030, workflowRunAccessSnapshot030);
@@ -122,9 +125,9 @@ function ArchitectViewer({ target, planStatus }: { target: AgsdlTarget; planStat
   useEffect(() => { if (execution.launched030) setRunsOpen(true); }, [execution.launched030]);
   useEffect(() => {
     if (!runsOpen || !projectId || !target.planId) { setBundle(undefined); return; }
-    try { setBundle(getWorkflowRunAccess030({ owner: { projectId, planId: target.planId, branch: projectBranches?.[projectId] ?? target.branchName }, conversationId: conversationId ?? undefined })); }
+    try { setBundle(getWorkflowRunAccess030({ owner: { projectId, planId: target.planId, branch: runBranch }, conversationId: conversationId ?? undefined })); }
     catch { setBundle(undefined); }
-  }, [runsOpen, projectId, projectBranches, target, conversationId, registrations]);
+  }, [runsOpen, projectId, runBranch, target, conversationId, registrations]);
   return (
     <aside
       className="h-full min-h-0 min-w-0 flex flex-col bg-card border-l border-border"
@@ -143,7 +146,7 @@ function ArchitectViewer({ target, planStatus }: { target: AgsdlTarget; planStat
         </label>
         <div className="flex gap-2">
           <button type="button" className="rounded border border-border px-2 py-1 hover:bg-accent" disabled={!conversationId || execution.intentBusy} onClick={() => void execution.start030(prompt)}>{t('agsdl.execution.start030')}</button>
-          <button type="button" className="rounded border border-border px-2 py-1 hover:bg-accent" disabled={!runsOpen || !selectedRun || execution.stopping || execution.owner?.projectId !== projectId || execution.owner?.branch !== (projectBranches?.[projectId ?? ""] ?? target.branchName)} onClick={() => { if (selectedRun) void execution.stop030(selectedRun); }}>{t('agsdl.execution.stop030')}</button>
+          <button type="button" className="rounded border border-border px-2 py-1 hover:bg-accent" disabled={!runsOpen || !selectedRun || execution.stopping || execution.owner?.projectId !== projectId || execution.owner?.branch !== runBranch} onClick={() => { if (selectedRun) void execution.stop030(selectedRun); }}>{t('agsdl.execution.stop030')}</button>
         </div>
         {execution.error && <p role="alert">{t(execution.error)}</p>}
         {execution.intent030 && execution.intent030.state.kind !== 'closed' && <div className="flex gap-2">
