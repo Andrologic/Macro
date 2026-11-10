@@ -151,6 +151,8 @@ const executionError = (error: unknown) => {
   const intent = intentFailure(error);
   if (intent) return { error: intent.code === "SLOT_OCCUPIED" ? "agsdl.execution.intentOpen" : intent.code === "SCOPE_INVALID" || intent.code === "SCOPE_UNAVAILABLE" ? "agsdl.execution.ownerChanged" : "agsdl.execution.error", stale: false };
   const native = toServiceError(error);
+  if (native.code === 'CALL_PLATFORM_UNQUALIFIED') return { error: 'agsdl.execution.callPlatform030', stale: false };
+  if (native.code === 'CALL_PERMISSIONS_UNSUPPORTED') return { error: 'agsdl.execution.callPermissions030', stale: false };
   if (native.code === 'UNSUPPORTED_030_FEATURE') return { error: 'agsdl.execution.unsupported030', stale: false };
   if (native.code === 'CODEX_NOT_INSTALLED') return { error: 'agsdl.execution.codexNotInstalled', stale: false };
   if (native.code === 'CODEX_LOGIN_REQUIRED') return { error: 'agsdl.execution.codexLoginRequired', stale: false };
@@ -584,11 +586,17 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
       if (preflight.diagnostics.some(item => item.code === 'UNSUPPORTED_030_FEATURE')) throw new Error('agsdl.execution.unsupported030');
       if (!(await current())) return;
       set({ notice030: preflight.diagnostics.some(item => item.code === 'READ_ONLY_CEILING') ? 'agsdl.execution.readOnly030' : undefined });
-      const status = await executionCodexStatus();
-      if (status.code === 'CODEX_NOT_INSTALLED') throw new Error('agsdl.execution.codexNotInstalled');
-      if (status.code === 'CODEX_LOGIN_REQUIRED') throw new Error('agsdl.execution.codexLoginRequired');
-      if (['CODEX_VERSION_UNQUALIFIED', 'CODEX_PLATFORM_UNQUALIFIED'].includes(status.code)) throw new Error('agsdl.execution.codexUnsupported');
-      if (!status.available || !preflight.productRuntimeAvailable || !preflight.staticValid || !preflight.runtimeSupported || preflight.incomplete ||
+      const document = readDocument(preflight.authoredSource);
+      const agents = document.agents;
+      const needsCodex = (agents !== null && typeof agents === 'object' && !Array.isArray(agents) && Object.values(agents).some(agent => agent !== null && typeof agent === 'object' && 'harness' in agent && agent.harness === 'codex'));
+      if (needsCodex) {
+        const status = await executionCodexStatus();
+        if (status.code === 'CODEX_NOT_INSTALLED') throw new Error('agsdl.execution.codexNotInstalled');
+        if (status.code === 'CODEX_LOGIN_REQUIRED') throw new Error('agsdl.execution.codexLoginRequired');
+        if (['CODEX_VERSION_UNQUALIFIED', 'CODEX_PLATFORM_UNQUALIFIED'].includes(status.code)) throw new Error('agsdl.execution.codexUnsupported');
+        if (!status.available) throw new Error('agsdl.execution.unavailable');
+      }
+      if (!preflight.productRuntimeAvailable || !preflight.staticValid || !preflight.runtimeSupported || preflight.incomplete ||
           preflight.authoredSource !== session.source || executionProfileForContract(readDocument(preflight.authoredSource).contract) !== 'macro-agsdl-030-v1') throw new Error('agsdl.execution.unavailable');
       if (!(await current()) || useAgsdlStore.getState().sessions[agsdlSessionKey({ planId: initial.owner!.planId, branchName: initial.owner!.branch })]?.version !== session.version) return;
       let row: VersionedIntent;

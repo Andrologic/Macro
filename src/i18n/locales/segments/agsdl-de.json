@@ -522,12 +522,14 @@
     "input030": "Eingabeanweisung",
     "start030": "Starten",
     "stop030": "Stoppen",
-    "unsupported030": "Dieses Dokument verwendet eine noch nicht unterstützte Funktion. Befehle, menschliche Anfragen, Steer, parallele Ausführung und Zeitlimits sind nicht verfügbar.",
+    "unsupported030": "Dieses Dokument verwendet eine noch nicht unterstützte Funktion. Menschliche Anfragen, Steer, Fan-out, Zeitlimits und entfernte MCP-Aufrufe sind nicht verfügbar.",
     "codexNotInstalled": "Codex ist nicht installiert. Installiere Codex, um den Lauf zu starten.",
     "codexLoginRequired": "Melde dich vor dem Start im privaten Codex-Profil von Macro an.",
     "codexUnsupported": "Diese Codex-Version oder Plattform wird nicht unterstützt. Verwenden Sie Codex 0.167.x auf einer qualifizierten Plattform.",
     "readOnly030": "Die Einstellungen von Macro oder des Projekts beschränken diesen Lauf auf Lesezugriff, auch für Agenten, die im Arbeitsbereich schreiben möchten. Prüfen Sie diese Einstellungen, wenn Dateien geändert werden sollen.",
-    "interrupted030": "Unterbrochen. Dieser Lauf wird nicht erneut gestartet."
+    "interrupted030": "Unterbrochen. Dieser Lauf wird nicht erneut gestartet.",
+    "callPlatform030": "Lokale Aufrufe erfordern macOS auf Apple silicon mit nativer Prozessisolation.",
+    "callPermissions030": "Lokale Aufrufe erfordern genehmigte workspace-Berechtigungen für Host und Projekt sowie ein beschreibbares Projekt."
   },
   "actionFailed": "Die Aktion ist fehlgeschlagen. Versuchen Sie es erneut.",
   "userError": {
@@ -1148,7 +1150,9 @@
       "filesWritten": "Geschriebene Dateien",
       "workContinues": "Fortsetzung der Arbeit"
     },
-    "occurrenceCount_many": "{{count}} Vorkommen"
+    "occurrenceCount_many": "{{count}} Vorkommen",
+    "commandExitCode": "Exitcode",
+    "commandOutput": "Befehlsausgabe"
   },
   "shell030": {
     "project": "Projekt",

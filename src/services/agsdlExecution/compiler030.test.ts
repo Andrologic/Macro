@@ -255,3 +255,12 @@ describe('0.3 compiler wire plan', () => {
     expect(reusedResult.runtime.diagnostics).toContainEqual(expect.objectContaining({ code: 'HARNESS_APPROXIMATE', pointer: '/compositions/fragment/steps/worker', step: ['second', 'worker'] }));
   });
 });
+
+it('opens a command-only flow when its native host capability is captured', async () => {
+  const doc = document030();
+  doc.agents = {};
+  doc.flow = { entry: 'check', steps: { check: { type: 'call', command: 'true' } } };
+  const registry = { ...registry030(doc), harnesses: [], agents: [] };
+  expect((await compile(doc, registry)).productRuntimeAvailable).toBe(true);
+  expect((await compile(doc, { ...registry, hostCapabilities: [] })).productRuntimeAvailable).toBe(false);
+});

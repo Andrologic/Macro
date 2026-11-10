@@ -3,7 +3,7 @@ import type { RunRead030, RunOccurrence030 } from '../../types/agsdlRunUi030';
 import type { RunInspection030 } from '../../services/agsdl/runtimeProjection030';
 import { retainedRunValue030 } from '../../services/agsdl/runtimeProjection030';
 import { projectStaticSemantics030 } from '../../services/agsdl/staticSemantics030';
-import { runEffectFacts030, runGraphReadState030, runStepLabels030, normalRunOutcome030, runCaptureKey030, projectRunGraph030, type RunGraphOccurrence030 } from '../../services/agsdl/runGraphProjection030';
+import { runEffectFacts030, runGraphReadState030, runStepLabels030, normalRunOutcome030, commandResult030, runCaptureKey030, projectRunGraph030, type RunGraphOccurrence030 } from '../../services/agsdl/runGraphProjection030';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
 
 /** The shell canvas consumes this bridge without replacing static or native ids. */
@@ -49,6 +49,7 @@ export function RunInspector030({ inspection, selectedStepId, selectedOccurrence
   const details = selected?.occurrence.details;
   const activation = selected?.occurrence.activation;
   const normalOutcome = selected ? normalRunOutcome030(selected.occurrence) : null;
+  const command = selected ? commandResult030(selected.occurrence) : null;
   const diagnostics = retainedRunValue030(state.diagnostics);
   const visibleDiagnostics = diagnostics?.filter(diagnostic => !selected || diagnostic.activationId === selected.activationId || !graph.some(item => item.activationId === diagnostic.activationId));
   const humans = retainedRunValue030(state.humans);
@@ -87,6 +88,11 @@ export function RunInspector030({ inspection, selectedStepId, selectedOccurrence
       <h3 className="font-medium">{selected ? visitLabel(selected) : tr('externalWork')}</h3>
       <p>{tr(`phase.${knownPhase(activation.phase)}`)}</p>
       {normalOutcome && <p>{tr(`outcome.${normalOutcome}`)}</p>}
+      {command && <div className="space-y-1">
+        <p>{tr('commandExitCode')}: {command.exitCode}</p>
+        <p>{tr('commandOutput')}</p>
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{command.output || tr('noContent')}</pre>
+      </div>}
       {activation.physical && <p>{tr('physicalActive')}</p>}
       {details?.kind === 'available' ? <>
         {!details.value.countsForFlow && <p>{tr('notCounting')}</p>}

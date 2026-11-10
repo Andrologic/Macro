@@ -220,3 +220,16 @@ it('clears the previous static filter when the graph selects external work and m
   expect(bridge!.selectedOccurrenceKey).toBe(key);
   expect(host.querySelector('ol button[aria-pressed="true"]')?.textContent).toContain('External reviewer');
 });
+
+it('shows the command exit code and complete text for a failed normal outcome', async () => {
+  const run = inspectionFixture030();
+  if (run.state.occurrences.kind !== 'ready') throw new Error('Fixture unavailable');
+  const occurrences = run.state.occurrences.value.map(item => item.details.kind === 'available' ? { ...item, details: available({ ...item.details.value, outputJson: '{"outcome":"failed","data":{"exitCode":7,"output":"tests failed\\n<script>untrusted</script>"}}' }) } : item);
+  let bridge: RunGraphBridge030 | undefined;
+  await mount(monitorFixture030({ ...run, state: { ...run.state, occurrences: ready(occurrences) } }), { renderGraph: (value: RunGraphBridge030) => { bridge = value; return null; } });
+  await act(async () => bridge!.selectOccurrence(bridge!.occurrences[0].key));
+  expect(host.textContent).toContain('Exit code: 7');
+  expect(host.textContent).toContain('tests failed');
+  expect(host.textContent).toContain('<script>untrusted</script>');
+  expect(host.querySelector('script')).toBeNull();
+});

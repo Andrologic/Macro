@@ -44,6 +44,18 @@ export function normalRunOutcome030(occurrence: RunOccurrence030): 'passed' | 'f
   } catch { return null; }
 }
 
+/** Show command output without parsing model or tool data as instructions. */
+export function commandResult030(occurrence: RunOccurrence030): { exitCode: string; output: string } | null {
+  if (occurrence.activation.agent !== null || occurrence.details.kind !== 'available' || occurrence.details.value.outputJson === null) return null;
+  try {
+    const value: unknown = JSON.parse(occurrence.details.value.outputJson);
+    if (!value || typeof value !== 'object' || !('outcome' in value) || !['passed', 'failed'].includes(String(value.outcome)) || !('data' in value)) return null;
+    const data = value.data;
+    if (!data || typeof data !== 'object' || !('exitCode' in data) || !Number.isInteger(data.exitCode) || !('output' in data) || typeof data.output !== 'string') return null;
+    return { exitCode: String(data.exitCode), output: data.output };
+  } catch { return null; }
+}
+
 /** Authored titles are presentation data, never runtime identities. */
 export function runStepLabels030(source: string, semantics: StaticSemantics030): ReadonlyMap<string, string> {
   const scanned = scanSource(source), decoder = new TextDecoder();

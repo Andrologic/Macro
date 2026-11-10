@@ -522,12 +522,14 @@
     "input030": "Input instructions",
     "start030": "Start",
     "stop030": "Stop",
-    "unsupported030": "This document uses a feature that is not supported yet. Commands, human requests, steer, fan-out and timeouts are unavailable.",
+    "unsupported030": "This document uses a feature that is not supported yet. Human requests, steer, fan-out, timeouts and remote MCP calls are unavailable.",
     "codexNotInstalled": "Codex is not installed. Install Codex to start this run.",
     "codexLoginRequired": "Sign in to Codex in Macro’s private profile before starting.",
     "codexUnsupported": "This Codex version or platform is not supported. Use Codex 0.167.x on a qualified platform.",
     "readOnly030": "This run is limited to read-only access by the host or project settings, including agents that request workspace writes. Review those settings if the work must change files.",
-    "interrupted030": "Interrupted. This run will not restart."
+    "interrupted030": "Interrupted. This run will not restart.",
+    "callPlatform030": "Local calls require macOS on Apple silicon with the native confinement backend.",
+    "callPermissions030": "Local calls require approved workspace permissions for the host and project, and a writable project."
   },
   "actionFailed": "The action failed. Try again.",
   "userError": {
@@ -1148,7 +1150,9 @@
       "filesWritten": "Written files",
       "workContinues": "Work continuation"
     },
-    "occurrenceCount_many": "Recorded occurrences: {{count}}"
+    "occurrenceCount_many": "Recorded occurrences: {{count}}",
+    "commandExitCode": "Exit code",
+    "commandOutput": "Command output"
   },
   "shell030": {
     "project": "Project",

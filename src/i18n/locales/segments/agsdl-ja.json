@@ -522,12 +522,14 @@
     "input030": "入力指示",
     "start030": "開始",
     "stop030": "停止",
-    "unsupported030": "この文書には未対応の機能が含まれています。コマンド、有人リクエスト、steer、並列実行、タイムアウトは利用できません。",
+    "unsupported030": "このドキュメントは未対応の機能を使用しています。人への要求、steer、ファンアウト、タイムアウト、リモート MCP 呼び出しは利用できません。",
     "codexNotInstalled": "Codex がインストールされていません。実行するには Codex をインストールしてください。",
     "codexLoginRequired": "開始する前に Macro の専用プロファイルで Codex にログインしてください。",
     "codexUnsupported": "この Codex のバージョンまたはプラットフォームはサポートされていません。検証済みのプラットフォームで Codex 0.167.x を使用してください。",
     "readOnly030": "Macro またはプロジェクトの設定により、この実行は読み取り専用です。ワークスペースへの書き込みを要求するエージェントにも適用されます。ファイルを変更する必要がある場合は、設定を確認してください。",
-    "interrupted030": "中断されました。この実行は再開されません。"
+    "interrupted030": "中断されました。この実行は再開されません。",
+    "callPlatform030": "ローカル呼び出しには、ネイティブ分離機能を備えた Apple silicon 上の macOS が必要です。",
+    "callPermissions030": "ローカル呼び出しには、ホストとプロジェクトで承認された workspace 権限と、書き込み可能なプロジェクトが必要です。"
   },
   "actionFailed": "操作に失敗しました。もう一度お試しください。",
   "userError": {
@@ -1148,7 +1150,9 @@
       "filesWritten": "書き込まれたファイル",
       "workContinues": "作業の継続"
     },
-    "occurrenceCount_many": "{{count}} 件の実行箇所"
+    "occurrenceCount_many": "{{count}} 件の実行箇所",
+    "commandExitCode": "終了コード",
+    "commandOutput": "コマンドの出力"
   },
   "shell030": {
     "project": "プロジェクト",

@@ -897,12 +897,12 @@ it('does not overwrite a failed scope opening with a later history read', async 
 });
 
 function prepare030() {
-  authoredSource = '{"contract":"agsdl-0.3.0","flow":{"entry":"write"}}'; available = true;
+  authoredSource = '{"contract":"agsdl-0.3.0","id":"start-test","agents":{"writer":{"harness":"codex","permissions":"read-only"}},"flow":{"entry":"write","steps":{"write":{"type":"agent","agent":"writer"}}}}'; available = true;
   useAgsdlStore.setState({ sessions: { [agsdlSessionKey(target)]: { source: authoredSource, annexes: {}, version: 'v1', persistedRevision: 1, status: 'draft', dirty: false, saving: false, history: [], future: [], reports: [], error: null } } });
 }
 it('reports native 0.3 preflight and Codex failures without staging a run', async () => {
   prepare030();
-  for (const [code, key] of [['UNSUPPORTED_030_FEATURE','unsupported030'], ['CODEX_LOGIN_REQUIRED','codexLoginRequired'], ['CODEX_NOT_INSTALLED','codexNotInstalled'], ['CODEX_VERSION_UNQUALIFIED','codexUnsupported'], ['CODEX_PLATFORM_UNQUALIFIED','codexUnsupported'], ['OTHER','error']]) {
+  for (const [code, key] of [['UNSUPPORTED_030_FEATURE','unsupported030'], ['CODEX_LOGIN_REQUIRED','codexLoginRequired'], ['CODEX_NOT_INSTALLED','codexNotInstalled'], ['CODEX_VERSION_UNQUALIFIED','codexUnsupported'], ['CODEX_PLATFORM_UNQUALIFIED','codexUnsupported'], ['CALL_PLATFORM_UNQUALIFIED','callPlatform030'], ['CALL_PERMISSIONS_UNSUPPORTED','callPermissions030'], ['OTHER','error']]) {
     preflightFailure = code;
     await store.getState().start030('write');
     expect(store.getState().error).toBe(`agsdl.execution.${key}`);
@@ -942,4 +942,14 @@ it('starts a 0.3 run through a versioned intent and stops the selected run', asy
   expect(store.getState().launched030).toBe('run');
   await store.getState().stop030('run');
   expect(stopped030).toMatchObject({ systemStartId:'run' });
+});
+
+it('stages a command-only 0.3 flow without requiring a Codex installation', async () => {
+  prepare030();
+  authoredSource = '{"contract":"agsdl-0.3.0","agents":{},"flow":{"entry":"check","steps":{"check":{"type":"call","command":"true"}}}}';
+  useAgsdlStore.setState(state => ({ sessions: { [agsdlSessionKey(target)]: { ...state.sessions[agsdlSessionKey(target)], source: authoredSource } } }));
+  codexCode = 'CODEX_NOT_INSTALLED';
+  await store.getState().start030('check');
+  expect(native.calls).toContain('stage030');
+  expect(store.getState().error).not.toBe('agsdl.execution.codexNotInstalled');
 });

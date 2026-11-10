@@ -96,7 +96,7 @@ export async function compilePlan030(authoredSource: string, source: SourceRevis
     const compiledPlanJson = encode(plan as unknown as ExactObject);
     runtime = { ...runtime, supported: true, diagnostics: runtimeWarnings };
     // The native registry must contain the production Codex adapter for every captured agent.
-    const productRuntimeAvailable = agents.length > 0 && agents.every(agent => registry.harnesses.some(observation =>
+    const productRuntimeAvailable = (agents.length > 0 || graph.steps.some(step => step.type === 'call')) && agents.every(agent => registry.harnesses.some(observation =>
       observation.harness === agent.harness && observation.harness === 'codex' && observation.installation === 'available' &&
       observation.qualified && observation.adapterId === 'codex-app-server-v1'));
     return { static: assessment, runtime, plan, compiledPlanJson, productRuntimeAvailable };

@@ -522,12 +522,14 @@
     "input030": "Instrucciones de entrada",
     "start030": "Iniciar",
     "stop030": "Detener",
-    "unsupported030": "Este documento utiliza una función aún no disponible. No se admiten comandos, solicitudes humanas, steer, ejecución paralela ni tiempos de espera.",
+    "unsupported030": "Este documento utiliza una función que aún no está disponible. Las solicitudes humanas, steer, fan-out, los tiempos límite y las llamadas MCP remotas no están disponibles.",
     "codexNotInstalled": "Codex no está instalado. Instálalo para iniciar la ejecución.",
     "codexLoginRequired": "Inicia sesión en Codex en el perfil privado de Macro antes de comenzar.",
     "codexUnsupported": "Esta versión de Codex o esta plataforma no es compatible. Utiliza Codex 0.167.x en una plataforma validada.",
     "readOnly030": "La configuración de Macro o del proyecto limita esta ejecución a solo lectura, incluso para los agentes que solicitan escribir en el espacio de trabajo. Revisa la configuración si el trabajo requiere modificar archivos.",
-    "interrupted030": "Interrumpida. Esta ejecución no se reiniciará."
+    "interrupted030": "Interrumpida. Esta ejecución no se reiniciará.",
+    "callPlatform030": "Las llamadas locales requieren macOS con Apple silicon y el aislamiento nativo.",
+    "callPermissions030": "Las llamadas locales requieren permisos workspace aprobados para el host y el proyecto, y un proyecto con acceso de escritura."
   },
   "actionFailed": "La acción falló. Inténtelo de nuevo.",
   "userError": {
@@ -1148,7 +1150,9 @@
       "filesWritten": "Archivos escritos",
       "workContinues": "Continuación del trabajo"
     },
-    "occurrenceCount_many": "{{count}} ocurrencias"
+    "occurrenceCount_many": "{{count}} ocurrencias",
+    "commandExitCode": "Código de salida",
+    "commandOutput": "Salida del comando"
   },
   "shell030": {
     "project": "Proyecto",
