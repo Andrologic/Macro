@@ -6,7 +6,7 @@ use crate::ai::stream_tasks::StreamTasks;
 use crate::db::agsdl_execution::{
     dto::EngineStopRequest,
     failure,
-    flow030::{FlowEffect030, WorkRef030},
+    flow030::{FlowEffect030, FlowEffectKind030, WorkRef030},
     public::PublicStopState,
     Result,
 };
@@ -110,6 +110,15 @@ pub(crate) async fn reconcile(
             continue;
         }
         let effect: FlowEffect030 = serde_json::from_value(row["effect"].clone())?;
+        if matches!(effect.kind, FlowEffectKind030::Start { agent: Some(_), .. })
+            && runtime
+                .supervisors
+                .is_registered(&identity.system_start_id)?
+        {
+            // The supervisor cancels agents cooperatively and joins their resources.
+            // Aborting this parent would destroy the executor before physical cleanup.
+            continue;
+        }
         let request_id = format!("flow030:{}:{}", identity.system_start_id, effect.id);
         tasks
             .cancel_owned(&request_id)

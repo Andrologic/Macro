@@ -255,8 +255,8 @@ pub(crate) async fn execution_host_end_provider(
     // The native supervisor, not a JavaScript boolean, supplies termination evidence.
     finish(&app, context, request_id).await
 }
-pub(crate) async fn finish(
-    app: &tauri::AppHandle,
+pub(crate) async fn finish<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     context: EngineContext,
     request_id: String,
 ) -> Result<()> {

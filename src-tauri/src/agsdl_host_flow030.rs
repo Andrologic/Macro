@@ -1246,8 +1246,8 @@ impl StartAuthority030 for Start<'_> {
     }
 }
 
-pub(crate) async fn start_linked(
-    app: Option<&tauri::AppHandle>,
+pub(crate) async fn start_linked<R: tauri::Runtime>(
+    app: Option<&tauri::AppHandle<R>>,
     runtime: &FlowHost030,
     host: &HostState,
     manager: &ConfigManager,
@@ -1279,10 +1279,13 @@ pub(crate) async fn start_linked(
                     .map(|(_, capture)| capture.identity.system_start_id.clone())
             });
             if let Some(system) = system {
-                if app.is_some() {
-                    interrupt_run030(pool, &system).await?;
-                }
+                let interruption = if app.is_some() {
+                    interrupt_run030(pool, &system).await
+                } else {
+                    Ok(())
+                };
                 runtime.supervisors.fail_reservation(&system, error.clone());
+                interruption?;
             }
             return Err(error);
         }
@@ -1301,31 +1304,43 @@ pub(crate) async fn start_linked(
         .is_some_and(|(_, capture)| capture.identity == result.receipt.identity);
     if created_here {
         if let Some(app) = app {
-            let ai = app.state::<crate::ai::AiState>();
-            let config = manager.clone();
-            let executors = crate::agsdl_host_runtime030::Executors030 {
-                agents: Arc::new(crate::agsdl_host_codex030::CodexExecutor030::new(
-                    config.clone(),
-                )),
-                calls: None,
-                humans: None,
-                clock: None,
-            };
-            if let Err(error) = crate::agsdl_host_runtime030::spawn_supervisor030(
-                app.clone(),
-                pool.clone(),
-                config,
-                ai.stream_tasks.clone(),
-                EngineOwner {
-                    system_start_id: result.receipt.identity.system_start_id.clone(),
-                    owner_epoch: "0".into(),
-                },
-                executors,
-            ) {
-                interrupt_run030(pool, &result.receipt.identity.system_start_id).await?;
+            let attachment = (|| {
+                let ai = app
+                    .try_state::<crate::ai::AiState>()
+                    .ok_or_else(unavailable)?;
+                let config = manager.clone();
+                let agents: Arc<dyn crate::agsdl_host_runtime030::AgentExecutor030> = Arc::new(
+                    crate::agsdl_host_codex030::CodexExecutor030::new(config.clone()),
+                );
+                #[cfg(test)]
+                let agents = app
+                    .try_state::<crate::agsdl_host_runtime030::TestAgentExecutor030>()
+                    .map_or(agents, |executor| executor.0.clone());
+                let executors = crate::agsdl_host_runtime030::Executors030 {
+                    agents,
+                    calls: None,
+                    humans: None,
+                    clock: None,
+                };
+                crate::agsdl_host_runtime030::spawn_supervisor030(
+                    app.clone(),
+                    pool.clone(),
+                    config,
+                    ai.stream_tasks.clone(),
+                    EngineOwner {
+                        system_start_id: result.receipt.identity.system_start_id.clone(),
+                        owner_epoch: "0".into(),
+                    },
+                    executors,
+                )
+            })();
+            if let Err(error) = attachment {
+                let interruption =
+                    interrupt_run030(pool, &result.receipt.identity.system_start_id).await;
                 runtime
                     .supervisors
                     .fail_reservation(&result.receipt.identity.system_start_id, error.clone());
+                interruption?;
                 return Err(error);
             }
         }

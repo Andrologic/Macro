@@ -5,7 +5,7 @@ use crate::agsdl_host_flow030 as flow;
 use crate::agsdl_host_runtime030::*;
 use crate::agsdl_host_work_admission030::{AttestedWorkPolicy030, PreparedEffectiveAgentWork030};
 use crate::db::agsdl_execution::{
-    flow030::{FlowEffect030, FlowEvent030, FlowEventKind030, FlowIdentity030, FlowState030},
+    flow030::{FlowEffect030, FlowEvent030, FlowEventKind030, FlowIdentity030},
     start030::StartCapture030,
 };
 use serde_json::{json, Value};
@@ -355,7 +355,7 @@ impl AgentExecutor030 for FakeExecutor {
         cancel: CancellationToken,
     ) -> futures::future::BoxFuture<'static, crate::db::agsdl_execution::Result<()>> {
         self.starts.fetch_add(1, Ordering::SeqCst);
-        self.started.notify_one();
+        let started = self.started.clone();
         let submission = if work.attempt.agent() == "reviewer" {
             "{\"choice\":\"approve\"}"
         } else {
@@ -372,6 +372,7 @@ impl AgentExecutor030 for FakeExecutor {
             if writer {
                 events.emit(json!({"kind":"visibleText","messageId":"draft","textParts":["Synthetic draft"]}), &cancel).await?;
             }
+            started.notify_one();
             if let Some(signal) = submitted {
                 events
                     .emit(
@@ -413,7 +414,7 @@ async fn distinct_executor_chains_two_works_without_double_dispatch() {
         submitted: None,
         independent_finish: false,
     });
-    let executors = Executors030 {
+    let executors: Executors030 = Executors030 {
         agents: executor,
         calls: None,
         humans: None,
@@ -459,7 +460,7 @@ async fn stop_remains_responsive_and_waits_for_physical_end() {
     let starts = Arc::new(AtomicUsize::new(0));
     let snapshot_read = Arc::new(Notify::new());
     let release_clock = Arc::new(Notify::new());
-    let executors = Executors030 {
+    let executors: Executors030 = Executors030 {
         agents: Arc::new(FakeExecutor {
             starts: starts.clone(),
             started: started.clone(),
@@ -539,7 +540,7 @@ async fn an_unowned_claim_is_interrupted_and_never_retried() {
             .unwrap(),
     );
     let starts = Arc::new(AtomicUsize::new(0));
-    let executors = Executors030 {
+    let executors: Executors030 = Executors030 {
         agents: Arc::new(FakeExecutor {
             starts: starts.clone(),
             started: Default::default(),
@@ -604,7 +605,7 @@ async fn accepted_completion_and_stop_do_not_route_or_double_send() {
     let submitted = Arc::new(Notify::new());
     let cancelled = Arc::new(Notify::new());
     let starts = Arc::new(AtomicUsize::new(0));
-    let executors = Executors030 {
+    let executors: Executors030 = Executors030 {
         agents: Arc::new(FakeExecutor {
             starts: starts.clone(),
             started: Default::default(),
@@ -699,7 +700,7 @@ async fn stop_during_physical_controller_evaluation_retains_the_join() {
     let pumps = f.pumps_with_physical_hook(Some((reached.clone(), release.clone())));
     let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let starts = Arc::new(AtomicUsize::new(0));
-    let executors = Executors030 {
+    let executors: Executors030 = Executors030 {
         agents: Arc::new(FakeExecutor {
             starts: starts.clone(),
             started: Default::default(),
@@ -756,7 +757,7 @@ async fn stop_before_the_first_handoff_settles_an_unadmitted_start() {
     stop_fixture(&f, "stop-before-handoff").await;
     let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let starts = Arc::new(AtomicUsize::new(0));
-    let executors = Executors030 {
+    let executors: Executors030 = Executors030 {
         agents: Arc::new(FakeExecutor {
             starts: starts.clone(),
             started: Default::default(),
@@ -844,7 +845,7 @@ async fn stop_between_preparation_and_claim_does_not_start_or_interrupt_the_supe
     let f = Fixture::new(false).await;
     let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let starts = Arc::new(AtomicUsize::new(0));
-    let executors = Executors030 {
+    let executors: Executors030 = Executors030 {
         agents: Arc::new(StopBeforeClaimExecutor {
             host: f.host.clone(),
             pool: f.pool.clone(),
@@ -894,7 +895,7 @@ async fn qualified_codex_registry_and_policy_run_the_write_review_demo() {
     let pumps = f.pumps();
     let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let starts = Arc::new(AtomicUsize::new(0));
-    let executors = Executors030 {
+    let executors: Executors030 = Executors030 {
         agents: Arc::new(FakeExecutor {
             starts: starts.clone(),
             started: Default::default(),
@@ -953,227 +954,543 @@ async fn qualified_codex_registry_and_policy_run_the_write_review_demo() {
                 .is_some_and(|message| message.contains("Synthetic draft"))));
 }
 
-#[tokio::test]
-async fn production_start_path_drives_write_review_with_a_fake_executor() {
-    let _secret_guard = crate::secrets::lock_test_store();
-    let secret_root = tempfile::tempdir().unwrap();
-    crate::secrets::init(secret_root.path()).unwrap();
-    use crate::db::agsdl_execution::dto::{
-        EngineAssociations, EngineEntry, EngineSourceOwner, EngineStartRequest,
-    };
-    use crate::workspace::metadata::{ProjectDto, WorkspaceState};
-    let document = json!({"contract":"agsdl-0.3.0","id":"codex-demo","agents":{
+struct CommandFixture {
+    fixture: Fixture,
+    app: tauri::App<tauri::test::MockRuntime>,
+    request: crate::db::agsdl_execution::dto::EngineStartRequest,
+    pumps: Vec<tokio::task::JoinHandle<()>>,
+    compiler: tokio::task::JoinHandle<()>,
+}
+impl CommandFixture {
+    async fn new(executor: Arc<dyn AgentExecutor030>, with_ai: bool) -> Self {
+        use crate::db::agsdl_execution::dto::{
+            EngineAssociations, EngineEntry, EngineSourceOwner, EngineStartRequest,
+        };
+        use crate::workspace::metadata::{ProjectDto, WorkspaceState};
+        let document = json!({"contract":"agsdl-0.3.0","id":"codex-demo","agents":{
         "writer":{"harness":"codex","permissions":"workspace","model":{"name":"fixture","effort":"high"}},
         "reviewer":{"harness":"codex","permissions":"read-only"}},
         "flow":{"entry":"write","steps":{
             "write":{"type":"agent","agent":"writer","maxVisits":3,"next":"review"},
             "review":{"type":"agent","agent":"reviewer","maxVisits":3,"next":{"approve":[],"revise":"write"}}}}});
-    let mut fixture = Fixture::with_document(document.clone()).await;
-    let root = fixture._temp.path().canonicalize().unwrap();
-    let workspace = root.join("workspace");
-    let metadata = workspace.join(".macro");
-    let project = workspace.join("project");
-    let dir = project.join(".macro/branches/develop/plans/source");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::create_dir_all(&metadata).unwrap();
-    let registered: ProjectDto = serde_json::from_value(json!({
+        let mut fixture = Fixture::with_document(document.clone()).await;
+        let root = fixture._temp.path().canonicalize().unwrap();
+        let workspace = root.join("workspace");
+        let metadata = workspace.join(".macro");
+        let project = workspace.join("project");
+        let dir = project.join(".macro/branches/develop/plans/source");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&metadata).unwrap();
+        let registered: ProjectDto = serde_json::from_value(json!({
         "id":"project", "name":"Synthetic", "path":project, "created_at":"2026-01-01", "status":"active",
         "directEdit":true, "gitSetupState":"not_git", "metadata":{"description":"", "tags":[], "team_members":[], "api_contracts":[], "dependencies":[]}
     })).unwrap();
-    let mut state = WorkspaceState::default();
-    state.standalone_projects.push(registered);
-    std::fs::write(
-        metadata.join("workspace.json"),
-        serde_json::to_vec(&state).unwrap(),
-    )
-    .unwrap();
-    std::fs::write(dir.join("plan.json"), serde_json::to_vec(&json!({
+        let mut state = WorkspaceState::default();
+        state.standalone_projects.push(registered);
+        std::fs::write(
+            metadata.join("workspace.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("plan.json"), serde_json::to_vec(&json!({
         "id":"source", "projectIds":["project"], "revision":1, "updatedAt":"time", "agsdl":{"source":document.to_string()}
     })).unwrap()).unwrap();
-    let scope = EngineSourceOwner {
-        project_id: "project".into(),
-        plan_id: "source".into(),
-        branch: "develop".into(),
-    };
-    let locked = crate::workspace::architect::lock_execution_source_owner(
-        &workspace, &metadata, &scope, None,
-    )
-    .await
-    .unwrap();
-    let request = EngineStartRequest {
-        source: locked.revision.clone(),
-        profile: "macro-agsdl-030-v1".into(),
-        associations: EngineAssociations::default(),
-        request_id: "production-start".into(),
-        entry: Some(EngineEntry {
-            delivery_id: "delivery".into(),
-            message_json: "{\"prompt\":\"Start\"}".into(),
-        }),
-    };
-    drop(locked);
-    let observed = crate::agsdl_host_codex::CodexObservation030 {
-        profile: crate::agsdl_host_codex::Profile {
-            executable: root.join("synthetic-codex"),
-            directory: root.join("profile"),
-            home: root.join("profile/home"),
-            bootstrap: root.join("bootstrap"),
-            digest: "synthetic-profile".into(),
-        },
-        version: "0.167.0".into(),
-        models: vec![
-            json!({"name":"fixture","efforts":["medium","high"],"defaultEffort":"medium","isDefault":true}),
-        ],
-        account_digest: "synthetic-account".into(),
-    };
-    crate::agsdl_host_capture::test_codex_observations030()
-        .lock()
-        .unwrap()
-        .insert(workspace.clone(), observed);
-    fixture.pool = crate::db::create_pool(&root.join("production-start.db"))
+        let scope = EngineSourceOwner {
+            project_id: "project".into(),
+            plan_id: "source".into(),
+            branch: "develop".into(),
+        };
+        let locked = crate::workspace::architect::lock_execution_source_owner(
+            &workspace, &metadata, &scope, None,
+        )
         .await
         .unwrap();
-    let compiler = fixture.incarnation.clone();
-    let worker = tokio::spawn(async move {
-        let job = compiler.compiler.next().await.unwrap();
-        let script = "import {compileHost030} from './src/services/agsdlExecution/hostCompilation';const j=JSON.parse(await Bun.stdin.text());process.stdout.write(await compileHost030(j.authoredSource,j.source,JSON.parse(j.registryJson)));";
-        let mut child = crate::core::process::background_tokio_command("bun")
-            .args(["-e", script])
-            .current_dir(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .unwrap(),
-            )
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
+        let request = EngineStartRequest {
+            source: locked.revision.clone(),
+            profile: "macro-agsdl-030-v1".into(),
+            associations: EngineAssociations::default(),
+            request_id: "production-start".into(),
+            entry: Some(EngineEntry {
+                delivery_id: "delivery".into(),
+                message_json: "{\"prompt\":\"Start\"}".into(),
+            }),
+        };
+        drop(locked);
+        let observed = crate::agsdl_host_codex::CodexObservation030 {
+            profile: crate::agsdl_host_codex::Profile {
+                executable: root.join("synthetic-codex"),
+                directory: root.join("profile"),
+                home: root.join("profile/home"),
+                bootstrap: root.join("bootstrap"),
+                digest: "synthetic-profile".into(),
+            },
+            version: "0.167.0".into(),
+            models: vec![
+                json!({"name":"fixture","efforts":["medium","high"],"defaultEffort":"medium","isDefault":true}),
+            ],
+            account_digest: "synthetic-account".into(),
+        };
+        crate::agsdl_host_capture::test_codex_observations030()
+            .lock()
             .unwrap()
-            .write_all(&serde_json::to_vec(&job).unwrap())
+            .insert(workspace.clone(), observed);
+        fixture.pool = crate::db::create_pool(&root.join("production-start.db"))
             .await
             .unwrap();
-        let output = child.wait_with_output().await.unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        compiler
-            .compiler
-            .complete(
-                &job.generation,
-                &job.ticket,
-                String::from_utf8(output.stdout).unwrap(),
-            )
+        let compiler = fixture.incarnation.clone();
+        let worker = tokio::spawn(async move {
+            let job = compiler.compiler.next().await.unwrap();
+            let script = "import {compileHost030} from './src/services/agsdlExecution/hostCompilation';const j=JSON.parse(await Bun.stdin.text());process.stdout.write(await compileHost030(j.authoredSource,j.source,JSON.parse(j.registryJson)));";
+            let mut child = crate::core::process::background_tokio_command("bun")
+                .args(["-e", script])
+                .current_dir(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .parent()
+                        .unwrap(),
+                )
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(&serde_json::to_vec(&job).unwrap())
+                .await
+                .unwrap();
+            let output = child.wait_with_output().await.unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            compiler
+                .compiler
+                .complete(
+                    &job.generation,
+                    &job.ticket,
+                    String::from_utf8(output.stdout).unwrap(),
+                )
+                .unwrap();
+        });
+        let pumps = fixture.pumps();
+        let host = Arc::try_unwrap(std::mem::take(&mut fixture.host))
+            .ok()
             .unwrap();
-    });
-    let retained = flow::start_linked(
-        None,
-        fixture.host.flow030(),
-        &fixture.host,
-        &fixture.config,
-        &fixture.pool,
-        &workspace,
-        &crate::git::GitState::new(),
-        &request,
-        None,
-    )
-    .await
-    .unwrap();
-    fixture.identity = retained.receipt.identity;
-    fixture.owner = EngineOwner {
-        system_start_id: fixture.identity.system_start_id.clone(),
-        owner_epoch: "0".into(),
-    };
-    let pumps = fixture.pumps();
-    let tasks = crate::ai::stream_tasks::StreamTasks::default();
-    let starts = Arc::new(AtomicUsize::new(0));
-    let executors = Executors030 {
-        agents: Arc::new(FakeExecutor {
-            starts: starts.clone(),
-            started: Default::default(),
-            cleanup: None,
-            cancelled: Default::default(),
-            submitted: None,
-            independent_finish: false,
-        }),
-        calls: None,
-        humans: None,
-        clock: None,
-    };
-    let (_wake, receiver) = watch::channel(0);
+        let db = crate::commands::DbPool::default();
+        db.set_ready(fixture.pool.clone()).await.unwrap();
+        let mut builder = tauri::test::mock_builder()
+            .manage(host)
+            .manage(db)
+            .manage(fixture.config.clone())
+            .manage(crate::git::GitState::new())
+            .manage(crate::WorkspaceMetadataRoot(Arc::new(
+                tokio::sync::RwLock::new(workspace),
+            )))
+            .manage(TestAgentExecutor030(executor));
+        if with_ai {
+            builder = builder.manage(crate::ai::AiState::default());
+        }
+        let app = builder
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        Self {
+            fixture,
+            app,
+            request,
+            pumps,
+            compiler: worker,
+        }
+    }
+    async fn start(
+        &self,
+    ) -> crate::db::agsdl_execution::Result<crate::db::agsdl_execution::public::PublicStartReceipt>
+    {
+        crate::commands::agsdl_execution::execution_start(
+            self.app.handle().clone(),
+            self.request.clone(),
+        )
+        .await
+    }
+    fn host(&self) -> tauri::State<'_, HostState> {
+        self.app.state::<HostState>()
+    }
+    async fn only_system(&self) -> String {
+        sqlx::query_scalar("SELECT system_id FROM engine_start030_requests")
+            .fetch_one(&self.fixture.pool)
+            .await
+            .unwrap()
+    }
+    async fn interrupted(&self, system: &str) -> bool {
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM engine_flow030_interruptions WHERE system_id=?)",
+        )
+        .bind(system)
+        .fetch_one(&self.fixture.pool)
+        .await
+        .unwrap()
+    }
+    async fn finish(self) {
+        self.compiler.await.unwrap();
+        for pump in self.pumps {
+            pump.abort();
+        }
+        let workspace = self
+            .fixture
+            ._temp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("workspace");
+        crate::agsdl_host_capture::test_codex_observations030()
+            .lock()
+            .unwrap()
+            .remove(&workspace);
+    }
+}
+fn fake_executor() -> FakeExecutor {
+    FakeExecutor {
+        starts: Default::default(),
+        started: Default::default(),
+        cleanup: None,
+        cancelled: Default::default(),
+        submitted: None,
+        independent_finish: false,
+    }
+}
+#[tokio::test]
+async fn execution_start_attaches_supervisor_and_completes_write_review() {
+    let _secret_guard = crate::secrets::lock_test_store();
+    let secret_root = tempfile::tempdir().unwrap();
+    crate::secrets::init(secret_root.path()).unwrap();
+    let executor = Arc::new(fake_executor());
+    let f = CommandFixture::new(executor.clone(), true).await;
+    let receipt = tokio::time::timeout(std::time::Duration::from_secs(15), f.start())
+        .await
+        .unwrap()
+        .unwrap();
     tokio::time::timeout(
         std::time::Duration::from_secs(15),
-        supervise_with_emitter030(
-            None,
-            &fixture.host,
-            &fixture.pool,
-            &fixture.config,
-            &tasks,
-            &fixture.owner,
-            &executors,
-            receiver,
-            &CancellationToken::new(),
-            fixture.emitter(&tasks),
-        ),
+        f.host()
+            .flow030()
+            .supervisors
+            .wait(&receipt.system_start_id),
     )
     .await
     .unwrap()
     .unwrap();
-    for pump in pumps {
-        pump.abort();
-    }
-    let result = flow::inspect_run(
-        fixture.host.flow030(),
-        &fixture.host,
-        &fixture.pool,
-        &fixture.owner,
-    )
-    .await
-    .unwrap();
+    let owner = EngineOwner {
+        system_start_id: receipt.system_start_id.clone(),
+        owner_epoch: "0".into(),
+    };
+    let result = flow::inspect_run(f.host().flow030(), &f.host(), &f.fixture.pool, &owner)
+        .await
+        .unwrap();
     assert_eq!(result.flow.state.verdict.as_deref(), Some("succeeded"));
-    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert_eq!(executor.starts.load(Ordering::SeqCst), 2);
+    assert!(result
+        .flow
+        .state
+        .activations
+        .iter()
+        .any(|activation| activation.agent.as_deref() == Some("reviewer")
+            && activation
+                .message_json
+                .as_deref()
+                .is_some_and(|message| message.contains("Synthetic draft"))));
+    // Replaying the same command returns the retained run, even after completion.
+    assert_eq!(
+        f.start().await.unwrap().system_start_id,
+        receipt.system_start_id
+    );
+    assert_eq!(executor.starts.load(Ordering::SeqCst), 2);
+    assert!(!f.interrupted(&receipt.system_start_id).await);
 
-    let mut unsupported = document.clone();
+    let root = f.fixture._temp.path().canonicalize().unwrap();
+    let dir = root.join("workspace/project/.macro/branches/develop/plans/source");
+    let mut plan: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("plan.json")).unwrap()).unwrap();
+    let mut unsupported: Value =
+        serde_json::from_str(plan["agsdl"]["source"].as_str().unwrap()).unwrap();
     unsupported["flow"]["steps"]["write"]["timeoutMs"] = json!(1000);
-    std::fs::write(dir.join("plan.json"), serde_json::to_vec(&json!({
-        "id":"source", "projectIds":["project"], "revision":2, "updatedAt":"later", "agsdl":{"source":unsupported.to_string()}
-    })).unwrap()).unwrap();
+    plan["agsdl"]["source"] = json!(unsupported.to_string());
+    plan["revision"] = json!(2);
+    std::fs::write(dir.join("plan.json"), serde_json::to_vec(&plan).unwrap()).unwrap();
+    let workspace = root.join("workspace");
     let locked = crate::workspace::architect::lock_execution_source_owner(
-        &workspace, &metadata, &scope, None,
+        &workspace,
+        &workspace.join(".macro"),
+        &f.request.source.owner,
+        None,
     )
     .await
     .unwrap();
-    let mut refused = request.clone();
+    let mut refused = f.request.clone();
     refused.source = locked.revision.clone();
     refused.request_id = "unsupported-start".into();
     drop(locked);
-    let failure = flow::start_linked(
-        None,
-        fixture.host.flow030(),
-        &fixture.host,
-        &fixture.config,
-        &fixture.pool,
-        &workspace,
-        &crate::git::GitState::new(),
-        &refused,
-        None,
-    )
-    .await
-    .err()
-    .expect("timeout must be refused");
-    assert_eq!(failure.code, "UNSUPPORTED_030_FEATURE");
-    worker.await.unwrap();
-    crate::agsdl_host_capture::test_codex_observations030()
-        .lock()
-        .unwrap()
-        .remove(&workspace);
+    let error = crate::commands::agsdl_execution::execution_start(f.app.handle().clone(), refused)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "UNSUPPORTED_030_FEATURE");
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM engine_start030_requests")
-        .fetch_one(&fixture.pool)
+        .fetch_one(&f.fixture.pool)
         .await
         .unwrap();
     assert_eq!(count, 1);
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn execution_stop_waits_for_fake_executor_physical_end() {
+    let _secret_guard = crate::secrets::lock_test_store();
+    let secret_root = tempfile::tempdir().unwrap();
+    crate::secrets::init(secret_root.path()).unwrap();
+    let executor = Arc::new(FakeExecutor {
+        cleanup: Some(Arc::new(Notify::new())),
+        ..fake_executor()
+    });
+    let f = CommandFixture::new(executor.clone(), true).await;
+    let receipt = f.start().await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        executor.started.notified(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        f.start().await.unwrap().system_start_id,
+        receipt.system_start_id
+    );
+    assert_eq!(executor.starts.load(Ordering::SeqCst), 1);
+    let app = f.app.handle().clone();
+    let system = receipt.system_start_id.clone();
+    let mut stop = tokio::spawn(async move {
+        crate::commands::agsdl_execution::execution_stop(
+            app.clone(),
+            app.state(),
+            app.state(),
+            crate::db::agsdl_execution::dto::EngineStopRequest {
+                system_start_id: system,
+                request_id: "command-stop".into(),
+                activation_id: None,
+            },
+        )
+        .await
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        executor.cancelled.notified(),
+    )
+    .await
+    .unwrap();
+    let app = f.app.handle().clone();
+    let system = receipt.system_start_id.clone();
+    let mut ensure = tokio::spawn(async move {
+        crate::commands::agsdl_execution::execution_ensure_stop(
+            app,
+            crate::db::agsdl_execution::intents::ExecutionEnsureStopRequest {
+                system_start_id: system,
+                activation_id: None,
+            },
+        )
+        .await
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut stop)
+            .await
+            .is_err(),
+        "Stop returned before the executor's physical end"
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut ensure)
+            .await
+            .is_err(),
+        "EnsureStop returned before physical end"
+    );
+    executor.cleanup.as_ref().unwrap().notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), stop)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), ensure)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(executor.starts.load(Ordering::SeqCst), 1);
+    let owner = EngineOwner {
+        system_start_id: receipt.system_start_id,
+        owner_epoch: "0".into(),
+    };
+    let result = flow::inspect_run(f.host().flow030(), &f.host(), &f.fixture.pool, &owner)
+        .await
+        .unwrap();
+    assert_eq!(result.flow.state.verdict.as_deref(), Some("cancelled"));
+    assert!(result
+        .flow
+        .state
+        .activations
+        .iter()
+        .all(|work| !work.physical));
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn execution_start_attachment_failure_releases_waiters_even_when_marker_fails() {
+    let _secret_guard = crate::secrets::lock_test_store();
+    let secret_root = tempfile::tempdir().unwrap();
+    crate::secrets::init(secret_root.path()).unwrap();
+    for fail_marker in [false, true] {
+        // Missing managed state fails after commit, before supervisor attachment.
+        let f = CommandFixture::new(Arc::new(fake_executor()), false).await;
+        if fail_marker {
+            sqlx::query("CREATE TRIGGER fail_marker BEFORE INSERT ON engine_flow030_interruptions BEGIN SELECT RAISE(ABORT, 'synthetic storage failure'); END").execute(&f.fixture.pool).await.unwrap();
+        }
+        assert!(f.start().await.is_err());
+        let system = f.only_system().await;
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            f.host().flow030().supervisors.wait(&system)
+        )
+        .await
+        .unwrap()
+        .is_err());
+        assert_eq!(f.interrupted(&system).await, !fail_marker);
+        if fail_marker {
+            sqlx::query("DROP TRIGGER fail_marker")
+                .execute(&f.fixture.pool)
+                .await
+                .unwrap();
+            flow::interrupt_previous_runs030(&f.fixture.pool)
+                .await
+                .unwrap();
+            assert!(f.interrupted(&system).await);
+        }
+        f.finish().await;
+    }
+}
+
+struct FailingPreparation {
+    panic: bool,
+}
+impl AgentExecutor030 for FailingPreparation {
+    fn prepare(
+        &self,
+        _: PreparedEffectiveAgentWork030,
+    ) -> crate::db::agsdl_execution::Result<AttestedWorkPolicy030> {
+        assert!(!self.panic, "synthetic supervisor panic");
+        Err(crate::db::agsdl_execution::failure(
+            "HOST_CAPABILITY",
+            "test",
+            "Synthetic preparation failure",
+        ))
+    }
+    fn run(
+        &self,
+        _: AgentWork030,
+        _: WorkEventSink030,
+        _: CancellationToken,
+    ) -> futures::future::BoxFuture<'static, crate::db::agsdl_execution::Result<()>> {
+        unreachable!("failed preparation must never start work")
+    }
+}
+#[tokio::test]
+async fn supervisor_error_and_panic_mark_interrupted_and_release_waiters() {
+    let _secret_guard = crate::secrets::lock_test_store();
+    let secret_root = tempfile::tempdir().unwrap();
+    crate::secrets::init(secret_root.path()).unwrap();
+    for panic in [false, true] {
+        let f = CommandFixture::new(Arc::new(FailingPreparation { panic }), true).await;
+        let receipt = f.start().await.unwrap();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            f.host()
+                .flow030()
+                .supervisors
+                .wait(&receipt.system_start_id),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(
+            error.code,
+            if panic {
+                "INTERRUPTED"
+            } else {
+                "HOST_CAPABILITY"
+            }
+        );
+        assert!(f.interrupted(&receipt.system_start_id).await);
+        f.finish().await;
+    }
+}
+
+struct PanickingClock;
+impl RuntimeClock030 for PanickingClock {
+    fn tick(&self) -> futures::future::BoxFuture<'_, crate::db::agsdl_execution::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn next_wake(
+        &self,
+    ) -> futures::future::BoxFuture<
+        '_,
+        crate::db::agsdl_execution::Result<Option<std::time::Duration>>,
+    > {
+        Box::pin(async { panic!("synthetic dispatch panic with active work") })
+    }
+}
+#[tokio::test]
+async fn supervisor_panic_waits_for_active_executor_cleanup() {
+    let f = Fixture::new(false).await;
+    let executor = Arc::new(FakeExecutor {
+        cleanup: Some(Arc::new(Notify::new())),
+        ..fake_executor()
+    });
+    let executors: Executors030 = Executors030 {
+        agents: executor.clone(),
+        calls: None,
+        humans: None,
+        clock: Some(Arc::new(PanickingClock)),
+    };
+    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let (_wake, receiver) = watch::channel(0);
+    let cancel = CancellationToken::new();
+    let supervisor = supervise_with_emitter030(
+        None,
+        &f.host,
+        &f.pool,
+        &f.config,
+        &tasks,
+        &f.owner,
+        &executors,
+        receiver,
+        &cancel,
+        f.emitter(&tasks),
+    );
+    tokio::pin!(supervisor);
+    tokio::select! {
+        result = &mut supervisor => panic!("supervisor returned before cleanup: {result:?}"),
+        _ = executor.cancelled.notified() => (),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => panic!("panic did not cancel active work"),
+    }
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut supervisor)
+            .await
+            .is_err(),
+        "panic must not bypass the executor's physical cleanup"
+    );
+    executor.cleanup.as_ref().unwrap().notify_one();
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), &mut supervisor)
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code,
+        "INTERRUPTED"
+    );
 }

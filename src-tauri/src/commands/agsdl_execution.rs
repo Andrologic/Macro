@@ -22,8 +22,8 @@ pub async fn execution_read_runtime_projection030(
     crate::agsdl_host_projection030::read(&host, &pool(&state).await?, scope, continuation).await
 }
 #[tauri::command]
-pub async fn execution_start(
-    app: tauri::AppHandle,
+pub async fn execution_start<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     request: EngineStartRequest,
 ) -> repository::Result<PublicStartReceipt> {
     // Dropping a UI invocation cannot abandon a committed Start before native
@@ -90,8 +90,8 @@ pub(crate) fn public_start030(
 }
 
 #[tauri::command]
-pub async fn execution_stop(
-    app: tauri::AppHandle,
+pub async fn execution_stop<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     state: State<'_, DbPool>,
     host: State<'_, crate::agsdl_host::HostState>,
     request: EngineStopRequest,
@@ -136,8 +136,8 @@ pub async fn execution_stop(
     .await
 }
 
-async fn stop_effects(
-    app: tauri::AppHandle,
+async fn stop_effects<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     pool: &sqlx::SqlitePool,
     system_start_id: &str,
     activation_id: Option<&str>,
@@ -197,8 +197,8 @@ async fn owned_stop(
 }
 
 #[tauri::command]
-pub async fn execution_ensure_stop(
-    app: tauri::AppHandle,
+pub async fn execution_ensure_stop<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     request: ExecutionEnsureStopRequest,
 ) -> repository::Result<PublicStopState> {
     // The orchestration, including cancellation and physical joins, survives IPC loss.

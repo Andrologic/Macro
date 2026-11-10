@@ -21,7 +21,7 @@ use crate::{
         Result,
     },
 };
-use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
+use futures::{future::BoxFuture, stream::FuturesUnordered, FutureExt, StreamExt};
 use serde_json::Value;
 use sqlx::{Connection, SqlitePool};
 use std::{
@@ -95,8 +95,8 @@ impl WorkEventSink030 {
     }
 }
 
-pub(crate) fn native_event_emitter030(
-    app: tauri::AppHandle,
+pub(crate) fn native_event_emitter030<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     pool: SqlitePool,
     config: ConfigManager,
     tasks: StreamTasks,
@@ -387,10 +387,10 @@ pub(crate) async fn drain_effects030(
 
 /// Host extensions must start their work and return promptly. They own their
 /// physical completion and wake the registry when native state changes.
-pub(crate) trait HostExecutor030: Send + Sync {
+pub(crate) trait HostExecutor030<R: tauri::Runtime = tauri::Wry>: Send + Sync {
     fn start(
         &self,
-        app: tauri::AppHandle,
+        app: tauri::AppHandle<R>,
         inspection: NativeFlowInspection030,
         effect: FlowEffect030,
         cancel: CancellationToken,
@@ -400,12 +400,15 @@ pub(crate) trait RuntimeClock030: Send + Sync {
     fn tick(&self) -> BoxFuture<'_, Result<()>>;
     fn next_wake(&self) -> BoxFuture<'_, Result<Option<std::time::Duration>>>;
 }
-pub(crate) struct Executors030 {
+pub(crate) struct Executors030<R: tauri::Runtime = tauri::Wry> {
     pub agents: Arc<dyn AgentExecutor030>,
-    pub calls: Option<Arc<dyn HostExecutor030>>,
-    pub humans: Option<Arc<dyn HostExecutor030>>,
+    pub calls: Option<Arc<dyn HostExecutor030<R>>>,
+    pub humans: Option<Arc<dyn HostExecutor030<R>>>,
     pub clock: Option<Arc<dyn RuntimeClock030>>,
 }
+
+#[cfg(test)]
+pub(crate) struct TestAgentExecutor030(pub Arc<dyn AgentExecutor030>);
 
 struct SupervisorHandle030 {
     wake: watch::Sender<u64>,
@@ -416,6 +419,18 @@ struct SupervisorHandle030 {
 #[derive(Default)]
 pub(crate) struct RuntimeRegistry030(Mutex<BTreeMap<String, SupervisorHandle030>>);
 impl RuntimeRegistry030 {
+    pub(crate) fn is_registered(&self, system: &str) -> Result<bool> {
+        self.0
+            .lock()
+            .map(|handles| handles.contains_key(system))
+            .map_err(|_| {
+                failure(
+                    "RUNTIME_UNAVAILABLE",
+                    "runtime",
+                    "Supervisor registry is unavailable",
+                )
+            })
+    }
     pub(crate) fn reserve(&self, system: &str) -> Result<()> {
         let mut handles = self.0.lock().map_err(|_| {
             failure(
@@ -516,22 +531,22 @@ struct LiveAgent030 {
     cancel: CancellationToken,
     stop: Option<(String, flow::ClaimedStopWork030)>,
 }
-struct NativeDriver030<'a> {
-    app: Option<&'a tauri::AppHandle>,
+struct NativeDriver030<'a, R: tauri::Runtime> {
+    app: Option<&'a tauri::AppHandle<R>>,
     emitter: Arc<dyn Fn(String) -> EventEmitter030 + Send + Sync>,
     host: &'a HostState,
     pool: &'a SqlitePool,
     config: &'a ConfigManager,
     tasks: &'a StreamTasks,
     owner: &'a EngineOwner,
-    executors: &'a Executors030,
+    executors: &'a Executors030<R>,
     active: BTreeMap<String, LiveAgent030>,
     joining: FuturesUnordered<BoxFuture<'a, (String, Result<JoinedOwnedAgent030>)>>,
     joined: BTreeMap<String, JoinedOwnedAgent030>,
     ready: BTreeMap<String, JoinedOwnedAgent030>,
     in_flight: BTreeSet<String>,
 }
-impl EffectDriver030 for NativeDriver030<'_> {
+impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
     fn owns_effect(&self, id: &str) -> bool {
         self.in_flight.contains(id)
     }
@@ -686,13 +701,13 @@ impl EffectDriver030 for NativeDriver030<'_> {
 
 /// Called by the start integration in lot 1.5. Registration precedes both the
 /// first revision read and the spawn, so concurrent validated events persist.
-pub(crate) fn spawn_supervisor030(
-    app: tauri::AppHandle,
+pub(crate) fn spawn_supervisor030<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     pool: SqlitePool,
     config: ConfigManager,
     tasks: StreamTasks,
     owner: EngineOwner,
-    executors: Executors030,
+    executors: Executors030<R>,
 ) -> Result<()> {
     let host = app.state::<HostState>();
     let mut handles = host.flow030().supervisors.0.lock().map_err(|_| {
@@ -754,14 +769,14 @@ pub(crate) fn spawn_supervisor030(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn supervise030(
-    app: &tauri::AppHandle,
+async fn supervise030<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     host: &HostState,
     pool: &SqlitePool,
     config: &ConfigManager,
     tasks: &StreamTasks,
     owner: &EngineOwner,
-    executors: &Executors030,
+    executors: &Executors030<R>,
     wake: watch::Receiver<u64>,
     cancel: &CancellationToken,
 ) -> Result<()> {
@@ -792,14 +807,14 @@ async fn supervise030(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn supervise_with_emitter030(
-    app: Option<&tauri::AppHandle>,
+pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
+    app: Option<&tauri::AppHandle<R>>,
     host: &HostState,
     pool: &SqlitePool,
     config: &ConfigManager,
     tasks: &StreamTasks,
     owner: &EngineOwner,
-    executors: &Executors030,
+    executors: &Executors030<R>,
     mut wake: watch::Receiver<u64>,
     cancel: &CancellationToken,
     emitter: Arc<dyn Fn(String) -> EventEmitter030 + Send + Sync>,
@@ -819,7 +834,9 @@ pub(crate) async fn supervise_with_emitter030(
         ready: BTreeMap::new(),
         in_flight: BTreeSet::new(),
     };
-    let outcome = async {
+    // Keep the driver outside the unwind boundary so panic follows the same
+    // cooperative cancellation and physical joins as an ordinary dispatch error.
+    let outcome = std::panic::AssertUnwindSafe(async {
     loop {
         // Subscribe/mark observed BEFORE reading state. A wake during the read
         // remains unseen and changed() returns immediately on the next select.
@@ -901,7 +918,9 @@ pub(crate) async fn supervise_with_emitter030(
             _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => (),
         }
     }
-    }.await;
+    }).catch_unwind().await.unwrap_or_else(|_| Err(failure(
+        "INTERRUPTED", "runtime", "Supervisor panicked before physical cleanup",
+    )));
     for live in driver.active.values() {
         live.cancel.cancel();
     }
