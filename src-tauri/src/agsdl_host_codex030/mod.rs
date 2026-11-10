@@ -652,7 +652,9 @@ for line in sys.stdin:
  elif method=='skills/list': result={'data':[{'cwd':bootstrap,'skills':[],'errors':[]}]}
  elif method=='command/exec': result={'exitCode':0}
  elif method in ('thread/start','thread/resume'):
-  result={'thread':{'id':'thread'},'model':'fixture','approvalPolicy':'never','activePermissionProfile':{'id':'macro-agsdl'},'cwd':bootstrap,'runtimeWorkspaceRoots':[bootstrap],'instructionSources':[]}
+  assert p['cwd']==bootstrap
+  assert p['runtimeWorkspaceRoots']==list(settings['permissions']['macro-agsdl']['workspace_roots'])
+  result={'thread':{'id':'thread'},'model':'fixture','approvalPolicy':'never','activePermissionProfile':{'id':'macro-agsdl'},'cwd':bootstrap,'runtimeWorkspaceRoots':p['runtimeWorkspaceRoots'],'instructionSources':[]}
  elif method=='turn/interrupt':
   open(sys.argv[4]+'.interrupted','w').write('yes')
   result={}
@@ -963,5 +965,63 @@ for line in sys.stdin:
         let receipt: Value = serde_json::from_str(&final_receipt.receipt_json).unwrap();
         assert_eq!(receipt["decision"]["kind"], "accepted");
         assert_eq!(receipt["decision"]["output"]["choice"], "approve");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated private Macro profile and synthetic workspace"]
+    async fn real_private_codex_workspace_sandbox() {
+        let config = ConfigManager::initialize(
+            std::env::var_os("MACRO_CODEX_TEST_CONFIG_ROOT")
+                .expect("set MACRO_CODEX_TEST_CONFIG_ROOT")
+                .into(),
+        )
+        .await
+        .unwrap();
+        let workspace =
+            std::env::var_os("MACRO_CODEX_TEST_WORKSPACE").expect("set MACRO_CODEX_TEST_WORKSPACE");
+        let temp = tempfile::tempdir_in(workspace).unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let root = base.join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        let outside = base.join("outside.txt");
+        let profile = profile::prepare(&config).unwrap();
+        for read_only in [false, true] {
+            let inside = root.join(if read_only { "review.txt" } else { "write.txt" });
+            let mut process = ContainedBackgroundProcess::spawn(
+                profile.app_server_command(&root, read_only).unwrap(),
+            )
+            .unwrap();
+            let mut client = Client::new(
+                process.take_stdin().unwrap(),
+                process.take_stdout().unwrap(),
+            );
+            client.initialize().await.unwrap();
+            client
+                .preflight(&profile, root.to_str().unwrap(), read_only)
+                .await
+                .unwrap();
+            // Pass file arguments separately, so no path can become shell code.
+            let result = client.request("command/exec", json!({"command":["/bin/sh","-c","printf inside > \"$1\"; printf outside > \"$2\"","sandbox-test",inside,outside],"cwd":profile.bootstrap,"runtimeWorkspaceRoots":[root],"permissionProfile":"macro-agsdl","timeoutMs":5000,"outputBytesCap":4096})).await;
+            drop(client);
+            process.terminate_bounded().await.unwrap();
+            let result = result.unwrap();
+            assert_ne!(
+                result["exitCode"], 0,
+                "outside write must be denied: {result}"
+            );
+            assert!(!outside.exists(), "Codex wrote outside its workspace");
+            assert_eq!(
+                inside.exists(),
+                !read_only,
+                "workspace write policy differed: {result}"
+            );
+            if !read_only {
+                assert_eq!(std::fs::read_to_string(inside).unwrap(), "inside");
+            }
+            eprintln!(
+                "Native sandbox readOnly={read_only}: outside denied, inside written={}",
+                !read_only
+            );
+        }
     }
 }
