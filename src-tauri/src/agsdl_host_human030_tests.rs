@@ -1775,6 +1775,7 @@ async fn pending_human_generation_loss_is_interrupted_and_never_replayed() {
     assert_eq!(page.requests[0].id, request);
     let facts: Value =
         serde_json::from_str(page.requests[0].flow_json.as_deref().unwrap()).unwrap();
+    assert_eq!(facts["clock"]["value"]["works"], json!([]));
     assert_eq!(facts["state"]["kind"], "cancelled");
     assert_eq!(facts["state"]["resolution"]["reason"], "revocation");
 }

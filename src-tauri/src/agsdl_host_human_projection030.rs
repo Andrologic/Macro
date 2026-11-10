@@ -92,6 +92,10 @@ pub(crate) async fn read(
         let deadline: Value = serde_json::from_str(row.get("deadline_json"))?;
         let mut works = Vec::new();
         for work in &work_ids {
+            // Waiting for a person is the approval itself, not machine work.
+            if kind == "approval" {
+                continue;
+            }
             let row = sqlx::query("SELECT snapshot_json,timeout_json FROM engine_flow030_clock_works WHERE system_id=? AND invocation_id=? AND activation_id=?")
                 .bind(&scope.system_start_id).bind(&capture.identity.flow_invocation_id).bind(work).fetch_one(&mut *tx).await?;
             let snapshot: Value = serde_json::from_str(row.get("snapshot_json"))?;
