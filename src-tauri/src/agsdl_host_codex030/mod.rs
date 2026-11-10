@@ -673,7 +673,8 @@ for line in sys.stdin:
  print(json.dumps({'id':i,'result':result}),flush=True)
  if method=='turn/start' and mode!='cancel':
   choice='bad' if mode in ('correct','exhausted') and count==1 else 'approve'
-  text='{}' if mode=='invalid_envelope' and count==1 else json.dumps({'text':'hello','submissionJson':json.dumps({'results':{'summary':'Done'},'choice':choice})})
+  submission={'version':'macro-agsdl-agent-work/030','agentJson':'{}'} if mode=='internal_contract' and count==1 else {'results':{'summary':'Done'},'choice':choice}
+  text='{}' if mode=='invalid_envelope' and count==1 else json.dumps({'text':'hello','submissionJson':json.dumps(submission)})
   print(json.dumps({'method':'item/completed','params':{'threadId':'thread','turnId':'turn'+str(count),'item':{'id':'item'+str(count),'type':'agentMessage','phase':'final_answer','text':text}}}),flush=True)
   print(json.dumps({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'turn'+str(count),'status':'completed'}}}),flush=True)
 "#;
@@ -755,6 +756,7 @@ for line in sys.stdin:
             ("correct", false, 2),
             ("exhausted", false, 1),
             ("invalid_envelope", false, 2),
+            ("internal_contract", false, 2),
         ] {
             let (result, events) = fake_session(mode, read_only).await;
             result.unwrap();
@@ -776,7 +778,61 @@ for line in sys.stdin:
                     submissions
                 }
             );
+            let receipt = controller_receipt(
+                test_contract(json!(["approve"]), if mode == "exhausted" { 0 } else { 2 }),
+                events,
+            )
+            .await;
+            let receipt: Value = serde_json::from_str(&receipt.receipt_json).unwrap();
+            if mode == "exhausted" {
+                assert_eq!(receipt["decision"]["kind"], "stopping");
+                assert_eq!(receipt["decision"]["code"], "OUTPUT_INVALID");
+            } else {
+                assert_eq!(receipt["decision"]["kind"], "accepted");
+                assert_eq!(receipt["decision"]["output"]["choice"], "approve");
+            }
         }
+    }
+    #[tokio::test]
+    async fn fresh_install_ceiling_reaches_the_app_server_policy() {
+        use crate::agsdl_permissions::{
+            normalize_requested, EffectivePolicy, PathContext, Preset, RequestedPermissions,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let config = ConfigManager::initialize(temp.path().join("config"))
+            .await
+            .unwrap();
+        config
+            .register_project_root("fresh-project", temp.path().join("metadata"))
+            .await
+            .unwrap();
+        let lease = config.lock_execution_tools("fresh-project").await.unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let context = PathContext {
+            workspace: root.clone(),
+            home: root,
+        };
+        let requested = normalize_requested(
+            RequestedPermissions::Preset(Preset::Workspace),
+            context.clone(),
+        )
+        .unwrap();
+        let host = normalize_requested(lease.agsdl_host_permissions.clone(), context).unwrap();
+        let policy = EffectivePolicy::new(requested, host.clone(), host);
+        let read_only = codex_read_only030(&policy).unwrap();
+        assert!(
+            read_only,
+            "a fresh install must preserve its approved read-only ceiling"
+        );
+        let (result, events) = fake_session("ok", read_only).await;
+        result.unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["kind"] == "submit")
+                .count(),
+            1
+        );
     }
     #[tokio::test]
     async fn fake_app_server_protocol_error_fails() {
