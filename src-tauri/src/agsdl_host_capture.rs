@@ -578,7 +578,7 @@ pub(crate) async fn observation(
                 {"harness":"pi", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/pi/module.json")}
             ],
             "harnesses":harnesses, "agents":agents, "hostCapabilities": if cfg!(all(target_os="macos", target_arch="aarch64")) {
-                json!([{"name":"call.command","support":"native","evidenceJson":"{\"transport\":\"confined-local\"}"},{"name":"call.mcp","support":"native","evidenceJson":"{\"transport\":\"confined-stdio\"}"}])
+                json!([{"name":"approval","support":"native","evidenceJson":"{\"runtime\":\"flow-human-clock\"}"},{"name":"call.command","support":"native","evidenceJson":"{\"transport\":\"confined-local\"}"},{"name":"call.mcp","support":"native","evidenceJson":"{\"transport\":\"confined-stdio\"}"}])
             } else { json!([]) }
         });
         let digest = Sha256::digest(serde_json::to_vec(&(&observation, &registry))?);
@@ -631,7 +631,7 @@ pub(crate) fn codex_registry030(
     }
     let adapter = crate::agsdl_host_codex::ADAPTER;
     let evidence = json!({"adapterId":adapter,"version":observed.version,"profileDigest":observed.profile.digest,"kind":"native-codex"}).to_string();
-    let capabilities = ["result-submission", "continuity", "permission-enforcement", "contained-stop", "response-attribution", "instructions", "resources", "model.name", "model.effort", "instance.new", "delivery.queue"]
+    let capabilities = ["result-submission", "continuity", "permission-enforcement", "contained-stop", "response-attribution", "instructions", "resources", "model.name", "model.effort", "instance.new", "delivery.queue", "answer-timeout"]
         .into_iter().map(|name| json!({"name":name,"support":if name == "resources" {"approximate"} else {"native"},"evidenceJson":evidence})).collect::<Vec<_>>();
     let default = observed
         .models
@@ -788,7 +788,7 @@ pub(crate) fn product_slice030(
                 "Only the Codex harness is supported for this run.",
             );
         }
-        for field in ["answerTimeoutMs", "completionCheck", "skills", "mcpServers"] {
+        for field in ["completionCheck", "skills", "mcpServers"] {
             if agent.get(field).is_some() {
                 return issue(
                     format!("{pointer}/{field}"),
@@ -827,20 +827,12 @@ pub(crate) fn product_slice030(
         let pointer = format!("/flow/steps/{}", name.replace('~', "~0").replace('/', "~1"));
         if !matches!(
             step.get("type").and_then(Value::as_str),
-            Some("agent" | "call")
+            Some("agent" | "call" | "approval")
         ) {
             return issue(
                 pointer,
-                "Only agent and call steps are supported for this run.",
+                "Only agent, call and approval steps are supported for this run.",
             );
-        }
-        for field in ["timeoutMs", "answerTimeoutMs"] {
-            if step.get(field).is_some() {
-                return issue(
-                    format!("{pointer}/{field}"),
-                    "Timeouts are not yet supported.",
-                );
-            }
         }
         if step.get("delivery").and_then(Value::as_str) == Some("steer") {
             return issue(
@@ -862,22 +854,14 @@ pub(crate) fn product_slice030(
         );
         if !matches!(
             step.get("type").and_then(Value::as_str),
-            Some("agent" | "call")
+            Some("agent" | "call" | "approval")
         ) {
             return issue(
                 pointer,
-                "Only agent and call steps are supported for this run.",
+                "Only agent, call and approval steps are supported for this run.",
             );
         }
         let declaration = exact_json::value(step.get("declarationJson")?.as_str()?).ok()?;
-        for field in ["timeoutMs", "answerTimeoutMs"] {
-            if declaration.get(field).is_some() {
-                return issue(
-                    format!("{pointer}/{field}"),
-                    "Timeouts are not yet supported.",
-                );
-            }
-        }
         if declaration.get("delivery").and_then(Value::as_str) == Some("steer") {
             return issue(
                 format!("{pointer}/delivery"),
@@ -2128,8 +2112,7 @@ mod product_slice030_tests {
         let base = json!({"contract":"agsdl-0.3.0", "agents":{"writer":{"harness":"codex"}},
             "flow":{"entry":"write","steps":{"write":{"type":"agent","agent":"writer"}}}});
         for (pointer, value) in [
-            ("/flow/steps/write/type", json!("approval")),
-            ("/flow/steps/write/timeoutMs", json!(10)),
+            ("/flow/steps/write/type", json!("compose")),
             ("/flow/steps/write/delivery", json!("steer")),
             ("/agents/writer/harness", json!("claude")),
         ] {

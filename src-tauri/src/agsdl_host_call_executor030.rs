@@ -35,6 +35,7 @@ pub(crate) struct CallExecutor030 {
 pub(crate) struct StartedCall030 {
     pub attempt: CallAttempt030,
     pub cancel: CancellationToken,
+    pub timeout: CancellationToken,
     pub request_id: String,
     pub result: tokio::sync::oneshot::Receiver<Result<Option<JoinedCall030>>>,
 }
@@ -80,16 +81,23 @@ impl<R: tauri::Runtime> HostExecutor030<R> for CallExecutor030 {
             };
             let request_id = claim.request_id();
             let (send, result) = tokio::sync::oneshot::channel();
+            let timeout = CancellationToken::new();
+            let machine_timeout = timeout.clone();
             let (owned_attempt, owned_cancel) = (attempt.clone(), cancel.clone());
+            let (clock_ready, wait_clock) = tokio::sync::oneshot::channel();
             let worker_app = app.clone();
+            let clock_pool = pool.clone();
             claim
                 .handoff_host(&tasks, async move {
                     let host = worker_app.state::<HostState>();
                     let result = async {
+                        wait_clock.await.map_err(|_| {
+                            failure("INTERRUPTED", "clock", "Clock admission failed")
+                        })?;
                         let authority = NativeCallAuthority030::capture(&host, &owner).await?;
                         let control = Control {
                             stop: owned_cancel,
-                            machine_timeout: CancellationToken::new(),
+                            machine_timeout,
                         };
                         let prepared = prepared(&pool, &owned_attempt).await?;
                         // Keep approved configuration leases until the synchronous spawn.
@@ -173,9 +181,21 @@ impl<R: tauri::Runtime> HostExecutor030<R> for CallExecutor030 {
                     let _ = send.send(result);
                 })
                 .await?;
+            let human = host
+                .flow030()
+                .humans
+                .broker(&host, &clock_pool, &effect.identity)
+                .await?;
+            {
+                let _operation = human.operation.lock().await;
+                human.admit_host_work(&host, &effect.id).await?;
+                human.pump(&host, &CancellationToken::new()).await?;
+            }
+            let _ = clock_ready.send(());
             Ok(Some(StartedCall030 {
                 attempt,
                 cancel,
+                timeout,
                 request_id,
                 result,
             }))
@@ -302,7 +322,9 @@ pub(crate) trait CallTransport030: Send + Sync {
         BoxFuture<'static, Result<crate::db::agsdl_execution::call_protocol030::CallEnd030>>,
     >;
 }
-pub(crate) struct NativeCallTransport030;
+pub(crate) struct NativeCallTransport030 {
+    pub humans: Option<std::sync::Arc<dyn transport::HostPort>>,
+}
 impl CallTransport030 for NativeCallTransport030 {
     fn start(
         &self,
@@ -315,8 +337,12 @@ impl CallTransport030 for NativeCallTransport030 {
         BoxFuture<'static, Result<crate::db::agsdl_execution::call_protocol030::CallEnd030>>,
     > {
         let started = start_transport(grant, &prepared, &capture)?;
+        let humans = self
+            .humans
+            .clone()
+            .unwrap_or_else(|| std::sync::Arc::new(NoHuman));
         Ok(Box::pin(async move {
-            run_transport(started, &prepared, &attempt, &control).await
+            run_transport(started, &prepared, &attempt, &control, humans).await
         }))
     }
 }
@@ -402,6 +428,7 @@ async fn run_transport(
     prepared: &PreparedCall030,
     attempt: &CallAttempt030,
     control: &Control,
+    humans: std::sync::Arc<dyn transport::HostPort>,
 ) -> Result<crate::db::agsdl_execution::call_protocol030::CallEnd030> {
     let (event, failure, evidence) = match started {
         StartedTransport::Command(child, policy) => {
@@ -434,13 +461,7 @@ async fn run_transport(
                 native_call_id: attempt.call_id().into(),
             };
             let result = session
-                .call(
-                    tool,
-                    arguments_json,
-                    std::sync::Arc::new(NoHuman),
-                    &identity,
-                    control,
-                )
+                .call(tool, arguments_json, humans, &identity, control)
                 .await;
             let (evidence, cleanup) = session.shutdown(result.is_ok()).await;
             match result {

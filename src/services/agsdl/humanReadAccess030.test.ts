@@ -1,6 +1,6 @@
 import { expect, it } from 'bun:test';
 import type { HumanPage030 } from '../../types/generated/ipc';
-import { createHumanReadAccess030, readHumanFacts030, submitHumanUnqualified030 } from './humanReadAccess030';
+import { createHumanReadAccess030, readHumanFacts030 } from './humanReadAccess030';
 import { inspectionFixture030 } from './runInspection030.testSupport';
 
 const capture = inspectionFixture030().capture;
@@ -21,7 +21,7 @@ it('checks the entire public page series without treating legacy records as true
   });
   expect(calls).toBe(2);
   expect(result).toEqual({ kind: 'unavailable', gap: 'human-flow-projection' });
-  expect(await readHumanFacts030(scope, async () => ({ ...pages[1], total: '0', requests: [] }))).toEqual(result);
+  expect(await readHumanFacts030(scope, async () => ({ ...pages[1], total: '0', requests: [] }))).toEqual({ kind: 'ready', revision: 'native', value: [] });
 });
 
 it('refuses a changed human cursor or foreign source rather than publishing partial data', async () => {
@@ -36,21 +36,23 @@ it('does not turn a missing legacy Stored row into an empty true-flow queue', as
     .toEqual({ kind: 'unavailable', gap: 'human-flow-projection' });
 });
 
-it('provides a closed submit and exact-scope read for the lot 8 client', async () => {
-  let reads = 0;
+it('submits exact user text through the native command and reads the durable resolution', async () => {
+  let closed = false, submissions = 0;
+  const native = () => ({ scope, id: 'human', revision: closed ? '1' : '0', workIds: ['activation'],
+    occurrences: [{ workId: 'activation', activation: { kind: 'unavailable', gap: 'human-occurrence-mapping' } }],
+    content: { kind: 'flowChoice', title: 'Release?', description: '', messageJson: '{}', choices: ['publish', 'revise'] },
+    state: closed ? { kind: 'resolved', receiptId: 'receipt', resolution: { receiptId: 'receipt', resolvedAtMs: '12', accepted: true,
+      reason: 'person', answer: { answer: {kind: 'approval', choice: 'revise', comment: 'Écrit exactement.'}, origin: 'person', receivedAtMs: '12' } } } : {kind: 'open'},
+    clock: { kind: 'available', value: { openedAtMs: '1', observedAtMs: '12', timeoutMs: '1e3', works: [] } } });
   const access = createHumanReadAccess030(scope, {
     async readExecutionSnapshot030() { return capture; },
-    async readExecutionHumans030(query) { reads++; return { scope: query, cursor: 'native', total: '1', requests: [request('human')], nextPage: null }; },
+    async readExecutionHumans030(query) { const value=native();return { scope: query, cursor: String(closed), total: '1', requests: [{ ...request('human'),revision:value.revision,flowJson:JSON.stringify(value) }], nextPage: null }; },
+    async submitExecutionHuman030(input) { expect(input.answer).toEqual({kind:'approval',choice:'revise',comment:'Écrit exactement.'});submissions++;closed=true;return 'receipt'; },
   });
-  await expect(access.read({ scope, requestId: 'human' })).rejects.toMatchObject({ code: 'DTO_UNAVAILABLE',
-    details: { kind: 'unavailable', gap: 'human-flow-projection' } });
-  const before = reads;
-  await expect(access.read({ scope: { ...scope, systemStartId: 'other' }, requestId: 'human' })).rejects.toMatchObject({ code: 'SCOPE_INVALID' });
-  expect(reads).toBe(before);
-  const result = await access.submit({ scope, requestId: 'human', expectedRevision: '0', answer: { kind: 'decision', decision: 'yes', comment: '' } });
-  expect(result).toMatchObject({ kind: 'refused', refusal: { code: 'CONTRACT_UNSUPPORTED', message: expect.stringContaining('non qualifié') } });
-  expect(reads).toBe(before);
-  expect(access.submit).toBe(submitHumanUnqualified030);
+  expect((await access.read({scope,requestId:'human'})).clock).toMatchObject({kind:'available',value:{timeoutMs:'1000'}});
+  expect(await access.submit({scope,requestId:'human',expectedRevision:'0',answer:{kind:'approval',choice:'revise',comment:'Écrit exactement.'}})).toMatchObject({kind:'received',receipt:{revision:'1',state:{kind:'resolved'}}});
+  expect(submissions).toBe(1);
+  await expect(access.read({scope:{...scope,systemStartId:'foreign'},requestId:'human'})).rejects.toMatchObject({code:'SCOPE_INVALID'});
 });
 
 it('rejects a foreign capture before attempting human readback', async () => {

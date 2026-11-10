@@ -4,4 +4,8 @@ import type { HumanContent030 } from "./HumanContent030";
 /**
  * Only these explicitly public fields may be exposed after native attestation.
  */
-export type PublicHumanRequest030 = { id: string, revision: string, status: string, workIds: Array<string>, content: HumanContent030, };
+export type PublicHumanRequest030 = { id: string, revision: string, status: string, workIds: Array<string>, content: HumanContent030,
+/**
+ * True-flow facts. Absent on the historical projection.
+ */
+flowJson?: string, };

@@ -31,6 +31,7 @@ async fn host_fixture(
         f.owner.clone(),
         Executors030 {
             agents: Arc::new(Executor {
+                plans: Default::default(),
                 running: Arc::new(Mutex::new(Vec::new())),
                 wake: watch::channel(0).0,
             }),
@@ -40,11 +41,33 @@ async fn host_fixture(
                     pool: f.pool.clone(),
                     tasks: tasks.clone(),
                     owner: f.owner.clone(),
-                    transport: Arc::new(crate::agsdl_host_call_executor030::NativeCallTransport030),
+                    transport: Arc::new(
+                        crate::agsdl_host_call_executor030::NativeCallTransport030 {
+                            humans: Some(Arc::new(
+                                crate::agsdl_host_human_executor030::CallHumans030 {
+                                    app: f.app.handle().clone(),
+                                    pool: f.pool.clone(),
+                                    identity: f.identity.clone(),
+                                },
+                            )),
+                        },
+                    ),
                 },
             )),
-            humans: None,
-            clock: None,
+            humans: Some(Arc::new(
+                crate::agsdl_host_human_executor030::HumanExecutor030 {
+                    pool: f.pool.clone(),
+                    tasks: tasks.clone(),
+                },
+            )),
+            clock: Some(Arc::new(
+                crate::agsdl_host_human_executor030::HumanClockRuntime030 {
+                    app: f.app.handle().clone(),
+                    pool: f.pool.clone(),
+                    tasks: tasks.clone(),
+                    identity: f.identity.clone(),
+                },
+            )),
         },
     )
     .unwrap();
@@ -261,14 +284,10 @@ async fn native_stdio_mcp_preserves_structured_error_result_and_operands() {
 }
 
 #[test]
-fn native_preflight_keeps_http_humans_timeouts_and_parallelism_closed() {
+fn native_preflight_opens_humans_timeouts_but_keeps_http_and_parallelism_closed() {
     let base = document(json!({"type":"call","command":"true"}));
     assert!(crate::agsdl_host_capture::product_slice030(&base.to_string(), None).is_none());
-    for (field, value) in [
-        ("timeoutMs", json!(10)),
-        ("answerTimeoutMs", json!(10)),
-        ("delivery", json!("steer")),
-    ] {
+    for (field, value) in [("delivery", json!("steer"))] {
         let mut doc = base.clone();
         doc["flow"]["steps"]["check"][field] = value;
         assert!(crate::agsdl_host_capture::product_slice030(&doc.to_string(), None).is_some());
@@ -280,7 +299,9 @@ fn native_preflight_keeps_http_humans_timeouts_and_parallelism_closed() {
     assert!(diagnostic.message.contains("physical cancellation"));
     let mut doc = base.clone();
     doc["flow"]["steps"]["check"]["type"] = json!("approval");
-    assert!(crate::agsdl_host_capture::product_slice030(&doc.to_string(), None).is_some());
+    assert!(crate::agsdl_host_capture::product_slice030(&doc.to_string(), None).is_none());
+    doc["flow"]["steps"]["check"]["timeoutMs"] = json!(10);
+    assert!(crate::agsdl_host_capture::product_slice030(&doc.to_string(), None).is_none());
     let plan = json!({"steps":[],"routes":[{"targets":[{},{}]}]});
     assert!(crate::agsdl_host_capture::product_slice030(
         &base.to_string(),
@@ -308,4 +329,91 @@ async fn native_mcp_operand_failure_routes_without_launching_server() {
     );
     assert!(view.effects.iter().all(|row| row["status"] == "settled"));
     assert!(!server_started.exists());
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[tokio::test]
+async fn native_command_deadline_waits_for_the_real_child_before_routing_timeout() {
+    let mut doc = document(
+        json!({"type":"call","command":"sleep 120 & child=$!; printf '%s' \"$child\" > timeout-child; wait","timeoutMs":700,"onError":"recover"}),
+    );
+    doc["flow"]["steps"]["recover"] =
+        json!({"type":"call","command":"test ! -e timeout-forbidden; printf recovered"});
+    let (f, bun, pump, _) = host_fixture(doc).await;
+    let file = f._temp.path().join("workspace/timeout-child");
+    let pid = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Ok(raw) = std::fs::read_to_string(&file) {
+                if let Ok(pid) = raw.parse::<i32>() {
+                    break pid;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let view = finish(&f, bun, pump).await;
+    assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
+    assert!(
+        matches!(&view.state.activations[0].result,Some(WorkResultRecord030::Failed{error}) if error.code=="TIMEOUT")
+    );
+    assert_eq!(
+        unsafe { libc::kill(pid, 0) },
+        -1,
+        "Timed-out child must be absent before the route"
+    );
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[tokio::test]
+async fn native_mcp_question_answers_and_expires_while_machine_time_is_paused() {
+    let server = r#"while IFS= read -r line; do case "$line" in *'"method":"initialize"'*) printf '%s\n' '{"jsonrpc":"2.0","id":"1","result":{"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"question-fixture","version":"1"}}}' ;; *'"method":"tools/call"'*) printf '%s\n' '{"jsonrpc":"2.0","id":"person","method":"elicitation/create","params":{"message":"Release note?","requestedSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}}}' ;; *'"id":"person"'*) printf '%s\n' '{"jsonrpc":"2.0","id":"2","result":{"content":[],"structuredContent":{"answered":true},"isError":false}}' ;; esac; done"#;
+    for expire in [false, true] {
+        let mut step =
+            json!({"type":"call","mcp":{"server":"local","tool":"check"},"timeoutMs":1500});
+        if expire {
+            step["answerTimeoutMs"] = json!(200);
+        }
+        let mut doc = document(step);
+        doc["mcpServers"] = json!({"local":{"command":["/bin/sh","-c",server]}});
+        let (f, bun, pump, _) = host_fixture(doc).await;
+        let scope = crate::db::agsdl_execution::public030::HumanScope030 {
+            system_start_id: f.identity.system_start_id.clone(),
+            source: serde_json::from_value(f.plan.source.clone()).unwrap(),
+        };
+        let page = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let page =
+                    crate::agsdl_host_human_projection030::read(&f.pool, scope.clone(), None)
+                        .await
+                        .unwrap();
+                if !page.requests.is_empty() {
+                    break page;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        if !expire {
+            tokio::time::sleep(std::time::Duration::from_millis(1600)).await;
+            let host = f.app.state::<HostState>();
+            let broker = host
+                .flow030()
+                .humans
+                .broker(&host, &f.pool, &f.identity)
+                .await
+                .unwrap();
+            let _operation = broker.operation.lock().await;
+            broker.submit(&host,crate::agsdl_host_human030::HumanSubmission030 {scope:scope.clone(),request_id:page.requests[0].id.clone(),expected_revision:"0".into(),answer:crate::agsdl_host_human030::HumanAnswer030::Question {answer_json:r#"{"action":"accept","content":{"text":"Écrit par une personne."}}"#.into()}},crate::agsdl_host_human030::HumanOrigin030::Person).await.unwrap();
+            broker.pump(&host, &CancellationToken::new()).await.unwrap();
+        }
+        let view = finish(&f, bun, pump).await;
+        assert_eq!(
+            view.state.verdict.as_deref(),
+            Some("succeeded"),
+            "Machine timeout must pause during the human wait"
+        );
+    }
 }

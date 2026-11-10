@@ -124,9 +124,19 @@ Le moniteur affiche le code de sortie et le texte de la commande. Stop attend
 l'arrêt du processus et de ses descendants avant de terminer le run.
 
 Les serveurs MCP HTTP restent refusés, car l'arrêt distant ne peut pas être
-confirmé. L'accès MCP des agents, les demandes humaines, les délais, steer,
-fan-out et les autres capacités hors tranche restent refusés. Un serveur local
-qui demande une interaction humaine échoue avec `CALL_FAILED` et est arrêté.
+confirmé. Les étapes `approval` proposent les choix déclarés et conservent le
+commentaire exact. Le panneau « Demandes pour vous » permet de répondre et
+signale leur expiration. Les questions de formulaire des appels MCP stdio
+utilisent le même suivi humain. `answerTimeoutMs` décline une question restée
+sans réponse, puis le serveur continue. `timeoutMs` borne le temps machine des
+agents et des appels et reste suspendu pendant leurs demandes humaines.
+Une approbation utilise son propre `timeoutMs` et échoue avec `APPROVAL_TIMEOUT`.
+Les délais attendent l'arrêt du travail et de ses descendants avant de suivre
+`onError`. Les réponses dépassant 65 536 octets JSON sont refusées avant
+leur enregistrement.
+
+L'accès MCP des agents, les permissions `ask`, `planFirst: ask`, steer, fan-out,
+les compositions et les autres capacités hors tranche restent refusés.
 Les runs interrompus au redémarrage restent consultables et ne reprennent pas.
 
 L'autorisation exige ensemble `staticValid`, `runtimeSupported`, une
@@ -207,7 +217,7 @@ wrappers générés, sans modifier leurs fichiers à la main.
 | Lancer | `execution_stage_intent`, `execution_submit_intent`, `execution_read_intent`, `execution_close_intent` ; dispatch existant `execution_start` | Fournisseurs lot 1 pour la pompe ; lot 2 pour l'admission ; lot 7 et I/09 pour les commandes | Intention durable et admission `start030` existantes ; G1 et raccord de production requis. |
 | Livrer en queue | Même cycle d'intention, dispatch `execution_deliver` à étendre à 0.3 | Livraison lot 1 et fournisseurs lot 7 ; I/09 | G2, reçu `deliver030`, admission FIFO, démarrage distinct ou retrait. |
 | Livrer en steer | Même cycle, `execution_deliver` à étendre ; dispatch natif spécialisé | Livraison lot 1, finalisation des travaux fournisseurs lot 5 ; I/09 | G2, cible physique exacte et preuve de consommation distincte du handoff. |
-| Choisir le flow, avec commentaire d'approval | `execution_submit_human030` à créer, lecture `execution_read_humans030` | Humain U, N-HUMAN H/B ; I/09 | G3 à G5, reçu de soumission puis décision et consommation ; aucun envoi du message approuvé par l'UI. |
+| Choisir le flow, avec commentaire d'approval | `execution_submit_human030`, lecture `execution_read_humans030` | Humain U, N-HUMAN H/B ; I/09 | G3 à G5, reçu de soumission puis décision et consommation ; aucun envoi du message approuvé par l'UI. |
 | Approuver ou refuser une action `ask`, avec commentaire | Même nouvelle commande humaine | Humain U, N-HUMAN H/B et fournisseur propriétaire de l'action ; I/09 | G4 distingue permission et choix de flow ; G5 corrèle la remise à l'exécuteur possédé. |
 | Accepter ou refuser un plan | Même nouvelle commande humaine | Humain U, N-HUMAN H/B ; fournisseurs lot 5 pour le verrou ; I/09 | G3 et G5, plan courant et verrou natifs, jamais un plan-id fourni par l'UI. |
 | Répondre à une question | Même nouvelle commande, seulement avec validateur attesté | Humain U / N-HUMAN ; N-CALLS pour l'identité MCP et son port ; I/09 | G3, G5, G6 ; `expectedResponse` seul ne qualifie pas la réponse. |
@@ -320,7 +330,7 @@ décision, cause, handler suivi et effets déjà produits. Pour steer, la destin
 déclarée et le travail physiquement rejoint restent deux identités distinctes.
 Un call n'invente aucune instance Agent. Un join n'invente aucun travail.
 
-Les `workIds` d'une demande humaine sont des UUID publics distincts des
+Les `workIds` d'une demande historique sont des UUID publics distincts des
 `RunOccurrence030.activation.id` ; ils ne peuvent pas servir à les retrouver
 directement. `RunHumanRequest030.occurrences` contient exactement une entrée
 par `workId`. Sa propriété `activation` est soit `available`, avec scope de
@@ -389,7 +399,7 @@ transparente des échéances entre générations n'est pas qualifiée.
 | --- | --- | --- |
 | G1, qualification | Identité de qualification, plateforme/versions exactes, propriétés admises, diagnostics par agent et liste `unassessed` publique ; lien au registre/source | Fournisseurs lot 2 pour capture/admission, lot 6 pour preuves physiques, lot 7 pour projection. Une compilation réussie ou un module ne suffit pas. |
 | G2, livraison | Cible shared/named, mode queue/steer, révision, intention/admission `deliver030`, reçu relisible, retrait et preuve de consommation | Livraison lot 1 et fournisseurs lot 7. L'actuel `ExecutionExternalDelivery` ne porte ni instance ni mode 0.3 et l'admission `deliver` reste historique. |
-| G3, humain du vrai flow | Projection publique sur `engine_flow030_human_*`, identité publique et révision natives, associations aux occurrences | Humain U avec N-HUMAN H/B ; I/09 raccorde migration/pump. `public030.rs` vise encore le stockage historique au commit de base. |
+| G3, humain du vrai flow | Projection publique sur `engine_flow030_human_*`, identité publique et révision natives, associations aux occurrences | Humain U avec N-HUMAN H/B ; I/09 raccorde migration/pump. La commande lit maintenant les tables du flow et publie les faits dans `flowJson`. Le lecteur historique reste séparé. |
 | G4, finalité humaine | Discriminant choix de flow / permission d'action, message exact capturé et action réellement présentée | Humain U / N-HUMAN. Le `kind: approval` actuel ne justifie pas de choisir l'un des deux dans l'UI. |
 | G5, reçu et historique humains | Nouvelle commande publique, réponse attestée relisible sur demande et reçu, choix/commentaire ou JSON exact, origine et instant natifs ; motif et reçu de résolution conservés après consommation, expiration, annulation ou incertitude | N-HUMAN H/B avec humain U pour la projection ; I/09. Les états sans cet historique restent indisponibles. Ne pas reprendre la révision historique calculée par addition de deux booléens. |
 | G6, question | Schéma/protocole public attesté, disponibilité du validateur natif, refus typé sans validateur | Humain U / N-HUMAN, N-CALLS pour identité/port MCP. Le JSON public ne reconstitue pas le validateur natif. |

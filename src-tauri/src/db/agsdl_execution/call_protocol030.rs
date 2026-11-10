@@ -1368,6 +1368,16 @@ async fn apply_terminal_tx<A: CallAuthority030>(
             physical: Some(receipt.physical()),
         }
     };
+    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_flow030_clock_controls WHERE system_id=? AND invocation_id=? AND activation_id=? AND joined=0")
+        .bind(&receipt.attempt.identity.system_start_id).bind(&receipt.attempt.identity.flow_invocation_id).bind(&work.activation_id).fetch_one(&mut *db).await?;
+    if pending > 0 {
+        require(
+            stopped || matches!(&receipt.result, CallResult030::Failed {code} if code=="TIMEOUT"),
+            "Call deadline requires its timeout result",
+        )?;
+        sqlx::query("UPDATE engine_flow030_clock_controls SET joined=1 WHERE system_id=? AND invocation_id=? AND activation_id=?")
+            .bind(&receipt.attempt.identity.system_start_id).bind(&receipt.attempt.identity.flow_invocation_id).bind(&work.activation_id).execute(&mut *db).await?;
+    }
     let event = FlowEvent030 {
         identity: receipt.attempt.identity.clone(),
         event_id: receipt.event_id.clone(),

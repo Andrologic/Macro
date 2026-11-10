@@ -1689,3 +1689,92 @@ async fn wake_rejects_a_native_clock_behind_the_persisted_observation() {
     f.clock.at(10000);
     assert_eq!(f.broker.next_wake_ms().await.unwrap(), Some(50000));
 }
+
+#[tokio::test]
+async fn oversized_answer_cannot_poison_the_durable_clock_ticket() {
+    let f = fixture("approval", Some(100), None).await;
+    let work = f
+        .broker
+        .admit_host_work(&f.host, f.attempt.start_effect_id())
+        .await
+        .unwrap();
+    pump(&f).await;
+    let request = f.broker.oldest_open(&work).await.unwrap().unwrap();
+    let error = f
+        .broker
+        .submit(
+            &f.host,
+            submission(
+                &f,
+                &request,
+                "0",
+                HumanAnswer030::Approval {
+                    choice: "publish".into(),
+                    comment: "é".repeat(40_000),
+                },
+            ),
+            HumanOrigin030::Person,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "INPUT_LIMIT");
+    let submitted: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM engine_flow030_human_submissions")
+            .fetch_one(&f.broker.pool)
+            .await
+            .unwrap();
+    let tickets: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM engine_flow030_clock_events WHERE output_json IS NULL",
+    )
+    .fetch_one(&f.broker.pool)
+    .await
+    .unwrap();
+    assert_eq!((submitted, tickets), (0, 0));
+    f.clock.at(100);
+    f.broker.tick(&f.host).await.unwrap();
+    assert_eq!(
+        pump(&f).await["pendingResolutions"][0]["failure"],
+        "APPROVAL_TIMEOUT"
+    );
+}
+
+#[tokio::test]
+async fn pending_human_generation_loss_is_interrupted_and_never_replayed() {
+    let f = fixture("approval", Some(100), None).await;
+    let work = f
+        .broker
+        .admit_host_work(&f.host, f.attempt.start_effect_id())
+        .await
+        .unwrap();
+    pump(&f).await;
+    let request = f.broker.oldest_open(&work).await.unwrap().unwrap();
+    let before: String = sqlx::query_scalar("SELECT state_json FROM engine_flow030_runs")
+        .fetch_one(&f.broker.pool)
+        .await
+        .unwrap();
+    crate::agsdl_host_flow030::revoke_generation(&f.broker.pool, f.attempt.generation())
+        .await
+        .unwrap();
+    let interrupted: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM engine_flow030_interruptions WHERE system_id=?")
+            .bind(&f.scope.system_start_id)
+            .fetch_one(&f.broker.pool)
+            .await
+            .unwrap();
+    assert_eq!(interrupted, 1);
+    f.clock.at(200);
+    assert!(f.broker.tick(&f.host).await.is_err());
+    let after: String = sqlx::query_scalar("SELECT state_json FROM engine_flow030_runs")
+        .fetch_one(&f.broker.pool)
+        .await
+        .unwrap();
+    assert_eq!(before, after);
+    let page = crate::agsdl_host_human_projection030::read(&f.broker.pool, f.scope.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(page.requests[0].id, request);
+    let facts: Value =
+        serde_json::from_str(page.requests[0].flow_json.as_deref().unwrap()).unwrap();
+    assert_eq!(facts["state"]["kind"], "cancelled");
+    assert_eq!(facts["state"]["resolution"]["reason"], "revocation");
+}

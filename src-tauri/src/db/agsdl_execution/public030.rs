@@ -36,6 +36,10 @@ pub struct PublicHumanRequest030 {
     pub status: String,
     pub work_ids: Vec<String>,
     pub content: HumanContent030,
+    /// True-flow facts. Absent on the historical projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub flow_json: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
@@ -263,6 +267,7 @@ pub(crate) async fn human_page(
             .into(),
             work_ids,
             content: serde_json::from_str(row.get("content_json"))?,
+            flow_json: None,
         });
     }
     let next_page = if has_more {

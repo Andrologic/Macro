@@ -446,7 +446,7 @@ pub async fn execution_read_humans030(
     scope: repository::public030::HumanScope030,
     continuation: Option<repository::public030::HumanContinuation030>,
 ) -> repository::Result<repository::public030::HumanPage030> {
-    repository::public030::human_page(&pool(&state).await?, scope, continuation).await
+    crate::agsdl_host_human_projection030::read(&pool(&state).await?, scope, continuation).await
 }
 
 #[tauri::command]
@@ -714,6 +714,7 @@ pub async fn execution_submit_human030(
             .humans
             .broker(&host, &pool, &inspection.capture.identity)
             .await?;
+        let _operation = broker.operation.lock().await;
         let receipt = broker
             .submit(
                 &host,
@@ -724,6 +725,7 @@ pub async fn execution_submit_human030(
         broker
             .pump(&host, &tokio_util::sync::CancellationToken::new())
             .await?;
+        host.flow030().supervisors.wake(&owner.system_start_id);
         Ok(receipt)
     })
     .await

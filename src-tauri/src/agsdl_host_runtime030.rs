@@ -121,6 +121,7 @@ pub(crate) fn native_event_emitter030<R: tauri::Runtime>(
 }
 
 pub(crate) struct StartedAgent030 {
+    pub timeout: CancellationToken,
     pub attempt: FlowWorkAttempt030,
     pub cancel: CancellationToken,
     returned: watch::Receiver<Option<Result<()>>>,
@@ -170,6 +171,8 @@ pub(crate) async fn start_agent_work030(
     let (returned, receiver) = watch::channel(None);
     let mut started = None;
     let work_cancel = cancel.clone();
+    let timeout = CancellationToken::new();
+    let work_timeout = timeout.clone();
     let effect = effect.clone();
     let tasks_owned = tasks.clone();
     claim
@@ -189,9 +192,20 @@ pub(crate) async fn start_agent_work030(
                 tasks: tasks_owned,
             };
             async move {
-                let result = executor
-                    .run(work, events.clone(), work_cancel.clone())
-                    .await;
+                let running = executor.run(work, events.clone(), work_cancel.clone());
+                tokio::pin!(running);
+                let result = tokio::select! {
+                    biased;
+                    _ = work_timeout.cancelled() => {
+                        // This branch runs inside the native owned parent. The
+                        // controller records TIMEOUT before provider cleanup.
+                        let stopping = events.emit(serde_json::json!({"kind":"stop","reason":"TIMEOUT"}), &CancellationToken::new()).await;
+                        work_cancel.cancel();
+                        let result = running.await;
+                        stopping.and(result)
+                    }
+                    result = &mut running => result,
+                };
                 if result.is_err() {
                     if !work_cancel.is_cancelled() {
                         let failure = events
@@ -211,6 +225,7 @@ pub(crate) async fn start_agent_work030(
         })
         .await?;
     Ok(StartedAgent030 {
+        timeout,
         attempt: started
             .ok_or_else(|| failure("INTERRUPTED", "work", "Owned attempt was not constructed"))?,
         cancel,
@@ -397,6 +412,9 @@ pub(crate) trait HostExecutor030<R: tauri::Runtime = tauri::Wry>: Send + Sync {
     ) -> BoxFuture<'static, Result<Option<crate::agsdl_host_call_executor030::StartedCall030>>>;
 }
 pub(crate) trait RuntimeClock030: Send + Sync {
+    fn tracks_humans(&self) -> bool {
+        false
+    }
     fn tick(&self) -> BoxFuture<'_, Result<()>>;
     fn next_wake(&self) -> BoxFuture<'_, Result<Option<std::time::Duration>>>;
 }
@@ -527,6 +545,7 @@ impl RuntimeRegistry030 {
 }
 
 struct LiveAgent030 {
+    timeout: CancellationToken,
     attempt: FlowWorkAttempt030,
     cancel: CancellationToken,
     stop: Option<(String, flow::ClaimedStopWork030)>,
@@ -544,7 +563,8 @@ struct NativeDriver030<'a, R: tauri::Runtime> {
     joining: FuturesUnordered<BoxFuture<'a, (String, Result<JoinedOwnedAgent030>)>>,
     joined: BTreeMap<String, JoinedOwnedAgent030>,
     ready: BTreeMap<String, JoinedOwnedAgent030>,
-    calls: BTreeMap<String, (CancellationToken, String)>,
+    approvals: BTreeMap<String, String>,
+    calls: BTreeMap<String, (CancellationToken, String, CancellationToken)>,
     call_joins: FuturesUnordered<
         BoxFuture<
             'a,
@@ -558,6 +578,51 @@ struct NativeDriver030<'a, R: tauri::Runtime> {
     in_flight: BTreeSet<String>,
 }
 impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
+    fn before_pass(&mut self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            let Some(clock) = &self.executors.clock else {
+                return Ok(());
+            };
+            let view =
+                flow::inspect_run(self.host.flow030(), self.host, self.pool, self.owner).await?;
+            if view.flow.state.stopping || view.flow.state.verdict.is_some() {
+                return Ok(());
+            }
+            if !clock.tracks_humans() {
+                return Ok(());
+            }
+            clock.tick().await?;
+            let fresh =
+                flow::inspect_run(self.host.flow030(), self.host, self.pool, self.owner).await?;
+            for (work, effect) in self.approvals.clone() {
+                if fresh
+                    .flow
+                    .state
+                    .activations
+                    .iter()
+                    .any(|a| a.id == work && !a.physical)
+                {
+                    self.approvals.remove(&work);
+                    self.in_flight.remove(&effect);
+                }
+            }
+            let broker = self
+                .host
+                .flow030()
+                .humans
+                .broker(self.host, self.pool, &view.capture.identity)
+                .await?;
+            for control in broker.timeout_controls().await? {
+                if let Some(live) = self.active.get(&control.work_id().to_owned()) {
+                    live.timeout.cancel();
+                } else if let Some((_, _, timeout)) = self.calls.get(control.work_id()) {
+                    timeout.cancel();
+                }
+            }
+            Ok(())
+        })
+    }
+
     fn owns_effect(&self, id: &str) -> bool {
         self.in_flight.contains(id)
     }
@@ -578,11 +643,40 @@ impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
                 CancellationToken::new(),
             )
             .await?;
+            if self
+                .executors
+                .clock
+                .as_ref()
+                .is_some_and(|clock| clock.tracks_humans())
+            {
+                let broker = self
+                    .host
+                    .flow030()
+                    .humans
+                    .broker(self.host, self.pool, &inspection.capture.identity)
+                    .await?;
+                let _operation = broker.operation.lock().await;
+                let admitted = async {
+                    broker.admit_agent(self.host, &started.attempt).await?;
+                    broker.pump(self.host, &CancellationToken::new()).await?;
+                    Ok::<_, crate::db::agsdl_execution::dto::EngineFailure>(())
+                }
+                .await;
+                if let Err(error) = admitted {
+                    let fresh =
+                        flow::inspect_run(self.host.flow030(), self.host, self.pool, self.owner)
+                            .await?;
+                    if !fresh.flow.state.stopping {
+                        return Err(error);
+                    }
+                }
+            }
             let key = started.attempt.work().activation_id.clone();
             self.in_flight.insert(effect.id.clone());
             self.active.insert(
                 key.clone(),
                 LiveAgent030 {
+                    timeout: started.timeout.clone(),
                     attempt: started.attempt.clone(),
                     cancel: started.cancel.clone(),
                     stop: None,
@@ -634,16 +728,27 @@ impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
                         })?
                         .clone(),
                     inspection,
-                    effect,
+                    effect.clone(),
                     CancellationToken::new(),
                 )
                 .await?;
+            if approval {
+                if let FlowEffectKind030::Start { work, .. } = &effect.kind {
+                    self.approvals
+                        .insert(work.activation_id.clone(), effect.id.clone());
+                    self.in_flight.insert(effect.id.clone());
+                }
+            }
             if let Some(started) = started {
                 let key = started.attempt.work().activation_id.clone();
                 self.in_flight.insert(started.attempt.effect().id.clone());
                 self.calls.insert(
                     key.clone(),
-                    (started.cancel, started.attempt.effect().id.clone()),
+                    (
+                        started.cancel,
+                        started.attempt.effect().id.clone(),
+                        started.timeout,
+                    ),
                 );
                 let tasks = self.tasks;
                 self.call_joins.push(Box::pin(async move {
@@ -685,7 +790,7 @@ impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
             let FlowEffectKind030::StopWork { work, .. } = &effect.kind else {
                 unreachable!()
             };
-            if let Some((cancel, _)) = self.calls.get(&work.activation_id) {
+            if let Some((cancel, _, _)) = self.calls.get(&work.activation_id) {
                 let claim = flow::claim_expected(
                     self.host.flow030(),
                     self.host,
@@ -702,6 +807,53 @@ impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
                     .await
                     .map_err(|_| failure("UNCERTAIN", "call", "Call stop handoff failed"))?;
                 cancel.cancel();
+                return Ok(());
+            }
+            if self.executors.humans.is_some() && work.agent_instance_id.is_none() {
+                let claim = flow::claim_expected(
+                    self.host.flow030(),
+                    self.host,
+                    self.pool,
+                    &effect.identity,
+                    &effect.id,
+                )
+                .await?
+                .ok_or_else(|| failure("STALE_REFERENCE", "approval", "Approval stop changed"))?;
+                let request = claim.request_id();
+                claim.handoff_host(self.tasks, async {}).await?;
+                self.tasks
+                    .cancel_owned(&request)
+                    .await
+                    .map_err(|_| failure("UNCERTAIN", "approval", "Stop owner did not join"))?;
+                let parent = format!(
+                    "flow030:{}:{}",
+                    effect.identity.system_start_id, work.start_effect_id
+                );
+                if !self
+                    .tasks
+                    .cancel_owned(&parent)
+                    .await
+                    .map_err(|_| failure("UNCERTAIN", "approval", "Approval owner did not join"))?
+                {
+                    return Err(failure("INTERRUPTED", "approval", "Approval owner absent"));
+                }
+                let lease = self.host.start_lease().await?;
+                let control = self
+                    .host
+                    .flow030()
+                    .retiring_controls(lease.generation())?
+                    .into_iter()
+                    .find(|control| control.identity() == &effect.identity)
+                    .ok_or_else(|| failure("INTERRUPTED", "approval", "Flow owner absent"))?;
+                drop(lease);
+                let view = control.read(self.pool).await?;
+                control.apply(self.pool, &crate::db::agsdl_execution::flow030::FlowEvent030 {
+                    identity: effect.identity.clone(), event_id: format!("approval-stop:{}", effect.id), expected_revision: view.state.revision,
+                    kind: crate::db::agsdl_execution::flow030::FlowEventKind030::PhysicalEnded {
+                        work: work.clone(), stop_effect_id: Some(effect.id.clone()),
+                        evidence: crate::db::agsdl_execution::flow030::PhysicalEvidence030 { native_receipt_id: parent, descendants_joined: true },
+                    },
+                }).await?;
                 return Ok(());
             }
             let Some(live) = self.active.get_mut(&work.activation_id) else {
@@ -895,6 +1047,7 @@ pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
         joining: FuturesUnordered::new(),
         joined: BTreeMap::new(),
         ready: BTreeMap::new(),
+        approvals: BTreeMap::new(),
         calls: BTreeMap::new(),
         call_joins: FuturesUnordered::new(),
         joined_calls: BTreeMap::new(),
@@ -935,6 +1088,12 @@ pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
                 result?;
                 if physical { return Err(failure("UNCERTAIN", "work", "Joined work has no terminal controller result")); }
             }
+            if executors.clock.as_ref().is_some_and(|clock| clock.tracks_humans()) && live.stop.is_none() {
+                let broker = host.flow030().humans.broker(host, pool, joined.attempt().identity()).await?;
+                let _operation = broker.operation.lock().await;
+                let fresh=flow::inspect_run(host.flow030(),host,pool,owner).await?;
+                if !fresh.flow.state.stopping {broker.retire_finished(host, &key).await?;}
+            }
             let live = driver.active.remove(&key).unwrap();
             driver.in_flight.remove(live.attempt.start_effect_id());
             if let Some((effect, _)) = live.stop { driver.in_flight.remove(&effect); }
@@ -950,7 +1109,7 @@ pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
             for live in driver.active.values() {
                 live.cancel.cancel();
             }
-            for (cancel, _) in driver.calls.values() { cancel.cancel(); }
+            for (cancel, _, _) in driver.calls.values() { cancel.cancel(); }
             return Err(failure(
                 "INTERRUPTED",
                 "runtime",
@@ -983,15 +1142,23 @@ pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
                         crate::agsdl_host_calls030::CallSettlement030::Terminal { .. } => (),
                         _ => return Err(failure("UNCERTAIN", "call", "Call completion has a diagnostic")),
                     }
+                    if executors.clock.as_ref().is_some_and(|clock| clock.tracks_humans()) {
+                        let view = flow::inspect_run(host.flow030(), host, pool, owner).await?;
+                        if !view.flow.state.stopping {
+                            let broker = host.flow030().humans.broker(host, pool, &view.capture.identity).await?;
+                            let _operation = broker.operation.lock().await;
+                            broker.retire_finished(host, &key).await?;
+                        }
+                    }
                     driver.joined_calls.insert(key.clone(), joined);
                 }
-                if let Some((_, effect)) = driver.calls.remove(&key) { driver.in_flight.remove(&effect); }
+                if let Some((_, effect, _)) = driver.calls.remove(&key) { driver.in_flight.remove(&effect); }
             },
             Some((key, joined)) = driver.joining.next(), if !driver.joining.is_empty() => {
                 driver.ready.insert(key, joined?);
             },
             _ = async { if let Some(duration) = deadline { tokio::time::sleep(duration).await; } else { std::future::pending::<()>().await; } } => {
-                if let Some(clock) = &executors.clock { clock.tick().await?; }
+                // The next dispatch pass arbitrates deadlines and joins.
             },
             // Safety net for native writers not yet wired to wake in lot 1.5.
             _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => (),
@@ -1003,10 +1170,20 @@ pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
     for live in driver.active.values() {
         live.cancel.cancel();
     }
-    for (cancel, _) in driver.calls.values() {
+    for (cancel, _, _) in driver.calls.values() {
         cancel.cancel();
     }
     let mut cleanup_error = None;
+    for effect in driver.approvals.values() {
+        let parent = format!("flow030:{}:{}", owner.system_start_id, effect);
+        if tasks.cancel_owned(&parent).await.is_err() {
+            cleanup_error.get_or_insert(failure(
+                "UNCERTAIN",
+                "approval",
+                "Approval cleanup failed",
+            ));
+        }
+    }
     while let Some((_, result)) = driver.call_joins.next().await {
         if let Err(error) = result {
             cleanup_error.get_or_insert(error);

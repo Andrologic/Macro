@@ -1275,7 +1275,7 @@ async fn execution_start_attaches_supervisor_and_completes_write_review() {
         serde_json::from_slice(&std::fs::read(dir.join("plan.json")).unwrap()).unwrap();
     let mut unsupported: Value =
         serde_json::from_str(plan["agsdl"]["source"].as_str().unwrap()).unwrap();
-    unsupported["flow"]["steps"]["write"]["timeoutMs"] = json!(1000);
+    unsupported["flow"]["steps"]["write"]["delivery"] = json!("steer");
     plan["agsdl"]["source"] = json!(unsupported.to_string());
     plan["revision"] = json!(2);
     std::fs::write(dir.join("plan.json"), serde_json::to_vec(&plan).unwrap()).unwrap();

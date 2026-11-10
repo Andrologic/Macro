@@ -15,7 +15,7 @@ import { runCaptureKey030 } from './agsdl/runGraphProjection030';
 import { retainedRunValue030 } from './agsdl/runtimeProjection030';
 import { createRunInspectionAccess030 } from './agsdl/runAccess030';
 import { toServiceError } from './contracts/errors';
-import { createReadOnlyHumanRequestClient030 } from './agsdl/humanReadAccess030';
+import { createNativeHumanRequestClient030 } from './agsdl/humanReadAccess030';
 import { object, readDocument } from './agsdl/document';
 
 export function sameWorkflowSource030(a: { owner: WorkflowRunScope030['owner']; revision: string; sourceSha256: string }, b: { owner: WorkflowRunScope030['owner']; revision: string; sourceSha256: string }): boolean {
@@ -56,7 +56,7 @@ const nativeWorkflowRunFactory030 = (scope: WorkflowRunScope030): WorkflowRunAcc
   return { access, humanClientForRun: run => {
     const key = runCaptureKey030(run.state.scope);
     if (!clients.has(key)) {
-      try { clients.set(key, createReadOnlyHumanRequestClient030(run.state.scope, window.sessionStorage)); }
+      try { clients.set(key, createNativeHumanRequestClient030(run.state.scope, window.sessionStorage)); }
       catch { return undefined; }
     }
     return clients.get(key);

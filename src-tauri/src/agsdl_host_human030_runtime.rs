@@ -1,12 +1,16 @@
 use super::*;
 /// Native lifetime owner shared by product IPC and owned execution drivers.
 pub(crate) struct HumanRuntime030 {
+    #[cfg(test)]
+    pub(crate) approval_commit_probe: Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
     clock: Mutex<Arc<dyn Clock030>>,
     brokers: tokio::sync::Mutex<BTreeMap<(String, String), Arc<HumanBroker030>>>,
 }
 impl Default for HumanRuntime030 {
     fn default() -> Self {
         Self {
+            #[cfg(test)]
+            approval_commit_probe: Default::default(),
             clock: Mutex::new(Arc::new(
                 crate::agsdl_host_clock030::MonotoneClock030::default(),
             )),
@@ -128,6 +132,12 @@ impl HumanBroker030 {
         .fetch_one(&mut *tx)
         .await?;
         let state: FlowState030 = serde_json::from_str(&state)?;
+        if state.stopping || state.verdict.is_some() {
+            // Stop won while the waiting future was joining. It owns cleanup;
+            // an answered approval cannot release a successor afterwards.
+            tx.commit().await?;
+            return Ok(());
+        }
         let event = FlowEvent030 {
             identity: self.identity.clone(),
             event_id: format!("human:{}:terminal", decision.request_id),
@@ -141,12 +151,26 @@ impl HumanBroker030 {
                 }),
             },
         };
-        // apply_native_event owns the flow COMMIT fence and validates the reducer.
-        tx.commit().await?;
+        #[cfg(test)]
+        if let Some(probe) = host
+            .flow030()
+            .humans
+            .approval_commit_probe
+            .lock()
+            .unwrap()
+            .take()
+        {
+            let _ = probe.send(host.admission_lock().try_lock().is_err());
+        }
+        crate::agsdl_host_flow030::apply_native_event_transaction030(
+            host.flow030(),
+            &lease,
+            tx,
+            &event,
+        )
+        .await?;
         drop(_gate);
         drop(lease);
-        crate::agsdl_host_flow030::apply_native_event(host.flow030(), host, &self.pool, &event)
-            .await?;
         self.acknowledge(host, decision).await?;
         self.pump(host, &CancellationToken::new()).await?;
         Ok(())

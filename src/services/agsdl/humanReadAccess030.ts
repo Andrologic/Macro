@@ -1,13 +1,15 @@
 import type { RunHumanRequest030, RunRead030 } from '../../types/agsdlRunUi030';
 import type { HumanScope030 } from '../../types/generated/ipc';
-import { readExecutionHumans030, readExecutionSnapshot030 } from '../tauriIpc';
+import { readExecutionHumans030, readExecutionSnapshot030, submitExecutionHuman030 } from '../tauriIpc';
 import { MacroServiceError, toServiceError } from '../contracts/errors';
+import { integer030, compareIntegers030, boundedInteger030 } from '../agsdlExecution/workIntegers030';
 import { createHumanRequestClient030, loadHumanRequests030 } from './humanRequests030';
 import type { HumanDraftStorage030, ReadHuman030, SubmitHuman030 } from './humanRequests030';
 
 export interface HumanReadTransport030 {
   readExecutionHumans030: typeof readExecutionHumans030;
   readExecutionSnapshot030: typeof readExecutionSnapshot030;
+  submitExecutionHuman030?: typeof submitExecutionHuman030;
 }
 
 export const sameHumanScope030 = (a: HumanScope030, b: HumanScope030) =>
@@ -16,32 +18,38 @@ export const sameHumanScope030 = (a: HumanScope030, b: HumanScope030) =>
   a.source.owner.projectId === b.source.owner.projectId &&
   a.source.owner.planId === b.source.owner.planId && a.source.owner.branch === b.source.owner.branch;
 
-/** The registered reader still uses engine_human_public030, not the true flow.
- * Its boolean-derived revision, missing resolutions and missing clock cannot
- * satisfy RunHumanRequest030, even when it returns an empty complete series.
- * Consume and validate that series without claiming absence of human waits.
- */
+/** Publish only a complete snapshot of the retained native flow. */
 export async function readHumanFacts030(scope: HumanScope030,
   read = readExecutionHumans030): Promise<RunRead030<readonly RunHumanRequest030[]>> {
-  try {
-    await loadHumanRequests030(scope, read, () => true);
-  } catch (error) {
-    // True-flow captures need not have a legacy Stored row. Its absence says
-    // nothing about the true-flow human queue and must not hide the run itself.
-    if (toServiceError(error).code !== 'NOT_FOUND') throw error;
+  let page;
+  try { page = await loadHumanRequests030(scope, read, () => true); }
+  catch (error) {
+    if (toServiceError(error).code === 'NOT_FOUND') return { kind: 'unavailable', gap: 'human-flow-projection' };
+    throw error;
   }
-  return { kind: 'unavailable', gap: 'human-flow-projection' };
+  if (!page) throw new MacroServiceError('CORRELATION', 'Human page was superseded');
+  if (page.requests.some(request => !request.flowJson)) return { kind: 'unavailable', gap: 'human-flow-projection' };
+  const requests = page.requests.map(request => {
+    if (!request.flowJson) throw new MacroServiceError('DTO_UNAVAILABLE', 'True-flow human facts are absent');
+    const value = JSON.parse(request.flowJson) as RunHumanRequest030;
+    if (!sameHumanScope030(value.scope, scope) || value.id !== request.id || value.revision !== request.revision ||
+        !Array.isArray(value.occurrences) || !value.content?.kind || !value.state?.kind || !value.clock?.kind)
+      throw new MacroServiceError('CORRELATION', 'Human flow facts differ');
+    if (value.clock.kind === 'available' && value.clock.value.timeoutMs !== null) {
+      const limit = integer030(value.clock.value.timeoutMs, true);
+      if (compareIntegers030(limit, '18446744073709551615') > 0)
+        return { ...value, clock: { kind: 'unavailable' as const, gap: 'human-clock-observation' as const } };
+      return { ...value, clock: { kind: 'available' as const, value: { ...value.clock.value,
+        timeoutMs: boundedInteger030(limit, 18446744073709551615n).toString() } } };
+    }
+    return value;
+  });
+  return { kind: 'ready', revision: page.cursor, value: requests };
 }
-
-/** No native execution_submit_human030 exists. Never use historical decisions. */
-export const submitHumanUnqualified030: SubmitHuman030 = async () => ({
-  kind: 'refused', refusal: { code: 'CONTRACT_UNSUPPORTED',
-    message: 'Envoi humain non qualifié : execution_submit_human030 est indisponible.', currentRevision: null },
-});
 
 /** Bind readback to an exact captured human scope. Reading never acknowledges. */
 export function createHumanReadAccess030(scope: HumanScope030,
-  transport: HumanReadTransport030 = { readExecutionHumans030, readExecutionSnapshot030 }) {
+  transport: HumanReadTransport030 = { readExecutionHumans030, readExecutionSnapshot030, submitExecutionHuman030 }) {
   const expected = structuredClone(scope);
   const read: ReadHuman030 = async target => {
     if (!target.requestId || !sameHumanScope030(target.scope, expected))
@@ -50,12 +58,32 @@ export function createHumanReadAccess030(scope: HumanScope030,
     if (!sameHumanScope030({ systemStartId: capture.systemStartId, source: capture.source }, expected))
       throw new MacroServiceError('CORRELATION', 'Human capture differs');
     const facts = await readHumanFacts030(expected, transport.readExecutionHumans030);
-    throw new MacroServiceError('DTO_UNAVAILABLE', 'La lecture humaine du vrai flow est non qualifiée.', facts);
+    if (facts.kind !== 'ready') throw new MacroServiceError('DTO_UNAVAILABLE', 'Human facts unavailable');
+    const request = facts.value.find(request => request.id === target.requestId);
+    if (!request) throw new MacroServiceError('NOT_FOUND', 'Human request not found');
+    return request;
   };
-  return { read, submit: submitHumanUnqualified030 };
+  const submit: SubmitHuman030 = async input => {
+    if (!sameHumanScope030(input.scope, expected)) return { kind: 'refused', refusal: {
+      code: 'SCOPE_INVALID', message: 'Human scope differs', currentRevision: null } };
+    let receiptId: string;
+    try { receiptId = await (transport.submitExecutionHuman030 ?? submitExecutionHuman030)(input); }
+    catch (error) {
+      const failure = toServiceError(error);
+      if (['INPUT_LIMIT', 'INPUT_CONSTRAINT', 'CORRELATION', 'CONFLICT', 'REVISION_CONFLICT'].includes(failure.code))
+        return { kind: 'refused', refusal: { code: 'INPUT_CONSTRAINT', message: failure.message, currentRevision: null } };
+      return { kind: 'uncertain', code: 'UNCERTAIN', receiptId: null };
+    }
+    const current = await read({ scope: input.scope, requestId: input.requestId });
+    return { kind: 'received', receipt: { scope: input.scope, requestId: input.requestId,
+      receiptId, revision: current.revision, state: current.state } };
+  };
+  return { read, submit };
 }
 
-export function createReadOnlyHumanRequestClient030(scope: HumanScope030, storage: HumanDraftStorage030,
+export function createNativeHumanRequestClient030(scope: HumanScope030, storage: HumanDraftStorage030,
   transport?: HumanReadTransport030) {
   return createHumanRequestClient030({ ...createHumanReadAccess030(scope, transport), storage });
 }
+
+export const createReadOnlyHumanRequestClient030 = createNativeHumanRequestClient030;

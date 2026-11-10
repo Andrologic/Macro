@@ -108,8 +108,6 @@ impl CallAuthority030 for NativeCallAuthority030<'_> {
             )
             .is_some()
                 || step["type"] != "call"
-                || step.get("timeoutMs").is_some()
-                || step.get("answerTimeoutMs").is_some()
                 || step.get("command").is_some() == step.get("mcp").is_some()
             {
                 return Err(StoreError030::Authority);

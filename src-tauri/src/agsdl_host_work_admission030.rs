@@ -190,7 +190,7 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
         {
             let pointer = format!("/agents/{}", pointer_token030(name));
             codex_permissions030(&agent["permissions"], &format!("{pointer}/permissions"))?;
-            for key in ["planFirst", "completionCheck", "answerTimeoutMs"] {
+            for key in ["planFirst", "completionCheck"] {
                 if agent.get(key).is_some() {
                     return Err(failure(
                         "HARNESS_CAPABILITY",
@@ -265,7 +265,7 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
                 ));
             }
             let step = object.get("type").and_then(Value::as_str);
-            if matches!(step, Some("approval" | "compose" | "join")) {
+            if matches!(step, Some("compose" | "join")) {
                 return Err(failure(
                     "HOST_CAPABILITY",
                     &format!("{pointer}/type"),
@@ -296,15 +296,6 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
                     continue;
                 }
                 let location = format!("{pointer}/{}", pointer_token030(key));
-                if matches!(step, Some("agent" | "call"))
-                    && ["timeoutMs", "answerTimeoutMs"].contains(&key.as_str())
-                {
-                    return Err(failure(
-                        "HOST_CAPABILITY",
-                        &location,
-                        "The production clock is not connected",
-                    ));
-                }
                 if key == "delivery" && child == "steer" {
                     return Err(failure(
                         "HARNESS_CAPABILITY",
@@ -312,7 +303,7 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
                         "Steer is not connected in this slice",
                     ));
                 }
-                if matches!(step, Some("agent" | "call"))
+                if matches!(step, Some("agent" | "call" | "approval"))
                     && ["next", "onError"].contains(&key.as_str())
                 {
                     route(child, &location)?;
@@ -1144,10 +1135,7 @@ mod codex030_tests {
         doc["flow"]["steps"]["tool"] = json!({"type":"call","mcp":{"server":"local","tool":"check"},"arguments":{"data":{"value":{"type":"approval","timeoutMs":1,"uri":"literal"}}}});
         assert!(validate_codex_document030(&doc).is_ok());
         doc["flow"]["steps"]["call"]["timeoutMs"] = json!(1);
-        assert_eq!(
-            validate_codex_document030(&doc).unwrap_err().pointer,
-            "/flow/steps/call/timeoutMs"
-        );
+        assert!(validate_codex_document030(&doc).is_ok());
         doc["flow"]["steps"]["call"]
             .as_object_mut()
             .unwrap()
@@ -1175,22 +1163,10 @@ mod codex030_tests {
                 "/agents/worker/completionCheck",
             ),
             (
-                "/agents/worker/answerTimeoutMs",
-                json!(1),
-                "HARNESS_CAPABILITY",
-                "/agents/worker/answerTimeoutMs",
-            ),
-            (
                 "/agents/worker/permissions",
                 json!({"rules":[{"action":"write","effect":"ask"}]}),
                 "HARNESS_CAPABILITY",
                 "/agents/worker/permissions/rules/0/effect",
-            ),
-            (
-                "/flow/steps/work/timeoutMs",
-                json!(1),
-                "HOST_CAPABILITY",
-                "/flow/steps/work/timeoutMs",
             ),
             (
                 "/flow/steps/work/delivery",
@@ -1212,7 +1188,7 @@ mod codex030_tests {
             ),
             (
                 "/flow/steps/work/type",
-                json!("approval"),
+                json!("compose"),
                 "HOST_CAPABILITY",
                 "/flow/steps/work/type",
             ),
@@ -1240,8 +1216,7 @@ mod codex030_tests {
         for name in ["value", "results"] {
             let mut doc = document();
             doc["flow"]["steps"] = json!({name: {"type":"agent", "agent":"worker", "timeoutMs":1}});
-            let error = validate_codex_document030(&doc).unwrap_err();
-            assert_eq!(error.pointer, format!("/flow/steps/{name}/timeoutMs"));
+            assert!(validate_codex_document030(&doc).is_ok());
             let mut doc = document();
             doc["content"] = json!({name: {"uri":"https://example.invalid/source"}});
             let error = validate_codex_document030(&doc).unwrap_err();

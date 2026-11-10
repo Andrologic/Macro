@@ -173,6 +173,7 @@ pub(crate) trait QuestionValidator030: Send + Sync {
 }
 
 pub(crate) struct HumanBroker030 {
+    pub(crate) operation: tokio::sync::Mutex<()>,
     pool: SqlitePool,
     identity: FlowIdentity030,
     owner: EngineOwner,
@@ -195,6 +196,7 @@ impl HumanBroker030 {
         let _gate = host.admission_lock().lock_owned().await;
         let owner = lease.owner(&identity.system_start_id)?;
         let broker = Self {
+            operation: Default::default(),
             pool,
             identity,
             owner,
@@ -383,7 +385,9 @@ impl HumanBroker030 {
             .find(|a| a.id == work.activation_id)
             .ok_or_else(|| failure("CORRELATION", "humanClock", "Activation absent"))?;
         require(
-            activation.phase == "running"
+            !state.stopping
+                && state.verdict.is_none()
+                && activation.phase == "running"
                 && activation.result.is_none()
                 && activation.stop_effect_id.is_none()
                 && activation.start_effect_id.as_deref() == Some(effect_id)
@@ -639,6 +643,16 @@ impl HumanBroker030 {
         input: HumanSubmission030,
         origin: HumanOrigin030,
     ) -> Result<String> {
+        // Bound user input before any durable ticket can be reserved.
+        let answer_json = serde_json::to_string(&input.answer)?;
+        if answer_json.len() > 65_536 {
+            return Err(failure(
+                "INPUT_LIMIT",
+                "answer",
+                "Human answer exceeds 65536 bytes",
+            ));
+        }
+        validate_json(&answer_json)?;
         let lease = host.start_lease().await?;
         let _gate = host.admission_lock().lock_owned().await;
         let mut connection = self.durable_connection().await?;
@@ -664,14 +678,16 @@ impl HumanBroker030 {
         .await?;
         let state: FlowState030 = serde_json::from_str(&raw_state)?;
         require(
-            work_ids.iter().all(|id| {
-                state.activations.iter().any(|a| {
-                    &a.id == id
-                        && a.phase == "running"
-                        && a.result.is_none()
-                        && a.stop_effect_id.is_none()
-                })
-            }),
+            !state.stopping
+                && state.verdict.is_none()
+                && work_ids.iter().all(|id| {
+                    state.activations.iter().any(|a| {
+                        &a.id == id
+                            && a.phase == "running"
+                            && a.result.is_none()
+                            && a.stop_effect_id.is_none()
+                    })
+                }),
             "Human answer targets a stale visit",
         )?;
         let kind: &str = row.get("kind");
@@ -731,7 +747,7 @@ impl HumanBroker030 {
             .bind(&input.request_id)
             .bind(&now)
             .bind(origin.name())
-            .bind(serde_json::to_string(&input.answer)?)
+            .bind(&answer_json)
             .execute(&mut *tx)
             .await?;
         self.reserve(&mut tx, event, &now).await?;
@@ -1006,6 +1022,19 @@ impl HumanBroker030 {
             .as_u64()
             .map(|delay| delay.saturating_sub(now - observed)))
     }
+    pub(crate) async fn owned_work(&self, id: &str) -> Result<OwnedHumanWork030> {
+        let raw: String = sqlx::query_scalar("SELECT work_json FROM engine_flow030_clock_works WHERE system_id=? AND invocation_id=? AND activation_id=?")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(id).fetch_one(&self.pool).await?;
+        Ok(serde_json::from_str(&raw)?)
+    }
+    pub(crate) async fn resolution_ready(&self, request: &str) -> Result<bool> {
+        Ok(sqlx::query_scalar("SELECT resolution_json IS NOT NULL FROM engine_flow030_human_requests WHERE system_id=? AND invocation_id=? AND request_id=?")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(request).fetch_one(&self.pool).await?)
+    }
+    pub(crate) async fn request_kind(&self, request: &str) -> Result<String> {
+        Ok(sqlx::query_scalar("SELECT kind FROM engine_flow030_human_requests WHERE system_id=? AND invocation_id=? AND request_id=?")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(request).fetch_one(&self.pool).await?)
+    }
     pub(crate) async fn oldest_open(&self, work: &OwnedHumanWork030) -> Result<Option<String>> {
         let rows = sqlx::query("SELECT request_id,work_ids_json FROM engine_flow030_human_requests WHERE system_id=? AND invocation_id=? AND resolution_json IS NULL ORDER BY rowid")
             .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).fetch_all(&self.pool).await?;
@@ -1113,6 +1142,14 @@ impl HumanBroker030 {
         sqlx::query("UPDATE engine_flow030_human_requests SET delivery='acknowledged' WHERE system_id=? AND invocation_id=? AND request_id=? AND resolution_json=?")
             .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&decision.request_id).bind(decision.resolution.to_string()).execute(&mut *tx).await?;
         tx.commit().await?;
+        Ok(())
+    }
+    pub(crate) async fn retire_finished(&self, host: &HostState, id: &str) -> Result<()> {
+        let raw: String = sqlx::query_scalar("SELECT work_json FROM engine_flow030_clock_works WHERE system_id=? AND invocation_id=? AND activation_id=?")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(id).fetch_one(&self.pool).await?;
+        let work: OwnedHumanWork030 = serde_json::from_str(&raw)?;
+        self.retire(host, &work).await?;
+        self.pump(host, &CancellationToken::new()).await?;
         Ok(())
     }
     /// TIMEOUT was already persisted by pump, under the shared admission fence.

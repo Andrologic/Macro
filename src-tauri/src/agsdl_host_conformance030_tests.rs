@@ -10,6 +10,7 @@ use crate::db::agsdl_execution::{flow030::*, start030::StartCapture030, Result};
 use futures::{future::BoxFuture, FutureExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use sqlx::Row;
 use tauri::Manager;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -364,6 +365,14 @@ impl Fixture {
 }
 
 struct ScriptedAgent {
+    attempt: crate::agsdl_host_flow030::FlowWorkAttempt030,
+    protocol: tokio::sync::mpsc::Sender<(
+        Value,
+        tokio::sync::oneshot::Sender<
+            Result<crate::db::agsdl_execution::work_protocol030::ProtocolDecision030>,
+        >,
+    )>,
+    plan_lock: Option<Arc<crate::agsdl_host_work_admission030::NativePlanLock030>>,
     key: WorkKey030,
     activation: String,
     send: tokio::sync::oneshot::Sender<ExampleResult030>,
@@ -414,21 +423,28 @@ impl crate::agsdl_host_call_executor030::CallTransport030 for CallTransport {
             use crate::db::agsdl_execution::call_protocol030::CallEnd030;
             tokio::select! {
                 _ = control.stop.cancelled() => Ok(CallEnd030::Stopped),
+                _ = control.machine_timeout.cancelled() => Ok(CallEnd030::TimedOut),
                 receipt = receive => Ok(CallEnd030::Returned { event: receipt.map_err(|_| failure("INTERRUPTED", "call", "Scripted receipt lost"))? }),
             }
         }))
     }
 }
 struct Executor {
+    plans: Mutex<BTreeMap<String, Arc<crate::agsdl_host_work_admission030::NativePlanLock030>>>,
     running: Arc<Mutex<Vec<ScriptedAgent>>>,
     wake: watch::Sender<u64>,
 }
 impl AgentExecutor030 for Executor {
     fn prepare(&self, work: PreparedEffectiveAgentWork030) -> Result<AttestedWorkPolicy030> {
-        AttestedWorkPolicy030::from_example(
+        let key = work.work().work().activation_id.clone();
+        let policy = AttestedWorkPolicy030::from_example(
             work,
             &crate::agsdl_host_example030::ExampleAdapter030::observe(),
-        )
+        )?;
+        if let Some(lock) = policy.plan_lock() {
+            self.plans.lock().unwrap().insert(key, lock);
+        }
+        Ok(policy)
     }
     fn run(
         &self,
@@ -451,17 +467,39 @@ impl AgentExecutor030 for Executor {
                 .as_ref()
                 .map(|_| occurrence.as_ref().unwrap().item_index.clone()),
         };
-        let (send, result) = tokio::sync::oneshot::channel();
+        let (send, mut result) = tokio::sync::oneshot::channel();
+        let (protocol, mut protocol_events) = tokio::sync::mpsc::channel::<(
+            Value,
+            tokio::sync::oneshot::Sender<
+                Result<crate::db::agsdl_execution::work_protocol030::ProtocolDecision030>,
+            >,
+        )>(1);
+        let plan_lock = self
+            .plans
+            .lock()
+            .unwrap()
+            .remove(&work.attempt.work().activation_id);
         self.running.lock().unwrap().push(ScriptedAgent {
+            attempt: work.attempt.clone(),
+            protocol,
+            plan_lock,
             key,
             activation: work.attempt.work().activation_id.clone(),
             send,
         });
         let wake = self.wake.clone();
         Box::pin(async move {
-            let outcome = tokio::select! {
-                _ = cancel.cancelled() => return Ok(()),
-                result = result => result.map_err(|_| crate::db::agsdl_execution::failure("INTERRUPTED","test","Scripted outcome lost"))?,
+            let outcome = loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok(()),
+                    result = &mut result => break result.map_err(|_| crate::db::agsdl_execution::failure("INTERRUPTED","test","Scripted outcome lost"))?,
+                    Some((body,reply)) = protocol_events.recv() => {
+                        let result=events.emit(body,&cancel).await;
+                        let stopping=result.as_ref().ok().and_then(|r|serde_json::from_str::<Value>(&r.receipt_json).ok()).is_some_and(|r|r["decision"]["kind"]=="stopping");
+                        let _=reply.send(result);
+                        if stopping {return Ok(());}
+                    }
+                }
             };
             match outcome {
                 ExampleResult030::Failed(code) => {
@@ -503,11 +541,36 @@ async fn idle(
                 .await
                 .unwrap()
                 .flow;
+            let clock_works: Vec<String> =
+                sqlx::query_scalar("SELECT activation_id FROM engine_flow030_clock_works")
+                    .fetch_all(&f.pool)
+                    .await
+                    .unwrap();
+            let pending_clock: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM engine_flow030_clock_events WHERE output_json IS NULL",
+            )
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+            let pending_controls: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM engine_flow030_clock_controls WHERE joined=0",
+            )
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
             let agents = running.lock().unwrap();
-            let ready = !view
-                .effects
-                .iter()
-                .any(|r| r["status"] == "pending" || r["status"] == "uncertain")
+            let ready = pending_clock == 0
+                && pending_controls == 0
+                && view
+                    .state
+                    .activations
+                    .iter()
+                    .filter(|a| a.physical)
+                    .all(|a| clock_works.contains(&a.id))
+                && !view
+                    .effects
+                    .iter()
+                    .any(|r| r["status"] == "pending" || r["status"] == "uncertain")
                 && view
                     .state
                     .preparations
@@ -521,6 +584,13 @@ async fn idle(
                     .all(|a| {
                         agents.iter().any(|w| w.activation == a.id)
                             || calls.lock().unwrap().iter().any(|w| w.activation == a.id)
+                            || a.agent.is_none()
+                                && a.step.as_ref().is_some_and(|step| {
+                                    f.plan
+                                        .steps
+                                        .iter()
+                                        .any(|s| &s.address == step && s.r#type == "approval")
+                                })
                     })
                 && ended.is_none_or(|id| {
                     view.state
@@ -548,8 +618,16 @@ async fn native_timeline(
     let running = Arc::new(Mutex::new(Vec::<ScriptedAgent>::new()));
     let calls = Arc::new(Mutex::new(Vec::<ScriptedCall>::new()));
     let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let host = f.app.state::<HostState>();
+    let clock = host.flow030().humans.virtual_clock().await?;
+    let human = host
+        .flow030()
+        .humans
+        .broker(&host, &f.pool, &f.identity)
+        .await?;
     let executors: Executors030<tauri::test::MockRuntime> = Executors030 {
         agents: Arc::new(Executor {
+            plans: Default::default(),
             running: running.clone(),
             wake: wake.clone(),
         }),
@@ -565,8 +643,20 @@ async fn native_timeline(
                 }),
             },
         )),
-        humans: None,
-        clock: None,
+        humans: Some(Arc::new(
+            crate::agsdl_host_human_executor030::HumanExecutor030 {
+                pool: f.pool.clone(),
+                tasks: tasks.clone(),
+            },
+        )),
+        clock: Some(Arc::new(
+            crate::agsdl_host_human_executor030::HumanClockRuntime030 {
+                app: f.app.handle().clone(),
+                pool: f.pool.clone(),
+                tasks: tasks.clone(),
+                identity: f.identity.clone(),
+            },
+        )),
     };
     let emitter = {
         let (app, pool, config, tasks) = (
@@ -605,6 +695,40 @@ async fn native_timeline(
             let view = idle(f, &running, &calls, ended.as_deref()).await;
             match event {
                 TimelineEvent030::Work { key, outcome } => {
+                    let approval = view.state.activations.iter().find(|a| {
+                        a.physical && a.step.as_ref() == Some(&key.step) && a.agent.is_none()
+                    });
+                    if let Some(approval) = approval {
+                        let ExampleResult030::Returned { submit_json, .. } = outcome else {
+                            panic!("Approval answer missing");
+                        };
+                        let answer: Value = serde_json::from_str(&submit_json)?;
+                        let work = human.owned_work(&approval.id).await?;
+                        let request_id = human.oldest_open(&work).await?.unwrap();
+                        let _operation = human.operation.lock().await;
+                        human
+                            .submit(
+                                &host,
+                                crate::agsdl_host_human030::HumanSubmission030 {
+                                    scope: crate::db::agsdl_execution::public030::HumanScope030 {
+                                        system_start_id: f.identity.system_start_id.clone(),
+                                        source: serde_json::from_value(f.plan.source.clone())?,
+                                    },
+                                    request_id,
+                                    expected_revision: "0".into(),
+                                    answer: crate::agsdl_host_human030::HumanAnswer030::Approval {
+                                        choice: answer["choice"].as_str().unwrap().into(),
+                                        comment: answer["comment"].as_str().unwrap_or("").into(),
+                                    },
+                                },
+                                crate::agsdl_host_human030::HumanOrigin030::SyntheticPerson,
+                            )
+                            .await?;
+                        human.pump(&host, &CancellationToken::new()).await?;
+                        ended = Some(approval.id.clone());
+                        wake.send_modify(|n| *n += 1);
+                        continue;
+                    }
                     let mut agents = running.lock().unwrap();
                     let candidates = agents
                         .iter()
@@ -662,14 +786,139 @@ async fn native_timeline(
                     expected.sort_by(|a, b| (&a.step, &a.item).cmp(&(&b.step, &b.item)));
                     assert_eq!(actual, expected);
                 }
-                event => panic!("Unsupported native timeline event: {event:?}"),
+                TimelineEvent030::Request { key, kind } => {
+                    let activation = view
+                        .state
+                        .activations
+                        .iter()
+                        .find(|a| a.physical && a.step.as_ref() == Some(&key.step))
+                        .unwrap();
+                    let work = human.owned_work(&activation.id).await?;
+                    let payload = if kind == "plan" {
+                        let (attempt, lock, protocol) = {
+                            let agents = running.lock().unwrap();
+                            let agent = agents
+                                .iter()
+                                .find(|a| a.activation == activation.id)
+                                .unwrap();
+                            (
+                                agent.attempt.clone(),
+                                agent.plan_lock.clone().unwrap(),
+                                agent.protocol.clone(),
+                            )
+                        };
+                        let plan_id = format!("plan:{}", activation.id);
+                        lock.presented(&attempt, &plan_id).await?;
+                        let (reply, done) = tokio::sync::oneshot::channel();
+                        protocol.send((json!({"kind":"planPresented","planId":plan_id,"text":"Pinned QA plan"}),reply)).await.unwrap();
+                        done.await.unwrap()?;
+                        json!({"planId":plan_id,"text":"Pinned QA plan"})
+                    } else {
+                        json!({"question":"Pinned QA request"})
+                    };
+                    let _operation = human.operation.lock().await;
+                    human.open(&host, &work, &kind, payload).await?;
+                    human.pump(&host, &CancellationToken::new()).await?;
+                }
+                TimelineEvent030::Answer { key, answer } => {
+                    let activation = view
+                        .state
+                        .activations
+                        .iter()
+                        .find(|a| a.physical && a.step.as_ref() == Some(&key.step))
+                        .unwrap();
+                    let work = human.owned_work(&activation.id).await?;
+                    let request = human.oldest_open(&work).await?.unwrap();
+                    let _operation = human.operation.lock().await;
+                    human
+                        .submit(
+                            &host,
+                            crate::agsdl_host_human030::HumanSubmission030 {
+                                scope: crate::db::agsdl_execution::public030::HumanScope030 {
+                                    system_start_id: f.identity.system_start_id.clone(),
+                                    source: serde_json::from_value(f.plan.source.clone())?,
+                                },
+                                request_id: request,
+                                expected_revision: "0".into(),
+                                answer: crate::agsdl_host_human030::HumanAnswer030::Decision {
+                                    decision: answer,
+                                    comment: String::new(),
+                                },
+                            },
+                            crate::agsdl_host_human030::HumanOrigin030::SyntheticPerson,
+                        )
+                        .await?;
+                    human.pump(&host, &CancellationToken::new()).await?;
+                }
+                TimelineEvent030::Elapse(ms) => {
+                    use crate::agsdl_host_clock030::Clock030;
+                    let end = clock.now_ms() + ms;
+                    loop {
+                        let fresh = idle(f, &running, &calls, ended.as_deref()).await;
+                        let _operation = human.operation.lock().await;
+                        if fresh.state.verdict.is_some() {
+                            clock.advance_to(end)?;
+                            break;
+                        }
+                        for request in human.pending_resolutions().await? {
+                            if human.request_kind(&request).await? != "approval" {
+                                let decision = human.take_resolution(&host, &request).await?;
+                                if decision.kind() == "plan" {
+                                    let work = decision.resolution()["workActions"][0]["workId"]
+                                        .as_str()
+                                        .unwrap();
+                                    let (attempt, lock, protocol) = {
+                                        let agents = running.lock().unwrap();
+                                        let agent =
+                                            agents.iter().find(|a| a.activation == work).unwrap();
+                                        (
+                                            agent.attempt.clone(),
+                                            agent.plan_lock.clone().unwrap(),
+                                            agent.protocol.clone(),
+                                        )
+                                    };
+                                    lock.resolve(&attempt, &decision).await?;
+                                    let (reply, done) = tokio::sync::oneshot::channel();
+                                    protocol
+                                        .send((decision.plan_event()?, reply))
+                                        .await
+                                        .unwrap();
+                                    let receipt = done.await.unwrap()?;
+                                    if serde_json::from_str::<Value>(&receipt.receipt_json)?
+                                        ["decision"]["kind"]
+                                        == "stopping"
+                                    {
+                                        ended = Some(work.to_owned());
+                                    }
+                                }
+                                human.acknowledge(&host, &decision).await?;
+                                human.pump(&host, &CancellationToken::new()).await?;
+                            }
+                        }
+                        let now = clock.now_ms();
+                        if now == end {
+                            break;
+                        }
+                        let slice = human.next_wake_ms().await?.unwrap_or(end - now);
+                        if slice == 0 {
+                            drop(_operation);
+                            wake.send_modify(|n| *n += 1);
+                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                            continue;
+                        }
+                        clock.advance_to(end.min(now + slice))?;
+                        drop(_operation);
+                        wake.send_modify(|n| *n += 1);
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                }
             }
             wake.send_modify(|n| *n += 1);
         }
         let view = idle(f, &running, &calls, ended.as_deref()).await;
         assert!(view.state.verdict.is_some());
         assert!(view.state.activations.iter().all(|a| !a.physical));
-        view
+        Ok::<_, crate::db::agsdl_execution::dto::EngineFailure>(view)
     };
     let guarded_timeline = async {
         let result = std::panic::AssertUnwindSafe(tokio::time::timeout(
@@ -679,13 +928,14 @@ async fn native_timeline(
         .catch_unwind()
         .await;
         match result {
-            Ok(Ok(view)) => Ok(view),
+            Ok(Ok(Ok(view))) => Ok(view),
             other => {
                 // A broken timeline must still let the same supervisor cancel
                 // and physically join every scripted executor before returning.
                 cancel.cancel();
                 let message = match other {
                     Ok(Err(_)) => "Native timeline exceeded 30 seconds".into(),
+                    Ok(Ok(Err(error))) => format!("Native timeline failed: {error:?}"),
                     Err(panic) => panic_message(panic),
                     Ok(Ok(_)) => unreachable!(),
                 };
@@ -697,7 +947,16 @@ async fn native_timeline(
             }
         }
     };
-    let (outcome, view) = tokio::join!(supervisor, guarded_timeline);
+    let (outcome, view) = tokio::join!(
+        async {
+            let result = supervisor.await;
+            if let Err(error) = &result {
+                eprintln!("SUPERVISOR ERROR {error:?}");
+            }
+            result
+        },
+        guarded_timeline
+    );
     let view = view?;
     outcome?;
     Ok(view)
@@ -746,22 +1005,45 @@ async fn agsdl030_conformance_error_route() {
     f.pool.close().await;
 }
 
+#[tokio::test]
+async fn agsdl030_conformance_human_timeout() {
+    let mut bun = BunHost::start();
+    let raw = scenarios::SCENARIOS
+        .iter()
+        .find(|(n, _)| *n == "timeout-pauses-for-person")
+        .unwrap()
+        .1;
+    let f = Fixture::new(raw, &mut bun).await;
+    let bun = Arc::new(tokio::sync::Mutex::new(bun));
+    let (wake, receiver) = watch::channel(0);
+    let pump = f.pump(bun.clone(), wake.clone());
+    let fixture: Value = serde_json::from_str(raw).unwrap();
+    let scenario = scenarios::PinnedScenario030::from_capture(
+        &f.plan.document_json,
+        &fixture["entry"].to_string(),
+    )
+    .unwrap();
+    let view = native_timeline(&f, scenario, wake, receiver).await.unwrap();
+    let observed = projection::project(&f, &view).await;
+    assert!(
+        projection::compare(&fixture["expect"], &observed).is_empty(),
+        "{observed}"
+    );
+    pump.abort();
+    let _ = pump.await;
+    Arc::try_unwrap(bun)
+        .ok()
+        .unwrap()
+        .into_inner()
+        .close()
+        .await;
+    f.pool.close().await;
+}
+
 // Select by capability, never by scenario name or expected output. The fallback
 // uses the existing scripted driver and the production drain_effects030 pass.
-fn scripted_reason(f: &Fixture, scenario: &scenarios::PinnedScenario030) -> Option<&'static str> {
-    if f.plan.steps.iter().any(|s| s.r#type == "approval") {
-        Some("human executor not connected")
-    } else if scenario.timeline.iter().any(|e| {
-        matches!(
-            e,
-            TimelineEvent030::Elapse(_)
-                | TimelineEvent030::Request { .. }
-                | TimelineEvent030::Answer { .. }
-        )
-    }) {
-        Some("human/clock executor not connected")
-    } else if f
-        .plan
+fn scripted_reason(f: &Fixture, _scenario: &scenarios::PinnedScenario030) -> Option<&'static str> {
+    if f.plan
         .steps
         .iter()
         .any(|s| s.delivery.as_deref() == Some("steer"))
@@ -953,3 +1235,114 @@ async fn invalid_timeline_cancels_and_joins_the_native_workers() {
 
 #[path = "agsdl_host_call_executor030_tests.rs"]
 mod call_executor_tests;
+
+#[tokio::test]
+async fn approval_keeps_admission_through_revision_application() {
+    let mut bun = BunHost::start();
+    let raw = scenarios::SCENARIOS
+        .iter()
+        .find(|(name, _)| *name == "approval")
+        .unwrap()
+        .1;
+    let f = Fixture::new(raw, &mut bun).await;
+    let bun = Arc::new(tokio::sync::Mutex::new(bun));
+    let (wake, receiver) = watch::channel(0);
+    let pump = f.pump(bun.clone(), wake.clone());
+    let host = f.app.state::<HostState>();
+    let (probe, observed) = tokio::sync::oneshot::channel();
+    *host.flow030().humans.approval_commit_probe.lock().unwrap() = Some(probe);
+    let fixture: Value = serde_json::from_str(raw).unwrap();
+    let scenario = scenarios::PinnedScenario030::from_capture(
+        &f.plan.document_json,
+        &fixture["entry"].to_string(),
+    )
+    .unwrap();
+    let view = native_timeline(&f, scenario, wake, receiver).await.unwrap();
+    assert_eq!(
+        view.state.verdict.as_deref(),
+        fixture["expect"]["run"].as_str()
+    );
+    assert!(
+        observed.await.unwrap(),
+        "Admission was released between revision read and apply"
+    );
+    let reserved: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM engine_flow030_human_requests WHERE delivery='reserved'",
+    )
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(reserved, 0);
+    pump.abort();
+    let _ = pump.await;
+    Arc::try_unwrap(bun)
+        .ok()
+        .unwrap()
+        .into_inner()
+        .close()
+        .await;
+    f.pool.close().await;
+}
+
+#[tokio::test]
+async fn handled_historical_failure_does_not_block_the_current_compose_failure() {
+    let mut bun = BunHost::start();
+    let raw = scenarios::SCENARIOS
+        .iter()
+        .find(|(name, _)| *name == "compose-body-failure")
+        .unwrap()
+        .1;
+    let f = Fixture::new(raw, &mut bun).await;
+    let bun = Arc::new(tokio::sync::Mutex::new(bun));
+    let (wake, receiver) = watch::channel(0);
+    let pump = f.pump(bun.clone(), wake.clone());
+    let fixture: Value = serde_json::from_str(raw).unwrap();
+    let scenario = scenarios::PinnedScenario030::from_capture(
+        &f.plan.document_json,
+        &fixture["entry"].to_string(),
+    )
+    .unwrap();
+    let view = native_timeline(&f, scenario, wake, receiver).await.unwrap();
+    let producer = view
+        .effects
+        .iter()
+        .filter_map(|row| serde_json::from_value::<FlowEffect030>(row["effect"].clone()).ok())
+        .find_map(|effect| match effect.kind {
+            FlowEffectKind030::PrepareRoute { producer, .. } if producer.kind == "compose" => {
+                Some(producer)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let row=sqlx::query("SELECT event_json,receipt_json FROM engine_flow030_events WHERE json_extract(event_json,'$.kind.WorkResult.result.Failed') IS NOT NULL LIMIT 1").fetch_one(&f.pool).await.unwrap();
+    let mut event: Value = serde_json::from_str(row.get("event_json")).unwrap();
+    let mut receipt: Value = serde_json::from_str(row.get("receipt_json")).unwrap();
+    event["eventId"] = json!("handled-historical");
+    receipt["eventId"] = json!("handled-historical");
+    sqlx::query("INSERT INTO engine_flow030_events(system_id,invocation_id,event_id,event_json,receipt_json) VALUES(?,?,'handled-historical',?,?)")
+        .bind(&f.identity.system_start_id).bind(&f.identity.flow_invocation_id).bind(event.to_string()).bind(receipt.to_string()).execute(&f.pool).await.unwrap();
+    let host = f.app.state::<HostState>();
+    let inspection = flow::inspect_run(host.flow030(), &host, &f.pool, &f.owner)
+        .await
+        .unwrap();
+    let mut db = f.pool.acquire().await.unwrap();
+    crate::agsdl_host_route_verifier030::verify_human_compose_source_tx(
+        &mut db,
+        &inspection.capture,
+        &producer,
+        &f.owner,
+        "generation",
+    )
+    .await
+    .unwrap();
+    drop(db);
+    pump.abort();
+    let _ = pump.await;
+    Arc::try_unwrap(bun)
+        .ok()
+        .unwrap()
+        .into_inner()
+        .close()
+        .await;
+    f.pool.close().await;
+}

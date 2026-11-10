@@ -1316,6 +1316,26 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
                 let agents = app
                     .try_state::<crate::agsdl_host_runtime030::TestAgentExecutor030>()
                     .map_or(agents, |executor| executor.0.clone());
+                let plan: repository::flow030::FlowPlan030 = serde_json::from_str(
+                    &authority
+                        .captured
+                        .lock()
+                        .map_err(|_| unavailable())?
+                        .as_ref()
+                        .ok_or_else(unavailable)?
+                        .1
+                        .compiled_plan_json,
+                )?;
+                let document: Value = serde_json::from_str(&plan.document_json)?;
+                let needs_clock = plan.steps.iter().any(|step| {
+                    step.r#type == "approval"
+                        || step.r#type == "call"
+                        || step.timeout_ms_json.is_some()
+                }) || document["agents"].as_object().is_some_and(|agents| {
+                    agents
+                        .values()
+                        .any(|agent| agent.get("answerTimeoutMs").is_some())
+                });
                 let executors = crate::agsdl_host_runtime030::Executors030 {
                     agents,
                     calls: Some(Arc::new(
@@ -1324,7 +1344,15 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
                             pool: pool.clone(),
                             tasks: ai.stream_tasks.clone(),
                             transport: Arc::new(
-                                crate::agsdl_host_call_executor030::NativeCallTransport030,
+                                crate::agsdl_host_call_executor030::NativeCallTransport030 {
+                                    humans: Some(Arc::new(
+                                        crate::agsdl_host_human_executor030::CallHumans030 {
+                                            app: app.clone(),
+                                            pool: pool.clone(),
+                                            identity: result.receipt.identity.clone(),
+                                        },
+                                    )),
+                                },
                             ),
                             owner: EngineOwner {
                                 system_start_id: result.receipt.identity.system_start_id.clone(),
@@ -1332,8 +1360,21 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
                             },
                         },
                     )),
-                    humans: None,
-                    clock: None,
+                    humans: Some(Arc::new(
+                        crate::agsdl_host_human_executor030::HumanExecutor030 {
+                            pool: pool.clone(),
+                            tasks: ai.stream_tasks.clone(),
+                        },
+                    )),
+                    clock: needs_clock.then(|| {
+                        Arc::new(crate::agsdl_host_human_executor030::HumanClockRuntime030 {
+                            app: app.clone(),
+                            pool: pool.clone(),
+                            tasks: ai.stream_tasks.clone(),
+                            identity: result.receipt.identity.clone(),
+                        })
+                            as Arc<dyn crate::agsdl_host_runtime030::RuntimeClock030>
+                    }),
                 };
                 crate::agsdl_host_runtime030::spawn_supervisor030(
                     app.clone(),
@@ -1586,17 +1627,27 @@ pub(crate) async fn apply_native_event(
     let _admission = host.admission_lock().lock_owned().await;
     // Cleanup under an unknown commit requires the retained opaque FlowControl.
     // A generic event cannot turn its variant into retirement authority.
+    let mut db = pool.acquire().await?;
+    sqlx::query("PRAGMA synchronous=FULL")
+        .execute(&mut *db)
+        .await?;
+    let tx = db.begin_with("BEGIN IMMEDIATE").await?;
+    apply_native_event_transaction030(runtime, &lease, tx, event).await
+}
+
+/// The caller retains the admission gate from revision read through COMMIT.
+pub(crate) async fn apply_native_event_transaction030(
+    runtime: &FlowHost030,
+    lease: &HostStartLease,
+    mut tx: sqlx::Transaction<'_, sqlx::Sqlite>,
+    event: &FlowEvent030,
+) -> Result<Apply030> {
     runtime.available(&event.identity)?;
     let authority = Authority {
         runtime,
         owner: lease.owner(&event.identity.system_start_id)?,
         lease: &lease,
     };
-    let mut db = pool.acquire().await?;
-    sqlx::query("PRAGMA synchronous=FULL")
-        .execute(&mut *db)
-        .await?;
-    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
     let result = flow_store030::apply_tx(&mut tx, &authority, event)
         .await
         .map_err(store_error)?;

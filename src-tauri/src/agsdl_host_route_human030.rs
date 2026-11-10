@@ -48,6 +48,9 @@ pub(crate) fn verify_human_compose_source_tx<'a>(
                     serde_json::from_str(row.get("receipt_json"))?;
                 let count: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=? AND event_id=? AND json_extract(effect_json,'$.kind.kind')='failure' AND json_extract(effect_json,'$.kind.activationId')=?")
                     .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&receipt.event_id).bind(&activation.id).fetch_one(&mut *db).await?;
+                if count == 0 {
+                    continue;
+                }
                 require(count == 1)?;
                 let plan: FlowPlan030 = serde_json::from_str(&capture.compiled_plan_json)?;
                 let kind = plan
