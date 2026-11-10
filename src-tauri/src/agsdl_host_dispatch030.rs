@@ -214,19 +214,9 @@ async fn source_route030(
     }
     let material = source.source_only_material();
     lease.ensure_live()?;
-    #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
-    if created {
-        crate::agsdl_host_example030::pause_before_source_commit(reference).await;
-    }
     tx.commit()
         .await
         .map_err(|_| failure("UNCERTAIN", "route", "Source readback did not complete"))?;
-    #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
-    if created {
-        crate::agsdl_host_example030::pause_after_source_commit(reference).await;
-    }
-    #[cfg(not(all(feature = "agsdl-engine-qa", debug_assertions)))]
-    let _ = created;
     if let Some(marker) = pending {
         lease
             .acknowledge_route_source_commit(host.flow030(), &marker)

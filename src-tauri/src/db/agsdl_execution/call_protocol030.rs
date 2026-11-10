@@ -167,7 +167,7 @@ enum CallPhysical030 {
     },
     /// Debug-only executor with no external IO or descendants. This is NOT an
     /// attestation about local process trees or remote server cancellation.
-    #[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
+    #[cfg(test)]
     SyntheticJoined {
         receipt_id: String,
     },
@@ -197,7 +197,7 @@ fn decode_received(raw: &str) -> Result<ReceivedCall030> {
 // Data read from SQL never becomes a join capability. Only the opaque witness
 // from OwnedSyntheticCall030::join can authorize receive/finish for launched IO.
 fn received_from_join(joined: &JoinedCall030) -> Result<ReceivedCall030> {
-    #[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
+    #[cfg(test)]
     {
         require(
             !joined.receipt_id().is_empty(),
@@ -210,7 +210,7 @@ fn received_from_join(joined: &JoinedCall030) -> Result<ReceivedCall030> {
             },
         })
     }
-    #[cfg(not(any(test, all(feature = "agsdl-engine-qa", debug_assertions))))]
+    #[cfg(not(test))]
     {
         let _ = joined;
         Err(denied("No qualified joined call transport"))
@@ -314,7 +314,7 @@ impl CallReceipt030 {
     pub(crate) fn physical(&self) -> PhysicalEvidence030 {
         let receipt_id = match &self.received.physical {
             CallPhysical030::NotStarted { receipt_id } => receipt_id,
-            #[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
+            #[cfg(test)]
             CallPhysical030::SyntheticJoined { receipt_id } => receipt_id,
         };
         PhysicalEvidence030 {

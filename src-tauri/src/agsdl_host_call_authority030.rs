@@ -94,7 +94,7 @@ impl CallAuthority030 for NativeCallAuthority030<'_> {
         Box::pin(async move {
             self.owner(db, &capture.identity).await?;
             self.effect(db, effect).await?;
-            #[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
+            #[cfg(test)]
             if crate::agsdl_host_example030::qualify_synthetic_call030(capture, effect, declaration)
                 .is_ok()
             {

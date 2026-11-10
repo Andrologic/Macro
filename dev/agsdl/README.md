@@ -40,5 +40,9 @@ The two compose expectations use the declared upstream erratum
 
 The default Rust library suite includes these tests, so `bun run ci` runs them
 without a QA feature. `ci:pre-push` selects them for changes to the engine,
-evaluators, fixtures, helper and CI routing. The existing TypeScript observer
-and replay verifier remain independent and unchanged.
+evaluators, fixtures, helper and CI routing. The in-process suite replaces the
+TypeScript observer and its standalone replay CLI.
+
+The optional `agsdl-engine-qa` Cargo feature selects additional native executor
+regression tests. Scripted executors compile only under `cfg(test)`; this feature
+no longer enables a separate QA application or launch configuration.

@@ -18,11 +18,6 @@ name = "agsdl-content-helper-qa"
 path = "src/bin/agsdl_content_helper_qa.rs"
 required-features = ["agsdl-content-qa"]
 
-[[bin]]
-name = "agsdl-engine-isolation-qa"
-path = "src/bin/agsdl_engine_isolation_qa.rs"
-required-features = ["agsdl-engine-qa"]
-
 [[test]]
 name = "lsp_core"
 path = "tests/lsp_core.rs"

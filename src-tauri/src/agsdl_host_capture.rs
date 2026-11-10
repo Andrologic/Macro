@@ -503,32 +503,6 @@ pub(crate) async fn observation(
             ],
             "harnesses":harnesses, "agents":agents, "hostCapabilities":[]
         });
-        #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
-        if crate::agsdl_host_example030::ExampleAdapter030::qa_capture_enabled() {
-            let observed = crate::agsdl_host_example030::ExampleAdapter030::observe().registry(
-                &document,
-                &source.source,
-                &source.revision.source_sha256,
-                &scope,
-            )?;
-            for field in ["modules", "harnesses", "agents", "hostCapabilities"] {
-                let entries = observed
-                    .get(field)
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| {
-                        failure(
-                            "CORRELATION",
-                            "example",
-                            "Native example observation differs",
-                        )
-                    })?;
-                registry
-                    .get_mut(field)
-                    .and_then(Value::as_array_mut)
-                    .ok_or_else(|| failure("CORRELATION", "example", "Native registry differs"))?
-                    .extend(entries.iter().cloned());
-            }
-        }
         let digest = Sha256::digest(serde_json::to_vec(&(&observation, &registry))?);
         registry["version"] = json!(format!("sha256:{digest:x}"));
         // These are transport-only inputs, not part of the captured registry.
