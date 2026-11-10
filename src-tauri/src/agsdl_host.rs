@@ -1162,6 +1162,10 @@ mod runtime030_tests;
 mod flow_work030_tests;
 
 #[cfg(test)]
+#[path = "agsdl_host_conformance030_tests.rs"]
+mod conformance030_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

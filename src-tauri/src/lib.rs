@@ -110,7 +110,7 @@ mod agsdl_host_codex030;
 mod agsdl_host_compiler;
 mod agsdl_host_confinement;
 mod agsdl_host_dispatch030;
-#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+#[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
 mod agsdl_host_example030;
 mod agsdl_host_flow030;
 mod agsdl_host_harness030;
@@ -120,7 +120,7 @@ mod agsdl_host_route030;
 mod agsdl_host_route_attestations030;
 mod agsdl_host_route_verifier030;
 mod agsdl_host_runtime030;
-#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+#[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
 mod agsdl_host_scenario030;
 mod agsdl_host_steer030;
 mod agsdl_host_stop030;

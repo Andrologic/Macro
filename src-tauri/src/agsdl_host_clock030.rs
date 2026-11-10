@@ -41,16 +41,16 @@ impl Clock030 for MonotoneClock030 {
             .expect("epoch milliseconds overflow")
     }
 }
-#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+#[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
 #[derive(Default)]
 pub(crate) struct VirtualClock030(std::sync::atomic::AtomicU64);
-#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+#[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
 impl Clock030 for VirtualClock030 {
     fn now_ms(&self) -> u64 {
         self.0.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
-#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+#[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
 impl VirtualClock030 {
     // Only the pinned QA driver may advance; call at each broker boundary, then
     // stabilize the flow before continuing the remainder of a large elapse.
@@ -412,7 +412,7 @@ mod tests {
         let at = clock.now_ms();
         assert!(clock.now_ms() >= at);
     }
-    #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+    #[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
     #[test]
     fn virtual_clock_is_exact_and_refuses_time_reversal() {
         let clock = VirtualClock030::default();

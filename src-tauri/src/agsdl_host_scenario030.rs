@@ -6,7 +6,7 @@ use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-const SCENARIOS: &[(&str, &str)] = &[
+pub(crate) const SCENARIOS: &[(&str, &str)] = &[
     (
         "answer-timeout-ask",
         include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/answer-timeout-ask.json"),

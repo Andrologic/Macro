@@ -181,3 +181,27 @@ test('selects CI policy tests when JavaScript gate implementations change', () =
     readFile: () => "import { stepsForProfile } from './check-profiles.mjs';",
   })).toEqual(['dev/ci/check-profiles.test.ts', 'dev/ci/fast-local-checks.test.ts', 'dev/ci/importer.test.ts']);
 });
+
+test('runs native AgSDL conformance for evaluator, engine, fixture and CI changes', () => {
+  for (const path of [
+    'src-tauri/src/agsdl_host_runtime030.rs',
+    'src-tauri/src/agsdl_host_conformance030_tests.rs',
+    'src-tauri/src/db/agsdl_execution/v030/flow.rs',
+    'src-tauri/src/db/migrations/040_execution_flow_human_clock030.sql',
+    'src/services/agsdlExecution/hostWorkPort030.ts',
+    'src/vendor/agsdl/v0.3/valueschema.mjs',
+    'dev/agsdl/conformance-host030.ts',
+    'dev/agsdl/fixtures/v0.3/conformance/runs/error-route.json',
+    'dev/ci/fast-local-checks.mjs',
+    'src-tauri/Cargo.toml',
+  ]) {
+    const plan = planFastLocalChecks([path], { exists: () => false });
+    expect(plan.steps.filter(step => step.args.includes('conformance030_tests'))).toEqual([
+      expect.objectContaining({ command: 'cargo', needsDependencies: true,
+        args: ['test', '--manifest-path', 'src-tauri/Cargo.toml', '--locked', '--jobs', '2',
+          '--lib', 'conformance030_tests', '--', '--test-threads=1'] }),
+    ]);
+  }
+  expect(planFastLocalChecks(['README.md', 'src/components/Panel.tsx']).steps
+    .some(step => step.args.includes('conformance030_tests'))).toBe(false);
+});

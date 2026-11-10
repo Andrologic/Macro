@@ -428,7 +428,7 @@ mod joined {
             self.timeout.cancelled().await;
         }
     }
-    #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+    #[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
     impl super::OwnedSyntheticCall030 {
         pub(crate) async fn join(mut self) -> super::Result<JoinedCall030> {
             // Await the retained handle so cancellation drops/cancels its owner.
@@ -455,11 +455,11 @@ pub(crate) use joined::JoinedCall030;
 /// network sessions or descendants. Dropping the receiver of its result does
 /// not start another call. Dropping the owner cancels the task, leaving SQL
 /// launched/uncertain until a native supervisor reconciles the join.
-#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+#[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
 pub(crate) struct SyntheticCallDriver030 {
     sender: oneshot::Sender<CallEvent030>,
 }
-#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+#[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
 impl SyntheticCallDriver030 {
     pub(crate) fn send(self, event: CallEvent030) -> Result<()> {
         self.sender
@@ -467,13 +467,13 @@ impl SyntheticCallDriver030 {
             .map_err(|_| protocol::denied("Synthetic call is no longer active"))
     }
 }
-#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+#[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
 pub(crate) struct OwnedSyntheticCall030 {
     attempt: CallAttempt030,
     control: Control,
     task: Option<tokio::task::JoinHandle<protocol::CallEnd030>>,
 }
-#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+#[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
 impl Drop for OwnedSyntheticCall030 {
     fn drop(&mut self) {
         if self.task.is_some() {
@@ -483,7 +483,7 @@ impl Drop for OwnedSyntheticCall030 {
 }
 /// Call only from the future transferred by DispatchLease030::handoff_host.
 /// The durable 033 handoff is rechecked before consuming launch exactly once.
-#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+#[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
 pub(crate) async fn launch_synthetic030<A: CallAuthority030>(
     pool: &SqlitePool,
     authority: &A,

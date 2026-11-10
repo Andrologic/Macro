@@ -18,7 +18,7 @@ impl HumanRuntime030 {
     pub(crate) fn clock(&self) -> Arc<dyn Clock030> {
         self.clock.lock().expect("native clock").clone()
     }
-    #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+    #[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
     pub(crate) async fn virtual_clock(
         &self,
     ) -> Result<Arc<crate::agsdl_host_clock030::VirtualClock030>> {

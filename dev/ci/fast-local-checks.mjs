@@ -5,6 +5,17 @@ const LINTABLE_SCRIPT_PATTERN = /\.(?:[cm]?[jt]s|jsx|tsx)$/;
 const TEST_PATTERN = /\.test\.(?:ts|tsx)$/;
 const RUST_PATTERN = /\.rs$/;
 
+const AGSDL_CONFORMANCE_PATTERNS = [
+  /^src-tauri\/src\/agsdl_/,
+  /^src-tauri\/src\/db\/(?:agsdl_execution\/|migrations\/)/,
+  /^src-tauri\/src\/(?:agsdl_host|lib)\.rs$/,
+  /^src-tauri\/(?:Cargo\.toml|Cargo\.lock)$/,
+  /^src\/services\/agsdlExecution\//,
+  /^src\/vendor\/agsdl\/v0\.3\//,
+  /^dev\/agsdl\/(?:conformance-host030\.ts|fixtures\/v0\.3\/)/,
+  /^dev\/ci\/(?:fast-local-checks|check-profiles)\.mjs$/,
+];
+
 const WORKFLOW_PATTERNS = [
   /^\.github\/(?:workflows|actions)\//,
   /^\.githooks\//,
@@ -222,6 +233,16 @@ export function planFastLocalChecks(paths, options = {}) {
         ],
       });
     }
+  }
+
+  if (normalized.some((path) => matchesAny(path, AGSDL_CONFORMANCE_PATTERNS))) {
+    steps.push({
+      name: 'Conformité AgSDL 0.3 en processus (37 scénarios)',
+      command: 'cargo',
+      args: ['test', '--manifest-path', 'src-tauri/Cargo.toml', '--locked', '--jobs', '2',
+        '--lib', 'conformance030_tests', '--', '--test-threads=1'],
+      needsDependencies: true,
+    });
   }
 
   return { paths: normalized, lintFiles, testFiles, steps };

@@ -322,7 +322,7 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
     visit(document, "")
 }
 
-#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+#[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
 impl AttestedWorkPolicy030 {
     /// The QA executor must retain plan_lock() and guard every change, including
     /// shell, MCP, checks and delegation. Completion checks remain unsupported.

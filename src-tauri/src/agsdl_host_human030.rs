@@ -68,14 +68,14 @@ pub(crate) use answer::HumanAnswer030;
 #[derive(Clone, Copy)]
 pub(crate) enum HumanOrigin030 {
     Person,
-    #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+    #[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
     SyntheticPerson,
 }
 impl HumanOrigin030 {
     fn name(self) -> &'static str {
         match self {
             Self::Person => "person",
-            #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+            #[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
             Self::SyntheticPerson => "synthetic-person",
         }
     }
@@ -931,7 +931,7 @@ impl HumanBroker030 {
     /// The QA driver supplies a pinned flow stabilizer that drains decisions,
     /// joined terminations and routes. A large Elapse is split at every actual
     /// wake boundary; newly admitted continuations receive only the remainder.
-    #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+    #[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
     pub(crate) async fn elapse_qa<F, Fut>(
         &self,
         host: &HostState,
@@ -979,7 +979,7 @@ impl HumanBroker030 {
         }
     }
 
-    #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+    #[cfg(any(test, all(feature = "agsdl-engine-qa", debug_assertions)))]
     async fn flow_running(&self) -> Result<bool> {
         let raw: String = sqlx::query_scalar(
             "SELECT state_json FROM engine_flow030_runs WHERE system_id=? AND invocation_id=?",

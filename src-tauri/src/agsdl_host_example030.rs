@@ -581,8 +581,8 @@ struct ScriptedCall030 {
     result: tokio::sync::oneshot::Receiver<Result<crate::agsdl_host_calls030::JoinedCall030>>,
 }
 
-async fn start_scripted_call030(
-    app: &tauri::AppHandle,
+async fn start_scripted_call030<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     pool: &SqlitePool,
     tasks: &StreamTasks,
     owner: &crate::db::agsdl_execution::dto::EngineOwner,
@@ -779,8 +779,8 @@ impl crate::agsdl_host_runtime030::AgentExecutor030 for ScriptedExecutor030 {
     }
 }
 
-async fn start_scripted_work030(
-    app: &tauri::AppHandle,
+async fn start_scripted_work030<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     pool: &SqlitePool,
     config: &ConfigManager,
     tasks: &StreamTasks,
@@ -846,8 +846,8 @@ async fn start_scripted_work030(
 
 /// Drain eligible effects before the next timeline event. Agent starts are
 /// attached to owned parents and wait for the corresponding native mailbox.
-async fn quiesce_scenario030(
-    app: &tauri::AppHandle,
+async fn quiesce_scenario030<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     pool: &SqlitePool,
     config: &ConfigManager,
     tasks: &StreamTasks,
@@ -884,8 +884,8 @@ async fn quiesce_scenario030(
     .await
 }
 
-struct ScenarioDriver030<'a> {
-    app: &'a tauri::AppHandle,
+struct ScenarioDriver030<'a, R: tauri::Runtime> {
+    app: &'a tauri::AppHandle<R>,
     pool: &'a SqlitePool,
     config: &'a ConfigManager,
     tasks: &'a StreamTasks,
@@ -898,7 +898,7 @@ struct ScenarioDriver030<'a> {
         &'a std::collections::BTreeMap<String, crate::agsdl_host_dispatch030::JoinedOwnedAgent030>,
     cancelled: &'a CancellationToken,
 }
-impl crate::agsdl_host_runtime030::EffectDriver030 for ScenarioDriver030<'_> {
+impl<R: tauri::Runtime> crate::agsdl_host_runtime030::EffectDriver030 for ScenarioDriver030<'_, R> {
     fn owns_effect(&self, id: &str) -> bool {
         self.works.iter().any(|w| w.attempt.start_effect_id() == id)
             || self
@@ -1108,8 +1108,8 @@ impl crate::agsdl_host_runtime030::EffectDriver030 for ScenarioDriver030<'_> {
     }
 }
 
-async fn drive_scenario030(
-    app: &tauri::AppHandle,
+pub(crate) async fn drive_scenario030<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     pool: &SqlitePool,
     config: &ConfigManager,
     tasks: &StreamTasks,
@@ -2014,14 +2014,20 @@ pub(crate) fn qualify_synthetic_call030(
             "Synthetic call is outside native QA capture",
         )
     };
-    if !ExampleAdapter030::qa_capture_enabled() || effect.identity != capture.identity {
+    if (!cfg!(test) && !ExampleAdapter030::qa_capture_enabled())
+        || effect.identity != capture.identity
+    {
         return Err(denied());
     }
     let private: serde_json::Value = serde_json::from_str(&capture.private_capture_json)?;
     let scope: serde_json::Value =
         serde_json::from_str(private["callScopeJson"].as_str().ok_or_else(denied)?)?;
     let root = std::path::Path::new(scope["root"].as_str().ok_or_else(denied)?);
-    let approved = QA_APPROVED_WORKSPACE.get().ok_or_else(denied)?;
+    let approved = if cfg!(test) {
+        root
+    } else {
+        QA_APPROVED_WORKSPACE.get().ok_or_else(denied)?.as_path()
+    };
     if !root.starts_with(approved)
         || scope["sourceOwner"] != serde_json::to_value(&capture.source.owner)?
         || scope["projectId"].as_str() != Some(&capture.source.owner.project_id)

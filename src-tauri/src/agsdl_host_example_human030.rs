@@ -67,8 +67,8 @@ pub(super) async fn submit_scripted_human030(
     broker.pump(host, cancelled).await?;
     Ok(())
 }
-pub(super) async fn settle_humans030(
-    app: &tauri::AppHandle,
+pub(super) async fn settle_humans030<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     pool: &SqlitePool,
     tasks: &StreamTasks,
     humans: &mut ScenarioHumans030,
