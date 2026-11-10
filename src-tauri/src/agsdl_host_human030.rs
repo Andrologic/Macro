@@ -35,6 +35,7 @@ fn require(ok: bool, message: &str) -> Result<()> {
 }
 #[path = "agsdl_host_human030_validation.rs"]
 mod validation;
+pub(crate) use validation::machine_remaining_ms030;
 
 /// ECMAScript WhiteSpace and LineTerminator, as used by String.prototype.trim.
 /// NEL (U+0085) is content; BOM (U+FEFF) is whitespace. Keep one native

@@ -94,3 +94,9 @@ pub(super) async fn validate(
     let (works, requests, submissions) = facts(broker, db).await?;
     validate_projection(works, requests, submissions, previous, envelope, receipt)
 }
+
+/// Reuse the deadline verifier's bounded exact-integer conversion for display.
+pub(crate) fn machine_remaining_ms030(raw: &str, elapsed: u64) -> Result<Option<String>> {
+    Ok(core::bounded(raw, u64::MAX as u128)?
+        .map(|limit| limit.saturating_sub(elapsed as u128).to_string()))
+}

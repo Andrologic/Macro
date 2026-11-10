@@ -93,7 +93,7 @@ fn compare_limits(a: &str, b: &str) -> Result<Ordering> {
         .find(|o| *o != Ordering::Equal)
         .unwrap_or(Ordering::Equal))
 }
-fn bounded(raw: &str, bound: u128) -> Result<Option<u128>> {
+pub(super) fn bounded(raw: &str, bound: u128) -> Result<Option<u128>> {
     let limit = counter::Limit::parse(raw)
         .ok_or_else(|| failure("CORRELATION", "clock", "Invalid authored limit"))?;
     if limit.compare_counter(&bound.to_string()) == Ordering::Less {

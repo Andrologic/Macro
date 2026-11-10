@@ -100,13 +100,18 @@ pub(crate) async fn read(
                 .bind(&scope.system_start_id).bind(&capture.identity.flow_invocation_id).bind(work).fetch_one(&mut *tx).await?;
             let snapshot: Value = serde_json::from_str(row.get("snapshot_json"))?;
             let elapsed = snapshot["elapsedMachineMs"].as_str().unwrap_or("0");
-            // Exact authored exponents remain in timeoutMs; the receipt's elapsed
-            // budget is projected without a lossy floating-point conversion.
             let remaining = row
                 .get::<Option<String>, _>("timeout_json")
-                .and_then(|s| s.parse::<u64>().ok())
-                .zip(elapsed.parse::<u64>().ok())
-                .map(|(limit, used)| limit.saturating_sub(used).to_string());
+                .map(|raw| {
+                    crate::agsdl_host_human030::machine_remaining_ms030(
+                        &raw,
+                        elapsed.parse().map_err(|_| {
+                            failure("CORRELATION", "clock", "Invalid elapsed machine time")
+                        })?,
+                    )
+                })
+                .transpose()?
+                .flatten();
             works.push(json!({"workId":work,"machineElapsedMs":elapsed,"machineRemainingMs":remaining,"machinePaused":snapshot["openHumanRequests"].as_array().is_some_and(|a|!a.is_empty())}));
         }
         let clock_fact = observed.as_ref().map(|at|json!({"kind":"available","value":{"openedAtMs":deadline["openedAtMs"],"observedAtMs":at,"timeoutMs":deadline["timeoutMs"],"works":works}})).unwrap_or(json!({"kind":"unavailable","gap":"human-clock-observation"}));
@@ -170,4 +175,29 @@ pub(crate) async fn read(
         requests: page,
         next_page,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::agsdl_host_human030::machine_remaining_ms030;
+    #[test]
+    fn machine_budget_display_preserves_exponent_notation_and_exact_integers() {
+        assert_eq!(
+            machine_remaining_ms030("1e3", 250).unwrap().as_deref(),
+            Some("750")
+        );
+        assert_eq!(
+            machine_remaining_ms030("1000.0", 1001).unwrap().as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            machine_remaining_ms030("9007199254740993", 1)
+                .unwrap()
+                .as_deref(),
+            Some("9007199254740992")
+        );
+        assert!(machine_remaining_ms030("1e9999999999999999999999", 0)
+            .unwrap()
+            .is_none());
+    }
 }
