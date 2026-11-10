@@ -116,15 +116,16 @@ conversation. L'IA inspecte le contexte, pose les questions nécessaires et aide
 les propriétés prises en charge. L’en-tête du graphe propose « Enregistrer et
 exporter », puis l’agrandissement à droite. Un seul modal regroupe la conservation
 dans le projet, la création d’une copie blueprint et le téléchargement du document
-AgSDL ou d’une copie Macro complète. Le moniteur 0.3 reste à raccorder au shell ;
-le contrat de consultation et d'actions est défini en section 7.1.
+AgSDL ou d’une copie Macro complète. La vue Exécutions donne accès au
+moniteur 0.3 ; le contrat de consultation et d'actions est défini en section 7.1.
 La création depuis un blueprint reste disponible pour un plan vide. Cette
 conception ne lance pas les agents du graphe et ne crée pas de tâches Implement.
 
 Implement continue d'exécuter les tâches autonomes et celles des plans
 historiques. Pour ces tâches, l'utilisateur supervise l'exécution, examine les
 changements, puis valide leur intégration. Le démarrage d'un nouveau plan AgSDL
-depuis le produit reste fermé tant qu'il n'est pas qualifié (section 7.1).
+depuis le produit est ouvert pour la tranche Codex qualifiée, avec contrôle
+natif avant lancement et arrêt depuis le panneau Architect (section 7.1).
 
 ### 5.2 Unités fonctionnelles principales
 
@@ -365,15 +366,17 @@ qualification n’est pas faite.
 #### Contrat produit des exécutions 0.3
 
 Le [contrat UI/runtime 0.3](agsdl-030.md#contrat-produit-des-runs-03) définit les
-actions à raccorder et les DTO natifs manquants. Il ne vaut pas ouverture du
-lancement. Celui-ci reste fermé tant que le profil fournisseur, sa plateforme,
-ses versions et les propriétés demandées ne sont pas qualifiés. La validité
+actions raccordées et les DTO natifs encore manquants. Start et Stop sont
+ouverts pour la tranche Codex 0.167.x qualifiée sur macOS ARM64 et Linux ARM64.
+Les appels, demandes humaines, steer, parallélisme et délais restent refusés
+avant lancement. Le profil fournisseur, sa plateforme, ses versions et les
+propriétés demandées sont vérifiés par le natif. La validité
 du document, le préflight natif et cette autorisation restent séparés. Un
 catalogue Chat ou un scénario synthétique réussi ne les remplace pas.
 
 La direction d'interface conserve navigation des plans à gauche, conversation
-de conception au centre et canvas à droite. Une vue dédiée « Exécutions » doit
-présenter l'historique compact et l'inspecteur de la source capturée. L'ouvrir
+de conception au centre et canvas à droite. La vue dédiée « Exécutions »
+présente l'historique compact et l'inspecteur de la source capturée. L'ouvrir
 ne lance, ne préflight, n'acquitte et ne relance rien. Le canvas montre action
 et responsable ; les joins restent de petites pastilles et les détails
 techniques restent repliés.

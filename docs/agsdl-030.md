@@ -106,13 +106,16 @@ la rédaction d’un document ne résout ni ne télécharge ces URI.
 
 ## Contrat produit des runs 0.3
 
-Cette section fixe le contrat à raccorder, pas une qualification du produit.
+Cette section décrit le contrat des runs, dont une partie reste à raccorder.
 Les types sont dans [`agsdlRunUi030.ts`](../src/types/agsdlRunUi030.ts).
 Ils décrivent les entrées du service UI et ses vues publiques. Ce ne sont ni des
 DTO IPC générés ni des capacités natives. Les commandes existantes restent
 soumises à leurs validations Rust ; les extensions ci-dessous restent fermées
-jusqu'à leur intégration et leur qualification. Le lancement produit 0.3 reste
-fermé tant que le profil fournisseur exact n'est pas qualifié.
+jusqu'à leur intégration et leur qualification. Start et Stop sont raccordés
+pour la tranche Codex 0.167.x qualifiée sur macOS ARM64 et Linux ARM64 :
+agents, ressources inline, résultats et corrections, choix et limites de visites.
+Les autres capacités restent refusées au contrôle avant lancement. Les runs
+interrompus au redémarrage restent consultables et ne reprennent pas.
 
 L'autorisation exige ensemble `staticValid`, `runtimeSupported`, une
 qualification native correspondant à la source et au registre, aucune propriété

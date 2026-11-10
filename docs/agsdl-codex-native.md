@@ -6,7 +6,8 @@ The `codex-native` provider identifier is reserved for this adapter. Macro never
 substitutes its HTTP transport when the native engine is unavailable. Existing
 Macro agents retain their captured engine and tool policy.
 
-This adapter targets the official Codex CLI **0.163.0 on Linux ARM64**. Other
+The current adapter qualifies the official Codex CLI **0.167.x on macOS ARM64
+and Linux ARM64**. Other
 versions and platforms are unavailable until qualified. Install that CLI on
 Macro's PATH. Macro checks its version and executable digest; it incorporates
 no private SDK or fork. The native model catalogue comes from this profile's
@@ -69,7 +70,25 @@ sessions. Signing into one does not authenticate this profile. Changing the
 profile's account after capture refuses continuation; a token refresh alone
 does not change the captured account identity.
 
-## Execution boundary
+## AgSDL 0.3 execution
+
+Architect exposes Start and Stop for the qualified Codex slice. It supports
+agent work, inline resources, validated result submissions, corrections on the
+same thread, choice routes and visit limits. The native preflight refuses
+capabilities outside that slice, including calls, human requests, steer,
+parallel work and deadlines. The host permission ceiling defaults to read-only;
+preflight announces when host or project settings restrict an agent requesting
+workspace writes. A workspace does not require Git and never inherits an
+ancestor repository's metadata.
+
+Results use the final agent message's `text` field as an envelope containing
+`text` and `submissionJson`. The production controller validates the inner
+submission and returns correction diagnostics for another turn on the same
+thread. Resources are separate `additionalContext` entries marked untrusted.
+Stop joins the owned app-server and its descendants. After an application
+restart, unfinished runs are marked interrupted and are never resumed.
+
+## Legacy 0.2 execution boundary
 
 Macro captures the executable, effective policy, account/routing fingerprint,
 model, configuration, initialization, mode and workspace before Start. It
@@ -125,6 +144,9 @@ Synthetic protocol tests exercise continuity, instance separation, exact
 publication, non-replay and failure windows. Physical local tests exercise the
 real CLI's effective configuration, filesystem/network restrictions and process
 termination without a model or login. These are distinct from an authenticated
-model turn. Model execution remains unqualified until tested with an explicitly
-authorized private test account; neither a successful initialize nor a visible
-model catalogue proves that path.
+model turn. The 0.3 write/review path, correction after a rejected result, Stop with a
+live descendant, restart interruption, and native workspace/read-only grants
+have also been exercised with an explicitly connected private profile on macOS
+ARM64. This qualification does not replace each installation's native preflight;
+neither a successful initialize nor a visible model catalogue proves a model
+turn or additional capabilities.

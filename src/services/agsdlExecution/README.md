@@ -1,4 +1,18 @@
-# Conformité et raccords natifs AgSDL inline
+# Exécution AgSDL
+
+Le profil actuel `macro-agsdl-030-v1` lance les agents Codex 0.167.x depuis
+Architect, avec résultats structurés validés, corrections, routes par choix et
+limites de visites. Le superviseur natif sert la production et les tests de
+conformité sur les 37 scénarios. Leur décompte reste 4 natifs dans la tranche
+produit, 33 scriptés hors tranche et aucun scénario sauté. Les capacités non
+raccordées sont refusées avant le lancement. Arrêter attend la fin des processus ;
+un redémarrage marque les runs interrompus sans reprise. Voir le
+[profil Codex](../../../docs/agsdl-codex-native.md).
+
+Les sections suivantes décrivent le profil historique 0.2 encore présent,
+`macro-serial-inline-v1`. Elles ne définissent pas les capacités du profil 0.3.
+
+## Profil inline historique 0.2
 
 Le compilateur pur évalue le profil `macro-serial-inline-v1`. Les raccords natifs
 et `ResidentAgent` ajoutent les frontières privées d’exécution.
@@ -204,12 +218,14 @@ erreurs à la frontière concernée vers les codes normatifs avant de former un
 
 ## Refus d'écriture par chemin
 
-Le lecteur reste à AgSDL 0.2. Le transport transitoire propre à Macro passe par
+Pour ce profil historique AgSDL 0.2, le transport transitoire propre à Macro passe par
 `configurations.<nom>.settings.writeRules`, un tableau de règles AgSDL
 `{ "action": "write", "match": ".env*", "effect": "deny" }`.
 `match` est facultatif. Les effets `allow` et `deny` sont acceptés ; `allow`
 n'élargit jamais les droits Macro. Tout autre champ, action ou effet est refusé
-au préflight. Le champ Agent `permissions` de 0.3 reste indisponible.
+au préflight. Ce transport 0.2 ne lit pas le champ Agent `permissions` ;
+le profil Codex 0.3 prend en charge les presets `read-only` et `workspace`,
+sous le plafond des permissions de Macro et du projet.
 
 La capture native conserve ce tableau dans `permissions_json.writeRules` pour
 chaque agent de la configuration. La compilation vérifie que le tableau figé
