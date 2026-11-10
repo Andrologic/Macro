@@ -35,9 +35,10 @@ export function projectRunGraph030(scope: RunScope030, semantics: StaticSemantic
 
 /** Read only the normal outcome discriminator; preserve output bytes for inspection. */
 export function normalRunOutcome030(occurrence: RunOccurrence030): 'passed' | 'failed' | 'done' | 'incomplete' | 'reached' | 'missed' | null {
-  if (occurrence.details.kind !== 'available' || occurrence.details.value.outputJson === null) return null;
+  const output = occurrenceOutput030(occurrence);
+  if (output === null) return null;
   try {
-    const value: unknown = JSON.parse(occurrence.details.value.outputJson);
+    const value: unknown = JSON.parse(output);
     if (value === null || typeof value !== 'object' || !('outcome' in value)) return null;
     const outcome = value.outcome;
     return outcome === 'passed' || outcome === 'failed' || outcome === 'done' || outcome === 'incomplete' || outcome === 'reached' || outcome === 'missed' ? outcome : null;
@@ -46,14 +47,36 @@ export function normalRunOutcome030(occurrence: RunOccurrence030): 'passed' | 'f
 
 /** Show command output without parsing model or tool data as instructions. */
 export function commandResult030(occurrence: RunOccurrence030): { exitCode: string; output: string } | null {
-  if (occurrence.activation.agent !== null || occurrence.details.kind !== 'available' || occurrence.details.value.outputJson === null) return null;
+  const output = occurrenceOutput030(occurrence);
+  if (occurrence.activation.agent !== null || output === null) return null;
   try {
-    const value: unknown = JSON.parse(occurrence.details.value.outputJson);
+    const value: unknown = JSON.parse(output);
     if (!value || typeof value !== 'object' || !('outcome' in value) || !['passed', 'failed'].includes(String(value.outcome)) || !('data' in value)) return null;
     const data = value.data;
     if (!data || typeof data !== 'object' || !('exitCode' in data) || !Number.isInteger(data.exitCode) || !('output' in data) || typeof data.output !== 'string') return null;
     return { exitCode: String(data.exitCode), output: data.output };
   } catch { return null; }
+}
+
+/** Native call results are independent of the still-unavailable visit details. */
+function nativeCallResult030(occurrence: RunOccurrence030): Record<string, unknown> | null {
+  const raw = occurrence.activation.callResultJson;
+  if (occurrence.activation.agent !== null || typeof raw !== 'string') return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  } catch { return null; }
+}
+export function occurrenceOutput030(occurrence: RunOccurrence030): string | null {
+  const result = nativeCallResult030(occurrence);
+  if (result) return result.kind === 'completed' && typeof result.outputJson === 'string' ? result.outputJson : null;
+  return occurrence.details.kind === 'available' ? occurrence.details.value.outputJson : null;
+}
+export function callFailure030(occurrence: RunOccurrence030): { code: string; message: string } | null {
+  const result = nativeCallResult030(occurrence);
+  if (result?.kind !== 'failed' || !result.error || typeof result.error !== 'object') return null;
+  const error = result.error as Record<string, unknown>;
+  return typeof error.code === 'string' && typeof error.message === 'string' ? { code: error.code, message: error.message } : null;
 }
 
 /** Authored titles are presentation data, never runtime identities. */

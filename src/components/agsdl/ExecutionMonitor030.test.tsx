@@ -233,3 +233,18 @@ it('shows the command exit code and complete text for a failed normal outcome', 
   expect(host.textContent).toContain('<script>untrusted</script>');
   expect(host.querySelector('script')).toBeNull();
 });
+
+it('shows native call results and errors when the runtime has no visit details', async () => {
+  const run = inspectionFixture030();
+  if (run.state.occurrences.kind !== 'ready') throw new Error('Fixture unavailable');
+  const occurrences = run.state.occurrences.value.map((item, index) => ({ ...item, activation: { ...item.activation, callResultJson: JSON.stringify(index === 0
+    ? { kind: 'completed', outputJson: '{"outcome":"failed","data":{"exitCode":7,"output":"native command text"}}', routeKey: 'failed' }
+    : { kind: 'failed', error: { code: 'OUTPUT_INVALID', message: 'Invalid JSON' } }) }, details: { kind: 'unavailable' as const, gap: 'occurrence-details' as const } }));
+  let bridge: RunGraphBridge030 | undefined;
+  await mount(monitorFixture030({ ...run, state: { ...run.state, occurrences: ready(occurrences) } }), { renderGraph: (value: RunGraphBridge030) => { bridge = value; return null; } });
+  await act(async () => bridge!.selectOccurrence(bridge!.occurrences[0].key));
+  expect(host.textContent).toContain('Exit code: 7');
+  expect(host.textContent).toContain('native command text');
+  await act(async () => bridge!.selectOccurrence(bridge!.occurrences[1].key));
+  expect(host.textContent).toContain('OUTPUT_INVALID: Invalid JSON');
+});

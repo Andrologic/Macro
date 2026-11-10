@@ -672,3 +672,18 @@ it('uses reducer-compatible selectors, path ancestry, terminal states and missin
   await expect(nativeAgentRunFixture030('invalid','body')).rejects.toThrow('Agent fixture phase');
   await expect(nativeAgentRunFixture030('invalid','group')).rejects.toThrow('Agent fixture phase');
 });
+
+it('retains the native call result while visit details remain unavailable', async () => {
+  const f = await fixture();
+  const row = f.runtime.items.find(item => item.kind === 'activation');
+  if (row?.kind !== 'activation') throw new Error('No activation');
+  row.value.callResultJson = JSON.stringify({ kind: 'completed', outputJson: '{"outcome":"failed","data":{"exitCode":7,"output":"native output"}}', routeKey: 'failed' });
+  const { transport, scope } = transportFor(f);
+  const access = createRunInspectionAccess030(scope, transport);
+  await access.refreshRun('run');
+  const occurrence = retainedRunValue030(retainedRunValue030(access.getSnapshot().runs.run)!.state.occurrences)![0];
+  expect(occurrence.details.kind).toBe('unavailable');
+  const { commandResult030, normalRunOutcome030 } = await import('./runGraphProjection030');
+  expect(commandResult030(occurrence)).toEqual({ exitCode: '7', output: 'native output' });
+  expect(normalRunOutcome030(occurrence)).toBe('failed');
+});

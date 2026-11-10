@@ -3,7 +3,7 @@ import type { RunRead030, RunOccurrence030 } from '../../types/agsdlRunUi030';
 import type { RunInspection030 } from '../../services/agsdl/runtimeProjection030';
 import { retainedRunValue030 } from '../../services/agsdl/runtimeProjection030';
 import { projectStaticSemantics030 } from '../../services/agsdl/staticSemantics030';
-import { runEffectFacts030, runGraphReadState030, runStepLabels030, normalRunOutcome030, commandResult030, runCaptureKey030, projectRunGraph030, type RunGraphOccurrence030 } from '../../services/agsdl/runGraphProjection030';
+import { runEffectFacts030, runGraphReadState030, runStepLabels030, normalRunOutcome030, commandResult030, callFailure030, occurrenceOutput030, runCaptureKey030, projectRunGraph030, type RunGraphOccurrence030 } from '../../services/agsdl/runGraphProjection030';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
 
 /** The shell canvas consumes this bridge without replacing static or native ids. */
@@ -49,6 +49,8 @@ export function RunInspector030({ inspection, selectedStepId, selectedOccurrence
   const details = selected?.occurrence.details;
   const activation = selected?.occurrence.activation;
   const normalOutcome = selected ? normalRunOutcome030(selected.occurrence) : null;
+  const callFailure = selected ? callFailure030(selected.occurrence) : null;
+  const callOutput = selected?.occurrence.activation.callResultJson ? occurrenceOutput030(selected.occurrence) : null;
   const command = selected ? commandResult030(selected.occurrence) : null;
   const diagnostics = retainedRunValue030(state.diagnostics);
   const visibleDiagnostics = diagnostics?.filter(diagnostic => !selected || diagnostic.activationId === selected.activationId || !graph.some(item => item.activationId === diagnostic.activationId));
@@ -93,13 +95,15 @@ export function RunInspector030({ inspection, selectedStepId, selectedOccurrence
         <p>{tr('commandOutput')}</p>
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{command.output || tr('noContent')}</pre>
       </div>}
+      {callFailure && <p role="status">{tr(`diagnosticCode.${['CALL_FAILED', 'TIMEOUT', 'OUTPUT_INVALID'].includes(callFailure.code) ? callFailure.code : 'other'}`)} · {callFailure.code}: {callFailure.message}</p>}
+      {callOutput !== null && !command && <ExactContent label={tr('result')} value={callOutput} />}
       {activation.physical && <p>{tr('physicalActive')}</p>}
       {details?.kind === 'available' ? <>
         {!details.value.countsForFlow && <p>{tr('notCounting')}</p>}
         <ExactContent label={tr('receivedMessage')} value={details.value.receivedMessageJson} />
         <ExactContent label={tr('sender')} value={details.value.senderJson} />
         <ExactContent label={tr('result')} value={details.value.outputJson} />
-      </> : <p>{tr('detailsUnavailable')}</p>}
+      </> : !activation.callResultJson && <p>{tr('detailsUnavailable')}</p>}
       <details><summary>{tr('technicalDetails')}</summary>
         <pre className="whitespace-pre-wrap break-all">{JSON.stringify({ activation, details }, null, 2)}</pre>
       </details>

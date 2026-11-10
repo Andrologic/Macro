@@ -85,6 +85,37 @@ async fn finish(
         .unwrap()
         .flow;
     assert!(view.state.activations.iter().all(|a| !a.physical));
+    let page = crate::agsdl_host_projection030::read(
+        &host,
+        &f.pool,
+        crate::agsdl_host_projection030::RuntimeProjectionQuery030 {
+            system_start_id: f.owner.system_start_id.clone(),
+            source: serde_json::from_value(f.plan.source.clone()).unwrap(),
+            snapshot_id: Some(f.identity.snapshot_id.clone()),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    for item in page.items {
+        if let crate::agsdl_host_projection030::RuntimeProjectionItem030::Activation { value } =
+            item
+        {
+            let activation = view
+                .state
+                .activations
+                .iter()
+                .find(|a| a.id == value.id)
+                .unwrap();
+            assert_eq!(
+                value.call_result_json,
+                activation
+                    .result
+                    .as_ref()
+                    .map(|r| serde_json::to_string(r).unwrap())
+            );
+        }
+    }
     f.pool.close().await;
     view
 }

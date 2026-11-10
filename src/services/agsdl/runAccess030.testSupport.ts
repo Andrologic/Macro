@@ -24,7 +24,7 @@ export async function nativeRunFixture030(id = 'run') {
     phaseCounts: [{ phase: 'done', count: '1' }, { phase: 'running', count: '1' }], physicalPending: '1' };
   const runtime: RuntimeProjectionPage030 = { scope, flowInvocationId: 'flow', revision: summary.revision,
     stopping: summary.stopping, verdict: summary.verdict, total: '2', items: [
-      { kind: 'activation', value: activation('activation-1', ['first'], 'done', false) },
+      { kind: 'activation', value: { ...activation('activation-1', ['first'], 'done', false), callResultJson: JSON.stringify({ kind: 'completed', outputJson: '{"outcome":"passed","data":{"exitCode":0,"output":"first\\n"}}', routeKey: 'passed' }) } },
       { kind: 'activation', value: activation('activation-2', ['second'], 'running', true) },
     ], nextPage: null };
   return { capture, scope, summary, runtime };
