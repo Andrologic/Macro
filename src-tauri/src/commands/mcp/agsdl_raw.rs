@@ -471,8 +471,22 @@ impl Session {
             }
         }
         let startup = match self.protocol {
-            Protocol::Legacy => self.rpc("initialize", r#"{"protocolVersion":"2025-11-25","capabilities":{"elicitation":{"form":{}}},"clientInfo":{"name":"Macro AgSDL","version":"0.3.0"}}"#, host.as_ref(), identity, control).await?,
-            Protocol::Modern => self.rpc("server/discover", "{}", host.as_ref(), identity, control).await?,
+            Protocol::Legacy => {
+                let capabilities = if host.supports_human_requests() {
+                    r#"{"elicitation":{"form":{}}}"#
+                } else {
+                    "{}"
+                };
+                let parameters = format!(
+                    r#"{{"protocolVersion":"2025-11-25","capabilities":{capabilities},"clientInfo":{{"name":"Macro AgSDL","version":"0.3.0"}}}}"#
+                );
+                self.rpc("initialize", &parameters, host.as_ref(), identity, control)
+                    .await?
+            }
+            Protocol::Modern => {
+                self.rpc("server/discover", "{}", host.as_ref(), identity, control)
+                    .await?
+            }
         };
         let startup = object(&startup)?;
         let version = match self.protocol {

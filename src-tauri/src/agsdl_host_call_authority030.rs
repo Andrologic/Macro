@@ -100,10 +100,30 @@ impl CallAuthority030 for NativeCallAuthority030<'_> {
             {
                 return Ok(());
             }
-            let _ = declaration;
-            // Production transports remain closed until their confinement and
-            // physical descendant proofs have been independently qualified.
-            Err(StoreError030::Authority)
+            let step: serde_json::Value = serde_json::from_str(declaration)?;
+            let document: serde_json::Value = serde_json::from_str(&capture.authored_source)?;
+            if crate::agsdl_host_capture::product_slice030(
+                &capture.authored_source,
+                Some(&capture.compiled_plan_json),
+            )
+            .is_some()
+                || step["type"] != "call"
+                || step.get("timeoutMs").is_some()
+                || step.get("answerTimeoutMs").is_some()
+                || step.get("command").is_some() == step.get("mcp").is_some()
+            {
+                return Err(StoreError030::Authority);
+            }
+            if let Some(mcp) = step.get("mcp") {
+                let server = mcp["server"].as_str().ok_or(StoreError030::Authority)?;
+                if document["mcpServers"][server]["command"]
+                    .as_array()
+                    .is_none()
+                {
+                    return Err(StoreError030::Authority);
+                }
+            }
+            Ok(())
         })
     }
 }

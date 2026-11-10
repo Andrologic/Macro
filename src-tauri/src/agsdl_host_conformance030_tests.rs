@@ -193,6 +193,42 @@ impl Fixture {
         let config = crate::config::ConfigManager::initialize(root.join("config"))
             .await
             .unwrap();
+        let tools_document = config
+            .get_document(
+                crate::config::ConfigDocumentKind::Tools,
+                crate::config::ConfigScope::User,
+            )
+            .await
+            .unwrap();
+        let mut approved_tools = tools_document.value;
+        approved_tools["agsdlHostPermissions"] = json!("workspace");
+        std::fs::write(
+            &tools_document.file_path,
+            serde_json::to_vec(&approved_tools).unwrap(),
+        )
+        .unwrap();
+        let pending = config
+            .reload(
+                crate::config::ConfigDocumentKind::Tools,
+                crate::config::ConfigScope::User,
+                crate::config::ConfigChangeSource::ExternalEditor,
+            )
+            .await
+            .unwrap()
+            .pending
+            .unwrap();
+        config.accept_pending_change(&pending.id).await.unwrap();
+        assert_eq!(
+            serde_json::to_value(
+                config
+                    .lock_agsdl_host_permissions()
+                    .await
+                    .unwrap()
+                    .permissions()
+            )
+            .unwrap(),
+            json!("workspace")
+        );
         config
             .register_project_root("project", metadata)
             .await
@@ -204,14 +240,18 @@ impl Fixture {
         let document: Value = serde_json::from_str(&authored).unwrap();
         let source = json!({"owner":{"projectId":"project","planId":"source","branch":"develop"},"revision":"1","sourceSha256":format!("{:x}",Sha256::digest(authored.as_bytes()))});
         let scope = json!({"projectId":"project","root":workspace,"rootIdentity":crate::fs::operations::workspace_root_identity(&workspace).unwrap().observation_key().unwrap(),"sourceOwner":source["owner"]});
-        let mut registry = crate::agsdl_host_example030::ExampleAdapter030::observe()
-            .registry(
-                &document,
-                &authored,
-                source["sourceSha256"].as_str().unwrap(),
-                &scope,
-            )
-            .unwrap();
+        let mut registry = if document["agents"].as_object().unwrap().is_empty() {
+            json!({"format":"macro-agsdl-registry/030", "version":"fixture", "modules":[], "harnesses":[], "agents":[], "hostCapabilities":[{"name":"call.command","support":"native","evidenceJson":"{\"transport\":\"native-call-test\"}"},{"name":"call.mcp","support":"native","evidenceJson":"{\"transport\":\"native-call-test\"}"}]})
+        } else {
+            crate::agsdl_host_example030::ExampleAdapter030::observe()
+                .registry(
+                    &document,
+                    &authored,
+                    source["sourceSha256"].as_str().unwrap(),
+                    &scope,
+                )
+                .unwrap()
+        };
         registry["format"] = "macro-agsdl-registry/030".into();
         registry["version"] = json!(format!(
             "sha256:{:x}",
@@ -230,9 +270,10 @@ impl Fixture {
             epoch: "capture".into(),
         };
         let tools = config.lock_execution_tools("project").await.unwrap();
-        let permissions = crate::agsdl_host_tools::permissions("Implement", false, &tools.tools)
-            .unwrap()
-            .to_string();
+        let mut permissions =
+            crate::agsdl_host_tools::permissions("Implement", false, &tools.tools).unwrap();
+        permissions["agsdlHostPermissions"] = json!("workspace");
+        let permissions = permissions.to_string();
         drop(tools);
         let capture = StartCapture030 { identity:identity.clone(), source:serde_json::from_value(source.clone()).unwrap(), versions:serde_json::from_value(serde_json::to_value(&plan.versions).unwrap()).unwrap(),
             authored_source:authored, compiled_plan_json:plan_json, registry_json:registry.to_string(), private_capture_json:json!({"format":"macro-native-flow-capture/030","callPermissionsJson":permissions,"callScopeJson":scope.to_string()}).to_string() };
@@ -327,6 +368,57 @@ struct ScriptedAgent {
     activation: String,
     send: tokio::sync::oneshot::Sender<ExampleResult030>,
 }
+struct ScriptedCall {
+    key: WorkKey030,
+    activation: String,
+    send: tokio::sync::oneshot::Sender<crate::agsdl_host_calls030::CallEvent030>,
+}
+struct CallTransport {
+    running: Arc<Mutex<Vec<ScriptedCall>>>,
+    wake: watch::Sender<u64>,
+}
+impl crate::agsdl_host_call_executor030::CallTransport030 for CallTransport {
+    fn start(
+        &self,
+        _grant: crate::agsdl_host_calls::CommandGrant,
+        _prepared: crate::agsdl_host_calls030::PreparedCall030,
+        _capture: StartCapture030,
+        attempt: crate::agsdl_host_calls030::CallAttempt030,
+        control: crate::agsdl_host_calls::Control,
+    ) -> crate::agsdl_host_calls::Result<
+        BoxFuture<'static, Result<crate::db::agsdl_execution::call_protocol030::CallEnd030>>,
+    > {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let work = attempt.work();
+        let FlowEffectKind030::Start {
+            item_json,
+            occurrence,
+            ..
+        } = &attempt.effect().kind
+        else {
+            unreachable!()
+        };
+        let key = WorkKey030 {
+            step: attempt.address().to_vec(),
+            item: item_json
+                .as_ref()
+                .map(|_| occurrence.as_ref().unwrap().item_index.clone()),
+        };
+        self.running.lock().unwrap().push(ScriptedCall {
+            key,
+            activation: work.activation_id.clone(),
+            send,
+        });
+        self.wake.send_modify(|n| *n += 1);
+        Ok(Box::pin(async move {
+            use crate::db::agsdl_execution::call_protocol030::CallEnd030;
+            tokio::select! {
+                _ = control.stop.cancelled() => Ok(CallEnd030::Stopped),
+                receipt = receive => Ok(CallEnd030::Returned { event: receipt.map_err(|_| failure("INTERRUPTED", "call", "Scripted receipt lost"))? }),
+            }
+        }))
+    }
+}
 struct Executor {
     running: Arc<Mutex<Vec<ScriptedAgent>>>,
     wake: watch::Sender<u64>,
@@ -401,6 +493,7 @@ impl AgentExecutor030 for Executor {
 async fn idle(
     f: &Fixture,
     running: &Mutex<Vec<ScriptedAgent>>,
+    calls: &Mutex<Vec<ScriptedCall>>,
     ended: Option<&str>,
 ) -> crate::db::agsdl_execution::flow_store030::FlowView030 {
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
@@ -425,7 +518,10 @@ async fn idle(
                     .activations
                     .iter()
                     .filter(|a| a.physical)
-                    .all(|a| agents.iter().any(|w| w.activation == a.id))
+                    .all(|a| {
+                        agents.iter().any(|w| w.activation == a.id)
+                            || calls.lock().unwrap().iter().any(|w| w.activation == a.id)
+                    })
                 && ended.is_none_or(|id| {
                     view.state
                         .activations
@@ -450,16 +546,28 @@ async fn native_timeline(
     receiver: watch::Receiver<u64>,
 ) -> Result<crate::db::agsdl_execution::flow_store030::FlowView030> {
     let running = Arc::new(Mutex::new(Vec::<ScriptedAgent>::new()));
+    let calls = Arc::new(Mutex::new(Vec::<ScriptedCall>::new()));
+    let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let executors: Executors030<tauri::test::MockRuntime> = Executors030 {
         agents: Arc::new(Executor {
             running: running.clone(),
             wake: wake.clone(),
         }),
-        calls: None,
+        calls: Some(Arc::new(
+            crate::agsdl_host_call_executor030::CallExecutor030 {
+                config: f.config.clone(),
+                pool: f.pool.clone(),
+                tasks: tasks.clone(),
+                owner: f.owner.clone(),
+                transport: Arc::new(CallTransport {
+                    running: calls.clone(),
+                    wake: wake.clone(),
+                }),
+            },
+        )),
         humans: None,
         clock: None,
     };
-    let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let emitter = {
         let (app, pool, config, tasks) = (
             f.app.handle().clone(),
@@ -494,7 +602,7 @@ async fn native_timeline(
     let timeline = async {
         let mut ended = None;
         for event in scenario.timeline {
-            let view = idle(f, &running, ended.as_deref()).await;
+            let view = idle(f, &running, &calls, ended.as_deref()).await;
             match event {
                 TimelineEvent030::Work { key, outcome } => {
                     let mut agents = running.lock().unwrap();
@@ -515,6 +623,26 @@ async fn native_timeline(
                     let agent = agents.remove(candidates[0]);
                     ended = Some(agent.activation);
                     agent.send.send(outcome).unwrap();
+                }
+                TimelineEvent030::Command { key, receipt } => {
+                    let mut calls = calls.lock().unwrap();
+                    let candidates = calls
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, c)| {
+                            c.key == key
+                                && view
+                                    .state
+                                    .activations
+                                    .iter()
+                                    .any(|a| a.id == c.activation && a.physical)
+                        })
+                        .map(|(i, _)| i)
+                        .collect::<Vec<_>>();
+                    assert_eq!(candidates.len(), 1, "Timeline call is not unique: {key:?}");
+                    let call = calls.remove(candidates[0]);
+                    ended = Some(call.activation);
+                    call.send.send(receipt).unwrap();
                 }
                 TimelineEvent030::Running(mut expected) => {
                     let mut actual = view
@@ -538,7 +666,7 @@ async fn native_timeline(
             }
             wake.send_modify(|n| *n += 1);
         }
-        let view = idle(f, &running, ended.as_deref()).await;
+        let view = idle(f, &running, &calls, ended.as_deref()).await;
         assert!(view.state.verdict.is_some());
         assert!(view.state.activations.iter().all(|a| !a.physical));
         view
@@ -621,9 +749,7 @@ async fn agsdl030_conformance_error_route() {
 // Select by capability, never by scenario name or expected output. The fallback
 // uses the existing scripted driver and the production drain_effects030 pass.
 fn scripted_reason(f: &Fixture, scenario: &scenarios::PinnedScenario030) -> Option<&'static str> {
-    if f.plan.steps.iter().any(|s| s.r#type == "call") {
-        Some("call executor not connected")
-    } else if f.plan.steps.iter().any(|s| s.r#type == "approval") {
+    if f.plan.steps.iter().any(|s| s.r#type == "approval") {
         Some("human executor not connected")
     } else if scenario.timeline.iter().any(|e| {
         matches!(
@@ -824,3 +950,6 @@ async fn invalid_timeline_cancels_and_joins_the_native_workers() {
         .await;
     f.pool.close().await;
 }
+
+#[path = "agsdl_host_call_executor030_tests.rs"]
+mod call_executor_tests;

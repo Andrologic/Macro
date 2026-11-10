@@ -114,8 +114,20 @@ soumises à leurs validations Rust ; les extensions ci-dessous restent fermées
 jusqu'à leur intégration et leur qualification. Start et Stop sont raccordés
 pour la tranche Codex 0.167.x qualifiée sur macOS ARM64 et Linux ARM64 :
 agents, ressources inline, résultats et corrections, choix et limites de visites.
-Les autres capacités restent refusées au contrôle avant lancement. Les runs
-interrompus au redémarrage restent consultables et ne reprennent pas.
+Les étapes `call` sont aussi raccordées sur macOS ARM64 avec le confinement
+natif. Les commandes et serveurs MCP locaux sur stdio tournent dans le dossier
+du projet, sans réseau ni environnement hérité, sous le plafond `workspace`
+approuvé de l'hôte et du projet. Aucun dépôt Git n'est nécessaire. `parse`
+accepte `json` et `lines`. Un code de sortie non nul, ou `isError` pour MCP,
+produit l'issue normale `failed` ; un JSON invalide produit `OUTPUT_INVALID`.
+Le moniteur affiche le code de sortie et le texte de la commande. Stop attend
+l'arrêt du processus et de ses descendants avant de terminer le run.
+
+Les serveurs MCP HTTP restent refusés, car l'arrêt distant ne peut pas être
+confirmé. L'accès MCP des agents, les demandes humaines, les délais, steer,
+fan-out et les autres capacités hors tranche restent refusés. Un serveur local
+qui demande une interaction humaine échoue avec `CALL_FAILED` et est arrêté.
+Les runs interrompus au redémarrage restent consultables et ne reprennent pas.
 
 L'autorisation exige ensemble `staticValid`, `runtimeSupported`, une
 qualification native correspondant à la source et au registre, aucune propriété

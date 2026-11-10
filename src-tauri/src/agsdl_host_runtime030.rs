@@ -394,7 +394,7 @@ pub(crate) trait HostExecutor030<R: tauri::Runtime = tauri::Wry>: Send + Sync {
         inspection: NativeFlowInspection030,
         effect: FlowEffect030,
         cancel: CancellationToken,
-    ) -> BoxFuture<'static, Result<()>>;
+    ) -> BoxFuture<'static, Result<Option<crate::agsdl_host_call_executor030::StartedCall030>>>;
 }
 pub(crate) trait RuntimeClock030: Send + Sync {
     fn tick(&self) -> BoxFuture<'_, Result<()>>;
@@ -544,6 +544,17 @@ struct NativeDriver030<'a, R: tauri::Runtime> {
     joining: FuturesUnordered<BoxFuture<'a, (String, Result<JoinedOwnedAgent030>)>>,
     joined: BTreeMap<String, JoinedOwnedAgent030>,
     ready: BTreeMap<String, JoinedOwnedAgent030>,
+    calls: BTreeMap<String, (CancellationToken, String)>,
+    call_joins: FuturesUnordered<
+        BoxFuture<
+            'a,
+            (
+                String,
+                Result<Option<crate::agsdl_host_calls030::JoinedCall030>>,
+            ),
+        >,
+    >,
+    joined_calls: BTreeMap<String, crate::agsdl_host_calls030::JoinedCall030>,
     in_flight: BTreeSet<String>,
 }
 impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
@@ -607,7 +618,7 @@ impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
             } else {
                 &self.executors.calls
             };
-            executor
+            let started = executor
                 .as_ref()
                 .ok_or_else(|| {
                     failure(
@@ -626,7 +637,38 @@ impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
                     effect,
                     CancellationToken::new(),
                 )
-                .await
+                .await?;
+            if let Some(started) = started {
+                let key = started.attempt.work().activation_id.clone();
+                self.in_flight.insert(started.attempt.effect().id.clone());
+                self.calls.insert(
+                    key.clone(),
+                    (started.cancel, started.attempt.effect().id.clone()),
+                );
+                let tasks = self.tasks;
+                self.call_joins.push(Box::pin(async move {
+                    let result = started
+                        .result
+                        .await
+                        .map_err(|_| {
+                            failure("INTERRUPTED", "call", "Call owner ended without a result")
+                        })
+                        .and_then(|r| r);
+                    let cleanup = tasks.cancel_owned(&started.request_id).await;
+                    (
+                        key,
+                        match cleanup {
+                            Ok(true) => result,
+                            _ => Err(failure(
+                                "UNCERTAIN",
+                                "call",
+                                "Call ownership cleanup did not complete",
+                            )),
+                        },
+                    )
+                }));
+            }
+            Ok(())
         })
     }
     fn steer(&mut self, _effect: FlowEffect030) -> BoxFuture<'_, Result<()>> {
@@ -643,6 +685,25 @@ impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
             let FlowEffectKind030::StopWork { work, .. } = &effect.kind else {
                 unreachable!()
             };
+            if let Some((cancel, _)) = self.calls.get(&work.activation_id) {
+                let claim = flow::claim_expected(
+                    self.host.flow030(),
+                    self.host,
+                    self.pool,
+                    &effect.identity,
+                    &effect.id,
+                )
+                .await?
+                .ok_or_else(|| failure("STALE_REFERENCE", "call", "Call stop changed"))?;
+                let request = claim.request_id();
+                claim.handoff_host(self.tasks, async {}).await?;
+                self.tasks
+                    .cancel_owned(&request)
+                    .await
+                    .map_err(|_| failure("UNCERTAIN", "call", "Call stop handoff failed"))?;
+                cancel.cancel();
+                return Ok(());
+            }
             let Some(live) = self.active.get_mut(&work.activation_id) else {
                 let lease = self.host.start_lease().await?;
                 let control = self
@@ -689,7 +750,9 @@ impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
         reference: &PrepareRef030,
         producer: &Producer030,
     ) -> SourceOwnership030<'a> {
-        if ["approval", "compose"].contains(&producer.kind.as_str()) {
+        if let Some(joined) = self.joined_calls.get(&reference.activation_id) {
+            SourceOwnership030::Call(joined)
+        } else if ["approval", "compose", "call"].contains(&producer.kind.as_str()) {
             SourceOwnership030::Host
         } else {
             self.joined
@@ -832,6 +895,9 @@ pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
         joining: FuturesUnordered::new(),
         joined: BTreeMap::new(),
         ready: BTreeMap::new(),
+        calls: BTreeMap::new(),
+        call_joins: FuturesUnordered::new(),
+        joined_calls: BTreeMap::new(),
         in_flight: BTreeSet::new(),
     };
     // Keep the driver outside the unwind boundary so panic follows the same
@@ -877,13 +943,14 @@ pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
             completed = true;
         }
         if completed { continue; }
-        if view.state.verdict.is_some() && driver.active.is_empty() {
+        if view.state.verdict.is_some() && driver.active.is_empty() && driver.calls.is_empty() {
             return Ok(());
         }
         if cancel.is_cancelled() {
             for live in driver.active.values() {
                 live.cancel.cancel();
             }
+            for (cancel, _) in driver.calls.values() { cancel.cancel(); }
             return Err(failure(
                 "INTERRUPTED",
                 "runtime",
@@ -908,6 +975,18 @@ pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
         tokio::select! {
             _ = cancel.cancelled() => (),
             changed = wake.changed() => { changed.map_err(|_| failure("INTERRUPTED", "runtime", "Supervisor wake channel closed"))?; },
+            Some((key, joined)) = driver.call_joins.next(), if !driver.call_joins.is_empty() => {
+                if let Some(joined) = joined? {
+                    let authority = crate::agsdl_host_call_authority030::NativeCallAuthority030::capture(host, owner).await?;
+                    let broker = host.start_lease().await?.call_data030()?;
+                    match crate::agsdl_host_calls030::finish_joined_call030(pool, &authority, &broker, &joined, &CancellationToken::new()).await? {
+                        crate::agsdl_host_calls030::CallSettlement030::Terminal { .. } => (),
+                        _ => return Err(failure("UNCERTAIN", "call", "Call completion has a diagnostic")),
+                    }
+                    driver.joined_calls.insert(key.clone(), joined);
+                }
+                if let Some((_, effect)) = driver.calls.remove(&key) { driver.in_flight.remove(&effect); }
+            },
             Some((key, joined)) = driver.joining.next(), if !driver.joining.is_empty() => {
                 driver.ready.insert(key, joined?);
             },
@@ -924,7 +1003,15 @@ pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
     for live in driver.active.values() {
         live.cancel.cancel();
     }
+    for (cancel, _) in driver.calls.values() {
+        cancel.cancel();
+    }
     let mut cleanup_error = None;
+    while let Some((_, result)) = driver.call_joins.next().await {
+        if let Err(error) = result {
+            cleanup_error.get_or_insert(error);
+        }
+    }
     while let Some((_, result)) = driver.joining.next().await {
         if let Err(error) = result {
             cleanup_error.get_or_insert(error);

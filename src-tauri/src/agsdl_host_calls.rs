@@ -182,6 +182,9 @@ pub(crate) struct Completion {
 
 #[async_trait]
 pub(crate) trait HostPort: Send + Sync + 'static {
+    fn supports_human_requests(&self) -> bool {
+        true
+    }
     /// One durable claim before any external IO. A consumed claim, even after a
     /// lost receipt, MUST return an error, never a fresh launch ticket. Bind all
     /// request bytes and candidate/provider/work/epoch identities transactionally.
@@ -406,7 +409,7 @@ async fn collect(
     Ok(StreamOutput { bytes, total })
 }
 
-async fn run_command(
+pub(crate) async fn run_command(
     mut child: ContainedBackgroundProcess,
     policy: &SandboxPolicy,
     control: &Control,

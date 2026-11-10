@@ -265,7 +265,7 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
                 ));
             }
             let step = object.get("type").and_then(Value::as_str);
-            if matches!(step, Some("call" | "approval" | "compose" | "join")) {
+            if matches!(step, Some("approval" | "compose" | "join")) {
                 return Err(failure(
                     "HOST_CAPABILITY",
                     &format!("{pointer}/type"),
@@ -285,14 +285,19 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
                     && object
                         .keys()
                         .all(|name| matches!(name.as_str(), "value" | "mediaType"));
-                if (key == "value" && inline_source)
+                let literal_operand = segments.len() >= 2
+                    && segments[segments.len() - 2] == "arguments"
+                    && object.len() == 1
+                    && object.contains_key("value");
+                if (key == "value" && (inline_source || literal_operand))
                     || (agent_definition
                         && ["results", "harnessSettings", "permissions"].contains(&key.as_str()))
                 {
                     continue;
                 }
                 let location = format!("{pointer}/{}", pointer_token030(key));
-                if step == Some("agent") && ["timeoutMs", "answerTimeoutMs"].contains(&key.as_str())
+                if matches!(step, Some("agent" | "call"))
+                    && ["timeoutMs", "answerTimeoutMs"].contains(&key.as_str())
                 {
                     return Err(failure(
                         "HOST_CAPABILITY",
@@ -307,7 +312,9 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
                         "Steer is not connected in this slice",
                     ));
                 }
-                if step == Some("agent") && ["next", "onError"].contains(&key.as_str()) {
+                if matches!(step, Some("agent" | "call"))
+                    && ["next", "onError"].contains(&key.as_str())
+                {
                     route(child, &location)?;
                 }
                 visit(child, &location)?;
@@ -1130,6 +1137,29 @@ mod codex030_tests {
         json!({"agents":{"worker":{"harness":"codex","permissions":"workspace"}},"flow":{"entry":"work","steps":{"work":{"type":"agent","agent":"worker","next":[]}}}})
     }
     #[test]
+    fn codex_documents_accept_host_calls_but_keep_unsupported_call_features_closed() {
+        let mut doc = document();
+        doc["mcpServers"] = json!({"local":{"command":["/bin/sh","server.sh"]}});
+        doc["flow"]["steps"]["call"] = json!({"type":"call","command":"true","parse":"json","next":{"passed":[],"failed":"work"}});
+        doc["flow"]["steps"]["tool"] = json!({"type":"call","mcp":{"server":"local","tool":"check"},"arguments":{"data":{"value":{"type":"approval","timeoutMs":1,"uri":"literal"}}}});
+        assert!(validate_codex_document030(&doc).is_ok());
+        doc["flow"]["steps"]["call"]["timeoutMs"] = json!(1);
+        assert_eq!(
+            validate_codex_document030(&doc).unwrap_err().pointer,
+            "/flow/steps/call/timeoutMs"
+        );
+        doc["flow"]["steps"]["call"]
+            .as_object_mut()
+            .unwrap()
+            .remove("timeoutMs");
+        doc["flow"]["steps"]["call"]["next"] = json!({"step":"work","each":["data"]});
+        assert_eq!(
+            validate_codex_document030(&doc).unwrap_err().code,
+            "HOST_CAPABILITY"
+        );
+    }
+
+    #[test]
     fn preflight_and_admission_share_precise_slice_refusals() {
         let cases = [
             (
@@ -1182,7 +1212,7 @@ mod codex030_tests {
             ),
             (
                 "/flow/steps/work/type",
-                json!("call"),
+                json!("approval"),
                 "HOST_CAPABILITY",
                 "/flow/steps/work/type",
             ),

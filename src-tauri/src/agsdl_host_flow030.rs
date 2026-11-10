@@ -1318,7 +1318,20 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
                     .map_or(agents, |executor| executor.0.clone());
                 let executors = crate::agsdl_host_runtime030::Executors030 {
                     agents,
-                    calls: None,
+                    calls: Some(Arc::new(
+                        crate::agsdl_host_call_executor030::CallExecutor030 {
+                            config: config.clone(),
+                            pool: pool.clone(),
+                            tasks: ai.stream_tasks.clone(),
+                            transport: Arc::new(
+                                crate::agsdl_host_call_executor030::NativeCallTransport030,
+                            ),
+                            owner: EngineOwner {
+                                system_start_id: result.receipt.identity.system_start_id.clone(),
+                                owner_epoch: "0".into(),
+                            },
+                        },
+                    )),
                     humans: None,
                     clock: None,
                 };

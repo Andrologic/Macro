@@ -1,4 +1,4 @@
-//! Native ownership of 0.3 calls. No shell/network transport is qualified here.
+//! Native ownership and normalization of 0.3 calls.
 //! The resident normalizer receives only tickets derived from native captures
 //! and raw native receipts. These APIs are private, never model tools or IPC.
 use crate::agsdl_host_calls::Control;
@@ -14,7 +14,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sqlx::{Connection, SqliteConnection, SqlitePool};
 use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
+#[cfg(test)]
+use tokio::sync::oneshot;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) use protocol::{
@@ -146,6 +148,8 @@ pub(crate) enum CallEvent030 {
         structured_content_json: Option<String>,
     },
     StartFailed,
+    /// Complete command output could not be decoded as normative text.
+    OutputInvalid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +249,11 @@ impl CallDataBroker030 {
         cancel: &CancellationToken,
     ) -> Result<NormalizedData030> {
         protocol::validate_event(prepared, event)?;
+        if matches!(event, CallEvent030::OutputInvalid) {
+            return Ok(NormalizedData030(protocol::CallResult030::failure(
+                "OUTPUT_INVALID",
+            )));
+        }
         if matches!(event, CallEvent030::StartFailed) {
             return Ok(NormalizedData030(protocol::CallResult030::failure(
                 "CALL_FAILED",
@@ -269,7 +278,7 @@ impl CallDataBroker030 {
                 }
                 value
             }
-            CallEvent030::StartFailed => unreachable!(),
+            CallEvent030::StartFailed | CallEvent030::OutputInvalid => unreachable!(),
         };
         let input = serde_json::json!({"operation":"normalize","call":attempt,
             "prepared":prepared,"receipt":receipt})
@@ -381,6 +390,23 @@ pub(crate) async fn prepare_call030<A: CallAuthority030>(
     Ok(decision)
 }
 
+/// Consume the existing launch exactly once before synchronous transport creation.
+pub(crate) async fn launch_native030<A: CallAuthority030, T>(
+    pool: &SqlitePool,
+    authority: &A,
+    attempt: &CallAttempt030,
+    control: &Control,
+    start: impl FnOnce() -> T,
+) -> Result<T> {
+    let _gate = authority.admission_lock().lock_owned().await;
+    authority.call_commits().require_clear(attempt.identity())?;
+    let mut db = pool.acquire().await?;
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+    protocol::launch_tx(&mut tx, authority, attempt, control).await?;
+    commit_call_tx(tx, authority, attempt).await?;
+    Ok(start())
+}
+
 /// Private native attribution for N-HUMAN. Obtain it only while this exact
 /// launched MCP call is live, under the same admission gate/SQL snapshot.
 /// human_open/answer/close have the same responsibilities as legacy HostPort;
@@ -426,6 +452,21 @@ mod joined {
         }
         pub(crate) async fn timed_out(&self) {
             self.timeout.cancelled().await;
+        }
+    }
+    impl JoinedCall030 {
+        pub(crate) fn from_native(
+            attempt: CallAttempt030,
+            end: protocol::CallEnd030,
+            control: super::Control,
+        ) -> Self {
+            Self {
+                attempt,
+                end,
+                receipt_id: uuid::Uuid::new_v4().to_string(),
+                stop: control.stop,
+                timeout: control.machine_timeout,
+            }
         }
     }
     #[cfg(test)]

@@ -300,6 +300,34 @@ pub(crate) async fn observation(
             &diagnostic.message,
         ));
     }
+    let uses_calls030 = is_030
+        && document
+            .pointer("/flow/steps")
+            .and_then(Value::as_object)
+            .is_some_and(|steps| steps.values().any(|step| step["type"] == "call"));
+    if uses_calls030 {
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return Err(failure(
+                "CALL_PLATFORM_UNQUALIFIED",
+                "/flow/steps",
+                "Local calls require the qualified macOS ARM64 confinement backend",
+            ));
+        }
+        if !matches!(
+            host_permissions,
+            crate::agsdl_permissions::RequestedPermissions::Preset(
+                crate::agsdl_permissions::Preset::Workspace
+            )
+        ) || project.user_read_only
+            || project.is_read_only
+        {
+            return Err(failure(
+                "CALL_PERMISSIONS_UNSUPPORTED",
+                "/flow/steps",
+                "Local calls require approved workspace permissions and a writable project",
+            ));
+        }
+    }
     let uses_codex030 = is_030
         && document
             .get("agents")
@@ -485,6 +513,10 @@ pub(crate) async fn observation(
     }
     let mut observation = json!({"format":"macro-native-registry-observation/1","models":models,"tools":crate::agsdl_host_tools::observations(),"configurations":configurations,
         "callPermissions":crate::agsdl_host_tools::permissions("Implement", project.user_read_only || project.is_read_only, tools)?,"callScope":scope});
+    if is_030 {
+        observation["callPermissions"]["agsdlHostPermissions"] =
+            serde_json::to_value(host_permissions)?;
+    }
     let account = codex030
         .as_ref()
         .map(|observed| observed.account_digest.clone())
@@ -545,7 +577,9 @@ pub(crate) async fn observation(
                 {"harness":"opencode", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/opencode/module.json")},
                 {"harness":"pi", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/pi/module.json")}
             ],
-            "harnesses":harnesses, "agents":agents, "hostCapabilities":[]
+            "harnesses":harnesses, "agents":agents, "hostCapabilities": if cfg!(all(target_os="macos", target_arch="aarch64")) {
+                json!([{"name":"call.command","support":"native","evidenceJson":"{\"transport\":\"confined-local\"}"},{"name":"call.mcp","support":"native","evidenceJson":"{\"transport\":\"confined-stdio\"}"}])
+            } else { json!([]) }
         });
         let digest = Sha256::digest(serde_json::to_vec(&(&observation, &registry))?);
         registry["version"] = json!(format!("sha256:{digest:x}"));
@@ -728,12 +762,22 @@ pub(crate) fn product_slice030(
             message: message.into(),
         })
     };
-    for field in ["skills", "mcpServers"] {
+    for field in ["skills"] {
         if document.get(field).is_some() {
             return issue(
                 format!("/{field}"),
                 "This document feature is not yet supported.",
             );
+        }
+    }
+    for (name, server) in document
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        if server.get("url").is_some() {
+            return issue(format!("/mcpServers/{name}/url"), "Remote MCP calls are not supported because their physical cancellation cannot be confirmed. Use a local stdio server.");
         }
     }
     for (name, agent) in document.get("agents")?.as_object()? {
@@ -781,8 +825,14 @@ pub(crate) fn product_slice030(
         .flatten()
     {
         let pointer = format!("/flow/steps/{}", name.replace('~', "~0").replace('/', "~1"));
-        if step.get("type").and_then(Value::as_str) != Some("agent") {
-            return issue(pointer, "Only agent steps are supported for this run.");
+        if !matches!(
+            step.get("type").and_then(Value::as_str),
+            Some("agent" | "call")
+        ) {
+            return issue(
+                pointer,
+                "Only agent and call steps are supported for this run.",
+            );
         }
         for field in ["timeoutMs", "answerTimeoutMs"] {
             if step.get(field).is_some() {
@@ -810,8 +860,14 @@ pub(crate) fn product_slice030(
                 .replace('~', "~0")
                 .replace('/', "~1")
         );
-        if step.get("type").and_then(Value::as_str) != Some("agent") {
-            return issue(pointer, "Only agent steps are supported for this run.");
+        if !matches!(
+            step.get("type").and_then(Value::as_str),
+            Some("agent" | "call")
+        ) {
+            return issue(
+                pointer,
+                "Only agent and call steps are supported for this run.",
+            );
         }
         let declaration = exact_json::value(step.get("declarationJson")?.as_str()?).ok()?;
         for field in ["timeoutMs", "answerTimeoutMs"] {
@@ -2072,7 +2128,6 @@ mod product_slice030_tests {
         let base = json!({"contract":"agsdl-0.3.0", "agents":{"writer":{"harness":"codex"}},
             "flow":{"entry":"write","steps":{"write":{"type":"agent","agent":"writer"}}}});
         for (pointer, value) in [
-            ("/flow/steps/write/type", json!("call")),
             ("/flow/steps/write/type", json!("approval")),
             ("/flow/steps/write/timeoutMs", json!(10)),
             ("/flow/steps/write/delivery", json!("steer")),

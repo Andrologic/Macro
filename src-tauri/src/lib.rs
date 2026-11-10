@@ -96,6 +96,7 @@ mod native_quit_consent {
 pub(crate) mod agsdl_content;
 mod agsdl_host;
 mod agsdl_host_call_authority030;
+mod agsdl_host_call_executor030;
 mod agsdl_host_calls;
 mod agsdl_host_calls030;
 mod agsdl_host_capture;

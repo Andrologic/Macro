@@ -165,6 +165,9 @@ enum CallPhysical030 {
     NotStarted {
         receipt_id: String,
     },
+    Joined {
+        receipt_id: String,
+    },
     /// Debug-only executor with no external IO or descendants. This is NOT an
     /// attestation about local process trees or remote server cancellation.
     #[cfg(test)]
@@ -195,26 +198,18 @@ fn decode_received(raw: &str) -> Result<ReceivedCall030> {
     Ok(serde_json::from_str::<ReceivedRecord030>(raw)?.0)
 }
 // Data read from SQL never becomes a join capability. Only the opaque witness
-// from OwnedSyntheticCall030::join can authorize receive/finish for launched IO.
+// returned after the executor joins can authorize receive/finish for launched IO.
 fn received_from_join(joined: &JoinedCall030) -> Result<ReceivedCall030> {
-    #[cfg(test)]
-    {
-        require(
-            !joined.receipt_id().is_empty(),
-            "Joined call receipt id missing",
-        )?;
-        Ok(ReceivedCall030 {
-            end: joined.end().clone(),
-            physical: CallPhysical030::SyntheticJoined {
-                receipt_id: joined.receipt_id().into(),
-            },
-        })
-    }
-    #[cfg(not(test))]
-    {
-        let _ = joined;
-        Err(denied("No qualified joined call transport"))
-    }
+    require(
+        !joined.receipt_id().is_empty(),
+        "Joined call receipt id missing",
+    )?;
+    Ok(ReceivedCall030 {
+        end: joined.end().clone(),
+        physical: CallPhysical030::Joined {
+            receipt_id: joined.receipt_id().into(),
+        },
+    })
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -313,7 +308,9 @@ impl CallReceipt030 {
     /// has been checked, or from an acknowledged native terminal commit.
     pub(crate) fn physical(&self) -> PhysicalEvidence030 {
         let receipt_id = match &self.received.physical {
-            CallPhysical030::NotStarted { receipt_id } => receipt_id,
+            CallPhysical030::NotStarted { receipt_id } | CallPhysical030::Joined { receipt_id } => {
+                receipt_id
+            }
             #[cfg(test)]
             CallPhysical030::SyntheticJoined { receipt_id } => receipt_id,
         };
@@ -321,6 +318,9 @@ impl CallReceipt030 {
             native_receipt_id: receipt_id.clone(),
             descendants_joined: true,
         }
+    }
+    pub(crate) fn not_started(&self) -> bool {
+        matches!(self.received.physical, CallPhysical030::NotStarted { .. })
     }
     pub(crate) fn status(&self) -> &str {
         match &self.result {
@@ -1037,6 +1037,11 @@ pub(crate) async fn fail_preparation_tx<A: CallAuthority030>(
     if let Some(diagnostic) = apply_terminal_tx(db, authority, &state, &receipt).await? {
         return Ok(CallSettlement030::Diagnostic { diagnostic });
     }
+    // Preparation failed before any claim or external IO. The existing call
+    // receipt settles this Start, without manufacturing a physical handoff.
+    let changed = sqlx::query("UPDATE engine_flow030_outbox SET status='settled',settlement_json=? WHERE system_id=? AND invocation_id=? AND effect_id=? AND status='pending'")
+        .bind(serde_json::to_string(&receipt)?).bind(&attempt.identity.system_start_id).bind(&attempt.identity.flow_invocation_id).bind(&attempt.effect.id).execute(&mut *db).await?.rows_affected();
+    require(changed == 1, "Preparation Start is no longer pending")?;
     sqlx::query("UPDATE engine_flow030_calls SET status='terminal',received_json=?,receipt_json=? WHERE call_id=? AND status='reserved'")
         .bind(serde_json::to_string(&receipt.received)?).bind(serde_json::to_string(&receipt)?).bind(&attempt.call_id).execute(db).await?;
     Ok(CallSettlement030::Terminal { receipt })
@@ -1112,7 +1117,10 @@ pub(crate) async fn launch_tx<A: CallAuthority030>(
 pub(crate) fn validate_event(prepared: &PreparedCall030, event: &CallEvent030) -> Result<()> {
     match (prepared, event) {
         (_, CallEvent030::StartFailed)
-        | (PreparedCall030::Command { .. }, CallEvent030::CommandReceipt { .. }) => Ok(()),
+        | (
+            PreparedCall030::Command { .. },
+            CallEvent030::CommandReceipt { .. } | CallEvent030::OutputInvalid,
+        ) => Ok(()),
         (
             PreparedCall030::Mcp { .. },
             CallEvent030::ToolReturned {
@@ -1254,6 +1262,17 @@ async fn validate_result_tx(
     match (result, &received.end) {
         (CallResult030::Completed { output_json }, CallEnd030::Returned { event }) => {
             validate_output(&prepared, event, output_json)?
+        }
+        (
+            CallResult030::Failed { code },
+            CallEnd030::Returned {
+                event: CallEvent030::OutputInvalid,
+            },
+        ) => {
+            require(
+                code == "OUTPUT_INVALID" && matches!(prepared, PreparedCall030::Command { .. }),
+                "Invalid command text failure differs",
+            )?;
         }
         (
             CallResult030::Failed { code },

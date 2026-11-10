@@ -180,6 +180,27 @@ async fn source_route030(
                 SourceOwnershipKind030::Join,
             ) => {}
             (
+                SourceRouteMode030::Dispatch(SourceOwnership030::Host),
+                SourceOwnershipKind030::Call,
+            ) => {
+                let receipt = crate::agsdl_host_route_verifier030::verify_call_source_tx(
+                    &mut tx,
+                    &capture,
+                    source.producer(),
+                    owner,
+                    lease.generation(),
+                )
+                .await
+                .map_err(|_| failure("AUTHORITY", "route", "Call preparation receipt differs"))?;
+                if !receipt.not_started() {
+                    return Err(failure(
+                        "CORRELATION",
+                        "route",
+                        "Launched calls require their joined owner",
+                    ));
+                }
+            }
+            (
                 SourceRouteMode030::Dispatch(SourceOwnership030::Call(joined)),
                 SourceOwnershipKind030::Call,
             ) => {

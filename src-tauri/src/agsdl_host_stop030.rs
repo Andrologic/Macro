@@ -110,12 +110,12 @@ pub(crate) async fn reconcile(
             continue;
         }
         let effect: FlowEffect030 = serde_json::from_value(row["effect"].clone())?;
-        if matches!(effect.kind, FlowEffectKind030::Start { agent: Some(_), .. })
+        if matches!(effect.kind, FlowEffectKind030::Start { .. })
             && runtime
                 .supervisors
                 .is_registered(&identity.system_start_id)?
         {
-            // The supervisor cancels agents cooperatively and joins their resources.
+            // The supervisor cancels agents and calls cooperatively and joins their resources.
             // Aborting this parent would destroy the executor before physical cleanup.
             continue;
         }
