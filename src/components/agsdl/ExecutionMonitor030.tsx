@@ -10,6 +10,7 @@ import { useAgsdlTranslation } from './useAgsdlTranslation';
 export interface ExecutionMonitorProps030 {
   readonly access: RunInspectionAccess030;
   readonly initialRunId?: string;
+  readonly onSelection?: (id: string | undefined) => void;
   readonly currentSource?: string;
   readonly renderGraph?: (bridge: RunGraphBridge030) => ReactNode;
   /** Observation only, never a scheduler. Zero disables periodic readback. */
@@ -22,7 +23,7 @@ function retainedInspection(read: ReturnType<RunInspectionAccess030['getSnapshot
 export function ExecutionMonitor030(props: ExecutionMonitorProps030) {
   return <ScopedMonitor030 key={props.access.scopeKey} {...props} />;
 }
-function ScopedMonitor030({ access, initialRunId, currentSource, renderGraph, refreshIntervalMs = 5000, renderHumans }: ExecutionMonitorProps030) {
+function ScopedMonitor030({ access, initialRunId, onSelection, currentSource, renderGraph, refreshIntervalMs = 5000, renderHumans }: ExecutionMonitorProps030) {
   const { t } = useAgsdlTranslation();
   const tr = (key: string) => t(`agsdl.run030.${key}`);
   const subscribe = useCallback((listener: () => void) => access.subscribe(listener), [access]);
@@ -33,6 +34,7 @@ function ScopedMonitor030({ access, initialRunId, currentSource, renderGraph, re
   const preferred = explicit ?? automatic;
   const selected = snapshot.history.kind === 'ready' ? initialRunSelection030(snapshot, preferred)
     : preferred ?? initialRunSelection030(snapshot);
+  useEffect(() => { onSelection?.(selected); }, [onSelection, selected]);
   const [comparison, setComparison] = useState<string>();
   const [selections, setSelections] = useState<Record<string, { step?: string; occurrence?: string; runtime?: RuntimeSelection030 }>>({});
   const [readErrors, setReadErrors] = useState<ReadonlySet<string>>(new Set());
@@ -89,8 +91,8 @@ function ScopedMonitor030({ access, initialRunId, currentSource, renderGraph, re
     {inspection && state && <>
       {stale && <p role="status" className="rounded border border-border p-2">{tr('stale')}</p>}
       <section className="space-y-1 rounded border border-border p-2" aria-label={tr('summary')}>
-        <h3 className="font-medium">{tr(`verdict.${state.verdict ?? 'pending'}`)}</h3>
-        <p>{[tr(`summarySentence.${state.verdict ?? 'pending'}`),
+        <h3 className="font-medium">{left?.interruptedAt ? t('agsdl.execution.interrupted030') : tr(`verdict.${state.verdict ?? 'pending'}`)}</h3>
+        <p>{left?.interruptedAt ? t('agsdl.execution.interrupted030') : [tr(`summarySentence.${state.verdict ?? 'pending'}`),
           ...(/^[1-9][0-9]*$/.test(state.physicalPending) ? [tr(state.stopping ? 'summarySentence.stopping' : 'summarySentence.active')] : []),
           ...(state.stop.kind === 'available' && state.stop.value.kind === 'uncertain' ? [tr('summarySentence.uncertain')] : []),
           ...(state.humans.kind === 'ready' && state.humans.value.some(request => request.state.kind === 'open') ? [tr('summarySentence.human')] : []),

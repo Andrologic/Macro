@@ -850,6 +850,7 @@ interface ChatStore {
     createdConversation: boolean;
     deferredUntilTurnCompletion?: boolean;
   }>;
+  materializeArchitectConversation: (conversationId: string) => Promise<string>;
   getPendingArchitectConversationTarget: (conversationId: string) => { planId: string; branchName: string } | null;
   /** The conversation whose composer draft this conversation shares while a first Architect send settles. */
   resolveComposerDraftConversationId: (conversationId: string) => string;
@@ -12167,6 +12168,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       void get().ensureConversationForCurrentMode();
     },
 
+    materializeArchitectConversation: materializePendingArchitectConversationIfNeeded,
     getPendingArchitectConversationTarget: (conversationId) => {
       const details = pendingArchitectConversationDetailsById.get(conversationId);
       return details ? { planId: details.planId, branchName: details.targetBranch } : null;

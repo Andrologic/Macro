@@ -518,7 +518,14 @@
     "recovery": {
       "inspect": "El resultado anterior es desconocido. Revisa sus efectos en el chat antes de volver a iniciar.",
       "newRunAcknowledgement": "He revisado los efectos anteriores. Iniciar una nueva ejecución desde el principio."
-    }
+    },
+    "input030": "Instrucciones de entrada",
+    "start030": "Iniciar",
+    "stop030": "Detener",
+    "unsupported030": "Este documento utiliza una función aún no disponible. No se admiten comandos, solicitudes humanas, steer, ejecución paralela ni tiempos de espera.",
+    "codexNotInstalled": "Codex no está instalado. Instálalo para iniciar la ejecución.",
+    "codexLoginRequired": "Inicia sesión en Codex en el perfil privado de Macro antes de comenzar.",
+    "interrupted030": "Interrumpida. Esta ejecución no se reiniciará."
   },
   "actionFailed": "La acción falló. Inténtelo de nuevo.",
   "userError": {

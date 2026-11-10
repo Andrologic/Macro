@@ -181,7 +181,7 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
   async function historyEntry(run: PublicRunSummary030, capture: RunCapture030): Promise<RunHistoryEntry030> {
     verifyRetained(run);
     return { capture, scope: { systemStartId: run.systemStartId, snapshotId: run.snapshotId, source: run.source },
-      verdict: verdict(run.verdict), physicalPending: run.physicalPending,
+      verdict: verdict(run.verdict), physicalPending: run.physicalPending, interruptedAt: run.interruptedAt,
       humans: await readHumanFacts030({ systemStartId: run.systemStartId, source: run.source }, transport.readExecutionHumans030),
       chronology: unavailable('chronology') };
   }

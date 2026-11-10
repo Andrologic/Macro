@@ -90,6 +90,7 @@ export interface RunInspection030 {
 }
 export type RunHistoryEntry030 = Pick<RunInspection030['state'], 'scope' | 'verdict' | 'physicalPending' | 'humans' | 'chronology'> & {
   readonly capture: RunInspection030['capture'];
+  readonly interruptedAt?: string | null;
 };
 export interface RunReadFailure030 {
   readonly kind: 'conflict' | 'scope' | 'notFound' | 'transport' | 'uncertain';

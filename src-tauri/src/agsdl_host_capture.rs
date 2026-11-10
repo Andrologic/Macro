@@ -248,6 +248,10 @@ pub(crate) async fn observation(
     let project = &source.project;
     let document = exact_json::value(&source.source).unwrap_or(Value::Null);
     let is_030 = document.get("contract").and_then(Value::as_str) == Some("agsdl-0.3.0");
+    // Report unsupported product features before attempting Codex account discovery.
+    if let Some(diagnostic) = product_slice030(&source.source, None) {
+        return Err(failure(&diagnostic.code, &diagnostic.pointer, &diagnostic.message));
+    }
     let uses_codex030 = is_030
         && document
             .get("agents")

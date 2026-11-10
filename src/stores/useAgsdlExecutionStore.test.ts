@@ -29,9 +29,14 @@ let readSnapshot030: (id: string) => Promise<PublicSnapshot030>;
 let readHumans030: (scope: HumanScope030) => Promise<HumanPage030>;
 let readRuntime030: (scope: RuntimeProjectionQuery030, next?: RuntimeProjectionContinuation030) => Promise<RuntimeProjectionPage030>;
 let wireIntent: VersionedIntent | undefined;
+let codexCode = 'CODEX_SCOPE_CHECK_REQUIRED';
+let preflightFailure: string | undefined;
+let submitted030: VersionedIntent | undefined;
+let stopped030: unknown;
+mock.module('../services/ipc/agsdlExecution', () => ({ executionCodexStatus: async () => ({ available: codexCode === 'CODEX_SCOPE_CHECK_REQUIRED', code: codexCode }) }));
 let listRuns030: (request: RunListRequest030) => Promise<RunPage030>;
 mock.module("../services/architectPlanService", () => ({ getArchitectPlan: async () => ({ conversationId: planConversation, status: "draft" }), migrateArchitectPlanToAgsdl: async () => null, updateArchitectPlan: async () => {} }));
-mock.module("./useChatStore", () => ({ useChatStore: { getState: () => ({ selectedConversationId: selected, conversations: [{ id: "conversation", project_id: "project" }, { id: "other", project_id: "foreign" }] }) } }));
+mock.module("./useChatStore", () => ({ useChatStore: { getState: () => ({ getPendingArchitectConversationTarget: () => null, selectedConversationId: selected, conversations: [{ id: "conversation", project_id: "project" }, { id: "other", project_id: "foreign" }] }) } }));
 mock.module("./useAppStore", () => ({ useAppStore: { getState: () => ({ setMode: () => {} }) } }));
 mock.module("./useTaskStore", () => ({ useTaskStore: { getState: () => ({ getTaskById: () => undefined }) } }));
 /** Controlled native authority. It persists outside the store, so a store reset
@@ -50,7 +55,14 @@ const native = {
 };
 const lost = (lose: boolean, value: PublicExecutionIntent) => { if (lose) throw new Error("Acknowledgement lost"); return structuredClone(value); };
 mock.module("../services/tauriIpc", () => ({
-  preflightExecution: async () => { preflightCalls++; return { source, authoredSource, staticValid: true, runtimeSupported: true, productRuntimeAvailable: available, incomplete: false }; },
+  stageExecutionIntentVersioned: async (request: any) => {
+    native.calls.push('stage030');
+    return { formatVersion:'1', key:{ scope:request.scope, intentId:request.intentId }, revision:'1', payload:request.payload, state:{ kind:'prepared' } };
+  },
+  submitExecutionIntentVersioned: async () => { native.calls.push('submit030'); return submitted030 ?? wireIntent; },
+  closeExecutionIntentVersioned: async () => { native.calls.push('close030'); return { ...submitted030!, state:{ kind:'closed', disposition:'acknowledged', admission:(submitted030!.state as any).admission } }; },
+  stopExecution030: async (request: unknown) => { stopped030 = request; },
+  preflightExecution: async () => { preflightCalls++; if (preflightFailure) throw { code: preflightFailure, message: 'native refusal' }; return { source, authoredSource, diagnostics: [], staticValid: true, runtimeSupported: true, productRuntimeAvailable: available, incomplete: false }; },
   listExecutionRuns: async () => { listCalls++; return { runs: [...native.rows.values()].some(row => row.state.kind === "admitted" || row.state.kind === "closed" && row.state.admission) ? [{ systemStartId: 'started', source, counts: { completed: completedCount } }] : [], nextCursor: null }; },
   readExecutionSnapshot: async (id: string) => ({ ...snapshot(id), source: { ...source, owner: snapshotOwner } }),
   listExecutionRuns030: (request: RunListRequest030) => listRuns030(request),
@@ -107,6 +119,7 @@ const target = { planId: owner.planId, branchName: owner.branch };
 /** A renderer reload: the store forgets everything, native rows remain. */
 const reload = () => store.setState({ owner: undefined, conversationId: undefined, snapshot: undefined, snapshot030: undefined, humans030: undefined, humans030Stale: false, runtime030: undefined, runtime030Stale: false, projection: undefined, approvals: undefined, diagnostic: undefined, preflight: undefined, intent: undefined, intent030: undefined, intentBusy: false, acceptedDelivery: undefined, stopping: false, busy: false, error: undefined, runs: [], nextRuns: null, runs030: [], nextRuns030: null, runs030Error: false });
 beforeEach(async () => {
+  codexCode = 'CODEX_SCOPE_CHECK_REQUIRED'; preflightFailure = undefined; submitted030 = undefined; stopped030 = undefined;
   selected = planConversation = "conversation"; snapshotOwner = owner; seenPages = []; seenDiagnostics = []; projectionChangesCursor = false; taskResult = null; available = false; authoredSource = '{}'; listCalls = preflightCalls = 0; native.reset(); completedCount = "0"; wireIntent = undefined;
   listRuns030 = async () => ({runs:[],nextCursor:null});
   readProjection = async id => projection(id);
@@ -239,7 +252,7 @@ it('observes a versioned 0.3 admission and verifies its capture without submitti
   expect(store.getState().intent030?.state.kind).toBe('admitted');
   expect(native.calls).not.toContain('close:acknowledged');
 });
-it('retains a prepared 0.3 intent without submitting it or using the historical reader', async () => {
+it('submits a prepared 0.3 intent only after an explicit resume', async () => {
   wireIntent = { formatVersion:'1', key:{scope:{owner,conversationId:'conversation'},intentId:'i'}, revision:'1',
     payload:{kind:'start',request:{source,profile:'macro-agsdl-030-v1',associations:{},requestId:'i',entry:null}}, state:{kind:'prepared'} };
   native.calls = [];
@@ -248,7 +261,7 @@ it('retains a prepared 0.3 intent without submitting it or using the historical 
   expect(native.calls).toEqual([]);
   await store.getState().resume();
   expect(store.getState().intent030?.state.kind).toBe('prepared');
-  expect(native.calls).toEqual([]);
+  expect(native.calls).toEqual(['submit030']);
 });
 it('rejects a 0.3 admission whose captured source belongs to another owner', async () => {
   const foreign = { ...source, owner: { ...owner, projectId: 'foreign' } };
@@ -879,4 +892,32 @@ it('does not overwrite a failed scope opening with a later history read', async 
   expect(historyReads).toBe(1);
   expect(store.getState().loaded).toBe(true);
   expect(store.getState().error).toBeUndefined();
+});
+
+function prepare030() {
+  authoredSource = '{"contract":"agsdl-0.3.0","flow":{"entry":"write"}}'; available = true;
+  useAgsdlStore.setState({ sessions: { [agsdlSessionKey(target)]: { source: authoredSource, annexes: {}, version: 'v1', persistedRevision: 1, status: 'draft', dirty: false, saving: false, history: [], future: [], reports: [], error: null } } });
+}
+it('reports native 0.3 preflight and Codex failures without staging a run', async () => {
+  prepare030();
+  for (const [code, key] of [['UNSUPPORTED_030_FEATURE','unsupported030'], ['CODEX_LOGIN_REQUIRED','codexLoginRequired'], ['CODEX_NOT_INSTALLED','codexNotInstalled'], ['OTHER','error']]) {
+    preflightFailure = code;
+    await store.getState().start030('write');
+    expect(store.getState().error).toBe(`agsdl.execution.${key}`);
+    expect(native.calls).not.toContain('stage030');
+  }
+});
+it('starts a 0.3 run through a versioned intent and stops the selected run', async () => {
+  prepare030();
+  const versions = { snapshot:'2' as const, contract:'agsdl-0.3.0' as const, compiler:'c', runtime:'r', registry:'g', profile:'macro-agsdl-030-v1' as const };
+  const { sourceDigest } = await import('../services/agsdlExecution/compiler');
+  const captured = { ...source, sourceSha256: await sourceDigest(authoredSource) };
+  const request = { source: captured, profile:'macro-agsdl-030-v1', associations:{}, requestId:'request', entry:{ deliveryId:'delivery', messageJson:'{}' } };
+  readSnapshot030 = async id => ({ systemStartId:id, source:captured, authoredSource, associations:{}, versions });
+  submitted030 = { formatVersion:'1', key:{ scope:{ owner, conversationId:'conversation' }, intentId:'intent' }, revision:'2', payload:{ kind:'start', request }, state:{ kind:'admitted', admission:{ kind:'start030', receipt:{ systemStartId:'run', flowInvocationId:'flow', source:captured, versions, entryDeliveryId:'delivery' } } } };
+  await store.getState().start030('write');
+  expect(native.calls).toEqual(['read','stage030','submit030','close030']);
+  expect(store.getState().launched030).toBe('run');
+  await store.getState().stop030('run');
+  expect(stopped030).toMatchObject({ systemStartId:'run' });
 });

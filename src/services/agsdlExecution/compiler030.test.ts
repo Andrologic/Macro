@@ -56,6 +56,14 @@ describe('0.3 compiler wire plan', () => {
     expect(plan.agents[0].provenanceJson).toContain('file:///synthetic/workspace/flow.json');
     expect(result.productRuntimeAvailable).toBe(false);
   });
+  it('reports product availability from the captured Codex adapter', async () => {
+    const doc = document030();
+    record(record(doc.agents).worker).harness = 'codex';
+    const base = registry030(doc);
+    const registry: CapturedRegistry030 = { ...base, harnesses: base.harnesses.map(item => ({ ...item, harness: 'codex', adapterId: 'codex-app-server-v1' })) };
+    expect((await compile(doc, registry)).productRuntimeAvailable).toBe(true);
+    expect((await compile(doc, { ...registry, harnesses: registry.harnesses.map(item => ({ ...item, adapterId: 'other' })) })).productRuntimeAvailable).toBe(false);
+  });
   it('keeps compose scopes, parameter bindings and joins instead of flattening work occurrences', async () => {
     const doc = document030();
     doc.compositions = { inner: { parameters: ['who'], entry: 'work', outputs: ['done'], steps: {

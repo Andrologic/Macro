@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { toServiceError } from "../services/contracts/errors";
 import { getArchitectPlan } from "../services/architectPlanService";
 import * as ipc from "../services/tauriIpc";
+import { executionCodexStatus } from "../services/ipc/agsdlExecution";
 import { useAppStore } from "./useAppStore";
 import { useTaskStore } from "./useTaskStore";
 import { useChatStore } from "./useChatStore";
@@ -71,6 +72,9 @@ interface ExecutionView {
   moreDiagnostics: () => Promise<void>;
   showCaptured: (value: boolean) => void;
   start: (prompt?: string) => Promise<void>;
+  start030: (prompt: string) => Promise<void>;
+  stop030: (systemStartId: string) => Promise<void>;
+  launched030?: string;
   deliver: (agentName: string, prompt: string) => Promise<void>;
   resume: () => Promise<void>;
   discard: () => Promise<void>;
@@ -122,13 +126,13 @@ const runtimeStaleAfterRuns030 = (view: ExecutionView, runs: readonly PublicRunS
 };
 const isIntent030 = (row: { readonly payload: { readonly kind: 'start'; readonly request: { readonly profile: string } } | { readonly kind: 'deliver' }; readonly state: { readonly kind: string; readonly admission?: { readonly kind: string } | null } }) => (row.payload.kind === 'start' && row.payload.request.profile === 'macro-agsdl-030-v1') ||
   ((row.state.kind === 'admitted' || row.state.kind === 'closed') && row.state.admission?.kind === 'start030');
-const empty = { runs: [], nextRuns: null, runs030: [], nextRuns030: null, runs030Error: false, captured: false, loaded: false, busy: false, stale: false, humans030Stale: false, runtime030Stale: false, snapshot030: undefined, humans030: undefined, runtime030: undefined, diagnosticPinned: false, intent: undefined, intent030: undefined, intentBusy: false, stopping: false, acceptedDelivery: undefined };
+const empty = { runs: [], nextRuns: null, runs030: [], nextRuns030: null, runs030Error: false, captured: false, loaded: false, busy: false, stale: false, humans030Stale: false, runtime030Stale: false, snapshot030: undefined, humans030: undefined, runtime030: undefined, diagnosticPinned: false, intent: undefined, intent030: undefined, intentBusy: false, stopping: false, acceptedDelivery: undefined, launched030: undefined };
 let generation = 0;
 /** Changes only when the view leaves its project/plan/branch/conversation scope. */
 let scopeGeneration = 0;
 let taskGeneration = 0;
 const watchers = new Map<string, { timer: ReturnType<typeof setInterval>; leases: number }>();
-const executionErrorKeys = new Set(["agsdl.execution.error", "agsdl.execution.stale", "agsdl.execution.unavailable", "agsdl.execution.intentOpen", "agsdl.execution.retryable", "agsdl.execution.saveBeforeStart", "agsdl.execution.ownerChanged", "agsdl.execution.promptRequired", "agsdl.execution.capturedAgentRequired", "agsdl.execution.taskUnavailable",
+const executionErrorKeys = new Set(["agsdl.execution.error", "agsdl.execution.stale", "agsdl.execution.unavailable", "agsdl.execution.intentOpen", "agsdl.execution.retryable", "agsdl.execution.saveBeforeStart", "agsdl.execution.ownerChanged", "agsdl.execution.promptRequired", "agsdl.execution.capturedAgentRequired", "agsdl.execution.taskUnavailable", "agsdl.execution.unsupported030", "agsdl.execution.codexNotInstalled", "agsdl.execution.codexLoginRequired",
   "agsdl.execution.refused.SCOPE_INVALID", "agsdl.execution.refused.SOURCE_CHANGED", "agsdl.execution.refused.TARGET_INVALID", "agsdl.execution.refused.TARGET_CLOSED", "agsdl.execution.refused.INPUT_CONSTRAINT"]);
 const intentFailure = (error: unknown): ExecutionIntentError | undefined => {
   const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
@@ -145,7 +149,11 @@ const executionError = (error: unknown) => {
   // Structured native intent errors are mapped by code, never by message text.
   const intent = intentFailure(error);
   if (intent) return { error: intent.code === "SLOT_OCCUPIED" ? "agsdl.execution.intentOpen" : intent.code === "SCOPE_INVALID" || intent.code === "SCOPE_UNAVAILABLE" ? "agsdl.execution.ownerChanged" : "agsdl.execution.error", stale: false };
-  const message = toServiceError(error).message;
+  const native = toServiceError(error);
+  if (native.code === 'UNSUPPORTED_030_FEATURE') return { error: 'agsdl.execution.unsupported030', stale: false };
+  if (native.code === 'CODEX_NOT_INSTALLED') return { error: 'agsdl.execution.codexNotInstalled', stale: false };
+  if (native.code === 'CODEX_LOGIN_REQUIRED') return { error: 'agsdl.execution.codexLoginRequired', stale: false };
+  const message = native.message;
   const stale = message.includes("Projection page is stale; restart explicitly");
   return { error: stale ? "agsdl.execution.stale" : executionErrorKeys.has(message) ? message : "agsdl.execution.error", stale };
 };
@@ -290,6 +298,27 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
     try { if (await current()) await work(initial, current); }
     catch (error) { if (token === scopeGeneration) set(executionError(error)); }
     finally { if (token === scopeGeneration) set({ intentBusy: false }); }
+  };
+  const settle030 = async (row: VersionedIntent, initial: ExecutionView, current: () => Promise<boolean>, submit: boolean) => {
+    if (!(await current())) return;
+    set({ intent030: row });
+    if ((row.state.kind === 'prepared' || row.state.kind === 'submissionPending') && submit) {
+      row = await ipc.submitExecutionIntentVersioned(row.key);
+      if (!(await current())) return;
+      set({ intent030: row });
+    }
+    if (row.state.kind === 'refused') { set({ error: `agsdl.execution.refused.${row.state.code}` }); return; }
+    if (row.state.kind === 'submissionPending') { set({ error: 'agsdl.execution.retryable' }); return; }
+    const receipt = retainedStartReceipt030(row, initial.owner, initial.conversationId);
+    if (!receipt) return;
+    await observe030(row, initial, current);
+    if (!(await current())) return;
+    if (row.state.kind === 'admitted') {
+      row = await ipc.closeExecutionIntentVersioned({ key: row.key, expectedRevision: row.revision, disposition: 'acknowledged' });
+      if (!(await current())) return;
+    }
+    set({ intent030: row, launched030: receipt.systemStartId });
+    await get().refreshRuns030();
   };
   /** Stage a new request. A slot already held natively is shown, never replaced. */
   const stage = async (payload: ExecutionIntentPayload, initial: ExecutionView, current: () => Promise<boolean>) => {
@@ -535,6 +564,49 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
         ? { deliveryId: crypto.randomUUID() as DeliveryId, messageJson: executionPrompt(prompt) } : null };
       await stage({ kind: "start", request }, initial, current);
     }),
+    start030: async prompt => {
+      const view = get();
+      const chat = useChatStore.getState();
+      if (view.conversationId && chat.getPendingArchitectConversationTarget(view.conversationId)) {
+        try {
+          const id = await chat.materializeArchitectConversation(view.conversationId);
+          await get().open030({ planId: view.owner!.planId, branchName: view.owner!.branch }, id);
+        } catch (error) { set(executionError(error)); return; }
+      }
+      await intentOperation(async (initial, current) => {
+      if (openIntent(get().intent) || (get().intent030 && get().intent030!.state.kind !== 'closed')) throw new Error("agsdl.execution.intentOpen");
+      const session = useAgsdlStore.getState().sessions[agsdlSessionKey({ planId: initial.owner!.planId, branchName: initial.owner!.branch })];
+      if (!session || !Number.isSafeInteger(session.persistedRevision) || session.dirty || session.saving) throw new Error("agsdl.execution.saveBeforeStart");
+      const messageJson = executionPrompt(prompt);
+      const preflight = await ipc.preflightExecution({ owner: initial.owner!, expected: null });
+      if (preflight.diagnostics.some(item => item.code === 'UNSUPPORTED_030_FEATURE')) throw new Error('agsdl.execution.unsupported030');
+      const status = await executionCodexStatus();
+      if (status.code === 'CODEX_NOT_INSTALLED') throw new Error('agsdl.execution.codexNotInstalled');
+      if (status.code === 'CODEX_LOGIN_REQUIRED') throw new Error('agsdl.execution.codexLoginRequired');
+      if (!status.available || !preflight.productRuntimeAvailable || !preflight.staticValid || !preflight.runtimeSupported || preflight.incomplete ||
+          preflight.authoredSource !== session.source || executionProfileForContract(readDocument(preflight.authoredSource).contract) !== 'macro-agsdl-030-v1') throw new Error('agsdl.execution.unavailable');
+      if (!(await current()) || useAgsdlStore.getState().sessions[agsdlSessionKey({ planId: initial.owner!.planId, branchName: initial.owner!.branch })]?.version !== session.version) return;
+      let row: VersionedIntent;
+      try { row = await ipc.stageExecutionIntentVersioned({ scope: scopeOf(initial), intentId: crypto.randomUUID(), payload: { kind: 'start', request: {
+        source: preflight.source, profile: 'macro-agsdl-030-v1', associations: {}, requestId: crypto.randomUUID(),
+        entry: { deliveryId: crypto.randomUUID(), messageJson },
+      } } });
+      } catch (error) {
+        const rows = await ipc.readExecutionIntentsVersioned({ scope: scopeOf(initial) });
+        if (await current() && rows.length === 1 && isIntent030(rows[0])) set({ intent030: rows[0] });
+        throw error;
+      }
+      if (!(await current())) return;
+      await settle030(row, initial, current, true);
+      });
+    },
+    stop030: async systemStartId => {
+      const token = scopeGeneration;
+      set({ stopping: true, error: undefined });
+      try { await ipc.stopExecution030({ systemStartId: systemStartId as SystemStartId, requestId: crypto.randomUUID() }); }
+      catch (error) { if (token === scopeGeneration) set(executionError(error)); }
+      finally { if (token === scopeGeneration) set({ stopping: false }); }
+    },
     deliver: (agentName, prompt) => intentOperation(async (initial, current) => {
       if (openIntent(get().intent) || (get().intent030 && get().intent030!.state.kind !== 'closed')) throw new Error("agsdl.execution.intentOpen");
       // Deliver to the retained capture, independently of the current document preflight.
@@ -552,13 +624,19 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
         const row = await ipc.readExecutionIntentVersioned(initial.intent030.key);
         if (token !== generation) return;
         if (!row || row.key.intentId !== initial.intent030.key.intentId) throw new Error('Intent identity differs');
-        await observe030(row, initial, current);
+        await settle030(row, initial, current, true);
         return;
       }
       const row = initial.intent ? await ipc.readExecutionIntent(initial.intent.key) : (await ipc.readExecutionIntents({ scope: scopeOf(initial) }))[0] ?? null;
       await settle(row, initial, current, true);
     }),
     discard: () => intentOperation(async (_initial, current) => {
+      const versioned = get().intent030;
+      if (versioned && ["prepared", "submissionPending", "refused"].includes(versioned.state.kind)) {
+        const row = await ipc.closeExecutionIntentVersioned({ key: versioned.key, expectedRevision: versioned.revision, disposition: "discarded" });
+        if (await current()) set({ intent030: row.state.kind === "closed" ? undefined : row });
+        return;
+      }
       const intent = get().intent;
       if (!intent || !["prepared", "submissionPending", "refused"].includes(intent.state.kind)) return;
       const row = await ipc.closeExecutionIntent({ key: intent.key, expectedRevision: intent.revision, disposition: "discarded" });

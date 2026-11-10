@@ -95,8 +95,11 @@ export async function compilePlan030(authoredSource: string, source: SourceRevis
         registry: registry.version, profile: EXECUTION_PROFILE030 }, source: clone(capturedSource), documentJson, agents, ...graph };
     const compiledPlanJson = encode(plan as unknown as ExactObject);
     runtime = { ...runtime, supported: true, diagnostics: runtimeWarnings };
-    // Product activation is qualified by lot09, not by successful compilation.
-    return { static: assessment, runtime, plan, compiledPlanJson, productRuntimeAvailable: false };
+    // The native registry must contain the production Codex adapter for every captured agent.
+    const productRuntimeAvailable = agents.length > 0 && agents.every(agent => registry.harnesses.some(observation =>
+      observation.harness === agent.harness && observation.harness === 'codex' && observation.installation === 'available' &&
+      observation.qualified && observation.adapterId === 'codex-app-server-v1'));
+    return { static: assessment, runtime, plan, compiledPlanJson, productRuntimeAvailable };
   } catch (error) {
     const diagnostic: Diagnostic030 = error instanceof ConformanceError
       ? { code: error.code, pointer: error.pointer, message: error.message, severity: 'error' }

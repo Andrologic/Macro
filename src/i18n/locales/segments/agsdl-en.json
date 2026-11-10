@@ -518,7 +518,14 @@
     "recovery": {
       "inspect": "The previous result is unknown. Inspect its effects in the chat before starting again.",
       "newRunAcknowledgement": "I have checked the previous effects. Start a new execution from the beginning."
-    }
+    },
+    "input030": "Input instructions",
+    "start030": "Start",
+    "stop030": "Stop",
+    "unsupported030": "This document uses a feature that is not supported yet. Commands, human requests, steer, fan-out and timeouts are unavailable.",
+    "codexNotInstalled": "Codex is not installed. Install Codex to start this run.",
+    "codexLoginRequired": "Sign in to Codex in Macro’s private profile before starting.",
+    "interrupted030": "Interrupted. This run will not restart."
   },
   "actionFailed": "The action failed. Try again.",
   "userError": {

@@ -518,7 +518,14 @@
     "recovery": {
       "inspect": "前回の結果は不明です。再実行する前にチャットで影響を確認してください。",
       "newRunAcknowledgement": "前回の影響を確認しました。最初から新しい実行を開始します。"
-    }
+    },
+    "input030": "入力指示",
+    "start030": "開始",
+    "stop030": "停止",
+    "unsupported030": "この文書には未対応の機能が含まれています。コマンド、有人リクエスト、steer、並列実行、タイムアウトは利用できません。",
+    "codexNotInstalled": "Codex がインストールされていません。実行するには Codex をインストールしてください。",
+    "codexLoginRequired": "開始する前に Macro の専用プロファイルで Codex にログインしてください。",
+    "interrupted030": "中断されました。この実行は再開されません。"
   },
   "actionFailed": "操作に失敗しました。もう一度お試しください。",
   "userError": {

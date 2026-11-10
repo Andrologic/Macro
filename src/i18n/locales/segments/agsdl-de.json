@@ -518,7 +518,14 @@
     "recovery": {
       "inspect": "Das vorherige Ergebnis ist unbekannt. Prüfen Sie seine Auswirkungen im Chat, bevor Sie erneut starten.",
       "newRunAcknowledgement": "Ich habe die bisherigen Auswirkungen geprüft. Eine neue Ausführung von Anfang an starten."
-    }
+    },
+    "input030": "Eingabeanweisung",
+    "start030": "Starten",
+    "stop030": "Stoppen",
+    "unsupported030": "Dieses Dokument verwendet eine noch nicht unterstützte Funktion. Befehle, menschliche Anfragen, Steer, parallele Ausführung und Zeitlimits sind nicht verfügbar.",
+    "codexNotInstalled": "Codex ist nicht installiert. Installiere Codex, um den Lauf zu starten.",
+    "codexLoginRequired": "Melde dich vor dem Start im privaten Codex-Profil von Macro an.",
+    "interrupted030": "Unterbrochen. Dieser Lauf wird nicht erneut gestartet."
   },
   "actionFailed": "Die Aktion ist fehlgeschlagen. Versuchen Sie es erneut.",
   "userError": {
