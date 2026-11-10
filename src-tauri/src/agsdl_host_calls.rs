@@ -134,9 +134,9 @@ pub(crate) struct ClaimedCall {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum PhysicalEvidence {
     NotStarted,
-    /// These are observed supervisor actions, not proof that every descendant
-    /// has exited. The host must obtain its own process-tree barrier before
-    /// publishing a terminal event or releasing a successor.
+    /// The existing process owner waits for the leader and every discovered
+    /// descendant to disappear. Callers must reject incomplete tree inspection,
+    /// termination or stream joins before publishing a terminal result.
     Local {
         policy_digest: String,
         profile_digest: String,

@@ -351,8 +351,8 @@ impl ContainedBackgroundProcess {
             &self.containment_id,
             self.containment_marker_path(),
         );
-        for process_id in process_ids {
-            signal_process(process_id, libc::SIGKILL);
+        for process_id in &process_ids {
+            signal_process(*process_id, libc::SIGKILL);
         }
         if let Some(process_group_id) = self.process_group_id {
             signal_process_group(process_group_id, libc::SIGKILL);
@@ -362,12 +362,16 @@ impl ContainedBackgroundProcess {
         } else {
             grace_period
         };
-        match tokio::time::timeout(reap_timeout, self.child.wait()).await {
+        let deadline = tokio::time::Instant::now() + reap_timeout;
+        match tokio::time::timeout_at(deadline, self.child.wait()).await {
             Ok(status) => match inspection_error {
                 Some(error) => Err(io::Error::other(IncompleteProcessTreeInspection(error))),
                 None => {
                     let status = status?;
-                    // A complete inspection and reap retires this identity.
+                    // SIGKILL delivery and the leader's reap do not establish
+                    // that descendants with detached streams have exited.
+                    wait_for_processes_exit(&process_ids, deadline).await?;
+                    // Retire only after all observed processes disappeared.
                     // Drop must not scan the machine again or signal a reused PID.
                     self.process_group_id = None;
                     Ok(status)
@@ -397,6 +401,41 @@ impl ContainedBackgroundProcess {
                 "contained process tree did not exit after job termination",
             )),
         }
+    }
+}
+
+/// Observe the same processes discovered and suspended by the existing tree
+/// inspector. Failure or expiry keeps the containment identity unresolved.
+#[cfg(unix)]
+async fn wait_for_processes_exit(
+    process_ids: &[u32],
+    deadline: tokio::time::Instant,
+) -> io::Result<()> {
+    loop {
+        let mut pending = false;
+        for process_id in process_ids {
+            if unsafe { libc::kill(*process_id as libc::pid_t, 0) } == 0 {
+                pending = true;
+            } else {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(error);
+                }
+            }
+        }
+        if !pending {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "contained descendants did not disappear after SIGKILL",
+            ));
+        }
+        tokio::time::sleep_until(
+            deadline.min(tokio::time::Instant::now() + Duration::from_millis(10)),
+        )
+        .await;
     }
 }
 
@@ -1992,5 +2031,68 @@ mod tests {
         normalized.ends_with("/src/core/process.rs")
             || normalized.ends_with("/src/core/environment.rs")
             || normalized.contains("/tests/")
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn descendant_exit_waits_for_actual_absence_and_times_out_conservatively() {
+        use std::time::Duration;
+        let mut command = super::background_tokio_command("/bin/sleep");
+        command
+            .arg("30")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let mut child = command.spawn().unwrap();
+        let process_ids = [child.id().unwrap()];
+        let expired = super::wait_for_processes_exit(
+            &process_ids,
+            tokio::time::Instant::now() + Duration::from_millis(20),
+        )
+        .await;
+        let waiting = super::wait_for_processes_exit(
+            &process_ids,
+            tokio::time::Instant::now() + Duration::from_secs(2),
+        );
+        tokio::pin!(waiting);
+        let early = tokio::time::timeout(Duration::from_millis(20), &mut waiting).await;
+        child.start_kill().unwrap();
+        child.wait().await.unwrap();
+        waiting.await.unwrap();
+        assert_eq!(expired.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            early.is_err(),
+            "A live detached process was reported joined"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn contained_process_joins_descendant_with_detached_streams() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut command = super::background_contained_tokio_command("/bin/sh");
+        command
+            .args([
+                "-c",
+                "sleep 120 </dev/null >/dev/null 2>&1 & printf '%s\n' \"$!\"; exit 0",
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        let mut process = super::ContainedBackgroundProcess::spawn(command).unwrap();
+        let mut output = BufReader::new(process.take_stdout().unwrap()).lines();
+        let pid: i32 = output.next_line().await.unwrap().unwrap().parse().unwrap();
+        process.wait().await.unwrap();
+        process.terminate_bounded().await.unwrap();
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "Detached descendant survived physical completion"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        assert!(process.unix_process_group_id().is_none());
     }
 }

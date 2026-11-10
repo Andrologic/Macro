@@ -698,7 +698,7 @@ for line in sys.stdin:
             settings["permissions"]["macro-agsdl"]["filesystem"][workspace.to_str().unwrap()],
             if read_only { "read" } else { "write" }
         );
-        let mut child = tokio::process::Command::new("python3")
+        let mut child = crate::core::process::background_tokio_command("python3")
             .arg("-u")
             .arg("-c")
             .arg(SERVER)
@@ -859,7 +859,7 @@ for line in sys.stdin:
         };
         let settings = profile.settings(&workspace, true).unwrap();
         let pidfile = root.join("child.pid");
-        let mut command = tokio::process::Command::new("python3");
+        let mut command = crate::core::process::background_tokio_command("python3");
         command
             .arg("-u")
             .arg("-c")

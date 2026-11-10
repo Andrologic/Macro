@@ -453,7 +453,7 @@ async fn interrupted_run_survives_process_kill_and_database_reopen() {
         return;
     }
     let temp = TempDir::new().unwrap();
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+    let mut child = crate::core::process::background_command(std::env::current_exe().unwrap())
         .args(["--exact", "db::agsdl_execution::discovery030::tests::interrupted_run_survives_process_kill_and_database_reopen", "--nocapture"])
         .env(CHILD_ROOT, temp.path())
         .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
