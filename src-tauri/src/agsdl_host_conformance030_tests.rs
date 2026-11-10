@@ -541,11 +541,46 @@ async fn native_timeline(
         let view = idle(f, &running, ended.as_deref()).await;
         assert!(view.state.verdict.is_some());
         assert!(view.state.activations.iter().all(|a| !a.physical));
-        Ok(view)
+        view
     };
-    let (outcome, view) = tokio::join!(supervisor, timeline);
+    let guarded_timeline = async {
+        let result = std::panic::AssertUnwindSafe(tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            timeline,
+        ))
+        .catch_unwind()
+        .await;
+        match result {
+            Ok(Ok(view)) => Ok(view),
+            other => {
+                // A broken timeline must still let the same supervisor cancel
+                // and physically join every scripted executor before returning.
+                cancel.cancel();
+                let message = match other {
+                    Ok(Err(_)) => "Native timeline exceeded 30 seconds".into(),
+                    Err(panic) => panic_message(panic),
+                    Ok(Ok(_)) => unreachable!(),
+                };
+                Err(crate::db::agsdl_execution::failure(
+                    "CONFORMANCE",
+                    "timeline",
+                    &message,
+                ))
+            }
+        }
+    };
+    let (outcome, view) = tokio::join!(supervisor, guarded_timeline);
+    let view = view?;
     outcome?;
-    view
+    Ok(view)
+}
+
+fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
+    panic
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_else(|| "Scenario panicked".into())
 }
 
 #[tokio::test]
@@ -649,7 +684,19 @@ async fn agsdl030_conformance_all_37_scenarios() {
     let bun = Arc::new(tokio::sync::Mutex::new(BunHost::start()));
     let (mut native, mut scripted, mut failures) = (0, 0, Vec::new());
     for (name, raw) in scenarios::SCENARIOS {
-        let f = Fixture::new(raw, &mut *bun.lock().await).await;
+        let prepared =
+            std::panic::AssertUnwindSafe(async { Fixture::new(raw, &mut *bun.lock().await).await })
+                .catch_unwind()
+                .await;
+        let f = match prepared {
+            Ok(f) => f,
+            Err(panic) => {
+                let error = format!("{name}: preparation failed: {}", panic_message(panic));
+                eprintln!("CONFORMANCE {error}");
+                failures.push(error);
+                continue;
+            }
+        };
         let fields: BTreeMap<String, Box<serde_json::value::RawValue>> =
             serde_json::from_str(raw).unwrap();
         let scenario = scenarios::PinnedScenario030::from_capture(
@@ -699,13 +746,7 @@ async fn agsdl030_conformance_all_37_scenarios() {
             Ok(Ok(Ok(()))) => None,
             Ok(Ok(Err(e))) => Some(format!("{}: {}", e.code, e.message)),
             Ok(Err(_)) => Some("scenario exceeded 40 seconds".into()),
-            Err(panic) => Some(
-                panic
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "scenario panicked".into()),
-            ),
+            Err(panic) => Some(panic_message(panic)),
         };
         pump.abort();
         if let Err(error) = pump.await {
@@ -746,4 +787,40 @@ async fn agsdl030_conformance_all_37_scenarios() {
         failures.len()
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[tokio::test]
+async fn invalid_timeline_cancels_and_joins_the_native_workers() {
+    let mut bun = BunHost::start();
+    let raw = scenarios::SCENARIOS
+        .iter()
+        .find(|(n, _)| *n == "error-route")
+        .unwrap()
+        .1;
+    let f = Fixture::new(raw, &mut bun).await;
+    let mut scenario =
+        scenarios::PinnedScenario030::from_capture(&f.plan.document_json, r#"{"prompt":"Start."}"#)
+            .unwrap();
+    // The initial work is already running. This deliberately incorrect check
+    // must fail without leaving the executor waiting for its scripted result.
+    scenario.timeline = vec![TimelineEvent030::Running(vec![])];
+    let bun = Arc::new(tokio::sync::Mutex::new(bun));
+    let (wake, receiver) = watch::channel(0);
+    let pump = f.pump(bun.clone(), wake.clone());
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        native_timeline(&f, scenario, wake, receiver),
+    )
+    .await
+    .expect("Failed timeline left a live native executor");
+    assert_eq!(result.unwrap_err().code, "CONFORMANCE");
+    pump.abort();
+    let _ = pump.await;
+    Arc::try_unwrap(bun)
+        .ok()
+        .unwrap()
+        .into_inner()
+        .close()
+        .await;
+    f.pool.close().await;
 }

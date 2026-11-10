@@ -239,9 +239,9 @@ pub(super) fn compare(expected: &Value, actual: &Value) -> Vec<String> {
     let mut errors = Vec::new();
     for (field, value) in expected.as_object().unwrap() {
         let ok = match field.as_str() {
-            "run" | "joins" => matches(value, &actual[field]),
+            "run" | "joins" | "answers" => matches(value, &actual[field]),
             "starts" => value == &actual[field],
-            "failures" | "cancelled" | "answers" => {
+            "failures" | "cancelled" => {
                 unordered(value.as_array().unwrap(), actual[field].as_array().unwrap())
             }
             "messages" => value.as_array().unwrap().iter().all(|pattern| {
@@ -307,4 +307,14 @@ fn comparison_covers_all_seven_fields_and_partial_patterns() {
         &serde_json::from_str::<Value>("1.0").unwrap(),
         &json!(1)
     ));
+}
+
+#[test]
+fn automatic_answers_keep_timeline_order() {
+    let expected =
+        json!({"answers":[{"work":"first","answer":"no"},{"work":"second","answer":"no"}]});
+    assert!(compare(&expected, &expected).is_empty());
+    let reversed =
+        json!({"answers":[{"work":"second","answer":"no"},{"work":"first","answer":"no"}]});
+    assert!(!compare(&expected, &reversed).is_empty());
 }
