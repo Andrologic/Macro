@@ -22,7 +22,8 @@ creates no model thread. It runs a local sandbox probe before asking for login.
 
 Let `MACRO_ROOT` be Macro's actual configuration root. An explicit absolute
 `MACRO_CONFIG_DIR` takes precedence; the Linux desktop default is
-`${XDG_CONFIG_HOME:-$HOME/.config}/com.macro.desktop`. A development or QA
+`${XDG_CONFIG_HOME:-$HOME/.config}/com.macro.desktop`, and the macOS default is
+`$HOME/Library/Application Support/com.macro.desktop`. A development or QA
 application identifier has its own root. Use the root of the application that
 will execute the Agent.
 
@@ -35,7 +36,7 @@ unavailable. Keep this profile outside every workspace used by its Agents.
 
 Run the official login in a terminal using only these private directories. Set
 `MACRO_ROOT` and `CODEX_BIN` to absolute paths, and check `CODEX_BIN --version`
-returns `codex-cli 0.163.0`. Do not copy an existing `auth.json` or create an API
+returns `codex-cli 0.167.x`. Do not copy an existing `auth.json` or create an API
 key. This profile supports a ChatGPT account whose stable account and routing
 identity Codex can attest through `account/read`.
 
