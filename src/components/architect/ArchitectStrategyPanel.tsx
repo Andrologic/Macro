@@ -149,6 +149,7 @@ function ArchitectViewer({ target, planStatus }: { target: AgsdlTarget; planStat
           <button type="button" className="rounded border border-border px-2 py-1 hover:bg-accent" disabled={!runsOpen || !selectedRun || execution.stopping || execution.owner?.projectId !== projectId || execution.owner?.branch !== runBranch} onClick={() => { if (selectedRun) void execution.stop030(selectedRun); }}>{t('agsdl.execution.stop030')}</button>
         </div>
         {execution.error && <p role="alert">{t(execution.error)}</p>}
+        {execution.notice030 && <p role="status">{t(execution.notice030)}</p>}
         {execution.intent030 && execution.intent030.state.kind !== 'closed' && <div className="flex gap-2">
           <button type="button" disabled={execution.intentBusy} onClick={() => void execution.resume()}>{t('agsdl.execution.resume')}</button>
           {['prepared', 'submissionPending', 'refused'].includes(execution.intent030.state.kind) && <button type="button" disabled={execution.intentBusy} onClick={() => void execution.discard()}>{t('agsdl.execution.discard')}</button>}

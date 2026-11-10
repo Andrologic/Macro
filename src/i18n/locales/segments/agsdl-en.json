@@ -525,6 +525,8 @@
     "unsupported030": "This document uses a feature that is not supported yet. Commands, human requests, steer, fan-out and timeouts are unavailable.",
     "codexNotInstalled": "Codex is not installed. Install Codex to start this run.",
     "codexLoginRequired": "Sign in to Codex in Macro’s private profile before starting.",
+    "codexUnsupported": "This Codex version or platform is not supported. Use Codex 0.167.x on a qualified platform.",
+    "readOnly030": "This run is limited to read-only access by the host or project settings, including agents that request workspace writes. Review those settings if the work must change files.",
     "interrupted030": "Interrupted. This run will not restart."
   },
   "actionFailed": "The action failed. Try again.",

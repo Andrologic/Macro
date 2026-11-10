@@ -147,3 +147,19 @@ it('inspects the selected document owner when its execution branch differs', asy
     expect(scopes).toEqual([{ owner: { projectId: 'selected-project', planId: 'layout-test', branch: 'develop' }, conversationId: undefined }]);
   } finally { await act(async () => configureWorkflowRunAccess030(undefined)); }
 });
+
+it('shows the native read-only notice beside the 0.3 launch controls', async () => {
+  const { useAgsdlExecutionStore } = await import('../../stores/useAgsdlExecutionStore');
+  await mount();
+  const key = agsdlSessionKey({ branchName: 'develop', planId: 'layout-test' });
+  try {
+    await act(async () => {
+      useAgsdlStore.setState(state => ({ sessions: { ...state.sessions, [key]: {
+        ...state.sessions[key], source: '{"contract":"agsdl-0.3.0","id":"readonly","agents":{}}',
+      } } }));
+      useAgsdlExecutionStore.setState({ notice030: 'agsdl.execution.readOnly030' });
+    });
+    expect(container!.textContent).toContain('This run is limited to read-only access');
+    expect([...container!.querySelectorAll('button')].some(button => button.textContent === 'Start')).toBe(true);
+  } finally { act(() => useAgsdlExecutionStore.setState({ notice030: undefined })); }
+});

@@ -525,6 +525,8 @@
     "unsupported030": "Ce document utilise une fonctionnalité qui n’est pas encore prise en charge. Les commandes, demandes humaines, messages steer, exécutions parallèles et délais ne sont pas disponibles.",
     "codexNotInstalled": "Codex n’est pas installé. Installez Codex pour lancer cette exécution.",
     "codexLoginRequired": "Connectez-vous à Codex dans le profil privé de Macro avant de lancer l’exécution.",
+    "codexUnsupported": "Cette version de Codex ou cette plateforme n’est pas prise en charge. Utilisez Codex 0.167.x sur une plateforme qualifiée.",
+    "readOnly030": "Les réglages de Macro ou du projet limitent cette exécution à la lecture seule, même pour les agents qui demandent à écrire dans l’espace de travail. Vérifiez ces réglages si le travail doit modifier des fichiers.",
     "interrupted030": "Interrompue. Cette exécution ne sera pas relancée."
   },
   "actionFailed": "L’action a échoué. Réessayez.",

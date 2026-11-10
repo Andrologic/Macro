@@ -74,6 +74,7 @@ pub(crate) struct CompilationCapture {
     pub generation: String,
     pub call_permissions_json: String,
     pub call_scope_json: String,
+    permission_notice030: bool,
 }
 
 // The 0.2 reader accepts host-specific configuration settings. Keep this
@@ -92,6 +93,43 @@ fn captured_write_permissions(mut native: Value, settings: &Value) -> Result<Val
 #[cfg(test)]
 mod write_capture_tests {
     use super::*;
+    #[tokio::test]
+    async fn fresh_install_and_project_read_only_ceilings_are_announced() {
+        use crate::agsdl_permissions::{Preset, RequestedPermissions};
+        let temp = tempfile::tempdir().unwrap();
+        let config = ConfigManager::initialize(temp.path().join("config"))
+            .await
+            .unwrap();
+        config
+            .register_project_root("fresh-project", temp.path().join("metadata"))
+            .await
+            .unwrap();
+        let lease = config.lock_execution_tools("fresh-project").await.unwrap();
+        let mut document =
+            json!({"agents":{"writer":{"harness":"codex","permissions":"workspace"}}});
+        assert!(read_only_ceiling030(
+            &document,
+            &lease.agsdl_host_permissions,
+            &json!({"mode":"Implement","readOnly":false})
+        ));
+        let workspace = RequestedPermissions::Preset(Preset::Workspace);
+        assert!(!read_only_ceiling030(
+            &document,
+            &workspace,
+            &json!({"mode":"Implement","readOnly":false})
+        ));
+        assert!(read_only_ceiling030(
+            &document,
+            &workspace,
+            &json!({"mode":"Implement","readOnly":true})
+        ));
+        document["agents"]["writer"]["permissions"] = json!("read-only");
+        assert!(!read_only_ceiling030(
+            &document,
+            &lease.agsdl_host_permissions,
+            &json!({"mode":"Implement","readOnly":true})
+        ));
+    }
     #[test]
     fn captures_write_rules_without_interpreting_or_widening_them() {
         let native = json!({"mode":"Implement","allowedToolIds":["write"],"riskLevel":"balanced"});
@@ -519,6 +557,26 @@ pub(crate) async fn observation(
     Ok((observation, account, claude_account))
 }
 
+fn read_only_ceiling030(
+    document: &Value,
+    host_permissions: &crate::agsdl_permissions::RequestedPermissions,
+    call_permissions: &Value,
+) -> bool {
+    use crate::agsdl_permissions::{Preset, RequestedPermissions};
+    document
+        .get("agents")
+        .and_then(Value::as_object)
+        .is_some_and(|agents| {
+            agents
+                .values()
+                .any(|agent| agent["harness"] == "codex" && agent["permissions"] == "workspace")
+        })
+        && (matches!(
+            host_permissions,
+            RequestedPermissions::Preset(Preset::ReadOnly)
+        ) || crate::core::tool_policy::agsdl_native_read_only(call_permissions))
+}
+
 /// Transport of a native app-server observation. It adds no provider work and
 /// uses the same private profile qualification as the existing native adapter.
 pub(crate) fn codex_registry030(
@@ -604,6 +662,11 @@ pub(crate) async fn compile_input(
     native_catalogue.claude_account_digest = claude_account;
     let call_permissions_json = serde_json::to_string(&registry["callPermissions"])?;
     let call_scope_json = serde_json::to_string(&registry["callScope"])?;
+    let permission_notice030 = read_only_ceiling030(
+        &exact_json::value(&locked.source).unwrap_or(Value::Null),
+        &policy.agsdl_host_permissions,
+        &registry["callPermissions"],
+    );
     if let Some(entry) = start_entry {
         registry["startEntry"] = serde_json::to_value(entry)?;
     }
@@ -630,6 +693,7 @@ pub(crate) async fn compile_input(
         generation: receipt.generation,
         call_permissions_json,
         call_scope_json,
+        permission_notice030,
     })
 }
 
@@ -1132,6 +1196,13 @@ impl CompilationCapture {
             .collect();
         let mut native_diagnostics =
             local_harness_diagnostics030(&self.authored_source, &self.native_registry_json);
+        if self.permission_notice030 {
+            native_diagnostics.push(PreflightDiagnostic {
+                code: "READ_ONLY_CEILING".into(),
+                pointer: "/agsdlHostPermissions".into(),
+                message: "Host or project settings limit this run to read-only access, including agents requesting workspace writes.".into(),
+            });
+        }
         let product_diagnostic = product_slice030(
             &self.authored_source,
             self.result.get("compiledPlanJson").and_then(Value::as_str),
@@ -1853,6 +1924,23 @@ mod start_material030_tests {
     use super::*;
     use crate::agsdl_host_catalogue::{ModelCapture, NativeModelCatalogue};
 
+    #[test]
+    fn read_only_notice_does_not_close_a_qualified_runtime() {
+        let (mut capture, _) = fixture();
+        let before = capture.public();
+        capture.permission_notice030 = true;
+        let after = capture.public();
+        assert!(after
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "READ_ONLY_CEILING"));
+        assert_eq!(after.runtime_supported, before.runtime_supported);
+        assert_eq!(
+            after.product_runtime_available,
+            before.product_runtime_available
+        );
+    }
+
     fn fixture() -> (CompilationCapture, EngineStartRequest) {
         let authored =
             r#"{"contract":"agsdl-0.3.0","id":"fixture","agents":{},"n":9007199254740993}"#;
@@ -1901,6 +1989,7 @@ mod start_material030_tests {
                 generation: "generation".into(),
                 call_permissions_json: json!({"mode":"Implement"}).to_string(),
                 call_scope_json: json!({"root":"/synthetic"}).to_string(),
+                permission_notice030: false,
                 native_registry_json: ticket.to_string(),
             },
             request,

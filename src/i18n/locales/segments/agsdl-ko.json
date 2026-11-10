@@ -525,6 +525,8 @@
     "unsupported030": "이 문서에는 아직 지원되지 않는 기능이 있습니다. 명령, 사람 요청, steer, 병렬 실행 및 시간 제한은 사용할 수 없습니다.",
     "codexNotInstalled": "Codex가 설치되어 있지 않습니다. 실행하려면 Codex를 설치하세요.",
     "codexLoginRequired": "시작하기 전에 Macro의 전용 프로필에서 Codex에 로그인하세요.",
+    "codexUnsupported": "이 Codex 버전 또는 플랫폼은 지원되지 않습니다. 검증된 플랫폼에서 Codex 0.167.x를 사용하세요.",
+    "readOnly030": "Macro 또는 프로젝트 설정에 따라 이 실행은 읽기 전용으로 제한됩니다. 작업 공간에 쓰기를 요청하는 에이전트에도 적용됩니다. 파일을 변경해야 한다면 설정을 확인하세요.",
     "interrupted030": "중단됨. 이 실행은 다시 시작되지 않습니다."
   },
   "actionFailed": "작업에 실패했습니다. 다시 시도하세요.",

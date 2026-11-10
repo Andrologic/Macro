@@ -75,6 +75,7 @@ interface ExecutionView {
   start030: (prompt: string) => Promise<void>;
   stop030: (systemStartId: string) => Promise<void>;
   launched030?: string;
+  notice030?: string;
   deliver: (agentName: string, prompt: string) => Promise<void>;
   resume: () => Promise<void>;
   discard: () => Promise<void>;
@@ -126,13 +127,13 @@ const runtimeStaleAfterRuns030 = (view: ExecutionView, runs: readonly PublicRunS
 };
 const isIntent030 = (row: { readonly payload: { readonly kind: 'start'; readonly request: { readonly profile: string } } | { readonly kind: 'deliver' }; readonly state: { readonly kind: string; readonly admission?: { readonly kind: string } | null } }) => (row.payload.kind === 'start' && row.payload.request.profile === 'macro-agsdl-030-v1') ||
   ((row.state.kind === 'admitted' || row.state.kind === 'closed') && row.state.admission?.kind === 'start030');
-const empty = { runs: [], nextRuns: null, runs030: [], nextRuns030: null, runs030Error: false, captured: false, loaded: false, busy: false, stale: false, humans030Stale: false, runtime030Stale: false, snapshot030: undefined, humans030: undefined, runtime030: undefined, diagnosticPinned: false, intent: undefined, intent030: undefined, intentBusy: false, stopping: false, acceptedDelivery: undefined, launched030: undefined };
+const empty = { runs: [], nextRuns: null, runs030: [], nextRuns030: null, runs030Error: false, captured: false, loaded: false, busy: false, stale: false, humans030Stale: false, runtime030Stale: false, snapshot030: undefined, humans030: undefined, runtime030: undefined, diagnosticPinned: false, intent: undefined, intent030: undefined, intentBusy: false, stopping: false, acceptedDelivery: undefined, launched030: undefined, notice030: undefined };
 let generation = 0;
 /** Changes only when the view leaves its project/plan/branch/conversation scope. */
 let scopeGeneration = 0;
 let taskGeneration = 0;
 const watchers = new Map<string, { timer: ReturnType<typeof setInterval>; leases: number }>();
-const executionErrorKeys = new Set(["agsdl.execution.error", "agsdl.execution.stale", "agsdl.execution.unavailable", "agsdl.execution.intentOpen", "agsdl.execution.retryable", "agsdl.execution.saveBeforeStart", "agsdl.execution.ownerChanged", "agsdl.execution.promptRequired", "agsdl.execution.capturedAgentRequired", "agsdl.execution.taskUnavailable", "agsdl.execution.unsupported030", "agsdl.execution.codexNotInstalled", "agsdl.execution.codexLoginRequired",
+const executionErrorKeys = new Set(["agsdl.execution.error", "agsdl.execution.stale", "agsdl.execution.unavailable", "agsdl.execution.intentOpen", "agsdl.execution.retryable", "agsdl.execution.saveBeforeStart", "agsdl.execution.ownerChanged", "agsdl.execution.promptRequired", "agsdl.execution.capturedAgentRequired", "agsdl.execution.taskUnavailable", "agsdl.execution.unsupported030", "agsdl.execution.codexNotInstalled", "agsdl.execution.codexLoginRequired", "agsdl.execution.codexUnsupported",
   "agsdl.execution.refused.SCOPE_INVALID", "agsdl.execution.refused.SOURCE_CHANGED", "agsdl.execution.refused.TARGET_INVALID", "agsdl.execution.refused.TARGET_CLOSED", "agsdl.execution.refused.INPUT_CONSTRAINT"]);
 const intentFailure = (error: unknown): ExecutionIntentError | undefined => {
   const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
@@ -153,6 +154,7 @@ const executionError = (error: unknown) => {
   if (native.code === 'UNSUPPORTED_030_FEATURE') return { error: 'agsdl.execution.unsupported030', stale: false };
   if (native.code === 'CODEX_NOT_INSTALLED') return { error: 'agsdl.execution.codexNotInstalled', stale: false };
   if (native.code === 'CODEX_LOGIN_REQUIRED') return { error: 'agsdl.execution.codexLoginRequired', stale: false };
+  if (['CODEX_VERSION_UNQUALIFIED', 'CODEX_PLATFORM_UNQUALIFIED'].includes(native.code ?? '')) return { error: 'agsdl.execution.codexUnsupported', stale: false };
   const message = native.message;
   const stale = message.includes("Projection page is stale; restart explicitly");
   return { error: stale ? "agsdl.execution.stale" : executionErrorKeys.has(message) ? message : "agsdl.execution.error", stale };
@@ -580,9 +582,12 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
       const messageJson = executionPrompt(prompt);
       const preflight = await ipc.preflightExecution({ owner: initial.owner!, expected: null });
       if (preflight.diagnostics.some(item => item.code === 'UNSUPPORTED_030_FEATURE')) throw new Error('agsdl.execution.unsupported030');
+      if (!(await current())) return;
+      set({ notice030: preflight.diagnostics.some(item => item.code === 'READ_ONLY_CEILING') ? 'agsdl.execution.readOnly030' : undefined });
       const status = await executionCodexStatus();
       if (status.code === 'CODEX_NOT_INSTALLED') throw new Error('agsdl.execution.codexNotInstalled');
       if (status.code === 'CODEX_LOGIN_REQUIRED') throw new Error('agsdl.execution.codexLoginRequired');
+      if (['CODEX_VERSION_UNQUALIFIED', 'CODEX_PLATFORM_UNQUALIFIED'].includes(status.code)) throw new Error('agsdl.execution.codexUnsupported');
       if (!status.available || !preflight.productRuntimeAvailable || !preflight.staticValid || !preflight.runtimeSupported || preflight.incomplete ||
           preflight.authoredSource !== session.source || executionProfileForContract(readDocument(preflight.authoredSource).contract) !== 'macro-agsdl-030-v1') throw new Error('agsdl.execution.unavailable');
       if (!(await current()) || useAgsdlStore.getState().sessions[agsdlSessionKey({ planId: initial.owner!.planId, branchName: initial.owner!.branch })]?.version !== session.version) return;

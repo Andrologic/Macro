@@ -31,6 +31,7 @@ let readRuntime030: (scope: RuntimeProjectionQuery030, next?: RuntimeProjectionC
 let wireIntent: VersionedIntent | undefined;
 let codexCode = 'CODEX_SCOPE_CHECK_REQUIRED';
 let preflightFailure: string | undefined;
+let preflightDiagnostics: { code: string; pointer: string; message: string }[] = [];
 let submitted030: VersionedIntent | undefined;
 let stopped030: unknown;
 mock.module('../services/ipc/agsdlExecution', () => ({ executionCodexStatus: async () => ({ available: codexCode === 'CODEX_SCOPE_CHECK_REQUIRED', code: codexCode }) }));
@@ -62,7 +63,7 @@ mock.module("../services/tauriIpc", () => ({
   submitExecutionIntentVersioned: async () => { native.calls.push('submit030'); return submitted030 ?? wireIntent; },
   closeExecutionIntentVersioned: async () => { native.calls.push('close030'); return { ...submitted030!, state:{ kind:'closed', disposition:'acknowledged', admission:(submitted030!.state as any).admission } }; },
   stopExecution030: async (request: unknown) => { stopped030 = request; },
-  preflightExecution: async () => { preflightCalls++; if (preflightFailure) throw { code: preflightFailure, message: 'native refusal' }; return { source, authoredSource, diagnostics: [], staticValid: true, runtimeSupported: true, productRuntimeAvailable: available, incomplete: false }; },
+  preflightExecution: async () => { preflightCalls++; if (preflightFailure) throw { code: preflightFailure, message: 'native refusal' }; return { source, authoredSource, diagnostics: preflightDiagnostics, staticValid: true, runtimeSupported: true, productRuntimeAvailable: available, incomplete: false }; },
   listExecutionRuns: async () => { listCalls++; return { runs: [...native.rows.values()].some(row => row.state.kind === "admitted" || row.state.kind === "closed" && row.state.admission) ? [{ systemStartId: 'started', source, counts: { completed: completedCount } }] : [], nextCursor: null }; },
   readExecutionSnapshot: async (id: string) => ({ ...snapshot(id), source: { ...source, owner: snapshotOwner } }),
   listExecutionRuns030: (request: RunListRequest030) => listRuns030(request),
@@ -119,6 +120,7 @@ const target = { planId: owner.planId, branchName: owner.branch };
 /** A renderer reload: the store forgets everything, native rows remain. */
 const reload = () => store.setState({ owner: undefined, conversationId: undefined, snapshot: undefined, snapshot030: undefined, humans030: undefined, humans030Stale: false, runtime030: undefined, runtime030Stale: false, projection: undefined, approvals: undefined, diagnostic: undefined, preflight: undefined, intent: undefined, intent030: undefined, intentBusy: false, acceptedDelivery: undefined, stopping: false, busy: false, error: undefined, runs: [], nextRuns: null, runs030: [], nextRuns030: null, runs030Error: false });
 beforeEach(async () => {
+  preflightDiagnostics = [];
   codexCode = 'CODEX_SCOPE_CHECK_REQUIRED'; preflightFailure = undefined; submitted030 = undefined; stopped030 = undefined;
   selected = planConversation = "conversation"; snapshotOwner = owner; seenPages = []; seenDiagnostics = []; projectionChangesCursor = false; taskResult = null; available = false; authoredSource = '{}'; listCalls = preflightCalls = 0; native.reset(); completedCount = "0"; wireIntent = undefined;
   listRuns030 = async () => ({runs:[],nextCursor:null});
@@ -900,12 +902,32 @@ function prepare030() {
 }
 it('reports native 0.3 preflight and Codex failures without staging a run', async () => {
   prepare030();
-  for (const [code, key] of [['UNSUPPORTED_030_FEATURE','unsupported030'], ['CODEX_LOGIN_REQUIRED','codexLoginRequired'], ['CODEX_NOT_INSTALLED','codexNotInstalled'], ['OTHER','error']]) {
+  for (const [code, key] of [['UNSUPPORTED_030_FEATURE','unsupported030'], ['CODEX_LOGIN_REQUIRED','codexLoginRequired'], ['CODEX_NOT_INSTALLED','codexNotInstalled'], ['CODEX_VERSION_UNQUALIFIED','codexUnsupported'], ['CODEX_PLATFORM_UNQUALIFIED','codexUnsupported'], ['OTHER','error']]) {
     preflightFailure = code;
     await store.getState().start030('write');
     expect(store.getState().error).toBe(`agsdl.execution.${key}`);
     expect(native.calls).not.toContain('stage030');
   }
+});
+it('distinguishes unsupported Codex status before staging an intent', async () => {
+  prepare030();
+  for (const code of ['CODEX_VERSION_UNQUALIFIED', 'CODEX_PLATFORM_UNQUALIFIED']) {
+    codexCode = code;
+    await store.getState().start030('write');
+    expect(store.getState().error).toBe('agsdl.execution.codexUnsupported');
+    expect(native.calls).not.toContain('stage030');
+  }
+});
+it('announces a native read-only ceiling before admission and clears it on a fresh check', async () => {
+  prepare030();
+  preflightDiagnostics = [{ code: 'READ_ONLY_CEILING', pointer: '/agsdlHostPermissions', message: 'Workspace writes will be denied' }];
+  codexCode = 'CODEX_LOGIN_REQUIRED';
+  await store.getState().start030('write');
+  expect(store.getState().notice030).toBe('agsdl.execution.readOnly030');
+  expect(native.calls).not.toContain('stage030');
+  preflightDiagnostics = [];
+  await store.getState().start030('write');
+  expect(store.getState().notice030).toBeUndefined();
 });
 it('starts a 0.3 run through a versioned intent and stops the selected run', async () => {
   prepare030();
