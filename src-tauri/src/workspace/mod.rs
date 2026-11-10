@@ -2203,6 +2203,25 @@ pub async fn get_bootstrap(
     workspace_path: &Path,
     metadata_root: &Path,
 ) -> Result<WorkspaceBootstrapDto> {
+    // Publish a recovered project in the same canonical registry execution reads.
+    // Re-read under the existing locks so recovery cannot replace a newer writer
+    // or resurrect a registry the user deliberately emptied.
+    let _state_guard = lock_workspace_state(metadata_root).await;
+    let root = metadata_root.to_path_buf();
+    let workspace = workspace_path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let _file_guard = lock_workspace_state_file(&root)?;
+        let mut state = load_raw_state_sync(&root)?.unwrap_or_default();
+        if recover_physical_workspace_project_if_missing(&mut state, &workspace, &root) {
+            state.workspace_revision = state.workspace_revision.saturating_add(1);
+            persist_state_sync(&root, &state)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| BackendError::Internal {
+        message: format!("Workspace recovery task failed: {error}"),
+    })??;
     let state = load_or_default_state(workspace_path, metadata_root).await?;
     Ok(WorkspaceBootstrapDto {
         plan: state.current_plan,
@@ -11388,6 +11407,30 @@ mod tests {
         assert_eq!(
             bootstrap.standalone_projects[0].path,
             absolutize_path(&project_path).to_string_lossy()
+        );
+        let canonical = load_raw_state_sync(&metadata_root).unwrap().unwrap();
+        assert_eq!(canonical.standalone_projects.len(), 1);
+        assert_eq!(canonical.standalone_projects[0].id, stale_project_id);
+        let revision = canonical.workspace_revision;
+        get_bootstrap(&project_path, &metadata_root).await.unwrap();
+        assert_eq!(
+            load_raw_state_sync(&metadata_root)
+                .unwrap()
+                .unwrap()
+                .workspace_revision,
+            revision
+        );
+
+        close_project(&project_path, &metadata_root, stale_project_id)
+            .await
+            .unwrap();
+        let empty = get_bootstrap(&project_path, &metadata_root).await.unwrap();
+        assert!(empty.standalone_projects.is_empty());
+        assert!(
+            load_raw_state_sync(&metadata_root)
+                .unwrap()
+                .unwrap()
+                .project_registry_explicitly_empty
         );
     }
 
