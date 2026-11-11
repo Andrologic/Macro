@@ -581,12 +581,12 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
       if (openIntent(get().intent) || (get().intent030 && get().intent030!.state.kind !== 'closed')) throw new Error("agsdl.execution.intentOpen");
       const session = useAgsdlStore.getState().sessions[agsdlSessionKey({ planId: initial.owner!.planId, branchName: initial.owner!.branch })];
       if (!session || !Number.isSafeInteger(session.persistedRevision) || session.dirty || session.saving) throw new Error("agsdl.execution.saveBeforeStart");
-      const messageJson = executionPrompt(prompt);
       const preflight = await ipc.preflightExecution({ owner: initial.owner!, expected: null });
       if (preflight.diagnostics.some(item => item.code === 'UNSUPPORTED_030_FEATURE')) throw new Error('agsdl.execution.unsupported030');
       if (!(await current())) return;
       set({ notice030: preflight.diagnostics.some(item => item.code === 'READ_ONLY_CEILING') ? 'agsdl.execution.readOnly030' : undefined });
       const document = readDocument(preflight.authoredSource);
+      const messageJson = document.flow ? executionPrompt(prompt) : "{}";
       const agents = document.agents;
       const needsCodex = (agents !== null && typeof agents === 'object' && !Array.isArray(agents) && Object.values(agents).some(agent => agent !== null && typeof agent === 'object' && 'harness' in agent && agent.harness === 'codex'));
       if (needsCodex) {
@@ -602,7 +602,7 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
       let row: VersionedIntent;
       try { row = await ipc.stageExecutionIntentVersioned({ scope: scopeOf(initial), intentId: crypto.randomUUID(), payload: { kind: 'start', request: {
         source: preflight.source, profile: 'macro-agsdl-030-v1', associations: {}, requestId: crypto.randomUUID(),
-        entry: { deliveryId: crypto.randomUUID(), messageJson },
+        entry: document.flow ? { deliveryId: crypto.randomUUID(), messageJson } : null,
       } } });
       } catch (error) {
         const rows = await ipc.readExecutionIntentsVersioned({ scope: scopeOf(initial) });

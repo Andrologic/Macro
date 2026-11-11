@@ -1,3 +1,4 @@
+import { Messages030 } from './Messages030';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { RunInspection030, RunInspectionAccess030 } from '../../services/agsdl/runtimeProjection030';
 import { initialRunSelection030, retainedRunValue030 } from '../../services/agsdl/runtimeProjection030';
@@ -108,6 +109,7 @@ function ScopedMonitor030({ access, initialRunId, onSelection, currentSource, re
         <ExactContent label={tr('capturedSource')} value={inspection.capture.authoredSource} />
         {currentSource !== undefined && <ExactContent label={tr('currentDocument')} value={currentSource} />}
       </section>
+      <Messages030 key={identity} run={inspection} stale={stale} refresh={refresh} />
       <RunInspector030 inspection={inspection} stale={stale} refreshing={readState?.kind === 'loading'} selectedStepId={selection.step} selectedOccurrenceKey={selection.occurrence}
         selectStep={step => choose({ step, occurrence: undefined })} selectOccurrence={occurrence => choose({ occurrence })} renderGraph={renderGraph} />
       <details><summary>{tr('runtimeDetails')}</summary>

@@ -11,6 +11,7 @@ pub mod execution {
     pub use crate::agsdl_host_claude::{ClaudeStatus, HostClaudeReceipt, HostClaudeRequest};
     pub use crate::agsdl_host_codex::{CodexStatus, HostCodexReceipt, HostCodexRequest};
     pub use crate::agsdl_host_compiler::HostCompileJob;
+    pub use crate::agsdl_host_flow030::{DeliveryReceipt030, DeliveryRequest030};
     pub use crate::agsdl_host_projection030::{
         RuntimeProjectionContinuation030, RuntimeProjectionItem030, RuntimeProjectionPage030,
         RuntimeProjectionQuery030, RuntimeProjectionScope030,

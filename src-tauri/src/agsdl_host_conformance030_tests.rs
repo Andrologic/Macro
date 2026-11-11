@@ -243,6 +243,34 @@ impl Fixture {
         let scope = json!({"projectId":"project","root":workspace,"rootIdentity":crate::fs::operations::workspace_root_identity(&workspace).unwrap().observation_key().unwrap(),"sourceOwner":source["owner"]});
         let mut registry = if document["agents"].as_object().unwrap().is_empty() {
             json!({"format":"macro-agsdl-registry/030", "version":"fixture", "modules":[], "harnesses":[], "agents":[], "hostCapabilities":[{"name":"call.command","support":"native","evidenceJson":"{\"transport\":\"native-call-test\"}"},{"name":"call.mcp","support":"native","evidenceJson":"{\"transport\":\"native-call-test\"}"}]})
+        } else if document["agents"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|a| a["harness"] == "codex")
+        {
+            let observed = crate::agsdl_host_codex::CodexObservation030 {
+                profile: crate::agsdl_host_codex::profile::Profile {
+                    executable: workspace.join("bin/codex"),
+                    directory: workspace.join("profile"),
+                    home: workspace.join("profile/home"),
+                    bootstrap: workspace.join("bootstrap"),
+                    digest: "synthetic-profile".into(),
+                },
+                version: "0.167.0".into(),
+                models: vec![
+                    json!({"name":"fixture","efforts":["medium"],"defaultEffort":"medium","isDefault":true}),
+                ],
+                account_digest: "synthetic-account".into(),
+            };
+            let (harness, agents) = crate::agsdl_host_capture::codex_registry030(
+                &document,
+                source["sourceSha256"].as_str().unwrap(),
+                &scope,
+                &observed,
+            )
+            .unwrap();
+            json!({"format":"macro-agsdl-registry/030","version":"fixture","modules":[{"harness":"codex","moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/codex/module.json")}],"harnesses":[harness],"agents":agents,"hostCapabilities":[]})
         } else {
             crate::agsdl_host_example030::ExampleAdapter030::observe()
                 .registry(
@@ -280,7 +308,7 @@ impl Fixture {
             authored_source:authored, compiled_plan_json:plan_json, registry_json:registry.to_string(), private_capture_json:json!({"format":"macro-native-flow-capture/030","callPermissionsJson":permissions,"callScopeJson":scope.to_string()}).to_string() };
         let pool = crate::db::create_pool(&root.join("run.db")).await.unwrap();
         let entry = fields.get("entry").map(|v| v.get()).unwrap_or("{}");
-        let request = serde_json::from_value(json!({"source":source,"profile":"macro-agsdl-030-v1", "associations":{}, "requestId":"request", "entry":{"deliveryId":"delivery", "messageJson":entry}})).unwrap();
+        let request = serde_json::from_value(json!({"source":source,"profile":"macro-agsdl-030-v1", "associations":{}, "requestId":"request", "entry": if plan.entry.is_some() { json!({"deliveryId":"delivery", "messageJson":entry}) } else { Value::Null }})).unwrap();
         crate::db::agsdl_execution::start030::start_linked(
             &pool,
             &request,
@@ -343,6 +371,12 @@ impl Fixture {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
+                    job = host.compiler.next() => {
+                        let job = job.unwrap();
+                        let registry: Value = serde_json::from_str(&job.registry_json).unwrap();
+                        let output = bun.lock().await.request(json!({"kind":"compile","authoredSource":job.authored_source,"source":job.source,"registry":registry})).await;
+                        host.compiler.complete(&job.generation, &job.ticket, output.to_string()).unwrap();
+                    }
                     job = host.work_protocol.next() => {
                         let job = job.unwrap();
                         let output = bun.lock().await.request(json!({"kind":"work","job":job})).await;
@@ -489,9 +523,11 @@ impl AgentExecutor030 for Executor {
         });
         let wake = self.wake.clone();
         Box::pin(async move {
+            let mut inbox = work.steer;
             let outcome = loop {
                 tokio::select! {
                     _ = cancel.cancelled() => return Ok(()),
+                    Some(delivery) = inbox.receive() => { delivery.acknowledge(&work.tasks, &work.attempt)?; wake.send_modify(|n| *n += 1); },
                     result = &mut result => break result.map_err(|_| crate::db::agsdl_execution::failure("INTERRUPTED","test","Scripted outcome lost"))?,
                     Some((body,reply)) = protocol_events.recv() => {
                         let result=events.emit(body,&cancel).await;
@@ -1042,16 +1078,8 @@ async fn agsdl030_conformance_human_timeout() {
 
 // Select by capability, never by scenario name or expected output. The fallback
 // uses the existing scripted driver and the production drain_effects030 pass.
-fn scripted_reason(f: &Fixture, _scenario: &scenarios::PinnedScenario030) -> Option<&'static str> {
-    if f.plan
-        .steps
-        .iter()
-        .any(|s| s.delivery.as_deref() == Some("steer"))
-    {
-        Some("steer executor not connected")
-    } else {
-        None
-    }
+fn scripted_reason(_f: &Fixture, _scenario: &scenarios::PinnedScenario030) -> Option<&'static str> {
+    None
 }
 
 fn product_gap(f: &Fixture) -> Option<String> {
@@ -1336,6 +1364,105 @@ async fn handled_historical_failure_does_not_block_the_current_compose_failure()
     .await
     .unwrap();
     drop(db);
+    pump.abort();
+    let _ = pump.await;
+    Arc::try_unwrap(bun)
+        .ok()
+        .unwrap()
+        .into_inner()
+        .close()
+        .await;
+    f.pool.close().await;
+}
+
+#[tokio::test]
+async fn delivery030_validates_retained_capture_and_is_idempotent_without_legacy_tables() {
+    let mut bun = BunHost::start();
+    let raw = json!({"document":{"contract":"agsdl-0.3.0","id":"graphless-messages","agents":{"worker":{"harness":"codex","permissions":"workspace"}}},"timeline":[]}).to_string();
+    let f = Fixture::new(&raw, &mut bun).await;
+    let bun = Arc::new(tokio::sync::Mutex::new(bun));
+    let (wake, _) = watch::channel(0);
+    let pump = f.pump(bun.clone(), wake);
+    let host = f.app.state::<HostState>();
+    let request = flow::DeliveryRequest030 {
+        scope: crate::agsdl_host_projection030::RuntimeProjectionScope030 {
+            system_start_id: f.identity.system_start_id.clone(),
+            snapshot_id: f.identity.snapshot_id.clone(),
+            source: serde_json::from_value(f.plan.source.clone()).unwrap(),
+        },
+        delivery_id: "first".into(),
+        agent_name: "worker".into(),
+        instance: None,
+        delivery: "queue".into(),
+        message_json: "{\"prompt\":\"Initial mission\"}".into(),
+    };
+    let first = flow::deliver030(&host, &f.pool, request.clone())
+        .await
+        .unwrap();
+    let replay = flow::deliver030(&host, &f.pool, request.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.event_id, replay.event_id);
+    assert_eq!(first.revision, replay.revision);
+    let mut second = request.clone();
+    second.delivery_id = "second".into();
+    second.message_json = "{\"prompt\":\"Queued mission\"}".into();
+    flow::deliver030(&host, &f.pool, second).await.unwrap();
+    let view = flow::inspect_run(host.flow030(), &host, &f.pool, &f.owner)
+        .await
+        .unwrap();
+    assert_eq!(view.flow.state.activations.len(), 2);
+    assert_eq!(view.flow.state.activations[1].phase, "queued");
+    assert_eq!(view.flow.state.instances[0].queue.len(), 1);
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_flow030_events")
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    let mut changed = request.clone();
+    changed.message_json = "{\"prompt\":\"Changed mission\"}".into();
+    assert!(flow::deliver030(&host, &f.pool, changed).await.is_err());
+    let mut invalid = request.clone();
+    invalid.delivery_id = "invalid".into();
+    invalid.message_json = "{\"unexpected\":true}".into();
+    assert_eq!(
+        flow::deliver030(&host, &f.pool, invalid)
+            .await
+            .unwrap_err()
+            .code,
+        "INPUT_CONSTRAINT"
+    );
+    let mut foreign = request.clone();
+    foreign.scope.snapshot_id = "foreign".into();
+    assert_eq!(
+        flow::deliver030(&host, &f.pool, foreign)
+            .await
+            .unwrap_err()
+            .code,
+        "CORRELATION"
+    );
+    let mut fresh = request;
+    fresh.instance = Some("new".into());
+    assert_eq!(
+        flow::deliver030(&host, &f.pool, fresh)
+            .await
+            .unwrap_err()
+            .code,
+        "INPUT_CONSTRAINT"
+    );
+    assert_eq!(
+        before,
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_flow030_events")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        0,
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_deliveries")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap()
+    );
     pump.abort();
     let _ = pump.await;
     Arc::try_unwrap(bun)

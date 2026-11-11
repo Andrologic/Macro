@@ -1102,17 +1102,6 @@ impl StartAuthority030 for Start<'_> {
     async fn capture(&self, request: &EngineStartRequest) -> Result<StartCapture030> {
         self.lease.ensure_live()?;
         let source = self.source(request).await?;
-        if self.reserve_supervisor
-            && crate::db::exact_json::value(&source.source)?
-                .get("flow")
-                .is_none()
-        {
-            return Err(failure(
-                "UNSUPPORTED_030_FEATURE",
-                "/flow",
-                "A flow is required for this run.",
-            ));
-        }
         if let Some(diagnostic) = capture::product_slice030(&source.source, None) {
             return Err(failure(
                 &diagnostic.code,
@@ -2372,7 +2361,7 @@ impl DispatchLease030<'_> {
         self,
         attempt: &FlowWorkAttempt030,
         sender: &crate::agsdl_host_steer030::SteerSender030,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.runtime.available(&self.effect.identity)?;
         self.lease.ensure_live()?;
         let FlowEffectKind030::Steer {
@@ -2424,6 +2413,18 @@ impl DispatchLease030<'_> {
             .effect(&mut tx, &self.effect)
             .await
             .map_err(store_error)?;
+        if !consumed.consumed() {
+            // The owned adapter established that no provider input was accepted.
+            // Release only this claim so the recipient's pending terminal event
+            // can perform the reducer's ordinary queue fallback. Never retry it.
+            let changed = sqlx::query("UPDATE engine_flow030_outbox SET status='pending' WHERE system_id=? AND invocation_id=? AND effect_id=? AND status='uncertain'")
+                .bind(&self.effect.identity.system_start_id).bind(&self.effect.identity.flow_invocation_id).bind(&self.effect.id).execute(&mut *tx).await?.rows_affected();
+            if changed != 1 {
+                return Err(uncertain());
+            }
+            tx.commit().await.map_err(|_| uncertain())?;
+            return Ok(false);
+        }
         let head: String = sqlx::query_scalar("SELECT event_id FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND diagnostic_json IS NULL ORDER BY rowid DESC LIMIT 1")
             .bind(&self.effect.identity.system_start_id).bind(&self.effect.identity.flow_invocation_id).fetch_one(&mut *tx).await?;
         let revision: String = sqlx::query_scalar("SELECT state_json ->> '$.revision' FROM engine_flow030_runs WHERE system_id=? AND invocation_id=?")
@@ -2467,7 +2468,7 @@ impl DispatchLease030<'_> {
         tx.commit().await.map_err(|_| uncertain())?;
         self.lease.ensure_live().map_err(|_| uncertain())?;
         self.runtime.acknowledge_event_commit(&event);
-        Ok(())
+        Ok(true)
     }
 
     /// The factory must only build a future; no IO or spawn may occur until it
@@ -3648,3 +3649,8 @@ impl Authority030 for FlowControl030 {
         &self.owner.owner_epoch
     }
 }
+
+#[path = "agsdl_host_delivery030.rs"]
+mod delivery030;
+pub(crate) use delivery030::deliver030;
+pub use delivery030::{DeliveryReceipt030, DeliveryRequest030};

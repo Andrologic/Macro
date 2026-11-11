@@ -120,6 +120,7 @@ function ArchitectViewer({ target, planStatus }: { target: AgsdlTarget; planStat
   useEffect(() => { setSelectedRun(undefined); }, [runsOpen, projectId, target, conversationId]);
   const selectRun = useCallback((id: string | undefined) => setSelectedRun(id), []);
   const execution = useAgsdlExecutionStore();
+  const hasFlow = useMemo(() => { try { return !!source && !!readDocument(source).flow; } catch { return false; } }, [source]);
   const is030 = useMemo(() => { try { return !!source && readDocument(source).contract === 'agsdl-0.3.0'; } catch { return false; } }, [source]);
   useEffect(() => { if (target.planId && conversationId) void useAgsdlExecutionStore.getState().open030(target, conversationId); }, [target, conversationId]);
   useEffect(() => { if (execution.launched030) setRunsOpen(true); }, [execution.launched030]);
@@ -141,9 +142,9 @@ function ArchitectViewer({ target, planStatus }: { target: AgsdlTarget; planStat
         </select>}
       </nav>}
       {target.planId && is030 && <section className="space-y-2 border-b border-border p-2 text-xs">
-        <label className="flex flex-col gap-1">{t('agsdl.execution.input030')}
+        {hasFlow && <label className="flex flex-col gap-1">{t('agsdl.execution.input030')}
           <textarea className="min-h-16 rounded border border-border bg-card p-1" value={prompt} onChange={event => setPrompt(event.target.value)} />
-        </label>
+        </label>}
         <div className="flex gap-2">
           <button type="button" className="rounded border border-border px-2 py-1 hover:bg-accent" disabled={!conversationId || execution.intentBusy} onClick={() => void execution.start030(prompt)}>{t('agsdl.execution.start030')}</button>
           <button type="button" className="rounded border border-border px-2 py-1 hover:bg-accent" disabled={!runsOpen || !selectedRun || execution.stopping || execution.owner?.projectId !== projectId || execution.owner?.branch !== runBranch} onClick={() => { if (selectedRun) void execution.stop030(selectedRun); }}>{t('agsdl.execution.stop030')}</button>

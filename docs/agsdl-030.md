@@ -135,7 +135,16 @@ Les délais attendent l'arrêt du travail et de ses descendants avant de suivre
 `onError`. Les réponses dépassant 65 536 octets JSON sont refusées avant
 leur enregistrement.
 
-L'accès MCP des agents, les permissions `ask`, `planFirst: ask`, steer, fan-out,
+Les messages `queue` et `steer` sont raccordés à Codex 0.167.x. Dans un document
+sans flow, Start ouvre une exécution en attente ; le panneau Messages permet
+d'envoyer une mission à son agent partagé. Une livraison en file démarre un
+nouveau travail après le travail courant. Un steer rejoint le tour actif via
+`turn/steer` et attend le `userMessage` corrélé de Codex avant la consommation.
+Si le destinataire finit avant l'envoi, le message repart en file. Une
+consommation incertaine n'est jamais rejouée. Le moniteur conserve les messages
+envoyés, livrés, consommés et repliés, avec la réponse de l'agent.
+
+L'accès MCP des agents, les permissions `ask`, `planFirst: ask`, fan-out,
 les compositions et les autres capacités hors tranche restent refusés.
 Les runs interrompus au redémarrage restent consultables et ne reprennent pas.
 
@@ -172,7 +181,9 @@ L'édition est explicite avant de choisir lecteur et commandes. Les captures
 `macro-serial-inline-v1` ; les captures 0.3 portent `snapshot: "2"`,
 `contract: "agsdl-0.3.0"`, profil `macro-agsdl-030-v1`. Les admissions natives
 `start` et `start030` restent distinctes. `deliver` est historique ;
-`deliver030` est une extension demandée, pas une admission déjà disponible.
+`execution_deliver030` admet désormais les messages sans flow dans les tables
+0.3, avec un identifiant dédupliqué et une capture conservée. Son reçu confirme
+l’admission ; la projection confirme séparément la livraison et la consommation.
 
 L'ouverture d'Exécutions lit l'historique et les intentions retenues du même
 projet, plan, branche et conversation. Elle ne compile, ne préflight,
@@ -215,8 +226,8 @@ wrappers générés, sans modifier leurs fichiers à la main.
 | Consulter un run et ses occurrences | `execution_list_runs030`, `execution_read_run_correlation030`, `execution_read_snapshot`, `execution_read_runtime_projection030`, `execution_read_humans030`, `execution_read_intents`, `execution_read_intent` | N-OBS / projection et découverte ; humain U pour sa projection ; I/09 pour le raccord | Capture, révision, pages complètes et intentions existantes ; G3, G7, G8, G9 restent partiels. |
 | Préflight explicite | `execution_preflight` | Fournisseurs lot 2, capture/admission ; fournisseurs lot 7 pour l'exposition | Source, validité et couverture ; G1 manque pour une qualification fournisseur exploitable. |
 | Lancer | `execution_stage_intent`, `execution_submit_intent`, `execution_read_intent`, `execution_close_intent` ; dispatch existant `execution_start` | Fournisseurs lot 1 pour la pompe ; lot 2 pour l'admission ; lot 7 et I/09 pour les commandes | Intention durable et admission `start030` existantes ; G1 et raccord de production requis. |
-| Livrer en queue | Même cycle d'intention, dispatch `execution_deliver` à étendre à 0.3 | Livraison lot 1 et fournisseurs lot 7 ; I/09 | G2, reçu `deliver030`, admission FIFO, démarrage distinct ou retrait. |
-| Livrer en steer | Même cycle, `execution_deliver` à étendre ; dispatch natif spécialisé | Livraison lot 1, finalisation des travaux fournisseurs lot 5 ; I/09 | G2, cible physique exacte et preuve de consommation distincte du handoff. |
+| Livrer en queue | `execution_deliver030`, panneau Messages | Production Codex 0.167.x | Capture conservée, admission FIFO, travail distinct ; aucun appel aux livraisons historiques. |
+| Livrer en steer | `execution_deliver030` et routes du flow, superviseur natif | Production Codex 0.167.x | Destinataire exact, accusé de consommation, repli avant envoi, aucun rejeu incertain. Les fan-outs et joins restent refusés au lancement produit. |
 | Choisir le flow, avec commentaire d'approval | `execution_submit_human030`, lecture `execution_read_humans030` | Humain U, N-HUMAN H/B ; I/09 | G3 à G5, reçu de soumission puis décision et consommation ; aucun envoi du message approuvé par l'UI. |
 | Approuver ou refuser une action `ask`, avec commentaire | Même nouvelle commande humaine | Humain U, N-HUMAN H/B et fournisseur propriétaire de l'action ; I/09 | G4 distingue permission et choix de flow ; G5 corrèle la remise à l'exécuteur possédé. |
 | Accepter ou refuser un plan | Même nouvelle commande humaine | Humain U, N-HUMAN H/B ; fournisseurs lot 5 pour le verrou ; I/09 | G3 et G5, plan courant et verrou natifs, jamais un plan-id fourni par l'UI. |
@@ -398,7 +409,7 @@ transparente des échéances entre générations n'est pas qualifiée.
 | Trou | Données ou frontière manquantes | Lot runtime propriétaire et condition de sortie |
 | --- | --- | --- |
 | G1, qualification | Identité de qualification, plateforme/versions exactes, propriétés admises, diagnostics par agent et liste `unassessed` publique ; lien au registre/source | Fournisseurs lot 2 pour capture/admission, lot 6 pour preuves physiques, lot 7 pour projection. Une compilation réussie ou un module ne suffit pas. |
-| G2, livraison | Cible shared/named, mode queue/steer, révision, intention/admission `deliver030`, reçu relisible, retrait et preuve de consommation | Livraison lot 1 et fournisseurs lot 7. L'actuel `ExecutionExternalDelivery` ne porte ni instance ni mode 0.3 et l'admission `deliver` reste historique. |
+| G2, livraison | `execution_deliver030` porte capture, identifiant, agent, instance, mode et message ; événement natif dédupliqué et projection de consommation | Raccordé à Codex 0.167.x. UI sur l’instance partagée sans flow ; formes supplémentaires d’interface et continuité entre travaux relèvent du lot 3.4. L’admission historique reste indépendante. |
 | G3, humain du vrai flow | Projection publique sur `engine_flow030_human_*`, identité publique et révision natives, associations aux occurrences | Humain U avec N-HUMAN H/B ; I/09 raccorde migration/pump. La commande lit maintenant les tables du flow et publie les faits dans `flowJson`. Le lecteur historique reste séparé. |
 | G4, finalité humaine | Discriminant choix de flow / permission d'action, message exact capturé et action réellement présentée | Humain U / N-HUMAN. Le `kind: approval` actuel ne justifie pas de choisir l'un des deux dans l'UI. |
 | G5, reçu et historique humains | Nouvelle commande publique, réponse attestée relisible sur demande et reçu, choix/commentaire ou JSON exact, origine et instant natifs ; motif et reçu de résolution conservés après consommation, expiration, annulation ou incertitude | N-HUMAN H/B avec humain U pour la projection ; I/09. Les états sans cet historique restent indisponibles. Ne pas reprendre la révision historique calculée par addition de deux booléens. |

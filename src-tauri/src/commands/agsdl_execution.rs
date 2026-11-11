@@ -737,3 +737,13 @@ pub async fn execution_submit_human030(
         )
     })?
 }
+
+/// Admit a message into the retained 0.3 run, independently of the live editor.
+#[tauri::command]
+pub async fn execution_deliver030(
+    host: tauri::State<'_, crate::agsdl_host::HostState>,
+    database: tauri::State<'_, DbPool>,
+    request: crate::agsdl_host_flow030::DeliveryRequest030,
+) -> repository::Result<crate::agsdl_host_flow030::DeliveryReceipt030> {
+    crate::agsdl_host_flow030::deliver030(&host, &pool(&database).await?, request).await
+}

@@ -1168,5 +1168,22 @@
     "attentionBody": "Eine Ausführung wartet auf Ihre Antwort.",
     "openRequest": "Anfrage öffnen",
     "close": "Schließen"
+  },
+  "messages030": {
+    "title": "Nachrichten",
+    "agent": "Agent",
+    "delivery": "Zustellung",
+    "steer": "Zur laufenden Arbeit hinzufügen",
+    "queue": "Für neue Arbeit einreihen",
+    "prompt": "Nachricht",
+    "sending": "Wird gesendet…",
+    "send": "Senden",
+    "error": "Die Nachricht wurde nicht bestätigt. Aktualisieren Sie diesen Lauf, bevor Sie eine weitere Nachricht senden.",
+    "you": "Sie",
+    "sent": "Gesendet",
+    "queued": "In Warteschlange",
+    "delivered": "Zugestellt",
+    "consumed": "Verarbeitet",
+    "fallback": "In Warteschlange verschoben"
   }
 }

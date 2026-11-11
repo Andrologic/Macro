@@ -287,11 +287,10 @@ async fn native_stdio_mcp_preserves_structured_error_result_and_operands() {
 fn native_preflight_opens_humans_timeouts_but_keeps_http_and_parallelism_closed() {
     let base = document(json!({"type":"call","command":"true"}));
     assert!(crate::agsdl_host_capture::product_slice030(&base.to_string(), None).is_none());
-    for (field, value) in [("delivery", json!("steer"))] {
-        let mut doc = base.clone();
-        doc["flow"]["steps"]["check"][field] = value;
-        assert!(crate::agsdl_host_capture::product_slice030(&doc.to_string(), None).is_some());
-    }
+    let mut steer = base.clone();
+    steer["agents"] = json!({"worker":{"harness":"codex","permissions":"read-only"}});
+    steer["flow"]["steps"]["check"] = json!({"type":"agent","agent":"worker","delivery":"steer"});
+    assert!(crate::agsdl_host_capture::product_slice030(&steer.to_string(), None).is_none());
     let mut doc = base.clone();
     doc["mcpServers"] = json!({"remote":{"url":"https://example.invalid/mcp"}});
     let diagnostic = crate::agsdl_host_capture::product_slice030(&doc.to_string(), None).unwrap();

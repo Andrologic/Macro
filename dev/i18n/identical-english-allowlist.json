@@ -180,7 +180,10 @@
     "settings.pilot.sessionState.active": "Active",
     "agsdl.preview.arguments": "Arguments",
     "agsdl.preview.action": "Action",
-    "agsdl.preview.agents": "Agents"
+    "agsdl.preview.agents": "Agents",
+    "agsdl.messages030.title": "Messages",
+    "agsdl.messages030.agent": "Agent",
+    "agsdl.messages030.prompt": "Message"
   },
   "de": {
     "mcpForm.server": "Server",
@@ -324,7 +327,8 @@
     "settings.pilot.availability.online": "Online",
     "settings.pilot.availability.offline": "Offline",
     "settings.pilot.online": "Online",
-    "settings.pilot.clientKind.desktop": "Desktop"
+    "settings.pilot.clientKind.desktop": "Desktop",
+    "agsdl.messages030.agent": "Agent"
   },
   "es": {
     "mcpForm.no": "No",

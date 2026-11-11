@@ -28,6 +28,8 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::execution::ExecutionPreflightRequest>("execution")?;
     registry.add::<ipc_contracts::execution::ExecutionPreflight>("execution")?;
     registry.add::<ipc_contracts::execution::ExecutionExternalDelivery>("execution")?;
+    registry.add::<ipc_contracts::execution::DeliveryRequest030>("execution")?;
+    registry.add::<ipc_contracts::execution::DeliveryReceipt030>("execution")?;
     registry.add::<ipc_contracts::execution::ResolveCardTask>("execution")?;
     registry.add::<ipc_contracts::execution::ResolvedCardTask>("execution")?;
     registry.add::<ipc_contracts::execution::HostInspection>("execution")?;

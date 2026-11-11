@@ -83,3 +83,8 @@ export function submitExecutionHuman030(input: {
 export function stopExecution030(request: import('../agsdlExecution/contracts').StopRequest): Promise<import('../agsdlExecution/contracts').PublicStopState> {
   return import('./agsdlExecution').then(({ stopExecution }) => stopExecution(request));
 }
+
+/** A 0.3 delivery receipt records native admission, before consumption. */
+export function deliverExecution030(request: import('../../types/generated/ipc').DeliveryRequest030): Promise<import('../../types/generated/ipc').DeliveryReceipt030> {
+  return invoke('execution_deliver030', { request });
+}

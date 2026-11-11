@@ -236,6 +236,45 @@ fn append_resources(
     Ok(())
 }
 
+struct SteerContext030 {
+    inbox: crate::agsdl_host_steer030::SteerInbox030,
+    tasks: crate::ai::stream_tasks::StreamTasks,
+    attempt: crate::agsdl_host_flow030::FlowWorkAttempt030,
+    document: Value,
+}
+impl SteerContext030 {
+    async fn close(&mut self) -> HostResult<()> {
+        self.inbox.close();
+        while let Some(delivery) = self.inbox.receive().await {
+            delivery.not_sent(&self.tasks, &self.attempt)?;
+        }
+        Ok(())
+    }
+}
+
+/// A turn may end before the host has accepted its result. While the
+/// controller is working, reject only messages that have not reached Codex;
+/// this releases admission so the pending terminal can trigger queue fallback.
+async fn between_turn_event030(
+    events: &AdapterSink030,
+    body: Value,
+    cancel: &CancellationToken,
+    steer: &mut Option<&mut SteerContext030>,
+) -> HostResult<crate::db::agsdl_execution::work_protocol030::ProtocolDecision030> {
+    let event = events(body, cancel.clone());
+    tokio::pin!(event);
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut event => return result,
+            Some(delivery) = async { match steer.as_mut() { Some(context) => context.inbox.receive().await, None => std::future::pending().await } } => {
+                let context = steer.as_ref().unwrap();
+                delivery.not_sent(&context.tasks, &context.attempt)?;
+            }
+        }
+    }
+}
+
 impl CodexExecutor030 {
     async fn execute(
         &self,
@@ -303,6 +342,18 @@ impl CodexExecutor030 {
             Value::Null
         };
         let mission = mission_text030(&message, &declaration, &input, &document)?;
+        let sender = match &work.effect.kind {
+            FlowEffectKind030::Start {
+                sender: Some(sender),
+                ..
+            } => sender
+                .step
+                .as_ref()
+                .map(|s| s.join(" / "))
+                .unwrap_or_else(|| sender.kind.clone()),
+            _ => "host".into(),
+        };
+        let mission = format!("Message from {sender}\n{mission}");
         let mut resources = BTreeMap::new();
         for (label, source) in [("agent", agent), ("input", &input), ("message", &message)] {
             append_resources(&mut resources, &source["resources"], &document, label)?;
@@ -367,6 +418,12 @@ impl CodexExecutor030 {
             &resources,
             &sink,
             &cancel,
+            Some(SteerContext030 {
+                inbox: work.steer,
+                tasks: work.tasks,
+                attempt: work.attempt,
+                document,
+            }),
         )
         .await
     }
@@ -386,6 +443,7 @@ impl CodexExecutor030 {
         resources: &BTreeMap<String, String>,
         sink: &AdapterSink030,
         cancel: &CancellationToken,
+        mut steer: Option<SteerContext030>,
     ) -> HostResult<()> {
         let mut client = Client::new(
             owned.stdin.take().ok_or_else(|| missing("stdin"))?,
@@ -394,7 +452,7 @@ impl CodexExecutor030 {
         let mut current_turn = None;
         let mut current_thread = None;
         let result = tokio::select! {
-            result = self.session(&mut client, profile, root, read_only, model, frozen, key, instructions, mission, resources, sink, cancel, &mut current_thread, &mut current_turn) => result,
+            result = self.session(&mut client, profile, root, read_only, model, frozen, key, instructions, mission, resources, sink, cancel, &mut current_thread, &mut current_turn, steer.as_mut()) => result,
             _ = cancel.cancelled() => Ok(()),
         };
         if cancel.is_cancelled() {
@@ -428,6 +486,7 @@ impl CodexExecutor030 {
         cancel: &CancellationToken,
         current_thread: &mut Option<String>,
         current_turn: &mut Option<String>,
+        mut steer: Option<&mut SteerContext030>,
     ) -> HostResult<()> {
         client.initialize().await?;
         client.preflight(profile, root, read_only).await?;
@@ -470,8 +529,37 @@ impl CodexExecutor030 {
             let turn = required(&response["turn"], "id")?;
             *current_turn = Some(turn.clone());
             let mut final_item = None;
+            let mut pending_steer: Option<crate::agsdl_host_steer030::SteerDelivery030> = None;
+            let mut deferred_text = Vec::new();
             loop {
-                let event = client.notification().await?;
+                let event = tokio::select! {
+                    biased;
+                    // Reading is cancellation-safe, including partial stdio frames.
+                    event = client.notification() => event?,
+                    Some(delivery) = async { match steer.as_mut() { Some(context) => context.inbox.receive().await, None => std::future::pending().await } }, if pending_steer.is_none() => {
+                        let context = steer.as_ref().unwrap();
+                        let FlowEffectKind030::Steer { message_json, sender, .. } = &delivery.effect().kind else { return Err(missing("steer")); };
+                        let message: Value = serde_json::from_str(message_json)?;
+                        let mission = message.get("prompt").map(|v|prompt_text(v, &context.document)).transpose()?.unwrap_or_else(|| "Read the additional information for your current work.".into());
+                        let sender = sender.as_ref().map(|p|p.step.as_ref().map(|s|s.join(" / ")).unwrap_or_else(||p.kind.clone())).unwrap_or_else(|| "host".into());
+                        let mut data = BTreeMap::new();
+                        append_resources(&mut data, &message["resources"], &context.document, "message")?;
+                        for name in ["item", "comments"] { if let Some(value) = message.get(name) { data.insert(format!("message:{name}"), value.to_string()); } }
+                        let id = delivery.effect().id.clone();
+                        match client.request("turn/steer", json!({"threadId":thread,"expectedTurnId":turn,"clientUserMessageId":id,"input":[{"type":"text","text":format!("Message from {sender}\n{mission}"),"text_elements":[]}],"additionalContext":additional_context030(&data)})).await {
+                            Ok(response) if response["turnId"] == turn => pending_steer = Some(delivery),
+                            Err(error) if error.code == "CODEX_REQUEST_FAILED" => {
+                                // Codex explicitly rejected this input. No replay into
+                                // this turn; its end settles the existing queue fallback.
+                                delivery.not_sent(&context.tasks, &context.attempt)?;
+                                steer.as_mut().unwrap().close().await?;
+                            }
+                            Ok(_) => return Err(missing("steerTurn")),
+                            Err(error) => return Err(error),
+                        }
+                        continue;
+                    }
+                };
                 if event.get("id").is_some() {
                     return Err(failure(
                         "CODEX_PROFILE_UNQUALIFIED",
@@ -486,6 +574,23 @@ impl CodexExecutor030 {
                 {
                     return Err(missing("thread"));
                 }
+                if method == "item/completed" && params["item"]["type"] == "userMessage" {
+                    if pending_steer
+                        .as_ref()
+                        .is_some_and(|delivery| params["item"]["clientId"] == delivery.effect().id)
+                    {
+                        if required(params, "threadId")? != thread
+                            || required(params, "turnId")? != turn
+                        {
+                            return Err(missing("steerRecipient"));
+                        }
+                        let context = steer.as_ref().unwrap();
+                        pending_steer
+                            .take()
+                            .unwrap()
+                            .acknowledge(&context.tasks, &context.attempt)?;
+                    }
+                }
                 if method == "item/completed" && params["item"]["type"] == "agentMessage" {
                     if required(params, "turnId")? != turn {
                         return Err(missing("turn"));
@@ -498,11 +603,12 @@ impl CodexExecutor030 {
                             return Err(missing("final"));
                         }
                     } else {
-                        events(
-                            json!({"kind":"visibleText","messageId":id,"textParts":[text]}),
-                            cancel.clone(),
-                        )
-                        .await?;
+                        let body = json!({"kind":"visibleText","messageId":id,"textParts":[text]});
+                        // Admission can already be held by a steer whose inbox
+                        // has not been polled yet. Keep reading Codex until the
+                        // turn ends; awaiting the controller here can deadlock
+                        // consumption against that admission lock.
+                        deferred_text.push(body);
                     }
                 }
                 if method == "turn/completed" {
@@ -515,31 +621,52 @@ impl CodexExecutor030 {
                             "Codex turn did not complete",
                         ));
                     }
+                    if pending_steer.is_some() {
+                        return Err(failure(
+                            "UNCERTAIN",
+                            "delivery",
+                            "Codex ended without acknowledging message consumption",
+                        ));
+                    }
                     break;
                 }
             }
             *current_turn = None;
+            for body in deferred_text {
+                between_turn_event030(events, body, cancel, &mut steer).await?;
+            }
             let decision = if let Some((id, raw)) = final_item {
                 let submission = match parse_envelope030(&raw) {
                     Ok(envelope) => {
                         if !envelope.text.is_empty() {
-                            events(json!({"kind":"visibleText","messageId":id,"textParts":[envelope.text]}), cancel.clone()).await?;
+                            between_turn_event030(events, json!({"kind":"visibleText","messageId":id,"textParts":[envelope.text]}), cancel, &mut steer).await?;
                         }
                         envelope.submission_json
                     }
                     Err(_) => format!("Invalid structured envelope: {raw}"),
                 };
-                events(
+                between_turn_event030(
+                    events,
                     json!({"kind":"submit","callId":turn,"argumentsJson":submission}),
-                    cancel.clone(),
+                    cancel,
+                    &mut steer,
                 )
                 .await?
             } else {
-                events(json!({"kind":"turnEnded","turnId":turn}), cancel.clone()).await?
+                between_turn_event030(
+                    events,
+                    json!({"kind":"turnEnded","turnId":turn}),
+                    cancel,
+                    &mut steer,
+                )
+                .await?
             };
             let receipt: Value = serde_json::from_str(&decision.receipt_json)?;
             match receipt["decision"]["kind"].as_str() {
-                Some("accepted" | "stopping" | "finished") => return Ok(()),
+                Some("accepted" | "stopping" | "finished") => {
+                    if let Some(context) = steer.as_mut() { context.close().await?; }
+                    return Ok(());
+                },
                 Some("correction") => prompt = format!("Your previous result was rejected. Correct it and return a new structured result. Diagnostics: {}", receipt["decision"]),
                 _ => return Err(missing("decision")),
             }
@@ -658,6 +785,16 @@ for line in sys.stdin:
  elif method=='turn/interrupt':
   open(sys.argv[4]+'.interrupted','w').write('yes')
   result={}
+ elif method=='turn/steer':
+  assert p['expectedTurnId']=='turn1' and p['clientUserMessageId']=='steer-test'
+  assert 'host' in p['input'][0]['text'] and 'Update the changelog' in p['input'][0]['text']
+  print(json.dumps({'id':i,'result':{'turnId':'turn1'}}),flush=True)
+  print(json.dumps({'method':'item/completed','params':{'threadId':'thread','turnId':'turn1','item':{'id':'comment','type':'agentMessage','phase':'commentary','text':'Working'}}}),flush=True)
+  if mode!='steer-uncertain':
+   print(json.dumps({'method':'item/completed','params':{'threadId':'thread','turnId':'turn1','item':{'id':'received','type':'userMessage','clientId':p['clientUserMessageId']}}}),flush=True)
+  print(json.dumps({'method':'item/completed','params':{'threadId':'thread','turnId':'turn1','item':{'id':'final','type':'agentMessage','phase':'final_answer','text':json.dumps({'text':'Updated changelog','submissionJson':json.dumps({'results':{'summary':'Updated'},'choice':'approve'})})}}}),flush=True)
+  print(json.dumps({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'turn1','status':'completed'}}}),flush=True)
+  continue
  elif method=='turn/start':
   count+=1
   if mode=='cancel':
@@ -671,7 +808,9 @@ for line in sys.stdin:
   result={'turn':{'id':'turn'+str(count)}}
  else: raise Exception(method)
  print(json.dumps({'id':i,'result':result}),flush=True)
- if method=='turn/start' and mode!='cancel':
+ if method=='turn/start' and mode in ('steer','steer-uncertain'):
+  print(json.dumps({'method':'item/completed','params':{'threadId':'thread','turnId':'turn1','item':{'id':'early','type':'agentMessage','phase':'commentary','text':'Starting'}}}),flush=True)
+ if method=='turn/start' and mode not in ('cancel','steer','steer-uncertain'):
   choice='bad' if mode in ('correct','exhausted') and count==1 else 'approve'
   submission={'version':'macro-agsdl-agent-work/030','agentJson':'{}'} if mode=='internal_contract' and count==1 else {'results':{'summary':'Done'},'choice':choice}
   text='{}' if mode=='invalid_envelope' and count==1 else json.dumps({'text':'hello','submissionJson':json.dumps(submission)})
@@ -741,6 +880,7 @@ for line in sys.stdin:
                 &CancellationToken::new(),
                 &mut None,
                 &mut None,
+                None,
             )
             .await;
         drop(client);
@@ -906,6 +1046,7 @@ for line in sys.stdin:
                         &BTreeMap::from([("note".into(), "data".into())]),
                         &sink,
                         &task_cancel,
+                        None,
                     )
                     .await
                     .unwrap();
@@ -940,6 +1081,126 @@ for line in sys.stdin:
             "descendant survived physical join"
         );
     }
+    #[tokio::test]
+    async fn owned_steer_waits_for_consumption_and_lost_ack_is_never_replayed() {
+        use crate::agsdl_host_flow030::FlowWorkAttempt030;
+        use crate::ai::stream_tasks::StreamTasks;
+        use crate::db::agsdl_execution::flow030::{FlowEffect030, WorkRef030};
+        for mode in ["steer", "steer-uncertain"] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let workspace = root.join("workspace");
+            let bootstrap = root.join("bootstrap");
+            std::fs::create_dir(&workspace).unwrap();
+            std::fs::create_dir(&bootstrap).unwrap();
+            let profile = profile::Profile {
+                executable: root.join("bin/codex"),
+                directory: root.join("profile"),
+                home: root.join("profile/home"),
+                bootstrap: bootstrap.clone(),
+                digest: "fixture".into(),
+            };
+            let mut command = crate::core::process::background_tokio_command("python3");
+            command
+                .arg("-u")
+                .arg("-c")
+                .arg(SERVER)
+                .arg(profile.settings(&workspace, true).unwrap().to_string())
+                .arg(&bootstrap)
+                .arg(mode)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            let process = ContainedBackgroundProcess::spawn(command).unwrap();
+            let executor = CodexExecutor030::new(
+                ConfigManager::initialize(root.join("config"))
+                    .await
+                    .unwrap(),
+            );
+            let tasks = StreamTasks::default();
+            let attempt = FlowWorkAttempt030::registry_fixture030("steer-codex");
+            let effect = FlowEffect030 { id:"steer-test".into(), identity:attempt.identity().clone(), revision:"2".into(), kind:FlowEffectKind030::Steer { work:WorkRef030 {activation_id:attempt.work().activation_id.clone(),start_effect_id:attempt.start_effect_id().into(),agent_instance_id:attempt.work().agent_instance_id.clone()},delivery_activation_id:"nudge".into(),message_json:"{\"prompt\":\"Update the changelog\",\"resources\":{\"note\":{\"value\":\"untrusted\"}}}".into(),occurrence:None,sender:None } };
+            let (sender, inbox) = crate::agsdl_host_steer030::channel030();
+            let parent = format!(
+                "flow030:{}:{}",
+                attempt.identity().system_start_id,
+                attempt.start_effect_id()
+            );
+            let registry = tasks.clone();
+            let target = attempt.clone();
+            let seen = Arc::new(StdMutex::new(Vec::new()));
+            let observed = seen.clone();
+            let (done, result) = tokio::sync::oneshot::channel();
+            let admission = Arc::new(tokio::sync::Mutex::new(()));
+            let claimed = admission.clone().lock_owned().await;
+            tasks
+                .start_agent030(parent.clone(), &attempt, async move {
+                    let owned = registry.own_process(&parent, process).unwrap();
+                    let sink: AdapterSink030 = Arc::new(move |event, _| {
+                        let admission = admission.clone();
+                        observed.lock().unwrap().push(event);
+                        let events = observed.lock().unwrap().clone();
+                        Box::pin(async move {
+                            let _admission = admission.lock().await;
+                            Ok(
+                                controller_receipt(test_contract(json!(["approve"]), 2), events)
+                                    .await,
+                            )
+                        })
+                    });
+                    let outcome = executor
+                        .drive(
+                            owned,
+                            &profile,
+                            workspace.to_str().unwrap(),
+                            true,
+                            "fixture",
+                            &json!({}),
+                            &("run".into(), "instance".into()),
+                            "instructions",
+                            "mission",
+                            &BTreeMap::from([("note".into(), "data".into())]),
+                            &sink,
+                            &CancellationToken::new(),
+                            Some(SteerContext030 {
+                                inbox,
+                                tasks: registry,
+                                attempt: target,
+                                document: json!({}),
+                            }),
+                        )
+                        .await;
+                    let _ = done.send(outcome);
+                })
+                .unwrap();
+            let receipt = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                sender.deliver(&effect, &attempt),
+            )
+            .await
+            .unwrap();
+            drop(claimed);
+            let outcome = result.await.unwrap();
+            tasks.join_agent030(&attempt, false).await.unwrap();
+            if mode == "steer" {
+                assert!(receipt.unwrap().consumed());
+                outcome.unwrap();
+                assert_eq!(
+                    seen.lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|e| e["kind"] == "submit")
+                        .count(),
+                    1
+                );
+            } else {
+                assert_eq!(receipt.err().unwrap().code, "UNCERTAIN");
+                assert_eq!(outcome.unwrap_err().code, "UNCERTAIN");
+                assert!(!seen.lock().unwrap().iter().any(|e| e["kind"] == "submit"));
+            }
+        }
+    }
+
     /// Set MACRO_CODEX_TEST_CONFIG_ROOT to the Macro configuration root whose
     /// private Codex profile has been connected before running this test.
     #[tokio::test]
@@ -1001,6 +1262,7 @@ for line in sys.stdin:
                 &CancellationToken::new(),
                 &mut None,
                 &mut None,
+                None,
             )
             .await;
         drop(client);
@@ -1021,6 +1283,73 @@ for line in sys.stdin:
         let receipt: Value = serde_json::from_str(&final_receipt.receipt_json).unwrap();
         assert_eq!(receipt["decision"]["kind"], "accepted");
         assert_eq!(receipt["decision"]["output"]["choice"], "approve");
+    }
+
+    /// Short protocol qualification against the explicitly connected QA profile.
+    #[tokio::test]
+    #[ignore = "requires an explicitly connected private Macro Codex profile"]
+    async fn real_private_codex_steer_protocol() {
+        let config = ConfigManager::initialize(
+            std::env::var_os("MACRO_CODEX_TEST_CONFIG_ROOT")
+                .expect("set MACRO_CODEX_TEST_CONFIG_ROOT")
+                .into(),
+        )
+        .await
+        .unwrap();
+        let profile = profile::prepare(&config).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let mut process =
+            ContainedBackgroundProcess::spawn(profile.app_server_command(&root, true).unwrap())
+                .unwrap();
+        let mut client = Client::new(
+            process.take_stdin().unwrap(),
+            process.take_stdout().unwrap(),
+        );
+        let result: HostResult<()> = async {
+            client.initialize().await?;
+            client.preflight(&profile, root.to_str().unwrap(), true).await?;
+            let thread = client.request("thread/start", json!({"model":"gpt-6.1-terra","cwd":profile.bootstrap,"runtimeWorkspaceRoots":[profile.bootstrap],"approvalPolicy":"never","permissions":"macro-agsdl","developerInstructions":"Run /bin/sleep 6 once, then return the most recent requested token. Return the structured envelope with submissionJson containing {\"results\":{}}. A user update during sleep replaces the initial token.","ephemeral":true})).await?;
+            let thread = required(&thread["thread"], "id")?;
+            let turn = client.request("turn/start", json!({"threadId":thread,"input":[{"type":"text","text":"Run the sleep, then return INITIAL_TOKEN.","text_elements":[]}],"permissions":"macro-agsdl","approvalPolicy":"never","effort":"medium","outputSchema":output_schema030()})).await?;
+            let turn = required(&turn["turn"], "id")?;
+            let mut sent = false;
+            let mut consumed = false;
+            let mut final_text = String::new();
+            loop {
+                let event = client.notification().await?;
+                let method = event["method"].as_str().unwrap_or("");
+                let p = &event["params"];
+                if method == "item/started" && p["item"]["type"] == "commandExecution" && !sent {
+                    let response = client.request("turn/steer", json!({"threadId":thread,"expectedTurnId":turn,"input":[{"type":"text","text":"Updated mission from host: return STEER_OBSERVED_033.","text_elements":[]}],"additionalContext":{"note":{"kind":"untrusted","name":"note","value":"Evidence value AMBER033"}},"clientUserMessageId":"probe_033"})).await?;
+                    println!("STEER_RESPONSE {}", response);
+                    assert_eq!(response["turnId"], turn);
+                    sent = true;
+                }
+                if method == "item/completed" && p["item"]["type"] == "userMessage" {
+                    println!("USER_MESSAGE {}", p);
+                    if p["item"].to_string().contains("STEER_OBSERVED_033") { consumed = true; }
+                }
+                if method == "item/completed" && p["item"]["type"] == "agentMessage" && p["item"]["phase"] == "final_answer" {
+                    final_text = required(&p["item"], "text")?;
+                    println!("FINAL {}", final_text);
+                }
+                if method == "turn/completed" {
+                    println!("TURN_COMPLETED {}", p["turn"]);
+                    assert!(sent, "model did not run the requested short command");
+                    assert!(consumed, "no userMessage consumption notification");
+                    assert!(final_text.contains("STEER_OBSERVED_033"));
+                    break;
+                }
+            }
+            let refused = client.request("turn/steer", json!({"threadId":thread,"expectedTurnId":turn,"input":[{"type":"text","text":"AFTER_END","text_elements":[]}]})).await.unwrap_err();
+            println!("AFTER_END {} {:?}", refused.code, client.last_request_error);
+            assert_eq!(refused.code, "CODEX_REQUEST_FAILED");
+            Ok(())
+        }.await;
+        drop(client);
+        process.terminate_bounded().await.unwrap();
+        result.unwrap();
     }
 
     #[tokio::test]

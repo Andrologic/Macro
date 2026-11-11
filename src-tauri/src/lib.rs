@@ -966,6 +966,7 @@ pub fn run() {
             commands::agsdl_execution::execution_submit_intent,
             commands::agsdl_execution::execution_close_intent,
             commands::agsdl_execution::execution_deliver,
+            commands::agsdl_execution::execution_deliver030,
             commands::agsdl_execution::execution_resolve_card_task,
             commands::agsdl_execution::execution_stop,
             commands::agsdl_execution::execution_ensure_stop,

@@ -1168,5 +1168,22 @@
     "attentionBody": "An execution is waiting for your answer.",
     "openRequest": "Open request",
     "close": "Close"
+  },
+  "messages030": {
+    "title": "Messages",
+    "agent": "Agent",
+    "delivery": "Delivery",
+    "steer": "Add to current work",
+    "queue": "Queue for a new work",
+    "prompt": "Message",
+    "sending": "Sending…",
+    "send": "Send",
+    "error": "The message was not acknowledged. Refresh this run before sending another message.",
+    "you": "You",
+    "sent": "Sent",
+    "queued": "Queued",
+    "delivered": "Delivered",
+    "consumed": "Consumed",
+    "fallback": "Moved to queue"
   }
 }

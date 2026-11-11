@@ -11,6 +11,7 @@ use crate::{
 };
 use tokio::sync::{mpsc, oneshot};
 
+#[derive(Clone)]
 pub(crate) struct SteerSender030(mpsc::Sender<SteerDelivery030>);
 pub(crate) struct SteerInbox030(mpsc::Receiver<SteerDelivery030>);
 
@@ -52,8 +53,12 @@ pub(crate) struct SteerDelivery030 {
 pub(crate) struct ConsumedSteer030 {
     effect: FlowEffect030,
     attempt: FlowWorkAttempt030,
+    consumed: bool,
 }
 impl ConsumedSteer030 {
+    pub(crate) fn consumed(&self) -> bool {
+        self.consumed
+    }
     pub(crate) fn verifies(&self, effect: &FlowEffect030, attempt: &FlowWorkAttempt030) -> bool {
         self.effect == *effect
             && self.attempt.provider_attempt_id() == attempt.provider_attempt_id()
@@ -63,6 +68,9 @@ impl ConsumedSteer030 {
     }
 }
 impl SteerSender030 {
+    pub(crate) fn is_closed(&self) -> bool {
+        self.0.is_closed()
+    }
     pub(crate) async fn deliver(
         &self,
         effect: &FlowEffect030,
@@ -72,18 +80,29 @@ impl SteerSender030 {
             return Err(refused());
         }
         let (ack, result) = oneshot::channel();
-        self.0
+        if self
+            .0
             .send(SteerDelivery030 {
                 effect: effect.clone(),
                 attempt: attempt.clone(),
                 ack,
             })
             .await
-            .map_err(|_| uncertain())?;
+            .is_err()
+        {
+            return Ok(ConsumedSteer030 {
+                effect: effect.clone(),
+                attempt: attempt.clone(),
+                consumed: false,
+            });
+        }
         result.await.map_err(|_| uncertain())
     }
 }
 impl SteerInbox030 {
+    pub(crate) fn close(&mut self) {
+        self.0.close();
+    }
     pub(crate) async fn receive(&mut self) -> Option<SteerDelivery030> {
         self.0.recv().await
     }
@@ -98,6 +117,19 @@ impl SteerDelivery030 {
         self,
         tasks: &StreamTasks,
         attempt: &FlowWorkAttempt030,
+    ) -> Result<()> {
+        self.resolve(tasks, attempt, true)
+    }
+
+    /// Only before any provider send, or after an explicit provider rejection.
+    pub(crate) fn not_sent(self, tasks: &StreamTasks, attempt: &FlowWorkAttempt030) -> Result<()> {
+        self.resolve(tasks, attempt, false)
+    }
+    fn resolve(
+        self,
+        tasks: &StreamTasks,
+        attempt: &FlowWorkAttempt030,
+        consumed: bool,
     ) -> Result<()> {
         if !matches_attempt(&self.effect, attempt)
             || self.attempt.provider_attempt_id() != attempt.provider_attempt_id()
@@ -118,6 +150,7 @@ impl SteerDelivery030 {
             .send(ConsumedSteer030 {
                 effect: self.effect,
                 attempt: self.attempt,
+                consumed,
             })
             .map_err(|_| uncertain())
     }
@@ -217,13 +250,10 @@ mod tests {
             "CORRELATION"
         );
         drop(inbox);
-        assert_eq!(
-            send.deliver(&effect(&attempt), &attempt)
-                .await
-                .err()
-                .unwrap()
-                .code,
-            "UNCERTAIN"
-        );
+        assert!(!send
+            .deliver(&effect(&attempt), &attempt)
+            .await
+            .unwrap()
+            .consumed());
     }
 }

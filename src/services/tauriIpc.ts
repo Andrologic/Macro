@@ -679,3 +679,5 @@ export * from './ipc/chatAdmission';
 export { submitExecutionHuman030, startExecution030, stopExecution030, readExecutionSnapshot030, readExecutionHumans030, readExecutionRuntimeProjection030, listExecutionRuns030, readExecutionRunCorrelation030 } from './ipc/agsdlExecution030';
 export type { StartRequest030, PublicSnapshot030, PublicStartReceipt030 } from './ipc/agsdlExecution030';
 export type { ExecutionRunCorrelation030 } from '../types/generated/ipc';
+
+export { deliverExecution030 } from './ipc/agsdlExecution030';

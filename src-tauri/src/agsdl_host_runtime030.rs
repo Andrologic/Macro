@@ -54,6 +54,7 @@ pub(crate) struct AgentWork030 {
     pub effect: FlowEffect030,
     pub policy: crate::agsdl_permissions::EffectivePolicy,
     pub tasks: StreamTasks,
+    pub steer: crate::agsdl_host_steer030::SteerInbox030,
 }
 
 pub(crate) type EventEmitter030 = Arc<
@@ -63,6 +64,17 @@ pub(crate) type EventEmitter030 = Arc<
             Value,
             CancellationToken,
         ) -> BoxFuture<'static, Result<ProtocolDecision030>>
+        + Send
+        + Sync,
+>;
+
+/// The host supplies admission and persistence; dispatch only owns the future.
+pub(crate) type SteerDeliveryPort030 = Arc<
+    dyn Fn(
+            FlowEffect030,
+            FlowWorkAttempt030,
+            crate::agsdl_host_steer030::SteerSender030,
+        ) -> BoxFuture<'static, Result<bool>>
         + Send
         + Sync,
 >;
@@ -120,7 +132,37 @@ pub(crate) fn native_event_emitter030<R: tauri::Runtime>(
     })
 }
 
+/// Native binding for the port, alongside the existing work-event binding.
+/// Delivery must continue independently while the supervisor reads or ticks:
+/// its admission lock is released only after the consumer acknowledgment.
+fn native_steer_port030<R: tauri::Runtime>(
+    app: Option<tauri::AppHandle<R>>,
+    pool: SqlitePool,
+) -> SteerDeliveryPort030 {
+    Arc::new(move |effect, attempt, sender| {
+        let (app, pool) = (app.clone(), pool.clone());
+        let task = tokio::spawn(async move {
+            let app = app.ok_or_else(|| {
+                failure("HOST_CAPABILITY", "delivery", "Host application is absent")
+            })?;
+            let host = app.state::<HostState>();
+            let Some(claim) =
+                flow::claim_expected(host.flow030(), &host, &pool, &effect.identity, &effect.id)
+                    .await?
+            else {
+                return Ok(true);
+            };
+            claim.deliver_steer030(&attempt, &sender).await
+        });
+        Box::pin(async move {
+            task.await
+                .map_err(|_| failure("UNCERTAIN", "delivery", "Steer task was lost"))?
+        })
+    })
+}
+
 pub(crate) struct StartedAgent030 {
+    pub steer: crate::agsdl_host_steer030::SteerSender030,
     pub timeout: CancellationToken,
     pub attempt: FlowWorkAttempt030,
     pub cancel: CancellationToken,
@@ -168,6 +210,7 @@ pub(crate) async fn start_agent_work030(
             "Claimed agent start differs",
         ));
     }
+    let (steer, inbox) = crate::agsdl_host_steer030::channel030();
     let (returned, receiver) = watch::channel(None);
     let mut started = None;
     let work_cancel = cancel.clone();
@@ -190,6 +233,7 @@ pub(crate) async fn start_agent_work030(
                 effect,
                 policy: effective,
                 tasks: tasks_owned,
+                steer: inbox,
             };
             async move {
                 let running = executor.run(work, events.clone(), work_cancel.clone());
@@ -225,6 +269,7 @@ pub(crate) async fn start_agent_work030(
         })
         .await?;
     Ok(StartedAgent030 {
+        steer,
         timeout,
         attempt: started
             .ok_or_else(|| failure("INTERRUPTED", "work", "Owned attempt was not constructed"))?,
@@ -289,10 +334,11 @@ pub(crate) fn next_effect030(
                 ))
             }
             Some("pending")
-                if crate::db::agsdl_execution::flow_store030::eligible(
-                    &inspection.flow.state,
-                    &effect,
-                ) =>
+                if !owns(&effect.id)
+                    && crate::db::agsdl_execution::flow_store030::eligible(
+                        &inspection.flow.state,
+                        &effect,
+                    ) =>
             {
                 if next.is_none() {
                     next = Some(effect);
@@ -545,6 +591,7 @@ impl RuntimeRegistry030 {
 }
 
 struct LiveAgent030 {
+    steer: crate::agsdl_host_steer030::SteerSender030,
     timeout: CancellationToken,
     attempt: FlowWorkAttempt030,
     cancel: CancellationToken,
@@ -575,6 +622,8 @@ struct NativeDriver030<'a, R: tauri::Runtime> {
         >,
     >,
     joined_calls: BTreeMap<String, crate::agsdl_host_calls030::JoinedCall030>,
+    steer_delivery: SteerDeliveryPort030,
+    steering: FuturesUnordered<BoxFuture<'a, (String, Result<bool>)>>,
     in_flight: BTreeSet<String>,
 }
 impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
@@ -676,6 +725,7 @@ impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
             self.active.insert(
                 key.clone(),
                 LiveAgent030 {
+                    steer: started.steer.clone(),
                     timeout: started.timeout.clone(),
                     attempt: started.attempt.clone(),
                     cancel: started.cancel.clone(),
@@ -776,13 +826,27 @@ impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
             Ok(())
         })
     }
-    fn steer(&mut self, _effect: FlowEffect030) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async {
-            Err(failure(
-                "HARNESS_CAPABILITY",
-                "delivery",
-                "Steer is not connected in this runtime",
-            ))
+    fn steer(&mut self, effect: FlowEffect030) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            let FlowEffectKind030::Steer { work, .. } = &effect.kind else {
+                unreachable!()
+            };
+            let live = self.active.get(&work.activation_id).ok_or_else(|| {
+                failure("INTERRUPTED", "delivery", "Steer recipient has no owner")
+            })?;
+            // The adapter has already observed the end. Let its terminal event
+            // settle before claiming any offer that can no longer be sent.
+            if live.steer.is_closed() {
+                self.in_flight.insert(effect.id);
+                return Ok(());
+            }
+            let future =
+                (self.steer_delivery)(effect.clone(), live.attempt.clone(), live.steer.clone());
+            let id = effect.id;
+            self.in_flight.insert(id.clone());
+            self.steering
+                .push(Box::pin(async move { (id, future.await) }));
+            Ok(())
         })
     }
     fn stop(&mut self, effect: FlowEffect030) -> BoxFuture<'_, Result<()>> {
@@ -1051,6 +1115,8 @@ pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
         calls: BTreeMap::new(),
         call_joins: FuturesUnordered::new(),
         joined_calls: BTreeMap::new(),
+        steer_delivery: native_steer_port030(app.cloned(), pool.clone()),
+        steering: FuturesUnordered::new(),
         in_flight: BTreeSet::new(),
     };
     // Keep the driver outside the unwind boundary so panic follows the same
@@ -1102,7 +1168,7 @@ pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
             completed = true;
         }
         if completed { continue; }
-        if view.state.verdict.is_some() && driver.active.is_empty() && driver.calls.is_empty() {
+        if view.state.verdict.is_some() && driver.active.is_empty() && driver.calls.is_empty() && driver.steering.is_empty() {
             return Ok(());
         }
         if cancel.is_cancelled() {
@@ -1120,7 +1186,7 @@ pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
             row["status"] == "pending"
                 && serde_json::from_value::<FlowEffect030>(row["effect"].clone()).is_ok_and(
                     |effect| {
-                        crate::db::agsdl_execution::flow_store030::eligible(&view.state, &effect)
+                        !driver.in_flight.contains(&effect.id) && crate::db::agsdl_execution::flow_store030::eligible(&view.state, &effect)
                     },
                 )
         }) {
@@ -1134,6 +1200,9 @@ pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
         tokio::select! {
             _ = cancel.cancelled() => (),
             changed = wake.changed() => { changed.map_err(|_| failure("INTERRUPTED", "runtime", "Supervisor wake channel closed"))?; },
+            Some((id, result)) = driver.steering.next(), if !driver.steering.is_empty() => {
+                if result? { driver.in_flight.remove(&id); }
+            },
             Some((key, joined)) = driver.call_joins.next(), if !driver.call_joins.is_empty() => {
                 if let Some(joined) = joined? {
                     let authority = crate::agsdl_host_call_authority030::NativeCallAuthority030::capture(host, owner).await?;
@@ -1190,6 +1259,11 @@ pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
         }
     }
     while let Some((_, result)) = driver.joining.next().await {
+        if let Err(error) = result {
+            cleanup_error.get_or_insert(error);
+        }
+    }
+    while let Some((_, result)) = driver.steering.next().await {
         if let Err(error) = result {
             cleanup_error.get_or_insert(error);
         }

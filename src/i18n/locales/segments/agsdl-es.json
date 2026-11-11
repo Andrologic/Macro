@@ -1168,5 +1168,22 @@
     "attentionBody": "Una ejecución espera su respuesta.",
     "openRequest": "Abrir solicitud",
     "close": "Cerrar"
+  },
+  "messages030": {
+    "title": "Mensajes",
+    "agent": "Agente",
+    "delivery": "Entrega",
+    "steer": "Añadir al trabajo actual",
+    "queue": "Encolar para un nuevo trabajo",
+    "prompt": "Mensaje",
+    "sending": "Enviando…",
+    "send": "Enviar",
+    "error": "No se confirmó el mensaje. Actualice la ejecución antes de enviar otro mensaje.",
+    "you": "Usted",
+    "sent": "Enviado",
+    "queued": "En cola",
+    "delivered": "Entregado",
+    "consumed": "Consumido",
+    "fallback": "Pasado a la cola"
   }
 }

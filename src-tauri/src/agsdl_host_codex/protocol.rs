@@ -20,6 +20,8 @@ pub(crate) struct Client {
     next_id: u64,
     pending: Vec<Value>,
     pending_bytes: usize,
+    frame: Vec<u8>,
+    pub(crate) last_request_error: Option<Value>,
 }
 impl Client {
     pub fn new(stdin: ChildStdin, stdout: ChildStdout) -> Self {
@@ -29,6 +31,8 @@ impl Client {
             next_id: 0,
             pending: Vec::new(),
             pending_bytes: 0,
+            frame: Vec::new(),
+            last_request_error: None,
         }
     }
     async fn send(&mut self, message: &Value) -> Result<()> {
@@ -57,7 +61,6 @@ impl Client {
         })
     }
     pub(crate) async fn next(&mut self) -> Result<Value> {
-        let mut bytes = Vec::new();
         loop {
             let chunk =
                 self.stdout.fill_buf().await.map_err(|_| {
@@ -75,19 +78,20 @@ impl Client {
                 .position(|byte| *byte == b'\n')
                 .map(|index| index + 1);
             let count = end.unwrap_or(chunk.len());
-            if bytes.len() + count > 2_000_000 {
+            if self.frame.len() + count > 2_000_000 {
                 return Err(failure(
                     "NATIVE_UNCERTAIN",
                     "stdio",
                     "Codex protocol frame exceeds the limit",
                 ));
             }
-            bytes.extend_from_slice(&chunk[..count]);
+            self.frame.extend_from_slice(&chunk[..count]);
             self.stdout.consume(count);
             if end.is_some() {
                 break;
             }
         }
+        let bytes = std::mem::take(&mut self.frame);
         Ok(serde_json::from_slice(&bytes)?)
     }
     async fn begin_request(&mut self, method: &str, params: Value) -> Result<u64> {
@@ -98,6 +102,7 @@ impl Client {
         Ok(id)
     }
     pub async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+        self.last_request_error = None;
         let id = self.begin_request(method, params).await?;
         self.response(id).await
     }
@@ -116,7 +121,8 @@ impl Client {
         loop {
             let value = self.next().await?;
             if value.get("id").and_then(Value::as_u64) == Some(id) {
-                if value.get("error").is_some() {
+                if let Some(error) = value.get("error") {
+                    self.last_request_error = Some(error.clone());
                     return Err(failure(
                         "CODEX_REQUEST_FAILED",
                         "protocol",

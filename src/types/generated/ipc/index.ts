@@ -96,6 +96,8 @@ export type { DbUpdateProviderConfigParams } from './DbUpdateProviderConfigParam
 export type { DeactivateConversationGoalInput } from './DeactivateConversationGoalInput';
 export type { DebugResetProjectReportDto } from './DebugResetProjectReportDto';
 export type { DeleteOrphanSecretRequest } from './DeleteOrphanSecretRequest';
+export type { DeliveryReceipt030 } from './DeliveryReceipt030';
+export type { DeliveryRequest030 } from './DeliveryRequest030';
 export type { DevProviderOverrideConfig } from './DevProviderOverrideConfig';
 export type { DevProviderOverridesFile } from './DevProviderOverridesFile';
 export type { DiagnosticIdentity } from './DiagnosticIdentity';
@@ -366,6 +368,7 @@ export type { RuntimeFrame030 } from './RuntimeFrame030';
 export type { RuntimeGroup030 } from './RuntimeGroup030';
 export type { RuntimeInstance030 } from './RuntimeInstance030';
 export type { RuntimeMembership030 } from './RuntimeMembership030';
+export type { RuntimeMessage030 } from './RuntimeMessage030';
 export type { RuntimePath030 } from './RuntimePath030';
 export type { RuntimeProjectionContinuation030 } from './RuntimeProjectionContinuation030';
 export type { RuntimeProjectionItem030 } from './RuntimeProjectionItem030';

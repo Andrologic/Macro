@@ -94,7 +94,7 @@ fn activation(id: &str, context: Vec<Frame030>, phase: &str, physical: bool) -> 
         start_effect_id: None,
         stop_effect_id: None,
         input_json: "\"PRIVATE_INPUT\"".into(),
-        message_json: Some("\"PRIVATE_MESSAGE\"".into()),
+        message_json: Some("\"PUBLIC_MESSAGE\"".into()),
         item_json: None,
         occurrence: None,
         producer: Some(producer()),
@@ -349,4 +349,68 @@ fn preserve_declared_fanout_order_and_sort_top_level_ids() {
     let frame = RuntimeFrame030::decl(&ts_rs::Config::default());
     assert!(frame.contains("activationId"));
     assert!(frame.contains("departedGroups"));
+}
+
+#[test]
+fn message_projection_distinguishes_queue_consumption_and_steer_fallback() {
+    use super::super::flow030::{SteerRecord030, WorkRef030, WorkResultRecord030};
+    let (plan, mut state) = setup();
+    let mut first = activation("first", vec![], "done", false);
+    first.start_effect_id = Some("start-first".into());
+    first.result = Some(WorkResultRecord030::Completed {
+        output_json: r#"{"text":"Mission accomplie","results":{}}"#.into(),
+        route_key: None,
+    });
+    let queued = activation("queued", vec![], "queued", false);
+    let mut steer = activation("steer", vec![], "absorbed", false);
+    steer.delivery = "steer".into();
+    state.activations = vec![first, queued, steer];
+    state.steer_deliveries.push(SteerRecord030 {
+        effect_id: "offer".into(),
+        work: WorkRef030 {
+            activation_id: "first".into(),
+            start_effect_id: "start-first".into(),
+            agent_instance_id: Some("instance".into()),
+        },
+        delivery_activation_id: "steer".into(),
+        status: "consumed".into(),
+        resolved_event_id: Some("ack".into()),
+        reason: None,
+    });
+    let view = project_runtime030(&plan, &state).unwrap();
+    let statuses = |id: &str| {
+        view.activations
+            .iter()
+            .find(|a| a.id == id)
+            .unwrap()
+            .message
+            .as_ref()
+            .unwrap()
+            .statuses
+            .clone()
+    };
+    assert_eq!(statuses("first"), vec!["sent", "delivered", "consumed"]);
+    assert_eq!(statuses("queued"), vec!["sent", "queued"]);
+    assert_eq!(statuses("steer"), vec!["sent", "delivered", "consumed"]);
+    assert_eq!(
+        view.activations[0].work_text.as_deref(),
+        Some("Mission accomplie")
+    );
+    assert_eq!(
+        view.activations[2]
+            .message
+            .as_ref()
+            .unwrap()
+            .target_activation_id
+            .as_deref(),
+        Some("first")
+    );
+    state.steer_deliveries[0].status = "fallback".into();
+    state.activations[2].start_effect_id = Some("start-fallback".into());
+    state.activations[2].phase = "running".into();
+    let view = project_runtime030(&plan, &state).unwrap();
+    assert_eq!(
+        view.activations[2].message.as_ref().unwrap().statuses,
+        vec!["sent", "fallback", "delivered"]
+    );
 }

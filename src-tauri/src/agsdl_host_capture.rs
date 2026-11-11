@@ -631,7 +631,7 @@ pub(crate) fn codex_registry030(
     }
     let adapter = crate::agsdl_host_codex::ADAPTER;
     let evidence = json!({"adapterId":adapter,"version":observed.version,"profileDigest":observed.profile.digest,"kind":"native-codex"}).to_string();
-    let capabilities = ["result-submission", "continuity", "permission-enforcement", "contained-stop", "response-attribution", "instructions", "resources", "model.name", "model.effort", "instance.new", "delivery.queue", "answer-timeout"]
+    let capabilities = ["result-submission", "continuity", "permission-enforcement", "contained-stop", "response-attribution", "instructions", "resources", "model.name", "model.effort", "instance.new", "delivery.queue", "delivery.steer", "answer-timeout"]
         .into_iter().map(|name| json!({"name":name,"support":if name == "resources" {"approximate"} else {"native"},"evidenceJson":evidence})).collect::<Vec<_>>();
     let default = observed
         .models
@@ -834,12 +834,6 @@ pub(crate) fn product_slice030(
                 "Only agent, call and approval steps are supported for this run.",
             );
         }
-        if step.get("delivery").and_then(Value::as_str) == Some("steer") {
-            return issue(
-                format!("{pointer}/delivery"),
-                "Steer delivery is not yet supported.",
-            );
-        }
     }
     let plan = exact_json::value(compiled?).ok()?;
     for step in plan.get("steps")?.as_array()? {
@@ -859,13 +853,6 @@ pub(crate) fn product_slice030(
             return issue(
                 pointer,
                 "Only agent, call and approval steps are supported for this run.",
-            );
-        }
-        let declaration = exact_json::value(step.get("declarationJson")?.as_str()?).ok()?;
-        if declaration.get("delivery").and_then(Value::as_str) == Some("steer") {
-            return issue(
-                format!("{pointer}/delivery"),
-                "Steer delivery is not yet supported.",
             );
         }
     }
@@ -2113,7 +2100,6 @@ mod product_slice030_tests {
             "flow":{"entry":"write","steps":{"write":{"type":"agent","agent":"writer"}}}});
         for (pointer, value) in [
             ("/flow/steps/write/type", json!("compose")),
-            ("/flow/steps/write/delivery", json!("steer")),
             ("/agents/writer/harness", json!("claude")),
         ] {
             let mut document = base.clone();

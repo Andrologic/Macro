@@ -1168,5 +1168,22 @@
     "attentionBody": "実行が回答を待っています。",
     "openRequest": "依頼を開く",
     "close": "閉じる"
+  },
+  "messages030": {
+    "title": "メッセージ",
+    "agent": "エージェント",
+    "delivery": "配信",
+    "steer": "進行中の作業に追加",
+    "queue": "新しい作業のために待機",
+    "prompt": "メッセージ",
+    "sending": "送信中…",
+    "send": "送信",
+    "error": "メッセージの確認応答がありません。この実行を更新してから次のメッセージを送信してください。",
+    "you": "あなた",
+    "sent": "送信済み",
+    "queued": "待機中",
+    "delivered": "配信済み",
+    "consumed": "処理済み",
+    "fallback": "待機列へ移動"
   }
 }

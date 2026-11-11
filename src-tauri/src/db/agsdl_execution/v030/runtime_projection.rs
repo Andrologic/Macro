@@ -15,7 +15,8 @@ macro_rules! dto {
 
 dto!(pub(crate) RuntimeProjection030 { system_start_id:String, flow_invocation_id:String, snapshot_id:String, revision:String, stopping:bool, verdict:Option<String>, instances:Vec<RuntimeInstance030>, activations:Vec<RuntimeActivation030>, groups:Vec<RuntimeGroup030>, paths:Vec<RuntimePath030> });
 dto!(pub RuntimeInstance030 { id:String, agent:String, selector_kind:String, selector_name:Option<String>, current_activation_id:Option<String>, queue_activation_ids:Vec<String>, discarded:bool });
-dto!(pub RuntimeActivation030 { id:String, step:Option<Vec<String>>, agent:Option<String>, instance_id:Option<String>, phase:String, physical:bool, physical_wait_group_ids:Vec<String>, stop_requested:bool, context:Vec<RuntimeFrame030>, path_ids:Vec<String>, compose_activation_ids:Vec<String>, nearest_fanout_index:Option<String>, #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] call_result_json:Option<String> });
+dto!(pub RuntimeMessage030 { sequence:String, delivery:String, sender:String, message_json:String, statuses:Vec<String>, target_activation_id:Option<String> });
+dto!(pub RuntimeActivation030 { id:String, step:Option<Vec<String>>, agent:Option<String>, instance_id:Option<String>, phase:String, physical:bool, physical_wait_group_ids:Vec<String>, stop_requested:bool, context:Vec<RuntimeFrame030>, path_ids:Vec<String>, compose_activation_ids:Vec<String>, nearest_fanout_index:Option<String>, #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] call_result_json:Option<String>, #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] message:Option<RuntimeMessage030>, #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] work_text:Option<String> });
 dto!(pub RuntimeGroup030 { id:String, join:Vec<String>, origin_activation_id:String, activation_id:String, decision:Option<String>, released:bool, context:Vec<RuntimeFrame030>, parent_path_ids:Vec<String>, branches:Vec<RuntimeBranch030> });
 dto!(pub RuntimeBranch030 { name:String, fanout:bool, path_ids:Vec<String> });
 dto!(pub RuntimePath030 { id:String, batch_id:Option<String>, phase:String, context:Vec<RuntimeFrame030>, nearest_fanout_index:Option<String>, memberships:Vec<RuntimeMembership030> });
@@ -168,7 +169,8 @@ pub(crate) fn project_runtime030(
     let mut activations = state
         .activations
         .iter()
-        .map(|a| {
+        .enumerate()
+        .map(|(sequence, a)| {
             Ok(RuntimeActivation030 {
                 id: a.id.clone(),
                 step: a.step.clone(),
@@ -189,6 +191,65 @@ pub(crate) fn project_runtime030(
                     })
                     .collect(),
                 nearest_fanout_index: index_for_context(&a.context, &indexes)?,
+                message: a
+                    .message_json
+                    .as_ref()
+                    .filter(|_| a.agent.is_some())
+                    .map(|raw| {
+                        let steer = state
+                            .steer_deliveries
+                            .iter()
+                            .find(|s| s.delivery_activation_id == a.id);
+                        let mut statuses = vec!["sent".into()];
+                        if a.phase == "queued" {
+                            statuses.push("queued".into());
+                        }
+                        if steer.is_some_and(|s| s.status == "fallback") {
+                            statuses.push("fallback".into());
+                        }
+                        if a.start_effect_id.is_some()
+                            || steer.is_some_and(|s| s.status == "consumed")
+                        {
+                            statuses.push("delivered".into());
+                        }
+                        if a.result.is_some() || steer.is_some_and(|s| s.status == "consumed") {
+                            statuses.push("consumed".into());
+                        }
+                        RuntimeMessage030 {
+                            sequence: sequence.to_string(),
+                            delivery: a.delivery.clone(),
+                            sender: a
+                                .sender
+                                .clone()
+                                .or_else(|| {
+                                    a.producer.as_ref().map(|p| {
+                                        p.step
+                                            .as_ref()
+                                            .map(|s| s.join(" / "))
+                                            .unwrap_or_else(|| p.kind.clone())
+                                    })
+                                })
+                                .unwrap_or_else(|| "host".into()),
+                            message_json: raw.clone(),
+                            statuses,
+                            target_activation_id: steer.map(|s| s.work.activation_id.clone()),
+                        }
+                    }),
+                work_text: a
+                    .result
+                    .as_ref()
+                    .filter(|_| a.agent.is_some())
+                    .and_then(|r| match r {
+                        super::flow030::WorkResultRecord030::Completed { output_json, .. } => {
+                            serde_json::from_str::<serde_json::Value>(output_json).ok()
+                        }
+                        _ => None,
+                    })
+                    .and_then(|v| {
+                        v.get("text")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    }),
                 call_result_json: if a.agent.is_none()
                     && a.step.as_ref().is_some_and(|address| {
                         plan.steps

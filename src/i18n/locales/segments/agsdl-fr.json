@@ -1168,5 +1168,22 @@
     "attentionBody": "Une exécution attend votre réponse.",
     "openRequest": "Ouvrir la demande",
     "close": "Fermer"
+  },
+  "messages030": {
+    "title": "Messages",
+    "agent": "Agent",
+    "delivery": "Livraison",
+    "steer": "Ajouter au travail en cours",
+    "queue": "Mettre en file pour un nouveau travail",
+    "prompt": "Message",
+    "sending": "Envoi…",
+    "send": "Envoyer",
+    "error": "Le message n’a pas été accusé. Actualisez cette exécution avant d’envoyer un autre message.",
+    "you": "Vous",
+    "sent": "Envoyé",
+    "queued": "En file",
+    "delivered": "Livré",
+    "consumed": "Consommé",
+    "fallback": "Replié en file"
   }
 }

@@ -296,13 +296,6 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
                     continue;
                 }
                 let location = format!("{pointer}/{}", pointer_token030(key));
-                if key == "delivery" && child == "steer" {
-                    return Err(failure(
-                        "HARNESS_CAPABILITY",
-                        &location,
-                        "Steer is not connected in this slice",
-                    ));
-                }
                 if matches!(step, Some("agent" | "call" | "approval"))
                     && ["next", "onError"].contains(&key.as_str())
                 {
@@ -1167,12 +1160,6 @@ mod codex030_tests {
                 json!({"rules":[{"action":"write","effect":"ask"}]}),
                 "HARNESS_CAPABILITY",
                 "/agents/worker/permissions/rules/0/effect",
-            ),
-            (
-                "/flow/steps/work/delivery",
-                json!("steer"),
-                "HARNESS_CAPABILITY",
-                "/flow/steps/work/delivery",
             ),
             (
                 "/flow/steps/work/next",

@@ -459,3 +459,61 @@ async fn an_uncertain_steer_cannot_be_replayed_as_a_fallback_but_stop_can_withdr
     assert!(!flow_store030::eligible(&c.state, &steer));
     c.verify_replay().await;
 }
+
+#[tokio::test]
+async fn explicit_no_send_releases_only_the_claim_and_terminal_performs_queue_fallback() {
+    let mut c = Case::new(include_str!(
+        "../tests/fixtures/agsdl030_pending_steer_completion_plan.json"
+    ))
+    .await;
+    c.finish("ping").await;
+    c.prepare().await;
+    c.settle_fixture_handoffs().await;
+    let effect = c.steer().await;
+    let attempt = c.attempt(&c.work("work"));
+    let tasks = StreamTasks::default();
+    let owned = tasks.clone();
+    let target = attempt.clone();
+    let (sender, mut inbox) = crate::agsdl_host_steer030::channel030();
+    tasks
+        .start_agent030(
+            format!("flow030:system:{}", attempt.start_effect_id()),
+            &attempt,
+            async move {
+                inbox
+                    .receive()
+                    .await
+                    .unwrap()
+                    .not_sent(&owned, &target)
+                    .unwrap();
+            },
+        )
+        .unwrap();
+    let claim = claim_expected(
+        c.host.flow030(),
+        &c.host,
+        &c.pool,
+        &c.state.identity,
+        &effect.id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!claim.deliver_steer030(&attempt, &sender).await.unwrap());
+    tasks.join_agent030(&attempt, false).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT status FROM engine_flow030_outbox WHERE effect_id=?"
+        )
+        .bind(&effect.id)
+        .fetch_one(&c.pool)
+        .await
+        .unwrap(),
+        "pending"
+    );
+    c.finish("work").await;
+    assert_eq!(c.state.verdict, None);
+    assert_eq!(c.state.steer_deliveries[0].status, "fallback");
+    assert!(c.work("nudge").agent_instance_id.is_some());
+    c.verify_replay().await;
+}

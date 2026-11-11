@@ -788,6 +788,22 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "DeliveryReceipt030",
+      "origin": "macro_lib::agsdl_host_flow030::delivery030::DeliveryReceipt030",
+      "path": "DeliveryReceipt030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "DeliveryRequest030",
+      "origin": "macro_lib::agsdl_host_flow030::delivery030::DeliveryRequest030",
+      "path": "DeliveryRequest030.ts"
+    },
+    {
+      "families": [
         "development"
       ],
       "name": "DevProviderOverrideConfig",
@@ -2955,6 +2971,14 @@
       "name": "RuntimeMembership030",
       "origin": "macro_lib::db::agsdl_execution::runtime_projection030::RuntimeMembership030",
       "path": "RuntimeMembership030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeMessage030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::RuntimeMessage030",
+      "path": "RuntimeMessage030.ts"
     },
     {
       "families": [

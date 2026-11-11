@@ -1168,5 +1168,22 @@
     "attentionBody": "실행이 응답을 기다리고 있습니다.",
     "openRequest": "요청 열기",
     "close": "닫기"
+  },
+  "messages030": {
+    "title": "메시지",
+    "agent": "에이전트",
+    "delivery": "전달",
+    "steer": "진행 중인 작업에 추가",
+    "queue": "새 작업을 위해 대기",
+    "prompt": "메시지",
+    "sending": "전송 중…",
+    "send": "전송",
+    "error": "메시지 확인 응답이 없습니다. 다음 메시지를 보내기 전에 실행을 새로 고치세요.",
+    "you": "나",
+    "sent": "전송됨",
+    "queued": "대기 중",
+    "delivered": "전달됨",
+    "consumed": "처리됨",
+    "fallback": "대기열로 이동"
   }
 }
