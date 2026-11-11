@@ -144,6 +144,24 @@ Si le destinataire finit avant l'envoi, le message repart en file. Une
 consommation incertaine n'est jamais rejouée. Le moniteur conserve les messages
 envoyés, livrés, consommés et repliés, avec la réponse de l'agent.
 
+Une définition conserve sa conversation partagée jusqu'à la fin du run. Une
+instance nommée conserve sa propre conversation, distincte des autres noms et
+des autres définitions. `instance: "new"` crée une conversation pour chaque
+travail. Aucun fil n'est réutilisé entre deux runs. Les références en mémoire
+appartiennent à l'exécuteur du run et sont libérées avec lui après la fin des
+travaux, y compris après un arrêt ou un échec. Cela ne supprime pas l'historique
+privé conservé par Codex et ne permet pas de reprendre un run après redémarrage.
+
+Chaque reprise transmet les exigences de résultat du travail courant, avec
+ses choix de route. Les instructions permanentes restent dans les instructions
+développeur ; la mission est l'entrée du nouveau tour. Seul `instructs: true`
+autorise un agent à fournir une mission au suivant. Un prompt explicite de route
+est prioritaire sur cette mission, puis le prompt de l'étape sert de repli.
+Les ressources restent des données séparées, marquées non fiables, même si elles
+contiennent des instructions produites par un autre agent. Une mission ne change
+ni les instructions permanentes, ni les permissions, ni la qualification du
+harness. Les soumissions non autorisées sont refusées dans le travail courant.
+
 L'accès MCP des agents, les permissions `ask`, `planFirst: ask`, fan-out,
 les compositions et les autres capacités hors tranche restent refusés.
 Les runs interrompus au redémarrage restent consultables et ne reprennent pas.

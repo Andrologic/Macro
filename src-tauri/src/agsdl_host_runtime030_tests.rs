@@ -16,6 +16,10 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[cfg(unix)]
+#[path = "agsdl_host_codex030/continuity_tests.rs"]
+mod codex_continuity;
+
 async fn bun(script: &str, value: &impl serde::Serialize) -> Value {
     let mut child = crate::core::process::background_tokio_command("bun")
         .args(["-e", script])
@@ -153,6 +157,9 @@ impl Fixture {
         Self::with_document(document).await
     }
     async fn with_document(document: Value) -> Self {
+        Self::with_document_in_run(document, "system").await
+    }
+    async fn with_document_in_run(document: Value, run: &str) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let workspace = root.join("workspace");
@@ -197,7 +204,7 @@ impl Fixture {
             .unwrap_or_else(|| panic!("compiler: {compiled}"))
             .to_owned();
         let identity = FlowIdentity030 {
-            system_start_id: "system".into(),
+            system_start_id: run.into(),
             flow_invocation_id: "flow".into(),
             snapshot_id: "snapshot".into(),
             epoch: "capture".into(),
@@ -220,7 +227,7 @@ impl Fixture {
         .await
         .unwrap();
         let owner = EngineOwner {
-            system_start_id: "system".into(),
+            system_start_id: run.into(),
             owner_epoch: "owner".into(),
         };
         let incarnation = Arc::new(Incarnation {
@@ -234,7 +241,7 @@ impl Fixture {
             ready: AtomicBool::new(true),
             retired: Default::default(),
             loads: AtomicUsize::new(0),
-            owners: Mutex::new(BTreeMap::from([("system".into(), owner.clone())])),
+            owners: Mutex::new(BTreeMap::from([(run.into(), owner.clone())])),
             qa_request: Mutex::new(None),
         });
         let host = Arc::new(HostState(
