@@ -150,6 +150,9 @@ before reporting the result. Stop and work deadlines remain available while
 the check runs. A failed check returns its output on the same thread and uses
 `maxFailures`, separately from invalid submissions and `maxCorrections`.
 The optional `choices` filter can exempt a submission from the check.
+Checks inherit the confined runtime's filesystem restrictions. In particular,
+a logical `cd` through unreadable ancestors can fail; use physical `cd -P`
+within the approved workspace. The check returns the real error output.
 
 The native file reader supports absolute local file URIs for instructions,
 missions and resources on macOS ARM64 with macOS 14.4 or later. Reads stay inside

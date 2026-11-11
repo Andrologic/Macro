@@ -1,5 +1,5 @@
-// Native launch bridge for the AgSDL content helper. It is not registered for
-// production until cancellation and process termination have been qualified.
+// Native launch bridge for the AgSDL content helper. The host separately
+// admits reads and owns cancellation, termination and reap.
 import Darwin
 import Foundation
 import LightweightCodeRequirements
@@ -50,6 +50,7 @@ private func applyQaSwap(_ executablePath: String) -> Bool {
 
 // O_CLOEXEC is applied by openat atomically, including on macOS before pipe2.
 // The FIFO is removed before the descriptors leave this function.
+@available(macOS 13.0, *)
 private func makeControlPipe() -> (Int32, Int32)? {
     let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("macro-content-XXXXXX")
     var template = Array(path.utf8CString)
