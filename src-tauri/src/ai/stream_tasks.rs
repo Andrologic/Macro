@@ -511,7 +511,24 @@ impl StreamTasks {
         })
     }
 
-    /// Attach a controlled cleanup to exercise the real registry join in tests.
+    /// Attach an effect owner before awaiting it. The parent joins this task
+    /// even if its work future is cancelled or dropped.
+    pub(crate) fn attach_cleanup030(
+        &self,
+        request_id: &str,
+        cleanup: tokio::task::JoinHandle<Result<(), String>>,
+    ) -> Result<(), String> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| "Stream registry poisoned")?;
+        let entry = entries
+            .get_mut(request_id)
+            .ok_or("Stream resource has no owner")?;
+        entry.cleanups.push(cleanup);
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn attach_test_cleanup030(
         &self,

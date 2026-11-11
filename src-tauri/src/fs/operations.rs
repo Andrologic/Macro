@@ -1745,10 +1745,10 @@ fn read_open_file(
 /// component cannot become a symlink between policy evaluation and the read.
 /// This does not grant access: callers must evaluate the original and resolved
 /// paths in `admit`, including their captured and current policy ceilings.
-#[cfg(feature = "agsdl-content-qa")]
 pub(crate) async fn read_file_bytes_with_admission<F, Fut>(
     path: &Path,
     cancel: &tokio_util::sync::CancellationToken,
+    owner: Option<crate::agsdl_content::ContentResourceOwner>,
     admit: F,
 ) -> Result<(Vec<u8>, PathBuf, WorkspaceRootIdentity), BackendError>
 where
@@ -1790,9 +1790,10 @@ where
     ))]
     pause_before_content_open(&resolved).await;
     let (directory, relative) = open_workspace_capability(parent, &resolved, Some(identity))?;
-    let bytes = crate::agsdl_content::file_helper::read_confined(&directory, &relative, cancel)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, &resolved))?;
+    let bytes =
+        crate::agsdl_content::file_helper::read_confined(&directory, &relative, cancel, owner)
+            .await
+            .map_err(|e| io_error_to_backend_error(e, &resolved))?;
     if workspace_root_identity(parent)? != identity
         || path.canonicalize().ok().as_ref() != Some(&resolved)
     {

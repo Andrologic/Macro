@@ -58,6 +58,71 @@ struct Binding030 {
     start_effect_id: String,
 }
 
+/// Consume the controller's reservation once, under the native launch gate.
+/// `uncertain` is retained if the host dies before the real result is committed.
+pub(crate) async fn claim_check030(
+    db: &mut SqliteConnection,
+    lease: &HostStartLease,
+    attempt: &crate::agsdl_host_flow030::FlowWorkAttempt030,
+    check: &CheckRequest030,
+    policies: &crate::agsdl_host_work_admission030::PolicyLeases030,
+) -> Result<(EngineContext, crate::agsdl_permissions::EffectivePolicy)> {
+    let id = attempt.identity();
+    let bound = binding(db, lease, id, &attempt.work().activation_id, false).await?;
+    require(
+        attempt.owner() == &bound.context.owner
+            && attempt.work() == &bound.context.work
+            && attempt.generation() == lease.generation()
+            && attempt.start_effect_id() == bound.start_effect_id
+            && attempt.agent() == bound.agent,
+        "Check work differs",
+    )?;
+    let row = sqlx::query("SELECT request_json,event_id FROM engine_flow030_work_checks WHERE system_id=? AND invocation_id=? AND activation_id=? AND check_id=? AND status='reserved'")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&attempt.work().activation_id)
+        .bind(&check.check_id).fetch_optional(&mut *db).await?.ok_or_else(|| denied("Check is not reserved"))?;
+    require(
+        row.get::<&str, _>("request_json") == check.invocation_json,
+        "Check request differs",
+    )?;
+    let decision: String = sqlx::query_scalar("SELECT decision_json FROM engine_flow030_work_events WHERE system_id=? AND invocation_id=? AND event_id=?")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(row.get::<&str,_>("event_id"))
+        .fetch_one(&mut *db).await?;
+    let decision: ProtocolDecision030 = serde_json::from_str(&decision)?;
+    let current: String = sqlx::query_scalar("SELECT state_json FROM engine_flow030_work_state WHERE system_id=? AND invocation_id=? AND activation_id=?")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&attempt.work().activation_id).fetch_one(&mut *db).await?;
+    require(
+        decision.state_json == current && decision.check.as_ref() == Some(check),
+        "Check revision differs",
+    )?;
+    let request: serde_json::Value = serde_json::from_str(&check.invocation_json)?;
+    let contract: serde_json::Value = serde_json::from_str(&bound.contract_json)?;
+    let options: serde_json::Value = serde_json::from_str(&bound.options_json)?;
+    require(
+        request["command"] == contract["completionCheck"]["command"]
+            && request["timeoutMs"] == options["checkTimeoutMs"]
+            && request["maxOutputBytes"] == options["maxCheckOutputBytes"],
+        "Check command or limits differ",
+    )?;
+    let evidence: String = sqlx::query_scalar("SELECT policy_evidence_json FROM engine_flow030_work_admissions WHERE system_id=? AND invocation_id=? AND activation_id=?")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&attempt.work().activation_id).fetch_one(&mut *db).await?;
+    let evidence: serde_json::Value = serde_json::from_str(&evidence)?;
+    require(
+        evidence["hostCeilingDigest"] == policies.ceiling_fingerprint(),
+        "Check ceiling changed",
+    )?;
+    let policy = crate::agsdl_permissions::EffectivePolicy::restore_capture(
+        &evidence["effectivePolicy"].to_string(),
+        evidence["policyDigest"]
+            .as_str()
+            .ok_or_else(|| denied("Check policy missing"))?,
+    )
+    .map_err(|_| denied("Check policy differs"))?;
+    let changed = sqlx::query("UPDATE engine_flow030_work_checks SET status='uncertain' WHERE system_id=? AND invocation_id=? AND check_id=? AND status='reserved'")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&check.check_id).execute(&mut *db).await?.rows_affected();
+    require(changed == 1, "Check was already consumed")?;
+    Ok((bound.context, policy))
+}
+
 /// A terminal work decision correlated to one native agent attempt. This
 /// capability is internal to the host and cannot be reconstructed from IPC.
 /// Its constructor is intentionally kept in this module, next to the 04
@@ -647,6 +712,14 @@ async fn commit_tx(
             .bind(&check.invocation_json)
             .execute(&mut *db)
             .await?;
+    }
+    let event: serde_json::Value = serde_json::from_str(&ticket.input.event_json)?;
+    if event["event"]["kind"] == "checkEnded" && event["event"]["physicalState"] == "ended" {
+        let changed = sqlx::query("UPDATE engine_flow030_work_checks SET status='ended' WHERE system_id=? AND invocation_id=? AND activation_id=? AND check_id=? AND status='uncertain'")
+            .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&ticket.input.context.work.activation_id)
+            .bind(event["event"]["checkId"].as_str().ok_or_else(|| denied("Missing check id"))?)
+            .execute(&mut *db).await?.rows_affected();
+        require(changed == 1, "Check has no owned execution")?;
     }
     let changed = sqlx::query("UPDATE engine_flow030_work_state SET revision=?,state_json=? WHERE system_id=? AND invocation_id=? AND activation_id=? AND revision=? AND state_json=?")
         .bind(super::next(&ticket.input.expected_revision)).bind(&decision.state_json)

@@ -182,8 +182,18 @@ tous les propriétaires physiques. L'annulation partagée non définie par la
 spec conserve le diagnostic bloquant `UNSPECIFIED_SHARED_CANCELLATION` ;
 l'utilisateur peut arrêter le run, sans règle de résolution ajoutée par Macro.
 
-L'accès MCP des agents, les permissions `ask`, `planFirst: ask`,
-les compositions et les autres capacités hors tranche restent refusés.
+Le contrôle de fin exécute la commande capturée avant d'accepter une soumission,
+avec des limites de durée et de sortie et les permissions effectives de l'agent.
+Ses échecs et les soumissions invalides ont des budgets de correction distincts.
+Les fichiers texte et JSON locaux par URI absolue et les compétences composées
+d'un seul `SKILL.md` sont pris en charge par le lecteur natif qualifié sur
+macOS ARM64. Les compétences sélectionnées sont chargées à la demande par un
+outil natif qui retourne les octets capturés sans étendre les permissions,
+sans charger implicitement les dossiers du projet. Voir les
+[limites précises du profil Codex](agsdl-codex-native.md#completion-checks-content-and-skills).
+
+L'accès MCP des agents, les formes de permissions `ask` non prises en charge,
+`planFirst: ask`, les compositions et les autres capacités hors tranche restent refusés.
 Les runs interrompus au redémarrage restent consultables et ne reprennent pas.
 
 L'autorisation exige ensemble `staticValid`, `runtimeSupported`, une

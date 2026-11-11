@@ -31,6 +31,7 @@ pub(super) fn pause_next_output(
 }
 
 unsafe extern "C" {
+    fn agsdl_content_macos_available() -> i32;
     fn agsdl_content_macos_launch(
         executable: *const c_char,
         component: *const c_char,
@@ -45,6 +46,10 @@ unsafe extern "C" {
         status: *mut i32,
         signal: *mut i32,
     ) -> i32;
+}
+
+pub(super) fn available() -> bool {
+    unsafe { agsdl_content_macos_available() == 1 }
 }
 
 #[cfg(all(feature = "agsdl-content-qa", debug_assertions))]

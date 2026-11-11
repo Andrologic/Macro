@@ -1745,6 +1745,7 @@ impl CapturedRoutePreparation030 {
             "source": serde_json::from_str::<Value>(&self.material.source_json)?,
             "nativeReceiptId": self.receipt_id,
             "contentReceipts": serde_json::from_str::<Value>(&self.material.content_receipts_json)?,
+            "deferPromptUris":true,
         }))?)
     }
 }

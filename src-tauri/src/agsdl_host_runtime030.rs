@@ -57,7 +57,7 @@ pub(crate) struct AgentWork030 {
     pub steer: crate::agsdl_host_steer030::SteerInbox030,
 }
 
-pub(crate) type EventEmitter030 = Arc<
+pub(crate) type EventWriter030 = Arc<
     dyn Fn(
             FlowWorkAttempt030,
             String,
@@ -67,6 +67,22 @@ pub(crate) type EventEmitter030 = Arc<
         + Send
         + Sync,
 >;
+
+pub(crate) type CompletionPort030 = Arc<
+    dyn Fn(
+            FlowWorkAttempt030,
+            crate::db::agsdl_execution::work_protocol030::CheckRequest030,
+            CancellationToken,
+        ) -> BoxFuture<'static, Result<Value>>
+        + Send
+        + Sync,
+>;
+
+#[derive(Clone)]
+pub(crate) struct EventEmitter030 {
+    pub event: EventWriter030,
+    pub check: CompletionPort030,
+}
 
 /// The host supplies admission and persistence; dispatch only owns the future.
 pub(crate) type SteerDeliveryPort030 = Arc<
@@ -101,9 +117,19 @@ impl WorkEventSink030 {
                 "Physical end requires a native join",
             ));
         }
-        let _serial = self.serial.lock().await;
-        let label = format!("event-{}", self.sequence.fetch_add(1, Ordering::Relaxed));
-        (self.emitter)(self.attempt.clone(), label, body, cancel.clone()).await
+        let decision = {
+            let _serial = self.serial.lock().await;
+            let label = format!("event-{}", self.sequence.fetch_add(1, Ordering::Relaxed));
+            (self.emitter.event)(self.attempt.clone(), label, body, cancel.clone()).await?
+        };
+        if let Some(check) = &decision.check {
+            // Effect IO must not hold the event serializer. Stop and machine
+            // deadlines need to commit while the owned check is still running.
+            let completed =
+                (self.emitter.check)(self.attempt.clone(), check.clone(), cancel.clone()).await?;
+            return Box::pin(self.emit(completed, cancel)).await;
+        }
+        Ok(decision)
     }
 }
 
@@ -114,22 +140,47 @@ pub(crate) fn native_event_emitter030<R: tauri::Runtime>(
     tasks: StreamTasks,
     project: String,
 ) -> EventEmitter030 {
-    Arc::new(move |attempt, label, body, cancel| {
-        let (app, pool, config, tasks, project) = (
-            app.clone(),
-            pool.clone(),
-            config.clone(),
-            tasks.clone(),
-            project.clone(),
-        );
-        Box::pin(async move {
-            let host = app.state::<HostState>();
-            emit_work_event030(
-                &host, &pool, &config, &tasks, &attempt, &project, &label, body, &cancel,
-            )
-            .await
-        })
-    })
+    let (check_app, check_pool, check_config, check_tasks, check_project) = (
+        app.clone(),
+        pool.clone(),
+        config.clone(),
+        tasks.clone(),
+        project.clone(),
+    );
+    EventEmitter030 {
+        event: Arc::new(move |attempt, label, body, cancel| {
+            let (app, pool, config, tasks, project) = (
+                app.clone(),
+                pool.clone(),
+                config.clone(),
+                tasks.clone(),
+                project.clone(),
+            );
+            Box::pin(async move {
+                let host = app.state::<HostState>();
+                emit_work_event030(
+                    &host, &pool, &config, &tasks, &attempt, &project, &label, body, &cancel,
+                )
+                .await
+            })
+        }),
+        check: Arc::new(move |attempt, check, cancel| {
+            let (app, pool, config, tasks, project) = (
+                check_app.clone(),
+                check_pool.clone(),
+                check_config.clone(),
+                check_tasks.clone(),
+                check_project.clone(),
+            );
+            Box::pin(async move {
+                let host = app.state::<HostState>();
+                crate::agsdl_host_completion030::execute(
+                    &host, &pool, &config, &tasks, &attempt, &project, &check, &cancel,
+                )
+                .await
+            })
+        }),
+    }
 }
 
 /// Native binding for the port, alongside the existing work-event binding.

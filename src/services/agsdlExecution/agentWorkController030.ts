@@ -18,7 +18,7 @@ export type WorkEventBody030 =
   | { readonly kind: 'turnEnded'; readonly turnId: string }
   | { readonly kind: 'planPresented'; readonly planId: string; readonly text: string }
   | { readonly kind: 'planResolved'; readonly planId: string; readonly decision: 'accept' | 'reject'; readonly comment?: string }
-  | { readonly kind: 'checkEnded'; readonly checkId: string; readonly physicalState: 'ended' | 'uncertain'; readonly exitCode: number | null; readonly stdout: string; readonly stderr: string }
+  | { readonly kind: 'checkEnded'; readonly checkId: string; readonly physicalState: 'ended' | 'uncertain'; readonly exitCode: number | null; readonly stdout: string; readonly stderr: string; readonly truncated?: boolean }
   | { readonly kind: 'stop'; readonly reason: WorkFailureCode030 | 'JOIN_CANCELLED' }
   | { readonly kind: 'physicalEnded'; readonly providerEnded: boolean; readonly effectsEnded: boolean };
 export interface WorkEvent030 {
@@ -208,7 +208,8 @@ export class AgentWorkController030 {
       this.state = 'working';
       if (compareIntegers030(this.checkFailures.toString(), this.contract.completionCheck!.maxFailures) >= 0) return this.stop('CHECK_FAILED');
       this.checkFailures++;
-      return { kind: 'correction', category: 'check', exitCode: event.exitCode, ...boundedOutput030(event.stdout, event.stderr, this.options.maxCheckOutputBytes) };
+      const output = boundedOutput030(event.stdout, event.stderr, this.options.maxCheckOutputBytes);
+      return { kind: 'correction', category: 'check', exitCode: event.exitCode, ...output, truncated: event.truncated === true || output.truncated };
     }
     if (this.state === 'checking') {
       if (event.kind === 'submit') {

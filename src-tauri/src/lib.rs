@@ -107,6 +107,7 @@ mod agsdl_host_claude;
 mod agsdl_host_codex;
 mod agsdl_host_codex030;
 mod agsdl_host_compiler;
+pub(crate) mod agsdl_host_completion030;
 mod agsdl_host_confinement;
 mod agsdl_host_dispatch030;
 #[cfg(test)]
@@ -532,7 +533,6 @@ async fn window_set_traffic_light_position(
 }
 
 /// Dispatch the internal content helper before initializing Tauri.
-#[cfg(feature = "agsdl-content-qa")]
 pub fn initialize_agsdl_content_helper() -> std::io::Result<Option<i32>> {
     agsdl_content::file_helper::initialize()
 }

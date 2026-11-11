@@ -7,6 +7,12 @@ import Security
 
 private let helperArgument = "--macro-internal-agsdl-content-read"
 
+@_cdecl("agsdl_content_macos_available")
+public func agsdlContentMacosAvailable() -> Int32 {
+    if #available(macOS 14.4, *) { return 1 }
+    return 0
+}
+
 #if AGSDL_CONTENT_TESTING
 // The harness uses this boundary to race an unrelated exec before fcntl.
 var controlPipeCreatedHook: ((Int32, Int32) -> Void)?

@@ -79,6 +79,11 @@ Transport notes:
 
 ## Browser UI with the Tauri runtime
 
+macOS builds compile the native content reader bridge with Swift and require an
+Xcode SDK containing the macOS 14.4 APIs. The bridge weak-links the newer
+framework and checks availability at runtime. Macro's macOS 13 deployment target
+stays unchanged; native file-content features require macOS 14.4 or later.
+
 Use the browser runtime bridge when UI inspection or browser automation needs
 the real local database, workspace, terminal, Git, and AI command handlers:
 

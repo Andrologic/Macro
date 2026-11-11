@@ -72,6 +72,9 @@ describe('default and explicit messages', () => {
     const input = source('call', '{"data":null}');
     expect(resolve(input, '{"prompt":[{"ref":"guide"}],"resources":{"r":{"ref":"remote"}}}').messageJson).toBe(j('{"prompt":[{"value":"Guide"}],"resources":{"r":{"uri":"guide.txt","mediaType":"text/plain"}}}'));
     code(() => resolve(input, '{"prompt":[{"ref":"remote"}]}'), 'CONTENT_UNAVAILABLE');
+    const deferred = resolveRouteMessage030(doc, target('{"prompt":[{"ref":"remote"}]}'), input, absent, { deferPromptUris: true });
+    expect(record(decode(deferred.messageJson)).prompt).toEqual([{ uri: 'guide.txt', mediaType: 'text/plain' }]);
+    expect(deferred.promptProvenance.kind).toBe('author');
     const seen: unknown[] = [];
     const captured = resolveRouteMessage030(doc, target('{"prompt":[{"ref":"remote"}]}'), input, absent, { resolveSource: (raw, context) => { seen.push([raw, context]); return j('{"value":"Captured guide","mediaType":"text/plain"}'); } });
     expect(captured.messageJson).toContain('Captured guide');

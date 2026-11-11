@@ -630,6 +630,20 @@ pub(crate) fn codex_registry030(
     observed: &crate::agsdl_host_codex::CodexObservation030,
 ) -> Result<(Value, Vec<Value>)> {
     crate::agsdl_host_work_admission030::validate_codex_document030(document)?;
+    if document["agents"].as_object().is_some_and(|agents| {
+        agents.values().any(|agent| {
+            agent["skills"]
+                .as_array()
+                .is_some_and(|skills| !skills.is_empty())
+        })
+    }) {
+        crate::agsdl_host_codex030::content::qualify_skill_folders(
+            document,
+            Path::new(scope["root"].as_str().ok_or_else(|| {
+                failure("CORRELATION", "skills", "Native project scope is absent")
+            })?),
+        )?;
+    }
     if !crate::agsdl_host_codex::qualified_version030(&observed.version)
         || observed.models.is_empty()
     {
@@ -641,8 +655,8 @@ pub(crate) fn codex_registry030(
     }
     let adapter = crate::agsdl_host_codex::ADAPTER;
     let evidence = json!({"adapterId":adapter,"version":observed.version,"profileDigest":observed.profile.digest,"kind":"native-codex"}).to_string();
-    let capabilities = ["result-submission", "continuity", "permission-enforcement", "contained-stop", "response-attribution", "instructions", "resources", "model.name", "model.effort", "instance.new", "delivery.queue", "delivery.steer", "answer-timeout", "reviewer.person", "planFirst.auto"]
-        .into_iter().map(|name| json!({"name":name,"support":if matches!(name, "resources" | "planFirst.auto") {"approximate"} else {"native"},"evidenceJson":evidence})).collect::<Vec<_>>();
+    let capabilities = ["result-submission", "continuity", "permission-enforcement", "contained-stop", "response-attribution", "instructions", "resources", "model.name", "model.effort", "instance.new", "delivery.queue", "delivery.steer", "answer-timeout", "reviewer.person", "planFirst.auto", "completion-check", "skills"]
+        .into_iter().filter(|name| (!matches!(*name,"completion-check"|"skills") || cfg!(all(target_os="macos",target_arch="aarch64"))) && (*name!="skills" || observed.version=="0.167.0" && crate::agsdl_content::file_helper::qualified_platform())).map(|name| json!({"name":name,"support":if matches!(name, "resources" | "planFirst.auto") {"approximate"} else {"native"},"evidenceJson":evidence})).collect::<Vec<_>>();
     let default = observed
         .models
         .iter()
@@ -772,14 +786,6 @@ pub(crate) fn product_slice030(
             message: message.into(),
         })
     };
-    for field in ["skills"] {
-        if document.get(field).is_some() {
-            return issue(
-                format!("/{field}"),
-                "This document feature is not yet supported.",
-            );
-        }
-    }
     for (name, server) in document
         .get("mcpServers")
         .and_then(Value::as_object)
@@ -798,11 +804,15 @@ pub(crate) fn product_slice030(
                 "Only the Codex harness is supported for this run.",
             );
         }
-        for field in ["completionCheck", "skills", "mcpServers"] {
-            if agent.get(field).is_some() {
+        for field in ["mcpServers"] {
+            if agent
+                .get(field)
+                .and_then(Value::as_array)
+                .is_some_and(|values| !values.is_empty())
+            {
                 return issue(
                     format!("{pointer}/{field}"),
-                    "This agent feature is not yet supported.",
+                    "Agent MCP equipment is not qualified for correlated human waits and physical completion in this Codex adapter. Local MCP call steps remain available.",
                 );
             }
         }

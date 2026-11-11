@@ -6,6 +6,16 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub(crate) const HELPER_ARGUMENT: &str = "--macro-internal-agsdl-content-read";
+pub(crate) fn qualified_platform() -> bool {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        return super::macos_launcher::available();
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        false
+    }
+}
 pub(super) const MAX_BYTES: u64 = 10 * 1024 * 1024;
 static HOST_EXECUTABLE: OnceLock<PathBuf> = OnceLock::new();
 
@@ -57,6 +67,7 @@ pub(crate) async fn read_confined(
     parent: &cap_std::fs::Dir,
     name: &Path,
     cancel: &tokio_util::sync::CancellationToken,
+    owner: Option<super::ContentResourceOwner>,
 ) -> std::io::Result<Vec<u8>> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
@@ -78,9 +89,17 @@ pub(crate) async fn read_confined(
     let child_cancel = cancel.child_token();
     let guard = child_cancel.clone().drop_guard();
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    tokio::task::spawn_blocking(move || {
+    let worker = tokio::task::spawn_blocking(move || {
         super::macos_launcher::read_supervised(&executable, &name, directory, child_cancel, sender)
     });
+    if let Some(owner) = owner {
+        let cleanup = tokio::spawn(async move {
+            worker
+                .await
+                .map_err(|error| format!("Content reader owner failed: {error}"))
+        });
+        owner(cleanup).map_err(std::io::Error::other)?;
+    }
     let result = receiver
         .await
         .map_err(|_| std::io::Error::other("Content helper worker stopped"))?;
@@ -93,6 +112,7 @@ pub(crate) async fn read_confined(
     parent: &cap_std::fs::Dir,
     name: &Path,
     cancel: &tokio_util::sync::CancellationToken,
+    _owner: Option<super::ContentResourceOwner>,
 ) -> std::io::Result<Vec<u8>> {
     use crate::core::process::{background_contained_tokio_command, ContainedBackgroundProcess};
     use std::os::fd::AsRawFd;
@@ -194,7 +214,9 @@ fn content_chain_enabled() -> bool {
         return QA_CHAIN_ENABLED.load(std::sync::atomic::Ordering::Acquire);
     }
     #[allow(unreachable_code)]
-    false
+    {
+        qualified_platform() && HOST_EXECUTABLE.get().is_some()
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -202,6 +224,7 @@ pub(crate) async fn read_confined(
     _parent: &cap_std::fs::Dir,
     _name: &Path,
     _cancel: &tokio_util::sync::CancellationToken,
+    _owner: Option<super::ContentResourceOwner>,
 ) -> std::io::Result<Vec<u8>> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,

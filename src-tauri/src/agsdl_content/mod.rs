@@ -1,7 +1,6 @@
 //! Host-owned content effects. A receipt records bytes; it never grants access.
-#[cfg(feature = "agsdl-content-qa")]
 pub(crate) mod file_helper;
-#[cfg(all(target_os = "macos", feature = "agsdl-content-qa"))]
+#[cfg(target_os = "macos")]
 mod macos_launcher;
 #[cfg(all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions))]
 pub(crate) mod qa;
@@ -14,19 +13,14 @@ mod qa_cases;
     debug_assertions
 ))]
 mod qa_runner_tests;
-#[cfg(feature = "agsdl-content-qa")]
 mod resolve;
-#[cfg(feature = "agsdl-content-qa")]
 mod skills;
 #[cfg(all(test, feature = "agsdl-content-qa"))]
 mod tests;
 
-#[cfg(feature = "agsdl-content-qa")]
 pub(crate) use resolve::*;
-#[cfg(feature = "agsdl-content-qa")]
 pub(crate) use skills::*;
 
-#[cfg(feature = "agsdl-content-qa")]
 use crate::agsdl_permissions::{evaluate_effective, ActionRequest, Effect};
 use crate::agsdl_permissions::{EffectivePolicy, ExecutionPurpose, PermissionDecision};
 use serde::{Deserialize, Serialize};
@@ -44,6 +38,15 @@ pub(crate) struct ContentError {
     pub message: String,
 }
 pub(crate) type ContentResult<T> = std::result::Result<T, ContentError>;
+/// The host attaches physical reader cleanup to the existing work owner.
+/// This port has no dependency on a window, application or database.
+pub(crate) type ContentResourceOwner = Arc<
+    dyn Fn(
+            tokio::task::JoinHandle<std::result::Result<(), String>>,
+        ) -> std::result::Result<(), String>
+        + Send
+        + Sync,
+>;
 fn error(code: &str, message: impl ToString) -> ContentError {
     ContentError {
         code: code.into(),
@@ -58,6 +61,7 @@ fn digest(bytes: &[u8]) -> String {
 /// Only the native host constructs this. Do not expose its constructor as IPC.
 /// The host supplies the import/read location, never a message's baseUri or cwd.
 pub(crate) struct ContentContext {
+    resource_owner: Option<ContentResourceOwner>,
     capture_id: String,
     source_digest: String,
     document_json: String,
@@ -111,6 +115,10 @@ pub(crate) enum ContentEffectPhase {
 }
 
 impl ContentContext {
+    pub(crate) fn with_resource_owner(mut self, owner: ContentResourceOwner) -> Self {
+        self.resource_owner = Some(owner);
+        self
+    }
     /// Serialize the actual captured policy, never policy supplied by a caller.
     /// The host must still revalidate and revoke the context at commit time.
     pub(crate) fn binding(&self) -> ContentResult<ContentContextBinding> {
@@ -132,7 +140,6 @@ impl ContentContext {
         })
     }
 
-    #[cfg(feature = "agsdl-content-qa")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn capture(
         capture_id: String,
@@ -176,6 +183,7 @@ impl ContentContext {
             ));
         }
         Ok(Self {
+            resource_owner: None,
             capture_id,
             source_digest,
             document_json,
@@ -196,7 +204,6 @@ impl ContentContext {
         }
     }
 
-    #[cfg(feature = "agsdl-content-qa")]
     async fn admit(
         &self,
         request: ActionRequest,

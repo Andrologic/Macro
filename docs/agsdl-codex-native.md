@@ -73,7 +73,7 @@ does not change the captured account identity.
 ## AgSDL 0.3 execution
 
 Architect exposes Start and Stop for the qualified Codex slice. It supports
-agent work, inline resources, validated result submissions, corrections on the
+agent work, text/JSON resources, validated result submissions, corrections on the
 same thread, choice routes and visit limits. Local command and stdio MCP calls,
 human flow choices and deadlines, steer, shared/named instances, parallel work
 and joins use the production supervisor. Remote MCP calls, compositions and
@@ -139,6 +139,46 @@ warns that this is an instruction-based aid: changes may precede the plan.
 Missing or foreign plan events do not unlock the work's result submission.
 This is not a permission guarantee. `planFirst: "ask"` remains refused before
 launch and admission because the adapter has no complete native plan lock.
+
+### Completion checks, content and skills
+
+On macOS ARM64, a `completionCheck` uses the captured project command before
+acceptance. Its native reservation is consumed once under the work's current
+ownership and permission ceiling. The existing confined command executor caps
+it at 30 seconds and 65,536 returned bytes. It joins the process tree and streams
+before reporting the result. Stop and work deadlines remain available while
+the check runs. A failed check returns its output on the same thread and uses
+`maxFailures`, separately from invalid submissions and `maxCorrections`.
+The optional `choices` filter can exempt a submission from the check.
+
+The native file reader supports absolute local file URIs for instructions,
+missions and resources on macOS ARM64 with macOS 14.4 or later. Reads stay inside
+the recipient's approved project data scope, exclude private host metadata and
+recheck the host ceiling. Text and JSON bytes, including exact number tokens,
+are retained. Each source is limited to 256 KiB and the work's content snapshots
+to 1,000,000 bytes. Native reader cleanup is attached to the work's existing
+physical owner. Relative URIs have no native document origin in this adapter
+and are refused. Network URIs and non-text/non-JSON media are also refused.
+The TypeScript route helper only carries Sources to the native recipient; it
+performs no file or network IO. Resources remain untrusted `additionalContext`,
+with the existing approximation warning.
+
+Selected local skills are qualified on Codex 0.167.0 and currently require a
+folder containing only `SKILL.md`, with at most 32 selections per agent and the
+same source and aggregate content bounds.
+The native reader captures that authorized file. The adapter advertises only
+the selected names and descriptions. Codex can load the exact captured bytes
+through the native dynamic tool `agsdl_load_skill`. The tool checks the current
+thread, turn, selection and host ceiling, and accepts no file path. The native
+filesystem profile stays unchanged. Live project skill roots are not passed to
+Codex because its discovery can follow symbolic links outside them.
+Skills with resources, scripts or other folder entries remain refused, as do
+extra directory grants not represented by the adapter. Skills add no permission.
+
+Agent MCP equipment remains refused: this adapter has not qualified native MCP
+human waits, their correlation to the current work, and physical completion.
+This does not affect the existing confined stdio MCP flow-call port, including
+its form questions and deadlines. Remote MCP calls remain refused.
 
 ## Legacy 0.2 execution boundary
 

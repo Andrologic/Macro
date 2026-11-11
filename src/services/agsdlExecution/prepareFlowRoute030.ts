@@ -16,6 +16,8 @@ export interface PreparedItem030 { readonly messageJson: ExactJsonText | null; r
 export interface PreparedBatch030 { readonly targetOrdinal: number; readonly target: CompiledTarget030; readonly items: readonly PreparedItem030[] }
 export interface OccurrenceProvenance030 { readonly occurrence: DeliveryOccurrence030; readonly prompt: PromptProvenance030; readonly source: RouteSource030; readonly producer: NativeProducer030 }
 export interface PrepareFlowRouteInput030 {
+  /** Native host will read prompt Sources under the recipient's admitted policy. */
+  readonly deferPromptUris?: boolean;
   readonly planJson: ExactJsonText; readonly reference: { readonly route: NativeRouteRef030 };
   readonly producer: NativeProducer030; readonly source: RouteSource030; readonly nativeReceiptId: string;
   readonly content?: CapturedContent030;
@@ -103,12 +105,14 @@ function prepareCapturedRoute030(input: PrepareFlowRouteInput030): PrepareFlowRo
         ? { kind: 'element', index: String(index), valueJson: encode(value), mission: batch.mission, instructionAuthority: batch.instructionAuthority }
         : { kind: 'absent' };
       try {
-        const receivesMessage = ['agent', 'approval', 'compose'].includes(text(record(decode(target.stepJson)).type));
+        const recipientType = text(record(decode(target.stepJson)).type);
+        const receivesMessage = ['agent', 'approval', 'compose'].includes(recipientType);
         const capturedTarget = captured[targetOrdinal] as unknown as CompiledTarget030;
         const content = !receivesMessage ? undefined : input.contentForOccurrence
           ? input.contentForOccurrence(targetOrdinal, String(index), capturedTarget) ?? {}
           : input.content;
-        const resolved = receivesMessage ? resolveRouteMessage030(documentJson, target, source, item, content) : null;
+        const resolved = receivesMessage ? resolveRouteMessage030(documentJson, target, source, item,
+          { ...content, deferPromptUris: input.deferPromptUris === true && recipientType === 'agent' }) : null;
         items.push({ messageJson: resolved?.messageJson ?? null, itemJson: item.kind === 'element' ? item.valueJson : null, occurrence });
         provenance.push({ occurrence, prompt: clone(resolved?.promptProvenance ?? { kind: 'none' }), source: clone(source), producer: clone(producer) });
       } catch (error) {

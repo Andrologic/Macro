@@ -18,6 +18,8 @@ pub(crate) struct SkillDescriptor {
     pub key: String,
     pub name: String,
     pub description: String,
+    pub path: String,
+    pub source: ResolvedContentReceipt,
     pub handle: SkillHandle,
 }
 
@@ -62,6 +64,13 @@ pub(crate) async fn discover_skills(
         None => Vec::new(),
     };
     let mut seen = std::collections::BTreeSet::new();
+    if names.len() > 32 {
+        return Err(error(
+            "INPUT_LIMIT",
+            "Too many selected skills for the native discovery bound.",
+        ));
+    }
+    let mut retained = 0u64;
     let mut result = Vec::with_capacity(names.len());
     for key in names {
         if !seen.insert(key.clone()) {
@@ -81,6 +90,18 @@ pub(crate) async fn discover_skills(
             },
         )
         .await?;
+        let bytes = receipt
+            .provenance
+            .size_bytes
+            .parse::<u64>()
+            .map_err(|_| error("CORRELATION", "Invalid native skill size."))?;
+        retained = retained.saturating_add(bytes);
+        if bytes > 262_144 || retained > 1_000_000 {
+            return Err(error(
+                "INPUT_LIMIT",
+                "Selected skills exceed the native content bound.",
+            ));
+        }
         let (name, description, _) = parse_skill(&receipt)?;
         let final_uri = receipt
             .provenance
@@ -93,9 +114,15 @@ pub(crate) async fn discover_skills(
             name: key.clone(),
             declared_uri,
             final_uri,
-            sha256: receipt.provenance.sha256,
+            sha256: receipt.provenance.sha256.clone(),
         };
         result.push(SkillDescriptor {
+            source: receipt,
+            path: resolve::absolute_uri(&handle.final_uri)?
+                .to_file_path()
+                .map_err(|_| error("CONTENT_URI", "Native skills require a local file"))?
+                .to_string_lossy()
+                .into_owned(),
             key,
             name,
             description,

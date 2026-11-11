@@ -68,7 +68,7 @@ impl AttestedWorkPolicy030 {
         validate_codex_registry030(&registry, &work.agent, &work.agent_harness)?;
         codex_read_only030(&prepared.policy)?;
         let contract: serde_json::Value = serde_json::from_str(&work.inputs.contract_json)?;
-        for key in ["planFirst", "completionCheck"] {
+        for key in ["planFirst"] {
             if !contract.get(key).is_none_or(serde_json::Value::is_null)
                 && !(key == "planFirst" && contract[key] == "auto")
             {
@@ -83,7 +83,13 @@ impl AttestedWorkPolicy030 {
                 ));
             }
         }
-        Ok(Self { prepared, plan_lock: None, options_json: serde_json::json!({"checkTimeoutMs":"1000","maxCheckOutputBytes":1024,"enforcedPlanLock":false}).to_string() })
+        if let Some(command) = contract
+            .pointer("/completionCheck/command")
+            .and_then(serde_json::Value::as_str)
+        {
+            crate::agsdl_host_completion030::grant(&prepared.policy, command)?;
+        }
+        Ok(Self { prepared, plan_lock: None, options_json: serde_json::json!({"checkTimeoutMs":"30000","maxCheckOutputBytes":65536,"enforcedPlanLock":false}).to_string() })
     }
 }
 
@@ -231,7 +237,26 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
         {
             let pointer = format!("/agents/{}", pointer_token030(name));
             codex_permissions030(&agent["permissions"], &format!("{pointer}/permissions"))?;
-            for key in ["planFirst", "completionCheck"] {
+            if agent.get("completionCheck").is_some()
+                && !cfg!(all(target_os = "macos", target_arch = "aarch64"))
+            {
+                return Err(failure(
+                    "HARNESS_CAPABILITY",
+                    &format!("{pointer}/completionCheck"),
+                    "The confined completion-check executor is qualified only on macOS ARM64",
+                ));
+            }
+            if agent.get("completionCheck").is_some()
+                && (agent["permissions"] == "read-only"
+                    || agent["permissions"]["preset"] == "read-only")
+            {
+                return Err(failure(
+                    "HARNESS_CAPABILITY",
+                    &format!("{pointer}/completionCheck"),
+                    "Completion checks require shell permission; the read-only preset denies shell",
+                ));
+            }
+            for key in ["planFirst"] {
                 if agent.get(key).is_some() && !(key == "planFirst" && agent[key] == "auto") {
                     return Err(failure(
                         "HARNESS_CAPABILITY",
@@ -244,7 +269,7 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
                     ));
                 }
             }
-            for key in ["skills", "mcpServers", "harnessSettings"] {
+            for key in ["mcpServers", "harnessSettings"] {
                 if agent.get(key).is_some_and(|value| {
                     value.as_array().is_some_and(|v| !v.is_empty())
                         || value.as_object().is_some_and(|v| !v.is_empty())
@@ -252,7 +277,11 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
                     return Err(failure(
                         "HARNESS_CAPABILITY",
                         &format!("{pointer}/{key}"),
-                        "This Codex option is not connected",
+                        if key == "mcpServers" {
+                            "Agent MCP equipment is not qualified for correlated human waits and physical completion in this Codex adapter. Local MCP call steps remain available."
+                        } else {
+                            "This Codex option is not connected"
+                        },
                     ));
                 }
             }
@@ -272,11 +301,44 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
                     .keys()
                     .all(|key| matches!(key.as_str(), "uri" | "mediaType"))
             {
-                return Err(failure(
-                    "CONTENT_SOURCE_UNSUPPORTED",
-                    &format!("{pointer}/uri"),
-                    "External content is not connected in this slice",
-                ));
+                let uri = object["uri"].as_str().unwrap();
+                let parsed = url::Url::parse(uri).map_err(|_| {
+                    failure(
+                        "CONTENT_SOURCE_UNSUPPORTED",
+                        &format!("{pointer}/uri"),
+                        "Relative content requires a native document origin; this source has none",
+                    )
+                })?;
+                if !crate::agsdl_content::file_helper::qualified_platform()
+                    || parsed.scheme() != "file"
+                    || parsed.to_file_path().is_err()
+                    || !parsed.username().is_empty()
+                    || parsed.password().is_some()
+                    || parsed.query().is_some()
+                    || parsed.fragment().is_some()
+                {
+                    return Err(failure("CONTENT_SOURCE_UNSUPPORTED",&format!("{pointer}/uri"),"Only absolute local file content on the qualified macOS ARM64 reader, macOS 14.4 or later, is supported"));
+                }
+            }
+            if (object.contains_key("uri") || object.contains_key("value"))
+                && object
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "uri" | "value" | "mediaType"))
+            {
+                if let Some(media) = object.get("mediaType").and_then(Value::as_str) {
+                    let mime = media
+                        .split(';')
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .to_ascii_lowercase();
+                    if !mime.starts_with("text/")
+                        && mime != "application/json"
+                        && !mime.ends_with("+json")
+                    {
+                        return Err(failure("CONTENT_SOURCE_UNSUPPORTED",&format!("{pointer}/mediaType"),"This Codex adapter supports text and JSON context; this media type is not represented"));
+                    }
+                }
             }
             let step = object.get("type").and_then(Value::as_str);
             if matches!(step, Some("compose")) {
@@ -1154,12 +1216,6 @@ mod codex030_tests {
                 json!("ask"),
                 "HARNESS_CAPABILITY",
                 "/agents/worker/planFirst",
-            ),
-            (
-                "/agents/worker/completionCheck",
-                json!({"command":"true"}),
-                "HARNESS_CAPABILITY",
-                "/agents/worker/completionCheck",
             ),
             (
                 "/agents/worker/permissions",

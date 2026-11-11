@@ -1,8 +1,6 @@
 fn main() {
     tauri_build::build();
-    if std::env::var_os("CARGO_FEATURE_AGSDL_CONTENT_QA").is_none()
-        || std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
-    {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
     let source = "src/agsdl_content/macos_launcher.swift";
@@ -14,7 +12,7 @@ fn main() {
         Ok("x86_64") => "x86_64",
         _ => panic!("Unsupported macOS architecture for content helper QA"),
     };
-    let deployment = std::env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_else(|_| "14.4".into());
+    let deployment = std::env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_else(|_| "13.0".into());
     let target = format!("{arch}-apple-macosx{deployment}");
     let object = out.join("agsdl_content_launcher.o");
     let mut compiler = std::process::Command::new("swiftc");
@@ -27,7 +25,9 @@ fn main() {
     ]);
     // This hook exists only in the explicit macOS debug QA build. If a QA
     // configuration omits it, linking the QA-only FFI must fail closed.
-    if std::env::var("PROFILE").as_deref() == Ok("debug") {
+    if std::env::var("PROFILE").as_deref() == Ok("debug")
+        && std::env::var_os("CARGO_FEATURE_AGSDL_CONTENT_QA").is_some()
+    {
         compiler.args(["-D", "AGSDL_CONTENT_TESTING"]);
     }
     let status = compiler

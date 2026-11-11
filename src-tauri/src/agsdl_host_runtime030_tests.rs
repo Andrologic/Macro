@@ -277,16 +277,35 @@ impl Fixture {
         Arc::new(move |_| {
             let (host, pool, config, tasks) =
                 (host.clone(), pool.clone(), config.clone(), tasks.clone());
-            Arc::new(move |attempt, label, body, cancel| {
-                let (host, pool, config, tasks) =
-                    (host.clone(), pool.clone(), config.clone(), tasks.clone());
-                Box::pin(async move {
-                    emit_work_event030(
-                        &host, &pool, &config, &tasks, &attempt, "project", &label, body, &cancel,
-                    )
-                    .await
-                })
-            })
+            let (check_host, check_pool, check_config, check_tasks) =
+                (host.clone(), pool.clone(), config.clone(), tasks.clone());
+            EventEmitter030 {
+                event: Arc::new(move |attempt, label, body, cancel| {
+                    let (host, pool, config, tasks) =
+                        (host.clone(), pool.clone(), config.clone(), tasks.clone());
+                    Box::pin(async move {
+                        emit_work_event030(
+                            &host, &pool, &config, &tasks, &attempt, "project", &label, body,
+                            &cancel,
+                        )
+                        .await
+                    })
+                }),
+                check: Arc::new(move |attempt, check, cancel| {
+                    let (host, pool, config, tasks) = (
+                        check_host.clone(),
+                        check_pool.clone(),
+                        check_config.clone(),
+                        check_tasks.clone(),
+                    );
+                    Box::pin(async move {
+                        crate::agsdl_host_completion030::execute(
+                            &host, &pool, &config, &tasks, &attempt, "project", &check, &cancel,
+                        )
+                        .await
+                    })
+                }),
+            }
         })
     }
     fn pumps(&self) -> Vec<tokio::task::JoinHandle<()>> {

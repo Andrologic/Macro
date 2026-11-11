@@ -737,7 +737,86 @@ async fn native_wait_timeout_retains_handle_until_real_reap() {
     assert_eq!(second.to_string(), "Helper already reaped");
 }
 
+async fn codex_recipient_sources_preserve_json_and_refuse_unrepresented_inputs() {
+    use crate::agsdl_host_codex030::content::{skill_reply030, Sources030};
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let raw = " { \"n\": 9007199254740993, \"x\": 1e999 }\n";
+    fs::write(root.join("data.json"), raw).unwrap();
+    let skill = root.join("selected");
+    fs::create_dir(&skill).unwrap();
+    fs::write(skill.join("SKILL.md"),"---\nname: selected\ndescription: Synthetic selected skill.\n---\nUse the approved project check.\n").unwrap();
+    let uri = Url::from_file_path(root.join("data.json"))
+        .unwrap()
+        .to_string();
+    let skill_uri = Url::from_file_path(skill.join("SKILL.md"))
+        .unwrap()
+        .to_string();
+    let document = json!({"agents":{"worker":{"skills":["selected"]}},"skills":{"selected":{"uri":skill_uri}},"content":{"data":{"uri":uri,"mediaType":"application/json"}}});
+    let document_json = document.to_string();
+    let ctx = context(&root, &document_json, None, "read-only");
+    let mut sources =
+        Sources030::from_context(ctx, document, root.clone(), root.join("private")).unwrap();
+    let mut message = json!({"prompt":[{"uri":uri,"mediaType":"application/json"}],"resources":{"same":{"ref":"data"}}});
+    sources.message(&mut message, "/message").await.unwrap();
+    assert_eq!(message["prompt"][0]["value"], raw);
+    assert_eq!(message["resources"]["same"]["value"], raw);
+    assert_eq!(sources.receipts.len(), 2);
+    assert!(sources
+        .receipts
+        .iter()
+        .all(|receipt| receipt.provenance.sha256 == digest(raw.as_bytes())));
+    let selected = sources.skills().await.unwrap();
+    let mut request = json!({"threadId":"thread","turnId":"turn","tool":"agsdl_load_skill","arguments":{"name":"selected"}});
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let reply = skill_reply030(&request, "thread", "turn", &selected, &cancel).unwrap();
+    assert_eq!(reply["success"], true);
+    assert_eq!(
+        reply["contentItems"][0]["text"],
+        fs::read_to_string(skill.join("SKILL.md")).unwrap()
+    );
+    request["arguments"]["name"] = json!("unselected");
+    assert_eq!(
+        skill_reply030(&request, "thread", "turn", &selected, &cancel).unwrap()["success"],
+        false
+    );
+    assert!(skill_reply030(&request, "foreign", "turn", &selected, &cancel).is_err());
+    cancel.cancel();
+    assert!(skill_reply030(&request, "thread", "turn", &selected, &cancel).is_err());
+    let mut relative = json!({"resources":{"x":{"uri":"data.json"}}});
+    assert_eq!(
+        sources
+            .message(&mut relative, "/message")
+            .await
+            .unwrap_err()
+            .code,
+        "CONTENT_SOURCE_UNSUPPORTED"
+    );
+    fs::write(root.join("image.bin"), [0, 1, 255]).unwrap();
+    let mut media = json!({"resources":{"x":{"uri":Url::from_file_path(root.join("image.bin")).unwrap(),"mediaType":"application/octet-stream"}}});
+    assert_eq!(
+        sources
+            .message(&mut media, "/message")
+            .await
+            .unwrap_err()
+            .code,
+        "CONTENT_SOURCE_UNSUPPORTED"
+    );
+    fs::create_dir(root.join(".macro")).unwrap();
+    fs::write(root.join(".macro/private"), "synthetic").unwrap();
+    let mut private = json!({"resources":{"x":{"uri":Url::from_file_path(root.join(".macro/private")).unwrap()}}});
+    assert_eq!(
+        sources
+            .message(&mut private, "/message")
+            .await
+            .unwrap_err()
+            .code,
+        "PERMISSION"
+    );
+}
+
 pub(super) const CASE_NAMES: &[&str] = &[
+    "codex_recipient_sources_preserve_json_and_refuse_unrepresented_inputs",
     "file_reads_preserve_bytes_json_and_literal_data",
     "skill_metadata_activation_resources_and_denials_use_real_files",
     "ask_waits_for_the_correlated_native_decision_before_reading",
@@ -754,6 +833,9 @@ pub(super) const CASE_NAMES: &[&str] = &[
 
 async fn execute(name: &str) -> Result<(), String> {
     match name {
+        "codex_recipient_sources_preserve_json_and_refuse_unrepresented_inputs" => {
+            codex_recipient_sources_preserve_json_and_refuse_unrepresented_inputs().await;
+        }
         "file_reads_preserve_bytes_json_and_literal_data" => {
             file_reads_preserve_bytes_json_and_literal_data().await
         }

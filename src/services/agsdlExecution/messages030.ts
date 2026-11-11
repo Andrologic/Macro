@@ -4,6 +4,8 @@ import { NumberToken, clone, decimal, decode, encode, equal, fail, has, list, re
 import type { InstructionAuthority030, ItemContext030, PromptProvenance030, ResultMetadata030, RouteSource030, RouteTarget030 } from './routes030';
 
 export interface CapturedContent030 {
+  /** The native recipient resolves these Sources before handing work to its harness. */
+  readonly deferPromptUris?: boolean;
   /** Consult already captured content only. Return a Source, not a delivery message. */
   readonly resolveSource?: (sourceJson: ExactJsonText, context: {
     readonly usage: 'prompt' | 'resource'; readonly pointer: string;
@@ -96,7 +98,7 @@ export function resolveRouteMessage030(documentJson: ExactJsonText, target: Rout
     if (usage === 'resource' && has(resolved, 'uri')) return clone(resolved);
     const captured = content.resolveSource ? record(decode(content.resolveSource(encode(resolved), { usage, pointer }))) : clone(resolved);
     if (has(captured, 'value') === has(captured, 'uri') || has(captured, 'ref')) return fail('CONTENT_UNAVAILABLE', pointer, 'Captured content must be a resolved source.');
-    if (usage === 'prompt' && has(captured, 'uri')) return fail('CONTENT_UNAVAILABLE', pointer, 'Prompt URI has not been captured as content.');
+    if (usage === 'prompt' && has(captured, 'uri') && !content.deferPromptUris) return fail('CONTENT_UNAVAILABLE', pointer, 'Prompt URI has not been captured as content.');
     return captured;
   };
   const authoredPrompt = (raw: ExactValue, pointer: string): ExactValue => {

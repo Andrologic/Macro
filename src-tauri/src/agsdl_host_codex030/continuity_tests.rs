@@ -10,6 +10,30 @@ fn envelope(submission: Value) -> Value {
     json!({"text":"Completed work", "submissionJson":submission.to_string()})
 }
 
+async fn approve_fixture_workspace(f: &Fixture) {
+    use crate::config::*;
+    let tools = f
+        .config
+        .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+        .await
+        .unwrap();
+    let mut approved = tools.value;
+    approved["agsdlHostPermissions"] = json!("workspace");
+    std::fs::write(&tools.file_path, serde_json::to_vec(&approved).unwrap()).unwrap();
+    let pending = f
+        .config
+        .reload(
+            ConfigDocumentKind::Tools,
+            ConfigScope::User,
+            ConfigChangeSource::ExternalEditor,
+        )
+        .await
+        .unwrap()
+        .pending
+        .unwrap();
+    f.config.accept_pending_change(&pending.id).await.unwrap();
+}
+
 fn requests(trace: &Path, method: &str) -> Vec<Value> {
     std::fs::read_to_string(trace)
         .unwrap_or_default()
@@ -200,6 +224,15 @@ async fn codex_run_end_releases_references_after_failure_and_stop() {
 }
 
 fn executor(f: &Fixture, trace: &Path, previous: Option<&CodexExecutor030>) -> CodexExecutor030 {
+    executor_access(f, trace, previous, true)
+}
+
+fn executor_access(
+    f: &Fixture,
+    trace: &Path,
+    previous: Option<&CodexExecutor030>,
+    read_only: bool,
+) -> CodexExecutor030 {
     let root = f._temp.path().canonicalize().unwrap();
     let profile = crate::agsdl_host_codex::profile::Profile {
         executable: root.join("fake-codex"),
@@ -209,7 +242,9 @@ fn executor(f: &Fixture, trace: &Path, previous: Option<&CodexExecutor030>) -> C
         digest: "synthetic-profile".into(),
     };
     std::fs::create_dir_all(&profile.bootstrap).unwrap();
-    let settings = profile.settings(&root.join("workspace"), true).unwrap();
+    let settings = profile
+        .settings(&root.join("workspace"), read_only)
+        .unwrap();
     // Reuse the existing protocol peer, including config/layer verification.
     let script = format!(
         "#!/usr/bin/env python3\nimport sys\nsys.argv=['fake', {}, {}, 'continuity', {}]\n{SERVER}",
@@ -226,9 +261,100 @@ fn executor(f: &Fixture, trace: &Path, previous: Option<&CodexExecutor030>) -> C
     executor
 }
 
+#[tokio::test]
+async fn completion_check_runs_before_acceptance_and_corrects_on_the_same_thread() {
+    let document = json!({"contract":"agsdl-0.3.0","id":"check-corrections","agents":{
+        "worker":{"harness":"codex","permissions":"workspace","maxCorrections":1,
+            "completionCheck":{"command":"if test -f check-marker; then printf check-passed; else printf first-failure >&2; : > check-marker; exit 7; fi","maxFailures":1}}},
+        "flow":{"entry":"work","steps":{"work":{"type":"agent","agent":"worker","next":{"done":[]}}}}});
+    let f = Fixture::with_document(document).await;
+    approve_fixture_workspace(&f).await;
+    let trace = f._temp.path().join("checks.jsonl");
+    std::fs::write(
+        trace.with_extension("jsonl.script"),
+        serde_json::to_vec(&vec![
+            envelope(json!({"results":{}})),
+            envelope(json!({"results":{},"choice":"done"})),
+            envelope(json!({"results":{},"choice":"done"})),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    let executor = executor_access(&f, &trace, None, false);
+    let view = run(&f, Arc::new(executor)).await;
+    assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
+    let turns = requests(&trace, "turn/start");
+    assert_eq!(turns.len(), 3);
+    assert!(turns
+        .iter()
+        .all(|turn| turn["threadId"] == turns[0]["threadId"]));
+    assert!(turns[2]["input"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("first-failure"));
+    let checks: Vec<String> =
+        sqlx::query_scalar("SELECT status FROM engine_flow030_work_checks ORDER BY rowid")
+            .fetch_all(&f.pool)
+            .await
+            .unwrap();
+    assert_eq!(checks, vec!["ended", "ended"]);
+    let journal: String =
+        sqlx::query_scalar("SELECT state_json FROM engine_flow030_work_state LIMIT 1")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+    assert!(journal.contains("check-passed"));
+    assert!(journal.contains("first-failure"));
+}
+
+#[tokio::test]
+async fn completion_check_failure_budget_and_exempt_choice_are_independent() {
+    for exempt in [false, true] {
+        let document = json!({"contract":"agsdl-0.3.0","id":"check-budget","agents":{
+            "worker":{"harness":"codex","permissions":"workspace","maxCorrections":0,
+                "completionCheck":{"command":"printf failure >&2; exit 9","choices":["done"],"maxFailures":0}}},
+            "flow":{"entry":"work","steps":{"work":{"type":"agent","agent":"worker","next":{"done":[],"blocked":[]}}}}});
+        let f = Fixture::with_document(document).await;
+        approve_fixture_workspace(&f).await;
+        let trace = f._temp.path().join("checks.jsonl");
+        std::fs::write(
+            trace.with_extension("jsonl.script"),
+            serde_json::to_vec(&vec![envelope(
+                json!({"results":{},"choice":if exempt {"blocked"} else {"done"}}),
+            )])
+            .unwrap(),
+        )
+        .unwrap();
+        let view = run(&f, Arc::new(executor_access(&f, &trace, None, false))).await;
+        assert_eq!(
+            view.state.verdict.as_deref(),
+            Some(if exempt { "succeeded" } else { "failed" })
+        );
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_flow030_work_checks")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, if exempt { 0 } else { 1 });
+        if !exempt {
+            assert!(serde_json::to_string(&view.state)
+                .unwrap()
+                .contains("CHECK_FAILED"));
+        }
+        assert_eq!(requests(&trace, "turn/start").len(), 1);
+    }
+}
+
 async fn run(
     f: &Fixture,
     executor: Arc<CodexExecutor030>,
+) -> crate::db::agsdl_execution::flow_store030::FlowView030 {
+    run_with_clock(f, executor, None).await
+}
+
+async fn run_with_clock(
+    f: &Fixture,
+    executor: Arc<CodexExecutor030>,
+    clock: Option<Arc<dyn RuntimeClock030>>,
 ) -> crate::db::agsdl_execution::flow_store030::FlowView030 {
     let capture = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
         .await
@@ -245,7 +371,7 @@ async fn run(
         agents: executor,
         calls: None,
         humans: None,
-        clock: None,
+        clock,
     };
     let (_wake, receiver) = watch::channel(0);
     let result = tokio::time::timeout(
@@ -275,6 +401,110 @@ async fn run(
         .flow;
     assert!(view.state.activations.iter().all(|work| !work.physical));
     view
+}
+
+struct CheckClock {
+    host: Arc<HostState>,
+    pool: sqlx::SqlitePool,
+    identity: FlowIdentity030,
+}
+impl RuntimeClock030 for CheckClock {
+    fn tracks_humans(&self) -> bool {
+        true
+    }
+    fn tick(&self) -> BoxFuture<'_, HostResult<()>> {
+        Box::pin(async move {
+            let broker = self
+                .host
+                .flow030()
+                .humans
+                .broker(&self.host, &self.pool, &self.identity)
+                .await?;
+            let _operation = broker.operation.lock().await;
+            broker.pump(&self.host, &CancellationToken::new()).await?;
+            if broker.next_wake_ms().await? == Some(0) {
+                broker.tick(&self.host).await?;
+                broker.pump(&self.host, &CancellationToken::new()).await?;
+            }
+            Ok(())
+        })
+    }
+    fn next_wake(&self) -> BoxFuture<'_, HostResult<Option<std::time::Duration>>> {
+        Box::pin(async move {
+            let broker = self
+                .host
+                .flow030()
+                .humans
+                .broker(&self.host, &self.pool, &self.identity)
+                .await?;
+            Ok(broker
+                .next_wake_ms()
+                .await?
+                .map(std::time::Duration::from_millis))
+        })
+    }
+}
+
+#[tokio::test]
+async fn completion_check_stop_and_machine_deadline_join_the_actual_command() {
+    for timeout in [false, true] {
+        let document = json!({"contract":"agsdl-0.3.0","id":"check-cancel","agents":{"worker":{"harness":"codex","permissions":"workspace",
+            "completionCheck":{"command":"sleep 30 & printf '%s' \"$!\" > check-child; wait","maxFailures":0}}},
+            "flow":{"entry":"work","steps":{"work":{"type":"agent","agent":"worker","timeoutMs":if timeout {1500} else {10000}}}}});
+        let f = Fixture::with_document(document).await;
+        approve_fixture_workspace(&f).await;
+        let trace = f._temp.path().join("checks.jsonl");
+        std::fs::write(
+            trace.with_extension("jsonl.script"),
+            serde_json::to_vec(&vec![envelope(json!({"results":{}}))]).unwrap(),
+        )
+        .unwrap();
+        let executor = executor_access(&f, &trace, None, false);
+        let pidfile = f._temp.path().join("workspace/check-child");
+        let stop = async {
+            if !timeout {
+                while !pidfile.exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                stop_fixture(&f, "stop-active-check").await;
+            }
+        };
+        let clock = timeout.then(|| {
+            Arc::new(CheckClock {
+                host: f.host.clone(),
+                pool: f.pool.clone(),
+                identity: f.identity.clone(),
+            }) as Arc<dyn RuntimeClock030>
+        });
+        let (view, ()) = tokio::time::timeout(std::time::Duration::from_secs(12), async {
+            tokio::join!(run_with_clock(&f, Arc::new(executor), clock), stop)
+        })
+        .await
+        .expect("Stop or machine deadline blocked on the active check");
+        assert_eq!(
+            view.state.verdict.as_deref(),
+            Some(if timeout { "failed" } else { "cancelled" })
+        );
+        let pid: i32 = std::fs::read_to_string(pidfile)
+            .expect("the real check never started")
+            .parse()
+            .unwrap();
+        assert_ne!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "check descendant survived physical completion"
+        );
+        if timeout {
+            assert!(serde_json::to_string(&view.state)
+                .unwrap()
+                .contains("TIMEOUT"));
+        }
+        assert!(view
+            .state
+            .activations
+            .iter()
+            .all(|activation| !activation.physical));
+    }
 }
 
 fn assert_policy(params: &Value) {

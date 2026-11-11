@@ -140,7 +140,15 @@ pub(crate) async fn resolve_content(
     context: &ContentContext,
     usage: ContentUse,
 ) -> ContentResult<ResolvedContentReceipt> {
-    resolve_content_in_root(context, usage, None).await
+    let pointer = usage.pointer.clone();
+    resolve_content_in_root(context, usage, None)
+        .await
+        .map_err(|mut error| {
+            if error.pointer.is_empty() {
+                error.pointer = pointer;
+            }
+            error
+        })
 }
 
 pub(super) async fn resolve_content_in_root(
@@ -339,6 +347,7 @@ async fn read_uri(
             let read = crate::fs::operations::read_file_bytes_with_admission(
                 &path,
                 &context.cancel,
+                context.resource_owner.clone(),
                 move |resolved| async move {
                     if let Some(root_path) = &root_path {
                         if !resolved.starts_with(root_path)
