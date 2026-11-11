@@ -14,8 +14,51 @@ use sqlx::SqlitePool;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, ChildStdout};
 
+/// A writer handle lets the owned session keep reading steer receipts while
+/// the human broker is waiting for admission to send its bounded response.
+#[derive(Clone)]
+pub(crate) struct ReplySender030(std::sync::Arc<tokio::sync::Mutex<ChildStdin>>);
+impl ReplySender030 {
+    async fn send(&self, message: &Value) -> Result<()> {
+        let mut bytes = serde_json::to_vec(message)?;
+        if bytes.len() > 2_000_000 {
+            return Err(failure(
+                "UNSUPPORTED",
+                "input",
+                "Codex request exceeds the bounded protocol limit",
+            ));
+        }
+        bytes.push(b'\n');
+        let mut stdin = self.0.lock().await;
+        stdin.write_all(&bytes).await.map_err(|_| {
+            failure(
+                "NATIVE_UNCERTAIN",
+                "operation",
+                "Codex request may have been sent",
+            )
+        })?;
+        stdin.flush().await.map_err(|_| {
+            failure(
+                "NATIVE_UNCERTAIN",
+                "operation",
+                "Codex request flush is uncertain",
+            )
+        })
+    }
+    pub(crate) async fn answer_request030(&self, id: Value, result: Value) -> Result<()> {
+        if !id.is_string() && !id.is_u64() {
+            return Err(failure(
+                "CORRELATION",
+                "protocol",
+                "Invalid native request id",
+            ));
+        }
+        self.send(&json!({"id":id,"result":result})).await
+    }
+}
+
 pub(crate) struct Client {
-    stdin: ChildStdin,
+    stdin: ReplySender030,
     stdout: BufReader<ChildStdout>,
     next_id: u64,
     pending: Vec<Value>,
@@ -26,7 +69,7 @@ pub(crate) struct Client {
 impl Client {
     pub fn new(stdin: ChildStdin, stdout: ChildStdout) -> Self {
         Self {
-            stdin,
+            stdin: ReplySender030(std::sync::Arc::new(tokio::sync::Mutex::new(stdin))),
             stdout: BufReader::new(stdout),
             next_id: 0,
             pending: Vec::new(),
@@ -36,29 +79,10 @@ impl Client {
         }
     }
     async fn send(&mut self, message: &Value) -> Result<()> {
-        let mut bytes = serde_json::to_vec(message)?;
-        if bytes.len() > 2_000_000 {
-            return Err(failure(
-                "UNSUPPORTED",
-                "input",
-                "Codex request exceeds the bounded protocol limit",
-            ));
-        }
-        bytes.push(b'\n');
-        self.stdin.write_all(&bytes).await.map_err(|_| {
-            failure(
-                "NATIVE_UNCERTAIN",
-                "operation",
-                "Codex request may have been sent",
-            )
-        })?;
-        self.stdin.flush().await.map_err(|_| {
-            failure(
-                "NATIVE_UNCERTAIN",
-                "operation",
-                "Codex request flush is uncertain",
-            )
-        })
+        self.stdin.send(message).await
+    }
+    pub(crate) fn reply_sender030(&self) -> ReplySender030 {
+        self.stdin.clone()
     }
     pub(crate) async fn next(&mut self) -> Result<Value> {
         loop {
@@ -94,7 +118,8 @@ impl Client {
         let bytes = std::mem::take(&mut self.frame);
         Ok(serde_json::from_slice(&bytes)?)
     }
-    async fn begin_request(&mut self, method: &str, params: Value) -> Result<u64> {
+    pub(crate) async fn begin_request(&mut self, method: &str, params: Value) -> Result<u64> {
+        self.last_request_error = None;
         self.next_id += 1;
         let id = self.next_id;
         self.send(&json!({"id":id,"method":method,"params":params}))
@@ -102,14 +127,24 @@ impl Client {
         Ok(id)
     }
     pub(crate) async fn answer_request030(&mut self, id: Value, result: Value) -> Result<()> {
-        if !id.is_string() && !id.is_u64() {
+        self.stdin.answer_request030(id, result).await
+    }
+    pub(crate) fn response_value030(&mut self, value: &Value) -> Result<Value> {
+        if let Some(error) = value.get("error") {
+            self.last_request_error = Some(error.clone());
             return Err(failure(
-                "CORRELATION",
+                "CODEX_REQUEST_FAILED",
                 "protocol",
-                "Invalid native request id",
+                "Codex rejected the request; no replacement execution was started",
             ));
         }
-        self.send(&json!({"id":id,"result":result})).await
+        value.get("result").cloned().ok_or_else(|| {
+            failure(
+                "NATIVE_UNCERTAIN",
+                "protocol",
+                "Codex response has no result",
+            )
+        })
     }
     pub async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         self.last_request_error = None;
@@ -130,22 +165,9 @@ impl Client {
     async fn response(&mut self, id: u64) -> Result<Value> {
         loop {
             let value = self.next().await?;
-            if value.get("id").and_then(Value::as_u64) == Some(id) {
-                if let Some(error) = value.get("error") {
-                    self.last_request_error = Some(error.clone());
-                    return Err(failure(
-                        "CODEX_REQUEST_FAILED",
-                        "protocol",
-                        "Codex rejected the request; no replacement execution was started",
-                    ));
-                }
-                return value.get("result").cloned().ok_or_else(|| {
-                    failure(
-                        "NATIVE_UNCERTAIN",
-                        "protocol",
-                        "Codex response has no result",
-                    )
-                });
+            if value.get("method").is_none() && value.get("id").and_then(Value::as_u64) == Some(id)
+            {
+                return self.response_value030(&value);
             }
             // Server requests could ask for approval or run a client tool. This
             // profile has no client tools and never grants an escalation.

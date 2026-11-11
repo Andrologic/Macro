@@ -109,9 +109,9 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
     {command && <div className="space-y-2" data-native-command-summary>
       <p>{t('agsdl.human030.nativeCommandHint')}</p>
       <dl className="space-y-1 [overflow-wrap:anywhere]">
-        <dt className="text-muted-foreground">{t('agsdl.human030.command')}</dt><dd>{command.command}</dd>
-        <dt className="text-muted-foreground">{t('agsdl.human030.file')}</dt><dd>{command.file}</dd>
-        <dt className="text-muted-foreground">{t('agsdl.human030.cwd')}</dt><dd>{command.cwd}</dd>
+        <dt className="text-muted-foreground">{t('agsdl.human030.command')}</dt><dd className="whitespace-pre-wrap">{command.command}</dd>
+        <dt className="text-muted-foreground">{t('agsdl.human030.file')}</dt><dd className="whitespace-pre-wrap">{command.file}</dd>
+        <dt className="text-muted-foreground">{t('agsdl.human030.cwd')}</dt><dd className="whitespace-pre-wrap">{command.cwd}</dd>
       </dl>
     </div>}
     {state.kind !== "open" && <details><summary>{t("agsdl.human030.draftHint")}</summary>

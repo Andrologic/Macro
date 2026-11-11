@@ -109,15 +109,20 @@ it('sends an action refusal and a plan refusal as distinct decisions with exact 
   expect(transport.submissions[1].answer).toEqual({ kind: 'decision', decision: 'no', comment: '' });
 });
 it('shows the exact native command and file scope before an action decision', async () => {
+  const command = "printf 'before' # commentaire\nprintf 'AFTER' > /workspace/sentinel.txt";
+  const file = '/workspace/two  spaces.txt';
+  const cwd = '/workspace/directory\nname';
   const actionJson = JSON.stringify({ nativeRequest: { method: 'item/commandExecution/requestApproval', params: {
-    kind: 'command', command: 'printf sample > /workspace/sentinel.txt', cwd: '/workspace',
-    additionalPermissions: { fileSystem: { write: ['/workspace/sentinel.txt'] } },
+    kind: 'command', command, cwd,
+    additionalPermissions: { fileSystem: { write: [file] } },
   } } });
   const request = humanFixture030({ content: { kind: 'actionApproval', title: '', actionJson } });
   transport.setCurrent(request); await render(ready(request));
   const summary = host.querySelector('[data-native-command-summary]')!;
   expect(summary.textContent).toContain('Uniquement pour cette commande');
-  expect(summary.textContent).toContain('printf sample > /workspace/sentinel.txt');
+  const values = summary.querySelectorAll('dd');
+  expect(Array.from(values, value => value.textContent)).toEqual([command, file, cwd]);
+  for (const value of values) expect(value.classList.contains('whitespace-pre-wrap')).toBe(true);
   expect(summary.textContent).toContain('Fichier');
   expect(summary.textContent).toContain('Dossier de travail');
   expect(summary.closest('details')).toBeNull();

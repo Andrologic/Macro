@@ -284,6 +284,86 @@ impl SteerContext030 {
     }
 }
 
+/// The RPC response and the consumption receipt may surround a native ask.
+/// Only the exact userMessage receipt acknowledges delivery; a sent message
+/// never becomes an unsent queue fallback just because a person is waiting.
+#[derive(Default)]
+struct PendingSteer030 {
+    request_id: Option<u64>,
+    delivery: Option<crate::agsdl_host_steer030::SteerDelivery030>,
+}
+impl PendingSteer030 {
+    fn is_pending(&self) -> bool {
+        self.request_id.is_some() || self.delivery.is_some()
+    }
+    async fn receive(
+        &mut self,
+        client: &mut Client,
+        event: &Value,
+        thread: &str,
+        turn: &str,
+        steer: &mut Option<&mut SteerContext030>,
+    ) -> HostResult<bool> {
+        if self.request_id.is_some()
+            && event.get("method").is_none()
+            && event.get("id").and_then(Value::as_u64) == self.request_id
+        {
+            match client.response_value030(event) {
+                Ok(response) if response["turnId"] == turn => {}
+                Err(error) if error.code == "CODEX_REQUEST_FAILED" => {
+                    let context = steer.as_mut().ok_or_else(|| missing("steerOwner"))?;
+                    self.delivery
+                        .take()
+                        .ok_or_else(|| missing("steerRejectedAfterConsumption"))?
+                        .not_sent(&context.tasks, &context.attempt)?;
+                    context.close().await?;
+                }
+                Ok(_) => return Err(missing("steerTurn")),
+                Err(error) => return Err(error),
+            }
+            self.request_id = None;
+            return Ok(true);
+        }
+        if event["method"] == "item/completed"
+            && event["params"]["item"]["type"] == "userMessage"
+            && self
+                .delivery
+                .as_ref()
+                .is_some_and(|delivery| event["params"]["item"]["clientId"] == delivery.effect().id)
+        {
+            if required(&event["params"], "threadId")? != thread
+                || required(&event["params"], "turnId")? != turn
+            {
+                return Err(missing("steerRecipient"));
+            }
+            let context = steer.as_ref().ok_or_else(|| missing("steerOwner"))?;
+            self.delivery
+                .take()
+                .unwrap()
+                .acknowledge(&context.tasks, &context.attempt)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+fn defer_native030(
+    queue: &mut std::collections::VecDeque<Value>,
+    bytes: &mut usize,
+    event: Value,
+) -> HostResult<()> {
+    *bytes += serde_json::to_vec(&event)?.len();
+    if queue.len() >= 1000 || *bytes > 4_000_000 {
+        return Err(failure(
+            "NATIVE_UNCERTAIN",
+            "stdio",
+            "Codex notification limit exceeded",
+        ));
+    }
+    queue.push_back(event);
+    Ok(())
+}
+
 /// A turn may end before the host has accepted its result. While the
 /// controller is working, reject only messages that have not reached Codex;
 /// this releases admission so the pending terminal can trigger queue fallback.
@@ -602,14 +682,24 @@ impl CodexExecutor030 {
             let turn = required(&response["turn"], "id")?;
             *current_turn = Some(turn.clone());
             let mut final_item = None;
-            let mut pending_steer: Option<crate::agsdl_host_steer030::SteerDelivery030> = None;
+            let mut pending_steer = PendingSteer030::default();
+            let mut deferred_native = std::collections::VecDeque::new();
+            let mut deferred_bytes = 0usize;
             let mut deferred_text = Vec::new();
             loop {
                 let event = tokio::select! {
                     biased;
                     // Reading is cancellation-safe, including partial stdio frames.
-                    event = client.notification() => event?,
-                    Some(delivery) = async { match steer.as_mut() { Some(context) => context.inbox.receive().await, None => std::future::pending().await } }, if pending_steer.is_none() => {
+                    event = async {
+                        if pending_steer.request_id.is_none() {
+                            if let Some(event) = deferred_native.pop_front() {
+                                deferred_bytes -= serde_json::to_vec(&event)?.len();
+                                return Ok(event);
+                            }
+                        }
+                        client.notification().await
+                    } => event?,
+                    Some(delivery) = async { match steer.as_mut() { Some(context) => context.inbox.receive().await, None => std::future::pending().await } }, if !pending_steer.is_pending() => {
                         let context = steer.as_ref().unwrap();
                         let FlowEffectKind030::Steer { message_json, sender, .. } = &delivery.effect().kind else { return Err(missing("steer")); };
                         let message: Value = serde_json::from_str(message_json)?;
@@ -619,20 +709,19 @@ impl CodexExecutor030 {
                         append_resources(&mut data, &message["resources"], &context.document, "message")?;
                         for name in ["item", "comments"] { if let Some(value) = message.get(name) { data.insert(format!("message:{name}"), value.to_string()); } }
                         let id = delivery.effect().id.clone();
-                        match client.request("turn/steer", json!({"threadId":thread,"expectedTurnId":turn,"clientUserMessageId":id,"input":[{"type":"text","text":format!("Message from {sender}\n{mission}"),"text_elements":[]}],"additionalContext":additional_context030(&data)})).await {
-                            Ok(response) if response["turnId"] == turn => pending_steer = Some(delivery),
-                            Err(error) if error.code == "CODEX_REQUEST_FAILED" => {
-                                // Codex explicitly rejected this input. No replay into
-                                // this turn; its end settles the existing queue fallback.
-                                delivery.not_sent(&context.tasks, &context.attempt)?;
-                                steer.as_mut().unwrap().close().await?;
-                            }
-                            Ok(_) => return Err(missing("steerTurn")),
-                            Err(error) => return Err(error),
-                        }
+                        // Keep the single session reader active while this RPC is in
+                        // flight, so server requests use the same bounded ask handler.
+                        let request_id = client.begin_request("turn/steer", json!({"threadId":thread,"expectedTurnId":turn,"clientUserMessageId":id,"input":[{"type":"text","text":format!("Message from {sender}\n{mission}"),"text_elements":[]}],"additionalContext":additional_context030(&data)})).await?;
+                        pending_steer = PendingSteer030 { request_id: Some(request_id), delivery: Some(delivery) };
                         continue;
                     }
                 };
+                if pending_steer
+                    .receive(client, &event, &thread, &turn, &mut steer)
+                    .await?
+                {
+                    continue;
+                }
                 if event.get("id").is_some() {
                     if write_ask {
                         if !native_requests.insert(event["id"].to_string()) {
@@ -659,17 +748,23 @@ impl CodexExecutor030 {
                             let attempt = context.attempt.clone();
                             let native_thread = thread.clone();
                             let native_turn = turn.clone();
-                            let client = &mut *client;
+                            let reply = client.reply_sender030();
                             let answer = port.answer(&attempt, json!({"nativeRequest":event}), cancel,
                                 Box::new(move |accepted| Box::pin(async move {
                                     let accepted = accepted && !cancel.is_cancelled() && approvals::bounded_file(&request, &native_thread, &native_turn, Path::new(&root), &policy).is_some();
-                                    client.answer_request030(request["id"].clone(), json!({"decision":if accepted {"accept"} else {"decline"}})).await
+                                    reply.answer_request030(request["id"].clone(), json!({"decision":if accepted {"accept"} else {"decline"}})).await
                                 })));
                             tokio::pin!(answer);
                             loop {
                                 tokio::select! {
                                     biased;
                                     result = &mut answer => { result?; break; }
+                                    event = client.notification() => {
+                                        let event = event?;
+                                        if !pending_steer.receive(client, &event, &thread, &turn, &mut steer).await? {
+                                            defer_native030(&mut deferred_native, &mut deferred_bytes, event)?;
+                                        }
+                                    }
                                     Some(delivery) = async { match steer.as_mut() { Some(context) => context.inbox.receive().await, None => std::future::pending().await } } => {
                                         // An unsent steer may hold admission while waiting for
                                         // consumption. Release it so the human answer can enter
@@ -700,6 +795,12 @@ impl CodexExecutor030 {
                         "Unexpected Codex server request",
                     ));
                 }
+                if pending_steer.request_id.is_some() {
+                    // Preserve RPC-era notification order, including a turn end
+                    // that precedes its steer response. Server asks above remain live.
+                    defer_native030(&mut deferred_native, &mut deferred_bytes, event)?;
+                    continue;
+                }
                 let method = event["method"].as_str().unwrap_or("");
                 let params = &event["params"];
                 if auto_plan && !plan_presented && method == "turn/plan/updated" {
@@ -724,23 +825,6 @@ impl CodexExecutor030 {
                     && required(params, "threadId")? != thread
                 {
                     return Err(missing("thread"));
-                }
-                if method == "item/completed" && params["item"]["type"] == "userMessage" {
-                    if pending_steer
-                        .as_ref()
-                        .is_some_and(|delivery| params["item"]["clientId"] == delivery.effect().id)
-                    {
-                        if required(params, "threadId")? != thread
-                            || required(params, "turnId")? != turn
-                        {
-                            return Err(missing("steerRecipient"));
-                        }
-                        let context = steer.as_ref().unwrap();
-                        pending_steer
-                            .take()
-                            .unwrap()
-                            .acknowledge(&context.tasks, &context.attempt)?;
-                    }
                 }
                 if method == "item/completed" && params["item"]["type"] == "agentMessage" {
                     if required(params, "turnId")? != turn {
@@ -772,7 +856,7 @@ impl CodexExecutor030 {
                             "Codex turn did not complete",
                         ));
                     }
-                    if pending_steer.is_some() {
+                    if pending_steer.is_pending() {
                         return Err(failure(
                             "UNCERTAIN",
                             "delivery",
@@ -937,6 +1021,8 @@ for line in sys.stdin:
   if m['result']['decision']=='accept': open(sys.argv[4],'w').write('after')
   print(json.dumps({'method':'item/completed','params':{'threadId':thread,'turnId':'turn1','item':{'id':'final','type':'agentMessage','phase':'final_answer','text':json.dumps({'text':'Completed','submissionJson':json.dumps({'results':{'summary':'Done'},'choice':'approve'})})}}}),flush=True)
   print(json.dumps({'method':'turn/completed','params':{'threadId':thread,'turn':{'id':'turn1','status':'completed'}}}),flush=True)
+  if mode=='approval-rpc-before-response':
+   print(json.dumps({'id':pending_steer_id,'result':{'turnId':'turn1'}}),flush=True)
   continue
  if mode=='continuity':
   with open(trace,'a') as f: f.write(json.dumps(m)+'\n')
@@ -982,6 +1068,15 @@ for line in sys.stdin:
  elif method=='turn/steer':
   assert p['expectedTurnId']=='turn1' and p['clientUserMessageId']=='steer-test'
   assert 'host' in p['input'][0]['text'] and 'Update the changelog' in p['input'][0]['text']
+  if mode.startswith('approval-rpc-'):
+   pending_steer_id=i
+   f=sys.argv[4]
+   params={'threadId':thread,'turnId':'turn1','kind':'command','environmentId':'local','itemId':'native-command','command':'synthetic command','cwd':bootstrap,'additionalPermissions':{'network':None,'fileSystem':{'read':None,'write':[f],'entries':[{'path':{'type':'path','path':f},'access':'write'}]}}}
+   print(json.dumps({'id':'native-approval','method':'item/commandExecution/requestApproval','params':params}),flush=True)
+   if mode=='approval-rpc-after-response':
+    print(json.dumps({'id':i,'result':{'turnId':'turn1'}}),flush=True)
+   print(json.dumps({'method':'item/completed','params':{'threadId':thread,'turnId':'turn1','item':{'id':'received','type':'userMessage','clientId':p['clientUserMessageId']}}}),flush=True)
+   continue
   print(json.dumps({'id':i,'result':{'turnId':'turn1'}}),flush=True)
   print(json.dumps({'method':'item/completed','params':{'threadId':'thread','turnId':'turn1','item':{'id':'comment','type':'agentMessage','phase':'commentary','text':'Working'}}}),flush=True)
   if mode!='steer-uncertain':
@@ -1030,6 +1125,9 @@ for line in sys.stdin:
  else: raise Exception(method)
  print(json.dumps({'id':i,'result':result}),flush=True)
  if method=='turn/start' and mode.startswith('approval-'):
+  if mode.startswith('approval-rpc-'):
+   open(sys.argv[4]+'.started','w').write('yes')
+   continue
   f=sys.argv[4]
   params={'threadId':thread,'turnId':'turn1','kind':'command','environmentId':'local','itemId':'native-command','command':'synthetic command' if mode!='approval-missing' else None,'cwd':bootstrap,'additionalPermissions':{'network':None,'fileSystem':{'read':None,'write':[f],'entries':[{'path':{'type':'path','path':f},'access':'write'}]}}}
   print(json.dumps({'id':'native-approval','method':'item/commandExecution/requestApproval','params':params}),flush=True)
@@ -1098,6 +1196,7 @@ for line in sys.stdin:
             let contract = contract.clone();
             Box::pin(async move { Ok(controller_receipt(contract, events).await) })
         });
+        let mut rpc_steer = None;
         let mut approval_context = None;
         let mut approval_owner = None;
         let approval_calls = Arc::new(StdMutex::new(Vec::new()));
@@ -1126,17 +1225,55 @@ for line in sys.stdin:
                 attempt.start_effect_id()
             );
             approval_owner = Some((tasks.clone(), parent));
+            let consumed = mode
+                .starts_with("approval-rpc-")
+                .then(|| Arc::new(tokio::sync::Notify::new()));
+            if let Some(consumed) = &consumed {
+                let sender = sender.clone();
+                let attempt = attempt.clone();
+                let file = workspace.join("sentinel.started");
+                let consumed = consumed.clone();
+                rpc_steer = Some(tokio::spawn(async move {
+                    while !file.exists() {
+                        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    }
+                    let effect = crate::db::agsdl_execution::flow030::FlowEffect030 {
+                        id: "steer-test".into(),
+                        identity: attempt.identity().clone(),
+                        revision: "2".into(),
+                        kind: FlowEffectKind030::Steer {
+                            work: crate::db::agsdl_execution::flow030::WorkRef030 {
+                                activation_id: attempt.work().activation_id.clone(),
+                                start_effect_id: attempt.start_effect_id().into(),
+                                agent_instance_id: attempt.work().agent_instance_id.clone(),
+                            },
+                            delivery_activation_id: "nudge".into(),
+                            message_json: r#"{"prompt":"Update the changelog"}"#.into(),
+                            occurrence: None,
+                            sender: None,
+                        },
+                    };
+                    let receipt = sender.deliver(&effect, &attempt).await.unwrap();
+                    assert!(
+                        receipt.consumed(),
+                        "a sent steer must keep its consumption receipt"
+                    );
+                    consumed.notify_one();
+                }));
+            }
             approval_context = Some(SteerContext030 {
                 inbox,
                 tasks,
                 attempt,
                 document: json!({}),
                 approvals: Some(Arc::new(TestCommandApprovals {
-                    accept: matches!(mode, "approval-yes" | "approval-steer"),
+                    accept: matches!(mode, "approval-yes" | "approval-steer")
+                        || mode.starts_with("approval-rpc-"),
                     stop: mode == "approval-stop",
                     file: workspace.join("sentinel"),
                     calls: approval_calls.clone(),
                     steer: (mode == "approval-steer").then_some(sender),
+                    consumed,
                 })),
                 policy: EffectivePolicy::new(p.clone(), p.clone(), p),
                 root: workspace.to_str().unwrap().into(),
@@ -1184,6 +1321,9 @@ for line in sys.stdin:
         } else {
             session.await
         };
+        if let Some(delivery) = rpc_steer {
+            delivery.await.unwrap();
+        }
         if let Some((tasks, parent)) = approval_owner {
             tasks.cancel_owned(&parent).await.unwrap();
         }
@@ -1200,6 +1340,7 @@ for line in sys.stdin:
         file: std::path::PathBuf,
         calls: Arc<StdMutex<Vec<bool>>>,
         steer: Option<crate::agsdl_host_steer030::SteerSender030>,
+        consumed: Option<Arc<tokio::sync::Notify>>,
     }
     impl approvals::CommandApprovals030 for TestCommandApprovals {
         fn answer<'a>(
@@ -1241,6 +1382,10 @@ for line in sys.stdin:
                     });
                     let _gate = gate.lock().await;
                     delivery.await.unwrap();
+                }
+                // Model the admission gate held until the sent steer is consumed.
+                if let Some(consumed) = &self.consumed {
+                    consumed.notified().await;
                 }
                 assert_eq!(std::fs::read_to_string(&self.file).unwrap(), "before");
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -1293,6 +1438,23 @@ for line in sys.stdin:
                     _ => json!([]),
                 }
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn native_approval_during_steer_rpc_preserves_the_human_answer_and_consumption() {
+        for mode in [
+            "approval-rpc-before-response",
+            "approval-rpc-after-response",
+        ] {
+            let (result, events) =
+                tokio::time::timeout(std::time::Duration::from_secs(10), fake_session(mode, true))
+                    .await
+                    .expect("approval and steer consumption deadlocked");
+            result.unwrap();
+            assert_eq!(events.last().unwrap()["nativeAnswers"], json!([true]));
+            assert_eq!(events.last().unwrap()["file"], "after");
+            assert_eq!(events.iter().filter(|e| e["kind"] == "submit").count(), 1);
         }
     }
 
