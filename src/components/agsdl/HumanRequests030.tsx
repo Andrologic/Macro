@@ -105,6 +105,28 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
   return <article ref={card} tabIndex={-1} aria-labelledby={headingId} className="min-w-0 space-y-2 rounded border border-border p-2 text-xs focus:outline focus:outline-1 focus:outline-ring" data-human-request={request.id}>
     <h3 id={headingId} className="font-medium">{t(`agsdl.human030.type.${content.kind}`)}</h3>
     <p role="status">{t(`agsdl.human030.state.${state.kind}`)}</p>
+    {state.kind !== "open" && <details><summary>{t("agsdl.human030.draftHint")}</summary>
+      <ExecutionHumanRequest request={view} labels={{ choice: t("agsdl.human030.choice"), comment: t("agsdl.human030.comment"), answer: t("agsdl.human030.answer"), submit: t("agsdl.human030.submit"), approve: t("agsdl.human030.approve"), reject: t("agsdl.human030.reject"), failed: t("agsdl.human030.sendUncertain") }} open={false} onAnswer={send} draft={draft} />
+    </details>}
+    {state.kind === "open" && <ExecutionHumanRequest request={view} labels={{ choice: t('agsdl.human030.choice'), comment: t('agsdl.human030.comment'), answer: t('agsdl.human030.answer'),
+      submit: t('agsdl.human030.submit'), approve: t('agsdl.human030.approve'), reject: t('agsdl.human030.reject'), failed: t('agsdl.human030.sendUncertain'),
+      messageDetails: content.kind === 'flowChoice' ? t('agsdl.human030.messageDetails') : content.kind === 'actionApproval' ? t('agsdl.human030.actionDetails')
+        : view.kind === 'plan' ? t('agsdl.human030.planDetails') : view.kind === 'question' ? t('agsdl.human030.questionDetails') : undefined }}
+      open={open} onAnswer={send} draft={draft} onDraftChange={saveDraft} />}
+    {state.kind !== 'open' && (draft.choice !== null || draft.text !== '') && <p className="text-muted-foreground">{t('agsdl.human030.draftHint')}</p>}
+    {resolution && <p data-human-reason>{t(`agsdl.human030.reason.${resolution.reason}`)}</p>}
+    {answer && <AttestedAnswer answer={answer} />}
+    {resolution && !answer && <p>{t('agsdl.human030.noAnswer')}</p>}
+    {resolution && answer && <p>{t(resolution.accepted ? 'agsdl.human030.answerAccepted' : 'agsdl.human030.answerNotAccepted')}</p>}
+    {state.kind === 'uncertain' && <p>{t(state.phase === 'afterResolution' ? 'agsdl.human030.uncertainAfter' : 'agsdl.human030.uncertainBefore')}</p>}
+    {outcome?.kind === 'refused' && (state.kind === 'open' || readback?.basis === observed) && <div role="alert">
+      <p>{t(state.kind === 'open' && (outcome.refusal.code === 'CONFLICT' || outcome.refusal.code === 'REVISION_CONFLICT') ? 'agsdl.human030.conflict' : 'agsdl.human030.refused')}</p>
+      <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{outcome.refusal.message}</p>
+    </div>}
+    {state.kind === 'open' && !storageUnavailable && (blocked || outcome?.kind === 'uncertain') && <p role="alert">{t('agsdl.human030.sendUncertain')}</p>}
+    {(storageFailed || storageUnavailable) && <p role="alert">{t('agsdl.human030.storageFailed')}</p>}
+    {(!fresh || readFailed || revisionStale) && <p role="alert">{t('agsdl.human030.stale')}</p>}
+    <details><summary>{t("agsdl.viewer.technicalDetails")}</summary>
     {request.occurrences.map((occurrence, index) => {
       const activation = occurrence.activation;
       return <p key={occurrence.workId}>{activation.kind === 'available'
@@ -122,24 +144,6 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
         <pre className="whitespace-pre-wrap [overflow-wrap:anywhere]">{content.answerContract.value.schemaJson}</pre>
       </details>
     </> : <p role="alert">{t('agsdl.human030.questionUnavailable')}</p>)}
-    <ExecutionHumanRequest request={view} labels={{ choice: t('agsdl.human030.choice'), comment: t('agsdl.human030.comment'), answer: t('agsdl.human030.answer'),
-      submit: t('agsdl.human030.submit'), approve: t('agsdl.human030.approve'), reject: t('agsdl.human030.reject'), failed: t('agsdl.human030.sendUncertain'),
-      messageDetails: content.kind === 'flowChoice' ? t('agsdl.human030.messageDetails') : content.kind === 'actionApproval' ? t('agsdl.human030.actionDetails')
-        : view.kind === 'plan' ? t('agsdl.human030.planDetails') : view.kind === 'question' ? t('agsdl.human030.questionDetails') : undefined }}
-      open={open} onAnswer={send} draft={draft} onDraftChange={saveDraft} />
-    {state.kind !== 'open' && (draft.choice !== null || draft.text !== '') && <p className="text-muted-foreground">{t('agsdl.human030.draftHint')}</p>}
-    {resolution && <p data-human-reason>{t(`agsdl.human030.reason.${resolution.reason}`)}</p>}
-    {answer && <AttestedAnswer answer={answer} />}
-    {resolution && !answer && <p>{t('agsdl.human030.noAnswer')}</p>}
-    {resolution && answer && <p>{t(resolution.accepted ? 'agsdl.human030.answerAccepted' : 'agsdl.human030.answerNotAccepted')}</p>}
-    {state.kind === 'uncertain' && <p>{t(state.phase === 'afterResolution' ? 'agsdl.human030.uncertainAfter' : 'agsdl.human030.uncertainBefore')}</p>}
-    {outcome?.kind === 'refused' && (state.kind === 'open' || readback?.basis === observed) && <div role="alert">
-      <p>{t(state.kind === 'open' && (outcome.refusal.code === 'CONFLICT' || outcome.refusal.code === 'REVISION_CONFLICT') ? 'agsdl.human030.conflict' : 'agsdl.human030.refused')}</p>
-      <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{outcome.refusal.message}</p>
-    </div>}
-    {state.kind === 'open' && !storageUnavailable && (blocked || outcome?.kind === 'uncertain') && <p role="alert">{t('agsdl.human030.sendUncertain')}</p>}
-    {(storageFailed || storageUnavailable) && <p role="alert">{t('agsdl.human030.storageFailed')}</p>}
-    {(!fresh || readFailed || revisionStale) && <p role="alert">{t('agsdl.human030.stale')}</p>}
     <div className="space-y-1 text-muted-foreground" data-human-clock>
       <p>{t('agsdl.human030.clockHint')}</p>
       {!clock ? <p>{t('agsdl.human030.clockUnavailable')}</p> : <>
@@ -151,6 +155,7 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
         </p>)}
       </>}
     </div>
+    </details>
     <button type="button" className="rounded border border-border px-2 py-1 disabled:opacity-50" disabled={busy} onClick={() => void refresh()}>{t('agsdl.human030.refresh')}</button>
   </article>;
 }

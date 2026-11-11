@@ -522,7 +522,7 @@
     "input030": "Instrucciones de entrada",
     "start030": "Iniciar",
     "stop030": "Detener",
-    "unsupported030": "Este documento utiliza una función que aún no está disponible. Las solicitudes humanas, steer, fan-out, los tiempos límite y las llamadas MCP remotas no están disponibles.",
+    "unsupported030": "La comprobación de inicio ha detectado una función no compatible. Consulta la causa a continuación.",
     "codexNotInstalled": "Codex no está instalado. Instálalo para iniciar la ejecución.",
     "codexLoginRequired": "Inicia sesión en Codex en el perfil privado de Macro antes de comenzar.",
     "codexUnsupported": "Esta versión de Codex o esta plataforma no es compatible. Utiliza Codex 0.167.x en una plataforma validada.",
@@ -1168,5 +1168,15 @@
     "attentionBody": "Una ejecución espera su respuesta.",
     "openRequest": "Abrir solicitud",
     "close": "Cerrar"
+  },
+  "canvas030": {
+    "document": "Documento y definiciones",
+    "runs": "Ejecuciones · {{count}}",
+    "captured": "Grafo guardado",
+    "capturedDifferent": "El grafo guardado difiere del diseño",
+    "loginHelp": "Instrucciones de inicio de sesión",
+    "loginInstructions": "Abre la configuración de Codex de un agente para preparar el perfil privado de Macro. Sigue la guía y comprueba de nuevo. Se conservan tus instrucciones.",
+    "retryLogin": "Comprobar sesión",
+    "loginGuide": "Guía de acceso al perfil privado"
   }
 }

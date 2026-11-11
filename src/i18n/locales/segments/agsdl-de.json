@@ -522,7 +522,7 @@
     "input030": "Eingabeanweisung",
     "start030": "Starten",
     "stop030": "Stoppen",
-    "unsupported030": "Dieses Dokument verwendet eine noch nicht unterstützte Funktion. Menschliche Anfragen, Steer, Fan-out, Zeitlimits und entfernte MCP-Aufrufe sind nicht verfügbar.",
+    "unsupported030": "Die Startprüfung hat eine nicht unterstützte Funktion gefunden. Die Ursache steht unten.",
     "codexNotInstalled": "Codex ist nicht installiert. Installiere Codex, um den Lauf zu starten.",
     "codexLoginRequired": "Melde dich vor dem Start im privaten Codex-Profil von Macro an.",
     "codexUnsupported": "Diese Codex-Version oder Plattform wird nicht unterstützt. Verwenden Sie Codex 0.167.x auf einer qualifizierten Plattform.",
@@ -1168,5 +1168,15 @@
     "attentionBody": "Eine Ausführung wartet auf Ihre Antwort.",
     "openRequest": "Anfrage öffnen",
     "close": "Schließen"
+  },
+  "canvas030": {
+    "document": "Dokument und Definitionen",
+    "runs": "Ausführungen · {{count}}",
+    "captured": "Gespeicherter Graph",
+    "capturedDifferent": "Gespeicherter Graph weicht vom Entwurf ab",
+    "loginHelp": "Anmeldeanleitung",
+    "loginInstructions": "Öffnen Sie die Codex-Konfiguration eines Agenten, um das private Profil von Macro vorzubereiten. Folgen Sie der Anleitung und prüfen Sie erneut. Ihre Anweisungen bleiben erhalten.",
+    "retryLogin": "Anmeldung prüfen",
+    "loginGuide": "Anleitung für das private Profil"
   }
 }

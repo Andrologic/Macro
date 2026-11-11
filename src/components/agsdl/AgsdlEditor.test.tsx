@@ -59,12 +59,13 @@ describe("AgSDL viewer", () => {
       flow: { entry: "one", steps: { one: { type: "agent", agent: "a", title: "Flow step" } } },
       compositions: { fragment: { title: "Fragment", entry: "two", steps: { two: { type: "agent", agent: "a", title: "Template step" } }, outputs: [] } } });
     await mount(source);
-    const graphSelect = container!.querySelector<HTMLSelectElement>('select[aria-label="Graph"]')!;
+    act(() => container!.querySelector<HTMLButtonElement>('[aria-label="Document and definitions"]')!.click());
+    const graphSelect = document.body.querySelector<HTMLSelectElement>('select[aria-label="Graph"]')!;
     act(() => { graphSelect.value = '1'; graphSelect.dispatchEvent(new Event('change', { bubbles: true })); });
     expect(container!.textContent).toContain('Template step');
     act(() => { graphSelect.value = '-1'; graphSelect.dispatchEvent(new Event('change', { bubbles: true })); });
-    expect(container!.querySelector('.agsdl-graph-caption')?.textContent).toContain('without a workflow graph');
-    act(() => Array.from(container!.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Definitions')!.click());
+    expect(container!.querySelector('.agsdl-graph-caption')).toBeNull();
+    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Definitions')!.click());
     expect(container!.textContent).toContain('Template step');
     expect(container!.querySelector('.agsdl-graph-caption')).toBeNull();
   });
@@ -73,8 +74,9 @@ describe("AgSDL viewer", () => {
     const source = JSON.stringify({ contract: "agsdl-0.3.0", id: "x", agents: {},
       compositions: { fragment: { title: "Fragment", entry: "only", steps: { only: { type: "call", command: "echo", title: "Template step" } }, outputs: [] } } });
     await mount(source);
-    expect(container!.querySelector('.agsdl-graph-caption')).not.toBeNull();
-    act(() => Array.from(container!.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Definitions')!.click());
+    expect(container!.querySelector('.agsdl-graph-caption')).toBeNull();
+    act(() => container!.querySelector<HTMLButtonElement>('[aria-label="Document and definitions"]')!.click());
+    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Definitions')!.click());
     expect(container!.textContent).toContain('Template step');
     expect(container!.querySelector('.agsdl-graph-caption')).toBeNull();
   });
@@ -83,7 +85,9 @@ describe("AgSDL viewer", () => {
     const source = createExample("feature", "agsdl-0.2.0");
     await mount(source);
     act(() => useAgsdlStore.setState(state => ({ sessions: { ...state.sessions, [key]: { ...state.sessions[key], display: { title: "Feature review", cards: { "/flow/steps/specify": { title: "Specification visit" } } } } } })));
-    expect(container!.querySelector("header strong")?.textContent).toBe("Feature review");
+    act(() => container!.querySelector<HTMLButtonElement>('[aria-label="Document and definitions"]')!.click());
+    expect(document.body.querySelector('[role="dialog"] header strong')?.textContent).toBe("Feature review");
+    act(() => document.body.querySelector<HTMLButtonElement>('[role="dialog"] [aria-label="Close"]')!.click());
     const first = container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!;
     expect(first.textContent).toContain("Specification visit");
     act(() => first.click());
@@ -236,7 +240,8 @@ describe("AgSDL viewer", () => {
     const document = JSON.parse(createLegacyExample("feature"));
     document.graphs.push(...["second", "third"].map(id => ({ ...structuredClone(document.graphs[0]), id })));
     await mount(JSON.stringify(document));
-    const selector = container!.querySelector("select")!;
+    act(() => container!.querySelector<HTMLButtonElement>('[aria-label="Document and definitions"]')!.click());
+    const selector = globalThis.document.body.querySelector("select")!;
     await inspectNode(container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!);
     expect(globalThis.document.body.querySelector(".agsdl-inspector")).not.toBeNull();
     act(() => { selector.value = "2"; selector.dispatchEvent(new Event("change", { bubbles: true })); });
@@ -362,7 +367,9 @@ describe("AgSDL viewer", () => {
       { rule: "HARNESS_UNVERIFIED", details: "Module warning", severity: "warning" as const, location: { pointer: "/agents/a/harness" }, outcome: "pass" },
     ];
     act(() => useAgsdlStore.setState(state => ({ sessions: { [key]: { ...state.sessions[key], reports: [{ operation: "validate", results: [{ input: "primary", unit: "document", verdict: "fail", findings }] }] } } })));
-    const list = () => container!.querySelector('details[aria-label="Design diagnostics"]')!;
+    const openIssues = () => act(() => container!.querySelector<HTMLButtonElement>('.agsdl-viewer-header .agsdl-unresolved')!.click());
+    openIssues();
+    const list = () => document.body.querySelector('details[aria-label="Design diagnostics"]')!;
     expect(list().textContent).toContain("Root problem");
     const filter = list().querySelector<HTMLSelectElement>("select")!;
     act(() => { filter.value = "warning"; filter.dispatchEvent(new Event("change", { bubbles: true })); });
@@ -372,13 +379,16 @@ describe("AgSDL viewer", () => {
     expect(document.body.querySelector('[role="dialog"] header strong')?.textContent).toBe("a");
     expect(document.body.querySelector('[role="dialog"]')!.textContent).toContain("Module warning");
     act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')).find(button => button.textContent === "Close")!.click());
-    act(() => { filter.value = "all"; filter.dispatchEvent(new Event("change", { bubbles: true })); });
+    openIssues();
+    act(() => { const filter = list().querySelector<HTMLSelectElement>("select")!; filter.value = "all"; filter.dispatchEvent(new Event("change", { bubbles: true })); });
     const row = Array.from(list().querySelectorAll("li")).find(row => row.textContent?.includes("Hidden composition problem"))!;
     act(() => row.querySelector<HTMLButtonElement>("button")!.click());
     expect(document.body.querySelector('[role="dialog"] header strong')?.textContent).toBe("hidden");
     act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')).find(button => button.textContent === "Close")!.click());
+    openIssues();
     const attach = spyOn(chatContext, "prepareAgsdlChatContext").mockResolvedValue(undefined);
-    await act(async () => row.querySelector<HTMLButtonElement>('[aria-label="Attach to chat"]')!.click());
+    const attachedRow = Array.from(list().querySelectorAll("li")).find(row => row.textContent?.includes("Hidden composition problem"))!;
+    await act(async () => attachedRow.querySelector<HTMLButtonElement>('[aria-label="Attach to chat"]')!.click());
     expect(attach).toHaveBeenCalledWith(target, expect.objectContaining({ path: "/compositions/hidden", diagnostic: "REFERENCE: Hidden composition problem\n/compositions/hidden/entry\nnested/use" }));
     act(() => list().querySelector<HTMLButtonElement>("li button")!.click());
     expect(document.body.querySelector('[role="dialog"] header strong')?.textContent).toBe("x");
@@ -389,7 +399,7 @@ describe("AgSDL viewer", () => {
     await mount('{"contract":"agsdl-0.3.0","id":"invalid","agents":{}}');
     const save = spyOn(useAgsdlStore.getState(), "save").mockResolvedValue(undefined);
     act(() => useAgsdlStore.setState(state => ({ sessions: { [key]: { ...state.sessions[key], dirty: true, reports: [{ operation: "validate", results: [{ input: "primary", unit: "document", verdict: "fail", findings: [{ rule: "SCHEMA", details: "Incomplete draft", severity: "error", outcome: "fail", location: { pointer: "" } }] }] }] } } })));
-    expect(container!.textContent).toContain("Draft to correct · execution not authorized");
+    expect(container!.querySelector('.agsdl-viewer-header .agsdl-unresolved')).not.toBeNull();
     await act(async () => Array.from(container!.querySelectorAll<HTMLButtonElement>("button")).find(button => button.textContent === "Save draft")!.click());
     expect(save).toHaveBeenCalledWith(target);
     expect(useAgsdlStore.getState().sessions[key].source).toContain('"id":"invalid"');

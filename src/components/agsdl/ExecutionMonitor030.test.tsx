@@ -32,7 +32,7 @@ it('opens only read access and keeps occurrence selection on a revision conflict
   expect(bridge!.selectedOccurrenceKey).toBe(second.key);
   expect(host.textContent).toContain('Captured source');
   expect(host.textContent).toContain('Current document');
-  await click('run-old'); await click('run-current');
+  await act(async () => host.querySelector<HTMLButtonElement>('[data-run-id="run-old"] button')!.click()); await act(async () => host.querySelector<HTMLButtonElement>('[data-run-id="run-current"] button')!.click());
   expect(bridge!.selectedOccurrenceKey).toBe(second.key);
   expect(bridge!.capture.authoredSource).toBe(run.capture.authoredSource);
   await act(async () => access.publish({ ...access.snapshot, history: { kind: 'loading', retained: [] } }));
@@ -49,9 +49,9 @@ it('does not pick the newest run before human waits across the full history are 
   const human = humanFixture030(waiting);
   await act(async () => access.publish({ ...access.snapshot, history: ready([historyFixture030(run), { ...historyFixture030(waiting), humans: ready([human]) }]) }));
   expect(access.reads).toEqual(['history', 'run-waiting']);
-  await click('run-current');
+  await act(async () => host.querySelector<HTMLButtonElement>('[data-run-id="run-current"] button')!.click());
   await click('Refresh observations');
-  expect(host.querySelector('button[aria-pressed="true"]')?.textContent).toContain('run-current');
+  expect(host.querySelector('[data-run-id="run-current"] button')?.getAttribute('aria-pressed')).toBe('true');
 });
 it('keeps stop proof, physical work and final verdict independent and compares exact captures', async () => {
   const run = inspectionFixture030(); const old = inspectionFixture030('run-old');
@@ -247,4 +247,22 @@ it('shows native call results and errors when the runtime has no visit details',
   expect(host.textContent).toContain('native command text');
   await act(async () => bridge!.selectOccurrence(bridge!.occurrences[1].key));
   expect(host.textContent).toContain('OUTPUT_INVALID: Invalid JSON');
+});
+
+it('keeps the captured canvas and pending human card visible while the run drawer is closed', async () => {
+  const run = inspectionFixture030();
+  const access = monitorFixture030(run);
+  await mount(access, { canvas: <div data-design>Design</div>, initialRunId: run.capture.systemStartId,
+    renderGraph: (bridge: RunGraphBridge030) => <div data-canvas={bridge.capture.systemStartId}>Captured graph</div>,
+    renderHumans: (_run: unknown, pendingOnly?: boolean) => <div>{pendingOnly ? 'Pending question' : 'Human history'}</div> });
+  const drawer = host.querySelector<HTMLElement>('.agsdl-runs-drawer')!;
+  expect(drawer.hidden).toBe(true);
+  expect(host.querySelector('.agsdl-run-canvas [data-canvas]')?.getAttribute('data-canvas')).toBe(run.capture.systemStartId);
+  expect(host.querySelector('.agsdl-human-overlay')?.textContent).toBe('Pending question');
+  await act(async () => host.querySelector<HTMLButtonElement>('.agsdl-runs-toggle')!.click());
+  expect(drawer.hidden).toBe(false);
+  await act(async () => host.querySelector<HTMLButtonElement>('.agsdl-runs-toggle')!.click());
+  expect(drawer.hidden).toBe(true);
+  expect(host.querySelector('.agsdl-human-overlay')?.textContent).toBe('Pending question');
+  expect(host.querySelector('.agsdl-run-canvas [data-canvas]')).not.toBeNull();
 });

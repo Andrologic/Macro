@@ -522,7 +522,7 @@
     "input030": "入力指示",
     "start030": "開始",
     "stop030": "停止",
-    "unsupported030": "このドキュメントは未対応の機能を使用しています。人への要求、steer、ファンアウト、タイムアウト、リモート MCP 呼び出しは利用できません。",
+    "unsupported030": "起動前の確認で未対応の機能が見つかりました。下記の原因を確認してください。",
     "codexNotInstalled": "Codex がインストールされていません。実行するには Codex をインストールしてください。",
     "codexLoginRequired": "開始する前に Macro の専用プロファイルで Codex にログインしてください。",
     "codexUnsupported": "この Codex のバージョンまたはプラットフォームはサポートされていません。検証済みのプラットフォームで Codex 0.167.x を使用してください。",
@@ -1168,5 +1168,15 @@
     "attentionBody": "実行が回答を待っています。",
     "openRequest": "依頼を開く",
     "close": "閉じる"
+  },
+  "canvas030": {
+    "document": "ドキュメントと定義",
+    "runs": "実行 · {{count}}",
+    "captured": "保存されたグラフ",
+    "capturedDifferent": "保存されたグラフは現在の設計と異なります",
+    "loginHelp": "ログイン手順",
+    "loginInstructions": "エージェントの Codex 設定を開いて Macro 専用プロファイルを準備してください。専用プロファイルへのログイン手順に従い、再確認してください。入力した指示は保持されます。",
+    "retryLogin": "ログインを確認",
+    "loginGuide": "専用プロファイルのログイン手順"
   }
 }

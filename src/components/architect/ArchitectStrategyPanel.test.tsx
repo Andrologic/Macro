@@ -85,24 +85,24 @@ it('opens captured executions without execution commands and keeps them after a 
   try {
     await mount();
     act(() => useAppStore.setState({ selectedProjectId:'sample-project' }));
-    const clickView = async (text: string) => {
-      const button = [...container!.querySelectorAll('nav button')].find(item => item.textContent === text) as HTMLButtonElement;
-      await act(async () => button.click());
-    };
-    await clickView('Executions');
-    expect(container!.textContent).toContain('run-current');
+    expect(container!.querySelector('nav')).toBeNull();
+    expect(container!.querySelector('.agsdl-viewer')).not.toBeNull();
+    expect(container!.querySelector('.agsdl-runs-drawer')?.hasAttribute('hidden')).toBe(true);
+    await act(async () => container!.querySelector<HTMLButtonElement>('.agsdl-runs-toggle')!.click());
+    await act(async () => container!.querySelector<HTMLButtonElement>('[data-run-id="run-current"] button')!.click());
+    expect(container!.querySelector('[data-captured-run="run-current"] .agsdl-canvas')).not.toBeNull();
     expect(access.reads.every(item => item === 'history' || item === 'run-current')).toBe(true);
-    expect(container!.querySelector('.agsdl-viewer')).toBeNull();
     const key = agsdlSessionKey({branchName:'develop', planId:'layout-test'});
     act(() => useAgsdlStore.setState(state => ({sessions:{...state.sessions,[key]:{...state.sessions[key],source:'{"contract":"agsdl-0.3.0","id":"changed","agents":{}}'}}})));
-    expect(container!.textContent).toContain('run-current');
-    expect(container!.textContent).toContain('Captured source');
-    expect(container!.textContent).toContain('Current document');
-    await clickView('Design');
+    expect(container!.querySelector('[data-captured-run="run-current"]')).not.toBeNull();
+    expect(container!.textContent).toContain('Captured graph differs from design');
+    await act(async () => container!.querySelector<HTMLButtonElement>('.agsdl-runs-toggle')!.click());
+    expect(container!.querySelector('[data-captured-run="run-current"] .agsdl-canvas')).not.toBeNull();
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Expand view"]')!.click());
+    expect(document.body.querySelector('[role="dialog"] [data-captured-run="run-current"] .agsdl-canvas')).not.toBeNull();
+    await act(async () => document.body.querySelector<HTMLButtonElement>('[role="dialog"] [aria-label="Close expanded view"]')!.click());
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Design"]')!.click());
     expect(container!.querySelector('.agsdl-viewer')).not.toBeNull();
-    expect(access.listeners.size).toBe(0);
-    await clickView('Executions');
-    expect(container!.textContent).toContain('run-current');
   } finally { await act(async () => configureWorkflowRunAccess030(undefined)); }
 });
 
@@ -125,9 +125,8 @@ it('requires an explicit project for a system spanning multiple project owners',
   try {
     await mount();
     act(() => useAppStore.setState({selectedProjectId:null,activePlanContext:{...useAppStore.getState().activePlanContext!,targetBranchesByProjectId:{'project-a':'develop','project-b':'main'}}}));
-    await act(async () => (container!.querySelectorAll('nav button')[1] as HTMLButtonElement).click());
     expect(scopes).toEqual([]);
-    const select = container!.querySelector('nav select') as HTMLSelectElement;
+    const select = container!.querySelector('select[aria-label="Project"]') as HTMLSelectElement;
     await act(async () => { select.value='project-b';select.dispatchEvent(new Event('change',{bubbles:true})); });
     expect(scopes).toEqual([{owner:{projectId:'project-b',planId:'layout-test',branch:'main'},conversationId:undefined}]);
   } finally { await act(async () => configureWorkflowRunAccess030(undefined)); }
@@ -143,7 +142,6 @@ it('inspects the selected document owner when its execution branch differs', asy
     act(() => useAppStore.setState({ selectedProjectId: 'selected-project', activePlanContext: {
       ...useAppStore.getState().activePlanContext!, targetBranchesByProjectId: { 'selected-project': 'main' },
     } }));
-    await act(async () => (container!.querySelectorAll('nav button')[1] as HTMLButtonElement).click());
     expect(scopes).toEqual([{ owner: { projectId: 'selected-project', planId: 'layout-test', branch: 'develop' }, conversationId: undefined }]);
   } finally { await act(async () => configureWorkflowRunAccess030(undefined)); }
 });
@@ -157,9 +155,10 @@ it('shows the native read-only notice beside the 0.3 launch controls', async () 
       useAgsdlStore.setState(state => ({ sessions: { ...state.sessions, [key]: {
         ...state.sessions[key], source: '{"contract":"agsdl-0.3.0","id":"readonly","agents":{}}',
       } } }));
-      useAgsdlExecutionStore.setState({ notice030: 'agsdl.execution.readOnly030' });
     });
-    expect(container!.textContent).toContain('This run is limited to read-only access');
-    expect([...container!.querySelectorAll('button')].some(button => button.textContent === 'Start')).toBe(true);
+    await act(async () => useAgsdlExecutionStore.setState({ notice030: 'agsdl.execution.readOnly030' }));
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Start"]')!.click());
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('This run is limited to read-only access');
+    expect(container!.querySelector('textarea')).toBeNull();
   } finally { act(() => useAgsdlExecutionStore.setState({ notice030: undefined })); }
 });

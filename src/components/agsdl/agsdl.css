@@ -193,3 +193,21 @@ details[open] > .agsdl-disclosure-summary > .agsdl-disclosure-chevron { transfor
 .agsdl-node-capabilities > span { display: inline-flex; align-items: center; gap: 3px; min-width: 0; }
 .agsdl-node-capabilities svg { flex: none; }
 .agsdl-node-visit-value, .agsdl-node-skill-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Canvas controls never take height away from the graph. */
+.agsdl-viewer { position: relative; }
+.agsdl-viewer-header { position: absolute; right: 8px; top: 8px; z-index: 6; gap: 2px; padding: 3px; border: 1px solid rgb(var(--border)); border-radius: 6px; background: rgb(var(--card) / 0.95); }
+.agsdl-viewer-header .agsdl-header-actions { gap: 1px; }
+.agsdl-canvas-shell, .agsdl-run-canvas, .agsdl-captured-graph { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; }
+.agsdl-launch-tools { position: absolute; z-index: 7; top: 8px; left: 8px; display: flex; gap: 1px; padding: 3px; border: 1px solid rgb(var(--border)); border-radius: 6px; background: rgb(var(--card) / 0.95); }
+.agsdl-icon-button:disabled { opacity: 0.4; }
+.agsdl-runs-toggle { position: absolute; z-index: 12; bottom: 8px; right: 8px; padding: 5px 8px; border: 1px solid rgb(var(--border)); border-radius: 6px; background: rgb(var(--card)); font-size: 11px; }
+.agsdl-runs-drawer { position: absolute; z-index: 10; inset: auto 0 0; max-height: 58%; overflow: auto; padding: 12px 12px 44px; border-top: 1px solid rgb(var(--border)); background: rgb(var(--card)); font-size: 12px; }
+.agsdl-runs-drawer > * + * { margin-top: 12px; }
+.agsdl-runs-drawer[hidden] { display: none; }
+.agsdl-human-overlay { position: absolute; z-index: 15; top: 50px; left: 8px; right: 8px; max-height: 48%; overflow: auto; border-radius: 8px; background: rgb(var(--card)); box-shadow: 0 8px 32px rgb(0 0 0 / 0.25); }
+.agsdl-human-overlay:empty { display: none; }
+.agsdl-human-overlay [data-human-request] { border-color: rgb(var(--primary)); }
+.agsdl-capture-label, .agsdl-canvas-notice { position: absolute; z-index: 6; top: 49px; left: 8px; right: 8px; width: fit-content; max-width: calc(100% - 16px); padding: 3px 6px; border-radius: 4px; background: rgb(var(--card) / 0.95); color: rgb(var(--muted-foreground)); font-size: 10px; }
+.agsdl-canvas-notice { top: auto; bottom: 44px; }
+.agsdl-project-picker { position: absolute; z-index: 8; bottom: 8px; right: 8px; padding: 6px; background: rgb(var(--card)); }
