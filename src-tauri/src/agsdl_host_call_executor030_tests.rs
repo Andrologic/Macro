@@ -284,7 +284,7 @@ async fn native_stdio_mcp_preserves_structured_error_result_and_operands() {
 }
 
 #[test]
-fn native_preflight_opens_humans_timeouts_but_keeps_http_and_parallelism_closed() {
+fn native_preflight_opens_humans_timeouts_and_parallelism_but_keeps_http_closed() {
     let base = document(json!({"type":"call","command":"true"}));
     assert!(crate::agsdl_host_capture::product_slice030(&base.to_string(), None).is_none());
     let mut steer = base.clone();
@@ -306,7 +306,7 @@ fn native_preflight_opens_humans_timeouts_but_keeps_http_and_parallelism_closed(
         &base.to_string(),
         Some(&plan.to_string())
     )
-    .is_some());
+    .is_none());
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

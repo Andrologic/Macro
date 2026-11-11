@@ -368,8 +368,10 @@ qualification n’est pas faite.
 Le [contrat UI/runtime 0.3](agsdl-030.md#contrat-produit-des-runs-03) définit les
 actions raccordées et les DTO natifs encore manquants. Start et Stop sont
 ouverts pour la tranche Codex 0.167.x qualifiée sur macOS ARM64 et Linux ARM64.
-Les appels, demandes humaines, steer, parallélisme et délais restent refusés
-avant lancement. Le profil fournisseur, sa plateforme, ses versions et les
+Les appels locaux, demandes humaines, messages en file et steer, délais,
+routes parallèles, fan-outs et joins sont raccordés au superviseur natif.
+Les compositions et les capacités d'agent hors tranche restent refusées avant
+lancement. Le profil fournisseur, sa plateforme, ses versions et les
 propriétés demandées sont vérifiés par le natif. La validité
 du document, le préflight natif et cette autorisation restent séparés. Un
 catalogue Chat ou un scénario synthétique réussi ne les remplace pas.

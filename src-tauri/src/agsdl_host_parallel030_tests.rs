@@ -102,6 +102,15 @@ async fn exercise(
     executor: Arc<dyn AgentExecutor030>,
     script: impl std::future::Future<Output = ()>,
 ) -> crate::db::agsdl_execution::flow_store030::FlowView030 {
+    let capture = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
+        .await
+        .unwrap()
+        .capture;
+    assert!(crate::agsdl_host_capture::product_slice030(
+        &capture.authored_source,
+        Some(&capture.compiled_plan_json)
+    )
+    .is_none());
     let pumps = f.pumps();
     let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let executors: Executors030 = Executors030 {

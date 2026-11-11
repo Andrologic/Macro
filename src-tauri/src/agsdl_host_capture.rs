@@ -827,11 +827,11 @@ pub(crate) fn product_slice030(
         let pointer = format!("/flow/steps/{}", name.replace('~', "~0").replace('/', "~1"));
         if !matches!(
             step.get("type").and_then(Value::as_str),
-            Some("agent" | "call" | "approval")
+            Some("agent" | "call" | "approval" | "join")
         ) {
             return issue(
                 pointer,
-                "Only agent, call and approval steps are supported for this run.",
+                "Only agent, call, approval and join steps are supported for this run.",
             );
         }
     }
@@ -848,26 +848,11 @@ pub(crate) fn product_slice030(
         );
         if !matches!(
             step.get("type").and_then(Value::as_str),
-            Some("agent" | "call" | "approval")
+            Some("agent" | "call" | "approval" | "join")
         ) {
             return issue(
                 pointer,
-                "Only agent, call and approval steps are supported for this run.",
-            );
-        }
-    }
-    for route in plan.get("routes")?.as_array()? {
-        let targets = route.get("targets")?.as_array()?;
-        if targets.len() > 1
-            || targets.iter().any(|target| {
-                !target.get("eachPathJson").is_none_or(Value::is_null)
-                    || !target.get("concurrencyJson").is_none_or(Value::is_null)
-                    || !target.get("maxJson").is_none_or(Value::is_null)
-            })
-        {
-            return issue(
-                "/flow".into(),
-                "Parallel routes and fan-out are not yet supported.",
+                "Only agent, call, approval and join steps are supported for this run.",
             );
         }
     }
@@ -2150,12 +2135,7 @@ mod product_slice030_tests {
             assert!(diagnostic.pointer.starts_with(parent), "{diagnostic:?}");
         }
         assert!(product_slice030(&base.to_string(), None).is_none());
-        let plan = json!({"steps": [], "routes": [{"targets": [{"eachPathJson":"[]"}]}]});
-        assert_eq!(
-            product_slice030(&base.to_string(), Some(&plan.to_string()))
-                .unwrap()
-                .code,
-            "UNSUPPORTED_030_FEATURE"
-        );
+        let plan = json!({"steps": [{"address":["gather"],"type":"join"}], "routes": [{"targets": [{"eachPathJson":"[]", "concurrencyJson":"2", "maxJson":"3"}, {"address":["sibling"]}]}]});
+        assert!(product_slice030(&base.to_string(), Some(&plan.to_string())).is_none());
     }
 }

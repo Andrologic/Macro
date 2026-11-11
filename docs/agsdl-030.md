@@ -166,7 +166,23 @@ contiennent des instructions produites par un autre agent. Une mission ne change
 ni les instructions permanentes, ni les permissions, ni la qualification du
 harness. Les soumissions non autorisées sont refusées dans le travail courant.
 
-L'accès MCP des agents, les permissions `ask`, `planFirst: ask`, fan-out,
+Les listes de cibles parallèles et les fan-outs `each` utilisent le superviseur
+natif. `max` refuse la route entière avant tout démarrage si la liste dépasse
+la limite ; `concurrency` borne le nombre de chemins actifs. Les instances
+partagées et nommées conservent leur file, tandis que `instance: "new"` permet
+des sessions Codex distinctes en parallèle. Les missions, ressources et réglages
+restent propres à chaque travail, sans modifier la configuration commune du profil.
+
+Les joins attendent tous les chemins ou un quorum. Après leur décision,
+`remaining: "stop"` annule les travaux restants et attend leur fin physique ;
+`finish` poursuit immédiatement tout en laissant ces chemins finir ; `wait`
+attend leur fin avant de poursuivre. Les éléments de fan-out non démarrés sont
+retirés, et les résultats tardifs ne changent pas la décision. Stop attend
+tous les propriétaires physiques. L'annulation partagée non définie par la
+spec conserve le diagnostic bloquant `UNSPECIFIED_SHARED_CANCELLATION` ;
+l'utilisateur peut arrêter le run, sans règle de résolution ajoutée par Macro.
+
+L'accès MCP des agents, les permissions `ask`, `planFirst: ask`,
 les compositions et les autres capacités hors tranche restent refusés.
 Les runs interrompus au redémarrage restent consultables et ne reprennent pas.
 
@@ -249,7 +265,7 @@ wrappers générés, sans modifier leurs fichiers à la main.
 | Préflight explicite | `execution_preflight` | Fournisseurs lot 2, capture/admission ; fournisseurs lot 7 pour l'exposition | Source, validité et couverture ; G1 manque pour une qualification fournisseur exploitable. |
 | Lancer | `execution_stage_intent`, `execution_submit_intent`, `execution_read_intent`, `execution_close_intent` ; dispatch existant `execution_start` | Fournisseurs lot 1 pour la pompe ; lot 2 pour l'admission ; lot 7 et I/09 pour les commandes | Intention durable et admission `start030` existantes ; G1 et raccord de production requis. |
 | Livrer en queue | `execution_deliver030`, panneau Messages | Production Codex 0.167.x | Capture conservée, admission FIFO, travail distinct ; aucun appel aux livraisons historiques. |
-| Livrer en steer | `execution_deliver030` et routes du flow, superviseur natif | Production Codex 0.167.x | Destinataire exact, accusé de consommation, repli avant envoi, aucun rejeu incertain. Les fan-outs et joins restent refusés au lancement produit. |
+| Livrer en steer | `execution_deliver030` et routes du flow, superviseur natif | Production Codex 0.167.x | Destinataire exact, accusé de consommation, repli avant envoi, aucun rejeu incertain. Les fan-outs et joins utilisent le même superviseur. |
 | Choisir le flow, avec commentaire d'approval | `execution_submit_human030`, lecture `execution_read_humans030` | Humain U, N-HUMAN H/B ; I/09 | G3 à G5, reçu de soumission puis décision et consommation ; aucun envoi du message approuvé par l'UI. |
 | Approuver ou refuser une action `ask`, avec commentaire | Même nouvelle commande humaine | Humain U, N-HUMAN H/B et fournisseur propriétaire de l'action ; I/09 | G4 distingue permission et choix de flow ; G5 corrèle la remise à l'exécuteur possédé. |
 | Accepter ou refuser un plan | Même nouvelle commande humaine | Humain U, N-HUMAN H/B ; fournisseurs lot 5 pour le verrou ; I/09 | G3 et G5, plan courant et verrou natifs, jamais un plan-id fourni par l'UI. |
