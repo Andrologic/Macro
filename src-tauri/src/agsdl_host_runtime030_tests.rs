@@ -200,7 +200,7 @@ impl Fixture {
             &observed,
         )
         .unwrap();
-        let registry = json!({"format":"macro-agsdl-registry/030","version":"fixture","modules":[{"harness":"codex","moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/codex/module.json")}],"harnesses":[harness],"agents":agents,"hostCapabilities":[]});
+        let registry = json!({"format":"macro-agsdl-registry/030","version":"fixture","modules":[{"harness":"codex","moduleJson":crate::agsdl_host_codex030::approvals::module030()}],"harnesses":[harness],"agents":agents,"hostCapabilities":[{"name":"approval","support":"native","evidenceJson":"{\"runtime\":\"synthetic-human-clock\"}"}]});
         let compiled = bun("import {compileHost030} from './src/services/agsdlExecution/hostCompilation';const j=JSON.parse(await Bun.stdin.text());process.stdout.write(await compileHost030(j.authored,j.source,j.registry));", &json!({"authored":authored,"source":source,"registry":registry})).await;
         let plan = compiled["compiledPlanJson"]
             .as_str()
@@ -1168,6 +1168,156 @@ fn fake_executor() -> FakeExecutor {
         cancelled: Default::default(),
         submitted: None,
         independent_finish: false,
+    }
+}
+
+#[tokio::test]
+async fn native_flow_choices_preserve_received_prompt_through_entry_and_route() {
+    use crate::agsdl_host_human030::{HumanAnswer030, HumanOrigin030, HumanSubmission030};
+    use crate::agsdl_host_human_executor030::{HumanClockRuntime030, HumanExecutor030};
+    use crate::ai::stream_tasks::StreamTasks;
+    let document = json!({"contract":"agsdl-0.3.0","id":"human-prompt-continuity",
+        "agents":{"worker":{"harness":"codex","permissions":"read-only"}},
+        "flow":{"entry":"first","steps":{
+            "first":{"type":"approval","next":{"continue":"second"}},
+            "second":{"type":"approval","next":{"continue":"work"}},
+            "work":{"type":"agent","agent":"worker"}}}});
+    let f = Fixture::with_document(document).await;
+    let pumps = f.pumps();
+    let app = tauri::test::mock_builder()
+        .manage(Arc::try_unwrap(f.host).ok().unwrap())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let tasks = StreamTasks::default();
+    let executor = Arc::new(fake_executor());
+    let executors = Executors030 {
+        agents: executor.clone(),
+        calls: None,
+        humans: Some(Arc::new(HumanExecutor030 {
+            pool: f.pool.clone(),
+            tasks: tasks.clone(),
+        })),
+        clock: Some(Arc::new(HumanClockRuntime030 {
+            app: app.handle().clone(),
+            pool: f.pool.clone(),
+            tasks: tasks.clone(),
+            identity: f.identity.clone(),
+        })),
+    };
+    let answer_app = app.handle().clone();
+    let (pool, identity) = (f.pool.clone(), f.identity.clone());
+    let answers = tokio::spawn(async move {
+        let host = answer_app.state::<HostState>();
+        let broker = host
+            .flow030()
+            .humans
+            .broker(&host, &pool, &identity)
+            .await
+            .unwrap();
+        for comment in ["First choice", "Second choice"] {
+            let request = loop {
+                let request: Option<String> = sqlx::query_scalar("SELECT request_id FROM engine_flow030_human_requests WHERE system_id=? AND kind='approval' AND resolution_json IS NULL ORDER BY rowid LIMIT 1")
+                    .bind(&identity.system_start_id).fetch_optional(&pool).await.unwrap();
+                if let Some(request) = request {
+                    break request;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            };
+            let _operation = broker.operation.lock().await;
+            let source: String = sqlx::query_scalar(
+                "SELECT capture_json FROM engine_start030_requests WHERE system_id=?",
+            )
+            .bind(&identity.system_start_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let source: StartCapture030 = serde_json::from_str(&source).unwrap();
+            broker
+                .submit(
+                    &host,
+                    HumanSubmission030 {
+                        scope: crate::db::agsdl_execution::public030::HumanScope030 {
+                            source: source.source,
+                            system_start_id: identity.system_start_id.clone(),
+                        },
+                        request_id: request,
+                        expected_revision: "0".into(),
+                        answer: HumanAnswer030::Approval {
+                            choice: "continue".into(),
+                            comment: comment.into(),
+                        },
+                    },
+                    HumanOrigin030::Person,
+                )
+                .await
+                .unwrap();
+            broker.pump(&host, &CancellationToken::new()).await.unwrap();
+        }
+    });
+    let event_app = app.handle().clone();
+    let (pool, config, event_tasks) = (f.pool.clone(), f.config.clone(), tasks.clone());
+    let emitter = Arc::new(move |project| {
+        native_event_emitter030(
+            event_app.clone(),
+            pool.clone(),
+            config.clone(),
+            event_tasks.clone(),
+            project,
+        )
+    });
+    let host = app.state::<HostState>();
+    let (_wake, receiver) = watch::channel(0);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        supervise_with_emitter030(
+            Some(app.handle()),
+            &host,
+            &f.pool,
+            &f.config,
+            &tasks,
+            &f.owner,
+            &executors,
+            receiver,
+            &CancellationToken::new(),
+            emitter,
+        ),
+    )
+    .await;
+    for pump in pumps {
+        pump.abort();
+    }
+    answers.abort();
+    result.expect("flow choices stalled").unwrap();
+    let view = flow::inspect_run(host.flow030(), &host, &f.pool, &f.owner)
+        .await
+        .unwrap();
+    assert_eq!(view.flow.state.verdict.as_deref(), Some("succeeded"));
+    assert_eq!(executor.starts.load(Ordering::SeqCst), 1);
+    let message: Value = serde_json::from_str(
+        view.flow
+            .state
+            .activations
+            .iter()
+            .find(|a| a.agent.as_deref() == Some("worker"))
+            .unwrap()
+            .message_json
+            .as_deref()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(message["prompt"], "Start");
+    assert_eq!(message["comments"][0]["comment"], "First choice");
+    assert_eq!(message["comments"][1]["comment"], "Second choice");
+    let sources: Vec<String> =
+        sqlx::query_scalar("SELECT source_json FROM engine_flow030_route_source_attestations")
+            .fetch_all(&f.pool)
+            .await
+            .unwrap();
+    assert_eq!(sources.len(), 2);
+    for source in sources {
+        let source: Value = serde_json::from_str(&source).unwrap();
+        assert_eq!(source["provenance"]["prompt"], json!({"kind":"host"}));
+        assert_eq!(source["provenance"]["instructions"], json!([]));
     }
 }
 #[tokio::test]

@@ -330,7 +330,8 @@ impl Profile {
         // metadata can be read only as explicit workspace data by native tools.
         Ok(
             json!({"features":{"plugins":false,"remote_plugin":false,"apps":false,"hooks":false,"shell_snapshot":false,"shell_snapshot_v2":false,
-            "memories":false,"goals":false,"code_mode":false,"image_generation":false,"multi_agent":false,"multi_agent_v2":false},
+            "memories":false,"goals":false,"code_mode":false,"image_generation":false,"multi_agent":false,"multi_agent_v2":false,"exec_permission_approvals":true,"request_permissions_tool":false},
+            "tools":{"update_plan":{"enabled":true}},
             "cloud":{"skills":{"enabled":false}},"allow_login_shell":false,"agents":{"enabled":false},"notify":[],"skills":{"include_instructions":false,"bundled":{"enabled":false}},
             "project_root_markers":[],"project_doc_max_bytes":0,"web_search":"disabled","shell_environment_policy":{"inherit":"none","experimental_use_profile":false,"set":{"PATH":"/usr/local/bin:/usr/bin:/bin","HOME":self.home,"CODEX_HOME":self.directory.join("codex"),"XDG_CONFIG_HOME":self.home.join(".config"),"XDG_DATA_HOME":self.home.join(".local/share"),"LANG":"C.UTF-8"}},
             "approval_policy":"never","cli_auth_credentials_store":"file","default_permissions":"macro-agsdl",
@@ -499,7 +500,16 @@ pub(crate) fn verify_layers(
             _ => value.clone(),
         }
     }
-    if !contains(config, &expected)
+    // 0.167 omits update_plan from the serialized effective ToolsV2, even
+    // though it parses and applies the setting. Its session layer retains it.
+    let plan_enabled = layers.iter().any(|layer| {
+        layer["name"]["type"] == "sessionFlags"
+            && layer["config"].pointer("/tools/update_plan/enabled") == Some(&json!(true))
+    });
+    let mut comparable = expected.clone();
+    comparable.as_object_mut().unwrap().remove("tools");
+    if !plan_enabled
+        || !contains(config, &comparable)
         || without_null_defaults(&config["permissions"]) != expected["permissions"]
         || config
             .get("mcp_servers")
@@ -550,6 +560,14 @@ mod tests {
         );
         let config = json!({"layers":[{"name":{"type":"sessionFlags"},"config":settings}],"config":settings});
         verify_layers(&config, &profile, &workspace, false).unwrap();
+        let mut serialized = config.clone();
+        serialized["config"]
+            .as_object_mut()
+            .unwrap()
+            .remove("tools");
+        verify_layers(&serialized, &profile, &workspace, false).unwrap();
+        serialized["layers"][0]["config"]["tools"]["update_plan"]["enabled"] = json!(false);
+        assert!(verify_layers(&serialized, &profile, &workspace, false).is_err());
         for pointer in [
             "/config/permissions/macro-agsdl/filesystem/:tmpdir",
             "/config/permissions/macro-agsdl/filesystem/:slash_tmp",

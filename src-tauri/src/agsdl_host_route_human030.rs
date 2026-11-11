@@ -1,4 +1,81 @@
 use super::*;
+
+/// Carry the already accepted incoming prompt through a flow choice. This
+/// reads the existing entry or occurrence; it creates no instruction authority.
+pub(crate) async fn received_prompt_tx(
+    db: &mut SqliteConnection,
+    capture: &StartCapture030,
+    producer: &Producer030,
+    owner: &EngineOwner,
+    generation: &str,
+) -> Verified<Value> {
+    let id = &capture.identity;
+    let raw: String = sqlx::query_scalar(
+        "SELECT state_json FROM engine_flow030_runs WHERE system_id=? AND invocation_id=?",
+    )
+    .bind(&id.system_start_id)
+    .bind(&id.flow_invocation_id)
+    .fetch_one(&mut *db)
+    .await?;
+    let state: FlowState030 = serde_json::from_str(&raw)?;
+    let matches: Vec<_> = state
+        .activations
+        .iter()
+        .filter(|a| a.id == producer.activation_id)
+        .collect();
+    require(matches.len() == 1)?;
+    let activation = matches[0];
+    require(activation.step == producer.step && activation.message_json == producer.message_json)?;
+    let message: Value = serde_json::from_str(
+        producer
+            .message_json
+            .as_deref()
+            .ok_or(StoreError030::Authority)?,
+    )?;
+    if message.get("prompt").is_none() {
+        return Ok(json!({"kind":"none"}));
+    }
+    if let Some(occurrence) = &activation.occurrence {
+        let raw = crate::agsdl_host_flow030::check_persisted_occurrence(
+            db,
+            id,
+            occurrence,
+            &activation.producer,
+            &owner.owner_epoch,
+            generation,
+        )
+        .await?;
+        let provenance: Value = serde_json::from_str(&raw)?;
+        let prompt = provenance.get("prompt").ok_or(StoreError030::Authority)?;
+        require(prompt["kind"].as_str().is_some_and(|kind| kind != "none"))?;
+        return Ok(prompt.clone());
+    }
+    let plan: FlowPlan030 = serde_json::from_str(&capture.compiled_plan_json)?;
+    let request: String = sqlx::query_scalar(
+        "SELECT request_json FROM engine_start030_requests WHERE system_id=? AND invocation_id=?",
+    )
+    .bind(&id.system_start_id)
+    .bind(&id.flow_invocation_id)
+    .fetch_one(&mut *db)
+    .await?;
+    let request: crate::db::agsdl_execution::dto::EngineStartRequest =
+        serde_json::from_str(&request)?;
+    require(
+        plan.entry == activation.step
+            && activation.producer.is_none()
+            && activation.item_json.is_none()
+            && request.source == capture.source
+            && request.entry.as_ref().is_some_and(|entry| {
+                exact(
+                    &entry.message_json,
+                    producer.message_json.as_deref().unwrap(),
+                )
+                .unwrap_or(false)
+            }),
+    )?;
+    Ok(json!({"kind":"host"}))
+}
+
 /// Approval and compose failures derive from retained native decisions. A
 /// deserialized source or a reducer phase alone cannot authorize either one.
 pub(crate) fn verify_human_compose_source_tx<'a>(

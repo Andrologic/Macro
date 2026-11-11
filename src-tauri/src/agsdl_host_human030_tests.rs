@@ -6,6 +6,76 @@ use tokio::io::AsyncWriteExt;
 
 #[derive(Default)]
 struct TestClock(AtomicU64);
+
+#[tokio::test]
+async fn native_action_delivery_requires_exact_payload_live_work_and_one_resolution() {
+    for outcome in ["yes", "no", "expired", "stop", "retired", "payload"] {
+        let f = fixture("agent", Some(1000), Some(10)).await;
+        let work = f.broker.admit_agent(&f.host, &f.attempt).await.unwrap();
+        assert!(work.belongs_to(&f.attempt));
+        pump(&f).await;
+        let payload = json!({"nativeRequest":{"id":"request","params":{"threadId":"thread","turnId":"turn","itemId":"command"}}});
+        let ticket = f
+            .broker
+            .open(&f.host, &work, "ask", payload.clone())
+            .await
+            .unwrap();
+        pump(&f).await;
+        if outcome == "expired" {
+            f.clock.at(10);
+            f.broker.tick(&f.host).await.unwrap();
+        } else {
+            let answer = HumanAnswer030::Decision {
+                decision: if outcome == "no" { "no" } else { "yes" }.into(),
+                comment: "A person's comment".into(),
+            };
+            f.broker
+                .submit(
+                    &f.host,
+                    submission(&f, &ticket, "0", answer),
+                    HumanOrigin030::Person,
+                )
+                .await
+                .unwrap();
+        }
+        pump(&f).await;
+        let decision = f.broker.take_resolution(&f.host, &ticket).await.unwrap();
+        if outcome == "stop" {
+            stop_fence(&f).await;
+        }
+        if outcome == "retired" {
+            f.broker.retire(&f.host, &work).await.unwrap();
+            pump(&f).await;
+        }
+        let supplied = if outcome == "payload" {
+            json!({"nativeRequest":{"id":"another-request"}})
+        } else {
+            payload.clone()
+        };
+        let calls = std::sync::Mutex::new(Vec::new());
+        let result = f
+            .broker
+            .deliver_action(&f.host, &work, &decision, &supplied, |yes| {
+                calls.lock().unwrap().push(yes);
+                async { Ok(()) }
+            })
+            .await;
+        if matches!(outcome, "stop" | "retired" | "payload") {
+            assert!(result.is_err());
+            assert!(calls.lock().unwrap().is_empty());
+        } else {
+            result.unwrap();
+            assert_eq!(*calls.lock().unwrap(), vec![outcome == "yes"]);
+            assert!(f
+                .broker
+                .deliver_action(&f.host, &work, &decision, &payload, |_| async {
+                    panic!("replayed native answer")
+                })
+                .await
+                .is_err());
+        }
+    }
+}
 impl Clock030 for TestClock {
     fn now_ms(&self) -> u64 {
         self.0.load(Ordering::SeqCst)

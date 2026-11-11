@@ -223,6 +223,21 @@ impl SqlRouteMaterialVerifier030 {
                     &self.generation,
                 )
                 .await?;
+                if producer.kind == "approval" && kind == "human" {
+                    require(
+                        source.pointer("/provenance/prompt")
+                            == Some(
+                                &human::received_prompt_tx(
+                                    db,
+                                    capture,
+                                    producer,
+                                    &self.owner,
+                                    &self.generation,
+                                )
+                                .await?,
+                            ),
+                    )?;
+                }
             } else if kind == "join" {
                 verify_join_source(db, capture, producer).await?;
             } else if producer.kind == "call" {
@@ -1359,4 +1374,5 @@ mod tests;
 
 #[path = "agsdl_host_route_human030.rs"]
 mod human;
+pub(crate) use human::received_prompt_tx;
 pub(crate) use human::verify_human_compose_source_tx;

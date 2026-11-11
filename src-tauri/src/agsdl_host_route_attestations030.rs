@@ -456,6 +456,7 @@ impl RouteAttestor030 {
 
     // One transport constructor, fed only by the correlated native rows.
     async fn source_json_tx(
+        &self,
         db: &mut SqliteConnection,
         capture: &StartCapture030,
         producer: &Producer030,
@@ -463,6 +464,20 @@ impl RouteAttestor030 {
     ) -> Result<String> {
         let mut agent = None;
         let mut instructions = Vec::new();
+        let mut provenance = json!({});
+        if matches!(kind, SourceKind030::Human { error: false }) {
+            // Preserve the original prompt's provenance, never infer a new
+            // mission from the person's choice or comment.
+            provenance["prompt"] = crate::agsdl_host_route_verifier030::received_prompt_tx(
+                db,
+                capture,
+                producer,
+                &self.owner,
+                &self.generation,
+            )
+            .await
+            .map_err(verification_error)?;
+        }
         if let SourceKind030::AgentWork { work_event_id } = kind {
             let plan: FlowPlan030 = serde_json::from_str(&capture.compiled_plan_json)?;
             let name = producer
@@ -497,13 +512,14 @@ impl RouteAttestor030 {
             }
             agent = Some(name.clone());
         }
+        provenance["instructions"] = json!(instructions);
         Ok(json!({
             "terminalId": producer.activation_id,
             "producerStep": producer.step,
             "producerAgent": agent,
             "kind": kind.producer_kind(),
             "outputJson": producer.output_json,
-            "provenance": {"instructions": instructions}
+            "provenance": provenance
         })
         .to_string())
     }
@@ -532,7 +548,9 @@ impl RouteAttestor030 {
             &self.generation,
         )
         .await?;
-        let source_json = Self::source_json_tx(&mut save, capture, &producer, &kind).await?;
+        let source_json = self
+            .source_json_tx(&mut save, capture, &producer, &kind)
+            .await?;
         let native_receipt_id = uuid::Uuid::new_v4().to_string();
         sqlx::query("INSERT INTO engine_flow030_route_source_attestations(system_id,invocation_id,prepare_id,preparation_effect_id,owner_epoch,generation,capture_sha256,native_receipt_id,receipt_kind,work_event_id,producer_json,source_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
             .bind(&capture.identity.system_start_id).bind(&capture.identity.flow_invocation_id)
@@ -602,7 +620,7 @@ impl RouteAttestor030 {
             &self.generation,
         )
         .await?;
-        let source_json = Self::source_json_tx(tx, capture, &producer, &kind).await?;
+        let source_json = self.source_json_tx(tx, capture, &producer, &kind).await?;
         let native_receipt_id: String = row.get("native_receipt_id");
         require(
             row.get::<&str, _>("preparation_effect_id") == effect_id

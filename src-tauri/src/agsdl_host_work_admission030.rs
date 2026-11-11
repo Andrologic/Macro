@@ -69,11 +69,17 @@ impl AttestedWorkPolicy030 {
         codex_read_only030(&prepared.policy)?;
         let contract: serde_json::Value = serde_json::from_str(&work.inputs.contract_json)?;
         for key in ["planFirst", "completionCheck"] {
-            if !contract.get(key).is_none_or(serde_json::Value::is_null) {
+            if !contract.get(key).is_none_or(serde_json::Value::is_null)
+                && !(key == "planFirst" && contract[key] == "auto")
+            {
                 return Err(failure(
                     "HARNESS_CAPABILITY",
                     &format!("/agents/{}/{key}", pointer_token030(&work.agent)),
-                    "This Codex option is not connected",
+                    if key == "planFirst" {
+                        "agsdl.execution.codexPlanAsk030"
+                    } else {
+                        "This Codex option is not connected"
+                    },
                 ));
             }
         }
@@ -129,13 +135,46 @@ pub(crate) fn validate_codex_registry030(
 }
 
 pub(crate) fn codex_permissions030(value: &serde_json::Value, pointer: &str) -> Result<()> {
+    use crate::agsdl_permissions::{
+        Action, Effect, Outside, Preset, RequestedPermissions, Reviewer,
+    };
+    let parsed = serde_json::from_value::<RequestedPermissions>(value.clone()).map_err(|_| {
+        failure(
+            "HARNESS_CAPABILITY",
+            pointer,
+            "Codex permissions are invalid",
+        )
+    })?;
+    if value.get("reviewer").and_then(serde_json::Value::as_str) == Some("model") {
+        return Err(failure(
+            "HARNESS_CAPABILITY",
+            &format!("{pointer}/reviewer"),
+            "agsdl.execution.codexReviewer030",
+        ));
+    }
+    let supported = match parsed {
+        RequestedPermissions::Preset(Preset::ReadOnly | Preset::Workspace) => true,
+        RequestedPermissions::Object(p) => {
+            matches!(p.preset, Some(Preset::ReadOnly | Preset::Workspace))
+                && p.directories.is_empty()
+                && p.outside.is_none_or(|o| o == Outside::Deny)
+                && p.reviewer != Some(Reviewer::Model)
+                && p.rules.iter().all(|r| {
+                    r.action == Action::Write && r.effect == Effect::Ask && r.pattern.is_none()
+                })
+        }
+        _ => false,
+    };
+    if supported {
+        return Ok(());
+    }
     if let Some(rules) = value.get("rules").and_then(serde_json::Value::as_array) {
         for (index, rule) in rules.iter().enumerate() {
             if rule["effect"] == "ask" {
                 return Err(failure(
                     "HARNESS_CAPABILITY",
                     &format!("{pointer}/rules/{index}/effect"),
-                    "Codex approval permissions are not connected",
+                    "agsdl.execution.codexAsk030",
                 ));
             }
         }
@@ -144,7 +183,7 @@ pub(crate) fn codex_permissions030(value: &serde_json::Value, pointer: &str) -> 
         return Err(failure(
             "HARNESS_CAPABILITY",
             pointer,
-            "This Codex slice supports read-only and workspace permissions",
+            "agsdl.execution.codexPermissions030",
         ));
     }
     Ok(())
@@ -155,13 +194,15 @@ pub(crate) fn codex_permissions030(value: &serde_json::Value, pointer: &str) -> 
 pub(crate) fn codex_read_only030(
     policy: &crate::agsdl_permissions::EffectivePolicy,
 ) -> Result<bool> {
-    use crate::agsdl_permissions::{Outside, Preset};
+    use crate::agsdl_permissions::{Action, Effect, Outside, Preset, Reviewer};
     let mut read_only = false;
     for ceiling in policy.policies() {
         if !matches!(ceiling.preset(), Some(Preset::ReadOnly | Preset::Workspace))
-            || !ceiling.rules().is_empty()
+            || ceiling.rules().iter().any(|r| {
+                r.action != Action::Write || r.effect != Effect::Ask || r.pattern.is_some()
+            })
             || !ceiling.directories().is_empty()
-            || ceiling.reviewer().is_some()
+            || ceiling.reviewer() == Some(Reviewer::Model)
             || ceiling.outside() != Outside::Deny
         {
             return Err(failure(
@@ -170,7 +211,7 @@ pub(crate) fn codex_read_only030(
                 "The effective Codex permission ceiling cannot be represented by this slice",
             ));
         }
-        read_only |= ceiling.preset() == Some(Preset::ReadOnly);
+        read_only |= ceiling.preset() == Some(Preset::ReadOnly) || !ceiling.rules().is_empty();
     }
     Ok(read_only)
 }
@@ -191,11 +232,15 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
             let pointer = format!("/agents/{}", pointer_token030(name));
             codex_permissions030(&agent["permissions"], &format!("{pointer}/permissions"))?;
             for key in ["planFirst", "completionCheck"] {
-                if agent.get(key).is_some() {
+                if agent.get(key).is_some() && !(key == "planFirst" && agent[key] == "auto") {
                     return Err(failure(
                         "HARNESS_CAPABILITY",
                         &format!("{pointer}/{key}"),
-                        "This Codex option is not connected",
+                        if key == "planFirst" {
+                            "agsdl.execution.codexPlanAsk030"
+                        } else {
+                            "This Codex option is not connected"
+                        },
                     ));
                 }
             }

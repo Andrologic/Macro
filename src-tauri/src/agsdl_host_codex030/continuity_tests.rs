@@ -1,7 +1,9 @@
 //! Full dispatch, native admission, Codex adapter and production controller.
 //! Only the observed installation and JSON-RPC peer are synthetic.
 use super::*;
-use crate::agsdl_host_codex030::{protocol_tests::SERVER, CodexExecutor030};
+use crate::agsdl_host_codex030::{approvals, protocol_tests::SERVER, CodexExecutor030};
+use crate::db::agsdl_execution::Result as HostResult;
+use futures::future::BoxFuture;
 use std::{os::unix::fs::PermissionsExt, path::Path};
 
 fn envelope(submission: Value) -> Value {
@@ -16,6 +18,140 @@ fn requests(trace: &Path, method: &str) -> Vec<Value> {
         .filter(|request| request["method"] == method)
         .map(|request| request["params"].clone())
         .collect()
+}
+
+#[tokio::test]
+async fn automatic_plan_uses_the_native_event_for_each_admitted_work() {
+    for native_plan in ["current", "missing", "foreign"] {
+        let document = json!({"contract":"agsdl-0.3.0","id":"automatic-plan","agents":{
+            "worker":{"harness":"codex","permissions":"read-only","planFirst":"auto"}},
+            "flow":{"entry":"work","steps":{"work":{"type":"agent","agent":"worker"}}}});
+        let f = Fixture::with_document(document).await;
+        let temp = tempfile::tempdir().unwrap();
+        let trace = temp.path().join("trace.jsonl");
+        let mut result = envelope(json!({"results":{}}));
+        if native_plan != "missing" {
+            result["_plan"] = json!(native_plan);
+        }
+        std::fs::write(
+            trace.with_extension("jsonl.script"),
+            serde_json::to_vec(&vec![result]).unwrap(),
+        )
+        .unwrap();
+        let executor = executor(&f, &trace, None);
+        let view = run(&f, Arc::new(executor)).await;
+        assert_eq!(
+            view.state.verdict.as_deref(),
+            Some(if native_plan == "current" {
+                "succeeded"
+            } else {
+                "failed"
+            })
+        );
+        let state: String =
+            sqlx::query_scalar("SELECT state_json FROM engine_flow030_work_state LIMIT 1")
+                .fetch_one(&f.pool)
+                .await
+                .unwrap();
+        let state: Value = serde_json::from_str(&state).unwrap();
+        let accepted = state["events"].as_array().unwrap().iter().any(|entry| {
+            let receipt: Value =
+                serde_json::from_str(entry["receiptJson"].as_str().unwrap()).unwrap();
+            receipt["decision"]["kind"] == "planAccepted"
+        });
+        assert_eq!(accepted, native_plan == "current");
+        assert_eq!(requests(&trace, "turn/start").len(), 1);
+    }
+}
+
+struct ActionAnswer {
+    yes: bool,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    identity: crate::db::agsdl_execution::flow030::FlowIdentity030,
+}
+impl approvals::CommandApprovals030 for ActionAnswer {
+    fn answer<'a>(
+        &'a self,
+        attempt: &'a crate::agsdl_host_flow030::FlowWorkAttempt030,
+        _: Value,
+        _: &'a CancellationToken,
+        respond: approvals::Respond030<'a>,
+    ) -> BoxFuture<'a, HostResult<()>> {
+        Box::pin(async move {
+            assert_eq!(attempt.identity(), &self.identity);
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            respond(self.yes).await
+        })
+    }
+}
+
+#[tokio::test]
+async fn admitted_write_ask_reaches_native_response_without_bypassing_the_host_ceiling() {
+    for mode in ["yes", "no", "host-denied"] {
+        let document = json!({"contract":"agsdl-0.3.0","id":"action-approval","agents":{"worker":{"harness":"codex","permissions":{"preset":"workspace","reviewer":"person","rules":[{"action":"write","effect":"ask"}]}}},"flow":{"entry":"work","steps":{"work":{"type":"agent","agent":"worker"}}}});
+        let f = Fixture::with_document(document).await;
+        if mode != "host-denied" {
+            use crate::config::{ConfigChangeSource, ConfigDocumentKind, ConfigScope};
+            let doc = f
+                .config
+                .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+                .await
+                .unwrap();
+            let mut value = doc.value;
+            value["agsdlHostPermissions"] = json!("workspace");
+            std::fs::write(&doc.file_path, serde_json::to_vec(&value).unwrap()).unwrap();
+            let pending = f
+                .config
+                .reload(
+                    ConfigDocumentKind::Tools,
+                    ConfigScope::User,
+                    ConfigChangeSource::ExternalEditor,
+                )
+                .await
+                .unwrap()
+                .pending
+                .unwrap();
+            f.config.accept_pending_change(&pending.id).await.unwrap();
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let trace = temp.path().join("trace.jsonl");
+        let root = f._temp.path().canonicalize().unwrap().join("workspace");
+        let file = root.join("sentinel");
+        std::fs::write(&file, "before").unwrap();
+        let mut result = envelope(json!({"results":{}}));
+        result["_approval"] = json!({"method":"item/commandExecution/requestApproval","id":"native-approval","params":{"threadId":"filled-by-peer","turnId":"filled-by-peer","kind":"command","environmentId":"local","itemId":"command","command":"synthetic command","cwd":root,"additionalPermissions":{"network":null,"fileSystem":{"read":null,"write":[file],"entries":[{"path":{"type":"path","path":file},"access":"write"}]}}}});
+        std::fs::write(
+            trace.with_extension("jsonl.script"),
+            serde_json::to_vec(&vec![result]).unwrap(),
+        )
+        .unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let e = executor(&f, &trace, None).with_approvals(Arc::new(ActionAnswer {
+            yes: mode == "yes",
+            calls: calls.clone(),
+            identity: f.identity.clone(),
+        }));
+        let view = run(&f, Arc::new(e)).await;
+        assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            if mode == "yes" { "after" } else { "before" }
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            usize::from(mode != "host-denied")
+        );
+        let response: Value = std::fs::read_to_string(&trace)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .find(|v| v["id"] == "native-approval")
+            .unwrap();
+        assert_eq!(
+            response["result"]["decision"],
+            if mode == "yes" { "accept" } else { "decline" }
+        );
+    }
 }
 
 #[tokio::test]

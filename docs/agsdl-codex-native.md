@@ -74,9 +74,10 @@ does not change the captured account identity.
 
 Architect exposes Start and Stop for the qualified Codex slice. It supports
 agent work, inline resources, validated result submissions, corrections on the
-same thread, choice routes and visit limits. The native preflight refuses
-capabilities outside that slice, including calls, human requests, steer,
-parallel work and deadlines. The host permission ceiling defaults to read-only;
+same thread, choice routes and visit limits. Local command and stdio MCP calls,
+human flow choices and deadlines, steer, shared/named instances, parallel work
+and joins use the production supervisor. Remote MCP calls, compositions and
+other unconnected capabilities remain unavailable. The host permission ceiling defaults to read-only;
 preflight announces when host or project settings restrict an agent requesting
 workspace writes. A workspace does not require Git and never inherits an
 ancestor repository's metadata.
@@ -87,6 +88,57 @@ submission and returns correction diagnostics for another turn on the same
 thread. Resources are separate `additionalContext` entries marked untrusted.
 Stop joins the owned app-server and its descendants. After an application
 restart, unfinished runs are marked interrupted and are never resumed.
+
+### Action approvals and planning
+
+Flow approvals choose the next mission. They do not grant an agent permission
+to act. Their successor retains the received prompt's existing provenance and
+the person's comments. Agent action approvals use Codex's native server requests and the same
+human request controls, ownership checks and clock as other human waits.
+
+The adapter supports this deliberately limited write policy:
+
+```json
+{
+  "preset": "workspace",
+  "reviewer": "person",
+  "rules": [{ "action": "write", "effect": "ask" }]
+}
+```
+
+The underlying workspace stays read-only. A person can approve one native
+command's write grant for one existing regular workspace file. The native
+request must identify the command, thread, turn, item and exact file grant.
+The human request displays the exact command, working directory and file before
+the decision; the original protocol payload remains available in the details.
+Directories, new files, symlinks, hard links, hidden paths, extra read or
+network grants, session-wide grants and incomplete requests are refused.
+Other write methods can remain unavailable. There is no automatic approval or
+grant for a subsequent command. A refusal, including an answer timeout, is sent
+to Codex and the agent continues. Comments remain in the human request record;
+the native command response carries the approval decision, not a comment.
+The qualified registry describes this sandbox enforcement separately from the
+unchanged upstream module, which describes generic Codex patch approvals.
+Upstream declaration-only diagnostics do not qualify the installed adapter.
+
+Host and project ceilings still apply. Macro checks them again before sending
+the response, under the existing admission gate shared with Stop. Retired work,
+revoked ownership and consumed answers cannot authorize an action. A mission,
+result or reviewer cannot increase a grant. Omitting `reviewer` selects a person
+for this subset. Native `auto_review` exists in Codex 0.167.0, but it can grant
+access without a client callback. This adapter therefore refuses
+`reviewer: "model"` before launch and admission; it does not silently substitute
+a reviewer or start a flow agent. Patterned write rules and `ask` for read,
+shell, network, MCP or delegation also remain refused. Native shell prefix
+rules are not equivalent to arbitrary AgSDL command patterns.
+
+`planFirst: "auto"` asks Codex to present the current work's plan with its
+native `update_plan` tool. The adapter passes the attributed plan event to the
+production work controller, which accepts it automatically. The launch dialog
+warns that this is an instruction-based aid: changes may precede the plan.
+Missing or foreign plan events do not unlock the work's result submission.
+This is not a permission guarantee. `planFirst: "ask"` remains refused before
+launch and admission because the adapter has no complete native plan lock.
 
 ## Legacy 0.2 execution boundary
 

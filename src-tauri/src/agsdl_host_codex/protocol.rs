@@ -101,6 +101,16 @@ impl Client {
             .await?;
         Ok(id)
     }
+    pub(crate) async fn answer_request030(&mut self, id: Value, result: Value) -> Result<()> {
+        if !id.is_string() && !id.is_u64() {
+            return Err(failure(
+                "CORRELATION",
+                "protocol",
+                "Invalid native request id",
+            ));
+        }
+        self.send(&json!({"id":id,"result":result})).await
+    }
     pub async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         self.last_request_error = None;
         let id = self.begin_request(method, params).await?;

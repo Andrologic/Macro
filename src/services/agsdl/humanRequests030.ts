@@ -14,6 +14,19 @@ export type ExecutionHumanAnswer =
   | { kind: 'decision'; decision: 'yes' | 'no'; comment: string }
   | { kind: 'question'; answer: string };
 
+/** Display only; native admission and response checks own authorization. */
+export function nativeCommandSummary030(raw: string): { command: string; file: string; cwd: string } | null {
+  try {
+    const request = JSON.parse(raw)?.nativeRequest;
+    const params = request?.params;
+    const files = params?.additionalPermissions?.fileSystem?.write;
+    if (request?.method !== 'item/commandExecution/requestApproval' || params?.kind !== 'command' ||
+        typeof params.command !== 'string' || typeof params.cwd !== 'string' ||
+        !Array.isArray(files) || files.length !== 1 || typeof files[0] !== 'string') return null;
+    return { command: params.command, file: files[0], cwd: params.cwd };
+  } catch { return null; }
+}
+
 const sameScope = (a: HumanScope030, b: HumanScope030) => a.systemStartId === b.systemStartId &&
   a.source.revision === b.source.revision && a.source.sourceSha256 === b.source.sourceSha256 &&
   a.source.owner.projectId === b.source.owner.projectId && a.source.owner.planId === b.source.owner.planId &&

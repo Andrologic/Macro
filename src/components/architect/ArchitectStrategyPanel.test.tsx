@@ -163,6 +163,14 @@ it('shows the native read-only notice beside the 0.3 launch controls', async () 
   } finally { act(() => useAgsdlExecutionStore.setState({ notice030: undefined })); }
 });
 
+it('warns before launching an automatic plan without promising a native lock', async () => {
+  await mount();
+  const key = Object.keys(useAgsdlStore.getState().sessions)[0];
+  act(() => useAgsdlStore.setState(state => ({sessions:{...state.sessions,[key]:{...state.sessions[key], source:'{"contract":"agsdl-0.3.0","id":"automatic","agents":{"worker":{"harness":"codex","permissions":"read-only","planFirst":"auto"}}}'}}})));
+  await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Start"]')!.click());
+  expect(document.querySelector('[role="dialog"]')!.textContent).toContain('Automatic planning relies on instructions. Changes may happen before the plan is recorded.');
+});
+
 it('opens graphless launch controls without an entry prompt that would be ignored', async () => {
   await mount();
   const key = agsdlSessionKey({ branchName: 'develop', planId: 'layout-test' });

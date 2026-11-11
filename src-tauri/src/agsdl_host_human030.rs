@@ -93,6 +93,14 @@ pub(crate) struct OwnedHumanWork030 {
     provider_attempt_id: Option<String>,
 }
 impl OwnedHumanWork030 {
+    pub(crate) fn belongs_to(&self, attempt: &FlowWorkAttempt030) -> bool {
+        self.identity == *attempt.identity()
+            && self.owner == *attempt.owner()
+            && self.generation == attempt.generation()
+            && self.reference.activation_id == attempt.work().activation_id
+            && self.reference.start_effect_id == attempt.start_effect_id()
+            && self.provider_attempt_id.as_deref() == Some(attempt.provider_attempt_id())
+    }
     pub(crate) fn work_id(&self) -> &str {
         &self.reference.activation_id
     }
@@ -1144,6 +1152,53 @@ impl HumanBroker030 {
             .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&decision.request_id).bind(decision.resolution.to_string()).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
+    }
+    /// Send an action answer under the same admission gate as Stop/revocation.
+    /// IO happens after the read transaction ends, with native ownership live.
+    pub(crate) async fn deliver_action<F, Fut>(
+        &self,
+        host: &HostState,
+        work: &OwnedHumanWork030,
+        decision: &ResolvedHumanDecision030,
+        payload: &Value,
+        deliver: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(bool) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        let lease = host.start_lease().await?;
+        let gate = host.admission_lock().lock_owned().await;
+        let mut connection = self.durable_connection().await?;
+        let mut tx = connection.begin().await?;
+        self.guard(&mut tx, &lease).await?;
+        self.verify_work(&mut tx, work).await?;
+        require(
+            decision.identity == self.identity
+                && decision.owner == self.owner
+                && decision.generation == self.generation
+                && decision.kind == "ask"
+                && decision.work_ids == [work.work_id()]
+                && decision.payload == *payload,
+            "Action decision belongs to another native request",
+        )?;
+        let row = self.request_row(&mut tx, &decision.request_id).await?;
+        require(
+            row.get::<&str, _>("delivery") == "reserved"
+                && row.get::<Option<String>, _>("resolution_json").as_deref()
+                    == Some(decision.resolution.to_string().as_str()),
+            "Action decision is stale or already delivered",
+        )?;
+        tx.commit().await?;
+        lease.ensure_live()?;
+        deliver(
+            decision.resolution["expired"] != true
+                && decision.resolution["answer"]["decision"] == "yes",
+        )
+        .await?;
+        drop(gate);
+        drop(lease);
+        self.acknowledge(host, decision).await
     }
     pub(crate) async fn retire_finished(&self, host: &HostState, id: &str) -> Result<()> {
         let raw: String = sqlx::query_scalar("SELECT work_json FROM engine_flow030_clock_works WHERE system_id=? AND invocation_id=? AND activation_id=?")

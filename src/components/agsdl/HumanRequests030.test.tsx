@@ -108,6 +108,22 @@ it('sends an action refusal and a plan refusal as distinct decisions with exact 
   await act(async () => host.querySelectorAll<HTMLButtonElement>('form button')[1].click());
   expect(transport.submissions[1].answer).toEqual({ kind: 'decision', decision: 'no', comment: '' });
 });
+it('shows the exact native command and file scope before an action decision', async () => {
+  const actionJson = JSON.stringify({ nativeRequest: { method: 'item/commandExecution/requestApproval', params: {
+    kind: 'command', command: 'printf sample > /workspace/sentinel.txt', cwd: '/workspace',
+    additionalPermissions: { fileSystem: { write: ['/workspace/sentinel.txt'] } },
+  } } });
+  const request = humanFixture030({ content: { kind: 'actionApproval', title: '', actionJson } });
+  transport.setCurrent(request); await render(ready(request));
+  const summary = host.querySelector('[data-native-command-summary]')!;
+  expect(summary.textContent).toContain('Uniquement pour cette commande');
+  expect(summary.textContent).toContain('printf sample > /workspace/sentinel.txt');
+  expect(summary.textContent).toContain('Fichier');
+  expect(summary.textContent).toContain('Dossier de travail');
+  expect(summary.closest('details')).toBeNull();
+  await act(async () => host.querySelectorAll<HTMLButtonElement>('form button')[1].click());
+  expect(transport.submissions[0].answer).toEqual({ kind: 'decision', decision: 'no', comment: '' });
+});
 it('restores every native terminal reason and response after remount without inventing an answer', async () => {
   const resolution = resolutionFixture030();
   const states: RunHumanState030[] = [

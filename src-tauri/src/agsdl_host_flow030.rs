@@ -1299,7 +1299,14 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
                     .ok_or_else(unavailable)?;
                 let config = manager.clone();
                 let agents: Arc<dyn crate::agsdl_host_runtime030::AgentExecutor030> = Arc::new(
-                    crate::agsdl_host_codex030::CodexExecutor030::new(config.clone()),
+                    crate::agsdl_host_codex030::CodexExecutor030::new(config.clone())
+                        .with_approvals(Arc::new(
+                            crate::agsdl_host_human_executor030::AgentActionHumans030 {
+                                app: app.clone(),
+                                pool: pool.clone(),
+                                config: config.clone(),
+                            },
+                        )),
                 );
                 #[cfg(test)]
                 let agents = app
@@ -1751,7 +1758,7 @@ struct OccurrenceProvenance030 {
     producer: Producer030,
 }
 
-async fn check_persisted_occurrence(
+pub(crate) async fn check_persisted_occurrence(
     db: &mut SqliteConnection,
     id: &FlowIdentity030,
     occurrence: &DeliveryOccurrence030,

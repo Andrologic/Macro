@@ -122,6 +122,7 @@ function ArchitectViewer({ target, planStatus }: { target: AgsdlTarget; planStat
   const execution = useAgsdlExecutionStore();
   const hasFlow = useMemo(() => { try { return !!source && !!readDocument(source).flow; } catch { return false; } }, [source]);
   const is030 = useMemo(() => { try { return !!source && readDocument(source).contract === 'agsdl-0.3.0'; } catch { return false; } }, [source]);
+  const automaticPlan = useMemo(() => { try { return !!source && Object.values(readDocument(source).agents ?? {}).some(agent => agent !== null && typeof agent === 'object' && 'planFirst' in agent && agent.planFirst === 'auto'); } catch { return false; } }, [source]);
   useEffect(() => { if (target.planId && conversationId) void useAgsdlExecutionStore.getState().open030(target, conversationId); }, [target, conversationId]);
   useEffect(() => {
     useAgsdlExecutionStore.setState({ error: undefined, notice030: undefined, launchDiagnostics030: [] });
@@ -170,8 +171,10 @@ function ArchitectViewer({ target, planStatus }: { target: AgsdlTarget; planStat
       <header><strong>{t('agsdl.execution.start030')}</strong><button className="agsdl-icon-button" aria-label={t('agsdl.close')} onClick={() => setLaunchOpen(false)}><X size={14} /></button></header>
       <div className="agsdl-inspector-body space-y-3">
         {hasFlow && <label className="agsdl-edit-field">{t('agsdl.execution.input030')}<textarea value={prompt} onChange={event => setPrompt(event.target.value)} /></label>}
+        {automaticPlan && <p role="status">{t('agsdl.execution.codexPlanAuto030')}</p>}
         {execution.error && <div role="alert"><p>{t(execution.error)}</p>
-          {!!execution.launchDiagnostics030?.length && <><ul>{execution.launchDiagnostics030.map((issue, i) => <li key={i}>{issue.message}</li>)}</ul><details><summary>{t('agsdl.viewer.technicalDetails')}</summary><pre className="whitespace-pre-wrap break-words">{JSON.stringify(execution.launchDiagnostics030, null, 2)}</pre></details></>}
+          {!!execution.launchDiagnostics030?.length && <><ul>{execution.launchDiagnostics030.map((issue, i) => <li key={i}>{issue.code === 'HARNESS_APPROXIMATE' && issue.pointer.endsWith('/planFirst')
+            ? t('agsdl.execution.codexPlanAuto030') : issue.message.startsWith('agsdl.execution.codex') ? t(issue.message) : issue.message}</li>)}</ul><details><summary>{t('agsdl.viewer.technicalDetails')}</summary><pre className="whitespace-pre-wrap break-words">{JSON.stringify(execution.launchDiagnostics030, null, 2)}</pre></details></>}
           {execution.error === 'agsdl.execution.codexLoginRequired' && <details><summary>{t('agsdl.canvas030.loginHelp')}</summary><p>{t('agsdl.canvas030.loginInstructions')}</p><a className="agsdl-link" href="https://github.com/Andrologic/Macro/blob/develop/docs/agsdl-codex-native.md#private-login" target="_blank" rel="noreferrer">{t('agsdl.canvas030.loginGuide')}</a></details>}
         </div>}
         {execution.notice030 && <p role="status">{t(execution.notice030)}</p>}

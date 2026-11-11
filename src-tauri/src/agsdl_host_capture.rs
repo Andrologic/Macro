@@ -572,7 +572,7 @@ pub(crate) async fn observation(
         let mut registry = json!({
             "format":"macro-agsdl-registry/030",
             "modules":[
-                {"harness":"codex", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/codex/module.json")},
+                {"harness":"codex", "moduleJson":crate::agsdl_host_codex030::approvals::module030()},
                 {"harness":"claude-code", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/claude-code/module.json")},
                 {"harness":"opencode", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/opencode/module.json")},
                 {"harness":"pi", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/pi/module.json")}
@@ -601,9 +601,19 @@ fn read_only_ceiling030(
         .get("agents")
         .and_then(Value::as_object)
         .is_some_and(|agents| {
-            agents
-                .values()
-                .any(|agent| agent["harness"] == "codex" && agent["permissions"] == "workspace")
+            agents.values().any(|agent| {
+                agent["harness"] == "codex"
+                    && (agent["permissions"] == "workspace"
+                        || agent.pointer("/permissions/preset") == Some(&json!("workspace"))
+                        || agent
+                            .pointer("/permissions/rules")
+                            .and_then(Value::as_array)
+                            .is_some_and(|rules| {
+                                rules
+                                    .iter()
+                                    .any(|r| r["action"] == "write" && r["effect"] == "ask")
+                            }))
+            })
         })
         && (matches!(
             host_permissions,
@@ -631,8 +641,8 @@ pub(crate) fn codex_registry030(
     }
     let adapter = crate::agsdl_host_codex::ADAPTER;
     let evidence = json!({"adapterId":adapter,"version":observed.version,"profileDigest":observed.profile.digest,"kind":"native-codex"}).to_string();
-    let capabilities = ["result-submission", "continuity", "permission-enforcement", "contained-stop", "response-attribution", "instructions", "resources", "model.name", "model.effort", "instance.new", "delivery.queue", "delivery.steer", "answer-timeout"]
-        .into_iter().map(|name| json!({"name":name,"support":if name == "resources" {"approximate"} else {"native"},"evidenceJson":evidence})).collect::<Vec<_>>();
+    let capabilities = ["result-submission", "continuity", "permission-enforcement", "contained-stop", "response-attribution", "instructions", "resources", "model.name", "model.effort", "instance.new", "delivery.queue", "delivery.steer", "answer-timeout", "reviewer.person", "planFirst.auto"]
+        .into_iter().map(|name| json!({"name":name,"support":if matches!(name, "resources" | "planFirst.auto") {"approximate"} else {"native"},"evidenceJson":evidence})).collect::<Vec<_>>();
     let default = observed
         .models
         .iter()
@@ -796,25 +806,16 @@ pub(crate) fn product_slice030(
                 );
             }
         }
-        if agent.pointer("/permissions/reviewer").is_some()
-            || agent
-                .pointer("/permissions/rules")
-                .and_then(Value::as_array)
-                .is_some_and(|rules| {
-                    rules
-                        .iter()
-                        .any(|rule| rule.get("effect").and_then(Value::as_str) == Some("ask"))
-                })
-        {
-            return issue(
-                format!("{pointer}/permissions"),
-                "Human approval is not yet supported.",
-            );
+        if let Err(refusal) = crate::agsdl_host_work_admission030::codex_permissions030(
+            &agent["permissions"],
+            &format!("{pointer}/permissions"),
+        ) {
+            return issue(refusal.pointer, &refusal.message);
         }
         if agent.get("planFirst").and_then(Value::as_str) == Some("ask") {
             return issue(
                 format!("{pointer}/planFirst"),
-                "Human approval is not yet supported.",
+                "agsdl.execution.codexPlanAsk030",
             );
         }
     }
@@ -2116,7 +2117,7 @@ mod product_slice030_tests {
 
     #[test]
     fn rejects_out_of_slice_before_native_start() {
-        let base = json!({"contract":"agsdl-0.3.0", "agents":{"writer":{"harness":"codex"}},
+        let base = json!({"contract":"agsdl-0.3.0", "agents":{"writer":{"harness":"codex","permissions":"read-only"}},
             "flow":{"entry":"write","steps":{"write":{"type":"agent","agent":"writer"}}}});
         for (pointer, value) in [
             ("/flow/steps/write/type", json!("compose")),

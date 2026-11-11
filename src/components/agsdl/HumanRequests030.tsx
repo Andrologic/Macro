@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { RunAttestedHumanAnswer030, RunHumanOccurrence030, RunHumanRequest030, RunRead030 } from '../../types/agsdlRunUi030';
 import {
-  humanDuration030, humanRemainingMs030, humanRequestKey030, runHumanView030,
+  humanDuration030, humanRemainingMs030, humanRequestKey030, nativeCommandSummary030, runHumanView030,
   type HumanFormDraft030, type HumanRequestClient030, type HumanSendOutcome030, type ReadHuman030,
 } from '../../services/agsdl/humanRequests030';
 import { claimHumanAttention030 } from '../../services/agsdl/humanAttention030';
@@ -55,6 +55,7 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
   let storageUnavailable = false;
   try { blocked = client.blocked(request); revisionStale = client.stale(request); } catch { storageUnavailable = true; }
   const content = request.content;
+  const command = content.kind === 'actionApproval' ? nativeCommandSummary030(content.actionJson) : null;
   const qualified = content.kind !== 'unclassified' && (content.kind !== 'question' || content.answerContract.kind === 'available');
   const open = request.state.kind === 'open' && fresh && !readFailed && !revisionStale && !blocked && !storageFailed && !storageUnavailable && qualified && !busy;
   const view = runHumanView030(request, { plan: t('agsdl.human030.plan'), question: t('agsdl.human030.question'), unknown: t('agsdl.human030.unknown') });
@@ -105,6 +106,14 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
   return <article ref={card} tabIndex={-1} aria-labelledby={headingId} className="min-w-0 space-y-2 rounded border border-border p-2 text-xs focus:outline focus:outline-1 focus:outline-ring" data-human-request={request.id}>
     <h3 id={headingId} className="font-medium">{t(`agsdl.human030.type.${content.kind}`)}</h3>
     <p role="status">{t(`agsdl.human030.state.${state.kind}`)}</p>
+    {command && <div className="space-y-2" data-native-command-summary>
+      <p>{t('agsdl.human030.nativeCommandHint')}</p>
+      <dl className="space-y-1 [overflow-wrap:anywhere]">
+        <dt className="text-muted-foreground">{t('agsdl.human030.command')}</dt><dd>{command.command}</dd>
+        <dt className="text-muted-foreground">{t('agsdl.human030.file')}</dt><dd>{command.file}</dd>
+        <dt className="text-muted-foreground">{t('agsdl.human030.cwd')}</dt><dd>{command.cwd}</dd>
+      </dl>
+    </div>}
     {state.kind !== "open" && <details><summary>{t("agsdl.human030.draftHint")}</summary>
       <ExecutionHumanRequest request={view} labels={{ choice: t("agsdl.human030.choice"), comment: t("agsdl.human030.comment"), answer: t("agsdl.human030.answer"), submit: t("agsdl.human030.submit"), approve: t("agsdl.human030.approve"), reject: t("agsdl.human030.reject"), failed: t("agsdl.human030.sendUncertain") }} open={false} onAnswer={send} draft={draft} />
     </details>}

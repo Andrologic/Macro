@@ -270,7 +270,7 @@ impl Fixture {
                 &observed,
             )
             .unwrap();
-            json!({"format":"macro-agsdl-registry/030","version":"fixture","modules":[{"harness":"codex","moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/codex/module.json")}],"harnesses":[harness],"agents":agents,"hostCapabilities":[]})
+            json!({"format":"macro-agsdl-registry/030","version":"fixture","modules":[{"harness":"codex","moduleJson":crate::agsdl_host_codex030::approvals::module030()}],"harnesses":[harness],"agents":agents,"hostCapabilities":[]})
         } else {
             crate::agsdl_host_example030::ExampleAdapter030::observe()
                 .registry(
