@@ -222,10 +222,11 @@ function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEnt
     if (!width || !height || !layout.nodes.length) return;
     if (bounds) void flow.setViewport(getViewportForBounds(bounds, width, height, minZoom, fitOptions.maxZoom, fitOptions.padding));
   }, [flow, layout.nodes.length, bounds, width, height, minZoom]);
-  const fitted = useRef(false);
+  const fitted = useRef<{ width: number; height: number } | null>(null);
   useEffect(() => {
-    if (!width || !height || !layout.nodes.length || fitted.current || layout.nodes.some(node => heights[node.card.path] === undefined)) return;
-    const timer = setTimeout(() => { fitted.current = true; fit(); }, 80);
+    if (!width || !height || !layout.nodes.length ||
+      (fitted.current?.width === width && fitted.current.height === height) || layout.nodes.some(node => heights[node.card.path] === undefined)) return;
+    const timer = setTimeout(() => { fitted.current = { width, height }; fit(); }, 80);
     return () => clearTimeout(timer);
   }, [width, height, layout.nodes, heights, fit]);
   const groupMenu = useRef<HTMLDetailsElement>(null);
