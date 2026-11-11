@@ -17,7 +17,12 @@ export function RunHistory030({ history, historyOrder, runFailures, selected, co
   const failureReason = (failure: RunReadFailure030) => failure.code === 'STORAGE_UNCERTAIN' ? 'storageUncertain'
     : failure.kind === 'notFound' ? 'notFound' : failure.kind === 'uncertain' ? 'uncertain'
     : failure.kind === 'scope' ? 'scope' : failure.kind === 'conflict' ? 'conflict' : 'unavailable';
-  const date = (fact: RunHistoryEntry030['chronology']) => fact.kind === 'available' ? fact.value.startedAt : tr('unknownDate');
+  const date = (fact: RunHistoryEntry030['chronology']) => {
+    if (fact.kind !== 'available') return '';
+    const value = new Date(fact.value.startedAt);
+    return Number.isNaN(value.getTime()) ? '' : value.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+  };
+  const label = (id: string) => `${t('agsdl.execution.run')} ${rows.indexOf(id) + 1}`;
   return <section aria-label={tr('history')} className="min-w-0 space-y-2">
     <h3 className="font-medium">{tr('history')}</h3>
     {history.kind === 'error' && <p role="alert">{tr('readFailed')}</p>}
@@ -26,25 +31,25 @@ export function RunHistory030({ history, historyOrder, runFailures, selected, co
     <ul className="space-y-1">{rows.map(id => {
       const failure = Object.hasOwn(runFailures, id) ? runFailures[id] : undefined;
       if (failure) return <li key={id} data-run-id={id} data-run-read-state="failed" className="rounded border border-border px-2 py-1">
-        <span className="block break-words">{id}</span>
+        <span className="block break-words">{label(id)}</span>
         <p role="status" className="text-muted-foreground">{tr(`readFailure.${failureReason(failure)}`)}</p>
       </li>;
       const run = byId.get(id)!;
       return <li key={id} data-run-id={id}>
       <button type="button" aria-pressed={selected === run.scope.systemStartId} onClick={() => select(run.scope.systemStartId)}
         className="w-full rounded border border-border px-2 py-1 text-left hover:bg-accent aria-pressed:bg-accent">
-        <span className="block break-words">{run.capture.systemStartId} · {run.interruptedAt ? t('agsdl.execution.interrupted030') : tr(`verdict.${run.verdict ?? 'pending'}`)}</span>
-        <span className="block text-muted-foreground">{date(run.chronology)} · {tr('physicalPending')}: {run.physicalPending}</span>
+        <span className="block break-words">{label(id)} · {run.interruptedAt ? t('agsdl.execution.interrupted030') : tr(`verdict.${run.verdict ?? 'pending'}`)}</span>
+        <span className="block text-muted-foreground">{date(run.chronology)}</span>
         {run.humans.kind === 'ready' ? run.humans.value.some(request => request.state.kind === 'open') && <span className="block">{tr('waitingHuman')}</span> : <span className="block">{tr('humanUnknown')}</span>}
       </button>
     </li>; })}</ul>
-    {selected && !runs.some(run => run.scope.systemStartId === selected) && <p>{tr('retainedSelection')} · {selected}</p>}
-    <label className="flex min-w-0 flex-col gap-1">{tr('compare')}
+    {selected && !runs.some(run => run.scope.systemStartId === selected) && <p>{tr('retainedSelection')}</p>}
+    {runs.length > 1 && <details><summary>{tr('compare')}</summary><label className="flex min-w-0 flex-col gap-1">{tr('compare')}
       <select className="min-w-0 max-w-full rounded border border-border bg-card p-1" value={comparison ?? ''} onChange={event => compare(event.target.value || undefined)}>
         <option value="">{tr('noComparison')}</option>
-        {runs.filter(run => run.scope.systemStartId !== selected).map(run => <option key={run.scope.systemStartId} value={run.scope.systemStartId}>{run.scope.systemStartId}</option>)}
+        {runs.filter(run => run.scope.systemStartId !== selected).map(run => <option key={run.scope.systemStartId} value={run.scope.systemStartId}>{label(run.scope.systemStartId)} · {date(run.chronology)}</option>)}
       </select>
-    </label>
+    </label></details>}
   </section>;
 }
 

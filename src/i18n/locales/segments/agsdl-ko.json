@@ -522,7 +522,7 @@
     "input030": "입력 지시",
     "start030": "시작",
     "stop030": "중지",
-    "unsupported030": "이 문서는 아직 지원되지 않는 기능을 사용합니다. 사람에게 요청, steer, 팬아웃, 시간 제한 및 원격 MCP 호출은 사용할 수 없습니다.",
+    "unsupported030": "시작 검사에서 지원되지 않는 기능을 발견했습니다. 아래 원인을 확인하세요.",
     "codexNotInstalled": "Codex가 설치되어 있지 않습니다. 실행하려면 Codex를 설치하세요.",
     "codexLoginRequired": "시작하기 전에 Macro의 전용 프로필에서 Codex에 로그인하세요.",
     "codexUnsupported": "이 Codex 버전 또는 플랫폼은 지원되지 않습니다. 검증된 플랫폼에서 Codex 0.167.x를 사용하세요.",
@@ -1185,5 +1185,15 @@
     "delivered": "전달됨",
     "consumed": "처리됨",
     "fallback": "대기열로 이동"
+  },
+  "canvas030": {
+    "document": "문서 및 정의",
+    "runs": "실행 · {{count}}",
+    "captured": "저장된 그래프",
+    "capturedDifferent": "저장된 그래프가 현재 설계와 다릅니다",
+    "loginHelp": "로그인 안내",
+    "loginInstructions": "에이전트의 Codex 설정을 열어 Macro 전용 프로필을 준비하세요. 전용 프로필 로그인 안내를 따른 뒤 다시 확인하세요. 입력한 지시는 유지됩니다.",
+    "retryLogin": "로그인 확인",
+    "loginGuide": "전용 프로필 로그인 안내"
   }
 }

@@ -85,24 +85,24 @@ it('opens captured executions without execution commands and keeps them after a 
   try {
     await mount();
     act(() => useAppStore.setState({ selectedProjectId:'sample-project' }));
-    const clickView = async (text: string) => {
-      const button = [...container!.querySelectorAll('nav button')].find(item => item.textContent === text) as HTMLButtonElement;
-      await act(async () => button.click());
-    };
-    await clickView('Executions');
-    expect(container!.textContent).toContain('run-current');
+    expect(container!.querySelector('nav')).toBeNull();
+    expect(container!.querySelector('.agsdl-viewer')).not.toBeNull();
+    expect(container!.querySelector('.agsdl-runs-drawer')?.hasAttribute('hidden')).toBe(true);
+    await act(async () => container!.querySelector<HTMLButtonElement>('.agsdl-runs-toggle')!.click());
+    await act(async () => container!.querySelector<HTMLButtonElement>('[data-run-id="run-current"] button')!.click());
+    expect(container!.querySelector('[data-captured-run="run-current"] .agsdl-canvas')).not.toBeNull();
     expect(access.reads.every(item => item === 'history' || item === 'run-current')).toBe(true);
-    expect(container!.querySelector('.agsdl-viewer')).toBeNull();
     const key = agsdlSessionKey({branchName:'develop', planId:'layout-test'});
     act(() => useAgsdlStore.setState(state => ({sessions:{...state.sessions,[key]:{...state.sessions[key],source:'{"contract":"agsdl-0.3.0","id":"changed","agents":{}}'}}})));
-    expect(container!.textContent).toContain('run-current');
-    expect(container!.textContent).toContain('Captured source');
-    expect(container!.textContent).toContain('Current document');
-    await clickView('Design');
+    expect(container!.querySelector('[data-captured-run="run-current"]')).not.toBeNull();
+    expect(container!.textContent).toContain('Captured graph differs from design');
+    await act(async () => container!.querySelector<HTMLButtonElement>('.agsdl-runs-toggle')!.click());
+    expect(container!.querySelector('[data-captured-run="run-current"] .agsdl-canvas')).not.toBeNull();
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Expand view"]')!.click());
+    expect(document.body.querySelector('[role="dialog"] [data-captured-run="run-current"] .agsdl-canvas')).not.toBeNull();
+    await act(async () => document.body.querySelector<HTMLButtonElement>('[role="dialog"] [aria-label="Close expanded view"]')!.click());
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Design"]')!.click());
     expect(container!.querySelector('.agsdl-viewer')).not.toBeNull();
-    expect(access.listeners.size).toBe(0);
-    await clickView('Executions');
-    expect(container!.textContent).toContain('run-current');
   } finally { await act(async () => configureWorkflowRunAccess030(undefined)); }
 });
 
@@ -125,9 +125,8 @@ it('requires an explicit project for a system spanning multiple project owners',
   try {
     await mount();
     act(() => useAppStore.setState({selectedProjectId:null,activePlanContext:{...useAppStore.getState().activePlanContext!,targetBranchesByProjectId:{'project-a':'develop','project-b':'main'}}}));
-    await act(async () => (container!.querySelectorAll('nav button')[1] as HTMLButtonElement).click());
     expect(scopes).toEqual([]);
-    const select = container!.querySelector('nav select') as HTMLSelectElement;
+    const select = container!.querySelector('select[aria-label="Project"]') as HTMLSelectElement;
     await act(async () => { select.value='project-b';select.dispatchEvent(new Event('change',{bubbles:true})); });
     expect(scopes).toEqual([{owner:{projectId:'project-b',planId:'layout-test',branch:'main'},conversationId:undefined}]);
   } finally { await act(async () => configureWorkflowRunAccess030(undefined)); }
@@ -143,7 +142,6 @@ it('inspects the selected document owner when its execution branch differs', asy
     act(() => useAppStore.setState({ selectedProjectId: 'selected-project', activePlanContext: {
       ...useAppStore.getState().activePlanContext!, targetBranchesByProjectId: { 'selected-project': 'main' },
     } }));
-    await act(async () => (container!.querySelectorAll('nav button')[1] as HTMLButtonElement).click());
     expect(scopes).toEqual([{ owner: { projectId: 'selected-project', planId: 'layout-test', branch: 'develop' }, conversationId: undefined }]);
   } finally { await act(async () => configureWorkflowRunAccess030(undefined)); }
 });
@@ -157,9 +155,91 @@ it('shows the native read-only notice beside the 0.3 launch controls', async () 
       useAgsdlStore.setState(state => ({ sessions: { ...state.sessions, [key]: {
         ...state.sessions[key], source: '{"contract":"agsdl-0.3.0","id":"readonly","agents":{}}',
       } } }));
-      useAgsdlExecutionStore.setState({ notice030: 'agsdl.execution.readOnly030' });
     });
-    expect(container!.textContent).toContain('This run is limited to read-only access');
-    expect([...container!.querySelectorAll('button')].some(button => button.textContent === 'Start')).toBe(true);
+    await act(async () => useAgsdlExecutionStore.setState({ notice030: 'agsdl.execution.readOnly030' }));
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Start"]')!.click());
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('This run is limited to read-only access');
+    expect(container!.querySelector('textarea')).toBeNull();
   } finally { act(() => useAgsdlExecutionStore.setState({ notice030: undefined })); }
+});
+
+it('opens graphless launch controls without an entry prompt that would be ignored', async () => {
+  await mount();
+  const key = agsdlSessionKey({ branchName: 'develop', planId: 'layout-test' });
+  await act(async () => useAgsdlStore.setState(state => ({ sessions: { ...state.sessions, [key]: {
+    ...state.sessions[key], source: '{"contract":"agsdl-0.3.0","id":"messages","agents":{"worker":{"harness":"example","permissions":"read-only"}}}',
+  } } })));
+  await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Start"]')!.click());
+  const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+  expect(dialog).not.toBeNull();
+  expect(dialog.querySelector('textarea')).toBeNull();
+  expect(dialog.textContent).not.toContain('Input instructions');
+});
+
+it('keeps run, occurrence and stop target together when returning from the expanded graph', async () => {
+  const { configureWorkflowRunAccess030 } = await import('../../services/workflowAgentTasks');
+  const { inspectionFixture030, monitorFixture030, ready } = await import('../../services/agsdl/runInspection030.testSupport');
+  const { useAgsdlExecutionStore } = await import('../../stores/useAgsdlExecutionStore');
+  const originalExecution = useAgsdlExecutionStore.getState();
+  const first = inspectionFixture030(), secondFixture = inspectionFixture030('run-second');
+  const second = { ...secondFixture, state: { ...secondFixture.state,
+    occurrences: ready(secondFixture.state.occurrences.kind === 'ready' ? secondFixture.state.occurrences.value.map((row, index) => index ? row : {
+      ...row, activation: { ...row.activation, message: { sequence: '1', delivery: 'queue' as const, sender: 'host', messageJson: '{"prompt":"Second run message"}', statuses: ['consumed'], targetActivationId: null }, workText: 'Second run reply' },
+    }) : []),
+  } };
+  const access = monitorFixture030(first, second), stopped: string[] = [];
+  configureWorkflowRunAccess030(() => ({ access }));
+  try {
+    await mount();
+    await act(async () => {
+      useAppStore.setState({ selectedProjectId: 'sample-project' });
+      useAgsdlExecutionStore.setState({ owner: { projectId: 'sample-project', planId: 'layout-test', branch: 'develop' }, launched030: 'run-current', stopping: false,
+        stop030: async id => { stopped.push(id); } });
+    });
+    expect(container!.querySelector('[data-captured-run="run-current"]')).not.toBeNull();
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Expand view"]')!.click());
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    await act(async () => dialog.querySelector<HTMLButtonElement>('.agsdl-runs-toggle')!.click());
+    await act(async () => dialog.querySelector<HTMLButtonElement>('[data-run-id="run-second"] button')!.click());
+    expect(dialog.querySelector('[data-captured-run="run-second"]')).not.toBeNull();
+    const occurrence = [...dialog.querySelectorAll<HTMLButtonElement>('section[aria-label="Run inspector"] ol button')][1];
+    expect(occurrence).toBeDefined();
+    await act(async () => occurrence.click());
+    await act(async () => dialog.querySelector<HTMLButtonElement>('[aria-label="Close expanded view"]')!.click());
+    expect(container!.querySelector('[data-captured-run="run-second"]')).not.toBeNull();
+    expect(container!.querySelector('[data-run-id="run-second"] button')?.getAttribute('aria-pressed')).toBe('true');
+    expect(container!.querySelector('section[aria-label="Messages"]')?.textContent).toContain('Second run reply');
+    const selected = container!.querySelector('section[aria-label="Run inspector"] ol button[aria-pressed="true"]');
+    expect(selected?.textContent).toBe(occurrence.textContent);
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Stop"]')!.click());
+    expect(stopped).toEqual(['run-second']);
+  } finally {
+    await act(async () => { configureWorkflowRunAccess030(undefined); useAgsdlExecutionStore.setState(originalExecution); });
+  }
+});
+
+it('opens the exact human occurrence from the design overlay without a previously rendered run graph', async () => {
+  const { WorkflowRunView030 } = await import('./ArchitectStrategyPanel');
+  const { inspectionFixture030, monitorFixture030, humanFixture030, ready } = await import('../../services/agsdl/runInspection030.testSupport');
+  const { createHumanRequestClient030 } = await import('../../services/agsdl/humanRequests030');
+  const { humanTransportDouble030, memoryDraftStorage030 } = await import('../agsdl/HumanRequests030.test-fixtures');
+  const initial = inspectionFixture030(), human = humanFixture030(initial);
+  const request = { ...human, occurrences: [{ workId: 'work-1', activation: { kind: 'available' as const, scope: initial.state.scope, activationId: 'activation-2' } }] };
+  const run = { ...initial, state: { ...initial.state, humans: ready([request]) } };
+  const access = monitorFixture030(run);
+  const client = createHumanRequestClient030({ ...humanTransportDouble030(), storage: memoryDraftStorage030() });
+  container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
+  await act(async () => root!.render(<WorkflowRunView030 bundle={{ access, humanClient: client }} canvas={<div data-design>Design</div>} />));
+  expect(container.querySelector('[data-design]')).not.toBeNull();
+  expect(container.querySelector('[data-captured-run]')).toBeNull();
+  const overlay = container.querySelector('.agsdl-human-overlay')!;
+  const link = overlay.querySelector<HTMLButtonElement>('article details p button')!;
+  expect(link).not.toBeNull();
+  await act(async () => link.click());
+  expect(container.querySelector('[data-captured-run="run-current"]')).not.toBeNull();
+  expect(container.querySelector<HTMLElement>('.agsdl-runs-drawer')!.hidden).toBe(false);
+  const selected = container.querySelector('section[aria-label="Run inspector"] ol button[aria-pressed="true"]');
+  expect(selected).not.toBeNull();
+  expect(selected?.textContent).toContain('Review');
+  expect(container.textContent).toContain('Late work.');
 });

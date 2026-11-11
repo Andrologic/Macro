@@ -953,3 +953,12 @@ it('stages a command-only 0.3 flow without requiring a Codex installation', asyn
   expect(native.calls).toContain('stage030');
   expect(store.getState().error).not.toBe('agsdl.execution.codexNotInstalled');
 });
+
+it('retains the precise unsupported-feature launch diagnosis without staging an intent', async () => {
+  prepare030();
+  preflightDiagnostics = [{ code: 'UNSUPPORTED_030_FEATURE', pointer: '/agents/writer/harness', message: 'The selected writer harness cannot run this document.' }];
+  await store.getState().start030('write');
+  expect(store.getState().error).toBe('agsdl.execution.unsupported030');
+  expect(store.getState().launchDiagnostics030).toEqual(preflightDiagnostics);
+  expect(native.calls).not.toContain('stage030');
+});

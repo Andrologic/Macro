@@ -54,7 +54,7 @@ it('shows exact captured data, all flow choices, observed budgets and exact noti
   expect(options.actions).toHaveLength(1);
   await options.actions[0].onClick();
   expect(opened[0]).toEqual({ scope: request.scope, requestId: request.id });
-  await act(async () => host.querySelector<HTMLButtonElement>('article > p button')!.click());
+  await act(async () => host.querySelector<HTMLButtonElement>('article details p button')!.click());
   expect(opened[1]).toEqual(occurrence030);
   expect(occurrence030.activationId).not.toBe(request.workIds[0]);
 });
@@ -147,7 +147,7 @@ it('keeps unclassified requests and unavailable occurrence mappings readable wit
   await render(ready(request));
   expect(host.textContent).toContain('Message exact');
   expect(host.textContent).toContain('Étape liée 1 : non disponible');
-  expect(host.querySelector('article > p button')).toBeNull();
+  expect(host.querySelector('article details p button')).toBeNull();
   expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
   expect(notification).not.toHaveBeenCalled();
 });

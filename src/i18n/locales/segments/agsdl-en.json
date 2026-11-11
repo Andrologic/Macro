@@ -522,7 +522,7 @@
     "input030": "Input instructions",
     "start030": "Start",
     "stop030": "Stop",
-    "unsupported030": "This document uses a feature that is not supported yet. Human requests, steer, fan-out, timeouts and remote MCP calls are unavailable.",
+    "unsupported030": "This launch check found an unsupported feature. Review the cause below.",
     "codexNotInstalled": "Codex is not installed. Install Codex to start this run.",
     "codexLoginRequired": "Sign in to Codex in Macro’s private profile before starting.",
     "codexUnsupported": "This Codex version or platform is not supported. Use Codex 0.167.x on a qualified platform.",
@@ -1185,5 +1185,15 @@
     "delivered": "Delivered",
     "consumed": "Consumed",
     "fallback": "Moved to queue"
+  },
+  "canvas030": {
+    "document": "Document and definitions",
+    "runs": "Runs · {{count}}",
+    "captured": "Captured graph",
+    "capturedDifferent": "Captured graph differs from design",
+    "loginHelp": "Sign-in instructions",
+    "loginInstructions": "Open an agent’s Codex configuration to prepare Macro’s private profile. Follow the private sign-in guide, then check again. Your instructions are kept.",
+    "retryLogin": "Check sign-in",
+    "loginGuide": "Private sign-in guide"
   }
 }

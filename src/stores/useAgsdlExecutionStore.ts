@@ -76,6 +76,7 @@ interface ExecutionView {
   stop030: (systemStartId: string) => Promise<void>;
   launched030?: string;
   notice030?: string;
+  launchDiagnostics030?: ExecutionPreflight["diagnostics"];
   deliver: (agentName: string, prompt: string) => Promise<void>;
   resume: () => Promise<void>;
   discard: () => Promise<void>;
@@ -127,7 +128,7 @@ const runtimeStaleAfterRuns030 = (view: ExecutionView, runs: readonly PublicRunS
 };
 const isIntent030 = (row: { readonly payload: { readonly kind: 'start'; readonly request: { readonly profile: string } } | { readonly kind: 'deliver' }; readonly state: { readonly kind: string; readonly admission?: { readonly kind: string } | null } }) => (row.payload.kind === 'start' && row.payload.request.profile === 'macro-agsdl-030-v1') ||
   ((row.state.kind === 'admitted' || row.state.kind === 'closed') && row.state.admission?.kind === 'start030');
-const empty = { runs: [], nextRuns: null, runs030: [], nextRuns030: null, runs030Error: false, captured: false, loaded: false, busy: false, stale: false, humans030Stale: false, runtime030Stale: false, snapshot030: undefined, humans030: undefined, runtime030: undefined, diagnosticPinned: false, intent: undefined, intent030: undefined, intentBusy: false, stopping: false, acceptedDelivery: undefined, launched030: undefined, notice030: undefined };
+const empty = { runs: [], nextRuns: null, runs030: [], nextRuns030: null, runs030Error: false, captured: false, loaded: false, busy: false, stale: false, humans030Stale: false, runtime030Stale: false, snapshot030: undefined, humans030: undefined, runtime030: undefined, diagnosticPinned: false, intent: undefined, intent030: undefined, intentBusy: false, stopping: false, acceptedDelivery: undefined, launched030: undefined, notice030: undefined, launchDiagnostics030: [] };
 let generation = 0;
 /** Changes only when the view leaves its project/plan/branch/conversation scope. */
 let scopeGeneration = 0;
@@ -153,7 +154,7 @@ const executionError = (error: unknown) => {
   const native = toServiceError(error);
   if (native.code === 'CALL_PLATFORM_UNQUALIFIED') return { error: 'agsdl.execution.callPlatform030', stale: false };
   if (native.code === 'CALL_PERMISSIONS_UNSUPPORTED') return { error: 'agsdl.execution.callPermissions030', stale: false };
-  if (native.code === 'UNSUPPORTED_030_FEATURE') return { error: 'agsdl.execution.unsupported030', stale: false };
+  if (native.code === 'UNSUPPORTED_030_FEATURE') return { error: 'agsdl.execution.unsupported030', stale: false, launchDiagnostics030: [{ code: native.code, pointer: 'pointer' in native && typeof native.pointer === 'string' ? native.pointer : '', message: native.message }] };
   if (native.code === 'CODEX_NOT_INSTALLED') return { error: 'agsdl.execution.codexNotInstalled', stale: false };
   if (native.code === 'CODEX_LOGIN_REQUIRED') return { error: 'agsdl.execution.codexLoginRequired', stale: false };
   if (['CODEX_VERSION_UNQUALIFIED', 'CODEX_PLATFORM_UNQUALIFIED'].includes(native.code ?? '')) return { error: 'agsdl.execution.codexUnsupported', stale: false };
@@ -296,11 +297,13 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
   };
   const intentOperation = async (work: (initial: ExecutionView, current: () => Promise<boolean>) => Promise<void>) => {
     const initial = get(); const token = scopeGeneration;
+    const documentKey = initial.owner && agsdlSessionKey({ planId: initial.owner.planId, branchName: initial.owner.branch });
+    const documentSource = documentKey && useAgsdlStore.getState().sessions[documentKey]?.source;
     if (initial.intentBusy) return;
     const current = async () => { if (token !== scopeGeneration) return false; await owns(initial); return token === scopeGeneration; };
-    set({ intentBusy: true, error: undefined });
+    set({ intentBusy: true, error: undefined, notice030: undefined, launchDiagnostics030: [] });
     try { if (await current()) await work(initial, current); }
-    catch (error) { if (token === scopeGeneration) set(executionError(error)); }
+    catch (error) { if (token === scopeGeneration && (!documentKey || useAgsdlStore.getState().sessions[documentKey]?.source === documentSource)) set(executionError(error)); }
     finally { if (token === scopeGeneration) set({ intentBusy: false }); }
   };
   const settle030 = async (row: VersionedIntent, initial: ExecutionView, current: () => Promise<boolean>, submit: boolean) => {
@@ -582,6 +585,9 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
       const session = useAgsdlStore.getState().sessions[agsdlSessionKey({ planId: initial.owner!.planId, branchName: initial.owner!.branch })];
       if (!session || !Number.isSafeInteger(session.persistedRevision) || session.dirty || session.saving) throw new Error("agsdl.execution.saveBeforeStart");
       const preflight = await ipc.preflightExecution({ owner: initial.owner!, expected: null });
+      if (!(await current())) return;
+      if (useAgsdlStore.getState().sessions[agsdlSessionKey({ planId: initial.owner!.planId, branchName: initial.owner!.branch })]?.version !== session.version) return;
+      set({ launchDiagnostics030: preflight.diagnostics.filter(item => item.code !== 'READ_ONLY_CEILING') });
       if (preflight.diagnostics.some(item => item.code === 'UNSUPPORTED_030_FEATURE')) throw new Error('agsdl.execution.unsupported030');
       if (!(await current())) return;
       set({ notice030: preflight.diagnostics.some(item => item.code === 'READ_ONLY_CEILING') ? 'agsdl.execution.readOnly030' : undefined });

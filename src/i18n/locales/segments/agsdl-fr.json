@@ -522,7 +522,7 @@
     "input030": "Consigne d’entrée",
     "start030": "Lancer",
     "stop030": "Arrêter",
-    "unsupported030": "Ce document utilise une fonctionnalité qui n’est pas encore prise en charge. Les demandes humaines, messages steer, exécutions parallèles, délais et appels MCP distants ne sont pas disponibles.",
+    "unsupported030": "Le contrôle de lancement a détecté une fonctionnalité non prise en charge. Consultez la cause ci-dessous.",
     "codexNotInstalled": "Codex n’est pas installé. Installez Codex pour lancer cette exécution.",
     "codexLoginRequired": "Connectez-vous à Codex dans le profil privé de Macro avant de lancer l’exécution.",
     "codexUnsupported": "Cette version de Codex ou cette plateforme n’est pas prise en charge. Utilisez Codex 0.167.x sur une plateforme qualifiée.",
@@ -1185,5 +1185,15 @@
     "delivered": "Livré",
     "consumed": "Consommé",
     "fallback": "Replié en file"
+  },
+  "canvas030": {
+    "document": "Document et définitions",
+    "runs": "Exécutions · {{count}}",
+    "captured": "Graphe capturé",
+    "capturedDifferent": "Graphe capturé différent de la conception",
+    "loginHelp": "Procédure de connexion",
+    "loginInstructions": "Ouvrez la configuration Codex d’un agent pour préparer le profil privé de Macro. Suivez la procédure de connexion privée, puis vérifiez à nouveau. Votre consigne est conservée.",
+    "retryLogin": "Vérifier la connexion",
+    "loginGuide": "Guide de connexion au profil privé"
   }
 }
