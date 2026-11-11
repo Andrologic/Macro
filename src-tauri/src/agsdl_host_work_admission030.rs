@@ -220,37 +220,6 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
             }
         }
     }
-    fn route(value: &Value, pointer: &str) -> Result<()> {
-        if let Some(values) = value.as_array() {
-            if values.len() > 1 {
-                return Err(failure(
-                    "HOST_CAPABILITY",
-                    pointer,
-                    "Parallel routes are not connected in this slice",
-                ));
-            }
-            for (i, value) in values.iter().enumerate() {
-                route(value, &format!("{pointer}/{i}"))?;
-            }
-        } else if let Some(object) = value.as_object() {
-            if object.contains_key("step") {
-                for key in ["each", "concurrency", "max"] {
-                    if object.contains_key(key) {
-                        return Err(failure(
-                            "HOST_CAPABILITY",
-                            &format!("{pointer}/{key}"),
-                            "Fan-out is not connected in this slice",
-                        ));
-                    }
-                }
-            } else if !object.contains_key("output") {
-                for (key, value) in object {
-                    route(value, &format!("{pointer}/{}", pointer_token030(key)))?;
-                }
-            }
-        }
-        Ok(())
-    }
     fn visit(value: &Value, pointer: &str) -> Result<()> {
         if let Some(object) = value.as_object() {
             if object.get("uri").is_some_and(Value::is_string)
@@ -265,7 +234,7 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
                 ));
             }
             let step = object.get("type").and_then(Value::as_str);
-            if matches!(step, Some("compose" | "join")) {
+            if matches!(step, Some("compose")) {
                 return Err(failure(
                     "HOST_CAPABILITY",
                     &format!("{pointer}/type"),
@@ -296,11 +265,6 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
                     continue;
                 }
                 let location = format!("{pointer}/{}", pointer_token030(key));
-                if matches!(step, Some("agent" | "call" | "approval"))
-                    && ["next", "onError"].contains(&key.as_str())
-                {
-                    route(child, &location)?;
-                }
                 visit(child, &location)?;
             }
         } else if let Some(array) = value.as_array() {
@@ -1134,10 +1098,7 @@ mod codex030_tests {
             .unwrap()
             .remove("timeoutMs");
         doc["flow"]["steps"]["call"]["next"] = json!({"step":"work","each":["data"]});
-        assert_eq!(
-            validate_codex_document030(&doc).unwrap_err().code,
-            "HOST_CAPABILITY"
-        );
+        assert!(validate_codex_document030(&doc).is_ok());
     }
 
     #[test]
@@ -1160,18 +1121,6 @@ mod codex030_tests {
                 json!({"rules":[{"action":"write","effect":"ask"}]}),
                 "HARNESS_CAPABILITY",
                 "/agents/worker/permissions/rules/0/effect",
-            ),
-            (
-                "/flow/steps/work/next",
-                json!(["a", "b"]),
-                "HOST_CAPABILITY",
-                "/flow/steps/work/next",
-            ),
-            (
-                "/flow/steps/work/next",
-                json!({"step":"a","each":["items"]}),
-                "HOST_CAPABILITY",
-                "/flow/steps/work/next/each",
             ),
             (
                 "/flow/steps/work/type",

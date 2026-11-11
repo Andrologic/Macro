@@ -20,6 +20,9 @@ use tokio_util::sync::CancellationToken;
 #[path = "agsdl_host_codex030/continuity_tests.rs"]
 mod codex_continuity;
 
+#[path = "agsdl_host_parallel030_tests.rs"]
+mod parallel;
+
 async fn bun(script: &str, value: &impl serde::Serialize) -> Value {
     let mut child = crate::core::process::background_tokio_command("bun")
         .args(["-e", script])
