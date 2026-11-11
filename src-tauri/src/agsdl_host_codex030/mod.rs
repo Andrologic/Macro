@@ -531,6 +531,13 @@ impl CodexExecutor030 {
         {
             return Err(missing("thread"));
         }
+        if previous.is_some() {
+            // Codex 0.167 restores the saved developer messages on resume;
+            // developerInstructions does not replace those history items.
+            // Append the current work's requirements at the same authority.
+            let current = format!("For this work, follow these developer instructions and result requirements. Result requirements from earlier works are no longer current.\n\n{instructions}");
+            client.request("thread/inject_items", json!({"threadId":thread,"items":[{"type":"message","role":"developer","content":[{"type":"input_text","text":current}]}]})).await?;
+        }
         self.threads
             .lock()
             .await
@@ -793,6 +800,7 @@ if mode=='continuity':
  trace=sys.argv[4]
  statefile=trace+'.threads'
  with open(trace+'.script') as f: work_script=json.load(f)
+ saved_instructions=json.load(open(statefile+'.instructions')) if os.path.exists(statefile+'.instructions') else {}
 for line in sys.stdin:
  m=json.loads(line); method=m.get('method'); p=m.get('params',{}); i=m.get('id')
  if i is None: continue
@@ -810,11 +818,25 @@ for line in sys.stdin:
    if method=='thread/start':
     thread='thread-'+str(len(state)+1)
     state[thread]=[]
+    saved_instructions[thread]=p['developerInstructions']
    else:
     thread=p['threadId']
     assert thread in state
+   # A resume keeps the saved developer history, as Codex 0.167 does.
+   current_instructions=saved_instructions[thread]
+   with open(statefile+'.instructions','w') as f: json.dump(saved_instructions,f)
    with open(statefile,'w') as f: json.dump(state,f)
   result={'thread':{'id':thread},'model':'fixture','approvalPolicy':'never','activePermissionProfile':{'id':'macro-agsdl'},'cwd':bootstrap,'runtimeWorkspaceRoots':p['runtimeWorkspaceRoots'],'instructionSources':[]}
+ elif method=='thread/inject_items':
+  if mode=='inject_error':
+   print(json.dumps({'id':i,'error':{'code':-1,'message':'unsupported'}}),flush=True); continue
+  assert mode=='continuity' and p['threadId']==thread
+  item=p['items'][0]
+  assert len(p['items'])==1 and item['type']=='message' and item['role']=='developer'
+  current_instructions=item['content'][0]['text']
+  saved_instructions[thread]=current_instructions
+  with open(statefile+'.instructions','w') as f: json.dump(saved_instructions,f)
+  result={}
  elif method=='turn/interrupt':
   open(sys.argv[4]+'.interrupted','w').write('yes')
   result={}
@@ -842,6 +864,11 @@ for line in sys.stdin:
    with open(statefile,'w') as f: json.dump(state,f)
    index=sum(len(turns) for turns in state.values())-1
    envelope=work_script[index]
+   if envelope is not None:
+    choice=json.loads(envelope['submissionJson']).get('choice')
+    if choice is not None:
+     requirements=json.loads(current_instructions.split('These requirements describe what to produce, not an object to copy: ')[-1].split('. The host validates')[0])
+     assert choice in requirements['choices'], 'current work requirements were not delivered'
    result={'turn':{'id':'turn'+str(count)}}
    print(json.dumps({'id':i,'result':result}),flush=True)
    if envelope is None: continue
@@ -900,6 +927,13 @@ for line in sys.stdin:
             .await
             .unwrap();
         let executor = CodexExecutor030::new(config);
+        if mode == "inject_error" {
+            executor
+                .threads
+                .lock()
+                .await
+                .insert(("run".into(), "instance".into()), "thread".into());
+        }
         let seen = Arc::new(StdMutex::new(Vec::new()));
         let observed = seen.clone();
         let contract = test_contract(json!(["approve"]), if mode == "exhausted" { 0 } else { 2 });
@@ -1023,6 +1057,15 @@ for line in sys.stdin:
     async fn fake_app_server_protocol_error_fails() {
         let (result, _) = fake_session("error", false).await;
         assert_eq!(result.unwrap_err().code, "CODEX_REQUEST_FAILED");
+    }
+    #[tokio::test]
+    async fn resumed_work_requires_delivery_of_current_developer_instructions() {
+        let (result, events) = fake_session("inject_error", true).await;
+        assert_eq!(result.unwrap_err().code, "CODEX_REQUEST_FAILED");
+        assert!(
+            events.is_empty(),
+            "a work must not start with stale requirements"
+        );
     }
     #[cfg(unix)]
     #[tokio::test]

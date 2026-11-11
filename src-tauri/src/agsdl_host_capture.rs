@@ -1183,6 +1183,7 @@ impl CompilationCapture {
                     "UNSUPPORTED",
                     "CORRELATION",
                     "INPUT_CONSTRAINT",
+                    "HARNESS_APPROXIMATE",
                 ]
                 .contains(&code)
                 {
@@ -1199,7 +1200,9 @@ impl CompilationCapture {
                         .chars()
                         .take(2048)
                         .collect(),
-                    message: if self
+                    message: if code == "HARNESS_APPROXIMATE" {
+                        "This harness feature is supported with limitations.".into()
+                    } else if self
                         .result
                         .pointer("/runtime/profile")
                         .and_then(Value::as_str)
@@ -1950,6 +1953,38 @@ mod exact_capture_tests {
 mod start_material030_tests {
     use super::*;
     use crate::agsdl_host_catalogue::{ModelCapture, NativeModelCatalogue};
+
+    #[test]
+    fn approximate_support_remains_a_warning_without_changing_qualification() {
+        let (mut capture, _) = fixture();
+        let before = capture.public();
+        capture.result["runtime"]["diagnostics"] = json!([{
+            "code":"HARNESS_APPROXIMATE", "severity":"warning",
+            "pointer":"/flow/steps/work", "message":"Untrusted module text"
+        }]);
+        let after = capture.public();
+        assert_eq!(after.runtime_supported, before.runtime_supported);
+        assert_eq!(
+            after.product_runtime_available,
+            before.product_runtime_available
+        );
+        let warning = after
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "HARNESS_APPROXIMATE")
+            .unwrap();
+        assert_eq!(
+            warning.message,
+            "This harness feature is supported with limitations."
+        );
+        assert_eq!(warning.pointer, "/flow/steps/work");
+        capture.result["runtime"]["diagnostics"][0]["code"] = json!("UNKNOWN");
+        let after = capture.public();
+        assert!(after
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "UNSUPPORTED" && !d.message.contains("Untrusted module text")));
+    }
 
     #[test]
     fn read_only_notice_does_not_close_a_qualified_runtime() {

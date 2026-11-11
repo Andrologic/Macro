@@ -186,8 +186,16 @@ async fn codex_shared_named_new_and_runs_use_the_reducer_instances() {
     assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
     let starts = requests(&trace, "thread/start");
     let resumes = requests(&trace, "thread/resume");
+    let updates = requests(&trace, "thread/inject_items");
     let turns = requests(&trace, "turn/start");
     assert_eq!((starts.len(), resumes.len(), turns.len()), (6, 2, 8));
+    assert_eq!(updates.len(), 2);
+    assert_eq!(updates[1]["threadId"], turns[0]["threadId"]);
+    let current = updates[1]["items"][0]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(current.contains("\"choices\":[\"last\"]"));
+    assert!(!current.contains("\"first\""));
     let threads: Vec<_> = turns.iter().map(|turn| turn["threadId"].clone()).collect();
     assert_eq!(threads[1], threads[3], "same named instance must resume");
     assert_eq!(threads[0], threads[7], "shared instance must resume");
@@ -338,6 +346,20 @@ async fn codex_authorized_missions_keep_permanent_instructions_permissions_and_d
             ] {
                 assert!(!instructions.contains(mission));
             }
+        }
+    }
+    for update in requests(&trace, "thread/inject_items") {
+        assert_eq!(update["items"][0]["role"], "developer");
+        let instructions = update["items"][0]["content"][0]["text"].as_str().unwrap();
+        assert!(instructions.contains("PERMANENT_"));
+        for mission in [
+            "AUTHORIZED_MISSION",
+            "UNAUTHORIZED_MISSION",
+            "OVERRIDDEN_MISSION",
+            "DATA_ONLY_MISSION",
+            "EXPLICIT_MISSION",
+        ] {
+            assert!(!instructions.contains(mission));
         }
     }
     assert!(references.upgrade().is_none());

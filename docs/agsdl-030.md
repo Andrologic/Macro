@@ -153,8 +153,12 @@ travaux, y compris après un arrêt ou un échec. Cela ne supprime pas l'histori
 privé conservé par Codex et ne permet pas de reprendre un run après redémarrage.
 
 Chaque reprise transmet les exigences de résultat du travail courant, avec
-ses choix de route. Les instructions permanentes restent dans les instructions
-développeur ; la mission est l'entrée du nouveau tour. Seul `instructs: true`
+ses choix de route. Codex 0.167 conserve les messages développeur enregistrés
+à la création du fil ; l'adaptateur ajoute donc un message développeur courant
+par `thread/inject_items` après la reprise et avant le nouveau tour. Un refus de
+cette mise à jour fait échouer le travail avant de lancer un tour Codex.
+Les instructions permanentes restent dans les instructions développeur ; la
+mission est l'entrée du nouveau tour. Seul `instructs: true`
 autorise un agent à fournir une mission au suivant. Un prompt explicite de route
 est prioritaire sur cette mission, puis le prompt de l'étape sert de repli.
 Les ressources restent des données séparées, marquées non fiables, même si elles
