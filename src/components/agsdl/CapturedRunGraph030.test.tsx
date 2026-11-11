@@ -9,6 +9,22 @@ import type { RunGraphBridge030 } from './RunInspector030';
 let root: Root | undefined;
 let host: HTMLDivElement;
 afterEach(() => { act(() => root?.unmount()); host?.remove(); });
+it('keeps a join and its physical barrier active without inventing uncertainty', async () => {
+  const run = inspectionFixture030();
+  if (run.state.occurrences.kind !== 'ready') throw new Error('Fixture occurrences unavailable');
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+  for (const phase of ['group', 'barrier', 'unrecognized']) {
+    const occurrence = { ...run.state.occurrences.value[0], activation: { ...run.state.occurrences.value[0].activation,
+      step: ['vote'], phase, physical: false, stopRequested: false } };
+    const bridge: RunGraphBridge030 = { capture: run.capture,
+      occurrences: projectRunGraph030(run.state.scope, projectStaticSemantics030(run.capture.authoredSource), [occurrence]),
+      occurrenceRead: { availability: 'ready', complete: true, revision: run.state.revision, stale: false, projectionAvailable: true },
+      selectStep: () => {}, selectOccurrence: () => {} };
+    await act(async () => root!.render(<CapturedRunGraph030 bridge={bridge} />));
+    const join = [...host.querySelectorAll<HTMLButtonElement>('.agsdl-graph-node')].find(node => node.textContent?.includes('vote'))!;
+    expect(join.querySelector('[role="img"]')?.getAttribute('aria-label')).toContain(phase === 'unrecognized' ? 'Uncertain' : 'Running');
+  }
+});
 it('uses the captured source and native visit identity when the design has changed', async () => {
   const run = inspectionFixture030();
   const occurrences = run.state.occurrences.kind === 'ready' ? run.state.occurrences.value : [];
