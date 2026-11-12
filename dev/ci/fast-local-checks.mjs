@@ -1,5 +1,5 @@
 import { dirname, posix } from 'node:path';
-import { isExtractedNativeFile } from '../architecture/extracted-boundaries.mjs';
+import { isArgenticFile, isExtractedNativeFile } from '../architecture/extracted-boundaries.mjs';
 
 const LINTABLE_SCRIPT_PATTERN = /\.(?:[cm]?[jt]s|jsx|tsx)$/;
 const TEST_PATTERN = /\.test\.(?:ts|tsx)$/;
@@ -175,7 +175,7 @@ export function planFastLocalChecks(paths, options = {}) {
   }
   if (normalized.some((path) =>
     path.startsWith('src/') || path === 'package.json' ||
-    isExtractedNativeFile(path) ||
+    isExtractedNativeFile(path) || isArgenticFile(path) ||
     path.startsWith('dev/architecture/') || path === 'vite.config.ts')) {
     steps.push({
       name: 'Frontières des domaines',

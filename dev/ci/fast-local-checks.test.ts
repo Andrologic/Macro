@@ -127,6 +127,15 @@ describe('fast local check selection', () => {
     expect(unrelated.steps.some((step) => step.args.includes('dev/architecture/import-boundaries.mjs'))).toBe(false);
   });
 
+  test('routes Argentic files and deletions to the architecture guard', () => {
+    for (const path of ['src-tauri/src/agsdl_host_flow030.rs', 'src-tauri/src/argentic_core/new.rs', 'src-tauri/src/argentic_runtime/new.rs', 'crates/argentic-core/src/lib.rs', 'crates/argentic-runtime/src/lib.rs', 'src-tauri/src/ai/stream_tasks.rs']) {
+      for (const exists of [true, false]) {
+        const plan = planFastLocalChecks([path], { exists: () => exists });
+        expect(plan.steps.filter((step) => step.args.includes('dev/architecture/import-boundaries.mjs'))).toHaveLength(1);
+      }
+    }
+  });
+
   test('typechecks changed Copilot code, configuration and imported dependencies once', () => {
     const paths = [
       'copilot-bridge/src/protocol.ts', 'copilot-bridge/src/protocol.test.ts',

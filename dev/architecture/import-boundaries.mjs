@@ -5,7 +5,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, normalize, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import ts from 'typescript';
-import { chatBoundaryViolations, isExtractedNativeFile, nativeBoundaryViolations } from './extracted-boundaries.mjs';
+import { argenticCounts, compareArgentic, isArgenticFile, tightenArgentic, validateArgenticBaseline, chatBoundaryViolations, isExtractedNativeFile, nativeBoundaryViolations } from './extracted-boundaries.mjs';
 
 export const BASELINE_PATH = 'dev/architecture/import-boundaries.baseline.json';
 export const SOURCE_EXTENSIONS = Object.freeze(['.ts', '.tsx', '.js', '.mjs']);
@@ -111,7 +111,7 @@ function sourceFileNames(rootDirectory, sourceDirectory = 'src') {
 }
 
 function gitSourceFileNames(rootDirectory, ref) {
-  const output = execFileSync('git', ['-C', rootDirectory, 'ls-tree', '-rz', ref, '--', 'src', 'src-tauri/src', 'contracts/macro-pilot/v2'], {
+  const output = execFileSync('git', ['-C', rootDirectory, 'ls-tree', '-rz', ref, '--', 'src', 'src-tauri/src', 'crates/argentic-core', 'crates/argentic-runtime', 'contracts/macro-pilot/v2'], {
     encoding: 'utf8',
   });
   return sorted(output.split('\0').filter(Boolean).map((entry) => {
@@ -131,6 +131,7 @@ function createFilesystemReader(rootDirectory) {
     resolutionFiles,
     files: resolutionFiles.filter((path) => path.startsWith('src/') && isSourceFile(path)),
     nativeFiles: sourceFileNames(rootDirectory, 'src-tauri/src').filter(isExtractedNativeFile),
+    argenticFiles: [...sourceFileNames(rootDirectory, 'src-tauri/src'), ...sourceFileNames(rootDirectory, 'crates/argentic-core'), ...sourceFileNames(rootDirectory, 'crates/argentic-runtime')].filter(isArgenticFile),
     read(path) {
       return readFileSync(join(rootDirectory, path), 'utf8');
     },
@@ -144,6 +145,7 @@ function createGitReader(rootDirectory, ref) {
     resolutionFiles,
     files: resolutionFiles.filter((path) => path.startsWith('src/') && isSourceFile(path)),
     nativeFiles: allFiles.filter(isExtractedNativeFile),
+    argenticFiles: allFiles.filter(isArgenticFile),
     read(path) {
       return readGitFile(rootDirectory, ref, path);
     },
@@ -156,6 +158,7 @@ export function createVirtualReader(sources) {
     resolutionFiles: sorted([...normalizedSources.keys()].filter((path) => path.startsWith('src/') || path.startsWith('contracts/macro-pilot/v2/'))),
     files: sorted([...normalizedSources.keys()].filter((path) => path.startsWith('src/') && isSourceFile(path))),
     nativeFiles: sorted([...normalizedSources.keys()].filter(isExtractedNativeFile)),
+    argenticFiles: sorted([...normalizedSources.keys()].filter(isArgenticFile)),
     read(path) {
       const text = normalizedSources.get(normalizePath(path));
       if (text === undefined && path === 'package.json') return '{}';
@@ -714,6 +717,7 @@ export function analyzeReader(reader, sourceRef = 'worktree') {
       native: nativeBoundaryViolations(reader),
       nativeFiles: reader.nativeFiles ?? [],
     },
+    argentic: argenticCounts(reader, graph.edges),
     exceptions: exceptionsForReport(violations),
     diagnostics: graph.diagnostics.sort((left, right) => `${left.file}|${left.message}`.localeCompare(`${right.file}|${right.message}`)),
     unresolved: graph.unresolved.sort((left, right) => `${left.from}|${left.specifier}|${left.line}`.localeCompare(`${right.from}|${right.specifier}|${right.line}`)),
@@ -806,7 +810,7 @@ export function buildReport(current, comparison) {
 }
 
 function parseArguments(argv) {
-  const options = { check: false, format: 'text', root: process.cwd(), baseline: BASELINE_PATH, report: undefined, base: undefined, writeBaseline: undefined };
+  const options = { check: false, format: 'text', root: process.cwd(), baseline: BASELINE_PATH, report: undefined, base: undefined, writeBaseline: undefined, argenticBaseline: 'dev/architecture/argentic-boundaries.baseline.json', captureArgentic: false, tightenArgentic: false };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--check') options.check = true;
@@ -816,6 +820,9 @@ function parseArguments(argv) {
     else if (argument === '--report') options.report = argv[++index];
     else if (argument === '--base') options.base = argv[++index];
     else if (argument === '--write-baseline') options.writeBaseline = argv[++index];
+    else if (argument === '--argentic-baseline') options.argenticBaseline = argv[++index];
+    else if (argument === '--capture-argentic') options.captureArgentic = true;
+    else if (argument === '--tighten-argentic') options.tightenArgentic = true;
     else if (argument === '--help') options.help = true;
     else throw new Error(`Unknown argument: ${argument}`);
   }
@@ -834,6 +841,9 @@ function usage() {
     '  --report <path>                 Write the current JSON report.',
     '  --format <text|json>            Select stdout format.',
     '  --root <path>                   Repository root. Defaults to cwd.',
+    '  --argentic-baseline <path>      Argentic baseline path.',
+    '  --capture-argentic              Capture initial baseline from the fixed base only.',
+    '  --tighten-argentic              Lower existing Argentic limits only.',
   ].join('\n');
 }
 
@@ -898,16 +908,40 @@ function main(argv = process.argv.slice(2)) {
     if (!options.base) throw new Error('--write-baseline requires --base <git-ref>.');
     writeFileSync(resolve(root, options.writeBaseline), `${JSON.stringify(baselineFromReport(current, options.base), null, 2)}\n`);
   }
+  const argenticPath = resolve(root, options.argenticBaseline);
+  const fixedBase = '627ea641d8ab1439ca41e9cd68bb07454ea33c49';
+  if (options.captureArgentic) {
+    if (options.base !== fixedBase || existsSync(argenticPath) || options.tightenArgentic || options.check) throw new Error('Initial Argentic capture requires the exact base, a nonexistent output and no check or tightening.');
+    const captured = { schemaVersion: 1, baseRef: fixedBase, counts: current.argentic };
+    validateArgenticBaseline(captured);
+    writeFileSync(argenticPath, `${JSON.stringify(captured, null, 2)}\n`, { flag: 'wx' });
+  }
+  let argenticIssues = [];
+  if (options.check || options.tightenArgentic) {
+    if (!existsSync(argenticPath)) throw new Error(`Argentic baseline not found: ${argenticPath}`);
+    let argenticBaseline;
+    try { argenticBaseline = JSON.parse(readFileSync(argenticPath, 'utf8')); validateArgenticBaseline(argenticBaseline); }
+    catch (error) { throw new Error(`Invalid Argentic baseline: ${error.message}`); }
+    argenticIssues = compareArgentic(argenticBaseline, current.argentic);
+    if (options.tightenArgentic) {
+      if (options.base || options.check) throw new Error('Tightening requires the worktree and cannot be combined with --check.');
+      writeFileSync(argenticPath, `${JSON.stringify(tightenArgentic(argenticBaseline, current.argentic), null, 2)}\n`);
+      argenticIssues = compareArgentic(tightenArgentic(argenticBaseline, current.argentic), current.argentic);
+    }
+  }
   let report = current;
   if (options.check) {
     const baselinePath = resolve(root, options.baseline);
     if (!existsSync(baselinePath)) throw new Error(`Baseline not found: ${baselinePath}`);
     const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
     report = buildReport(current, compareReports(baseline, current));
+    report.comparison.argenticIssues = argenticIssues;
+    report.comparison.passed &&= argenticIssues.length === 0;
   }
   if (options.report) writeFileSync(resolve(root, options.report), `${JSON.stringify(report, null, 2)}\n`);
   console.log(options.format === 'json' ? JSON.stringify(report, null, 2) : formatText(report));
-  return options.check && !report.comparison.passed ? 1 : 0;
+  if (options.format === 'text') for (const issue of argenticIssues) console.log(`Argentic ${issue.file} [${issue.rule}]: ${issue.count}/${issue.limit} (${issue.direction}); ${issue.direction === 'increase' ? 'remove the coupling' : 'run --tighten-argentic and review the baseline'}.`);
+  return (options.check && !report.comparison.passed) || (options.tightenArgentic && argenticIssues.length > 0) ? 1 : 0;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
