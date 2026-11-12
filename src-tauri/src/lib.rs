@@ -136,6 +136,8 @@ mod app_updates;
 #[cfg_attr(not(test), allow(dead_code))]
 mod argentic_core;
 #[cfg(test)]
+mod argentic_reader_conformance030_tests;
+#[cfg(test)]
 mod argentic_values_conformance030_tests;
 pub mod commands;
 pub mod config;

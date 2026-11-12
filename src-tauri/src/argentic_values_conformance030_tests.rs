@@ -191,14 +191,16 @@ fn native(request: &Json) -> Json {
     }
 }
 
-struct Oracle {
+/// JSON-lines client of `dev/agsdl/conformance-host030.ts`, shared with the
+/// reader differential. Every non-response is a hard failure.
+pub(crate) struct Oracle {
     child: tokio::process::Child,
     input: tokio::process::ChildStdin,
     output: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
     sequence: usize,
 }
 impl Oracle {
-    fn start() -> Self {
+    pub(crate) fn start() -> Self {
         let mut child = crate::core::process::background_tokio_command("bun")
             .arg("dev/agsdl/conformance-host030.ts")
             .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
@@ -207,7 +209,7 @@ impl Oracle {
             .stderr(std::process::Stdio::inherit())
             .kill_on_drop(true)
             .spawn()
-            .expect("Bun is required for the values differential; never skip");
+            .expect("Bun is required for the Argentic differentials; never skip");
         let input = child.stdin.take().unwrap();
         let output = BufReader::new(child.stdout.take().unwrap()).lines();
         Self {
@@ -218,21 +220,45 @@ impl Oracle {
         }
     }
     async fn request(&mut self, request: &Json, case: &str) -> Json {
+        self.request_kind(
+            "values",
+            request,
+            case,
+            std::time::Duration::from_secs(30),
+            "ARGENTIC_VALUES_RESOURCE",
+        )
+        .await
+    }
+    /// One correlated request. A timeout, an end of output and an IO error
+    /// are reported with distinct causes, then fail the test.
+    pub(crate) async fn request_kind(
+        &mut self,
+        kind: &str,
+        request: &Json,
+        case: &str,
+        timeout: std::time::Duration,
+        label: &str,
+    ) -> Json {
         self.sequence += 1;
-        let envelope = json!({"id":self.sequence,"kind":"values","request":request});
+        let envelope = json!({"id":self.sequence,"kind":kind,"request":request});
         let mut bytes = serde_json::to_vec(&envelope).unwrap();
         bytes.push(b'\n');
         self.input.write_all(&bytes).await.unwrap();
-        let received =
-            tokio::time::timeout(std::time::Duration::from_secs(30), self.output.next_line()).await;
+        let received = tokio::time::timeout(timeout, self.output.next_line()).await;
         let line = match received {
             Ok(Ok(Some(line))) => line,
             other => {
+                let cause = match &other {
+                    Err(_) => "timeout",
+                    Ok(Ok(None)) => "endOfOutput",
+                    Ok(Err(_)) => "io",
+                    Ok(Ok(Some(_))) => unreachable!(),
+                };
                 eprintln!(
-                    "ARGENTIC_VALUES_RESOURCE {}",
-                    json!({"case":case,"status":"resourceLimit","cause":format!("{other:?}")})
+                    "{label} {}",
+                    json!({"case":case,"status":"noResponse","cause":cause,"detail":format!("{other:?}")})
                 );
-                panic!("values oracle did not reply for {case}: {other:?}");
+                panic!("{kind} oracle did not reply for {case}: {cause} {other:?}");
             }
         };
         let reply: Json = serde_json::from_str(&line).expect("oracle JSON-lines reply");
@@ -243,7 +269,7 @@ impl Oracle {
         );
         reply["output"].clone()
     }
-    async fn close(mut self) {
+    pub(crate) async fn close(mut self) {
         self.input.shutdown().await.unwrap();
         drop(self.input);
         let exit = tokio::time::timeout(std::time::Duration::from_secs(5), self.child.wait())

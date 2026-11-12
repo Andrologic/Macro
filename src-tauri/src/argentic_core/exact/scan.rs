@@ -105,7 +105,7 @@ pub(crate) fn parse_v030(bytes: &[u8]) -> Result<Parsed, ParseError> {
 
 /// Canonical JS array index (`0` to `2^32 - 2`), which ordinary objects list
 /// first in ascending order.
-fn array_index(key: &str) -> Option<u32> {
+pub(crate) fn array_index(key: &str) -> Option<u32> {
     if key.is_empty() || key.len() > 10 || (key.len() > 1 && key.starts_with('0')) {
         return None;
     }
