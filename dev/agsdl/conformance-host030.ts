@@ -12,6 +12,7 @@ import type { CapturedRegistry030 } from '../../src/services/agsdlExecution/cont
 import type { SourceRevision } from '../../src/services/agsdlExecution/contracts';
 import { evaluateValues030, type ValuesRequest030 } from './values-oracle030';
 import { evaluateReader030, type ReaderRequest030 } from './reader-oracle030';
+import { evaluateRoutes030, type RoutesRequest030 } from './routes-oracle030';
 
 type Request = { id: number } & (
   | { kind: 'compile'; authoredSource: string; source: SourceRevision; registry: CapturedRegistry030 }
@@ -19,6 +20,7 @@ type Request = { id: number } & (
   | { kind: 'route'; job: HostRouteJob030 }
   | { kind: 'values'; request: ValuesRequest030 }
   | { kind: 'reader'; request: ReaderRequest030 }
+  | { kind: 'routes'; request: RoutesRequest030 }
 );
 const validator = connectValueSchemaValidator030({ NumberToken, parse, validate });
 for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
@@ -33,6 +35,7 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
       case 'route': output = await createHostRoutePort030(request.job.generation).evaluate(request.job); break;
       case 'values': output = evaluateValues030(request.request); break;
       case 'reader': output = evaluateReader030(request.request); break;
+      case 'routes': output = evaluateRoutes030(request.request); break;
       default: throw new Error('Unknown conformance host operation');
     }
     process.stdout.write(JSON.stringify({ id, output }) + '\n');

@@ -2,17 +2,20 @@
 //!
 //! D15 2.c ports the TypeScript evaluators here one sub-lot at a time; 2.c.1
 //! brought exact JSON values, value schemas and work integers, 2.c.2 the
-//! reader, the schema checker, flow graphs and static validation. Nothing
+//! reader, the schema checker, flow graphs and static validation. 2.c.5a adds
+//! descriptive routes and captured message resolution. Nothing
 //! outside tests calls this module before the 2.c.7 switch. The module must
 //! not use the desktop shell, storage drivers, generated IPC types or IO; the
 //! architecture guard counts forbidden names here, comments included. Besides
-//! the standard library, only the locked `regex` crate is used, for the
-//! patterns of the pinned and code-defined schemas.
+//! the standard library, the staged ports use the locked schema regex, serde
+//! JSON data types and the approved pure URL syntax parser.
 pub(crate) mod error;
 pub(crate) mod exact;
 pub(crate) mod graph;
 pub(crate) mod integers;
+pub(crate) mod messages;
 pub(crate) mod reader;
+pub(crate) mod route;
 pub(crate) mod schema;
 pub(crate) mod validate;
 pub(crate) mod valueschema;

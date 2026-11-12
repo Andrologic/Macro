@@ -138,6 +138,8 @@ mod argentic_core;
 #[cfg(test)]
 mod argentic_reader_conformance030_tests;
 #[cfg(test)]
+mod argentic_routes_conformance030_tests;
+#[cfg(test)]
 mod argentic_values_conformance030_tests;
 pub mod commands;
 pub mod config;

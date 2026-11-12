@@ -60,6 +60,27 @@ pub(crate) struct Object {
 }
 
 impl Object {
+    /// Ordinary JS object construction: the last value wins without moving an
+    /// existing key; array-index keys precede named keys. Scanned v030 objects
+    /// keep using their separate insertion-order constructor.
+    pub(crate) fn from_entries(entries: impl IntoIterator<Item = (String, Value)>) -> Self {
+        let mut object = Self::default();
+        for (key, value) in entries {
+            object.set(key, value);
+        }
+        object
+    }
+
+    /// JS property assignment, including replacement without reinsertion.
+    pub(crate) fn set(&mut self, key: String, value: Value) {
+        if let Some((_, previous)) = self.entries.iter_mut().find(|(name, _)| name == &key) {
+            *previous = value;
+        } else {
+            self.entries.push((key, value));
+            self.entries = scan::js_object_order(mem::take(&mut self.entries));
+        }
+    }
+
     /// Caller guarantees unique keys.
     pub(super) fn from_unique_entries(entries: Vec<(String, Value)>) -> Self {
         Self { entries }
