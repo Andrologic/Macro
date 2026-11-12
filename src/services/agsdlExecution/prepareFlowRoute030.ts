@@ -52,7 +52,7 @@ function prepareCapturedRoute030(input: PrepareFlowRouteInput030): PrepareFlowRo
   if (!direct && !compose) return fail('CORRELATION', '', 'The producer is outside the selected route.');
   if (reference.route.kind === 'error' ? source.kind !== 'error' : source.kind !== producer.kind && !(compose && source.kind === 'error')) return fail('CORRELATION', '', 'Producer kind contradicts the selected route.');
   if (source.kind === 'agent' && (typeof producerStep.agent !== 'string' || source.producerAgent !== producerStep.agent)) return fail('CORRELATION', '', 'The agent does not match the captured producer.');
-  if (reference.route.kind === 'normal' && producer.kind === 'approval') {
+  if (source.kind === 'approval') {
     const output = record(decode(producer.outputJson));
     if (producer.messageJson === null || !equal(output.message, decode(producer.messageJson))) return fail('CORRELATION', '', 'Approval output differs from its received message.');
   }

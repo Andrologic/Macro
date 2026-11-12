@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { compilePlan030 } from './compiler030';
 import { sourceDigest } from './compiler';
+import { createHostRoutePort030 } from './hostRouteBroker030';
 import type { ExactJsonText, SourceRevision } from './contracts';
 import type { CapturedRegistry030 } from './contracts030';
 import { ConformanceError, decode, encode, record } from './exact';
@@ -270,4 +271,50 @@ describe('preparing a reducer-selected route from a compiled plan', () => {
     expect(prepareFlowRoute030({ ...input, planJson: encode(wrong) })).toMatchObject({ kind: 'failed', error: { code: 'CONTENT_UNAVAILABLE' } });
   });
 
+  it('forwards approval replies and failures through nested outputs without mixing their message contracts', async () => {
+    const raw = JSON.stringify({ contract: 'agsdl-0.3.0', id: 'approval-output', agents: {},
+      compositions: {
+        inner: { entry: 'approve', outputs: ['done'], steps: { approve: { type: 'approval', timeoutMs: 1,
+          next: { yes: { output: 'done' } }, onError: { output: 'done' } } } },
+        outer: { entry: 'inner', outputs: ['done'], steps: { inner: { type: 'compose', composition: 'inner',
+          next: { done: { output: 'done' } } } } },
+      },
+      flow: { entry: 'outer', steps: {
+        outer: { type: 'compose', composition: 'outer', next: { done: 'after' } },
+        after: { type: 'approval', next: { yes: [] } },
+      } },
+    });
+    const planJson = await compile(raw);
+    const messageJson = j('{"prompt":"Synthetic approval"}');
+    const cases = [
+      { errorCode: null, messageJson },
+      { errorCode: 'APPROVAL_TIMEOUT', messageJson },
+      { errorCode: 'VISIT_LIMIT', messageJson: null },
+    ];
+    for (const { errorCode, messageJson: received } of cases) {
+      const outputJson = j(JSON.stringify(errorCode
+        ? { error: { code: errorCode, message: errorCode, details: [] } }
+        : { choice: 'yes', comment: 'Approved', message: JSON.parse(messageJson) }));
+      const producer: NativeProducer030 = { activationId: 'approval-terminal', step: ['outer', 'inner', 'approve'],
+        kind: 'approval', inputJson: j('{}'), messageJson: received, itemJson: null, outputJson };
+      const source: RouteSource030 = { kind: errorCode ? 'error' : 'approval', terminalId: producer.activationId,
+        producerStep: producer.step, outputJson, provenance: { instructions: [], ...(!errorCode ? { prompt: { kind: 'host' as const } } : {}) } };
+      const input = { planJson, producer, source, nativeReceiptId: 'receipt',
+        reference: { route: { source: ['outer'] as [string], kind: 'normal' as const, key: 'done' } } };
+      const prepared = prepareFlowRoute030(input);
+      expect(prepared.kind).toBe('ready');
+      if (prepared.kind !== 'ready') throw new Error('expected prepared composition output');
+      const message = JSON.parse(prepared.batches[0].items[0].messageJson!);
+      if (errorCode) expect(message.resources.error.value.code).toBe(errorCode);
+      else {
+        expect(message.prompt).toBe('Synthetic approval');
+        expect(() => prepareFlowRoute030({ ...input, producer: { ...producer, messageJson: j('{"prompt":"Other"}') } })).toThrow('received message');
+      }
+      const output = await createHostRoutePort030('generation').evaluate({ ticket: 'ticket', generation: 'generation', inputDigest: 'digest',
+        inputJson: JSON.stringify({ ...input, contentReceipts: { format: 'macro-agsdl-route-content/1', occurrences: [] } }) });
+      expect(output.kind).toBe('ready');
+      if (output.kind !== 'ready') throw new Error('expected prepared resident route');
+      expect(JSON.parse(output.resultJson)).toEqual(prepared);
+    }
+  });
 });
