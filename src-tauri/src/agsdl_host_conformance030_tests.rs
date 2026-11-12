@@ -242,7 +242,7 @@ impl Fixture {
         let source = json!({"owner":{"projectId":"project","planId":"source","branch":"develop"},"revision":"1","sourceSha256":format!("{:x}",Sha256::digest(authored.as_bytes()))});
         let scope = json!({"projectId":"project","root":workspace,"rootIdentity":crate::fs::operations::workspace_root_identity(&workspace).unwrap().observation_key().unwrap(),"sourceOwner":source["owner"]});
         let mut registry = if document["agents"].as_object().unwrap().is_empty() {
-            json!({"format":"macro-agsdl-registry/030", "version":"fixture", "modules":[], "harnesses":[], "agents":[], "hostCapabilities":[{"name":"call.command","support":"native","evidenceJson":"{\"transport\":\"native-call-test\"}"},{"name":"call.mcp","support":"native","evidenceJson":"{\"transport\":\"native-call-test\"}"}]})
+            json!({"format":"macro-agsdl-registry/030", "version":"fixture", "modules":[], "harnesses":[], "agents":[], "hostCapabilities":[{"name":"call.command","support":"native","evidenceJson":"{\"transport\":\"native-call-test\"}"},{"name":"call.mcp","support":"native","evidenceJson":"{\"transport\":\"native-call-test\"}"},{"name":"approval","support":"native","evidenceJson":"{\"transport\":\"native-human-test\"}"}]})
         } else if document["agents"]
             .as_object()
             .unwrap()
@@ -1363,6 +1363,31 @@ async fn handled_historical_failure_does_not_block_the_current_compose_failure()
     )
     .await
     .unwrap();
+    for field in ["activation", "step", "input", "message", "error"] {
+        let mut changed = producer.clone();
+        match field {
+            "activation" => changed.activation_id.push_str("-other"),
+            "step" => changed.step = Some(vec!["neighbor".into()]),
+            "input" => changed.input_json = "{\"other\":true}".into(),
+            "message" => changed.message_json = Some("{\"prompt\":\"other\"}".into()),
+            "error" => changed.output_json =
+                "{\"error\":{\"code\":\"VISIT_LIMIT\",\"message\":\"VISIT_LIMIT\",\"details\":[]}}"
+                    .into(),
+            _ => unreachable!(),
+        }
+        assert!(
+            crate::agsdl_host_route_verifier030::verify_human_compose_source_tx(
+                &mut db,
+                &inspection.capture,
+                &changed,
+                &f.owner,
+                "generation",
+            )
+            .await
+            .is_err(),
+            "accepted a different {field}"
+        );
+    }
     drop(db);
     pump.abort();
     let _ = pump.await;

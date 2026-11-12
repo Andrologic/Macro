@@ -193,7 +193,17 @@ sans charger implicitement les dossiers du projet. Voir les
 [limites précises du profil Codex](agsdl-codex-native.md#completion-checks-content-and-skills).
 
 L'accès MCP des agents, les formes de permissions `ask` non prises en charge,
-`planFirst: ask`, les compositions et les autres capacités hors tranche restent refusés.
+`planFirst: ask` et les autres capacités hors tranche restent refusés.
+Les compositions imbriquées transmettent le message à leur entrée et quittent
+leur corps une seule fois, avec la sortie ou l'erreur du producteur réel.
+Une erreur suit le `onError` local, puis le join ou la composition qui contient
+l'étape, puis le défaut du flow pour les étapes qu'il couvre. Le handler du flow
+n'hérite pas de son propre défaut. Les limites de visites comptent chaque
+adresse développée sur tout le run, y compris les corps de composition et les
+groupes de join. Une visite refusée ne démarre pas de nouveau travail.
+Le run attend toujours la fin des travaux physiques qui restent actifs après
+une sortie. Les valeurs hors des bornes numériques natives sont refusées.
+
 Les runs interrompus au redémarrage restent consultables et ne reprennent pas.
 
 L'autorisation exige ensemble `staticValid`, `runtimeSupported`, une

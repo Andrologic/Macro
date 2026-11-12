@@ -240,10 +240,34 @@ describe('preparing a reducer-selected route from a compiled plan', () => {
     const plan = await compile(composed);
     const output = '{"text":"Info","results":{},"instructions":"from body"}';
     const result = prepareFlowRoute030(fixture(plan, { source: ['compose'], kind: 'normal', key: 'done' }, output, true, ['compose','body']));
+    const failed = fixture(plan, { source: ['compose'], kind: 'normal', key: 'done' }, '{"error":{"code":"VISIT_LIMIT","message":"VISIT_LIMIT","details":[]}}', false, ['compose','body']);
+    const errorExit = prepareFlowRoute030({ ...failed, source: { ...failed.source, kind: 'error' } });
+    expect(errorExit).toMatchObject({ kind: 'ready' });
+    if (errorExit.kind === 'ready') expect(errorExit.batches[0].items[0].messageJson).toContain('VISIT_LIMIT');
+
     expect(result.kind).toBe('ready');
     if (result.kind === 'ready') {
       expect(result.batches[0].items[0].messageJson).toContain('from body');
       expect(result.provenance[0].source.producerStep).toEqual(['compose','body']);
     }
   });
+  it('defers local prompt content to the effective nested entry agent and keeps the wrapper occurrence', async () => {
+    const raw = `{"contract":"agsdl-0.3.0","id":"entry-content",${definition},"flow":{"entry":"plan","steps":{
+      "plan":{"type":"agent","agent":"lead","next":{"step":"outer","message":{"prompt":[{"uri":"file:///workspace/mission.txt","mediaType":"text/plain"}]}}},
+      "outer":{"type":"compose","composition":"outer","next":{"done":[]}}
+    }},"compositions":{
+      "outer":{"entry":"inner","outputs":["done"],"steps":{"inner":{"type":"compose","composition":"inner","next":{"done":{"output":"done"}}}}},
+      "inner":{"entry":"work","outputs":["done"],"steps":{"work":{"type":"agent","agent":"worker","next":{"output":"done"}}}}
+    }}`;
+    const plan = await compile(raw);
+    const input = { ...fixture(plan, { source: ['plan'], kind: 'normal', key: null }, '{"text":"","results":{}}', false), deferPromptUris: true };
+    const result = prepareFlowRoute030(input);
+    expect(result).toMatchObject({ kind: 'ready', batches: [{ target: { address: ['outer'] }, items: [{ occurrence: { nativeReceiptId: 'native-receipt', targetOrdinal: 0, itemIndex: '0' } }] }] });
+    if (result.kind === 'ready') expect(result.batches[0].items[0].messageJson).toContain('file:///workspace/mission.txt');
+    const wrong = record(decode(plan));
+    const steps = wrong.steps as ReturnType<typeof record>[];
+    steps.find(step => JSON.stringify(step.address) === '["outer","inner","work"]')!.type = 'approval';
+    expect(prepareFlowRoute030({ ...input, planJson: encode(wrong) })).toMatchObject({ kind: 'failed', error: { code: 'CONTENT_UNAVAILABLE' } });
+  });
+
 });

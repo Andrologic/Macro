@@ -340,14 +340,6 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
                     }
                 }
             }
-            let step = object.get("type").and_then(Value::as_str);
-            if matches!(step, Some("compose")) {
-                return Err(failure(
-                    "HOST_CAPABILITY",
-                    &format!("{pointer}/type"),
-                    "This flow step is not connected in this slice",
-                ));
-            }
             for (key, child) in object {
                 let segments: Vec<&str> = pointer.split('/').skip(1).collect();
                 let agent_definition = segments.len() == 2 && segments[0] == "agents";
@@ -1222,12 +1214,6 @@ mod codex030_tests {
                 json!({"rules":[{"action":"write","effect":"ask"}]}),
                 "HARNESS_CAPABILITY",
                 "/agents/worker/permissions/rules/0/effect",
-            ),
-            (
-                "/flow/steps/work/type",
-                json!("compose"),
-                "HOST_CAPABILITY",
-                "/flow/steps/work/type",
             ),
         ];
         for (pointer, value, code, location) in cases {

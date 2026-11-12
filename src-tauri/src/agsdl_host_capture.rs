@@ -300,11 +300,8 @@ pub(crate) async fn observation(
             &diagnostic.message,
         ));
     }
-    let uses_calls030 = is_030
-        && document
-            .pointer("/flow/steps")
-            .and_then(Value::as_object)
-            .is_some_and(|steps| steps.values().any(|step| step["type"] == "call"));
+    let uses_calls030 =
+        is_030 && declared_steps030(&document).any(|(_, step)| step["type"] == "call");
     if uses_calls030 {
         if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             return Err(failure(
@@ -771,6 +768,43 @@ pub(crate) struct StartCaptureMaterial030 {
     pub generation: String,
 }
 
+/// Authored steps include composition declarations, not literal content values.
+fn declared_steps030(document: &Value) -> impl Iterator<Item = (String, &Value)> {
+    let flow = document
+        .pointer("/flow/steps")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .map(|(name, step)| {
+            (
+                format!("/flow/steps/{}", name.replace('~', "~0").replace('/', "~1")),
+                step,
+            )
+        });
+    let bodies = document
+        .get("compositions")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .flat_map(|(composition, body)| {
+            body.get("steps")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .map(move |(name, step)| {
+                    (
+                        format!(
+                            "/compositions/{}/steps/{}",
+                            composition.replace('~', "~0").replace('/', "~1"),
+                            name.replace('~', "~0").replace('/', "~1")
+                        ),
+                        step,
+                    )
+                })
+        });
+    flow.chain(bodies)
+}
+
 pub(crate) fn product_slice030(
     authored: &str,
     compiled: Option<&str>,
@@ -829,21 +863,20 @@ pub(crate) fn product_slice030(
             );
         }
     }
-    for (name, step) in document
-        .pointer("/flow/steps")
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-    {
-        let pointer = format!("/flow/steps/{}", name.replace('~', "~0").replace('/', "~1"));
+    for (pointer, step) in declared_steps030(&document) {
         if !matches!(
             step.get("type").and_then(Value::as_str),
-            Some("agent" | "call" | "approval" | "join")
+            Some("agent" | "call" | "approval" | "join" | "compose")
         ) {
-            return issue(
-                pointer,
-                "Only agent, call, approval and join steps are supported for this run.",
-            );
+            return issue(pointer, "agsdl.execution.codexStepType030");
+        }
+        if let Some(limit) = step.get("maxVisits") {
+            if exact_json::positive_integer(&limit.to_string()).is_none() {
+                return issue(
+                    format!("{pointer}/maxVisits"),
+                    "agsdl.execution.codexVisitBounds030",
+                );
+            }
         }
     }
     let plan = exact_json::value(compiled?).ok()?;
@@ -859,7 +892,7 @@ pub(crate) fn product_slice030(
         );
         if !matches!(
             step.get("type").and_then(Value::as_str),
-            Some("agent" | "call" | "approval" | "join")
+            Some("agent" | "call" | "approval" | "join" | "compose")
         ) {
             return issue(
                 pointer,
@@ -2130,7 +2163,7 @@ mod product_slice030_tests {
         let base = json!({"contract":"agsdl-0.3.0", "agents":{"writer":{"harness":"codex","permissions":"read-only"}},
             "flow":{"entry":"write","steps":{"write":{"type":"agent","agent":"writer"}}}});
         for (pointer, value) in [
-            ("/flow/steps/write/type", json!("compose")),
+            ("/flow/steps/write/type", json!("unsupported")),
             ("/agents/writer/harness", json!("claude")),
         ] {
             let mut document = base.clone();
@@ -2148,5 +2181,20 @@ mod product_slice030_tests {
         assert!(product_slice030(&base.to_string(), None).is_none());
         let plan = json!({"steps": [{"address":["gather"],"type":"join"}], "routes": [{"targets": [{"eachPathJson":"[]", "concurrencyJson":"2", "maxJson":"3"}, {"address":["sibling"]}]}]});
         assert!(product_slice030(&base.to_string(), Some(&plan.to_string())).is_none());
+    }
+    #[test]
+    fn composition_steps_keep_native_visit_bounds_and_nested_call_detection() {
+        let mut document = json!({"contract":"agsdl-0.3.0","agents":{},"flow":{"entry":"outer","steps":{"outer":{"type":"compose","composition":"body","next":{"done":[]}}}},
+            "compositions":{"body":{"entry":"call","outputs":["done"],"steps":{"call":{"type":"call","command":"true","maxVisits":1,"next":{"output":"done"}}}}}});
+        assert!(declared_steps030(&document).any(|(_, s)| s["type"] == "call"));
+        assert!(product_slice030(&document.to_string(), None).is_none());
+        document["compositions"]["body"]["steps"]["call"]["maxVisits"] =
+            serde_json::from_str("1e4096").unwrap();
+        let refusal = product_slice030(&document.to_string(), None).unwrap();
+        assert_eq!(refusal.pointer, "/compositions/body/steps/call/maxVisits");
+        assert_eq!(refusal.message, "agsdl.execution.codexVisitBounds030");
+        document["compositions"]["body"]["steps"]["call"]["maxVisits"] =
+            serde_json::from_str("1e4095").unwrap();
+        assert!(product_slice030(&document.to_string(), None).is_none());
     }
 }

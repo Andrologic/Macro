@@ -526,6 +526,8 @@
     "codexAsk030": "Este adaptador Codex puede pedir a una persona que autorice un comando a escribir en un archivo existente del espacio de trabajo. Las reglas de escritura con patrones y otras acciones de aprobación no están disponibles.",
     "codexReviewer030": "El revisor de modelo nativo no puede aplicar las comprobaciones de este adaptador antes de conceder acceso. Elige una persona o no especifiques un revisor.",
     "codexPermissions030": "Esta configuración de permisos no está disponible. Se admiten read-only y workspace, con aprobación de escritura sin patrones y un revisor humano opcionales.",
+    "codexStepType030": "Este tipo de paso no está disponible para esta ejecución.",
+    "codexVisitBounds030": "Este límite de visitas es demasiado grande para el motor nativo.",
     "codexPlanAsk030": "Codex no puede imponer un bloqueo completo antes de aprobar el plan. Este modo sigue sin estar disponible.",
     "codexPlanAuto030": "La planificación automática depende de instrucciones. Puede haber cambios antes de registrar el plan.",
     "codexNotInstalled": "Codex no está instalado. Instálalo para iniciar la ejecución.",

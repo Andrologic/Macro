@@ -118,20 +118,6 @@ async fn source_route030(
     let lease = host.start_lease().await?;
     let gate = host.admission_lock().lock_owned().await;
     let mut pending = host.flow030().pending_route_source_commit(reference)?;
-    if let Some(joined) = joined {
-        let attempt = joined.attempt();
-        if attempt.identity() != &reference.identity
-            || attempt.owner() != owner
-            || attempt.generation() != lease.generation()
-            || attempt.work().activation_id != reference.activation_id
-        {
-            return Err(failure(
-                "CORRELATION",
-                "route",
-                "Joined error source differs",
-            ));
-        }
-    }
     let mut db = pool.acquire().await?;
     let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
     let raw: String = sqlx::query_scalar(
@@ -164,6 +150,22 @@ async fn source_route030(
             source
         }
     };
+    if let Some(joined) = joined {
+        let attempt = joined.attempt();
+        let producer = source.producer();
+        if attempt.identity() != &reference.identity
+            || attempt.owner() != owner
+            || attempt.generation() != lease.generation()
+            || attempt.work().activation_id != producer.activation_id
+            || attempt.work().step != producer.step
+        {
+            return Err(failure(
+                "CORRELATION",
+                "route",
+                "Joined producer differs from the captured route source",
+            ));
+        }
+    }
     if matches!(mode, SourceRouteMode030::Dispatch(_)) {
         use crate::agsdl_host_route_attestations030::SourceOwnershipKind030;
         match (&mode, source.ownership_kind()) {

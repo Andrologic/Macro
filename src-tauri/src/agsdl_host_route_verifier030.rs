@@ -174,7 +174,9 @@ impl SqlRouteMaterialVerifier030 {
             effect.identity == *id
                 && matches!(&effect.kind, FlowEffectKind030::PrepareRoute { reference: r, producer: p } if r == reference && p == producer),
         )?;
-        let kind = if reference.route.kind == "error" {
+        let kind = if reference.route.kind == "error"
+            || source.get("kind").and_then(Value::as_str) == Some("error")
+        {
             "error"
         } else {
             match producer.kind.as_str() {
@@ -214,7 +216,12 @@ impl SqlRouteMaterialVerifier030 {
                     && source.get("producerAgent") == Some(&Value::Null)
                     && source.pointer("/provenance/instructions") == Some(&json!([])),
             )?;
-            if producer.kind == "approval" || producer.kind == "compose" {
+            let prestart_failure = kind == "error"
+                && producer.kind != "join"
+                && verify_native_failure_source_tx(db, capture, producer, &self.owner).await?;
+            if prestart_failure {
+                // The accepted failure has no physical work to join.
+            } else if producer.kind == "approval" || producer.kind == "compose" {
                 verify_human_compose_source_tx(
                     db,
                     capture,
@@ -242,6 +249,9 @@ impl SqlRouteMaterialVerifier030 {
                 verify_join_source(db, capture, producer).await?;
             } else if producer.kind == "call" {
                 verify_call_source_tx(db, capture, producer, &self.owner, &self.generation).await?;
+            } else if kind == "error" && producer.kind == "join" && reference.route.kind != "error"
+            {
+                verify_native_failure_source_tx(db, capture, producer, &self.owner).await?;
             } else if kind == "error" && producer.kind == "join" {
                 verify_join_error_source_tx(
                     db,
@@ -672,8 +682,61 @@ pub(crate) async fn verify_join_error_source_tx(
     require(failures == 1)
 }
 
-/// Read the join failure and its accepted receipt independently of the source writer.
-async fn verify_join_failure_effect_tx(
+/// Use the existing native failure effect and accepted event, including
+/// failures before a provider start. No authority is inferred from the code
+/// or activation phase alone.
+pub(crate) async fn verify_native_failure_source_tx(
+    db: &mut SqliteConnection,
+    capture: &StartCapture030,
+    producer: &Producer030,
+    owner: &EngineOwner,
+) -> Verified<bool> {
+    let id = &capture.identity;
+    require(owner.system_start_id == id.system_start_id)?;
+    let raw: String = sqlx::query_scalar("SELECT state_json FROM engine_flow030_runs WHERE system_id=? AND invocation_id=? AND snapshot_id=? AND epoch=?")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&id.snapshot_id).bind(&id.epoch)
+        .fetch_one(&mut *db).await?;
+    let state: FlowState030 = serde_json::from_str(&raw)?;
+    require(
+        state.identity == *id
+            && same_flow_plan030(
+                state.plan_json.as_deref().ok_or(StoreError030::Authority)?,
+                &capture.compiled_plan_json,
+            )?,
+    )?;
+    let activations = state
+        .activations
+        .iter()
+        .filter(|a| a.id == producer.activation_id)
+        .collect::<Vec<_>>();
+    require(activations.len() == 1)?;
+    let activation = activations[0];
+    require(
+        activation.step == producer.step
+            && activation.input_json == producer.input_json
+            && activation.message_json == producer.message_json
+            && activation.item_json == producer.item_json
+            && !activation.physical,
+    )?;
+    let plan: FlowPlan030 = serde_json::from_str(&capture.compiled_plan_json)?;
+    let steps = plan
+        .steps
+        .iter()
+        .filter(|s| Some(&s.address) == producer.step.as_ref())
+        .collect::<Vec<_>>();
+    require(steps.len() == 1 && steps[0].r#type == producer.kind)?;
+    let output: Value = serde_json::from_str(&producer.output_json)?;
+    require(
+        output
+            .as_object()
+            .is_some_and(|o| o.len() == 1 && o.contains_key("error")),
+    )?;
+    let error = serde_json::from_value(output["error"].clone())?;
+    verify_failure_effect_tx(db, id, owner, producer, &error, &state).await?;
+    Ok(activation.start_effect_id.is_none())
+}
+
+async fn verify_failure_effect_tx(
     db: &mut SqliteConnection,
     id: &crate::db::agsdl_execution::flow030::FlowIdentity030,
     owner: &EngineOwner,
@@ -681,8 +744,8 @@ async fn verify_join_failure_effect_tx(
     error: &crate::db::agsdl_execution::flow030::Failure030,
     state: &FlowState030,
 ) -> Verified<i64> {
-    // The join's own Failure is a distinct durable effect. It may precede
-    // the event that releases the group, but must have one accepted receipt.
+    // Failure is a native reducer effect with one accepted event receipt.
+    // It may precede a group's physical release or have no provider start.
     let rows = sqlx::query("SELECT o.effect_id,o.effect_json,o.event_id,e.rowid AS event_rowid,e.event_json,e.receipt_json,e.diagnostic_json FROM engine_flow030_outbox o LEFT JOIN engine_flow030_events e ON e.system_id=o.system_id AND e.invocation_id=o.invocation_id AND e.event_id=o.event_id WHERE o.system_id=? AND o.invocation_id=? AND o.owner_epoch=?")
         .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&owner.owner_epoch).fetch_all(&mut *db).await?;
     let mut join_failures = 0;
@@ -928,7 +991,7 @@ fn verify_failed_group_tx<'a>(
                     })),
         )?;
         let join_failure_rowid =
-            verify_join_failure_effect_tx(db, id, owner, producer, error, state).await?;
+            verify_failure_effect_tx(db, id, owner, producer, error, state).await?;
         let mut trigger: Option<(i64, usize, String, Value)> = None;
         for (path, membership) in failed_paths {
             let expected = membership
@@ -957,6 +1020,14 @@ fn verify_failed_group_tx<'a>(
                 }
                 let acts = state.activations.iter().filter(|a| a.id == *activation_id && a.step == *step && a.context.iter().any(|f| matches!(f, crate::db::agsdl_execution::flow030::Frame030::Path {path_id,..} if path_id == &path.id))).collect::<Vec<_>>();
                 if acts.len() != 1 || serde_json::to_value(error)? != *path_error {
+                    continue;
+                }
+                // A body failure belongs to its nearest compose first. Only
+                // the wrapper's propagated failure can fail this outer path.
+                if matches!(
+                    acts[0].context.last(),
+                    Some(crate::db::agsdl_execution::flow030::Frame030::Compose { .. })
+                ) {
                     continue;
                 }
                 let event: Value = serde_json::from_str(row.get("event_json"))?;
@@ -1019,6 +1090,18 @@ fn verify_failed_group_tx<'a>(
                         let call = verify_call_source_tx(db, capture, &producer, owner, generation)
                             .await?;
                         require(call.event_id() == event_id)?;
+                    }
+                    PathFailureOrigin030::Compose => {
+                        let source = Producer030 {
+                            activation_id: activation_id.clone(),
+                            step: step.clone(),
+                            kind: "compose".into(),
+                            input_json: acts[0].input_json.clone(),
+                            message_json: acts[0].message_json.clone(),
+                            item_json: acts[0].item_json.clone(),
+                            output_json: json!({"error":error}).to_string(),
+                        };
+                        verify_native_failure_source_tx(db, capture, &source, owner).await?;
                     }
                     PathFailureOrigin030::AgentWork => {
                         require(
@@ -1261,9 +1344,7 @@ async fn verify_content(
             _ => return Err(StoreError030::Authority),
         };
         let step = plan
-            .steps
-            .iter()
-            .find(|s| &s.address == address)
+            .message_recipient(address)
             .ok_or(StoreError030::Authority)?;
         require(matches!(
             step.r#type.as_str(),

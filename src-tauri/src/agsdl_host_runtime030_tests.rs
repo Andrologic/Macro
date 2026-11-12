@@ -23,6 +23,9 @@ mod codex_continuity;
 #[path = "agsdl_host_parallel030_tests.rs"]
 mod parallel;
 
+#[path = "agsdl_host_composition030_tests.rs"]
+mod composition;
+
 async fn bun(script: &str, value: &impl serde::Serialize) -> Value {
     let mut child = crate::core::process::background_tokio_command("bun")
         .args(["-e", script])

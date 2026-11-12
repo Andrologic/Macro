@@ -5,6 +5,7 @@ use crate::db::agsdl_execution::flow030::{reduce, Activation030, Failure030, Flo
 pub(super) enum PathFailureOrigin030 {
     AgentWork,
     Call,
+    Compose,
     FailedJoin,
     PreparedFailure,
     AdmissionLimit,
@@ -30,6 +31,15 @@ impl PathFailureOrigin030 {
             && activation.start_effect_id.is_none()
         {
             return Ok(Self::PreparedFailure);
+        }
+        let plan: crate::db::agsdl_execution::flow030::FlowPlan030 =
+            serde_json::from_str(state.plan_json.as_deref().ok_or(StoreError030::Authority)?)?;
+        if plan
+            .steps
+            .iter()
+            .any(|s| Some(&s.address) == activation.step.as_ref() && s.r#type == "compose")
+        {
+            return Ok(Self::Compose);
         }
         require(
             event

@@ -526,6 +526,8 @@
     "codexAsk030": "Dieser Codex-Adapter kann eine Person fragen, bevor ein Befehl in eine vorhandene Datei im Arbeitsbereich schreibt. Schreibregeln mit Mustern und andere Genehmigungsaktionen sind nicht verfügbar.",
     "codexReviewer030": "Das native Prüfmodell kann die Kontrollen dieses Adapters vor der Freigabe nicht anwenden. Wähle eine Person oder lasse die Prüfinstanz offen.",
     "codexPermissions030": "Diese Berechtigungskonfiguration ist nicht verfügbar. Unterstützt werden read-only und workspace, optional mit Schreibfreigabe ohne Muster und menschlicher Prüfung.",
+    "codexStepType030": "Dieser Schritttyp ist für diesen Lauf nicht verfügbar.",
+    "codexVisitBounds030": "Dieses Besuchslimit ist für die native Laufzeit zu groß.",
     "codexPlanAsk030": "Codex kann vor der Plangenehmigung keine vollständige Sperre erzwingen. Dieser Modus bleibt nicht verfügbar.",
     "codexPlanAuto030": "Die automatische Planung beruht auf Anweisungen. Änderungen können erfolgen, bevor der Plan erfasst wird.",
     "codexNotInstalled": "Codex ist nicht installiert. Installiere Codex, um den Lauf zu starten.",

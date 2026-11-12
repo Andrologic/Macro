@@ -76,8 +76,11 @@ Architect exposes Start and Stop for the qualified Codex slice. It supports
 agent work, text/JSON resources, validated result submissions, corrections on the
 same thread, choice routes and visit limits. Local command and stdio MCP calls,
 human flow choices and deadlines, steer, shared/named instances, parallel work
-and joins use the production supervisor. Remote MCP calls, compositions and
-other unconnected capabilities remain unavailable. The host permission ceiling defaults to read-only;
+joins, nested compositions and step/flow error handlers use the production
+supervisor. Expanded step addresses have separate visit counters across one run;
+re-entering a composition does not reset its body's counters. Limits fail before
+an additional work starts, and leaving a body does not bypass physical cleanup.
+Remote MCP calls and other unconnected capabilities remain unavailable. The host permission ceiling defaults to read-only;
 preflight announces when host or project settings restrict an agent requesting
 workspace writes. A workspace does not require Git and never inherits an
 ancestor repository's metadata.

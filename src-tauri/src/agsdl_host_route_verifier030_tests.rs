@@ -162,7 +162,7 @@ async fn failed_group_requires_one_exact_accepted_join_failure() {
                 .unwrap();
         }
         let result =
-            verify_join_failure_effect_tx(&mut db, &id, &owner, &producer, &error, &state).await;
+            verify_failure_effect_tx(&mut db, &id, &owner, &producer, &error, &state).await;
         assert_eq!(result.is_ok(), fault == "none", "fault {fault}");
     }
 }

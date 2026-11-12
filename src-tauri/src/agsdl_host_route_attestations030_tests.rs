@@ -1884,3 +1884,33 @@ async fn failed_group_accepts_only_the_native_call_failure_receipt() {
         .unwrap();
     tx.commit().await.unwrap();
 }
+
+#[test]
+fn composed_content_uses_only_the_effective_entry_agent_policy() {
+    let (_temp, context) = context(CancellationToken::new(), "worker");
+    let binding = context.binding().unwrap();
+    let (mut capture, reference) = fixture();
+    plan(&mut capture, "compose", None);
+    let mut value: Value = serde_json::from_str(&capture.compiled_plan_json).unwrap();
+    let mut entry = value["steps"][0].clone();
+    entry["address"] = json!(["target", "inner", "work"]);
+    value["steps"].as_array_mut().unwrap().push(entry);
+    let mut inner = value["steps"][1].clone();
+    inner["address"] = json!(["target", "inner"]);
+    value["steps"].as_array_mut().unwrap().push(inner);
+    value["scopes"] = json!([
+        {"address":["target"],"parent":[],"composition":"outer","entry":["target","inner"],"outputs":["done"],"agents":{}},
+        {"address":["target","inner"],"parent":["target"],"composition":"inner","entry":["target","inner","work"],"outputs":["done"],"agents":{}}
+    ]);
+    capture.compiled_plan_json = value.to_string();
+    assert_eq!(
+        validate_recipient(&capture, &reference, 0, &binding).unwrap(),
+        (vec!["target".into()], "worker".into())
+    );
+    value["steps"][2]["agent"] = json!("other");
+    capture.compiled_plan_json = value.to_string();
+    assert!(validate_recipient(&capture, &reference, 0, &binding).is_err());
+    value["scopes"][1]["entry"] = json!(["target"]);
+    capture.compiled_plan_json = value.to_string();
+    assert!(validate_recipient(&capture, &reference, 0, &binding).is_err());
+}

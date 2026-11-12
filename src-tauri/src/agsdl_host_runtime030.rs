@@ -1014,17 +1014,21 @@ impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
     }
     fn source_owner<'a>(
         &'a self,
-        reference: &PrepareRef030,
+        _reference: &PrepareRef030,
         producer: &Producer030,
     ) -> SourceOwnership030<'a> {
-        if let Some(joined) = self.joined_calls.get(&reference.activation_id) {
+        // A compose owns the selected route, but its body's actual producer
+        // owns the physical work. Never substitute the wrapper's activation.
+        if let Some(joined) = self.joined_calls.get(&producer.activation_id) {
             SourceOwnership030::Call(joined)
-        } else if ["approval", "compose", "call"].contains(&producer.kind.as_str()) {
-            SourceOwnership030::Host
+        } else if let Some(joined) = self.joined.get(&producer.activation_id) {
+            SourceOwnership030::Agent(joined)
+        } else if producer.kind == "join" {
+            SourceOwnership030::Join
         } else {
-            self.joined
-                .get(&reference.activation_id)
-                .map_or(SourceOwnership030::Join, SourceOwnership030::Agent)
+            // Native pre-start failures and approvals have no provider future.
+            // Dispatch verifies their exact retained transition before use.
+            SourceOwnership030::Host
         }
     }
 }

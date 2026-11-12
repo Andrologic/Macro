@@ -498,3 +498,42 @@ for line in sys.stdin:
  else: raise RuntimeError(method)
  print(json.dumps({'id':i,'result':result}),flush=True)
 "#;
+
+#[tokio::test]
+async fn composition_output_does_not_end_run_before_finishing_body_work() {
+    let mut doc = fork("finish");
+    let mut body = doc["flow"].clone();
+    body["outputs"] = json!(["done"]);
+    body["steps"].as_object_mut().unwrap().remove("after");
+    body["steps"]["join"]["next"] = json!({"reached":{"output":"done"},"missed":{"output":"done"}});
+    doc["compositions"] = json!({"body":body});
+    doc["flow"] = json!({"entry":"outer","steps":{
+        "outer":{"type":"compose","composition":"body","next":{"done":"after"}},
+        "after":{"type":"agent","agent":"worker","instance":"new"}
+    }});
+    let f = Fixture::with_document(doc).await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let view = exercise(&f, Arc::new(Controlled(tx)), async {
+        let mut left = next(&mut rx).await;
+        let mut right = next(&mut rx).await;
+        left.submit(json!({"choice":"yes"})).await;
+        left.finish();
+        let mut after = next(&mut rx).await;
+        assert_eq!(after.step, "after");
+        after.submit(json!({})).await;
+        after.finish();
+        quiet(&mut rx).await;
+        let view = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
+            .await
+            .unwrap();
+        assert_eq!(view.flow.state.verdict, None);
+        assert!(view.flow.state.activations.iter().any(|a| a.physical
+            && a.step
+                .as_ref()
+                .is_some_and(|s| s.last() == Some(&right.step))));
+        right.submit(json!({"choice":"yes"})).await;
+        right.finish();
+    })
+    .await;
+    assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
+}

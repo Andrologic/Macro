@@ -526,6 +526,8 @@
     "codexAsk030": "This Codex adapter can ask a person before one command writes one existing workspace file. Patterned write rules and other approval actions are unavailable.",
     "codexReviewer030": "The native model reviewer cannot use this adapter’s checks before granting access. Choose a person or leave the reviewer unspecified.",
     "codexPermissions030": "This permission configuration is unavailable. Supported presets are read-only and workspace, with optional unpatterned write approval and a person reviewer.",
+    "codexStepType030": "This step type is unavailable for this run.",
+    "codexVisitBounds030": "This visit limit is too large for the native runtime.",
     "codexPlanAsk030": "Codex cannot enforce a complete lock before plan approval. This mode remains unavailable.",
     "codexPlanAuto030": "Automatic planning relies on instructions. Changes may happen before the plan is recorded.",
     "codexNotInstalled": "Codex is not installed. Install Codex to start this run.",

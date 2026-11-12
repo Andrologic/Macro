@@ -86,6 +86,7 @@ enum SourceKind030 {
     Human { error: bool },
     ComposeError,
     Error,
+    HostError,
     Call { error: bool },
     JoinError,
     FailedGroupError,
@@ -95,7 +96,7 @@ enum SourceKind030 {
 impl SourceKind030 {
     fn receipt_kind(&self) -> &'static str {
         match self {
-            Self::Error | Self::JoinError | Self::FailedGroupError => "error",
+            Self::Error | Self::HostError | Self::JoinError | Self::FailedGroupError => "error",
             Self::Call { error: true } => "error",
             Self::Call { error: false } => "call",
             Self::AgentWork { .. } => "agentWork",
@@ -112,7 +113,7 @@ impl SourceKind030 {
     }
     fn producer_kind(&self) -> &'static str {
         match self {
-            Self::Error | Self::JoinError | Self::FailedGroupError => "error",
+            Self::Error | Self::HostError | Self::JoinError | Self::FailedGroupError => "error",
             Self::Call { error: true } => "error",
             Self::Call { error: false } => "call",
             Self::AgentWork { .. } => "agent",
@@ -171,9 +172,9 @@ impl AttestedRouteSource030 {
     /// A native group decision needs no invented agent join witness.
     pub(crate) fn ownership_kind(&self) -> SourceOwnershipKind030 {
         match self.kind {
-            SourceKind030::Human { .. } | SourceKind030::ComposeError => {
-                SourceOwnershipKind030::Host
-            }
+            SourceKind030::Human { .. }
+            | SourceKind030::ComposeError
+            | SourceKind030::HostError => SourceOwnershipKind030::Host,
             SourceKind030::Call { .. } => SourceOwnershipKind030::Call,
             SourceKind030::Join | SourceKind030::JoinError | SourceKind030::FailedGroupError => {
                 SourceOwnershipKind030::Join
@@ -344,7 +345,35 @@ impl RouteAttestor030 {
         owner: &EngineOwner,
         generation: &str,
     ) -> Result<SourceKind030> {
-        if reference.route.kind == "error" {
+        let error_output: Value = serde_json::from_str(&producer.output_json)?;
+        if reference.route.kind == "error" || error_output.get("error").is_some() {
+            // An onError route may leave a body through an output. The selected
+            // outer route is normal, but its actual producer is still a failure.
+            if reference.route.kind != "error" {
+                crate::agsdl_host_route_verifier030::verify_native_failure_source_tx(
+                    db, capture, producer, owner,
+                )
+                .await
+                .map_err(verification_error)?;
+            }
+            let activation = state
+                .activations
+                .iter()
+                .find(|a| a.id == producer.activation_id)
+                .ok_or_else(|| failure("CORRELATION", "route", "Failure producer is absent"))?;
+            if activation.start_effect_id.is_none()
+                && producer.kind != "join"
+                && producer.kind != "compose"
+            {
+                require(
+                    crate::agsdl_host_route_verifier030::verify_native_failure_source_tx(
+                        db, capture, producer, owner,
+                    )
+                    .await
+                    .map_err(verification_error)?,
+                )?;
+                return Ok(SourceKind030::HostError);
+            }
             return match producer.kind.as_str() {
                 "approval" | "compose" => {
                     crate::agsdl_host_route_verifier030::verify_human_compose_source_tx(
@@ -367,6 +396,7 @@ impl RouteAttestor030 {
                     .map_err(verification_error)?;
                     Ok(SourceKind030::Call { error: true })
                 }
+                "join" if reference.route.kind != "error" => Ok(SourceKind030::JoinError),
                 "join" => {
                     verify_join_error_source_tx(
                         db, capture, reference, producer, owner, generation,
@@ -847,12 +877,9 @@ fn validate_recipient(
         }
     };
     let step = plan
-        .steps
-        .iter()
-        .find(|s| &s.address == address)
-        .ok_or_else(|| failure("CORRELATION", "route", "Recipient is absent"))?;
-    // 11 currently has only a captured agent policy context. Never invent an
-    // agent for an approval/composition, nor borrow the producer's permission.
+        .message_recipient(address)
+        .ok_or_else(|| failure("CORRELATION", "route", "Recipient entry is absent"))?;
+    // Only the effective entry agent's captured policy can authorize a read.
     require(step.r#type == "agent" && step.agent.as_deref() == Some(binding.agent.as_str()))?;
     Ok((address.clone(), binding.agent.clone()))
 }

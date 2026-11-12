@@ -9,9 +9,20 @@ async fn host_fixture(
     tokio::task::JoinHandle<()>,
     crate::ai::stream_tasks::StreamTasks,
 ) {
+    host_fixture_with_entry(document, json!({})).await
+}
+async fn host_fixture_with_entry(
+    document: Value,
+    entry: Value,
+) -> (
+    Fixture,
+    Arc<tokio::sync::Mutex<BunHost>>,
+    tokio::task::JoinHandle<()>,
+    crate::ai::stream_tasks::StreamTasks,
+) {
     let bun = Arc::new(tokio::sync::Mutex::new(BunHost::start()));
     let f = Fixture::new(
-        &json!({"document":document,"timeline":[]}).to_string(),
+        &json!({"document":document,"entry":entry,"timeline":[]}).to_string(),
         &mut *bun.lock().await,
     )
     .await;
@@ -135,6 +146,11 @@ async fn finish(
                 activation
                     .result
                     .as_ref()
+                    .filter(|_| {
+                        f.plan.steps.iter().any(|s| {
+                            Some(&s.address) == activation.step.as_ref() && s.r#type == "call"
+                        })
+                    })
                     .map(|r| serde_json::to_string(r).unwrap())
             );
         }
@@ -415,4 +431,103 @@ async fn native_mcp_question_answers_and_expires_while_machine_time_is_paused() 
             "Machine timeout must pause during the human wait"
         );
     }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[tokio::test]
+async fn nested_composition_call_outputs_use_the_actual_joined_call_owner() {
+    let doc = json!({"contract":"agsdl-0.3.0","id":"nested-native-calls","agents":{},
+    "compositions":{
+        "inner":{"entry":"call","outputs":["done"],"steps":{"call":{"type":"call","command":"printf nested","next":{"output":"done"}}}},
+        "outer":{"entry":"inner","outputs":["done"],"steps":{"inner":{"type":"compose","composition":"inner","next":{"done":{"output":"done"}}}}}
+    },
+    "flow":{"entry":"first","steps":{
+        "first":{"type":"compose","composition":"outer","next":{"done":"second"}},
+        "second":{"type":"compose","composition":"outer","next":{"done":"after"}},
+        "after":{"type":"call","command":"printf after"}
+    }}});
+    let (f, bun, pump, _) = host_fixture(doc).await;
+    let view = finish(&f, bun, pump).await;
+    assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
+    let calls = view
+        .state
+        .activations
+        .iter()
+        .filter(|a| a.start_effect_id.is_some())
+        .map(|a| a.step.as_ref().unwrap().join("/"))
+        .collect::<Vec<_>>();
+    assert_eq!(calls, ["first/inner/call", "second/inner/call", "after"]);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[tokio::test]
+async fn nested_entry_approval_keeps_host_prompt_provenance_through_its_output() {
+    let doc = json!({"contract":"agsdl-0.3.0","id":"nested-entry-approval","agents":{},
+    "compositions":{
+        "inner":{"entry":"approve","outputs":["done"],"steps":{"approve":{"type":"approval","next":{"yes":{"output":"done"}}}}},
+        "outer":{"entry":"inner","outputs":["done"],"steps":{"inner":{"type":"compose","composition":"inner","next":{"done":{"output":"done"}}}}}
+    },
+    "flow":{"entry":"outer","steps":{
+        "outer":{"type":"compose","composition":"outer","next":{"done":"after"}},
+        "after":{"type":"call","command":"printf after"}
+    }}});
+    let (f, bun, pump, _) = host_fixture_with_entry(doc, json!({"prompt":"Synthetic entry"})).await;
+    let scope = crate::db::agsdl_execution::public030::HumanScope030 {
+        system_start_id: f.identity.system_start_id.clone(),
+        source: serde_json::from_value(f.plan.source.clone()).unwrap(),
+    };
+    let page = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let page = crate::agsdl_host_human_projection030::read(&f.pool, scope.clone(), None)
+                .await
+                .unwrap();
+            if !page.requests.is_empty() {
+                break page;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let host = f.app.state::<HostState>();
+    let broker = host
+        .flow030()
+        .humans
+        .broker(&host, &f.pool, &f.identity)
+        .await
+        .unwrap();
+    {
+        let _operation = broker.operation.lock().await;
+        broker
+            .submit(
+                &host,
+                crate::agsdl_host_human030::HumanSubmission030 {
+                    scope,
+                    request_id: page.requests[0].id.clone(),
+                    expected_revision: "0".into(),
+                    answer: crate::agsdl_host_human030::HumanAnswer030::Approval {
+                        choice: "yes".into(),
+                        comment: "Synthetic comment".into(),
+                    },
+                },
+                crate::agsdl_host_human030::HumanOrigin030::Person,
+            )
+            .await
+            .unwrap();
+        broker.pump(&host, &CancellationToken::new()).await.unwrap();
+    }
+    drop(host);
+    let view = finish(&f, bun, pump).await;
+    assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
+    let approval = view
+        .state
+        .activations
+        .iter()
+        .find(|a| a.step == Some(vec!["outer".into(), "inner".into(), "approve".into()]))
+        .unwrap();
+    let Some(WorkResultRecord030::Completed { output_json, .. }) = &approval.result else {
+        panic!("approval result missing")
+    };
+    let output: Value = serde_json::from_str(output_json).unwrap();
+    assert_eq!(output["message"]["prompt"], "Synthetic entry");
 }

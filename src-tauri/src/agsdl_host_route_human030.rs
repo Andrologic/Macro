@@ -60,8 +60,35 @@ pub(crate) async fn received_prompt_tx(
     .await?;
     let request: crate::db::agsdl_execution::dto::EngineStartRequest =
         serde_json::from_str(&request)?;
+    // A flow entry may be several compose wrappers away from this approval.
+    // Follow only their exact entry chain, preserving the incoming occurrence.
+    let mut entry = activation;
+    for frame in activation.context.iter().rev() {
+        let crate::db::agsdl_execution::flow030::Frame030::Compose { activation_id } = frame else {
+            continue;
+        };
+        let parent = state
+            .activations
+            .iter()
+            .find(|a| a.id == *activation_id)
+            .ok_or(StoreError030::Authority)?;
+        let scope = plan
+            .scopes
+            .iter()
+            .find(|s| Some(&s.address) == parent.step.as_ref())
+            .ok_or(StoreError030::Authority)?;
+        require(
+            Some(&scope.entry) == entry.step.as_ref()
+                && parent.input_json == entry.input_json
+                && parent.message_json == entry.message_json
+                && parent.item_json == entry.item_json
+                && parent.producer == entry.producer
+                && parent.occurrence == entry.occurrence,
+        )?;
+        entry = parent;
+    }
     require(
-        plan.entry == activation.step
+        plan.entry == entry.step
             && activation.producer.is_none()
             && activation.item_json.is_none()
             && request.source == capture.source
@@ -102,62 +129,8 @@ pub(crate) fn verify_human_compose_source_tx<'a>(
             .ok_or(StoreError030::Authority)?;
         require(activation.step == producer.step)?;
         if producer.kind == "compose" {
-            let error: Value = serde_json::from_str(&producer.output_json)?;
-            let rows = sqlx::query("SELECT event_json,receipt_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? ORDER BY rowid")
-                .bind(&id.system_start_id).bind(&id.flow_invocation_id).fetch_all(&mut *db).await?;
-            let mut found = 0;
-            for row in rows {
-                let event: Value = serde_json::from_str(row.get("event_json"))?;
-                let Some(body) = event.pointer("/kind/WorkResult") else {
-                    continue;
-                };
-                if body.pointer("/result/Failed/error") != error.get("error") {
-                    continue;
-                }
-                let Some(child) = state.activations.iter().find(|a| {
-                    Some(a.id.as_str())
-                        == body.pointer("/work/activationId").and_then(Value::as_str)
-                }) else {
-                    continue;
-                };
-                if !child.context.iter().any(|f|matches!(f, crate::db::agsdl_execution::flow030::Frame030::Compose {activation_id} if activation_id == &activation.id)) { continue; }
-                let receipt: crate::db::agsdl_execution::flow030::FlowReceipt030 =
-                    serde_json::from_str(row.get("receipt_json"))?;
-                let count: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=? AND event_id=? AND json_extract(effect_json,'$.kind.kind')='failure' AND json_extract(effect_json,'$.kind.activationId')=?")
-                    .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&receipt.event_id).bind(&activation.id).fetch_one(&mut *db).await?;
-                if count == 0 {
-                    continue;
-                }
-                require(count == 1)?;
-                let plan: FlowPlan030 = serde_json::from_str(&capture.compiled_plan_json)?;
-                let kind = plan
-                    .steps
-                    .iter()
-                    .find(|s| Some(&s.address) == child.step.as_ref())
-                    .ok_or(StoreError030::Authority)?
-                    .r#type
-                    .clone();
-                let source = Producer030 {
-                    activation_id: child.id.clone(),
-                    step: child.step.clone(),
-                    kind,
-                    input_json: child.input_json.clone(),
-                    message_json: child.message_json.clone(),
-                    item_json: child.item_json.clone(),
-                    output_json: producer.output_json.clone(),
-                };
-                if source.kind == "approval" || source.kind == "compose" {
-                    verify_human_compose_source_tx(db, capture, &source, owner, generation).await?;
-                } else if source.kind == "call" {
-                    verify_call_source_tx(db, capture, &source, owner, generation).await?;
-                } else {
-                    require(source.kind == "agent")?;
-                    let physical = body.get("physical").ok_or(StoreError030::Authority)?;
-                    require(physical["descendants_joined"] == true)?;
-                }
-                found += 1;
-            }
-            return require(found == 1);
+            verify_native_failure_source_tx(db, capture, producer, owner).await?;
+            return Ok(());
         }
         require(producer.kind == "approval")?;
         let rows = sqlx::query("SELECT r.request_id,r.payload_json,r.resolution_json,r.delivery,p.resolution_json AS proof,p.event_id,w.work_json,w.owner_epoch,w.generation FROM engine_flow030_human_requests r JOIN engine_flow030_human_resolution_proofs p USING(system_id,invocation_id,request_id) JOIN engine_flow030_clock_works w ON w.system_id=r.system_id AND w.invocation_id=r.invocation_id AND w.activation_id=json_extract(r.work_ids_json,'$[0]') WHERE r.system_id=? AND r.invocation_id=? AND r.kind='approval' AND w.activation_id=?")

@@ -14,6 +14,24 @@ record!(FlowPlan030 {format: String, versions: Versions030, source: Value, docum
     agents: Vec<Value>, entry: Option<Address030>, scopes: Vec<Scope030>, steps: Vec<Step030>,
     routes: Vec<Route030>, joins: Vec<Join030>, handlers: Vec<Handler030>,
     graphless_submission_contracts: BTreeMap<String,String>});
+impl FlowPlan030 {
+    /// A compose receives a message on behalf of its exact body entry. Keep the
+    /// outer target address for occurrence identity, and use this step's policy.
+    pub fn message_recipient(&self, address: &[String]) -> Option<&Step030> {
+        let mut step = self.steps.iter().find(|step| step.address == address)?;
+        for _ in 0..=self.scopes.len() {
+            if step.r#type != "compose" {
+                return Some(step);
+            }
+            let scope = self
+                .scopes
+                .iter()
+                .find(|scope| scope.address == step.address)?;
+            step = self.steps.iter().find(|step| step.address == scope.entry)?;
+        }
+        None
+    }
+}
 record!(Versions030 {
     snapshot: String,
     contract: String,

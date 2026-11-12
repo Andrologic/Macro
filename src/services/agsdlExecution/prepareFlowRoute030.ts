@@ -50,7 +50,7 @@ function prepareCapturedRoute030(input: PrepareFlowRouteInput030): PrepareFlowRo
   const compose = sourceStep.type === 'compose' && producer.step.length > reference.route.source.length
     && reference.route.source.every((part, index) => producer.step![index] === part);
   if (!direct && !compose) return fail('CORRELATION', '', 'The producer is outside the selected route.');
-  if (reference.route.kind === 'error' ? source.kind !== 'error' : source.kind !== producer.kind) return fail('CORRELATION', '', 'Producer kind contradicts the selected route.');
+  if (reference.route.kind === 'error' ? source.kind !== 'error' : source.kind !== producer.kind && !(compose && source.kind === 'error')) return fail('CORRELATION', '', 'Producer kind contradicts the selected route.');
   if (source.kind === 'agent' && (typeof producerStep.agent !== 'string' || source.producerAgent !== producerStep.agent)) return fail('CORRELATION', '', 'The agent does not match the captured producer.');
   if (reference.route.kind === 'normal' && producer.kind === 'approval') {
     const output = record(decode(producer.outputJson));
@@ -105,8 +105,18 @@ function prepareCapturedRoute030(input: PrepareFlowRouteInput030): PrepareFlowRo
         ? { kind: 'element', index: String(index), valueJson: encode(value), mission: batch.mission, instructionAuthority: batch.instructionAuthority }
         : { kind: 'absent' };
       try {
-        const recipientType = text(record(decode(target.stepJson)).type);
-        const receivesMessage = ['agent', 'approval', 'compose'].includes(recipientType);
+        let recipient = steps.find(step => equal(step.address, target.address));
+        const visited = new Set<string>();
+        while (recipient?.type === 'compose') {
+          const key = encode(recipient.address);
+          if (visited.has(key)) return fail('CORRELATION', '', 'Composition entry cycle.');
+          visited.add(key);
+          const body = list(plan.scopes).map(value => record(value)).find(scope => equal(scope.address, recipient!.address));
+          recipient = body && steps.find(step => equal(step.address, body.entry));
+        }
+        if (!recipient) return fail('CORRELATION', '', 'Composition message recipient is absent.');
+        const recipientType = text(recipient.type);
+        const receivesMessage = ['agent', 'approval', 'compose'].includes(text(record(decode(target.stepJson)).type));
         const capturedTarget = captured[targetOrdinal] as unknown as CompiledTarget030;
         const content = !receivesMessage ? undefined : input.contentForOccurrence
           ? input.contentForOccurrence(targetOrdinal, String(index), capturedTarget) ?? {}
