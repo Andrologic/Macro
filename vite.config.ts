@@ -200,6 +200,16 @@ const manualVendorChunk = (id: string): string | undefined => {
   // makes every dynamic caller statically load the diagram runtime.
   if (moduleId === "\0vite/preload-helper.js") return "utils-vendor";
 
+  // Retiring the 0.2 compiler removes Rollup's former shared dependency spine.
+  // Keep workflow inspection and Macro tool policy in their own shared chunks
+  // rather than folding their dependencies into the application entry.
+  if (moduleId.endsWith("/src/services/workflowAgentTasks.ts")) {
+    return "workflow-runtime";
+  }
+  if (moduleId.endsWith("/src/services/toolSecurityPolicy.ts")) {
+    return "tool-policy";
+  }
+
   if (!moduleId.includes("/node_modules/")) {
     return undefined;
   }
