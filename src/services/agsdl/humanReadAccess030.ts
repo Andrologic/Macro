@@ -50,7 +50,7 @@ export async function readHumanFacts030(scope: HumanScope030,
 /** Bind readback to an exact captured human scope. Reading never acknowledges. */
 export function createHumanReadAccess030(scope: HumanScope030,
   transport: HumanReadTransport030 = { readExecutionHumans030, readExecutionSnapshot030, submitExecutionHuman030 }) {
-  const expected = structuredClone(scope);
+  const expected: HumanScope030 = { systemStartId: scope.systemStartId, source: structuredClone(scope.source) };
   const read: ReadHuman030 = async target => {
     if (!target.requestId || !sameHumanScope030(target.scope, expected))
       throw new MacroServiceError('SCOPE_INVALID', 'Human read scope differs');

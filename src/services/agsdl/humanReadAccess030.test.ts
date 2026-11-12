@@ -64,3 +64,19 @@ it('rejects a foreign capture before attempting human readback', async () => {
   await expect(access.read({ scope, requestId: 'human' })).rejects.toMatchObject({ code: 'CORRELATION' });
   expect(reads).toBe(0);
 });
+
+it('narrows a runtime scope to the human IPC contract before reading a request', async () => {
+  const runtimeScope = { ...scope, snapshotId: 'captured-runtime' };
+  const value = { scope, id: 'human', revision: '0', workIds: ['activation'], occurrences: [],
+    content: { kind: 'flowChoice', title: 'Continue?', description: '', messageJson: '{}', choices: ['continue'] },
+    state: { kind: 'open' }, clock: { kind: 'unavailable', gap: 'human-clock-observation' } };
+  const access = createHumanReadAccess030(runtimeScope, {
+    async readExecutionSnapshot030() { return capture; },
+    async readExecutionHumans030(query) {
+      // Tauri rejects extra fields, even when TypeScript accepts the subtype.
+      expect(query).toEqual(scope);
+      return { scope: query, cursor: 'native', total: '1', requests: [{ ...request('human'), flowJson: JSON.stringify(value) }], nextPage: null };
+    },
+  });
+  expect((await access.read({ scope, requestId: 'human' })).id).toBe('human');
+});
