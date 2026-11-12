@@ -1,6 +1,7 @@
 //! Explicit ordinary JSON boundary. Native numeric conversion happens here,
 //! outside the pure core, and never touches an authored NumberToken.
-use crate::argentic_core::native::{Number, Text, Value};
+use crate::argentic_core::native::{JsonDecoder, Number, SyntaxError, Text, Value};
+mod syntax;
 use serde::{
     de::{MapAccess, Visitor},
     Deserialize, Deserializer,
@@ -207,4 +208,25 @@ pub(crate) fn parse(raw: &str) -> Result<Value, Error> {
         }
     }
     Ok(values.pop().unwrap())
+}
+
+/// The integrated codec implements the core's durable, pure decoding port.
+pub(crate) struct Decoder;
+impl JsonDecoder for Decoder {
+    fn parse(&self, raw: &Text) -> Result<Value, SyntaxError> {
+        syntax::validate(raw)?;
+        // Literal isolated UTF-16 units are legal inside ordinary JSON strings.
+        // Escape units before the byte parser, without repairing their value.
+        let mut bytes = String::new();
+        for &unit in raw.units() {
+            if unit < 128 {
+                bytes.push(char::from_u32(u32::from(unit)).unwrap());
+            } else {
+                bytes.push_str(&format!("\\u{unit:04x}"));
+            }
+        }
+        parse(&bytes).map_err(|e| SyntaxError {
+            message: Text::from(e.0),
+        })
+    }
 }

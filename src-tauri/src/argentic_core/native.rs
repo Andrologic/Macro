@@ -2,6 +2,20 @@
 //! value tree. Numbers hold their one canonical rounded decimal representation;
 //! no redundant bit pattern can disagree with it. Native text keeps UTF-16.
 use super::exact;
+
+/// Ordinary JSON syntax errors retain native text, including isolated units.
+/// They are not authored-value or work-correlation failures.
+#[derive(Clone, Debug)]
+pub(crate) struct SyntaxError {
+    pub(crate) message: Text,
+}
+
+/// Pure decoding boundary. Implemented by the ordinary JSON codec; authored
+/// values continue to use the exact reader. Parsing happens when requested,
+/// so a journal replay retains the original validation and error order.
+pub(crate) trait JsonDecoder {
+    fn parse(&self, raw: &Text) -> Result<Value, SyntaxError>;
+}
 #[derive(Clone, Debug)]
 pub(crate) struct Error {
     pub(crate) code: &'static str,

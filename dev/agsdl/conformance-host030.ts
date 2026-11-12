@@ -16,6 +16,8 @@ import { evaluateRoutes030, type RoutesRequest030 } from './routes-oracle030';
 import { evaluateNativeJson030, type NativeJsonRequest030 } from './native-json-oracle030';
 import { evaluateCompile030, type CompileRequest030 } from './compile-oracle030';
 import { buildCompileCorpus030 } from './compile-corpus030';
+import { evaluateWork030, type WorkRequest030 } from './work-oracle030';
+import { buildWorkCorpus030, WORK_MINIMUMS030, WORK_SEED030 } from './work-corpus030';
 
 type Request = { id: number } & (
   | { kind: 'compile'; authoredSource: string; source: SourceRevision; registry: CapturedRegistry030 }
@@ -27,6 +29,8 @@ type Request = { id: number } & (
   | { kind: 'nativeJson'; request: NativeJsonRequest030 }
   | { kind: 'compilePure'; request: CompileRequest030 }
   | { kind: 'compileCorpus'; request: null }
+  | { kind: 'workPure'; request: WorkRequest030 }
+  | { kind: 'workCorpus'; request: null }
 );
 const validator = connectValueSchemaValidator030({ NumberToken, parse, validate });
 for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
@@ -43,6 +47,8 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
       case 'reader': output = evaluateReader030(request.request); break;
       case 'routes': output = evaluateRoutes030(request.request); break;
       case 'nativeJson': output = { json: JSON.stringify(evaluateNativeJson030(request.request)) }; break;
+      case 'workCorpus': output = { seed: WORK_SEED030, minimums: WORK_MINIMUMS030, cases: buildWorkCorpus030() }; break;
+      case 'workPure': output = { json: evaluateWork030(request.request) }; break;
       case 'compilePure': output = { json: await evaluateCompile030(request.request) }; break;
       case 'compileCorpus': output = await buildCompileCorpus030(); break;
       default: throw new Error('Unknown conformance host operation');

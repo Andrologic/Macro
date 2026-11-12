@@ -145,6 +145,8 @@ mod argentic_routes_conformance030_tests;
 mod argentic_runtime;
 #[cfg(test)]
 mod argentic_values_conformance030_tests;
+#[cfg(test)]
+mod argentic_work_conformance030_tests;
 pub mod commands;
 pub mod config;
 pub mod core;
