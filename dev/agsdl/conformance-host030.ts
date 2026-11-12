@@ -13,6 +13,9 @@ import type { SourceRevision } from '../../src/services/agsdlExecution/contracts
 import { evaluateValues030, type ValuesRequest030 } from './values-oracle030';
 import { evaluateReader030, type ReaderRequest030 } from './reader-oracle030';
 import { evaluateRoutes030, type RoutesRequest030 } from './routes-oracle030';
+import { evaluateNativeJson030, type NativeJsonRequest030 } from './native-json-oracle030';
+import { evaluateCompile030, type CompileRequest030 } from './compile-oracle030';
+import { buildCompileCorpus030 } from './compile-corpus030';
 
 type Request = { id: number } & (
   | { kind: 'compile'; authoredSource: string; source: SourceRevision; registry: CapturedRegistry030 }
@@ -21,6 +24,9 @@ type Request = { id: number } & (
   | { kind: 'values'; request: ValuesRequest030 }
   | { kind: 'reader'; request: ReaderRequest030 }
   | { kind: 'routes'; request: RoutesRequest030 }
+  | { kind: 'nativeJson'; request: NativeJsonRequest030 }
+  | { kind: 'compilePure'; request: CompileRequest030 }
+  | { kind: 'compileCorpus'; request: null }
 );
 const validator = connectValueSchemaValidator030({ NumberToken, parse, validate });
 for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
@@ -36,6 +42,9 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
       case 'values': output = evaluateValues030(request.request); break;
       case 'reader': output = evaluateReader030(request.request); break;
       case 'routes': output = evaluateRoutes030(request.request); break;
+      case 'nativeJson': output = { json: JSON.stringify(evaluateNativeJson030(request.request)) }; break;
+      case 'compilePure': output = { json: await evaluateCompile030(request.request) }; break;
+      case 'compileCorpus': output = await buildCompileCorpus030(); break;
       default: throw new Error('Unknown conformance host operation');
     }
     process.stdout.write(JSON.stringify({ id, output }) + '\n');
