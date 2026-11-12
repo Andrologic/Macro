@@ -397,11 +397,9 @@ L’annulation et le rétablissement utilisent l’historique de `useAgsdlStore`
 la même sauvegarde versionnée que les formulaires.
 La source et les annexes sont persistées
 dans `ArchitectPlanRecord.agsdl`, avec contrôle de révision dans la file de
-mutations du plan. `migrateArchitectPlanToAgsdl` convertit les stratégies sans
-AgSDL au chargement, y compris les plans archivés, dans cette même file et via
-le journal de réplication. La ressource `macro-legacy-plan` conserve les données
-originales ; le visualisateur distingue ces dépendances historiques des routes G.
-Le moteur Implement utilise encore les enregistrements d’exécution historiques.
+mutations du plan. Le chargement ne convertit plus les anciens plans en AgSDL.
+Les tâches Macro extérieures au moteur AgSDL conservent leurs mécanismes
+de stockage et d’exécution.
 
 `src/services/agsdl` contient la projection du graphe, les modifications
 atomiques par pointeurs JSON et les exemples. `src/stores/agsdl/tools.ts`
@@ -434,28 +432,25 @@ prouve ni l'annulation d'une écriture ni l'absence de travail distant chez le
 fournisseur. Aucun replay automatique n'est permis. L'utilisateur doit vérifier
 les effets avant de demander une nouvelle exécution.
 
-Le profil initial exclut les compositions, les fournisseurs qui lancent un
-processus externe autres que les adaptateurs Codex et Claude qualifiés, Terminal
-et les MCP. Les profils [Codex](agsdl-codex-native.md) et
-[Claude](agsdl-claude-controlled.md) détaillent les limites de ces exceptions.
-Un document statiquement valide peut donc
-rester non exécutable dans Macro. La disponibilité produit est annoncée seulement
-après qualification des commandes réelles de l'application.
+Le profil [Codex](agsdl-codex-native.md) décrit la tranche 0.3 qualifiée,
+y compris les compositions, les appels locaux et les MCP stdio confinés.
+Les observations [Claude](agsdl-claude-controlled.md) sont conservées sans
+rouvrir son ancienne exécution 0.2. Un document statiquement valide peut
+rester non exécutable dans Macro ; la qualification native reste requise.
 
 Le contrat produit 0.3 est défini dans
 [`agsdlRunUi030.ts`](../src/types/agsdlRunUi030.ts) et son
 [raccord UI/runtime](agsdl-030.md#contrat-produit-des-runs-03). Ces types publics
-décrivent des vues et intentions à adapter, pas des DTO IPC déjà implémentés.
-Le lot UI 6 garde l'orchestration dans `useAgsdlExecutionStore` et les services
-IPC ; les composants capturent l'intention et rendent les faits natifs. Le
-moniteur 0.3 est encore isolé du shell au point de départ de ce contrat.
-L'UI ne conduit ni outbox, ni horloge, ni scheduler, ni relecture de commit
-native. Le lancement produit reste fermé jusqu'à qualification du profil
-fournisseur exact, indépendamment des preuves synthétiques du moteur.
+décrivent les vues et intentions adaptées aux DTO IPC et aux validations Rust.
+`useAgsdlExecutionStore` et les services IPC portent l’orchestration ; les
+composants capturent l’intention et rendent les faits natifs. Le moniteur 0.3
+est raccordé au shell. L’UI ne conduit ni outbox, ni horloge, ni scheduler,
+ni relecture de commit native. Le lancement produit exige la qualification
+du profil fournisseur exact ; les preuves synthétiques ne la remplacent pas.
 
-Les lecteurs choisissent explicitement le contrat 0.2 ou 0.3, les versions de
-capture et le profil. Les admissions `start`/`start030` restent distinctes ;
-le reçu `deliver030` demandé nécessite une extension native. Les entrées UI
+Les lecteurs vérifient explicitement le contrat 0.3, les versions de capture
+et le profil d’exécution. L’ancienne admission 0.2 est retirée ; `start030`
+et `execution_deliver030` utilisent les tables natives conservées. Les entrées UI
 contiennent seulement scope public, identifiants publics, révision et réponse.
 Le natif alloue ou retrouve owner, génération, tentatives, tickets et reçus
 d'autorité. Une réponse humaine utilise le broker du vrai flow avec

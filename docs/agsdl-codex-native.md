@@ -1,10 +1,9 @@
 # Native Codex for AgSDL
 
-An AgSDL Agent can explicitly bind `macro/agent-engine` version `1` to
-`openai/codex` version `1`. Its Model must be an observed `codex-native` Edition.
-The `codex-native` provider identifier is reserved for this adapter. Macro never
-substitutes its HTTP transport when the native engine is unavailable. Existing
-Macro agents retain their captured engine and tool policy.
+An AgSDL 0.3 agent declares `harness: "codex"` and a supported permission
+profile. Its model name comes from the qualified native catalogue. Macro never
+substitutes its HTTP transport when the native harness is unavailable. Macro
+agent tools outside AgSDL retain their own captured engine and tool policy.
 
 The current adapter qualifies the official Codex CLI **0.167.x on macOS ARM64
 and Linux ARM64**. Other

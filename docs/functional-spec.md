@@ -286,14 +286,13 @@ progressive. Ils ne certifient pas l’exécution. Le profil 0.3 qualifié et se
 
 Trois capacités restent distinctes :
 - la conception du document, décrite ci-dessous, disponible ;
-- le suivi des exécutions, dont le parcours 0.3 reste à raccorder : l’ouverture
-  doit lire seulement l’état natif, sans contrôle
+- le suivi des exécutions 0.3 : l’ouverture lit seulement l’état natif, sans contrôle
   préalable, lancement ni acquittement implicite. La sélection suit uniquement
   la [règle normative de sélection initiale du run](agsdl-030.md#sélection-initiale-du-run).
   Une autre exécution peut ensuite être choisie. Tant qu’aucun contrôle n’a été
   demandé, la prise en charge s’affiche comme non vérifiée ;
-- le démarrage depuis le produit, fermé tant que sa qualification physique n’est
-  pas faite.
+- le démarrage depuis le produit, réservé à la tranche native qualifiée ;
+  les capacités non qualifiées restent fermées.
 
 Le suivi des runs conservés reste disponible après une modification du design ou
 un changement de source. Une omission de provenance dans une édition ordinaire
