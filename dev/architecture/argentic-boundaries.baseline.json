@@ -411,6 +411,13 @@
       },
       "src-tauri/src/db/agsdl_execution/work_dto030.rs": {
         "token:ts_rs": 1
+      },
+      "src-tauri/src/fs/operations.rs": {
+        "crate:core": 4,
+        "crate:fs": 11,
+        "crate:git": 4,
+        "crate:project_path": 1,
+        "crate:workspace": 1
       }
     },
     "imports": {

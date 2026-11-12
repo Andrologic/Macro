@@ -49,9 +49,11 @@ The Argentic guard records existing couplings; it does not claim the engine is
 already independent. Its explicit Rust scope in `isArgenticFile` follows the
 D15 destination map: engine host, permissions, content, confinement, harnesses,
 flow and storage logic, plus the shared process, tool policy, stream task, MCP
-and exact JSON files. Mixed files are checked in full until split. Capture,
-catalogue, task targets, mode tools, UI intentions, product commands and the
-other UI-only database modules remain Macro-only and are excluded. The future
+and exact JSON files. The shared filesystem file `fs/operations.rs`, including
+the confined reader and root identity, is checked in full until split, as are
+the other mixed files. Capture, catalogue, task targets, mode tools, UI
+intentions, product commands and the other UI-only database modules remain
+Macro-only and are excluded. The future
 `src-tauri/src/argentic_core/`, `argentic_runtime/`, `crates/argentic-core/`
 and `crates/argentic-runtime/` trees are included as soon as files appear.
 

@@ -12,8 +12,36 @@ const counts = (sources: Record<string, string>) => analyzeSources(sources).arge
 
 describe('Argentic boundaries', () => {
   it('covers mapped and future files without covering Macro-only adapters', () => {
-    for (const path of [file, 'src-tauri/src/ai/stream_tasks.rs', 'src-tauri/src/core/process.rs', 'src-tauri/src/commands/mcp/agsdl_raw.rs', 'src-tauri/src/db/exact_json.rs', 'src-tauri/src/agsdl_permissions/mod.rs', 'src-tauri/src/argentic_core/nested/new.rs', 'src-tauri/src/argentic_runtime/new.rs', 'crates/argentic-core/src/new.rs', 'crates/argentic-runtime/src/new.rs']) expect(isArgenticFile(path)).toBe(true);
+    for (const path of [file, 'src-tauri/src/ai/stream_tasks.rs', 'src-tauri/src/core/process.rs', 'src-tauri/src/fs/operations.rs', 'src-tauri/src/commands/mcp/agsdl_raw.rs', 'src-tauri/src/db/exact_json.rs', 'src-tauri/src/agsdl_permissions/mod.rs', 'src-tauri/src/argentic_core/nested/new.rs', 'src-tauri/src/argentic_runtime/new.rs', 'crates/argentic-core/src/new.rs', 'crates/argentic-runtime/src/new.rs']) expect(isArgenticFile(path)).toBe(true);
     for (const path of ['src-tauri/src/agsdl_host_capture.rs', 'src-tauri/src/agsdl_host_catalogue.rs', 'src-tauri/src/db/agsdl_execution/intents.rs', 'src-tauri/src/commands/agsdl_execution.rs', 'src-tauri/src/core/diagnostics.rs']) expect(isArgenticFile(path)).toBe(false);
+  });
+
+  it('guards the shared filesystem reader through the real CLI', () => {
+    const root = mkdtempSync(join(tmpdir(), 'argentic-filesystem-'));
+    const shared = 'src-tauri/src/fs/operations.rs';
+    try {
+      mkdirSync(join(root, 'src-tauri/src/fs'), { recursive: true });
+      writeFileSync(join(root, 'package.json'), '{}');
+      writeFileSync(join(root, 'vite.config.ts'), 'export default { resolve: { alias: {} } };');
+      writeFileSync(join(root, 'graph.json'), JSON.stringify(analyzeSources({})));
+      writeFileSync(join(root, 'argentic.json'), JSON.stringify(empty()));
+      const cli = () => Bun.spawnSync([process.execPath, join(import.meta.dir, 'import-boundaries.mjs'),
+        '--root', root, '--baseline', 'graph.json', '--argentic-baseline', 'argentic.json', '--format', 'json', '--check']);
+      writeFileSync(join(root, shared), 'pub fn workspace_root_identity() {}');
+      expect(cli().exitCode).toBe(0);
+      for (const [source, rule] of [
+        ['pub fn workspace_root_identity(_config: &crate::config::ConfigManager) {}', 'crate:config'],
+        ['pub fn workspace_root_identity(_db: &crate::db::DbState) {}', 'crate:db'],
+        ['use sqlx::SqlitePool;', 'token:sqlx'],
+      ]) {
+        writeFileSync(join(root, shared), source);
+        const result = cli();
+        expect(result.exitCode).toBe(1);
+        expect(JSON.parse(result.stdout.toString()).comparison.argenticIssues).toEqual([
+          expect.objectContaining({ file: shared, rule, count: 1, limit: 0, direction: 'increase' }),
+        ]);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('counts grouped and qualified roots and rejects new couplings and floating point in pure modules', () => {

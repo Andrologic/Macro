@@ -97,7 +97,7 @@ export function nativeBoundaryViolations(reader) {
 const MACRO_ONLY = new Set(['agsdl_host_capture.rs', 'agsdl_host_catalogue.rs', 'agsdl_host_tasks.rs', 'agsdl_host_tools.rs', 'agsdl_intent_coordinator.rs']);
 const ENGINE_SHARED = new Set([
   'ai/stream_tasks.rs', 'core/process.rs', 'core/tool_policy.rs', 'commands/mcp/agsdl_raw.rs',
-  'commands/mcp/agsdl_raw_tests.rs', 'db/exact_json.rs',
+  'commands/mcp/agsdl_raw_tests.rs', 'db/exact_json.rs', 'fs/operations.rs',
 ]);
 const ENGINE_DB = /^(?:call_protocol030|discovery030|dto|flow_store030|flow_work_protocol030|json_lexemes030|mod|public030|start030|work_dto030)(?:_tests)?\.rs$/;
 export function isArgenticFile(path) {
