@@ -9,7 +9,7 @@ import { validate } from '../../src/vendor/agsdl/v0.3/valueschema.mjs';
 import type { ExactJsonText } from '../../src/services/agsdlExecution/contracts';
 import type { WorkRequest030 } from './work-oracle030';
 export const WORK_SEED030 = 'work-030-20261112-v1';
-export const WORK_MINIMUMS030: Record<string, number> = { submission: 100, controller: 100, plan: 20, check: 100, nativeSyntax: 100, journal: 40, visible: 5, options: 50, attribution: 5, generated: 256, mutations: 6 };
+export const WORK_MINIMUMS030: Record<string, number> = { submission: 100, controller: 100, plan: 20, check: 100, nativeSyntax: 100, journal: 40, visible: 5, options: 50, attribution: 5, generated: 256, mutations: 6, syntaxDot: 52, syntaxDotJournal: 9 };
 interface Case { family: string; request: WorkRequest030 }
 type Input = Record<string, unknown>;
 const owner = { systemStartId: 'run', activationId: 'work', agentInstanceId: 'agent', ownerEpoch: 'epoch' };
@@ -155,6 +155,19 @@ export function buildWorkCorpus030(): Case[] {
         if(i%3===2) input.eventJson=i%2?'null':'[]';
         add('attribution','host',input);
     }
+    // A dot is a syntax token: its diagnostic belongs to the parser context.
+    // Incomplete decimals and unrelated lexical errors retain their own errors.
+    for (const token of ['1.1.','1e1.','1e+1.','-1.1.','0.1.','1.1.0','1e1.0','1.1 .','1e1 .']) {
+        for (const [prefix,suffix] of [['',''],['[',']'],['{"k":','}']]) add('syntaxDot','parse',{raw:prefix+token+suffix});
+    }
+    for (const raw of ['.','[.]','{"k":.}','{.}','{"k".}','[,.]','[1,.]','.x','.1','true.','[true.]','"x".','["x".]','[].','[[] .]','{}.','[{}.]','true .','[true .]','1.1@','[1.1@]','{"k":1.1@}','1.1 @','[1.1 @]','{"k":1.1 @}']) add('syntaxDot','parse',{raw});
+    const nextEvent=event('next',{kind:'turnEnded',turnId:'next'});
+    const dotHost=host('next',EMPTY_WORK_JOURNAL030,'0',nextEvent);
+    for (const raw of ['1.1.','[1.1.]','{"k":1.1.}','1e1.','1e+1.']) {
+        const altered={format:'macro-agsdl-work-journal/1',events:[{eventJson:raw,receiptJson:'{}'}]};
+        add('syntaxDotJournal','host',{...dotHost,expectedRevision:'1',stateJson:JSON.stringify(altered)});
+    }
+    for (const field of ['eventJson','contractJson','optionsJson','stateJson']) add('syntaxDotJournal','host',{...dotHost,[field]:'[1.1.]'});
     // Remove only byte-identical deterministic requests. This never changes
     // a retained input or any of the independent raw conformance captures.
     const seen = new Set<string>();

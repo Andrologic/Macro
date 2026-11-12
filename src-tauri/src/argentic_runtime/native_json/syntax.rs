@@ -16,6 +16,7 @@ enum Token {
     CloseObject,
     Colon,
     Comma,
+    Dot,
     Identifier(usize, usize),
 }
 fn error(message: impl Into<Text>) -> SyntaxError {
@@ -47,6 +48,9 @@ impl Lexer<'_> {
             125 => Token::CloseObject,
             58 => Token::Colon,
             44 => Token::Comma,
+            // A dot is diagnosed by the parser context, like punctuation.
+            // A decimal without digits is still rejected in the number lexer.
+            46 => Token::Dot,
             34 => {
                 self.string()?;
                 Token::String
@@ -191,6 +195,7 @@ fn unexpected(token: Token, units: &[u16]) -> SyntaxError {
         Token::CloseObject => error("Unexpected token '}'"),
         Token::Colon => error("Unexpected token ':'"),
         Token::Comma => error("Unexpected token ','"),
+        Token::Dot => error("Unexpected token '.'"),
         _ => error("Unable to parse JSON string"),
     }
 }
