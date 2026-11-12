@@ -58,10 +58,14 @@ fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// An additional recipient constraint, checked on each resolved read target.
+pub(crate) type ContentReadScope = Arc<dyn Fn(&std::path::Path) -> ContentResult<()> + Send + Sync>;
+
 /// Only the native host constructs this. Do not expose its constructor as IPC.
 /// The host supplies the import/read location, never a message's baseUri or cwd.
 pub(crate) struct ContentContext {
     resource_owner: Option<ContentResourceOwner>,
+    read_scope: Option<ContentReadScope>,
     capture_id: String,
     source_digest: String,
     document_json: String,
@@ -115,6 +119,24 @@ pub(crate) enum ContentEffectPhase {
 }
 
 impl ContentContext {
+    pub(crate) fn with_read_scope(mut self, scope: ContentReadScope) -> Self {
+        self.read_scope = Some(scope);
+        self
+    }
+
+    fn permission(&self, request: &ActionRequest) -> ContentResult<PermissionDecision> {
+        let decision = evaluate_effective(&self.policy, request, self.purpose)
+            .map_err(|e| error("PERMISSION", e.detail))?;
+        if let (ActionRequest::Read { .. }, Some(scope)) = (request, &self.read_scope) {
+            let path = decision
+                .resolved_path
+                .as_deref()
+                .ok_or_else(|| error("PERMISSION", "Content read has no resolved target."))?;
+            scope(std::path::Path::new(path))?;
+        }
+        Ok(decision)
+    }
+
     pub(crate) fn with_resource_owner(mut self, owner: ContentResourceOwner) -> Self {
         self.resource_owner = Some(owner);
         self
@@ -184,6 +206,7 @@ impl ContentContext {
         }
         Ok(Self {
             resource_owner: None,
+            read_scope: None,
             capture_id,
             source_digest,
             document_json,
@@ -210,8 +233,7 @@ impl ContentContext {
         effect: ContentEffect,
     ) -> ContentResult<PermissionDecision> {
         self.active()?;
-        let decision = evaluate_effective(&self.policy, &request, self.purpose)
-            .map_err(|e| error("PERMISSION", e.detail))?;
+        let decision = self.permission(&request)?;
         match decision.effect {
             Effect::Deny => {
                 return Err(error(
@@ -236,8 +258,7 @@ impl ContentContext {
             Effect::Allow => {}
         }
         self.active()?;
-        let current = evaluate_effective(&self.policy, &request, self.purpose)
-            .map_err(|e| error("PERMISSION", e.detail))?;
+        let current = self.permission(&request)?;
         if current.effect != decision.effect
             || current.resolved_path != decision.resolved_path
             || current.policy_digest != decision.policy_digest

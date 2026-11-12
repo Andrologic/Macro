@@ -6,6 +6,16 @@ use crate::agsdl_content::{
 };
 use crate::agsdl_permissions::{normalize_requested, ExecutionPurpose};
 
+const CONTENT_SCOPE_REFUSAL: &str =
+    "Content is outside the approved data scope or inside private host metadata";
+
+fn approved_data_path(root: &Path, private: &Path, path: &Path) -> bool {
+    path.is_absolute()
+        && path.starts_with(root)
+        && !private_project_path(root, path)
+        && !path.starts_with(private)
+}
+
 pub(crate) struct Sources030 {
     context: ContentContext,
     document: Value,
@@ -108,6 +118,19 @@ impl Sources030 {
         root: std::path::PathBuf,
         private: std::path::PathBuf,
     ) -> HostResult<Self> {
+        let scope_root = root.clone();
+        let scope_private = private.clone();
+        let context = context.with_read_scope(Arc::new(move |path| {
+            if approved_data_path(&scope_root, &scope_private, path) {
+                Ok(())
+            } else {
+                Err(crate::agsdl_content::ContentError {
+                    code: "PERMISSION".into(),
+                    pointer: String::new(),
+                    message: CONTENT_SCOPE_REFUSAL.into(),
+                })
+            }
+        }));
         Ok(Self {
             context,
             document,
@@ -326,15 +349,8 @@ impl Sources030 {
                     "Native content file is unavailable",
                 )
             })?;
-            if !path.starts_with(&self.root)
-                || private_project_path(&self.root, &path)
-                || path.starts_with(&self.private)
-            {
-                return Err(failure(
-                    "PERMISSION",
-                    pointer,
-                    "Content is outside the approved data scope or inside private host metadata",
-                ));
+            if !approved_data_path(&self.root, &self.private, &path) {
+                return Err(failure("PERMISSION", pointer, CONTENT_SCOPE_REFUSAL));
             }
         }
         Ok(())
@@ -458,4 +474,72 @@ pub(crate) fn qualify_skill_folders(document: &Value, root: &Path) -> HostResult
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::agsdl_permissions::{EffectivePolicy, PathContext, RequestedPermissions};
+    use sha2::{Digest, Sha256};
+
+    #[tokio::test]
+    async fn recipient_read_scope_is_rechecked_at_content_admission() {
+        for folder in [".macro", "private"] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let file = root.join("data.txt");
+            std::fs::write(&file, "Public fixture").unwrap();
+            let private = root.join(folder);
+            std::fs::create_dir(&private).unwrap();
+            let destination = private.join("fixture.txt");
+            std::fs::write(&destination, "Private fixture").unwrap();
+            let document = json!({"agents":{"worker":{}}});
+            let document_json = document.to_string();
+            let policy = normalize_requested(
+                RequestedPermissions::Preset(crate::agsdl_permissions::Preset::ReadOnly),
+                PathContext {
+                    workspace: root.clone(),
+                    home: root.clone(),
+                },
+            )
+            .unwrap();
+            let context = ContentContext::capture(
+                "capture".into(),
+                format!("{:x}", Sha256::digest(document_json.as_bytes())),
+                document_json,
+                None,
+                "worker".into(),
+                EffectivePolicy::new(policy.clone(), policy.clone(), policy),
+                ExecutionPurpose::Agent,
+                CancellationToken::new(),
+                Arc::new(|_| {
+                    Box::pin(async { panic!("read-only content must not request approval") })
+                }),
+            )
+            .unwrap();
+            let sources =
+                Sources030::from_context(context, document, root.clone(), root.join("private"))
+                    .unwrap();
+            let source = json!({"uri":url::Url::from_file_path(&file).unwrap().to_string(),"mediaType":"text/plain"});
+            sources.allowed_file(&source, "/resource").unwrap();
+            std::fs::remove_file(&file).unwrap();
+            std::os::unix::fs::symlink(&destination, &file).unwrap();
+            // Continue through the same native resolver used after preflight.
+            // The recipient scope must be enforced before starting its reader.
+            let result = resolve_content(
+                &sources.context,
+                ContentUse {
+                    source_json: source.to_string(),
+                    usage: ContentUsage::Resource,
+                    pointer: "/resource".into(),
+                },
+            )
+            .await;
+            assert_eq!(
+                result.unwrap_err().code,
+                "PERMISSION",
+                "scope changed to {folder}"
+            );
+        }
+    }
 }
