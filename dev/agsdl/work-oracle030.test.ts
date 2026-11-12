@@ -13,6 +13,7 @@ it('keeps native UTF-16 parsing distinct from exact authored submissions', () =>
 
 it('requires every deterministic corpus family, including generated sequences and altered journals', () => {
     const corpus = buildWorkCorpus030();
+    expect(new Set(corpus.map(({ request }) => request.op + '\0' + request.json)).size).toBe(corpus.length);
     const counts: Record<string, number> = {};
     for (const entry of corpus) counts[entry.family] = (counts[entry.family] ?? 0) + 1;
     for (const [family, minimum] of Object.entries(WORK_MINIMUMS030)) expect(counts[family], family).toBeGreaterThanOrEqual(minimum);
