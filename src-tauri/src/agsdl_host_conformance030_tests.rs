@@ -20,6 +20,8 @@ use tokio_util::sync::CancellationToken;
 
 #[path = "agsdl_host_conformance030_projection.rs"]
 mod projection;
+#[path = "agsdl_host_conformance030_work.rs"]
+mod work_capture;
 
 struct BunHost {
     child: tokio::process::Child,
@@ -173,6 +175,7 @@ impl crate::db::agsdl_execution::start030::StartAuthority030 for FixtureStart030
 }
 
 struct Fixture {
+    work_captures: Arc<Mutex<Vec<work_capture::Capture>>>,
     _temp: tempfile::TempDir,
     app: tauri::App<tauri::test::MockRuntime>,
     pool: sqlx::SqlitePool,
@@ -351,6 +354,7 @@ impl Fixture {
             .unwrap();
         assert!(fixture["timeline"].is_array());
         Self {
+            work_captures: Default::default(),
             _temp: temp,
             app,
             pool,
@@ -367,6 +371,7 @@ impl Fixture {
         wake: watch::Sender<u64>,
     ) -> tokio::task::JoinHandle<()> {
         let host = self.incarnation.clone();
+        let captures = self.work_captures.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -378,7 +383,12 @@ impl Fixture {
                     }
                     job = host.work_protocol.next() => {
                         let job = job.unwrap();
-                        let output = bun.lock().await.request(json!({"kind":"work","job":job})).await;
+                        let request = json!({"kind":"work","job":job});
+                        let raw_job = request["job"].to_string();
+                        let output = bun.lock().await.request(request).await;
+                        let difference = work_capture::compare(&raw_job, &output).err();
+                        if let Some(error) = &difference { eprintln!("ARGENTIC_WORK_CAPTURE_MISMATCH {error}"); }
+                        captures.lock().unwrap().push(work_capture::Capture { raw_job, output: output.clone(), difference });
                         host.work_protocol.complete(&job.generation, crate::agsdl_host_work::HostWorkCompletion030 {
                             ticket:job.ticket, generation:job.generation.clone(), input_digest:job.input_digest, output:serde_json::from_value(output).unwrap()
                         }).unwrap();
@@ -1118,6 +1128,7 @@ async fn agsdl030_conformance_all_37_scenarios() {
     );
     let bun = Arc::new(tokio::sync::Mutex::new(BunHost::start()));
     let (mut native, mut scripted, mut failures) = (0, 0, Vec::new());
+    let mut capture_manifest = Vec::new();
     for (name, raw) in scenarios::SCENARIOS {
         let prepared =
             std::panic::AssertUnwindSafe(async { Fixture::new(raw, &mut *bun.lock().await).await })
@@ -1143,7 +1154,8 @@ async fn agsdl030_conformance_all_37_scenarios() {
         let reason = scripted_reason(&f, &scenario);
         let gap = product_gap(&f);
         let (wake, receiver) = watch::channel(0);
-        let pump = f.pump(bun.clone(), wake.clone());
+        let mut pump = f.pump(bun.clone(), wake.clone());
+        let mut pump_consumed = false;
         let run = async {
             let view = if reason.is_some() {
                 crate::agsdl_host_example030::drive_scenario030(
@@ -1170,10 +1182,21 @@ async fn agsdl030_conformance_all_37_scenarios() {
                 ));
             }
             Ok(())
-        };
+        }
+        .boxed_local();
+        let guarded_run = async {
+            tokio::select! {
+                result = run => result,
+                result = &mut pump => {
+                    pump_consumed = true;
+                    panic!("Work conformance pump failed in {name}: {result:?}");
+                }
+            }
+        }
+        .boxed_local();
         let result = std::panic::AssertUnwindSafe(tokio::time::timeout(
             std::time::Duration::from_secs(40),
-            run,
+            guarded_run,
         ))
         .catch_unwind()
         .await;
@@ -1184,8 +1207,13 @@ async fn agsdl030_conformance_all_37_scenarios() {
             Err(panic) => Some(panic_message(panic)),
         };
         pump.abort();
-        if let Err(error) = pump.await {
-            assert!(error.is_cancelled(), "Mailbox pump panicked: {error}");
+        if !pump_consumed {
+            if let Err(error) = pump.await {
+                assert!(error.is_cancelled(), "Mailbox pump panicked: {error}");
+            }
+        }
+        if error.is_none() {
+            capture_manifest.push(work_capture::replay(&f, &mut *bun.lock().await, name).await);
         }
         match error {
             None if reason.is_none() && gap.is_none() => {
@@ -1222,6 +1250,21 @@ async fn agsdl030_conformance_all_37_scenarios() {
         failures.len()
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert_eq!(
+        capture_manifest.len(),
+        37,
+        "Every scenario needs a capture manifest, including zero-work cases"
+    );
+    let manifest =
+        json!({"scenarios": capture_manifest, "N": native, "M": scripted, "K": failures.len()});
+    eprintln!("ARGENTIC_WORK_CAPTURE_MANIFEST {manifest}");
+    if let Some(directory) = std::env::var_os("ARGENTIC_WORK_CAPTURE_DIR") {
+        std::fs::write(
+            std::path::Path::new(&directory).join("manifest.json"),
+            manifest.to_string(),
+        )
+        .unwrap();
+    }
 }
 
 #[tokio::test]
