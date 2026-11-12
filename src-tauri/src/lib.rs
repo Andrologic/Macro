@@ -131,6 +131,12 @@ mod agsdl_intent_coordinator;
 pub(crate) mod agsdl_permissions;
 mod app_quit_state;
 mod app_updates;
+// Argentic core staged inside Macro (D15 2.c). The product path does not call
+// it before the 2.c.7 switch, which removes this dead-code allowance.
+#[cfg_attr(not(test), allow(dead_code))]
+mod argentic_core;
+#[cfg(test)]
+mod argentic_values_conformance030_tests;
 pub mod commands;
 pub mod config;
 pub mod core;

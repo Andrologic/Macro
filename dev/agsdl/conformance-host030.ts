@@ -10,11 +10,13 @@ import { validate } from '../../src/vendor/agsdl/v0.3/valueschema.mjs';
 import type { HostRouteJob030, HostWorkJob030 } from '../../src/types/generated/ipc';
 import type { CapturedRegistry030 } from '../../src/services/agsdlExecution/contracts030';
 import type { SourceRevision } from '../../src/services/agsdlExecution/contracts';
+import { evaluateValues030, type ValuesRequest030 } from './values-oracle030';
 
 type Request = { id: number } & (
   | { kind: 'compile'; authoredSource: string; source: SourceRevision; registry: CapturedRegistry030 }
   | { kind: 'work'; job: HostWorkJob030 }
   | { kind: 'route'; job: HostRouteJob030 }
+  | { kind: 'values'; request: ValuesRequest030 }
 );
 const validator = connectValueSchemaValidator030({ NumberToken, parse, validate });
 for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
@@ -27,6 +29,7 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
       case 'compile': output = JSON.parse(await compileHost030(request.authoredSource, request.source, request.registry)); break;
       case 'work': output = await createHostWorkPort030(request.job.generation, validator).evaluate(request.job); break;
       case 'route': output = await createHostRoutePort030(request.job.generation).evaluate(request.job); break;
+      case 'values': output = evaluateValues030(request.request); break;
       default: throw new Error('Unknown conformance host operation');
     }
     process.stdout.write(JSON.stringify({ id, output }) + '\n');
