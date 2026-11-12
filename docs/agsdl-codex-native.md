@@ -75,7 +75,7 @@ does not change the captured account identity.
 Architect exposes Start and Stop for the qualified Codex slice. It supports
 agent work, text/JSON resources, validated result submissions, corrections on the
 same thread, choice routes and visit limits. Local command and stdio MCP calls,
-human flow choices and deadlines, steer, shared/named instances, parallel work
+human flow choices and deadlines, steer, shared/named instances, parallel work,
 joins, nested compositions and step/flow error handlers use the production
 supervisor. Expanded step addresses have separate visit counters across one run;
 re-entering a composition does not reset its body's counters. Limits fail before
