@@ -629,7 +629,9 @@ pub(crate) fn instructions_expectation(
             continue;
         }
         let message = exact::record(target.get("message"), "")?;
-        if let Some(Value::Object(selected)) = message.get("prompt") {
+        // NumberToken also satisfies the TS object test, then record rejects it.
+        if let Some(prompt @ (Value::Object(_) | Value::Number(_))) = message.get("prompt") {
+            let selected = exact::record(Some(prompt), "")?;
             if selected
                 .get("from")
                 .is_some_and(|v| exact::equal(v, &object_path(&["instructions"])))

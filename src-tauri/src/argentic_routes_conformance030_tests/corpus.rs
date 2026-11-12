@@ -10,6 +10,7 @@ use std::{
 pub(super) const SEED: u64 = 0x2c5a_0303;
 pub(super) const MINIMUMS: &[(&str, usize)] = &[
     ("routes", 100),
+    ("instruction-prompts", 78),
     ("scopes", 20),
     ("paths", 100),
     ("messages", 100),
@@ -201,6 +202,35 @@ fn routes(c: &mut Corpus) {
             let mut r = request("expect", route);
             r["agent"] = json!(agent);
             c.add("routes", r);
+        }
+    }
+}
+fn instruction_prompts(c: &mut Corpus) {
+    // NumberToken is a JS object. An instructing agent reaches record(prompt),
+    // which rejects it; non-instructors return before that validation.
+    let prompts = [
+        "1",
+        "1.0",
+        "-0",
+        "1e400",
+        "null",
+        "false",
+        "true",
+        "[]",
+        "[1]",
+        r#""Mission""#,
+        "{}",
+        r#"{"from":["instructions"]}"#,
+        r#"{"from":["item"]}"#,
+    ];
+    for agent in ["{}", r#"{"instructs":false}"#, r#"{"instructs":true}"#] {
+        for each in ["", r#","each":["instructions"]"#] {
+            for prompt in prompts {
+                let route = format!(r#"{{"step":"worker"{each},"message":{{"prompt":{prompt}}}}}"#);
+                let mut r = request("expect", &route);
+                r["agent"] = json!(agent);
+                c.add("instruction-prompts", r);
+            }
         }
     }
 }
@@ -686,6 +716,7 @@ pub(super) fn build() -> Corpus {
         counts: BTreeMap::new(),
     };
     routes(&mut c);
+    instruction_prompts(&mut c);
     scopes(&mut c);
     paths(&mut c);
     messages(&mut c);
