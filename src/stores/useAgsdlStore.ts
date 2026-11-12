@@ -2,7 +2,9 @@ import { create } from "zustand";
 import { adaptationChanges,readDesign,retainDesignOrigin,withDocumentDesign,type AgsdlEnvelopeMetadata,type DesignMetadata } from "../services/agsdl/design";
 import {
 applyChanges,
+AGSDL_020_CONTRACT,
 MAX_AGSDL_BYTES,
+readDocument,
 validateDocument,
 } from "../services/agsdl/document";
 import { AgsdlUserError } from "../services/agsdl/userErrors";
@@ -55,6 +57,16 @@ interface AgsdlState {
   validate: (target: AgsdlTarget) => Promise<void>;
 }
 const pendingLoads = new Map<string, Promise<AgsdlSession>>();
+function assertEditableEdition(...sources: string[]): void {
+  for (const source of sources) {
+    let contract: unknown;
+    try { contract = readDocument(source).contract; }
+    catch { continue; } // Malformed drafts remain repairable.
+    if (contract === AGSDL_020_CONTRACT) {
+      throw new AgsdlUserError("agsdl.unsupportedEdition020", "AgSDL 0.2 is no longer supported. This document cannot be edited or run.");
+    }
+  }
+}
 const snapshot = ({ source, annexes, design, display, migration }: Snapshot): Snapshot => structuredClone({
   source, annexes, design, display, migration,
 });
@@ -130,6 +142,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
         throw new Error("AgSDL editing requires a draft plan.");
       if (expectedVersion !== undefined && expectedVersion !== current.version)
         throw new AgsdlUserError("agsdl.viewer.editConflict", "The document changed. Read it again before editing.");
+      assertEditableEdition(current.source, source);
       const nextAnnexes = annexes ?? current.annexes;
       const metadataSource = metadata === undefined ? current : metadata;
       const nextMetadata = structuredClone({ design: retainDesignOrigin(current.design, metadataSource.design), display: metadataSource.display, migration: metadataSource.migration });
@@ -162,6 +175,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
     setDesign(target, design, expectedVersion) {
       const current = session(target);
       if (expectedVersion !== undefined && expectedVersion !== current.version) throw new AgsdlUserError("agsdl.viewer.editConflict", "The document changed. Read it again before editing.");
+      assertEditableEdition(current.source);
       const previous = readDesign(current.source, current.design);
       const changes = adaptationChanges(current.source, previous, design);
       const adapted = changes.length ? applyChanges(current.source, changes) : current.source;
@@ -170,6 +184,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
     },
     edit(target, changes, expectedVersion) {
       const current = session(target);
+      assertEditableEdition(current.source);
       get().replace(
         target,
         applyChanges(current.source, changes),
@@ -184,6 +199,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       const from = redo ? current.future : current.history;
       const next = from.at(-1);
       if (!next) return;
+      assertEditableEdition(current.source, next.source);
       update(target, {
         ...current,
         ...next,
@@ -203,6 +219,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       const current = session(target);
       if (current.saving) throw new AgsdlUserError("agsdl.userError.saving", "A save is already in progress.");
       if (!current.dirty) return;
+      assertEditableEdition(current.source);
       update(target, { ...current, saving: true, error: null });
       try {
         const plan = await updateArchitectPlan({

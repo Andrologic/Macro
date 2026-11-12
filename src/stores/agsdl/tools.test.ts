@@ -98,6 +98,28 @@ afterEach(() => {
   restoreProviderCatalog?.();
 });
 
+const retiredSource = '{"contract":"agsdl-0.2.0","id":"retired","agents":{},"content":{"exact":{"value":9007199254740993}}}';
+it.each([
+  retiredSource.replace('"retired"', '"edited"'),
+  '{"contract":"agsdl-0.3.0","id":"replacement","agents":{}}',
+])('refuses full-source edits of a retired document without changing its session or persistence', async source => {
+  plan.agsdl = { source: retiredSource, annexes: {}, revision: 1 };
+  const read = JSON.parse(await call('agsdl_get'));
+  const before = structuredClone(current());
+  await expect(call('agsdl_update', { expected_revision: read.revision, source })).rejects.toThrow('AgSDL 0.2 is no longer supported');
+  expect(current()).toEqual(before);
+  expect(plan.agsdl).toEqual({ source: retiredSource, annexes: {}, revision: 1 });
+});
+
+it('refuses replacing a supported source with edition 0.2 before editing or saving', async () => {
+  const read = JSON.parse(await call('agsdl_get'));
+  const before = structuredClone(current());
+  const persisted = structuredClone(plan.agsdl);
+  await expect(call('agsdl_update', { expected_revision: read.revision, source: retiredSource })).rejects.toThrow('AgSDL 0.2 is no longer supported');
+  expect(current()).toEqual(before);
+  expect(plan.agsdl).toEqual(persisted);
+});
+
 describe("shared AgSDL authoring session", () => {
   it("keeps newer UI edits dirty when a prior snapshot finishes saving", async () => {
     const store = useAgsdlStore.getState();
