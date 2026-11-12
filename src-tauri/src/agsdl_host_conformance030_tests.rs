@@ -20,6 +20,8 @@ use tokio_util::sync::CancellationToken;
 
 #[path = "agsdl_host_conformance030_projection.rs"]
 mod projection;
+#[path = "agsdl_host_conformance030_route_data.rs"]
+mod route_data_capture;
 #[path = "agsdl_host_conformance030_work.rs"]
 mod work_capture;
 
@@ -53,7 +55,10 @@ impl BunHost {
             sequence: 0,
         }
     }
-    async fn request(&mut self, mut request: Value) -> Value {
+    async fn request(&mut self, request: Value) -> Value {
+        self.request_raw(request).await.0
+    }
+    async fn request_raw(&mut self, mut request: Value) -> (Value, String) {
         self.sequence += 1;
         request["id"] = self.sequence.into();
         let mut bytes = serde_json::to_vec(&request).unwrap();
@@ -68,7 +73,12 @@ impl BunHost {
         let reply: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(reply["id"], request["id"]);
         assert!(reply.get("error").is_none(), "Bun evaluator: {reply}");
-        reply["output"].clone()
+        #[derive(serde::Deserialize)]
+        struct RawReply {
+            output: Box<serde_json::value::RawValue>,
+        }
+        let raw: RawReply = serde_json::from_str(&line).expect("raw evaluator output");
+        (reply["output"].clone(), raw.output.get().to_owned())
     }
     async fn close(mut self) {
         self.input.shutdown().await.unwrap();
@@ -176,6 +186,7 @@ impl crate::db::agsdl_execution::start030::StartAuthority030 for FixtureStart030
 
 struct Fixture {
     work_captures: Arc<Mutex<Vec<work_capture::Capture>>>,
+    route_captures: Arc<Mutex<Vec<route_data_capture::Capture>>>,
     _temp: tempfile::TempDir,
     app: tauri::App<tauri::test::MockRuntime>,
     pool: sqlx::SqlitePool,
@@ -355,6 +366,7 @@ impl Fixture {
         assert!(fixture["timeline"].is_array());
         Self {
             work_captures: Default::default(),
+            route_captures: Default::default(),
             _temp: temp,
             app,
             pool,
@@ -372,6 +384,7 @@ impl Fixture {
     ) -> tokio::task::JoinHandle<()> {
         let host = self.incarnation.clone();
         let captures = self.work_captures.clone();
+        let route_captures = self.route_captures.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -395,7 +408,13 @@ impl Fixture {
                     }
                     job = host.route030.next() => {
                         let job = job.unwrap();
-                        let output = bun.lock().await.request(json!({"kind":"route","job":job})).await;
+                        let request = json!({"kind":"route","job":job});
+                        let raw_job = request["job"].to_string();
+                        let (output, raw_output) = bun.lock().await.request_raw(request).await;
+                        let operation = route_data_capture::operation(&raw_job);
+                        let difference = route_data_capture::compare(&raw_job, &raw_output).err();
+                        if let Some(error) = &difference { eprintln!("ARGENTIC_ROUTE_DATA_CAPTURE_MISMATCH {error}"); }
+                        route_captures.lock().unwrap().push(route_data_capture::Capture { raw_job, raw_output, operation, difference });
                         host.route030.complete(&job.generation, crate::agsdl_host_route030::HostRouteCompletion030 {
                             ticket:job.ticket, generation:job.generation.clone(), input_digest:job.input_digest, output:serde_json::from_value(output).unwrap()
                         }).unwrap();
@@ -1129,6 +1148,7 @@ async fn agsdl030_conformance_all_37_scenarios() {
     let bun = Arc::new(tokio::sync::Mutex::new(BunHost::start()));
     let (mut native, mut scripted, mut failures) = (0, 0, Vec::new());
     let mut capture_manifest = Vec::new();
+    let mut route_capture_manifest = Vec::new();
     for (name, raw) in scenarios::SCENARIOS {
         let prepared =
             std::panic::AssertUnwindSafe(async { Fixture::new(raw, &mut *bun.lock().await).await })
@@ -1214,6 +1234,8 @@ async fn agsdl030_conformance_all_37_scenarios() {
         }
         if error.is_none() {
             capture_manifest.push(work_capture::replay(&f, &mut *bun.lock().await, name).await);
+            route_capture_manifest
+                .push(route_data_capture::replay(&f, &mut *bun.lock().await, name).await);
         }
         match error {
             None if reason.is_none() && gap.is_none() => {
@@ -1255,6 +1277,7 @@ async fn agsdl030_conformance_all_37_scenarios() {
         37,
         "Every scenario needs a capture manifest, including zero-work cases"
     );
+    route_data_capture::finish(&route_capture_manifest, native, scripted);
     let manifest =
         json!({"scenarios": capture_manifest, "N": native, "M": scripted, "K": failures.len()});
     eprintln!("ARGENTIC_WORK_CAPTURE_MANIFEST {manifest}");

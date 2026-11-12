@@ -1,5 +1,7 @@
 //! Pure port of Macro's routes030.ts. Scheduling and accepted provenance are
 //! supplied by the caller; this module creates no execution authority.
+pub(crate) mod data;
+pub(crate) mod preparation;
 use super::{
     error::{fail, Failure},
     exact::{

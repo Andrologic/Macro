@@ -140,6 +140,8 @@ mod argentic_core;
 #[cfg(test)]
 mod argentic_reader_conformance030_tests;
 #[cfg(test)]
+mod argentic_route_data_conformance030_tests;
+#[cfg(test)]
 mod argentic_routes_conformance030_tests;
 #[cfg_attr(not(test), allow(dead_code))]
 mod argentic_runtime;

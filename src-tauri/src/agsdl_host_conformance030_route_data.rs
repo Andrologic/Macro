@@ -1,0 +1,160 @@
+//! Actual shared-mailbox jobs, captured only by the conformance pump. The
+//! protocol always receives the original TS reply. Clock has no Rust oracle yet.
+use super::{BunHost, Fixture};
+use crate::argentic_core::{
+    native::{JsonDecoder, Text},
+    route::data::{self, Evaluation},
+};
+use crate::argentic_runtime::native_json::Decoder;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+#[derive(Clone)]
+pub(super) struct Capture {
+    pub raw_job: String,
+    pub raw_output: String,
+    pub operation: String,
+    pub difference: Option<String>,
+}
+fn sha(raw: &str) -> String {
+    format!("{:x}", Sha256::digest(raw.as_bytes()))
+}
+pub(super) fn operation(raw_job: &str) -> String {
+    let job = Decoder.parse(&Text::from(raw_job)).unwrap();
+    let input = Decoder.parse(job.get("inputJson").text().unwrap()).unwrap();
+    match input
+        .get("operation")
+        .text()
+        .and_then(|t| t.utf8())
+        .as_deref()
+    {
+        Some("humanClock") => "humanClock".into(),
+        Some("prepare") => {
+            let step = crate::argentic_core::calls_data::decode(input.get("stepJson")).unwrap();
+            format!(
+                "prepare.{}",
+                if step.as_object().unwrap().contains_key("command") {
+                    "command"
+                } else {
+                    "mcp"
+                }
+            )
+        }
+        Some("normalize") => format!(
+            "normalize.{}",
+            input
+                .get("prepared")
+                .get("kind")
+                .text()
+                .unwrap()
+                .utf8()
+                .unwrap()
+        ),
+        _ => "route".into(),
+    }
+}
+pub(super) fn compare(raw_job: &str, raw_output: &str) -> Result<(), String> {
+    let job = Decoder
+        .parse(&Text::from(raw_job))
+        .map_err(|e| format!("Captured job JSON: {e:?}"))?;
+    let result = data::evaluate(
+        job.get("inputJson").text().ok_or("inputJson absent")?,
+        &Decoder,
+    )
+    .map_err(|e| format!("Rust refused: {e:?}"))?;
+    match result {
+        Evaluation::HumanClock => {
+            if operation(raw_job) != "humanClock" {
+                return Err("Wrong clock classification".into());
+            }
+        }
+        Evaluation::Computed(actual) => {
+            if actual.stringify() != raw_output {
+                return Err(format!(
+                    "job={raw_job}; expected={raw_output}; actual={}",
+                    actual.stringify()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+pub(super) async fn replay(f: &Fixture, bun: &mut BunHost, name: &str) -> Value {
+    let captures = f.route_captures.lock().unwrap().clone();
+    let mut rows = String::new();
+    let mut cases = vec![];
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for (ordinal, capture) in captures.iter().enumerate() {
+        assert!(
+            capture.difference.is_none(),
+            "{}",
+            capture.difference.as_deref().unwrap_or("")
+        );
+        let frozen = sha(&capture.raw_job);
+        let output_frozen = sha(&capture.raw_output);
+        for _ in 0..2 {
+            let job: Value = serde_json::from_str(&capture.raw_job).unwrap();
+            let (_, output) = bun.request_raw(json!({"kind":"route","job":job})).await;
+            assert_eq!(
+                output, capture.raw_output,
+                "TS frozen route replay {name}/{ordinal}"
+            );
+            compare(&capture.raw_job, &output).unwrap_or_else(|e| panic!("{name}/{ordinal}: {e}"));
+            assert_eq!(sha(&capture.raw_job), frozen);
+            assert_eq!(sha(&capture.raw_output), output_frozen);
+        }
+        *counts.entry(capture.operation.clone()).or_default() += 1;
+        let comparison = if capture.operation == "humanClock" {
+            "outside-rust-2.c.6"
+        } else {
+            "strict-rust-ts"
+        };
+        let row = json!({"scenario":name,"ordinal":ordinal,"operation":capture.operation,"rawJob":capture.raw_job,"rawOutput":capture.raw_output,"comparison":comparison});
+        rows.push_str(&row.to_string());
+        rows.push('\n');
+        cases.push(json!({"ordinal":ordinal,"operation":capture.operation,"rawJobSha256":frozen,"outputSha256":output_frozen,"comparison":comparison,"tsReplays":2,"rustReplays":if capture.operation=="humanClock"{0}else{2}}));
+    }
+    if let Some(dir) = std::env::var_os("ARGENTIC_ROUTE_DATA_CAPTURE_DIR") {
+        let dir = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(format!("{name}.jsonl")), &rows).unwrap();
+    }
+    let manifest = json!({"scenario":name,"calls":captures.len(),"zeroRouteJobs":captures.is_empty(),"operations":counts,"captureSha256":sha(&rows),"cases":cases});
+    eprintln!("ARGENTIC_ROUTE_DATA_CAPTURE {manifest}");
+    manifest
+}
+pub(super) fn finish(scenarios: &[Value], native: usize, scripted: usize) {
+    assert_eq!(scenarios.len(), 37);
+    let names = scenarios
+        .iter()
+        .map(|v| v["scenario"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(names.len(), 37);
+    let mut counts = std::collections::BTreeMap::<String, u64>::new();
+    for scenario in scenarios {
+        for (op, count) in scenario["operations"].as_object().unwrap() {
+            *counts.entry(op.clone()).or_default() += count.as_u64().unwrap();
+        }
+    }
+    for operation in [
+        "route",
+        "prepare.command",
+        "prepare.mcp",
+        "normalize.command",
+        "normalize.mcp",
+        "humanClock",
+    ] {
+        assert!(
+            counts.get(operation).copied().unwrap_or(0) > 0,
+            "Expected operation absent: {operation}"
+        );
+    }
+    let manifest = json!({"scenarios":scenarios,"operations":counts,"N":native,"M":scripted,"K":0,"humanClockRust":"outside-2.c.6"});
+    eprintln!("ARGENTIC_ROUTE_DATA_CAPTURE_MANIFEST {manifest}");
+    if let Some(dir) = std::env::var_os("ARGENTIC_ROUTE_DATA_CAPTURE_DIR") {
+        std::fs::write(
+            std::path::Path::new(&dir).join("manifest.json"),
+            manifest.to_string(),
+        )
+        .unwrap();
+    }
+}

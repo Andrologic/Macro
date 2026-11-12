@@ -1,5 +1,6 @@
 //! Pure port of Macro's messages030.ts. Accepted instruction provenance and
 //! captured content are inputs. A value's shape never supplies that provenance.
+pub(crate) mod captured;
 use super::{
     error::{fail, Failure},
     exact::{
