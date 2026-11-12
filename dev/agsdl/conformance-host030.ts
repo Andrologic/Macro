@@ -1,3 +1,5 @@
+import { evaluateClock030, type ClockRequest030 } from './clock-oracle030';
+import { buildClockCorpus030 } from './clock-corpus030';
 import { evaluateRouteData030, type RouteDataRequest030 } from './route-data-oracle030';
 import { buildRouteDataCorpus030 } from './route-data-corpus030';
 // JSON-lines transport for the native, in-process conformance test. Evaluators
@@ -33,6 +35,8 @@ type Request = { id: number } & (
   | { kind: 'compileCorpus'; request: null }
   | { kind: 'workPure'; request: WorkRequest030 }
   | { kind: 'workCorpus'; request: null }
+  | { kind: 'clockPure'; request: ClockRequest030 }
+  | { kind: 'clockCorpus'; request: null }
   | { kind: 'routeDataPure'; request: RouteDataRequest030 }
   | { kind: 'routeDataCorpus'; request: null }
 );
@@ -51,6 +55,8 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
       case 'reader': output = evaluateReader030(request.request); break;
       case 'routes': output = evaluateRoutes030(request.request); break;
       case 'nativeJson': output = { json: JSON.stringify(evaluateNativeJson030(request.request)) }; break;
+      case 'clockPure': output = { json: await evaluateClock030(request.request) }; break;
+      case 'clockCorpus': output = buildClockCorpus030(); break;
       case 'routeDataPure': output = { json: await evaluateRouteData030(request.request) }; break;
       case 'routeDataCorpus': output = await buildRouteDataCorpus030(); break;
       case 'workCorpus': output = { seed: WORK_SEED030, minimums: WORK_MINIMUMS030, cases: buildWorkCorpus030() }; break;

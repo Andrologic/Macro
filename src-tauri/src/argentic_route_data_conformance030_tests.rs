@@ -5,7 +5,7 @@ use crate::{
         messages::captured::{CapturedOccurrences, CapturedReceipts},
         native::{self, o, s, JsonDecoder, Text, Value},
         route::{
-            data::{self, Evaluation},
+            data,
             preparation::{self, Content},
         },
     },
@@ -83,10 +83,7 @@ fn eval(op: &str, i: &Value) -> c::Result<Value> {
             if !native::equal(&generation, i.get("job").get("generation")) {
                 return c::exception("Error", "Route mailbox generation changed.");
             }
-            match data::evaluate(c::text(i.get("job").get("inputJson"))?, &Decoder)? {
-                Evaluation::Computed(v) => v,
-                Evaluation::HumanClock => panic!("Clock corpus must be separate from Rust parity"),
-            }
+            data::evaluate(c::text(i.get("job").get("inputJson"))?, &Decoder)?
         }
         _ => panic!("unknown operation"),
     })
@@ -170,14 +167,15 @@ async fn route_data_differential() {
     );
 }
 #[test]
-fn clock_is_classified_before_its_fields_are_read() {
+fn clock_fields_are_evaluated_before_route_content() {
     for raw in [
         r#"{"operation":"humanClock"}"#,
         r#"{"operation":"humanClock","input":null,"contentReceipts":false}"#,
     ] {
-        assert!(matches!(
-            data::evaluate(&Text::from(raw), &Decoder).unwrap(),
-            Evaluation::HumanClock
-        ));
+        let result = data::evaluate(&Text::from(raw), &Decoder).unwrap();
+        assert_eq!(
+            result.stringify(),
+            r#"{"kind":"failed","code":"ROUTE_PREPARATION_FAILED","pointer":""}"#
+        );
     }
 }

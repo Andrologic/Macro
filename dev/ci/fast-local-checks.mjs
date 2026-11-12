@@ -7,7 +7,7 @@ const RUST_PATTERN = /\.rs$/;
 
 const AGSDL_CONFORMANCE_PATTERNS = [
   /^src-tauri\/src\/agsdl_/,
-  /^src-tauri\/src\/(?:argentic_(?:core|runtime)\/|argentic_(?:values|reader|routes|compile|work|route_data)_conformance030_tests(?:\.rs|\/))/,
+  /^src-tauri\/src\/(?:argentic_(?:core|runtime)\/|argentic_(?:values|reader|routes|compile|work|route_data|clock)_conformance030_tests(?:\.rs|\/))/,
   /^src-tauri\/src\/db\/(?:agsdl_execution\/|migrations\/)/,
   /^src-tauri\/src\/(?:agsdl_host|lib)\.rs$/,
   /^src-tauri\/(?:Cargo\.toml|Cargo\.lock)$/,
@@ -15,7 +15,7 @@ const AGSDL_CONFORMANCE_PATTERNS = [
   /^src\/vendor\/agsdl\/v0\.3\//,
   /^src\/vendor\/agsdl\/shared\/(?:json|values)\.mjs$/,
   /^src\/vendor\/agsdl\/experimental\/readers\/javascript\/json\.mjs$/,
-  /^dev\/agsdl\/(?:conformance-host030\.ts|(?:compile|work|route-data)-corpus030\.ts|(?:values|reader|routes|compile|native-json|work|route-data)-oracle030(?:\.test)?\.ts|fixtures\/v0\.3\/)/,
+  /^dev\/agsdl\/(?:conformance-host030\.ts|(?:compile|work|route-data|clock)-corpus030\.ts|(?:values|reader|routes|compile|native-json|work|route-data|clock)-oracle030(?:\.test)?\.ts|fixtures\/v0\.3\/)/,
   /^dev\/ci\/(?:fast-local-checks|check-profiles)\.mjs$/,
 ];
 

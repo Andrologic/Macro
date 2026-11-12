@@ -134,6 +134,8 @@ mod app_updates;
 // Argentic core staged inside Macro (D15 2.c). The product path does not call
 // it before the 2.c.7 switch, which removes this dead-code allowance.
 #[cfg(test)]
+mod argentic_clock_conformance030_tests;
+#[cfg(test)]
 mod argentic_compile_conformance030_tests;
 #[cfg_attr(not(test), allow(dead_code))]
 mod argentic_core;

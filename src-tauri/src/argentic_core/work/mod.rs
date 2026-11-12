@@ -45,7 +45,7 @@ pub(crate) fn exception<T>(name: &str, message: impl Into<Text>) -> Result<T> {
 fn plain<T>(message: &str) -> Result<T> {
     exception("Error", message)
 }
-fn correlation<T>(p: &str, message: &str) -> Result<T> {
+pub(super) fn correlation<T>(p: &str, message: &str) -> Result<T> {
     Err(native::Error::new("CORRELATION", p, message).into())
 }
 fn text(v: &Value) -> Result<&Text> {
@@ -54,13 +54,13 @@ fn text(v: &Value) -> Result<&Text> {
         message: Text::from("Expected text."),
     })
 }
-fn exact_text(v: &Text) -> Result<exact::Value> {
+pub(super) fn exact_text(v: &Text) -> Result<exact::Value> {
     let Some(raw) = v.utf8() else {
         return Err(native::Error::new("PARSE", "", "Invalid or unsupported exact JSON.").into());
     };
     Ok(exact::decode(&raw)?)
 }
-fn native_string(v: &Value) -> Text {
+pub(super) fn native_string(v: &Value) -> Text {
     match v {
         Value::String(t) => t.clone(),
         Value::Undefined => Text::from("undefined"),
@@ -83,7 +83,7 @@ fn native_string(v: &Value) -> Text {
         _ => Text::from(v.stringify()),
     }
 }
-fn parse(decoder: &impl native::JsonDecoder, v: &Value) -> Result<Value> {
+pub(crate) fn parse(decoder: &impl native::JsonDecoder, v: &Value) -> Result<Value> {
     Ok(decoder.parse(&native_string(v))?)
 }
 fn is_true(v: &Value) -> bool {
@@ -106,7 +106,7 @@ fn diagnostic(pointer: &str, rule: &str, message: &str) -> Value {
         ("message", s(message)),
     ])
 }
-fn safe_integer(v: &Value) -> bool {
+pub(super) fn safe_integer(v: &Value) -> bool {
     let Value::Number(native::Number::Finite(raw)) = v else {
         return false;
     };
@@ -124,7 +124,7 @@ fn safe_integer(v: &Value) -> bool {
     crate::argentic_core::integers::compare_integers030(magnitude, "9007199254740991")
         .is_ok_and(|o| o != std::cmp::Ordering::Greater)
 }
-fn integer_string(v: &Value, positive: bool) -> Result<String> {
+pub(super) fn integer_string(v: &Value, positive: bool) -> Result<String> {
     let Some(value) = v.text() else {
         return correlation("", "Expected an exact integer lexeme.");
     };
@@ -146,7 +146,7 @@ fn instructions(v: Option<&exact::Value>) -> Value {
     }
 }
 
-fn access(value: &Value, expression: &str) -> Result<()> {
+pub(crate) fn access(value: &Value, expression: &str) -> Result<()> {
     if value.is_nullish() {
         exception(
             "TypeError",
@@ -163,7 +163,7 @@ fn access(value: &Value, expression: &str) -> Result<()> {
         Ok(())
     }
 }
-fn trimmed(value: &Value, expression: &str, optional: bool) -> Result<bool> {
+pub(super) fn trimmed(value: &Value, expression: &str, optional: bool) -> Result<bool> {
     if !optional {
         access(value, expression)?;
     }

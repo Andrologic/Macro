@@ -1,26 +1,41 @@
-//! Non-clock computation behind the shared mailbox. HumanClock is an internal
-//! ownership classification, never a fabricated mailbox reply.
+//! Pure computation behind the shared route mailbox, including human clocks.
 use crate::argentic_core::{
     calls_data::{self as c, Error, Result},
+    clock,
     messages::captured::CapturedOccurrences,
     native::{self, o, s, Text, Value},
     route::preparation::{self, Content},
+    work,
 };
-pub(crate) enum Evaluation {
-    HumanClock,
-    Computed(Value),
-}
-pub(crate) fn evaluate(
-    input_json: &Text,
-    decoder: &impl native::JsonDecoder,
-) -> Result<Evaluation> {
+pub(crate) fn evaluate(input_json: &Text, decoder: &impl native::JsonDecoder) -> Result<Value> {
     let evaluated = (|| {
         let parsed = decoder.parse(input_json)?;
         if !matches!(parsed, Value::Object(_) | Value::Array(_)) {
             return c::exception("TypeError", "Invalid route input.");
         }
         if parsed.get("operation").eq_str("humanClock") {
-            return Ok(Evaluation::HumanClock);
+            let input = parsed.get("input");
+            let result = (|| -> work::Result<Value> {
+                work::access(input, "input.owner")?;
+                let options = work::parse(decoder, input.get("optionsJson"))?;
+                clock::evaluate_host(
+                    input.get("owner"),
+                    input.get("eventId"),
+                    input.get("expectedRevision"),
+                    input.get("stateJson"),
+                    input.get("eventJson"),
+                    &options,
+                    decoder,
+                )
+            })()
+            .map_err(|e| match e {
+                work::Error::Failure(e) => Error::Failure(e),
+                work::Error::Exception { name, message } => Error::Exception { name, message },
+            })?;
+            return Ok(o([
+                ("kind", s("ready")),
+                ("resultJson", s(result.stringify())),
+            ]));
         }
         let result = if parsed.get("operation").eq_str("prepare")
             || parsed.get("operation").eq_str("normalize")
@@ -35,22 +50,19 @@ pub(crate) fn evaluate(
             )?
             .stringify())
         };
-        Ok(Evaluation::Computed(o([
-            ("kind", s("ready")),
-            ("resultJson", result),
-        ])))
+        Ok(o([("kind", s("ready")), ("resultJson", result)]))
     })();
     match evaluated {
-        Err(Error::Failure(e)) => Ok(Evaluation::Computed(o([
+        Err(Error::Failure(e)) => Ok(o([
             ("kind", s("failed")),
             ("code", s(e.code)),
             ("pointer", s(e.pointer)),
-        ]))),
-        Err(_) => Ok(Evaluation::Computed(o([
+        ])),
+        Err(_) => Ok(o([
             ("kind", s("failed")),
             ("code", s("ROUTE_PREPARATION_FAILED")),
             ("pointer", s("")),
-        ]))),
+        ])),
         other => other,
     }
 }

@@ -201,9 +201,14 @@ pub(crate) struct Oracle {
 }
 impl Oracle {
     pub(crate) fn start() -> Self {
-        let mut child = crate::core::process::background_tokio_command("bun")
+        let mut command = crate::core::process::background_tokio_command("bun");
+        command
             .arg("dev/agsdl/conformance-host030.ts")
-            .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
+            .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap());
+        Self::start_command(command)
+    }
+    pub(crate) fn start_command(mut command: tokio::process::Command) -> Self {
+        let mut child = command
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
@@ -268,6 +273,13 @@ impl Oracle {
             "oracle failed for {case}: {reply}"
         );
         reply["output"].clone()
+    }
+    /// Failed-oracle probes still join every child they own.
+    pub(crate) async fn terminate(mut self) {
+        if self.child.try_wait().unwrap().is_none() {
+            self.child.kill().await.unwrap();
+        }
+        self.child.wait().await.unwrap();
     }
     pub(crate) async fn close(mut self) {
         self.input.shutdown().await.unwrap();

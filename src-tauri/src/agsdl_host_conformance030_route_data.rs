@@ -1,9 +1,9 @@
 //! Actual shared-mailbox jobs, captured only by the conformance pump. The
-//! protocol always receives the original TS reply. Clock has no Rust oracle yet.
+//! protocol always receives the original TS reply, including clock results.
 use super::{BunHost, Fixture};
 use crate::argentic_core::{
     native::{JsonDecoder, Text},
-    route::data::{self, Evaluation},
+    route::data,
 };
 use crate::argentic_runtime::native_json::Decoder;
 use serde_json::{json, Value};
@@ -56,25 +56,24 @@ pub(super) fn compare(raw_job: &str, raw_output: &str) -> Result<(), String> {
     let job = Decoder
         .parse(&Text::from(raw_job))
         .map_err(|e| format!("Captured job JSON: {e:?}"))?;
+    let input_json = job.get("inputJson").text().ok_or("inputJson absent")?;
+    let input_utf8 = input_json.utf8().ok_or("Native inputJson is not UTF-8")?;
+    if !job
+        .get("inputDigest")
+        .eq_str(&format!("sha256:{}", sha(&input_utf8)))
+    {
+        return Err("Captured native input digest differs".into());
+    }
     let result = data::evaluate(
         job.get("inputJson").text().ok_or("inputJson absent")?,
         &Decoder,
     )
     .map_err(|e| format!("Rust refused: {e:?}"))?;
-    match result {
-        Evaluation::HumanClock => {
-            if operation(raw_job) != "humanClock" {
-                return Err("Wrong clock classification".into());
-            }
-        }
-        Evaluation::Computed(actual) => {
-            if actual.stringify() != raw_output {
-                return Err(format!(
-                    "job={raw_job}; expected={raw_output}; actual={}",
-                    actual.stringify()
-                ));
-            }
-        }
+    if result.stringify() != raw_output {
+        return Err(format!(
+            "job={raw_job}; expected={raw_output}; actual={}",
+            result.stringify()
+        ));
     }
     Ok(())
 }
@@ -83,6 +82,7 @@ pub(super) async fn replay(f: &Fixture, bun: &mut BunHost, name: &str) -> Value 
     let mut rows = String::new();
     let mut cases = vec![];
     let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    let mut clock_events = std::collections::BTreeMap::<String, usize>::new();
     for (ordinal, capture) in captures.iter().enumerate() {
         assert!(
             capture.difference.is_none(),
@@ -103,22 +103,27 @@ pub(super) async fn replay(f: &Fixture, bun: &mut BunHost, name: &str) -> Value 
             assert_eq!(sha(&capture.raw_output), output_frozen);
         }
         *counts.entry(capture.operation.clone()).or_default() += 1;
-        let comparison = if capture.operation == "humanClock" {
-            "outside-rust-2.c.6"
-        } else {
-            "strict-rust-ts"
-        };
+        if capture.operation == "humanClock" {
+            let job: Value = serde_json::from_str(&capture.raw_job).unwrap();
+            let input: Value = serde_json::from_str(job["inputJson"].as_str().unwrap()).unwrap();
+            let event: Value =
+                serde_json::from_str(input["input"]["eventJson"].as_str().unwrap()).unwrap();
+            *clock_events
+                .entry(event["event"]["kind"].as_str().unwrap().into())
+                .or_default() += 1;
+        }
+        let comparison = "strict-rust-ts";
         let row = json!({"scenario":name,"ordinal":ordinal,"operation":capture.operation,"rawJob":capture.raw_job,"rawOutput":capture.raw_output,"comparison":comparison});
         rows.push_str(&row.to_string());
         rows.push('\n');
-        cases.push(json!({"ordinal":ordinal,"operation":capture.operation,"rawJobSha256":frozen,"outputSha256":output_frozen,"comparison":comparison,"tsReplays":2,"rustReplays":if capture.operation=="humanClock"{0}else{2}}));
+        cases.push(json!({"ordinal":ordinal,"operation":capture.operation,"rawJobSha256":frozen,"outputSha256":output_frozen,"comparison":comparison,"tsReplays":2,"rustReplays":2}));
     }
     if let Some(dir) = std::env::var_os("ARGENTIC_ROUTE_DATA_CAPTURE_DIR") {
         let dir = std::path::Path::new(&dir);
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join(format!("{name}.jsonl")), &rows).unwrap();
     }
-    let manifest = json!({"scenario":name,"calls":captures.len(),"zeroRouteJobs":captures.is_empty(),"operations":counts,"captureSha256":sha(&rows),"cases":cases});
+    let manifest = json!({"scenario":name,"calls":captures.len(),"zeroRouteJobs":captures.is_empty(),"clockCalls":counts.get("humanClock").copied().unwrap_or(0),"zeroClockJobs":!counts.contains_key("humanClock"),"clockEvents":clock_events,"operations":counts,"captureSha256":sha(&rows),"cases":cases});
     eprintln!("ARGENTIC_ROUTE_DATA_CAPTURE {manifest}");
     manifest
 }
@@ -130,7 +135,11 @@ pub(super) fn finish(scenarios: &[Value], native: usize, scripted: usize) {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(names.len(), 37);
     let mut counts = std::collections::BTreeMap::<String, u64>::new();
+    let mut clock_events = std::collections::BTreeMap::<String, u64>::new();
     for scenario in scenarios {
+        for (event, count) in scenario["clockEvents"].as_object().unwrap() {
+            *clock_events.entry(event.clone()).or_default() += count.as_u64().unwrap();
+        }
         for (op, count) in scenario["operations"].as_object().unwrap() {
             *counts.entry(op.clone()).or_default() += count.as_u64().unwrap();
         }
@@ -148,7 +157,7 @@ pub(super) fn finish(scenarios: &[Value], native: usize, scripted: usize) {
             "Expected operation absent: {operation}"
         );
     }
-    let manifest = json!({"scenarios":scenarios,"operations":counts,"N":native,"M":scripted,"K":0,"humanClockRust":"outside-2.c.6"});
+    let manifest = json!({"scenarios":scenarios,"operations":counts,"N":native,"M":scripted,"K":0,"humanClockRust":"strict-rust-ts","clockEvents":clock_events});
     eprintln!("ARGENTIC_ROUTE_DATA_CAPTURE_MANIFEST {manifest}");
     if let Some(dir) = std::env::var_os("ARGENTIC_ROUTE_DATA_CAPTURE_DIR") {
         std::fs::write(

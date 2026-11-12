@@ -12,6 +12,7 @@
 //! the standard library, the staged ports use the locked schema regex, serde
 //! JSON data types, SHA-256 and the approved pure URL syntax parser.
 pub(crate) mod calls_data;
+pub(crate) mod clock;
 pub(crate) mod compile;
 pub(crate) mod contract;
 pub(crate) mod error;
