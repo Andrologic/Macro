@@ -132,52 +132,7 @@ pub(crate) fn resolve_target(
         };
     Ok(Some((task, target, resolved)))
 }
-pub(crate) async fn resolve(
-    pool: &sqlx::SqlitePool,
-    workspace: &Path,
-    git: &crate::git::GitState,
-    request: ResolveCardTask,
-) -> Result<Option<ResolvedCardTask>> {
-    let Some(reference) = repository::card_associations::historical(
-        pool,
-        &request.system_start_id,
-        &request.source,
-        &request.path,
-    )
-    .await?
-    else {
-        return Ok(None);
-    };
-    let metadata = crate::agsdl_host_capture::metadata_root(workspace)?;
-    let locked = match crate::workspace::architect::lock_execution_source_owner(
-        workspace,
-        &metadata,
-        &request.source.owner,
-        None,
-    )
-    .await
-    {
-        Ok(locked) => locked,
-        Err(_) => return Ok(None),
-    };
-    let Some((task_id, target, _root)) = resolve_target(workspace, &locked, &reference, git)?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(ResolvedCardTask {
-        task_id,
-        project_id: request.source.owner.project_id,
-        plan_id: request.source.owner.plan_id,
-        branch: request.source.owner.branch,
-        execution_target: PublicTaskTarget {
-            project_id: target.project_id,
-            branch_name: target.branch_name,
-            execution_mode: target.execution_mode,
-            execution_kind: target.execution_kind,
-            worktree_key: target.worktree_key,
-        },
-    }))
-}
+
 #[cfg(test)]
 mod tests {
     use super::*;

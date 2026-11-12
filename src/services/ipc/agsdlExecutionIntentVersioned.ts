@@ -1,13 +1,13 @@
 import type {
-  ExecutionCloseIntentRequest,
-  ExecutionIntentKey,
-  ExecutionReadIntentsRequest,
-  ExecutionStageIntentRequest,
-  PublicExecutionIntent,
+ExecutionCloseIntentRequest,
+ExecutionIntentKey,
+ExecutionReadIntentsRequest,
+ExecutionStageIntentRequest,
+PublicExecutionIntent,
 } from '../../types/generated/ipc';
 import { invoke } from '../tauriRuntimeBridge';
 
-/** The generated native union includes both 0.2 and 0.3 admissions. */
+/** Native admission accepts only the supported 0.3 profile. */
 export function stageExecutionIntentVersioned(request: ExecutionStageIntentRequest): Promise<PublicExecutionIntent> {
   return invoke('execution_stage_intent', { request });
 }

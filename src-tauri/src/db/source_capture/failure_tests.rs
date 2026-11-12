@@ -20,6 +20,9 @@ async fn connections(maximum: u32) -> (TempDir, SqlitePool, SourceCapture, Arc<A
         )
         .await
         .unwrap();
+    // Compact this temporary schema before the owner attests its schema cookie.
+    // SQLITE_FULL tests must exhaust pages rather than reuse retirement's freelist.
+    sqlx::query("VACUUM").execute(&pool).await.unwrap();
     c.owner.set_ready(pool.clone()).await.unwrap();
     let capture = authorized(
         c.owner.clone(),

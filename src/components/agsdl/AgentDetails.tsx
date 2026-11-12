@@ -1,10 +1,10 @@
-import { DisclosureSummary } from "./DisclosureSummary";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { ArrowDownToLine,ArrowUpFromLine,ArrowUpRight,Bot,Box,Braces,FileText,Settings2,Terminal,Wrench } from "lucide-react";
+import { useEffect,useId,useLayoutEffect,useRef,useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowDownToLine, ArrowUpFromLine, ArrowUpRight, Bot, Box, Braces, FileText, Settings2, Terminal, Wrench } from "lucide-react";
-import type { ViewerCard, ViewerReference } from "../../services/agsdl/viewer";
-import { agentConfigurations, outputRecipients } from "../../services/agsdl/agentDetails";
-import { useAgsdlModelCatalogue, qualifiedModel } from "../../stores/useAgsdlModelCatalogue";
+import { agentConfigurations,outputRecipients } from "../../services/agsdl/agentDetails";
+import type { ViewerCard,ViewerReference } from "../../services/agsdl/viewer";
+import { qualifiedModel,useAgsdlModelCatalogue } from "../../stores/useAgsdlModelCatalogue";
+import { DisclosureSummary } from "./DisclosureSummary";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 
 function ReferencePreview({ reference, cards, onSelect }: {
@@ -79,9 +79,6 @@ export function AgentDetails({ card, cards, source, onSelect, captured = false }
 }) {
   const { t } = useAgsdlTranslation();
   const configurations = agentConfigurations(source, card);
-  const hasResponse = card.details.contract === "agsdl-0.2.0" && ["Agent", "agent"].includes(card.kind) && !card.unresolved;
-  const responseRecipients = card.branches.filter(branch => branch.label === "next").map(branch => branch.reference)
-    .filter((ref, index, all) => all.findIndex(other => other.target === ref.target && other.label === ref.label) === index);
   const { catalogue, load } = useAgsdlModelCatalogue();
   useEffect(() => { if (!card.edition030) void load().catch(() => {}); }, [load, card.edition030]);
   const reference = (ref: ViewerReference) => <ReferencePreview reference={ref} cards={cards} onSelect={onSelect} />;
@@ -124,13 +121,10 @@ export function AgentDetails({ card, cards, source, onSelect, captured = false }
                   : port.binding?.uri ? <span className="agsdl-source-uri"><FileText size={14} /><span title={port.binding.uri}>{port.binding.uri}</span>{port.type && <small>{port.type}</small>}</span>
                     : t("agsdl.viewer.detail.unspecifiedSource")}</div>}
           </div>
-        </div>) : !card.flowInputs?.length && (hasResponse ? <div className="agsdl-io-card"><strong>{t("agsdl.edge.Message")}</strong></div> : <p className="agsdl-muted">{t("agsdl.viewer.detail.noInputs")}</p>)}
+        </div>) : !card.flowInputs?.length && <p className="agsdl-muted">{t("agsdl.viewer.detail.noInputs")}</p>}
         {!!card.dependencies?.length && <div className="agsdl-agent-dependencies"><span className="agsdl-muted">{t("agsdl.viewer.dependencies")}</span>{card.dependencies.map((ref, index) => <div key={index}>{reference(ref)}</div>)}</div>}
       </section>
       <section><h4><ArrowUpFromLine size={14} />{t("agsdl.viewer.detail.outputs")}</h4>
-        {hasResponse && <div className="agsdl-io-card"><strong>{t("agsdl.edge.completion")}</strong>
-          {!!responseRecipients.length && <div className="agsdl-io-origin">{responseRecipients.map((ref, index) => <div key={index}>{reference(ref)}</div>)}</div>}
-        </div>}
         {card.outputs.length ? card.outputs.map(port => {
           const recipients = outputRecipients(card, cards, port.name);
           return <div className="agsdl-io-card" key={port.name}><strong>{port.name}</strong>
@@ -140,7 +134,7 @@ export function AgentDetails({ card, cards, source, onSelect, captured = false }
               <small>{t("agsdl.viewer.detail.toPort", { port: input })}</small>
             </div>) : <span className="agsdl-muted">{t("agsdl.viewer.detail.noRecipient")}</span>}</div>
           </div>;
-        }) : !hasResponse && <p className="agsdl-muted">{t("agsdl.viewer.detail.noOutputs")}</p>}
+        }) : <p className="agsdl-muted">{t("agsdl.viewer.detail.noOutputs")}</p>}
       </section>
     </div>
     <section className="agsdl-agent-configuration"><h4><Wrench size={14} />{t("agsdl.viewer.detail.tools")}</h4>
@@ -158,7 +152,7 @@ export function AgentDetails({ card, cards, source, onSelect, captured = false }
           ? `${id} · ${t("agsdl.macroConfig.unavailable", { defaultValue: "Unavailable locally" })}`
           : t("agsdl.macroConfig.unset", { defaultValue: "Not configured" });
         const parameters = macro ? Object.fromEntries(Object.entries(config.parameters).filter(([key]) => !["providerId", "modelId"].includes(key))) : config.parameters;
-        if (card.details.contract !== "agsdl-0.2.0" && !macro && !Object.keys(parameters).length && !config.tools.length) {
+        if (!macro && !Object.keys(parameters).length && !config.tools.length) {
           return <div className="agsdl-runtime-empty" key={`${config.id}-${index}`}><Settings2 size={13} />{config.engine || t("agsdl.viewer.detail.engineUnset")}</div>;
         }
         return <details className="agsdl-runtime-settings" key={`${config.id}-${index}`}>

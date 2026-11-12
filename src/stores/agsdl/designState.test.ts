@@ -1,10 +1,10 @@
-import { beforeEach, describe, expect, it } from 'bun:test';
-import { agsdlSessionKey, useAgsdlStore, type AgsdlSession } from '../useAgsdlStore';
-import { createEmptySystemDocument, readDesign } from '../../services/agsdl/design';
+import { beforeEach,describe,expect,it } from 'bun:test';
+import { createEmptySystemDocument,readDesign } from '../../services/agsdl/design';
+import { agsdlSessionKey,useAgsdlStore,type AgsdlSession } from '../useAgsdlStore';
 const target = { branchName: 'feature/design-envelope', planId: 'test' }, key = agsdlSessionKey(target);
 const state = () => useAgsdlStore.getState().sessions[key];
 beforeEach(() => {
-  const draft = createEmptySystemDocument('Test', 'agsdl-0.2.0');
+  const draft = createEmptySystemDocument('Test', 'agsdl-0.3.0');
   const session: AgsdlSession = { ...draft, version: 'v1', persistedRevision: 1, dirty: false, saving: false, status: 'draft', history: [], future: [], reports: [], error: null };
   useAgsdlStore.setState({ sessions: { [key]: session } });
 });
@@ -23,7 +23,7 @@ describe('Macro design metadata history', () => {
     expect(state().source).toBe(source);
   });
   it('preserves metadata across source patches and clones imported envelopes', () => {
-    const draft = createEmptySystemDocument('Pinned', 'agsdl-0.2.0');
+    const draft = createEmptySystemDocument('Pinned', 'agsdl-0.3.0');
     useAgsdlStore.getState().replace(target, draft.source, {}, 'v1', draft);
     draft.display!.title = 'Changed outside';
     expect(state().display?.title).toBe('Pinned');
@@ -31,7 +31,7 @@ describe('Macro design metadata history', () => {
     expect(state().display?.title).toBe('Pinned');
   });
   it('applies blueprint guidance to its existing authored content slot and undoes both atomically', () => {
-    const source = JSON.stringify({ contract: 'agsdl-0.2.0', id: 'test', agents: {}, configurations: {}, bindings: {}, content: { guide: { value: 'Placeholder' } } });
+    const source = JSON.stringify({ contract: 'agsdl-0.3.0', id: 'test', agents: {}, configurations: {}, bindings: {}, content: { guide: { value: 'Placeholder' } } });
     const design = { ...state().design!, requirements: [{ id: 'guide', label: 'Guidance', description: '', value: '', targetPath: '/content/guide/value' }] };
     useAgsdlStore.getState().replace(target, source, {}, 'v1', { design });
     const version = state().version;
@@ -68,7 +68,7 @@ describe('Macro design metadata history', () => {
     expect(state().migration).toBeUndefined();
   });
   it('counts only envelope metadata when a full editor document is passed to replace', () => {
-    const document = createEmptySystemDocument('Large draft', 'agsdl-0.2.0');
+    const document = createEmptySystemDocument('Large draft', 'agsdl-0.3.0');
     const source = JSON.stringify({ ...JSON.parse(document.source), content: { guide: { value: 'a'.repeat(600 * 1024) } } });
     document.source = source;
     useAgsdlStore.getState().replace(target, source, {}, state().version, document);

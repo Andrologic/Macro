@@ -1,10 +1,9 @@
-import { keyId, list, object, readDocument, scanSource, text } from "./document";
-import { successors } from "./projection";
-import type { AgsdlEnvelopeMetadata } from "./design";
-import { projectViewer030, type ViewerRoute030 } from "./viewer030";
-import { projectViewer020 } from "./viewer020";
-import { staticReportForSource030, type StaticOccurrence030, type StaticSemantics030 } from "./staticSemantics030";
 import type { AgsdlReport } from "../../types/agsdl";
+import type { AgsdlEnvelopeMetadata } from "./design";
+import { keyId,list,object,readDocument,scanSource,text } from "./document";
+import { successors } from "./projection";
+import { staticReportForSource030,type StaticOccurrence030,type StaticSemantics030 } from "./staticSemantics030";
+import { projectViewer030,type ViewerRoute030 } from "./viewer030";
 
 type Value = Record<string, unknown>;
 export interface ViewerReference {
@@ -90,7 +89,7 @@ const ports = (value: unknown): ViewerPort[] =>
 export function projectViewer(source: string, metadata?: AgsdlEnvelopeMetadata, reports: readonly AgsdlReport[] = []) {
   if (object(scanSource(source).tree).contract === "agsdl-0.3.0") return projectViewer030(source, metadata, staticReportForSource030(source, reports));
   const doc = readDocument(source);
-  if (doc.contract === "agsdl-0.2.0") return projectViewer020(doc, source, metadata);
+  if (doc.contract === "agsdl-0.2.0") throw new Error("agsdl.unsupportedEdition020");
   if (doc.contract !== "agsdl-0.1.0")
     throw new Error("Unsupported or missing AgSDL contract.");
   const definitions = list(doc.definitions).map(object);

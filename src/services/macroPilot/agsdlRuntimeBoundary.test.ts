@@ -1,20 +1,20 @@
-import { expect, test } from 'bun:test';
+import { expect,test } from 'bun:test';
+import { desktopStorePorts } from '../../composition/macroPilotDesktop';
+import { projectWorkflowAgentTasks030 } from '../workflowAgentTasks';
+import { workflowTaskFixture } from '../workflowAgentTasks.fixtures';
 import { PilotKernel } from './kernel';
+import type { Command,Resource } from './protocol';
 import { assertA1 } from './protocol';
 import { PilotRuntime } from './runtime';
-import { desktopStorePorts } from '../../composition/macroPilotDesktop';
-import { workflowTaskFixture } from '../workflowAgentTasks.fixtures';
-import { projectWorkflowAgentTasks } from '../workflowAgentTasks';
-import { pilotTaskId } from './taskIdentity';
 import { pilotStartRejection } from './startEligibility';
-import type { Command, Resource } from './protocol';
+import { pilotTaskId } from './taskIdentity';
 
 test('runtime projection and action resolution exclude real AgSDL tasks even in a read-only project', async () => {
   const f = await workflowTaskFixture();
   f.plan.projectIds = ['project:synthetic'];
-  const snapshot = { ...f.snapshot, source: { ...f.snapshot.source, owner: { ...f.snapshot.source.owner, projectId: 'project:synthetic' } } };
-  const projection = { ...f.projection, source: structuredClone(snapshot.source) };
-  const tasks = projectWorkflowAgentTasks(f.plan, snapshot, projection, []);
+  f.snapshot.source.owner.projectId = 'project:synthetic';
+  const inspection = await f.ports.inspect!(f.snapshot);
+  const tasks = projectWorkflowAgentTasks030(f.plan, inspection);
   expect(tasks.length).toBeGreaterThan(0);
   const ports = { ...desktopStorePorts,
     app: (): ReturnType<typeof desktopStorePorts.app> => ({ ...desktopStorePorts.app(), standaloneProjects: [{ id: 'project:synthetic', name: 'Synthetic', mountName: 'synthetic', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] }, path: '/synthetic/project', userReadOnly: true, status: 'active', gitSetupState: 'ready', created_at: '2026-01-01T00:00:00Z' }], projectGroups: [] }),

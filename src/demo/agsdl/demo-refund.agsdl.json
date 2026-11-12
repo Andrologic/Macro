@@ -1,172 +1,47 @@
 {
-  "contract": "agsdl-0.2.0",
+  "contract": "agsdl-0.3.0",
   "id": "demo-refund",
-  "content": {
-    "refundPolicy": {
-      "value": "Remboursement intégral sous 30 jours pour un article non utilisé. Au-delà, échange ou avoir uniquement.",
-      "mediaType": "text/plain"
-    }
-  },
-  "bindings": {
-    "engine": {
-      "contract": {
-        "identity": "macro/agent-engine",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      }
-    },
-    "orders": {
-      "contract": {
-        "identity": "macro/order-system",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "meridian/orders-api",
-        "version": "1"
-      },
-      "effects": "none"
-    },
-    "refundApproval": {
-      "contract": {
-        "identity": "macro/human-approval",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      },
-      "effects": "none"
-    },
-    "refunds": {
-      "contract": {
-        "identity": "macro/payment-refund",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "stripe/http",
-        "version": "1"
-      },
-      "effects": "external"
-    },
-    "crm": {
-      "contract": {
-        "identity": "macro/crm",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "hubspot/http",
-        "version": "1"
-      },
-      "effects": "none"
-    }
-  },
-  "configurations": {
-    "conseil": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "crm": "crm"
-      }
-    },
-    "analyse": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "orders": "orders"
-      }
-    }
-  },
+  "title": "Remboursement accompagné",
   "agents": {
     "understand": {
-      "configuration": "conseil",
-      "prompt": [
-        {
-          "value": "Identifier la commande, le motif et la solution souhaitée. Demander les informations manquantes."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Identifier la commande, le motif et la solution souhaitée. Demander les informations manquantes."
     },
     "eligibility": {
-      "configuration": "analyse",
-      "prompt": [
-        {
-          "value": "Comparer la commande à la politique de remboursement. Expliquer les exceptions."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      },
-      "resources": {
-        "policy": {
-          "ref": "refundPolicy"
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Comparer la commande à la politique de remboursement. Expliquer les exceptions."
     },
     "alternative": {
-      "configuration": "conseil",
-      "prompt": [
-        {
-          "value": "Proposer un échange ou une prise en charge adaptée, sans promettre une action non autorisée."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      },
-      "resources": {
-        "policy": {
-          "ref": "refundPolicy"
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Proposer un échange ou une prise en charge adaptée, sans promettre une action non autorisée."
     },
     "notify": {
-      "configuration": "conseil",
-      "prompt": [
-        {
-          "value": "Présenter la décision avec empathie, le délai attendu et les prochaines étapes."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Présenter la décision avec empathie, le délai attendu et les prochaines étapes."
+    },
+    "scene-main-lookup": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Consulter la commande"
+    },
+    "scene-main-eligible": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Remboursement possible ?"
+    },
+    "scene-main-approval": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Accord du responsable"
+    },
+    "scene-main-refund": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Effectuer le remboursement"
     }
   },
   "flow": {
@@ -175,89 +50,49 @@
       "understand": {
         "type": "agent",
         "agent": "understand",
-        "next": [
-          "lookup"
-        ]
+        "title": "Comprendre la demande",
+        "next": "lookup"
       },
       "lookup": {
-        "type": "call",
-        "binding": "orders",
-        "next": [
-          "eligibility"
-        ]
+        "type": "agent",
+        "agent": "scene-main-lookup",
+        "title": "Consulter la commande",
+        "next": "eligibility"
       },
       "eligibility": {
         "type": "agent",
         "agent": "eligibility",
-        "next": [
-          "eligible"
-        ]
+        "title": "Vérifier l’éligibilité",
+        "next": "eligible"
       },
       "eligible": {
-        "type": "condition",
-        "test": {
-          "equals": [
-            {
-              "path": [
-                "text"
-              ]
-            },
-            {
-              "value": "Éligible"
-            }
-          ]
-        },
-        "next": {
-          "true": [
-            "approval"
-          ],
-          "false": [
-            "alternative"
-          ]
-        }
+        "type": "agent",
+        "agent": "scene-main-eligible",
+        "title": "Remboursement possible ?",
+        "next": "approval"
       },
       "approval": {
-        "type": "approval",
-        "call": "refund",
-        "binding": "refundApproval",
-        "timeoutMs": 3600000,
-        "validForMs": 3600000,
-        "next": {
-          "approved": [
-            "refund"
-          ],
-          "denied": [
-            "alternative"
-          ]
-        }
+        "type": "agent",
+        "agent": "scene-main-approval",
+        "title": "Accord du responsable",
+        "next": "refund"
       },
       "refund": {
-        "type": "call",
-        "binding": "refunds",
-        "scope": {
-          "action": "refund",
-          "resources": [
-            "order:meridian/1042"
-          ],
-          "context": {
-            "value": "Commande 1042 · 89 €"
-          }
-        },
-        "next": [
-          "notify"
-        ]
+        "type": "agent",
+        "agent": "scene-main-refund",
+        "title": "Effectuer le remboursement",
+        "next": "alternative"
       },
       "alternative": {
         "type": "agent",
         "agent": "alternative",
-        "next": [
-          "notify"
-        ]
+        "title": "Proposer une alternative",
+        "next": "notify"
       },
       "notify": {
         "type": "agent",
         "agent": "notify",
-        "next": []
+        "title": "Informer le client"
       }
     }
   }

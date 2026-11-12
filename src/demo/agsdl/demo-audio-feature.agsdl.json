@@ -1,126 +1,22 @@
 {
-  "contract": "agsdl-0.2.0",
+  "contract": "agsdl-0.3.0",
   "id": "demo-audio-feature",
-  "bindings": {
-    "engine": {
-      "contract": {
-        "identity": "macro/agent-engine",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      }
-    },
-    "storeConsoles": {
-      "contract": {
-        "identity": "macro/store-console",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "fastlane/cli",
-        "version": "1"
-      },
-      "effects": "external"
-    },
-    "lumaRepository": {
-      "contract": {
-        "identity": "macro/git-repository",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "github/rest",
-        "version": "1"
-      },
-      "effects": "external"
-    }
-  },
-  "configurations": {
-    "standard": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "repository": "lumaRepository"
-      }
-    },
-    "code": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "repository": "lumaRepository"
-      }
-    },
-    "mobile": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "stores": "storeConsoles"
-      }
-    }
-  },
+  "title": "Améliorer la lecture audio",
   "agents": {
     "scope": {
-      "configuration": "standard",
-      "prompt": [
-        {
-          "value": "Définir les situations de pause, de navigation et de chargement à couvrir."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Définir les situations de pause, de navigation et de chargement à couvrir."
     },
     "implement": {
-      "configuration": "code",
-      "prompt": [
-        {
-          "value": "Conserver la dernière position de lecture et rendre l’état de chargement compréhensible."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Conserver la dernière position de lecture et rendre l’état de chargement compréhensible."
     },
     "verify": {
-      "configuration": "mobile",
-      "prompt": [
-        {
-          "value": "Vérifier la reprise après une pause, un changement d’écran et un chargement lent."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier la reprise après une pause, un changement d’écran et un chargement lent."
     }
   },
   "flow": {
@@ -129,21 +25,19 @@
       "scope": {
         "type": "agent",
         "agent": "scope",
-        "next": [
-          "implement"
-        ]
+        "title": "Préciser la reprise audio",
+        "next": "implement"
       },
       "implement": {
         "type": "agent",
         "agent": "implement",
-        "next": [
-          "verify"
-        ]
+        "title": "Améliorer la lecture audio",
+        "next": "verify"
       },
       "verify": {
         "type": "agent",
         "agent": "verify",
-        "next": []
+        "title": "Vérifier la reprise audio"
       }
     }
   }

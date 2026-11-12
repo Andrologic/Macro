@@ -155,18 +155,6 @@ async fn lookup_tx<A: StartAuthority030>(
     link: Option<&super::intents::IntentAdmissionLink>,
 ) -> Result<Option<RetainedStart030>> {
     super::intents::reserve_start(db, request, link).await?;
-    let historical: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_systems WHERE request_id=?)")
-            .bind(&request.request_id)
-            .fetch_one(&mut *db)
-            .await?;
-    if historical {
-        return Err(failure(
-            "CORRELATION",
-            "requestId",
-            "Start request is already used by another execution version",
-        ));
-    }
     let Some(row) = sqlx::query("SELECT request_json,capture_json,receipt_json,system_id,invocation_id,snapshot_id,capture_epoch FROM engine_start030_requests WHERE request_id=?")
         .bind(&request.request_id).fetch_optional(&mut *db).await? else { return Ok(None); };
     let prior: EngineStartRequest = serde_json::from_str(row.get("request_json"))?;

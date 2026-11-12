@@ -134,7 +134,7 @@ type AdapterSink030 = Arc<
             CancellationToken,
         ) -> BoxFuture<
             'static,
-            HostResult<crate::db::agsdl_execution::work_protocol030::ProtocolDecision030>,
+            HostResult<crate::db::agsdl_execution::work_dto030::ProtocolDecision030>,
         > + Send
         + Sync,
 >;
@@ -375,7 +375,7 @@ async fn between_turn_event030(
     body: Value,
     cancel: &CancellationToken,
     steer: &mut Option<&mut SteerContext030>,
-) -> HostResult<crate::db::agsdl_execution::work_protocol030::ProtocolDecision030> {
+) -> HostResult<crate::db::agsdl_execution::work_dto030::ProtocolDecision030> {
     let event = events(body, cancel.clone());
     tokio::pin!(event);
     loop {
@@ -978,7 +978,7 @@ impl CodexExecutor030 {
 #[cfg(test)]
 pub(crate) mod protocol_tests {
     use super::*;
-    use crate::db::agsdl_execution::work_protocol030::ProtocolDecision030;
+    use crate::db::agsdl_execution::work_dto030::ProtocolDecision030;
     use std::process::Stdio;
     use std::sync::Mutex as StdMutex;
 

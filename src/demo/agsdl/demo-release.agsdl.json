@@ -1,149 +1,32 @@
 {
-  "contract": "agsdl-0.2.0",
+  "contract": "agsdl-0.3.0",
   "id": "example-release",
-  "content": {
-    "releaseProcedure": {
-      "uri": "repo://luma-mobile/docs/RELEASE.md",
-      "mediaType": "text/markdown"
-    }
-  },
-  "bindings": {
-    "engine": {
-      "contract": {
-        "identity": "macro/agent-engine",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      }
-    },
-    "storeConsoles": {
-      "contract": {
-        "identity": "macro/store-console",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "fastlane/cli",
-        "version": "1"
-      },
-      "effects": "external"
-    },
-    "lumaRepository": {
-      "contract": {
-        "identity": "macro/git-repository",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "github/rest",
-        "version": "1"
-      },
-      "effects": "external"
-    }
-  },
-  "configurations": {
-    "standard": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "repository": "lumaRepository"
-      }
-    },
-    "mobile": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "repository": "lumaRepository",
-        "stores": "storeConsoles"
-      }
-    }
-  },
+  "title": "Release mobile",
   "agents": {
     "checklist": {
-      "configuration": "standard",
-      "prompt": [
-        {
-          "value": "Vérifier les prérequis. Consignez le résultat et les points qui demandent une décision."
-        }
-      ],
-      "interface": {
-        "inputMediaTypes": [
-          "text/plain",
-          "application/json"
-        ],
-        "outputMediaTypes": [
-          "text/plain"
-        ],
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      },
-      "resources": {
-        "procedure": {
-          "ref": "releaseProcedure"
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier les prérequis. Consignez le résultat et les points qui demandent une décision."
     },
     "review": {
-      "configuration": "standard",
-      "prompt": [
-        {
-          "value": "Relire les changements. Consignez le résultat et les points qui demandent une décision."
-        }
-      ],
-      "interface": {
-        "inputMediaTypes": [
-          "text/plain",
-          "application/json"
-        ],
-        "outputMediaTypes": [
-          "text/plain"
-        ],
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Relire les changements. Consignez le résultat et les points qui demandent une décision."
     },
     "installers": {
-      "configuration": "mobile",
-      "prompt": [
-        {
-          "value": "Vérifier les installateurs. Consignez le résultat et les points qui demandent une décision."
-        }
-      ],
-      "interface": {
-        "inputMediaTypes": [
-          "text/plain",
-          "application/json"
-        ],
-        "outputMediaTypes": [
-          "text/plain"
-        ],
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier les installateurs. Consignez le résultat et les points qui demandent une décision."
+    },
+    "scene-main-prepare-review": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre le rapport"
+    },
+    "scene-main-prepare-installers": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre le rapport"
     }
   },
   "flow": {
@@ -152,57 +35,31 @@
       "checklist": {
         "type": "agent",
         "agent": "checklist",
-        "next": [
-          "prepare-review"
-        ]
+        "title": "Vérifier les prérequis",
+        "next": "prepare-review"
       },
       "prepare-review": {
-        "type": "prepare",
-        "message": {
-          "resources": {
-            "report": {
-              "source": {
-                "path": [
-                  "results",
-                  "report"
-                ]
-              }
-            }
-          }
-        },
-        "next": [
-          "review"
-        ]
+        "type": "agent",
+        "agent": "scene-main-prepare-review",
+        "title": "Transmettre le rapport",
+        "next": "review"
       },
       "review": {
         "type": "agent",
         "agent": "review",
-        "next": [
-          "prepare-installers"
-        ]
+        "title": "Relire les changements",
+        "next": "prepare-installers"
       },
       "prepare-installers": {
-        "type": "prepare",
-        "message": {
-          "resources": {
-            "report": {
-              "source": {
-                "path": [
-                  "results",
-                  "report"
-                ]
-              }
-            }
-          }
-        },
-        "next": [
-          "installers"
-        ]
+        "type": "agent",
+        "agent": "scene-main-prepare-installers",
+        "title": "Transmettre le rapport",
+        "next": "installers"
       },
       "installers": {
         "type": "agent",
         "agent": "installers",
-        "next": []
+        "title": "Vérifier les installateurs"
       }
     }
   }

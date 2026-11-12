@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'bun:test';
-import { NumberToken as ReaderNumberToken, parse } from '../../vendor/agsdl/v0.3/reader.mjs';
-import { NumberToken, clone, decimal, decode, encode, equal, record } from './exact';
+import { describe,expect,it } from 'bun:test';
+import { NumberToken as ReaderNumberToken,parse } from '../../vendor/agsdl/v0.3/reader.mjs';
+import { NumberToken,clone,decimal,decode,encode,equal,record } from './exact';
 import { sourceDigest } from './sourceDigest';
 
 describe('shared exact values', () => {
@@ -9,8 +9,8 @@ describe('shared exact values', () => {
     const raw = '{"large":9007199254740993,"exponent":1e999999,"negativeZero":-0,"text":"é\\n𝄞"}';
     const value = record(decode(raw));
     expect(value.large).toBeInstanceOf(ReaderNumberToken);
-    expect(encode(value)).toBe(raw);
-    expect(encode(clone(value))).toBe(raw);
+    expect(String(encode(value))).toBe(raw);
+    expect(String(encode(clone(value)))).toBe(raw);
     const parsed = parse(new TextEncoder().encode(raw));
     expect(parsed.error).toBeUndefined();
     expect(equal(value, parsed.tree)).toBe(true);

@@ -1,9 +1,9 @@
-import type { AgsdlChange, DesignMetadata, AgsdlDisplayMetadata, AgsdlEnvelopeMetadata } from '../../types/agsdl';
-export type { DesignMetadata, AgsdlDisplayMetadata, AgsdlMigrationMetadata, AgsdlEnvelopeMetadata } from '../../types/agsdl';
-import { LEGACY_AGSDL_CONTRACT, object, readDocument, applyChanges, sourceAt } from './document';
+import type { AgsdlChange,AgsdlDisplayMetadata,AgsdlEnvelopeMetadata,DesignMetadata } from '../../types/agsdl';
+import { applyChanges,LEGACY_AGSDL_CONTRACT,object,readDocument,sourceAt } from './document';
+export type { AgsdlDisplayMetadata,AgsdlEnvelopeMetadata,AgsdlMigrationMetadata,DesignMetadata } from '../../types/agsdl';
 
 export type AgsdlAuthoringContract = 'agsdl-0.1.0' | 'agsdl-0.2.0' | 'agsdl-0.3.0';
-export const hasDesignEnvelope = (contract: unknown): boolean => contract === 'agsdl-0.2.0' || contract === 'agsdl-0.3.0';
+export const hasDesignEnvelope = (contract: unknown): boolean => contract === 'agsdl-0.3.0';
 
 export class DesignMetadataError extends Error {
   constructor() { super('The design metadata is malformed or uses an unsupported version. Its original contents have been preserved.'); this.name = 'DesignMetadataError'; }
@@ -38,7 +38,7 @@ export function readDesign(source: string, metadata?: DesignMetadata): DesignMet
 export function designChanges(source: string, design: DesignMetadata): AgsdlChange[] {
   if (!valid(design)) throw new DesignMetadataError();
   design = updateDesignMetadata(readDesign(source), design);
-  if (hasDesignEnvelope(readDocument(source).contract)) throw new Error('AgSDL 0.2/0.3 design metadata belongs in the editor envelope. Use setDesign.');
+  if (hasDesignEnvelope(readDocument(source).contract)) throw new Error('AgSDL 0.3 design metadata belongs in the editor envelope. Use setDesign.');
   const previous = readDesign(source);
   const root = object(readDocument(source).root);
   if (root.annotations === undefined) return [{ op: 'set', path: '/root/annotations', valueJson: JSON.stringify({ macroDesign: design }) }];
@@ -114,7 +114,7 @@ export function withDocumentDesign(source: string, design: DesignMetadata, metad
 export function createEmptySystem(title: string, contract: AgsdlAuthoringContract = 'agsdl-0.3.0'): string {
   if (contract === LEGACY_AGSDL_CONTRACT) return createLegacyEmptySystem(title);
   if (!hasDesignEnvelope(contract)) throw new Error('Unsupported AgSDL authoring contract.');
-  return JSON.stringify({ contract, id: `system-${crypto.randomUUID()}`, agents: {}, ...(contract === 'agsdl-0.2.0' ? { configurations: {}, bindings: {} } : { title }) }, null, 2);
+  return JSON.stringify({ contract, id: `system-${crypto.randomUUID()}`, agents: {}, title }, null, 2);
 }
 export function createEmptySystemDocument(title: string, contract: AgsdlAuthoringContract = 'agsdl-0.3.0', kind: DesignMetadata['kind'] = 'system'): { source: string; annexes: Record<string, string> } & AgsdlEnvelopeMetadata {
   const design = { ...defaultDesign(), kind };
@@ -124,18 +124,6 @@ export function createEmptySystemDocument(title: string, contract: AgsdlAuthorin
 export function createEmptyBlueprintDocument(title: string) {
   const document = createEmptySystemDocument(title);
   return { ...document, design: { ...defaultDesign(), ...document.design, kind: 'blueprint' as const } };
-}
-/** Migration requires a separately authored target and a reviewed loss list. */
-export function manualMigrationInventory(source: string) {
-  const doc = readDocument(source);
-  if (doc.contract !== LEGACY_AGSDL_CONTRACT && doc.contract !== 'agsdl-0.2.0') throw new Error('Manual migration inventory requires an AgSDL 0.1 or 0.2 document.');
-  return {
-    from: doc.contract,
-    to: 'agsdl-0.3.0',
-    originalSource: source,
-    original: structuredClone(doc),
-    requiresAuthoring: ['system-boundary-and-identities', 'typed-relations-and-dependencies', 'prompt-versus-resources', 'persistent-agent-lifecycle', 'flow-data-and-failure-paths', 'configuration-bindings-and-evidence', 'authority-and-approval-controls', 'harness-model-and-permissions', 'skills-and-mcp-uris', 'joins-and-compositions'],
-  };
 }
 
 /** Explicit historical fixture and editor support for the unchanged 0.1 edition. */
@@ -148,22 +136,12 @@ export function adaptationChanges(source: string, previous: DesignMetadata, desi
   const doc = readDocument(source);
   if (!hasDesignEnvelope(doc.contract)) return [];
   const old = new Map(previous.requirements.map(item => [item.id, item]));
-  const changedDeclarations = new Set<string>();
-  const changes: AgsdlChange[] = design.requirements.flatMap(item => {
+  return design.requirements.flatMap(item => {
     const before = old.get(item.id);
     if (!item.targetPath || item.targetPath !== before?.targetPath || item.value === before.value) return [];
     const value: unknown = JSON.parse(sourceAt(source, item.targetPath));
     if (typeof value !== 'string') throw new Error('The adaptation target must be an existing string value.');
     if (value === item.value) return [];
-    const declaration = doc.contract === 'agsdl-0.2.0' ? /^(\/(?:configurations|bindings)\/[^/]+)\//.exec(item.targetPath)?.[1] : undefined;
-    if (declaration) changedDeclarations.add(declaration);
     return [{ op: 'set' as const, path: item.targetPath, valueJson: JSON.stringify(item.value) }];
   });
-  // Support assertions describe the exact declaration before adaptation.
-  for (const path of changedDeclarations) {
-    const [, catalog, name] = path.split('/');
-    const declaration = object(object(doc[catalog])[name.replaceAll('~1', '/').replaceAll('~0', '~')]);
-    if (declaration.claims !== undefined) changes.push({ op: 'remove', path: `${path}/claims` });
-  }
-  return changes;
 }

@@ -1,22 +1,21 @@
-import { groupNativeState, type NativeCardActivation } from "../../services/agsdl/executionView";
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { Background, getViewportForBounds, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps, type NodeChange } from "@xyflow/react";
-import { Bot, Boxes, ChevronDown, ChevronRight, ChevronUp, CircleHelp, Info, Layers, List, MessageSquare, MessageSquarePlus, LocateFixed, Minus, Plus, Terminal, UserCheck, Sparkles, Braces, Shuffle, RotateCcw, Zap } from "lucide-react";
-import { useElementSize } from "../../hooks/useElementSize";
-import { isFailureEdge, layoutViewer, routeViewerEdge, VIEWER_CARD_WIDTH, VIEWER_FRAME, viewerLayoutBounds, type ViewerEdge } from "../../services/agsdl/graphLayout";
-import { graphBlockPerformer, graphBlockShape, graphConversationKey, graphDeliveryPolicy, graphSourcePath, graphNeighborhood, presentFocusedGraph, presentGraph } from "../../services/agsdl/graphPresentation";
-import { blockDetails, type BlockDetail } from "../../services/agsdl/blockDetails";
-import "./graphPresentation.css";
-import type { ViewerCard } from "../../services/agsdl/viewer";
-import { useAgsdlTranslation } from "./useAgsdlTranslation";
+import { Background,getViewportForBounds,Handle,MarkerType,Panel,Position,ReactFlow,ReactFlowProvider,useReactFlow,type Node,type NodeChange,type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { WorkflowEdge, type GraphEdge } from "./WorkflowEdge";
+import { Bot,Boxes,Braces,ChevronDown,ChevronRight,ChevronUp,CircleHelp,Info,Layers,List,LocateFixed,MessageSquare,MessageSquarePlus,Minus,Plus,RotateCcw,Shuffle,Sparkles,Terminal,UserCheck,Zap } from "lucide-react";
+import { useCallback,useEffect,useId,useMemo,useRef,useState,type ReactNode } from "react";
+import { useElementSize } from "../../hooks/useElementSize";
+import { blockDetails,type BlockDetail } from "../../services/agsdl/blockDetails";
+import { expandCompositions,originalStepPath } from "../../services/agsdl/compositionExpansion";
+import { groupNativeState,type NativeCardActivation } from "../../services/agsdl/executionView";
+import { isFailureEdge,layoutViewer,routeViewerEdge,VIEWER_CARD_WIDTH,VIEWER_FRAME,viewerLayoutBounds,type ViewerEdge } from "../../services/agsdl/graphLayout";
+import { graphBlockPerformer,graphBlockShape,graphConversationKey,graphDeliveryPolicy,graphNeighborhood,graphSourcePath,presentFocusedGraph,presentGraph } from "../../services/agsdl/graphPresentation";
+import { groupTaskState,type TrackedTask } from "../../services/agsdl/taskTracking";
+import type { ViewerCard,ViewerGraph } from "../../services/agsdl/viewer";
+import "./graphPresentation.css";
+import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { WorkflowBlockOverlay } from "./WorkflowBlockOverlay";
+import { WorkflowEdge,type GraphEdge } from "./WorkflowEdge";
 import { WorkflowGraphPopup } from "./WorkflowGraphPopup";
-import { WorkflowStatusBadge, type WorkflowOccurrenceBadge030 } from "./WorkflowStatusBadge";
-import { groupTaskState, type TrackedTask } from "../../services/agsdl/taskTracking";
-import { expandCompositions, originalStepPath } from "../../services/agsdl/compositionExpansion";
-import type { ViewerGraph } from "../../services/agsdl/viewer";
+import { WorkflowStatusBadge,type WorkflowOccurrenceBadge030 } from "./WorkflowStatusBadge";
 
 type GraphNode = Node<{
   card: ViewerCard;
@@ -271,7 +270,7 @@ function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEnt
         dismissSignal,
         members: group?.members.map(title),
         changed: changedPaths.some(path => path === graphSourcePath(card) || (group?.members.some(member => graphSourcePath(member) === path))),
-        pending: !["agsdl-0.2.0", "agsdl-0.3.0"].includes(String(card.details.contract)) && (card.kind === "Agent" || card.kind === "invoke") && !card.mission.trim(),
+        pending: !(card.details.contract === "agsdl-0.3.0") && (card.kind === "Agent" || card.kind === "invoke") && !card.mission.trim(),
         occurrences: group ? undefined : occurrenceBadges[card.static030?.occurrenceId ?? card.path],
         native: group ? groupNativeState(group.members.flatMap(member => nativeActivations[member.path] ? [nativeActivations[member.path]] : []), group.members.length) : nativeActivations[card.path],
         task: group ? groupTaskState(group.members.flatMap(member => trackedTasks[member.path] ? [trackedTasks[member.path]] : []), group.members.length) : trackedTasks[card.path],

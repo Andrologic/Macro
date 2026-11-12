@@ -529,6 +529,9 @@ async fn connect_publication_disk_full_keeps_pin_archive_and_all_charges() {
         )
         .await
         .unwrap();
+    // Schema retirement leaves reusable pages. Compact only this temporary test
+    // database so the existing max_page_count bound still injects SQLITE_FULL.
+    sqlx::query("VACUUM").execute(&pool).await.unwrap();
     let pages: i64 = sqlx::query_scalar("PRAGMA page_count")
         .fetch_one(&pool)
         .await

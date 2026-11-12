@@ -93,28 +93,3 @@ mod tests {
             .contains("foreign"));
     }
 }
-
-pub(crate) async fn historical(
-    pool: &SqlitePool,
-    system_id: &str,
-    source: &EngineSourceRevision,
-    path: &str,
-) -> Result<Option<CardAssociation>> {
-    let mut connection = pool.acquire().await?;
-    let stored = load(&mut connection, system_id).await?;
-    require(
-        stored.snapshot.source == *source,
-        "Historical card source differs from run",
-    )?;
-    let capture = stored.capture.ok_or_else(|| {
-        failure(
-            "VERSION_UNAVAILABLE",
-            "cards",
-            "Historical card associations are unavailable",
-        )
-    })?;
-    Ok(capture
-        .card_associations
-        .into_iter()
-        .find(|card| card.path == path))
-}

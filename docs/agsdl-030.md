@@ -234,11 +234,10 @@ d'instance shared/named, jamais une tentative fournisseur. `new` n'est pas une
 cible de livraison externe. Les livraisons sans flow sont le premier périmètre
 normatif ; les routes internes au flow restent conduites par le natif.
 
-L'édition est explicite avant de choisir lecteur et commandes. Les captures
-0.2 portent `snapshot: "1"`, `contract: "agsdl-0.2.0"`, profil
-`macro-serial-inline-v1` ; les captures 0.3 portent `snapshot: "2"`,
-`contract: "agsdl-0.3.0"`, profil `macro-agsdl-030-v1`. Les admissions natives
-`start` et `start030` restent distinctes. `deliver` est historique ;
+L’édition est explicite avant de choisir lecteur et commandes. Les captures
+produit portent `snapshot: "2"`, `contract: "agsdl-0.3.0"` et le profil
+`macro-agsdl-030-v1`. L’ancien chemin 0.2 est retiré et les entrées refusent son
+profil sans repli ni conversion de document. L’admission `start030` est conservée.
 `execution_deliver030` admet désormais les messages sans flow dans les tables
 0.3, avec un identifiant dédupliqué et une capture conservée. Son reçu confirme
 l’admission ; la projection confirme séparément la livraison et la consommation.

@@ -108,40 +108,18 @@ et celles de l’IA suivent le même historique Annuler/Rétablir. Fermer cet ap
 ou masquer ses repères ne change pas le document. Cet historique ne constitue
 pas un historique durable de toutes les versions du système.
 
-La modale d’édition d’un agent permet de choisir un fournisseur et un modèle
-configurés dans Macro lorsqu’une configuration AgSDL unique peut être identifiée.
-Le moteur déclaré est Macro. En 0.2.0, la configuration référence un binding
-`macro/agent-engine` en version `1`, implémenté par `macro/desktop` en version `1`.
-Le lecteur historique conserve ses règles d’édition, dont la conversion de l’alias
-`macro` en `macro/desktop` lors de la sauvegarde d’une configuration 0.1.0. Les configurations importées étrangères ou ambiguës restent
-préservées et doivent être préparées par l’agent avant cette édition. Les outils
-et MCP restent des déclarations indépendantes du choix du modèle. Ces déclarations
-ne confèrent aucune autorisation d’exécution.
-Cette version ne lance pas les systèmes AgSDL et n’ajoute pas de mode orchestrateur.
+La modale 0.3 édite les instructions, propriétés et choix de modèle pris en
+charge par le document. La disponibilité du harness et les droits d’exécution
+restent soumis au Preflight natif. Le lecteur historique 0.1 conserve ses règles
+d’édition. L’édition 0.2 n’est plus prise en charge et son ouverture l’indique
+clairement, sans proposer de lancement ou de conversion.
 
-## Conversion des plans existants
+## Plans existants
 
-La conversion des nouveaux imports de plans ajoute un document AgSDL 0.2.0
-descriptif, avec des agents et leurs instructions. L’enveloppe Macro conserve
-les données originales et les limites de conversion. Les documents 0.1.0 déjà
-présents gardent leur édition. Les données conservées comprennent les nœuds, les todos,
-les contrats d’artefacts et les branches prédictives. Les dépendances héritées
-restent dans l’enveloppe de migration ; elles ne prouvent pas un transfert de données.
-Aucun graphe séquentiel n’est inventé pour remplacer des dépendances arbitraires.
-L’agent peut ensuite préciser les interfaces et construire le processus AgSDL.
-
-La migration est idempotente et utilise la file de mutations et le journal de
-réplication des métadonnées. Elle conserve les statuts, dates de modification,
-transcriptions et documents AgSDL déjà présents. Les plans archivés peuvent aussi
-être convertis. Une réplication incomplète ou une conversion dépassant 1 Mio
-bloque l’écriture sans supprimer le plan original.
-
-L’interface et les outils de rédaction de stratégie legacy sont retirés du
-parcours Architect. Les données d’exécution historiques restent présentes pour
-les tâches Implement déjà créées. Leur suppression complète dépend du démarrage
-AgSDL depuis le produit, encore fermé tant qu’il n’est pas qualifié. Le document
-converti reste un instantané descriptif. Le visualisateur peut toutefois afficher
-les états actuels des tâches Macro liées, indépendamment de cet instantané.
+L’ouverture d’un ancien plan ne crée plus automatiquement de document AgSDL.
+Ses données Macro restent conservées. Les nouveaux systèmes utilisent 0.3 ;
+aucun remplacement de marqueur ni graphe inventé ne migre une ancienne édition.
+Les tâches Macro extérieures au moteur AgSDL restent dans leur domaine existant.
 
 ## Contrat et conservation
 
@@ -152,8 +130,7 @@ sérialiseur sans perte. Les diagnostics structurels ne certifient pas la capaci
 à exécuter le système.
 
 Les nouveaux documents et blueprints inclus utilisent [AgSDL 0.3](agsdl-030.md).
-Les sources 0.1 et 0.2 conservent explicitement leur édition et leurs guides.
-Le [contrat historique 0.2.0](agsdl-020.md) reste documenté. Le guide chargé par
+La source 0.1 conserve son édition et son guide. L’édition 0.2 est refusée. Le guide chargé par
 `agsdl_get` suit la source ; le guide d’un document vide est celui de 0.3. La provenance,
 la licence et les adaptations des lecteurs sont décrites dans
 [`src/vendor/agsdl/NOTICE.md`](../src/vendor/agsdl/NOTICE.md).
@@ -170,7 +147,7 @@ statut n’est déduit du titre du bloc ou du statut enregistré dans la migrati
 
 Pour les cartes legacy, le lien utilise l’identifiant original du nœud. Pour
 un document natif, `macroTaskId` doit référencer l’identifiant exact de la tâche
-dans `agsdl.display.cards[path]` pour les documents 0.2.0 et 0.3.0.
+dans `agsdl.display.cards[path]` pour les documents 0.3.0.
 Pour un document historique 0.1.0, le lien reste dans les annotations de la
 déclaration ou dans `ControlFlow.annotations.macroSteps[stepId]` pour une étape. Le lien est limité
 au même plan et à la même branche ; les tâches archivées et les liens ambigus

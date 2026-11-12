@@ -1,7 +1,7 @@
 import {
-  NumberToken, clone, decimal, equal, parse, shape, stringify,
+NumberToken,clone,decimal,equal,parse,stringify,
 } from '../../vendor/agsdl/shared/values.mjs';
-import type { ExactJsonText, ExactValuePort, ExecutionFailure, WorkIdentity } from './contracts';
+import type { ExactJsonText,ExactValuePort,ExecutionFailure,WorkIdentity } from './contracts';
 
 export type ExactValue = null | boolean | string | NumberToken | ExactValue[] | ExactObject;
 export interface ExactObject { [key: string]: ExactValue }
@@ -47,4 +47,4 @@ export function at(pointer: string, key: string): string {
 }
 export function has(object: ExactObject, key: string): boolean { return Object.hasOwn(object, key); }
 export const exactValues: ExactValuePort = { equal: (left, right) => equal(decode(left), decode(right)) };
-export { NumberToken, clone, decimal, equal, shape };
+export { NumberToken,clone,decimal,equal };

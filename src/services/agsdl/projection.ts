@@ -1,7 +1,6 @@
-import type { AgsdlGraphEdge, AgsdlGraphNode } from "../../types/agsdl";
-import { keyId, list, object, readDocument, text } from "./document";
+import type { AgsdlGraphEdge,AgsdlGraphNode } from "../../types/agsdl";
+import { keyId,list,object,readDocument,text } from "./document";
 import { projectViewer030 } from "./viewer030";
-import { projectViewer020 } from "./viewer020";
 
 export function successors(step: Record<string, unknown>): string[] {
   if (step.kind === "invoke") return ["success", "failure"];
@@ -17,8 +16,8 @@ export function projectDocument(
   focusPath?: string,
 ): { nodes: AgsdlGraphNode[]; edges: AgsdlGraphEdge[] } {
   const doc = readDocument(source);
-  if (["agsdl-0.2.0", "agsdl-0.3.0"].includes(String(doc.contract))) {
-    const viewer = doc.contract === "agsdl-0.3.0" ? projectViewer030(source) : projectViewer020(doc, source);
+  if (doc.contract === "agsdl-0.3.0") {
+    const viewer = projectViewer030(source);
     const graph = viewer.graphs[graphIndex];
     const cards = view === "process" ? graph?.cards ?? [] : viewer.declarations;
     const nodes = cards.map((card, index) => ({ id: card.path, path: card.path, title: card.title,
@@ -30,6 +29,7 @@ export function projectDocument(
         label: branch.label, handle: branch.label, path: branch.path ?? card.path }] : [])) : [];
     return { nodes, edges };
   }
+  if (doc.contract === "agsdl-0.2.0") throw new Error("agsdl.unsupportedEdition020");
   const definitions = list(doc.definitions).map(object);
   const nodes: AgsdlGraphNode[] = [];
   const edges: AgsdlGraphEdge[] = [];

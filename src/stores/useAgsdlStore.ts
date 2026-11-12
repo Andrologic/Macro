@@ -1,17 +1,17 @@
 import { create } from "zustand";
-import { adaptationChanges, readDesign, retainDesignOrigin, withDocumentDesign, type AgsdlEnvelopeMetadata, type DesignMetadata } from "../services/agsdl/design";
+import { adaptationChanges,readDesign,retainDesignOrigin,withDocumentDesign,type AgsdlEnvelopeMetadata,type DesignMetadata } from "../services/agsdl/design";
 import {
-  migrateArchitectPlanToAgsdl,
-  updateArchitectPlan,
-} from "../services/architectPlanService";
-import type { ArchitectPlanStatus } from "../services/architectPlanService";
-import type { AgsdlChange, AgsdlReport } from "../types/agsdl";
-import {
-  applyChanges,
-  MAX_AGSDL_BYTES,
-  validateDocument,
+applyChanges,
+MAX_AGSDL_BYTES,
+validateDocument,
 } from "../services/agsdl/document";
 import { AgsdlUserError } from "../services/agsdl/userErrors";
+import type { ArchitectPlanStatus } from "../services/architectPlanService";
+import {
+getArchitectPlan,
+updateArchitectPlan,
+} from "../services/architectPlanService";
+import type { AgsdlChange,AgsdlReport } from "../types/agsdl";
 
 export interface AgsdlTarget {
   branchName: string;
@@ -93,7 +93,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       if (pendingLoads.has(key)) return pendingLoads.get(key)!;
       const originalVersion = existing?.version;
       const pending = (async () => {
-        const plan = await migrateArchitectPlanToAgsdl(target.branchName, target.planId);
+        const plan = await getArchitectPlan(target.branchName, target.planId);
         if (!plan || plan.status === "deleted")
           throw new Error("The Architect plan is unavailable.");
         const current = get().sessions[key];

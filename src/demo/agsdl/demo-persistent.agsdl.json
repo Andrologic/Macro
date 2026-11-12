@@ -1,233 +1,99 @@
 {
-  "contract": "agsdl-0.2.0",
+  "contract": "agsdl-0.3.0",
   "id": "demo-persistent",
-  "content": {
-    "editorialBrief": {
-      "value": "Dossier sur la migration du portail client. Public : décideurs. 1 200 mots, trois sources vérifiables.",
-      "mediaType": "text/plain"
-    }
-  },
-  "bindings": {
-    "engine": {
-      "contract": {
-        "identity": "macro/agent-engine",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      }
-    },
-    "atlasCms": {
-      "contract": {
-        "identity": "macro/cms",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "strapi/rest",
-        "version": "1"
-      },
-      "effects": "external"
-    }
-  },
-  "configurations": {
-    "redaction": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "cms": "atlasCms"
-      }
-    },
-    "approfondi": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-opus-5-5",
-        "version": "1"
-      }
-    }
-  },
+  "title": "Rédaction supervisée avec validation éditoriale et révision du même agent",
   "agents": {
     "writer": {
-      "configuration": "redaction",
-      "prompt": [
-        {
-          "value": "Rédiger le dossier en conservant les décisions éditoriales entre les messages. Intégrer les consignes reçues pendant la rédaction."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      },
-      "resources": {
-        "brief": {
-          "ref": "editorialBrief"
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Rédiger le dossier en conservant les décisions éditoriales entre les messages. Intégrer les consignes reçues pendant la rédaction."
     },
     "observer": {
-      "configuration": "approfondi",
-      "prompt": [
-        {
-          "value": "Vérifier l’angle et les sources. Transmettre une consigne courte au rédacteur si le dossier s’éloigne de la demande."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier l’angle et les sources. Transmettre une consigne courte au rédacteur si le dossier s’éloigne de la demande."
     },
     "reviewer": {
-      "configuration": "approfondi",
-      "prompt": [
-        {
-          "value": "Comparer le dossier au brief. Répondre Prêt lorsque les critères sont satisfaits, sinon formuler une demande de révision."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      },
-      "resources": {
-        "brief": {
-          "ref": "editorialBrief"
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Comparer le dossier au brief. Répondre Prêt lorsque les critères sont satisfaits, sinon formuler une demande de révision."
+    },
+    "scene-main-start": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Lancer la rédaction supervisée"
+    },
+    "scene-main-advice": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Préparer une consigne"
+    },
+    "scene-main-ready": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Dossier prêt ?"
+    },
+    "scene-main-finish": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Conserver le dossier"
     }
   },
   "flow": {
     "entry": "start",
     "steps": {
       "start": {
-        "type": "prepare",
-        "message": {
-          "prompt": [
-            {
-              "ref": "editorialBrief"
-            }
-          ]
-        },
-        "next": [
-          "write",
-          "observe"
-        ]
+        "type": "agent",
+        "agent": "scene-main-start",
+        "title": "Lancer la rédaction supervisée",
+        "next": "write"
       },
       "write": {
         "type": "agent",
         "agent": "writer",
-        "next": [
-          "review"
-        ]
+        "title": "Rédiger un dossier technique étayé sans perdre les consignes reçues en cours de travail",
+        "next": "observe"
       },
       "observe": {
         "type": "agent",
         "agent": "observer",
-        "next": [
-          "advice"
-        ]
+        "title": "Observer le travail",
+        "next": "advice"
       },
       "advice": {
-        "type": "prepare",
-        "message": {
-          "prompt": [
-            {
-              "value": "Intégrer la consigne de l’observateur."
-            }
-          ],
-          "resources": {
-            "guidance": {
-              "select": {
-                "path": [
-                  "text"
-                ]
-              },
-              "mediaType": "text/plain"
-            }
-          }
-        },
-        "next": [
-          "steer"
-        ]
+        "type": "agent",
+        "agent": "scene-main-advice",
+        "title": "Préparer une consigne",
+        "next": "steer"
       },
       "steer": {
         "type": "agent",
         "agent": "writer",
-        "delivery": "steering",
-        "steers": "write"
+        "title": "Réorienter le rédacteur",
+        "next": "review"
       },
       "review": {
         "type": "agent",
         "agent": "reviewer",
-        "next": [
-          "ready"
-        ],
-        "maxVisits": 3
+        "title": "Relire le dossier",
+        "next": "ready"
       },
       "ready": {
-        "type": "condition",
-        "test": {
-          "equals": [
-            {
-              "path": [
-                "text"
-              ]
-            },
-            {
-              "value": "Prêt"
-            }
-          ]
-        },
-        "next": {
-          "true": [
-            "finish"
-          ],
-          "false": [
-            "revise"
-          ]
-        }
+        "type": "agent",
+        "agent": "scene-main-ready",
+        "title": "Dossier prêt ?",
+        "next": "revise"
       },
       "revise": {
         "type": "agent",
         "agent": "writer",
-        "next": [
-          "review"
-        ],
-        "maxVisits": 2
+        "title": "Reprendre avec le même agent",
+        "next": "finish"
       },
       "finish": {
-        "type": "prepare",
-        "message": {
-          "resources": {
-            "dossier": {
-              "select": {
-                "path": [
-                  "text"
-                ]
-              },
-              "mediaType": "text/plain"
-            }
-          }
-        }
+        "type": "agent",
+        "agent": "scene-main-finish",
+        "title": "Conserver le dossier"
       }
     }
   }

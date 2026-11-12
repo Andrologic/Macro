@@ -34,19 +34,6 @@ describe('authored demo execution scenes', () => {
     }
   });
 
-  test('declares writes as external effects with distinct approval and documentation bindings', () => {
-    for (const [id, step, approval] of [['demo-quality', 'deliver', 'approval'], ['demo-refund', 'refund', 'approval'], ['demo-delivery', 'publish', 'approval'], ['demo-crisis', 'deploy', 'securityApproval']]) {
-      const source = JSON.parse(demoPlans.find(plan => plan.id === id)!.agsdl.source);
-      const write = source.flow.steps[step];
-      const gate = source.flow.steps[approval];
-      expect(source.bindings[write.binding].effects).toBe('external');
-      expect(source.bindings[gate.binding].effects).toBe('none');
-      expect(write.binding).not.toBe(gate.binding);
-      expect(write.binding).not.toBe('knowledge');
-      expect(gate.call).toBe(step);
-    }
-  });
-
   test('provides the catalogue described by the failed import conversation', async () => {
     const runtime = createDemoRuntime();
     const file = await runtime.invoke('fs_read_file', { path: '/demo/helio/fixtures/catalog.csv' }) as { content: string };

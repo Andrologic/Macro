@@ -223,7 +223,7 @@ async fn exercise(mode: u8) {
             .await
             .unwrap();
         let physical_event = json!({"eventId":physical_id,"owner":{"systemStartId":"system","activationId":start.activation_id,"agentInstanceId":start.agent_instance_id,"ownerEpoch":"owner"},"event":{"kind":"physicalEnded","providerEnded":true,"effectsEnded":true}});
-        let input = crate::db::agsdl_execution::work_protocol030::ProtocolEvent030 {
+        let input = crate::db::agsdl_execution::work_dto030::ProtocolEvent030 {
             context: context.clone(),
             event_id: physical_id.clone(),
             expected_revision: "0".into(),
@@ -1501,7 +1501,7 @@ async fn validated_work_result_diagnostic_retains_join_for_real_stop_cleanup() {
     use crate::db::agsdl_execution::flow_work_protocol030::{
         test_accepted_terminal030, FlowWorkTicket030,
     };
-    use crate::db::agsdl_execution::work_protocol030::{ProtocolDecision030, ProtocolEvent030};
+    use crate::db::agsdl_execution::work_dto030::{ProtocolDecision030, ProtocolEvent030};
     let temp = tempfile::tempdir().unwrap();
     let pool = crate::db::create_pool(&temp.path().join("diagnostic-joined.db"))
         .await

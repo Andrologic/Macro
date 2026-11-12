@@ -1,17 +1,15 @@
-import { run, stringify as stringifyLegacy } from "../../vendor/agsdl/browser-reader.mjs";
-import { parse, read as read030, NumberToken, stringify, ModuleError } from "../../vendor/agsdl/v0.3/reader.mjs";
-import type { ExactObject, ReaderOptions030, Report030 } from "../../vendor/agsdl/v0.3/reader.mjs";
-import { read as read020 } from "../../vendor/agsdl/v0.2/reader.mjs";
-import { stringify as stringify020 } from "../../vendor/agsdl/shared/values.mjs";
-import type { AgsdlChange, AgsdlReport } from "../../types/agsdl";
-import { rememberSourceLocations, workerRequest } from "./reader030WorkerProtocol";
+import type { AgsdlChange,AgsdlReport } from "../../types/agsdl";
+import { run,stringify as stringifyLegacy } from "../../vendor/agsdl/browser-reader.mjs";
+import type { ExactObject,ReaderOptions030,Report030 } from "../../vendor/agsdl/v0.3/reader.mjs";
+import { ModuleError,NumberToken,parse,read as read030,stringify } from "../../vendor/agsdl/v0.3/reader.mjs";
 import type { WorkerResponse } from "./reader030WorkerProtocol";
+import { rememberSourceLocations,workerRequest } from "./reader030WorkerProtocol";
 
 export const AGSDL_CONTRACT = "agsdl-0.3.0";
 export const AGSDL_020_CONTRACT = "agsdl-0.2.0";
 export const LEGACY_AGSDL_CONTRACT = "agsdl-0.1.0";
 export const isSupportedContract = (contract: unknown): boolean =>
-  contract === AGSDL_CONTRACT || contract === AGSDL_020_CONTRACT || contract === LEGACY_AGSDL_CONTRACT;
+  contract === AGSDL_CONTRACT || contract === LEGACY_AGSDL_CONTRACT;
 export const MAX_AGSDL_BYTES = 1024 * 1024;
 
 /** Identify an authored 0.3 marker without building an AST or spans on the UI thread. */
@@ -255,7 +253,7 @@ export async function validateDocument(
     throw new Error("AgSDL inputs exceed the 1 MiB editor limit.");
   let contract: unknown;
   try { contract = has030Contract(source) ? AGSDL_CONTRACT : readDocument(source).contract; } catch {
-    // The official 0.2 parser supplies a scoped report for malformed byte input.
+    // Malformed input receives the unsupported/parse report below.
   }
   if (contract === AGSDL_CONTRACT) {
     const request = workerRequest(primary, options);
@@ -293,28 +291,6 @@ export async function validateDocument(
       worker.onmessageerror = () => { finish(); reject(new Error("AgSDL 0.3 Web Worker returned an unreadable message.")); };
       try { worker.postMessage(request); } catch (error) { finish(); reject(error); }
     });
-  }
-  if (contract === AGSDL_020_CONTRACT || contract === undefined) {
-    const report = read020(primary);
-    const documentReportJson = stringify020(report);
-    return [{
-      operation: "readDocument",
-      contract: report.contract,
-      scope: report.scope,
-      executionSupport: report.executionSupport,
-      // Preserve the original lossless report for agent-facing evidence.
-      documentReportJson,
-      annexesAssessment: "not-used-by-contract",
-      results: [{
-        input: "primary", unit: "document", verdict: report.valid ? "pass" : "fail",
-        findings: report.findings.map(finding => ({
-          rule: finding.code, outcome: "fail",
-          details: finding.message ?? `AgSDL 0.2.0 ${finding.code} check at ${finding.path || "document root"}.`,
-          location: { pointer: finding.path },
-          ...(finding.invocation === undefined ? {} : { invocation: finding.invocation }),
-        })),
-      }],
-    }];
   }
   if (contract !== LEGACY_AGSDL_CONTRACT) return [{
     operation: "readDocument", contract,

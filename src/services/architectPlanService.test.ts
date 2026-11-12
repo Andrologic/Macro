@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
-const actualTauriIpc = await import('./tauriIpc');
-import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
-import type { DbConversation, WorkspaceScope } from './tauriIpc';
-import type { ValidProjectRegistrySnapshot } from './validProjectRegistry';
+import { afterEach,beforeEach,describe,expect,it,mock,spyOn } from 'bun:test';
 import { DEFAULT_NEW_PLAN_LABEL } from './architectPlanPresentation';
-import { installArchitectPlanPorts, type ArchitectPlanServiceAppState } from './architectPlanReadContext';
+import { installArchitectPlanPorts,type ArchitectPlanServiceAppState } from './architectPlanReadContext';
+import type { ArchitectPlanRecord,ArchitectPlanSummary } from './architectPlanService';
+import type { WorkspaceScope } from './tauriIpc';
+import type { ValidProjectRegistrySnapshot } from './validProjectRegistry';
+const actualTauriIpc = await import('./tauriIpc');
 const registerAppStateGetter = (getAppState: () => unknown) => installArchitectPlanPorts({
   getAppState: () => getAppState() as ArchitectPlanServiceAppState,
 });
@@ -2516,38 +2516,6 @@ describe('architectPlanService', () => {
     expect(payload?.chatMessages).toHaveLength(0);
   });
 
-  it('converts persisted legacy plans once without changing lifecycle, tasks or transcript', async () => {
-    for (const status of ['draft', 'validated', 'in_progress', 'completed', 'archived'] as const) {
-      const created = await service.createArchitectPlan({ branchName, planId: `migration-${status}`, label: 'Migration',
-        nodes: [{ id: 'one', title: 'Check', type: 'task', status: 'pending', dependencies: [], todos: [{ id: 'check', title: 'Verify', status: 'pending' }] }] });
-      await service.saveArchitectPlanChatMessages(branchName, created.id, [{ id: 'message', role: 'user', content: 'Keep the transcript', createdAt: created.createdAt }]);
-      if (status === 'archived') await service.archiveArchitectPlan(branchName, created.id);
-      else if (status !== 'draft') await service.updateArchitectPlan({ branchName, planId: created.id, status });
-      const before = (await service.getArchitectPlan(branchName, created.id))!;
-      const [first, concurrent] = await Promise.all([
-        service.migrateArchitectPlanToAgsdl(branchName, created.id),
-        service.migrateArchitectPlanToAgsdl(branchName, created.id),
-      ]);
-      expect(first?.agsdl?.revision).toBe(1);
-      expect(concurrent?.revision).toBe(first?.revision);
-      expect(first?.status).toBe(status);
-      expect(first?.nodes).toEqual(before.nodes);
-      expect(first?.predictedBranches).toEqual(before.predictedBranches);
-      expect(first?.updatedAt).toBe(before.updatedAt);
-      const again = await service.migrateArchitectPlanToAgsdl(branchName, created.id);
-      expect(again?.agsdl).toEqual(first?.agsdl);
-      expect((await service.getArchitectPlanActivationPayload(branchName, created.id))?.chatMessages[0]?.content).toBe('Keep the transcript');
-    }
-  });
-
-  it('rejects an oversized converted envelope before changing the legacy replicas', async () => {
-    const created = await service.createArchitectPlan({ branchName, planId: 'migration-oversized-envelope', label: 'Migration',
-      nodes: [{ id: 'one', title: 'Check', description: 'x'.repeat(400_000), type: 'task', status: 'pending', dependencies: [], todos: [] }] });
-    const before = await service.getArchitectPlan(branchName, created.id);
-    await expect(service.migrateArchitectPlanToAgsdl(branchName, created.id)).rejects.toThrow('1 MiB');
-    expect(await service.getArchitectPlan(branchName, created.id)).toEqual(before);
-  });
-
   it('creates an AgSDL blueprint snapshot atomically with its source and annexes', async () => {
     const agsdl = { source: '{ "opaque":900719925474099312345 }', annexes: { guidance: 'Synthetic release guidance' } };
     const created = await service.createArchitectPlan({ branchName, planId: 'blueprint-snapshot', label: 'Release blueprint', setActive: false, agsdl });
@@ -2557,33 +2525,6 @@ describe('architectPlanService', () => {
     const listing = await service.listArchitectPlans(branchName);
     expect(listing.plans.find((plan: ArchitectPlanSummary) => plan.id === created.id)?.hasAgsdl).toBe(true);
     expect(listing.activePlanId).not.toBe(created.id);
-  });
-
-  it('persists a blueprint workflow through canonical metadata without changing or activating the original', async () => {
-    const { createBlueprintWorkflowService } = await import('./blueprintWorkflowService');
-    const { defaultDesign } = await import('./agsdl/design');
-    const { BASE_SOURCE } = await import('./agsdlExecution/conformanceFixtures');
-    const blueprint = await service.createArchitectPlan({ branchName, planId: 'reusable-blueprint', label: 'Vérifier',
-      agsdl: { source: BASE_SOURCE, annexes: { guidance: 'Conserver les preuves.' },
-        design: { ...defaultDesign(), kind: 'blueprint' } } });
-    const workflow = createBlueprintWorkflowService({
-      getPlan: service.getArchitectPlan, createPlan: service.createArchitectPlan,
-      getConversation: async () => ({ project_id: 'web' }) as DbConversation,
-    });
-    const input = { blueprint: { branchName, planId: blueprint.id, revision: blueprint.revision! },
-      scope: { owner: { projectId: 'web', planId: 'workflow-snapshot', branch: branchName }, conversationId: 'workflow-chat' } };
-    const copy = await workflow.prepare(input);
-    service.clearArchitectPlanFrontendCaches();
-    expect((await service.getArchitectPlan(branchName, copy.id))?.agsdl?.source).toBe(BASE_SOURCE);
-    expect((await service.getArchitectPlan(branchName, copy.id))?.agsdl?.design?.origin).toEqual({
-      branchName, planId: blueprint.id, revision: blueprint.revision!, name: 'Vérifier',
-    });
-    expect((await service.listArchitectPlans(branchName)).activePlanId).toBe(blueprint.id);
-    expect(await service.getArchitectPlan(branchName, blueprint.id)).toEqual(blueprint);
-    await service.updateArchitectPlan({ branchName, planId: blueprint.id, expectedAgsdlRevision: 1,
-      agsdl: { ...blueprint.agsdl!, source: '{}' } });
-    expect((await workflow.prepare(input)).agsdl!.source).toBe(BASE_SOURCE);
-    expect((await service.listArchitectPlans(branchName)).plans.filter((plan: ArchitectPlanSummary) => plan.id === copy.id)).toHaveLength(1);
   });
 
   it('persists 0.2 design intent outside the unchanged closed source and includes metadata in size limits', async () => {
@@ -2640,41 +2581,6 @@ describe('architectPlanService', () => {
     expect(payload?.plan.id).toBe(created.id);
     expect(payload?.chatMessages).toHaveLength(0);
     expect(payload?.conversationId).toBeNull();
-  });
-  it('retains blueprint provenance at the shared persistence boundary when direct saves omit it', async () => {
-    const { defaultDesign } = await import('./agsdl/design');
-    const { BASE_SOURCE } = await import('./agsdlExecution/conformanceFixtures');
-    const origin = { branchName, planId: 'blueprint', name: 'Blueprint', revision: 1 };
-    const created = await service.createArchitectPlan({ branchName, planId: 'durable-provenance', label: 'Copy',
-      agsdl: { source: BASE_SOURCE, annexes: {}, design: { ...defaultDesign(), origin } } });
-    await service.updateArchitectPlan({ branchName, planId: created.id, expectedAgsdlRevision: 1,
-      agsdl: { source: BASE_SOURCE, annexes: {}, design: { ...defaultDesign(), context: 'Edited context' } } });
-    service.clearArchitectPlanFrontendCaches();
-    let saved = (await service.getArchitectPlan(branchName, created.id))!;
-    expect(saved.agsdl!.design!.origin).toEqual(origin);
-    expect(saved.agsdl!.design!.context).toBe('Edited context');
-    await service.updateArchitectPlan({ branchName, planId: created.id, expectedAgsdlRevision: 2,
-      agsdl: { source: BASE_SOURCE.replace('Review.', 'Edited.'), annexes: {} } });
-    service.clearArchitectPlanFrontendCaches();
-    saved = (await service.getArchitectPlan(branchName, created.id))!;
-    expect(saved.agsdl!.design!.origin).toEqual(origin);
-    expect(saved.agsdl!.source).toContain('Edited.');
-    await service.updateArchitectPlan({ branchName, planId: created.id, expectedAgsdlRevision: 3,
-      agsdl: { source: saved.agsdl!.source, annexes: {}, design: { ...defaultDesign(), origin: { ...origin, branchName: undefined } } } });
-    service.clearArchitectPlanFrontendCaches();
-    saved = (await service.getArchitectPlan(branchName, created.id))!;
-    expect(saved.agsdl!.design!.origin).toEqual(origin);
-  });
-
-  it.each([null, 7, {}, { planId: 'blueprint' }, { planId: 'blueprint', name: 'Blueprint', revision: 1, branchName: null }, { planId: 'blueprint', name: 'Blueprint', revision: 1, branchName: 7 }])('refuses malformed provenance at persistence before merging: %j', async origin => {
-    const { defaultDesign } = await import('./agsdl/design');
-    const { BASE_SOURCE } = await import('./agsdlExecution/conformanceFixtures');
-    const created = await service.createArchitectPlan({ branchName, planId: 'invalid-copy-provenance', label: 'Copy',
-      agsdl: { source: BASE_SOURCE, annexes: {}, design: { ...defaultDesign(), origin: { branchName, planId: 'blueprint', name: 'Blueprint', revision: 1 } } } });
-    await expect(service.updateArchitectPlan({ branchName, planId: created.id, expectedAgsdlRevision: 1,
-      agsdl: { source: BASE_SOURCE.replace('Review.', 'Refused edit.'), annexes: {}, design: { ...defaultDesign(), origin } as never } })).rejects.toThrow('design metadata');
-    service.clearArchitectPlanFrontendCaches();
-    expect(await service.getArchitectPlan(branchName, created.id)).toEqual(created);
   });
 
 });

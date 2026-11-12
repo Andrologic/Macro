@@ -3223,11 +3223,11 @@ impl FlowControl030 {
             .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&work.activation_id).bind(&protocol_id).fetch_optional(&mut *tx).await?.ok_or_else(refused)?;
             let ticket: Value = serde_json::from_str(work_event.get("ticket_json"))?;
             let decision: Value = serde_json::from_str(work_event.get::<&str, _>("decision_json"))?;
-            let input: repository::work_protocol030::ProtocolEvent030 =
+            let input: repository::work_dto030::ProtocolEvent030 =
                 serde_json::from_value(ticket.get("input").cloned().ok_or_else(refused)?)?;
             let authorization = sqlx::query("SELECT input_json,provider_attempt_id,native_call_id FROM engine_flow030_work_authorizations WHERE system_id=? AND invocation_id=? AND activation_id=? AND event_id=?")
             .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&work.activation_id).bind(&protocol_id).fetch_optional(&mut *tx).await?.ok_or_else(refused)?;
-            let authorized: repository::work_protocol030::ProtocolEvent030 =
+            let authorized: repository::work_dto030::ProtocolEvent030 =
                 serde_json::from_str(authorization.get("input_json"))?;
             let physical_event: Value = serde_json::from_str(&input.event_json)?;
             if input != authorized

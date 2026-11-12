@@ -1,33 +1,33 @@
-import { Dialog } from "../ui/Dialog";
-import { SaveSystemDialog } from "./SaveSystemDialog";
-import { DisclosureSummary } from "./DisclosureSummary";
-import React, { useEffect, useMemo, useState } from "react";
-import { Download, Save, Maximize2, X, Undo2, Redo2, Settings2, AlertTriangle } from "lucide-react";
-import { DesignLibraryDialog, DesignStart } from "./DesignLibraryDialog";
-import { DesignChangesDialog } from "./DesignChangesDialog";
+import { AlertTriangle,Download,Maximize2,Redo2,Save,Settings2,Undo2,X } from "lucide-react";
+import React,{ useEffect,useMemo,useState } from "react";
 import { reviewDesignChanges } from "../../services/agsdl/designReview";
-import { Diagnostics030 } from "./Diagnostics030";
+import { diagnosticOwner030,localizeDiagnostics,type LocalizedDiagnostic } from "../../services/agsdl/diagnostics";
+import { projectSystemOverview } from "../../services/agsdl/systemOverview";
+import {
+projectViewer,
+type ViewerCard,
+type ViewerPort,
+type ViewerReference,
+} from "../../services/agsdl/viewer";
+import { prepareAgsdlChatContext } from "../../stores/agsdl/chatContext";
+import {
+agsdlSessionKey,
+useAgsdlStore,
+type AgsdlTarget,
+} from "../../stores/useAgsdlStore";
+import { Dialog } from "../ui/Dialog";
 import { AgentDetails } from "./AgentDetails";
 import { ComponentDetailsDialog } from "./ComponentDetailsDialog";
+import { DesignChangesDialog } from "./DesignChangesDialog";
+import { DesignLibraryDialog,DesignStart } from "./DesignLibraryDialog";
+import { Diagnostics030 } from "./Diagnostics030";
+import { DisclosureSummary } from "./DisclosureSummary";
+import { SaveSystemDialog } from "./SaveSystemDialog";
 import { WorkflowEdgeSummary } from "./WorkflowEdge";
 import { WorkflowGraph } from "./WorkflowGraph";
-import { useAgsdlTranslation } from "./useAgsdlTranslation";
-import {
-  useAgsdlStore,
-  agsdlSessionKey,
-  type AgsdlTarget,
-} from "../../stores/useAgsdlStore";
-import {
-  projectViewer,
-  type ViewerCard,
-  type ViewerPort,
-  type ViewerReference,
-} from "../../services/agsdl/viewer";
-import { diagnosticOwner030, localizeDiagnostics, type LocalizedDiagnostic } from "../../services/agsdl/diagnostics";
-import { projectSystemOverview } from "../../services/agsdl/systemOverview";
 import "./agsdl.css";
-import { prepareAgsdlChatContext } from "../../stores/agsdl/chatContext";
 import { agsdlErrorText } from "./errorText";
+import { useAgsdlTranslation } from "./useAgsdlTranslation";
 
 // Chat and focused component edits share the same versioned document store.
 export const AgsdlEditor: React.FC<{
@@ -168,7 +168,7 @@ export const AgsdlEditor: React.FC<{
   }}>{t("agsdl.viewer.correctIssue")}</button>;
   const nodeTitle = (item: ViewerCard) => {
     const hasTitle = !!((item.details.displayAnnotations ?? item.details.annotations) as { title?: string } | undefined)?.title;
-    if (item.kind === "approval" && !["agsdl-0.2.0", "agsdl-0.3.0"].includes(String(item.details.contract)) && !hasTitle) return t("agsdl.viewer.approvalRequired");
+    if (item.kind === "approval" && !(item.details.contract === "agsdl-0.3.0") && !hasTitle) return t("agsdl.viewer.approvalRequired");
     if (item.kind === "end" && !hasTitle) return t(`agsdl.edge.${item.outcome}`, { defaultValue: item.title });
     return item.title || t("agsdl.viewer.unnamed");
   };
@@ -361,7 +361,7 @@ export const AgsdlEditor: React.FC<{
         <div role="alert" className="agsdl-error">
           {error || (session?.error && t("agsdl.actionFailed")) || (
             <>
-              <p>{t("agsdl.viewer.unreadable")}</p>
+              <p>{t(parsed.error?.includes("agsdl.unsupportedEdition020") ? "agsdl.unsupportedEdition020" : "agsdl.viewer.unreadable")}</p>
               <details className="agsdl-details">
                 <DisclosureSummary>{t("agsdl.viewer.technicalDetails")}</DisclosureSummary>
                 <p>{parsed.error}</p>

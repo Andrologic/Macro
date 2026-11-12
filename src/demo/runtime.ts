@@ -1,14 +1,14 @@
-import { demoNavigationPreferences } from './navigationExamples';
-import { demoBlueprintSteps } from './executionScenarios';
-import { initialDemoTaskGraphs, launchedDemoTaskGraph } from './taskExecutionGraph';
-import { DEMO_MACRO_LIBRARY_ID } from './macroBlueprintLibrary';
-import { sharedDemoBlueprints } from './sharedBlueprints';
-import { blueprintAgentTasks, blueprintWorkflowSteps, missingBlueprintFields, type DemoBlueprint, type DemoBlueprintUse } from './blueprintLaunch';
 import { macroNativeModelEdition } from '../services/agsdl/nativeModelEdition';
-import { demoSkill, demoProjects, demoTasks, demoPlans, demoExecutionGraphs, demoConversations, demoMessages, demoProvider, demoModel, demoMessage, DEMO_DATE } from './fixtures';
-import type { ConfigDocumentKind, ConfigSnapshot, ConfigDocument, JsonPatchOperation } from '../types/generated/config';
-import type { TerminalTabDto } from '../types/generated/ipc/TerminalTabDto';
 import type { DbConversation } from '../services/tauriIpc';
+import type { ConfigDocument,ConfigDocumentKind,ConfigSnapshot,JsonPatchOperation } from '../types/generated/config';
+import type { TerminalTabDto } from '../types/generated/ipc/TerminalTabDto';
+import { blueprintAgentTasks,blueprintWorkflowSteps,missingBlueprintFields,type DemoBlueprint,type DemoBlueprintUse } from './blueprintLaunch';
+import { demoBlueprintSteps } from './executionScenarios';
+import { DEMO_DATE,demoConversations,demoExecutionGraphs,demoMessage,demoMessages,demoModel,demoPlans,demoProjects,demoProvider,demoSkill,demoTasks } from './fixtures';
+import { DEMO_MACRO_LIBRARY_ID } from './macroBlueprintLibrary';
+import { demoNavigationPreferences } from './navigationExamples';
+import { sharedDemoBlueprints } from './sharedBlueprints';
+import { initialDemoTaskGraphs,launchedDemoTaskGraph } from './taskExecutionGraph';
 type Args = Record<string, unknown>;
 const object = (v: unknown): Args => v && typeof v === 'object' && !Array.isArray(v) ? v as Args : {};
 const string = (v: unknown): string => typeof v === 'string' ? v : '';
@@ -31,7 +31,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
     return { id: plan.id, projectIds: shared ? [] : [...plan.projectIds], shared, awaitsInput: sharedDemoBlueprints.find(item => item.id === plan.id)?.awaitsInput, title: plan.label || plan.title, description: plan.description,
       fields: plan.agsdl.design?.requirements?.map(field => ({ id: field.id, label: field.label, value: field.value ?? '' })) ?? [{ id: 'model', label: 'Modèle des agents', value: 'Macro AI · Démo' }],
       steps: demoBlueprintSteps(plan), document: structuredClone(plan.agsdl),
-      agents: Object.entries(source.agents).map(([id, agent]) => ({ id, title: plan.agsdl.display?.cards?.[`/agents/${id}`]?.title ?? id, prompt: (agent as { prompt?: { value?: string }[] }).prompt?.map(part => part.value ?? '').join('\n') ?? '' })),
+      agents: Object.entries(source.agents).map(([id, agent]) => ({ id, title: plan.agsdl.display?.cards?.[`/agents/${id}`]?.title ?? id, prompt: (typeof (agent as {instructions?: unknown}).instructions === 'string' ? (agent as {instructions: string}).instructions : (agent as { instructions?: { value?: string }[] }).instructions?.map(part => part.value ?? '').join('\n')) ?? '' })),
     } satisfies DemoBlueprint;
   }).filter(blueprint => blueprint.agents.length > 0);
   const blueprintUses = new Map<string, DemoBlueprintUse>();

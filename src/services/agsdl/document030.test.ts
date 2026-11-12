@@ -1,13 +1,12 @@
-import { describe, expect, it } from 'bun:test';
-import { readFileSync, readdirSync } from 'node:fs';
-import { encode as encodeExecution, decode as decodeExecution, record as executionRecord, NumberToken as ExecutionToken } from '../agsdlExecution/exact';
-import { equal } from '../../vendor/agsdl/v0.3/reader.mjs';
-import { AGSDL_CONTRACT, AGSDL_020_CONTRACT, LEGACY_AGSDL_CONTRACT, readDocument, readExactDocument, validateDocument, validateDocumentBytes, applyChanges, sourceAt, object, MAX_AGSDL_BYTES } from './document';
-import { NumberToken, parse, stringify, loadHarnessModule } from '../../vendor/agsdl/v0.3/reader.mjs';
+import { describe,expect,it } from 'bun:test';
+import { readdirSync,readFileSync } from 'node:fs';
+import type { AgsdlReport } from '../../types/agsdl';
+import { equal,loadHarnessModule,NumberToken,parse,stringify } from '../../vendor/agsdl/v0.3/reader.mjs';
+import { decode as decodeExecution,encode as encodeExecution,record as executionRecord,NumberToken as ExecutionToken } from '../agsdlExecution/exact';
 import { localizeDiagnostics } from './diagnostics';
+import { AGSDL_020_CONTRACT,AGSDL_CONTRACT,applyChanges,LEGACY_AGSDL_CONTRACT,MAX_AGSDL_BYTES,object,readDocument,readExactDocument,sourceAt,validateDocument,validateDocumentBytes } from './document';
 import { rememberSourceLocations } from './reader030WorkerProtocol';
 import type { ViewerCard } from './viewer';
-import type { AgsdlReport } from '../../types/agsdl';
 
 const bytes = (source: string) => new TextEncoder().encode(source);
 const source = (extra = '') => `{"contract":"agsdl-0.3.0","id":"test","agents":{}${extra}}`;
@@ -67,7 +66,7 @@ describe('AgSDL 0.3 document boundary', () => {
     expect(() => applyChanges(raw, [{ op: 'set', path: '/content/payload/value/absent/constructor/x', valueJson: 'true' }])).toThrow('does not exist');
   });
   it('structured 030 changes keep the historical pointer guards in older editions', () => {
-    for (const contract of [LEGACY_AGSDL_CONTRACT, AGSDL_020_CONTRACT]) {
+    for (const contract of [LEGACY_AGSDL_CONTRACT]) {
       const raw = JSON.stringify({ contract, constructor: { prototype: {} } });
       expect(() => applyChanges(raw, [{ op: 'set', path: '/constructor/prototype/agsdl030PrototypeGuardProbe', valueJson: 'true' }])).toThrow('not editable');
     }

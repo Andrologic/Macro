@@ -186,65 +186,8 @@ human waits, their correlation to the current work, and physical completion.
 This does not affect the existing confined stdio MCP flow-call port, including
 its form questions and deadlines. Remote MCP calls remain refused.
 
-## Legacy 0.2 execution boundary
+## Retired 0.2 execution
 
-Macro captures the executable, effective policy, account/routing fingerprint,
-model, configuration, initialization, mode and workspace before Start. It
-rechecks them before each activation. The captured permission ceiling remains
-in force after a configuration edit. Codex's native tools run under its named
-sandbox profile, with approvals set to `never`, network disabled, and write
-access limited to the captured workspace in Implement mode. Other modes and
-read-only projects grant workspace reads. The profile denies the workspace's
-`.macro` directory and private authentication/session directory. Codex's
-metadata protections keep `.git`, `.codex` and `.agents` read-only. Native tools
-can read project files as explicit task data. A Git worktree whose `.git` file
-redirects outside that workspace receives no extra metadata grant; native Git
-commands requiring that external directory can fail. Macro does not widen the
-sandbox to repair this limitation.
-
-The native context cwd stays at the empty private bootstrap. Workspace paths
-are supplied separately for tool effects. Macro disables project instruction
-loading, ancestor markers, shell snapshots, login shells, hooks, plugins, cloud
-skills, bundled skills, memories and native sub-agents. It verifies effective
-config, an empty skills inventory without errors, and the cwd, runtime roots
-and instruction sources returned by thread creation/resume. An existing
-`/etc/codex/skills` makes this host ineligible. This is an observed context
-condition, checked before capture and continuation; it does not claim a kernel
-deny against host reads or immunity to an administrator changing files during a
-turn.
-
-Codex owns its native tool policy. Macro's per-tool approval dialog and tool
-journal govern Macro tools; they do not intercept each native Codex tool. Macro
-still owns Agent FIFO admission, fencing epochs, durable input admission,
-private thread/turn references, exact response collection, validation of the
-AgSDL publication, and the final terminal transaction. A native publication is
-returned through an output schema containing a JSON string, preserving exact
-JSON number tokens for Macro's trusted validator.
-
-One Agent instance retains one native thread across activations. Distinct
-instances have separate threads. Codex memory uses `macro-codex-memory/1`; Macro
-memory is never silently converted. The private journal persists
-`possiblySent` before each thread/turn request. A missing receipt forbids an
-automatic replay, even after restart or Stop. A conclusively failed or
-interrupted turn becomes a failed Agent outcome only after physical end. A
-transport or correlation failure remains uncertain.
-
-Stop requests physical termination of the owned app-server and its descendants.
-Only a correlated native end receipt permits response closure, a stopped
-checkpoint and terminal validation. A JavaScript stop flag or stdio EOF is
-insufficient. No successor delivery occurs before physical end and trusted
-validation. Stop does not restore files already modified, and local process end
-does not prove cancellation of remote provider work.
-
-## Qualification
-
-Synthetic protocol tests exercise continuity, instance separation, exact
-publication, non-replay and failure windows. Physical local tests exercise the
-real CLI's effective configuration, filesystem/network restrictions and process
-termination without a model or login. These are distinct from an authenticated
-model turn. The 0.3 write/review path, correction after a rejected result, Stop with a
-live descendant, restart interruption, and native workspace/read-only grants
-have also been exercised with an explicitly connected private profile on macOS
-ARM64. This qualification does not replace each installation's native preflight;
-neither a successful initialize nor a visible model catalogue proves a model
-turn or additional capabilities.
+The former 0.2 scheduler and adapter are removed. Opening a 0.2 document reports
+an unsupported edition. The shared Codex client, profile observations and 0.3
+qualification above remain; no old execution or document conversion is used.

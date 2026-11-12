@@ -1,104 +1,49 @@
-import { createArchitectPlanReadService, type ArchitectPlanReadService } from './architectPlanReadService';
 import {
-  createArchitectPlanMutationService,
-  type ArchitectPlanMutationService,
+archiveArchitectPlan as archiveArchitectPlanImpl,
+bindArchitectPlanConversation as bindArchitectPlanConversationImpl,
+createArchitectPlan as createArchitectPlanImpl,
+createArchitectPlanMutationService,
+deleteArchitectPlan as deleteArchitectPlanImpl,
+mutateArchitectPlan as mutateArchitectPlanImpl,
+mutateArchitectPlanTaskStatus as mutateArchitectPlanTaskStatusImpl,
+restoreArchitectPlan as restoreArchitectPlanImpl,
+setActiveArchitectPlan as setActiveArchitectPlanImpl,
+updateArchitectPlan as updateArchitectPlanImpl,
+type ArchitectPlanMutationService,
 } from './architectPlanMutationService';
-import { createArchitectPlanSyncService, type ArchitectPlanSyncService } from './architectPlanSyncService';
 import {
-  resolveArchitectPlanServiceDependencies,
-  type ArchitectPlanServiceDependencies,
+clearArchitectPlanFrontendCaches as clearArchitectPlanFrontendCachesImpl,
+resolveArchitectPlanServiceDependencies,
+type ArchitectPlanServiceDependencies,
 } from './architectPlanReadContext';
 import {
-  isArchitectPlanStrategyMutable as isArchitectPlanStrategyMutableImpl,
+getArchitectPlanActionableProjectIds as getArchitectPlanActionableProjectIdsImpl,
+getArchitectPlanCrudCapabilities as getArchitectPlanCrudCapabilitiesImpl,
+getArchitectPlanEffectiveTargetBranchesByProjectId as getArchitectPlanEffectiveTargetBranchesByProjectIdImpl,
+getArchitectPlanEffectiveTargetBranch as getArchitectPlanEffectiveTargetBranchImpl,
+getArchitectPlanProjectIds as getArchitectPlanProjectIdsImpl,
+getArchitectPlanTargetBranchesByProjectId as getArchitectPlanTargetBranchesByProjectIdImpl,
+getArchitectPlanTargetBranchForProject as getArchitectPlanTargetBranchForProjectImpl,
+getArchitectPlanTargetDisplay as getArchitectPlanTargetDisplayImpl,
+getArchitectPlanVisibleProjectIds as getArchitectPlanVisibleProjectIdsImpl,
+getGitFlowBaseBranch as getGitFlowBaseBranchImpl,
+getGitFlowMainBranch as getGitFlowMainBranchImpl,
+hasPersistedArchitectStrategy as hasPersistedArchitectStrategyImpl,
+isArchitectPlanReplicaDivergenceError as isArchitectPlanReplicaDivergenceErrorImpl,
+isArchitectPlanRestorableStatus as isArchitectPlanRestorableStatusImpl,
+isArchitectPlanSlugMutable as isArchitectPlanSlugMutableImpl,
+isArchitectPlanStrategyMutable as isArchitectPlanStrategyMutableImpl,
+isArchitectPlanStrategyMutationLocked as isArchitectPlanStrategyMutationLockedImpl,
+isArchitectPlanVisibleForScope as isArchitectPlanVisibleForScopeImpl,
+planHasMixedTargetBranches as planHasMixedTargetBranchesImpl,
+planMatchesProjectId as planMatchesProjectIdImpl,
+resolvePlanProjectContextId as resolvePlanProjectContextIdImpl,
+resolveTargetBranch as resolveTargetBranchImpl,
+toPlanIntegrationBranch as toPlanIntegrationBranchImpl,
+toPlanScopedFeatureBranch as toPlanScopedFeatureBranchImpl,
 } from './architectPlanReadModel';
-import {
-  isArchitectPlanStrategyMutationLocked as isArchitectPlanStrategyMutationLockedImpl,
-} from './architectPlanReadModel';
-import {
-  isArchitectPlanRestorableStatus as isArchitectPlanRestorableStatusImpl,
-} from './architectPlanReadModel';
-import {
-  getArchitectPlanCrudCapabilities as getArchitectPlanCrudCapabilitiesImpl,
-} from './architectPlanReadModel';
-import {
-  isArchitectPlanReplicaDivergenceError as isArchitectPlanReplicaDivergenceErrorImpl,
-} from './architectPlanReadModel';
-import { isArchitectPlanSlugMutable as isArchitectPlanSlugMutableImpl } from './architectPlanReadModel';
-import { hasPersistedArchitectStrategy as hasPersistedArchitectStrategyImpl } from './architectPlanReadModel';
-import {
-  getArchitectPlanEffectiveTargetBranchesByProjectId as getArchitectPlanEffectiveTargetBranchesByProjectIdImpl,
-} from './architectPlanReadModel';
-import {
-  getArchitectPlanEffectiveTargetBranch as getArchitectPlanEffectiveTargetBranchImpl,
-} from './architectPlanReadModel';
-import { getArchitectPlanTargetDisplay as getArchitectPlanTargetDisplayImpl } from './architectPlanReadModel';
-import {
-  getArchitectPlanActionableProjectIds as getArchitectPlanActionableProjectIdsImpl,
-} from './architectPlanReadModel';
-import {
-  getArchitectPlanVisibleProjectIds as getArchitectPlanVisibleProjectIdsImpl,
-} from './architectPlanReadModel';
-import { getArchitectPlanProjectIds as getArchitectPlanProjectIdsImpl } from './architectPlanReadModel';
-import {
-  isArchitectPlanVisibleForScope as isArchitectPlanVisibleForScopeImpl,
-} from './architectPlanReadModel';
-import {
-  getArchitectPlanTargetBranchesByProjectId as getArchitectPlanTargetBranchesByProjectIdImpl,
-} from './architectPlanReadModel';
-import {
-  getArchitectPlanTargetBranchForProject as getArchitectPlanTargetBranchForProjectImpl,
-} from './architectPlanReadModel';
-import { planHasMixedTargetBranches as planHasMixedTargetBranchesImpl } from './architectPlanReadModel';
-import { planMatchesProjectId as planMatchesProjectIdImpl } from './architectPlanReadModel';
-import { resolvePlanProjectContextId as resolvePlanProjectContextIdImpl } from './architectPlanReadModel';
-import { toPlanScopedFeatureBranch as toPlanScopedFeatureBranchImpl } from './architectPlanReadModel';
-import { toPlanIntegrationBranch as toPlanIntegrationBranchImpl } from './architectPlanReadModel';
-import { resolveTargetBranch as resolveTargetBranchImpl } from './architectPlanReadModel';
-import { getGitFlowBaseBranch as getGitFlowBaseBranchImpl } from './architectPlanReadModel';
-import { getGitFlowMainBranch as getGitFlowMainBranchImpl } from './architectPlanReadModel';
-import {
-  clearArchitectPlanFrontendCaches as clearArchitectPlanFrontendCachesImpl,
-} from './architectPlanReadContext';
-import {
-  getArchitectPlanChatTranscript as getArchitectPlanChatTranscriptImpl,
-} from './architectPlanReadService';
-import {
-  getArchitectPlanActivationPayload as getArchitectPlanActivationPayloadImpl,
-} from './architectPlanReadService';
-import { listArchitectPlans as listArchitectPlansImpl } from './architectPlanReadService';
-import { isArchitectPlanSlugAvailable as isArchitectPlanSlugAvailableImpl } from './architectPlanReadService';
-import { getArchitectPlan as getArchitectPlanImpl, readArchitectPlanSnapshot as readArchitectPlanSnapshotImpl } from './architectPlanReadService';
-import { getArchitectPlanChatMessages as getArchitectPlanChatMessagesImpl } from './architectPlanReadService';
-import {
-  inspectArchitectPlanMetadataHealth as inspectArchitectPlanMetadataHealthImpl,
-} from './architectPlanReadService';
-import {
-  listArchitectPlanTargetBranches as listArchitectPlanTargetBranchesImpl,
-} from './architectPlanReadService';
-import { commitArchitectPlanMetadata as commitArchitectPlanMetadataImpl } from './architectPlanSyncService';
-import {
-  saveArchitectPlanChatMessages as saveArchitectPlanChatMessagesImpl,
-} from './architectPlanSyncService';
-import {
-  syncArchitectPlanChatFromConversation as syncArchitectPlanChatFromConversationImpl,
-} from './architectPlanSyncService';
-import { repairArchitectPlanReplicas as repairArchitectPlanReplicasImpl } from './architectPlanSyncService';
-import { repairArchitectPlanMetadata as repairArchitectPlanMetadataImpl } from './architectPlanSyncService';
-import { writeArchitectTaskExecution as writeArchitectTaskExecutionImpl } from './architectPlanSyncService';
-import { createArchitectPlan as createArchitectPlanImpl } from './architectPlanMutationService';
-import { migrateArchitectPlanToAgsdl as migrateArchitectPlanToAgsdlImpl } from './architectPlanMutationService';
-import {
-  mutateArchitectPlanTaskStatus as mutateArchitectPlanTaskStatusImpl,
-} from './architectPlanMutationService';
-import { updateArchitectPlan as updateArchitectPlanImpl } from './architectPlanMutationService';
-import {
-  bindArchitectPlanConversation as bindArchitectPlanConversationImpl,
-} from './architectPlanMutationService';
-import { setActiveArchitectPlan as setActiveArchitectPlanImpl } from './architectPlanMutationService';
-import { deleteArchitectPlan as deleteArchitectPlanImpl } from './architectPlanMutationService';
-import { restoreArchitectPlan as restoreArchitectPlanImpl } from './architectPlanMutationService';
-import { archiveArchitectPlan as archiveArchitectPlanImpl } from './architectPlanMutationService';
-import { mutateArchitectPlan as mutateArchitectPlanImpl } from './architectPlanMutationService';
+import { createArchitectPlanReadService,getArchitectPlanActivationPayload as getArchitectPlanActivationPayloadImpl,getArchitectPlanChatMessages as getArchitectPlanChatMessagesImpl,getArchitectPlanChatTranscript as getArchitectPlanChatTranscriptImpl,getArchitectPlan as getArchitectPlanImpl,inspectArchitectPlanMetadataHealth as inspectArchitectPlanMetadataHealthImpl,isArchitectPlanSlugAvailable as isArchitectPlanSlugAvailableImpl,listArchitectPlans as listArchitectPlansImpl,listArchitectPlanTargetBranches as listArchitectPlanTargetBranchesImpl,readArchitectPlanSnapshot as readArchitectPlanSnapshotImpl,type ArchitectPlanReadService } from './architectPlanReadService';
+import { commitArchitectPlanMetadata as commitArchitectPlanMetadataImpl,createArchitectPlanSyncService,repairArchitectPlanMetadata as repairArchitectPlanMetadataImpl,repairArchitectPlanReplicas as repairArchitectPlanReplicasImpl,saveArchitectPlanChatMessages as saveArchitectPlanChatMessagesImpl,syncArchitectPlanChatFromConversation as syncArchitectPlanChatFromConversationImpl,writeArchitectTaskExecution as writeArchitectTaskExecutionImpl,type ArchitectPlanSyncService } from './architectPlanSyncService';
 
 /** Compatibility facade. Each capability is also usable independently. */
 export interface ArchitectPlanService extends ArchitectPlanReadService, ArchitectPlanMutationService, ArchitectPlanSyncService {}
@@ -113,32 +58,9 @@ export const createArchitectPlanService = (overrides: ArchitectPlanServiceDepend
 };
 
 export {
-  type ArchitectPlanStatus,
-  type ArchitectPlanRestorableStatus,
-  ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,
-  type ArchitectPlanReplicationState,
-  type ArchitectPlanParticipant,
-  type ArchitectPlanContentHashes,
-  type ArchitectPlanArtifactManifestSummary,
-  type ArchitectPlanConversationSnapshot,
-  type ArchitectPlanDeletionSnapshot,
-  type ArchitectPlanManifest,
-  type ArchitectPlanChatMessage,
-  type ArchitectPlanRecord,
-  type ArchitectPlanSummary,
-  type ArchitectPlanReplica,
-  type ArchitectPlanReplicaDivergence,
-  type ArchitectPlanMetadataHealthStatus,
-  type ArchitectPlanMetadataHealth,
-  type ArchitectPlanMetadataRepairResult,
-  type ArchitectPlanCrudCapabilities,
-  type ArchitectPlanActivationResolutionMode,
-  type ArchitectPlanActivationPayload,
-  type ArchitectPlanActivationOptions,
-  ArchitectPlanReplicaDivergenceError,
-  type ArchitectPlanReplicaRepairStrategy,
-  type ProjectGitFlowSettingsResolver,
-  type ArchitectTaskExecutionRecord,
+ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,ArchitectPlanReplicaDivergenceError,type ArchitectPlanActivationOptions,type ArchitectPlanActivationPayload,type ArchitectPlanActivationResolutionMode,type ArchitectPlanArtifactManifestSummary,type ArchitectPlanChatMessage,type ArchitectPlanContentHashes,type ArchitectPlanConversationSnapshot,type ArchitectPlanCrudCapabilities,type ArchitectPlanDeletionSnapshot,
+type ArchitectPlanManifest,type ArchitectPlanMetadataHealth,type ArchitectPlanMetadataHealthStatus,type ArchitectPlanMetadataRepairResult,type ArchitectPlanParticipant,type ArchitectPlanRecord,type ArchitectPlanReplica,
+type ArchitectPlanReplicaDivergence,type ArchitectPlanReplicaRepairStrategy,type ArchitectPlanReplicationState,type ArchitectPlanRestorableStatus,type ArchitectPlanStatus,type ArchitectPlanSummary,type ArchitectTaskExecutionRecord,type ProjectGitFlowSettingsResolver
 } from './architectPlanReadModel';
 export const isArchitectPlanStrategyMutable: typeof isArchitectPlanStrategyMutableImpl = (...args) => isArchitectPlanStrategyMutableImpl(...args);
 export const isArchitectPlanStrategyMutationLocked: typeof isArchitectPlanStrategyMutationLockedImpl = (...args) => isArchitectPlanStrategyMutationLockedImpl(...args);
@@ -166,14 +88,14 @@ export const getGitFlowBaseBranch: typeof getGitFlowBaseBranchImpl = (...args) =
 export const getGitFlowMainBranch: typeof getGitFlowMainBranchImpl = (...args) => getGitFlowMainBranchImpl(...args);
 
 export {
-  type ArchitectPlanServiceAppState,
-  type ArchitectPlanServiceDependencies,
+type ArchitectPlanServiceAppState,
+type ArchitectPlanServiceDependencies
 } from './architectPlanReadContext';
 export const clearArchitectPlanFrontendCaches: typeof clearArchitectPlanFrontendCachesImpl = (...args) => clearArchitectPlanFrontendCachesImpl(...args);
 
 export {
-  type ArchitectPlanChatTranscriptOptions,
-  type ListArchitectPlansOptions,
+type ArchitectPlanChatTranscriptOptions,
+type ListArchitectPlansOptions
 } from './architectPlanReadService';
 export const getArchitectPlanChatTranscript: typeof getArchitectPlanChatTranscriptImpl = (...args) => getArchitectPlanChatTranscriptImpl(...args);
 export const getArchitectPlanActivationPayload: typeof getArchitectPlanActivationPayloadImpl = (...args) => getArchitectPlanActivationPayloadImpl(...args);
@@ -194,7 +116,6 @@ export const writeArchitectTaskExecution: typeof writeArchitectTaskExecutionImpl
 
 export { type UpdateArchitectPlanInput } from './architectPlanMutationService';
 export const createArchitectPlan: typeof createArchitectPlanImpl = (...args) => createArchitectPlanImpl(...args);
-export const migrateArchitectPlanToAgsdl: typeof migrateArchitectPlanToAgsdlImpl = (...args) => migrateArchitectPlanToAgsdlImpl(...args);
 export const mutateArchitectPlanTaskStatus: typeof mutateArchitectPlanTaskStatusImpl = (...args) => mutateArchitectPlanTaskStatusImpl(...args);
 export const updateArchitectPlan: typeof updateArchitectPlanImpl = (...args) => updateArchitectPlanImpl(...args);
 export const bindArchitectPlanConversation: typeof bindArchitectPlanConversationImpl = (...args) => bindArchitectPlanConversationImpl(...args);

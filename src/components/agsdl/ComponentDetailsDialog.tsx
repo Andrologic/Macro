@@ -1,19 +1,19 @@
+import { ArrowLeft,MessageSquarePlus,Pencil,X } from "lucide-react";
+import { useState,type ReactNode } from "react";
+import { componentChanges,componentFields,type ComponentField } from "../../services/agsdl/componentFields";
+import { componentProperties,propertyChanges,type ComponentProperties } from "../../services/agsdl/componentProperties";
+import { macroAgentConfiguration,macroConfigurationChanges,type MacroConfiguration } from "../../services/agsdl/macroAgentConfiguration";
+import { AgsdlUserError } from "../../services/agsdl/userErrors";
+import type { ViewerCard } from "../../services/agsdl/viewer";
+import { qualifiedModel,useAgsdlModelCatalogue } from "../../stores/useAgsdlModelCatalogue";
+import { agsdlSessionKey,useAgsdlStore,type AgsdlTarget } from "../../stores/useAgsdlStore";
+import { Dialog } from "../ui/Dialog";
 import { ComponentDetails030 } from "./ComponentDetails030";
 import { DiscardChangesDialog } from "./DiscardChangesDialog";
 import { DisclosureSummary } from "./DisclosureSummary";
-import { useState, type ReactNode } from "react";
-import { ArrowLeft, Pencil, X, MessageSquarePlus } from "lucide-react";
-import { Dialog } from "../ui/Dialog";
-import { useAgsdlTranslation } from "./useAgsdlTranslation";
-import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../../stores/useAgsdlStore";
-import { componentChanges, componentFields, type ComponentField } from "../../services/agsdl/componentFields";
-import { componentProperties, propertyChanges, type ComponentProperties } from "../../services/agsdl/componentProperties";
-import { macroAgentConfiguration, macroConfigurationChanges, type MacroConfiguration } from "../../services/agsdl/macroAgentConfiguration";
-import { qualifiedModel, useAgsdlModelCatalogue } from "../../stores/useAgsdlModelCatalogue";
-import { MacroAgentConfiguration } from "./MacroAgentConfiguration";
-import type { ViewerCard } from "../../services/agsdl/viewer";
-import { AgsdlUserError } from "../../services/agsdl/userErrors";
 import { agsdlErrorText } from "./errorText";
+import { MacroAgentConfiguration } from "./MacroAgentConfiguration";
+import { useAgsdlTranslation } from "./useAgsdlTranslation";
 
 export function ComponentDetailsDialog(props: Parameters<typeof HistoricalComponentDetailsDialog>[0]) {
   return props.card?.edition030 ? <ComponentDetails030 {...props} /> : <HistoricalComponentDetailsDialog {...props} />;
@@ -24,8 +24,6 @@ function HistoricalComponentDetailsDialog({ title, target, card, canEdit = true,
 }) {
   const { t } = useAgsdlTranslation();
   const session = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]);
-  const hasEditableConfiguration = card && session && macroAgentConfiguration(session.source, card).editable;
-  const hasEditablePrompt = card && session && componentFields(session.source, card).length > 0;
   const [draft, setDraft] = useState<{ fields: ComponentField[]; values: string[]; version: string; properties: ComponentProperties; propertyValues: string[]; source: string; configuration: MacroConfiguration; providerId: string; modelId: string; modelSelected: boolean }>();
   const [applied, setApplied] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -74,7 +72,7 @@ function HistoricalComponentDetailsDialog({ title, target, card, canEdit = true,
     backdropClassName="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
     panelClassName="agsdl-detail-modal">
     <header>{!draft && onBack && <button className="agsdl-icon-button" disabled={busy} onClick={onBack} aria-label={t("agsdl.viewer.backToComponent")} title={t("agsdl.viewer.backToComponent")}><ArrowLeft size={16} /></button>}<strong>{title}</strong><div className="agsdl-header-actions">
-      {!draft && canEdit && card && (card.details.contract !== "agsdl-0.2.0" || hasEditableConfiguration || hasEditablePrompt) && ["invoke", "agent", "Agent", "System", "Instructions", "Interface", "Tool", "Resource", "condition", "approval"].includes(card.kind) && session?.status === "draft" && <button className="agsdl-icon-button" onClick={start} disabled={session.saving} aria-label={t("agsdl.viewer.editComponent")} title={t("agsdl.viewer.editComponent")}><Pencil size={15} /></button>}
+      {!draft && canEdit && card && ["invoke", "agent", "Agent", "System", "Instructions", "Interface", "Tool", "Resource", "condition", "approval"].includes(card.kind) && session?.status === "draft" && <button className="agsdl-icon-button" onClick={start} disabled={session.saving} aria-label={t("agsdl.viewer.editComponent")} title={t("agsdl.viewer.editComponent")}><Pencil size={15} /></button>}
       <button className="agsdl-icon-button" disabled={busy} onClick={close} aria-label={t("agsdl.close")}><X size={16} /></button>
     </div></header>
     <div className="agsdl-inspector-body">

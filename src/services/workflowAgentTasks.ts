@@ -1,22 +1,20 @@
-import type { RunInspectionAccess030, RunInspection030 } from './agsdl/runtimeProjection030';
-import type { HumanRequestClient030 } from './agsdl/humanRequests030';
-import type { RunCapture030, RunHumanRequest030 } from '../types/agsdlRunUi030';
 import type { TaskStatus } from '../types';
-import type { ArchitectPlanRecord } from './architectPlanService';
-import type { CatalogedImplementTask } from './implementTaskCatalog';
-import type { WorkflowAgentTaskReference, WorkflowAgentTaskState } from '../types/workflowAgentTask';
-import type { PublicApproval } from '../types/generated/ipc';
-import type { AgentInstanceId, PublicActivation, PublicProjection, PublicSnapshot, SourceRevision, SystemStartId } from './agsdlExecution/contracts';
-import * as ipc from './ipc/agsdlExecution';
-import { assertProjection, appendProjection } from './agsdl/executionView';
-import { sourceDigest } from './agsdlExecution/sourceDigest';
-import { compareSequence, sameWork } from './agsdlExecution/invariants';
-import { runCaptureKey030 } from './agsdl/runGraphProjection030';
-import { retainedRunValue030 } from './agsdl/runtimeProjection030';
-import { createRunInspectionAccess030 } from './agsdl/runAccess030';
-import { toServiceError } from './contracts/errors';
+import type { RunCapture030,RunHumanRequest030 } from '../types/agsdlRunUi030';
+import type { WorkflowAgentTaskReference,WorkflowAgentTaskState } from '../types/workflowAgentTask';
+import { object,readDocument } from './agsdl/document';
 import { createNativeHumanRequestClient030 } from './agsdl/humanReadAccess030';
-import { object, readDocument } from './agsdl/document';
+import type { HumanRequestClient030 } from './agsdl/humanRequests030';
+import { createRunInspectionAccess030 } from './agsdl/runAccess030';
+import { runCaptureKey030 } from './agsdl/runGraphProjection030';
+import type { RunInspection030,RunInspectionAccess030 } from './agsdl/runtimeProjection030';
+import { retainedRunValue030 } from './agsdl/runtimeProjection030';
+import type { AgentInstanceId,PublicProjection,PublicSnapshot,SourceRevision,SystemStartId } from './agsdlExecution/contracts';
+import { compareSequence } from './agsdlExecution/invariants';
+import { sourceDigest } from './agsdlExecution/sourceDigest';
+import type { ArchitectPlanRecord } from './architectPlanService';
+import { toServiceError } from './contracts/errors';
+import type { CatalogedImplementTask } from './implementTaskCatalog';
+import * as ipc from './ipc/agsdlExecution030';
 
 export function sameWorkflowSource030(a: { owner: WorkflowRunScope030['owner']; revision: string; sourceSha256: string }, b: { owner: WorkflowRunScope030['owner']; revision: string; sourceSha256: string }): boolean {
   return a.owner.projectId === b.owner.projectId && a.owner.planId === b.owner.planId && a.owner.branch === b.owner.branch && a.revision === b.revision && a.sourceSha256 === b.sourceSha256;
@@ -133,101 +131,13 @@ export const isWorkflowPlan = (plan: ArchitectPlanRecord): boolean =>
   plan.agsdl?.design?.kind === 'system' && !!plan.agsdl.design.origin?.branchName;
 
 export interface WorkflowAgentTaskPorts {
-  runs: typeof ipc.listExecutionRuns;
-  snapshot: typeof ipc.readExecutionSnapshot;
-  projection: typeof ipc.readExecutionProjection;
-  approvals: typeof ipc.readExecutionApprovals;
+  runs: typeof ipc.listExecutionRuns030;
+  snapshot: typeof ipc.readExecutionSnapshot030;
+  inspect?: typeof readWorkflowRun030;
 }
-const nativePorts: WorkflowAgentTaskPorts = { runs: ipc.listExecutionRuns, snapshot: ipc.readExecutionSnapshot,
-  projection: ipc.readExecutionProjection, approvals: ipc.readExecutionApprovals };
-
-function agentState(items: PublicActivation[], approvals: readonly PublicApproval[], system: PublicProjection['systemStop']): WorkflowAgentTaskState {
-  const unresolved = items.filter(item => item.workState !== 'terminal');
-  if (unresolved.some(item => item.workState === 'uncertain' || item.stopState.kind === 'uncertain') ||
-    (unresolved.length > 0 && system.kind === 'uncertain')) return 'uncertain';
-  if (unresolved.some(item => item.stopState.kind === 'requested') ||
-    (unresolved.length > 0 && system.kind === 'requested')) return 'stopRequested';
-  if (approvals.some(approval => approval.status === 'pending' && unresolved.some(item => item.work.activationId === approval.work.activationId))) return 'approval';
-  if (unresolved.some(item => item.workState === 'active')) return 'active';
-  if (unresolved.some(item => item.workState === 'queued')) return 'queued';
-  const last = items.reduce<PublicActivation | undefined>((previous, next) =>
-    !previous || compareSequence(previous.queueSequence, next.queueSequence) < 0 ? next : previous, undefined);
-  if (last) {
-    if (!last.terminalKind) throw new Error('Native terminal activation has no outcome');
-    return last.terminalKind;
-  }
-  return system.kind === 'confirmed' ? 'stopped' : system.kind === 'none' ? 'idle' :
-    system.kind === 'uncertain' ? 'uncertain' : 'stopRequested';
-}
+const nativePorts: WorkflowAgentTaskPorts = { runs: ipc.listExecutionRuns030, snapshot: ipc.readExecutionSnapshot030 };
 const statuses: Record<WorkflowAgentTaskState, TaskStatus> = { idle: 'Blocked', queued: 'Pending', active: 'InProgress',
   approval: 'AwaitingResponse', uncertain: 'Blocked', stopRequested: 'Blocked', stopped: 'Blocked', completed: 'Completed', failed: 'Failed' };
-
-/** One Task per native instance, across all visits and deliveries in this run.
- * Pure/Call/Condition steps do not fabricate Agent tasks. */
-export function projectWorkflowAgentTasks(plan: ArchitectPlanRecord, snapshot: PublicSnapshot, projection: PublicProjection,
-  approvals: readonly PublicApproval[]): CatalogedImplementTask[] {
-  if (isCapture030(snapshot)) throw new Error('Use the 0.3 workflow projection');
-  if (projection.systemStartId !== snapshot.systemStartId || !sameWorkflowSource030(projection.source, snapshot.source) ||
-    projection.activations.some(item => item.work.systemStartId !== snapshot.systemStartId)) throw new Error('Workflow projection scope differs');
-  if (projection.nextPage) throw new Error('Incomplete workflow projection');
-  const owner = snapshot.source.owner;
-  if (owner.planId !== plan.id || owner.branch !== plan.targetBranch ||
-    !(plan.projectIds ?? (plan.projectId ? [plan.projectId] : [])).includes(owner.projectId)) throw new Error('Workflow project scope differs');
-  const instances = new Set<string>(), names = new Set<string>(), activations = new Set<string>(), positions = new Set<string>();
-  for (const agent of projection.agents) {
-    if (!agent.agentInstanceId || !agent.agentName || instances.has(agent.agentInstanceId) || names.has(agent.agentName)) throw new Error('Duplicate native Agent');
-    instances.add(agent.agentInstanceId); names.add(agent.agentName);
-  }
-  for (const activation of projection.activations) {
-    compareSequence(activation.queueSequence, activation.queueSequence);
-    // SQLite numbers each Agent's FIFO independently. Pure steps use the
-    // system cursor and therefore share only the null-instance position space.
-    const position = JSON.stringify([activation.work.agentInstanceId, activation.queueSequence]);
-    if (activations.has(activation.work.activationId) || positions.has(position) ||
-      activation.work.agentInstanceId !== null && !instances.has(activation.work.agentInstanceId)) throw new Error('Invalid native activation identity');
-    activations.add(activation.work.activationId); positions.add(position);
-  }
-  for (const approval of approvals) {
-    if (approval.work.systemStartId !== snapshot.systemStartId) throw new Error('Approval scope differs');
-    const activation = projection.activations.find(item => item.work.activationId === approval.work.activationId);
-    if (!activation || !sameWork(activation.work, approval.work as PublicActivation['work'])) throw new Error('Approval activation differs');
-  }
-  const document = readDocument(snapshot.authoredSource);
-  const agents = object(document.agents);
-  const steps = object(object(document.flow).steps);
-  // A committed failure with onError atomically schedules its authored successor.
-  // Historical failures on that path are not unresolved requests for the run.
-  const unownedProblems = projection.activations.filter(item => {
-    if (item.work.agentInstanceId !== null) return false;
-    if (item.workState !== 'terminal') return item.workState === 'uncertain' || item.stopState.kind === 'uncertain';
-    const onError = item.work.step?.length === 1 ? object(steps[item.work.step[0]]).onError : undefined;
-    return item.terminalKind === 'failed' && !(Array.isArray(onError) && onError.length > 0);
-  });
-  const runAttention: WorkflowAgentTaskReference['runAttention'] = unownedProblems.length ? {
-    state: unownedProblems.some(item => item.workState !== 'terminal') ? 'uncertain' : 'failed',
-    activationIds: unownedProblems.map(item => item.work.activationId),
-  } : undefined;
-  return projection.agents.map((agent, index) => {
-    if (!Object.hasOwn(agents, agent.agentName)) throw new Error('Agent is absent from captured source');
-    const items = projection.activations.filter(item => item.work.agentInstanceId === agent.agentInstanceId);
-    const state = agentState(items, approvals, projection.systemStop);
-    const reference: WorkflowAgentTaskReference = { systemStartId: snapshot.systemStartId, source: snapshot.source,
-      agentInstanceId: agent.agentInstanceId, agentName: agent.agentName, cursor: projection.cursor, state,
-      activationIds: items.map(item => item.work.activationId),
-      runAttention: index === 0 ? runAttention : undefined,
-      interactionRequired: ['approval', 'uncertain', 'failed'].includes(state) || index === 0 && !!runAttention };
-    return { id: workflowAgentTaskId(snapshot.systemStartId, agent.agentInstanceId), plan_id: plan.id,
-      project_id: owner.projectId, project_ids: [owner.projectId], context_project_ids: [], title: agent.agentName,
-      description: '', status: statuses[state], dependencies: [], estimated_changes: [], workflow_execution: reference,
-      task_source: 'agsdl', plan_title: plan.label || plan.title, plan_status: plan.status, plan_storage_branch: owner.branch,
-      plan_target_branch: owner.branch, plan_target_branches_by_project_id: { [owner.projectId]: owner.branch },
-      draft: false, standalone_kind: 'legacy', task_kind: null, base_branch: owner.branch, feature_slug: null,
-      conversation_id: null, archived_at: plan.archivedAt ?? null, archive_reason: null, merged_at: null,
-      assigned_branch: owner.branch, branch_name: owner.branch, branch_id: null, branch_task_index: index,
-      blocked_by_task_ids: [], blocked_by: [], is_blocked: statuses[state] === 'Blocked', is_ready: false,
-      needs_revalidation: false, sequence_index: index, execution_targets: [] };
-  });
-}
 
 export function projectWorkflowAgentTasks030(plan: ArchitectPlanRecord, inspection: RunInspection030): CatalogedImplementTask[] {
   const { capture, state } = inspection;
@@ -278,13 +188,8 @@ export function projectWorkflowAgentTasks030(plan: ArchitectPlanRecord, inspecti
 
 async function tasksForCapture(plan: ArchitectPlanRecord, snapshot: WorkflowCapture, ports: WorkflowAgentTaskPorts) {
   if (await sourceDigest(snapshot.authoredSource) !== snapshot.source.sourceSha256) throw new Error('Workflow capture differs');
-  if (isCapture030(snapshot)) return projectWorkflowAgentTasks030(plan, await readWorkflowRun030(snapshot, plan.conversationId));
-  let projection = await ports.projection(snapshot.systemStartId);
-  assertProjection(projection, snapshot);
-  while (projection.nextPage) projection = appendProjection(projection, await ports.projection(snapshot.systemStartId, projection.nextPage), snapshot);
-  const approvals = await ports.approvals({ systemStartId: snapshot.systemStartId, source: snapshot.source });
-  if (approvals.incomplete) throw new Error('Incomplete workflow approvals');
-  return projectWorkflowAgentTasks(plan, snapshot, projection, approvals.approvals);
+  if (isCapture030(snapshot)) return projectWorkflowAgentTasks030(plan, await (ports.inspect ?? readWorkflowRun030)(snapshot, plan.conversationId));
+  throw new Error('Unsupported AgSDL execution edition.');
 }
 
 /** Re-read only known executions. Polling never scans metadata or creates Tasks. */

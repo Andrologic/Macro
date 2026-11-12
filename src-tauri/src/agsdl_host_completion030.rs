@@ -10,9 +10,7 @@ use crate::{
     },
     ai::stream_tasks::StreamTasks,
     config::ConfigManager,
-    db::agsdl_execution::{
-        failure, flow_work_protocol030, work_protocol030::CheckRequest030, Result,
-    },
+    db::agsdl_execution::{failure, flow_work_protocol030, work_dto030::CheckRequest030, Result},
 };
 use serde_json::{json, Value};
 use sqlx::{Connection, SqlitePool};

@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 pub(crate) const ADAPTER: &str = "codex-app-server-v1";
-pub(crate) const VERSION: &str = crate::db::agsdl_execution::native_operations::CODEX_VERSION;
+pub(crate) const VERSION: &str = "0.167.0";
 pub(crate) const PROVIDER: &str = "codex-native";
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

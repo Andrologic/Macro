@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
+import { afterEach,describe,expect,it,mock,spyOn } from "bun:test";
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { DesignLibraryDialog } from "./DesignLibraryDialog";
-import * as blueprints from "../../stores/agsdl/blueprints";
-import { agsdlSessionKey, useAgsdlStore } from "../../stores/useAgsdlStore";
+import { createRoot,type Root } from "react-dom/client";
 import { createExample } from "../../services/agsdl/examples";
+import * as blueprints from "../../stores/agsdl/blueprints";
+import { agsdlSessionKey,useAgsdlStore } from "../../stores/useAgsdlStore";
+import { DesignLibraryDialog } from "./DesignLibraryDialog";
 
 const target = { branchName: "develop", planId: "design-library" };
 const key = agsdlSessionKey(target);
@@ -54,7 +54,7 @@ const setSearch = (value: string) => act(() => {
 describe("design source library", () => {
   it("keeps healthy sources visible, invalidates filtered selections, and retries a partial load", async () => {
     const original = blueprints.builtInDesignSources()[0];
-    const source = { ...original, source: createExample("release", "agsdl-0.2.0"), display: { ...original.display, cards: { "/flow/steps/checklist": { title: "Checklist" } } } };
+    const source = { ...original, source: createExample("release", "agsdl-0.3.0"), display: { ...original.display, cards: { "/flow/steps/implement": { title: "Checklist" } } } };
     let resolveRetry!: (result: Awaited<ReturnType<typeof blueprints.listDesignSources>>) => void;
     const retryResult = new Promise<Awaited<ReturnType<typeof blueprints.listDesignSources>>>(resolve => { resolveRetry = resolve; });
     const list = spyOn(blueprints, "listDesignSources")

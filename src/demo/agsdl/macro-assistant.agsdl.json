@@ -1,45 +1,12 @@
 {
-  "contract": "agsdl-0.2.0",
+  "contract": "agsdl-0.3.0",
   "id": "macro-assistant",
-  "bindings": {
-    "engine": {
-      "contract": {
-        "identity": "macro/agent-engine",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      }
-    }
-  },
-  "configurations": {
-    "standard": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      }
-    }
-  },
+  "title": "Assistant",
   "agents": {
     "agent1": {
-      "configuration": "standard",
-      "prompt": [
-        {
-          "value": "Répondre à la demande et présenter un résultat clair."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Répondre à la demande et présenter un résultat clair."
     }
   },
   "flow": {
@@ -48,7 +15,7 @@
       "agent1": {
         "type": "agent",
         "agent": "agent1",
-        "next": []
+        "title": "Traiter votre demande"
       }
     }
   }

@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach,describe,expect,it } from "bun:test";
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { ComponentDetailsDialog } from "./ComponentDetailsDialog";
-import { createLegacyExample, createExample } from "../../services/agsdl/examples";
+import { createRoot,type Root } from "react-dom/client";
+import { createLegacyExample } from "../../services/agsdl/examples";
 import { projectViewer } from "../../services/agsdl/viewer";
-import { agsdlSessionKey, useAgsdlStore } from "../../stores/useAgsdlStore";
+import { agsdlSessionKey,useAgsdlStore } from "../../stores/useAgsdlStore";
+import { ComponentDetailsDialog } from "./ComponentDetailsDialog";
 
 const target = { branchName: "develop", planId: "component-edit" };
 const key = agsdlSessionKey(target);
@@ -31,25 +31,6 @@ const rename = (value: string) => act(() => {
 const submit = () => act(async () => { document.body.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
 
 describe("component detail editing", () => {
-  it("saves a 0.2 literal prompt without replacing an external Engine configuration", async () => {
-    const doc = JSON.parse(createExample("release", "agsdl-0.2.0"));
-    doc.bindings.engine = { contract: { identity: "example/engine", version: "1" }, implementation: { identity: "example/runtime", version: "1" } };
-    const source = JSON.stringify(doc);
-    await mount(() => {}, source);
-    act(() => {
-      const input = document.body.querySelector("textarea")!;
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "Updated release instruction");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    useAgsdlStore.setState({ save: async () => {} });
-    await submit();
-    const updated = JSON.parse(useAgsdlStore.getState().sessions[key].source);
-    expect(updated.agents.checklist.prompt[0].value).toBe("Updated release instruction");
-    expect(updated.bindings).toEqual(doc.bindings);
-    expect(updated.configurations).toEqual(doc.configurations);
-    expect(updated.flow).toEqual(doc.flow);
-    expect(updated.agents.checklist).not.toHaveProperty("annotations");
-  });
   it("keeps edits local until saving and lets cancellation leave the source intact", async () => {
     await mount();
     const source = useAgsdlStore.getState().sessions[key].source;

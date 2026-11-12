@@ -331,16 +331,17 @@ impl CompileBroker {
                 .get("documentJson")
                 .and_then(Value::as_str)
                 .ok_or_else(|| failure("CORRELATION", "compiler", "Compiled document is absent"))?;
-            let same_document = if plan.get("format").and_then(Value::as_str)
-                == Some("macro-agsdl-compiled-plan/2")
-            {
-                crate::db::agsdl_execution::json_lexemes030::document_tokens_equal(
-                    document,
-                    &job.authored_source,
-                )?
-            } else {
-                crate::db::exact_json::equal(document, &job.authored_source)?
-            };
+            if plan.get("format").and_then(Value::as_str) != Some("macro-agsdl-compiled-plan/2") {
+                return Err(failure(
+                    "CORRELATION",
+                    "compiler",
+                    "Unsupported compiled plan edition",
+                ));
+            }
+            let same_document = crate::db::agsdl_execution::json_lexemes030::document_tokens_equal(
+                document,
+                &job.authored_source,
+            )?;
             if !same_document {
                 return Err(failure(
                     "CORRELATION",
@@ -349,19 +350,6 @@ impl CompileBroker {
                 ));
             }
             match plan.get("format").and_then(Value::as_str) {
-                Some("macro-agsdl-compiled-plan/1") => {
-                    let authored: Value = serde_json::from_str(&job.authored_source)?;
-                    if authored.get("contract").and_then(Value::as_str) == Some("agsdl-0.3.0")
-                        || registry.get("format").and_then(Value::as_str)
-                            == Some("macro-agsdl-registry/030")
-                    {
-                        return Err(failure(
-                            "CORRELATION",
-                            "compiler",
-                            "A 0.3 capture cannot use the historical compiled plan",
-                        ));
-                    }
-                }
                 Some("macro-agsdl-compiled-plan/2") => {
                     let authored: Value = serde_json::from_str(&job.authored_source)?;
                     let captured = result

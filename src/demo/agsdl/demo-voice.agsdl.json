@@ -1,130 +1,42 @@
 {
-  "contract": "agsdl-0.2.0",
+  "contract": "agsdl-0.3.0",
   "id": "demo-voice",
-  "bindings": {
-    "engine": {
-      "contract": {
-        "identity": "macro/agent-engine",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      }
-    },
-    "speechService": {
-      "contract": {
-        "identity": "macro/speech-to-text",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "whisper/local",
-        "version": "1"
-      },
-      "effects": "none"
-    }
-  },
-  "configurations": {
-    "transcription": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-haiku-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "speech": "speechService"
-      }
-    },
-    "standard": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      }
-    },
-    "approfondi": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-opus-5-5",
-        "version": "1"
-      }
-    }
-  },
+  "title": "Compte rendu vocal",
   "agents": {
     "transcribe": {
-      "configuration": "transcription",
-      "prompt": [
-        {
-          "value": "Transcrire l’enregistrement. Marquer les passages incertains et identifier les interlocuteurs."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transcrire l’enregistrement. Marquer les passages incertains et identifier les interlocuteurs."
     },
     "clarify": {
-      "configuration": "standard",
-      "prompt": [
-        {
-          "value": "Demander à la personne qui a fourni l’audio de préciser les passages ambigus. Conserver les incertitudes non résolues."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Demander à la personne qui a fourni l’audio de préciser les passages ambigus. Conserver les incertitudes non résolues."
     },
     "summarize": {
-      "configuration": "standard",
-      "prompt": [
-        {
-          "value": "Produire un résumé structuré : décisions, responsables et échéances. Ne pas inventer de décisions."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      },
-      "skills": [
-        "meetingNotes"
-      ]
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Produire un résumé structuré : décisions, responsables et échéances. Ne pas inventer de décisions."
     },
     "review": {
-      "configuration": "approfondi",
-      "prompt": [
-        {
-          "value": "Comparer le compte rendu à la transcription et signaler les omissions."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Comparer le compte rendu à la transcription et signaler les omissions."
+    },
+    "scene-main-confidence": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Passages incertains ?"
+    },
+    "scene-main-prepare": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Préparer la transcription"
+    },
+    "scene-main-handoff": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre le compte rendu"
     }
   },
   "flow": {
@@ -133,97 +45,44 @@
       "transcribe": {
         "type": "agent",
         "agent": "transcribe",
-        "next": [
-          "confidence"
-        ]
+        "title": "Transcrire la réunion",
+        "next": "confidence"
       },
       "confidence": {
-        "type": "condition",
-        "test": {
-          "equals": [
-            {
-              "path": [
-                "text"
-              ]
-            },
-            {
-              "value": "À clarifier"
-            }
-          ]
-        },
-        "next": {
-          "true": [
-            "clarify"
-          ],
-          "false": [
-            "prepare"
-          ]
-        }
+        "type": "agent",
+        "agent": "scene-main-confidence",
+        "title": "Passages incertains ?",
+        "next": "clarify"
       },
       "clarify": {
         "type": "agent",
         "agent": "clarify",
-        "next": [
-          "prepare"
-        ]
+        "title": "Clarifier les passages ambigus",
+        "next": "prepare"
       },
       "prepare": {
-        "type": "prepare",
-        "message": {
-          "resources": {
-            "report": {
-              "source": {
-                "path": [
-                  "results",
-                  "report"
-                ]
-              }
-            }
-          }
-        },
-        "next": [
-          "summarize"
-        ]
+        "type": "agent",
+        "agent": "scene-main-prepare",
+        "title": "Préparer la transcription",
+        "next": "summarize"
       },
       "summarize": {
         "type": "agent",
         "agent": "summarize",
-        "next": [
-          "handoff"
-        ]
+        "title": "Rédiger le compte rendu",
+        "next": "handoff"
       },
       "handoff": {
-        "type": "prepare",
-        "message": {
-          "resources": {
-            "report": {
-              "source": {
-                "path": [
-                  "results",
-                  "report"
-                ]
-              }
-            }
-          }
-        },
-        "next": [
-          "review"
-        ]
+        "type": "agent",
+        "agent": "scene-main-handoff",
+        "title": "Transmettre le compte rendu",
+        "next": "review"
       },
       "review": {
         "type": "agent",
         "agent": "review",
-        "next": []
+        "title": "Vérifier la fidélité"
       }
-    }
-  },
-  "skills": {
-    "meetingNotes": {
-      "prompt": [
-        {
-          "value": "Structurer en décisions, responsables et échéances. Citer l’horodatage de chaque décision."
-        }
-      ]
     }
   }
 }

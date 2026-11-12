@@ -1,28 +1,11 @@
-import { describe, expect, it } from "bun:test";
-import { componentChanges, componentFields } from "./componentFields";
+import { describe,expect,it } from "bun:test";
 import { run } from "../../vendor/agsdl/browser-reader.mjs";
+import { componentChanges,componentFields } from "./componentFields";
 import { applyChanges } from "./document";
 import { createLegacyExample } from "./examples";
 import { projectViewer } from "./viewer";
 
 describe("component text edits", () => {
-  it("edits only real 0.2 string prompt owners and preserves skill order, media and exact unrelated tokens", () => {
-    const source = JSON.stringify({ contract: "agsdl-0.2.0", id: "prompt-edit", agents: {
-      first: { configuration: "review", skills: ["shared"], prompt: [{ value: "First instruction" }, { ref: "instruction" }, { uri: "image.png", mediaType: "image/png" }, { value: { structured: true } }] },
-      second: { configuration: "review", prompt: [{ ref: "instruction" }] },
-    }, skills: { shared: { prompt: [{ value: "Skill instruction" }] } }, content: { instruction: { value: "Shared instruction", mediaType: "text/plain" } },
-    configurations: { review: { engine: "engine", settings: { count: "EXACT_NUMBER" } } }, bindings: { engine: { contract: { identity: "example/engine", version: "1" }, implementation: { identity: "example/runtime", version: "1" } } },
-    }).replace('"EXACT_NUMBER"', '900719925474099312345');
-    const fields = componentFields(source, projectViewer(source).declarations[0]);
-    expect(fields.map(field => field.path)).toEqual(["/agents/first/prompt/0/value", "/content/instruction/value"]);
-    expect(fields[1].shared).toBe(true);
-    const edited = applyChanges(source, componentChanges(fields, ["Updated instruction", "Updated shared instruction"]));
-    expect(edited).toContain("900719925474099312345");
-    expect(JSON.parse(edited).agents.first.prompt.slice(2)).toEqual(JSON.parse(source).agents.first.prompt.slice(2));
-    expect(JSON.parse(edited).skills).toEqual(JSON.parse(source).skills);
-    expect(projectViewer(edited).declarations[0].mission).toContain("Skill instruction\n\nUpdated instruction\n\nUpdated shared instruction");
-    expect(projectViewer(edited).declarations[1].mission).toBe("Updated shared instruction");
-  });
   it("edits a local title and real instruction body without losing opaque values or connections", () => {
     const source = createLegacyExample("release").replace('"extensions": []', '"extensions": [{"opaque": 900719925474099312345}]');
     const original = projectViewer(source).graphs[0];

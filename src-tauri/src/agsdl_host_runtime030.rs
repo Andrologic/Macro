@@ -17,7 +17,7 @@ use crate::{
         flow_store030::FlowView030,
         flow_work_protocol030,
         start030::StartCapture030,
-        work_protocol030::{NativeCall030, ProtocolDecision030, ProtocolEvent030},
+        work_dto030::{NativeCall030, ProtocolDecision030, ProtocolEvent030},
         Result,
     },
 };
@@ -71,7 +71,7 @@ pub(crate) type EventWriter030 = Arc<
 pub(crate) type CompletionPort030 = Arc<
     dyn Fn(
             FlowWorkAttempt030,
-            crate::db::agsdl_execution::work_protocol030::CheckRequest030,
+            crate::db::agsdl_execution::work_dto030::CheckRequest030,
             CancellationToken,
         ) -> BoxFuture<'static, Result<Value>>
         + Send

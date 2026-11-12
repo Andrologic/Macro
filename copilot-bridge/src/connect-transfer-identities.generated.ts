@@ -78,7 +78,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/agsdl/document.ts",
-    "sha256": "dbda660949cc76dd164703afa01e3b453d5427c89ebf5546d0c636f67c06c671"
+    "sha256": "66c70de0d259ef9bbf8628527f5a92ccbe2881900434856b3230b12d2a80442e"
   },
   {
     "path": "src/services/agsdl/reader030WorkerProtocol.ts",
@@ -381,40 +381,16 @@ export const TRANSFER_RESOURCES = [
     "sha256": "78964ba6b077ba3117bff2f08bfde5f0fc28f0502c7915ff8f9bc876137a1b3b"
   },
   {
+    "path": "src/vendor/agsdl/shared/json.mjs",
+    "sha256": "2f2aca92644a9ed8179a769f2984eb1ef9d39f98d32c1d0022f48b3dad80f518"
+  },
+  {
     "path": "src/vendor/agsdl/tooling/readers/javascript/core.mjs",
     "sha256": "976529c2e4fe39b29aadbf079469b5fef7bb4bf7cf31969e6278b021559ba067"
   },
   {
     "path": "src/vendor/agsdl/tooling/readers/javascript/graph.mjs",
     "sha256": "b9f5aa6530ad6d4209b17413184c34625159fdb024cad596c4f645990864104c"
-  },
-  {
-    "path": "src/vendor/agsdl/v0.2/declarations.mjs",
-    "sha256": "c644e25f11d8924290d098e9490230030ba1b163f11ef0fb99a6548dbcfb9ff9"
-  },
-  {
-    "path": "src/vendor/agsdl/v0.2/graphs.mjs",
-    "sha256": "5c5620d207daff2320531ed59af7d92cb9f8fbca739f9e3957b50ad01a9b8c0c"
-  },
-  {
-    "path": "src/vendor/agsdl/v0.2/ip.mjs",
-    "sha256": "ebfa2757a1c686935c5794dc5f7083c374f34e89f02c428d36adde9115a4504f"
-  },
-  {
-    "path": "src/vendor/agsdl/v0.2/json.mjs",
-    "sha256": "2f2aca92644a9ed8179a769f2984eb1ef9d39f98d32c1d0022f48b3dad80f518"
-  },
-  {
-    "path": "src/vendor/agsdl/v0.2/reader.mjs",
-    "sha256": "0d2416ee7908d144dc106f135bb0b37074009d41bf1d8927462181e3c861ca59"
-  },
-  {
-    "path": "src/vendor/agsdl/v0.2/schema.json",
-    "sha256": "7017404ad41fc30e34d5fff6377f176cbe3f18b376e1cdf2ecec15126ed72e0e"
-  },
-  {
-    "path": "src/vendor/agsdl/v0.2/values.mjs",
-    "sha256": "2a6ad9123813ab33c75e227fa23db4cd8fcc5a4318d718668d99db9b50e2f8c2"
   },
   {
     "path": "src/vendor/agsdl/v0.3/graph.mjs",
@@ -438,7 +414,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/vendor/agsdl/v0.3/json.mjs",
-    "sha256": "ca992b357c2de75c63e52ac2a3fa7dd14c8f86b26d0797f1365fc02efd5c7e34"
+    "sha256": "9f7996080c8baad5bff662f582a8ab28dbe080b9444784ce03897d8862b9ce49"
   },
   {
     "path": "src/vendor/agsdl/v0.3/permissions.mjs",
@@ -466,7 +442,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/vendor/agsdl/v0.3/values.mjs",
-    "sha256": "5a179b850d2cc6247dda0bf7a1385dc263ff77a3aa9927a232b9001db1fb37b9"
+    "sha256": "df35c41991f6ff9d7bd17d280a7cf61f60fea28665928b5b83c5ca14b232e961"
   },
   {
     "path": "src/vendor/agsdl/v0.3/valueschema.mjs",
@@ -476,5 +452,5 @@ export const TRANSFER_RESOURCES = [
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "b94fbf7c902977f0cfab1623a3d226d5f37cb450ba47ed5e8f4d1a104f8b052c"
+  "preparation_set_sha256": "e9c65cb8e2e7c0f42b23bb816176cba1facbed0554161ec9345087e53ae2f7ed"
 } as const;

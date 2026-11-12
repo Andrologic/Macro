@@ -1110,6 +1110,9 @@ async fn sqlite_full_rolls_back_payload_mapping_and_charge_before_ack() {
         .await
         .unwrap();
     let store = active(pool, clock);
+    // Schema retirement leaves reusable pages. Compact only this temporary test
+    // database so the existing max_page_count bound still injects SQLITE_FULL.
+    sqlx::query("VACUUM").execute(&store.pool).await.unwrap();
     let payload = vec![b'x'; FRAGMENT_BYTES];
     let (begin, headers) = intent(&[(RecordKind::Message { role: Role::User }, payload.clone())]);
     let receipt = store.begin(json(&begin).unwrap().as_bytes()).await.unwrap();

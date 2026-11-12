@@ -1,118 +1,32 @@
 {
-  "contract": "agsdl-0.2.0",
+  "contract": "agsdl-0.3.0",
   "id": "example-feature",
-  "content": {
-    "responseCharter": {
-      "value": "Vouvoyer le client. Phrases courtes. Aucun délai ni geste commercial sans validation.",
-      "mediaType": "text/plain"
-    }
-  },
-  "bindings": {
-    "engine": {
-      "contract": {
-        "identity": "macro/agent-engine",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      }
-    }
-  },
-  "configurations": {
-    "conseil": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      }
-    }
-  },
+  "title": "Assistant",
   "agents": {
     "specify": {
-      "configuration": "conseil",
-      "prompt": [
-        {
-          "value": "Comprendre la demande. Consignez le résultat et les points qui demandent une décision."
-        }
-      ],
-      "interface": {
-        "inputMediaTypes": [
-          "text/plain",
-          "application/json"
-        ],
-        "outputMediaTypes": [
-          "text/plain"
-        ],
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Comprendre la demande. Consignez le résultat et les points qui demandent une décision."
     },
     "implement": {
-      "configuration": "conseil",
-      "prompt": [
-        {
-          "value": "Préparer la réponse. Consignez le résultat et les points qui demandent une décision."
-        }
-      ],
-      "interface": {
-        "inputMediaTypes": [
-          "text/plain",
-          "application/json"
-        ],
-        "outputMediaTypes": [
-          "text/plain"
-        ],
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      },
-      "resources": {
-        "charter": {
-          "ref": "responseCharter"
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Préparer la réponse. Consignez le résultat et les points qui demandent une décision."
     },
     "verify": {
-      "configuration": "conseil",
-      "prompt": [
-        {
-          "value": "Vérifier le résultat. Consignez le résultat et les points qui demandent une décision."
-        }
-      ],
-      "interface": {
-        "inputMediaTypes": [
-          "text/plain",
-          "application/json"
-        ],
-        "outputMediaTypes": [
-          "text/plain"
-        ],
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      },
-      "resources": {
-        "charter": {
-          "ref": "responseCharter"
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier le résultat. Consignez le résultat et les points qui demandent une décision."
+    },
+    "scene-main-prepare-implement": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre le rapport"
+    },
+    "scene-main-prepare-verify": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre le rapport"
     }
   },
   "flow": {
@@ -121,57 +35,31 @@
       "specify": {
         "type": "agent",
         "agent": "specify",
-        "next": [
-          "prepare-implement"
-        ]
+        "title": "Comprendre la demande",
+        "next": "prepare-implement"
       },
       "prepare-implement": {
-        "type": "prepare",
-        "message": {
-          "resources": {
-            "report": {
-              "source": {
-                "path": [
-                  "results",
-                  "report"
-                ]
-              }
-            }
-          }
-        },
-        "next": [
-          "implement"
-        ]
+        "type": "agent",
+        "agent": "scene-main-prepare-implement",
+        "title": "Transmettre le rapport",
+        "next": "implement"
       },
       "implement": {
         "type": "agent",
         "agent": "implement",
-        "next": [
-          "prepare-verify"
-        ]
+        "title": "Préparer la réponse",
+        "next": "prepare-verify"
       },
       "prepare-verify": {
-        "type": "prepare",
-        "message": {
-          "resources": {
-            "report": {
-              "source": {
-                "path": [
-                  "results",
-                  "report"
-                ]
-              }
-            }
-          }
-        },
-        "next": [
-          "verify"
-        ]
+        "type": "agent",
+        "agent": "scene-main-prepare-verify",
+        "title": "Transmettre le rapport",
+        "next": "verify"
       },
       "verify": {
         "type": "agent",
         "agent": "verify",
-        "next": []
+        "title": "Vérifier le résultat"
       }
     }
   }

@@ -1,16 +1,9 @@
 //! Bounded stdio client. Protocol JSON is metadata; authored JSON travels inside
 //! strings so Codex's ordinary JSON decoder cannot round AgSDL numbers.
 use super::profile::{self, Profile};
-use crate::db::agsdl_execution::{
-    dto::*,
-    failure,
-    native_operations::{self, NativeOperation},
-    responses::{self, Emission},
-    Result,
-};
+use crate::db::agsdl_execution::{failure, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use sqlx::SqlitePool;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, ChildStdout};
 
@@ -271,108 +264,6 @@ impl Client {
         );
         let models = self.request("model/list", json!({"limit":100})).await?;
         Ok((model_observations030(&models)?, account_digest))
-    }
-    pub async fn operation(
-        &mut self,
-        pool: &SqlitePool,
-        operation: NativeOperation,
-        params: Value,
-        gate: &std::sync::Arc<tokio::sync::Mutex<()>>,
-    ) -> Result<Value> {
-        let _guard = gate.lock().await;
-        native_operations::admit(pool, &operation).await?;
-        let id = self.begin_request(&operation.method, params).await?;
-        drop(_guard);
-        let response = self.response(id).await?;
-        let references = match operation.method.as_str() {
-            "thread/start" | "thread/resume" => {
-                json!({"threadId":required(&response["thread"], "id")?,"turnId":null})
-            }
-            "turn/start" => {
-                json!({"threadId":required(&serde_json::from_str::<Value>(&operation.request_json)?, "threadId")?,"turnId":required(&response["turn"], "id")?})
-            }
-            _ => {
-                return Err(failure(
-                    "UNSUPPORTED",
-                    "operation",
-                    "Unknown Codex operation",
-                ))
-            }
-        };
-        native_operations::received(pool, &operation, &references.to_string()).await?;
-        Ok(response)
-    }
-    pub async fn collect(
-        &mut self,
-        pool: &SqlitePool,
-        context: &EngineContext,
-        attempt: &str,
-        thread: &str,
-        turn: &str,
-        publication: bool,
-    ) -> Result<bool> {
-        let mut sequence = 0;
-        self.pending_bytes = 0;
-        let mut events: std::collections::VecDeque<_> = std::mem::take(&mut self.pending).into();
-        loop {
-            let event = match events.pop_front() {
-                Some(event) => event,
-                None => self.next().await?,
-            };
-            if event.get("id").is_some() {
-                return Err(failure(
-                    "CODEX_PROFILE_UNQUALIFIED",
-                    "protocol",
-                    "Unexpected Codex server request",
-                ));
-            }
-            let method = event["method"].as_str().unwrap_or("");
-            let params = &event["params"];
-            if ["item/completed", "turn/completed"].contains(&method) {
-                if required(params, "threadId")? != thread
-                    || (method == "item/completed" && required(params, "turnId")? != turn)
-                {
-                    return Err(failure(
-                        "CORRELATION",
-                        "response",
-                        "Codex emission belongs to another thread or turn",
-                    ));
-                }
-            }
-            if method == "item/completed" && params["item"]["type"] == "agentMessage" {
-                let item = &params["item"];
-                let text = required(item, "text")?;
-                let (kind, body) = if publication && item["phase"] == "final_answer" {
-                    match serde_json::from_str::<Value>(&text).ok().and_then(|value| {
-                        value
-                            .get("publicationJson")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    }) {
-                        Some(raw) => ("publication", json!({"rawArguments":raw})),
-                        None => ("rejectedPublication", json!({"rawArguments":text})),
-                    }
-                } else {
-                    ("message", json!({"textParts":[text]}))
-                };
-                sequence += 1;
-                responses::append(
-                    pool,
-                    Emission {
-                        context: context.clone(),
-                        provider_attempt_id: attempt.into(),
-                        sequence: sequence.to_string(),
-                        identity: format!("{attempt}:{}", required(item, "id")?),
-                        kind: kind.into(),
-                        body_json: body.to_string(),
-                    },
-                )
-                .await?;
-            }
-            if method == "turn/completed" {
-                return conclusive_turn(&params["turn"], turn);
-            }
-        }
     }
 }
 fn conclusive_turn(value: &Value, turn: &str) -> Result<bool> {

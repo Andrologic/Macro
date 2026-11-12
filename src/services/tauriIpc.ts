@@ -4,665 +4,284 @@
  */
 
 export type {
-  DbConversation,
-  DbMessage,
-  DbConversationCitation,
-  DbUpsertConversationCitationInput,
-  DbConversationToolboxState,
-  DbUpsertConversationToolboxStateInput,
-  DbConversationCompactionState,
-  DbImportMessageInput,
-  DbChatSnapshot,
-  DbChatBootstrapSnapshot,
-  DbArchitectPlanConversationSync,
-  DbUpsertArchitectPlanConversationSyncInput,
-  DbUpsertConversationCompactionStateInput,
-  DbInsertConversationCompactionEventInput,
-  MessageSearchResult,
-  MessageSearchPage,
+DbArchitectPlanConversationSync,DbChatBootstrapSnapshot,DbChatSnapshot,DbConversation,DbConversationCitation,DbConversationCompactionState,DbConversationToolboxState,DbImportMessageInput,DbInsertConversationCompactionEventInput,DbMessage,DbUpsertArchitectPlanConversationSyncInput,DbUpsertConversationCitationInput,DbUpsertConversationCompactionStateInput,DbUpsertConversationToolboxStateInput,MessageSearchPage,MessageSearchResult
 } from "./ipc/conversations.types";
 
 export type {
-  DbInitializationStatusDto,
+DbInitializationStatusDto
 } from "./ipc/database.types";
 
 export type {
-  ToolInvocation,
-  ToolInvocationIdentity,
-  ToolInvocationStatus,
-  ToolEffectClass,
-  RecordToolInvocationInput,
-  RecordToolInvocationResult,
-  CompleteToolInvocationInput,
+CompleteToolInvocationInput,RecordToolInvocationInput,
+RecordToolInvocationResult,ToolEffectClass,ToolInvocation,
+ToolInvocationIdentity,
+ToolInvocationStatus
 } from "../types/generated/ipc";
 
-export type { GoalAuditTransition, RecordGoalAuditTransitionInput } from "../types/generated/ipc";
-export type { GoalAuditorReadInput } from "./ipc/goalAudit";
-export {
-  recordGoalAuditTransition,
-  linkGoalAuditChildConversation,
-  reserveGoalAuditChildConversation,
-  executeGoalAuditorRead,
-} from "./ipc/goalAudit";
 export type {
-  ActivateConversationGoalInput, ApplyConversationGoalVerdictInput,
-  ClaimConversationGoalAuditInput, ConversationGoal, ConversationGoalAudit,
-  DeactivateConversationGoalInput,
-  GoalCasOutcome, GoalAuditStatus, GoalStatus, GoalVerdict,
-  ResumeConversationGoalAuditInput, UpdateConversationGoalInput,
+ActivateConversationGoalInput,ApplyConversationGoalVerdictInput,
+ClaimConversationGoalAuditInput,ConversationGoal,ConversationGoalAudit,
+DeactivateConversationGoalInput,GoalAuditStatus,GoalAuditTransition,GoalCasOutcome,GoalStatus,GoalVerdict,RecordGoalAuditTransitionInput,ResumeConversationGoalAuditInput,UpdateConversationGoalInput
 } from "../types/generated/ipc";
 export {
-  getCurrentConversationGoal, activateConversationGoal, updateConversationGoal, deactivateConversationGoal,
-  getConversationGoalAudit,
-  listConversationGoalAudits,
-  listRecoverableConversationGoalAudits,
-  applyConversationGoalVerdict, createNativeGoalAuditVerdictPort,
+activateConversationGoal,applyConversationGoalVerdict,createNativeGoalAuditVerdictPort,deactivateConversationGoal,
+getConversationGoalAudit,getCurrentConversationGoal,listConversationGoalAudits,
+listRecoverableConversationGoalAudits,updateConversationGoal
 } from "./ipc/conversationGoals";
+export {
+executeGoalAuditorRead,linkGoalAuditChildConversation,recordGoalAuditTransition,reserveGoalAuditChildConversation
+} from "./ipc/goalAudit";
+export type { GoalAuditorReadInput } from "./ipc/goalAudit";
 
 export type {
-  DbProviderConfig,
-  DbAiModel,
-  DbProviderSettings,
-  DbProviderModelInput,
+DbAiModel,DbProviderConfig,DbProviderModelInput,DbProviderSettings
 } from "./ipc/providers.types";
 
 export type {
-  GitFileStatus,
-  GitStatusDto,
-  GitBranchDto,
-  GitBranchesDto,
-  GitWorktreeInspectionStatus,
-  GitWorktreeEnsureStatus,
-  GitWorktreeInspectionDto,
-  GitAvailableWorktreeDto,
-  GitAvailableTaskBranchDto,
-  GitTaskStartPointsDto,
-  GitWorktreeEnsureDto,
-  GitWorktreeRemoveDto,
-  GitBranchWorktreeInspectionDto,
-  GitBranchWorktreeEnsureDto,
-  GitBranchWorktreeRemoveDto,
-  GitSyncDto,
-  GitPreparedBranchSyncDto,
-  GitRemoteDto,
-  GitMergeCheckDto,
-  GitGuardedMergeStateDto,
-  GitRebaseCheckDto,
-  GitFilePairDto,
-  GitReviewDiffLineDto,
-  GitReviewDiffHunkDto,
-  GitReviewParsedDiffDto,
-  GitReviewChangeDto,
-  GitReviewSnapshotDto,
-  DirectReviewSnapshotDto,
-  GitReviewFileDto,
-  GitStartMergeResolutionDto,
-  GitConflictFileSideDto,
-  GitConflictFileDto,
-  GitLogPageDto,
-  GitWorkflowSessionIdentity,
-  GitWorkflowSessionDto,
+DirectReviewSnapshotDto,GitAvailableTaskBranchDto,GitAvailableWorktreeDto,GitBranchDto,GitBranchWorktreeEnsureDto,GitBranchWorktreeInspectionDto,GitBranchWorktreeRemoveDto,GitBranchesDto,GitConflictFileDto,GitConflictFileSideDto,GitFilePairDto,GitFileStatus,GitGuardedMergeStateDto,GitLogPageDto,GitMergeCheckDto,GitPreparedBranchSyncDto,GitRebaseCheckDto,GitRemoteDto,GitReviewChangeDto,GitReviewDiffHunkDto,GitReviewDiffLineDto,GitReviewFileDto,GitReviewParsedDiffDto,GitReviewSnapshotDto,GitStartMergeResolutionDto,GitStatusDto,GitSyncDto,GitTaskStartPointsDto,GitWorkflowSessionDto,GitWorkflowSessionIdentity,GitWorktreeEnsureDto,GitWorktreeEnsureStatus,
+GitWorktreeInspectionDto,GitWorktreeInspectionStatus,GitWorktreeRemoveDto
 } from "./ipc/git.types";
 
 export type {
-  MacroSyncState,
-  MacroSyncReason,
-  MacroSyncNextAction,
-  MacroBranchSyncDto,
+MacroBranchSyncDto,MacroSyncNextAction,MacroSyncReason,MacroSyncState
 } from "./ipc/metadataSync.types";
 
 export type {
-  MacroAiProvisioningStatusDto,
-  DevProviderOverrideConfig,
-  DevProviderOverridesFile,
-  AiChatMessageImageUrl,
-  AiChatMessagePart,
-  AiChatMessageContent,
-  AiChatMessage,
-  AiToolCall,
-  AiStreamChunkEvent,
-  AiStreamToolTraceEvent,
-  AiToolRequestEvent,
-  AiStreamDoneEvent,
-  AiStreamErrorEvent,
-  AiStreamTimelineEvent,
-  AiAuthStartedEvent,
-  AiAuthSuccessEvent,
-  AiAuthCancelledEvent,
-  AiAuthErrorEvent,
-  CopilotStatusDto,
-  CopilotDownloadProgressEvent,
-  CopilotDownloadCompleteEvent,
-  CopilotDownloadErrorEvent,
-  CopilotAuthProgressEvent,
-  CopilotAuthCompleteEvent,
-  CopilotAuthCancelledEvent,
-  CopilotAuthErrorEvent,
+AiAuthCancelledEvent,
+AiAuthErrorEvent,AiAuthStartedEvent,
+AiAuthSuccessEvent,AiChatMessage,AiChatMessageContent,AiChatMessageImageUrl,
+AiChatMessagePart,AiStreamChunkEvent,AiStreamDoneEvent,
+AiStreamErrorEvent,
+AiStreamTimelineEvent,AiStreamToolTraceEvent,AiToolCall,AiToolRequestEvent,CopilotAuthCancelledEvent,CopilotAuthCompleteEvent,CopilotAuthErrorEvent,CopilotAuthProgressEvent,CopilotDownloadCompleteEvent,
+CopilotDownloadErrorEvent,CopilotDownloadProgressEvent,CopilotStatusDto,DevProviderOverrideConfig,
+DevProviderOverridesFile,MacroAiProvisioningStatusDto
 } from "./ipc/ai.types";
 
 export type {
-  DbAppSetting,
-  DbCompareAndSwapAppSettingResult,
-  DbProjectContextState,
-  DbSessionContextState,
-  DbProjectRegistryRepairReport,
+DbAppSetting,
+DbCompareAndSwapAppSettingResult,
+DbProjectContextState,DbProjectRegistryRepairReport,DbSessionContextState
 } from "./ipc/settings.types";
 
 export type {
-  ExternalOpenAction,
-  ExternalAppKind,
-  ExternalAppOptionDto,
-  ExternalAppCatalogDto,
+ExternalAppCatalogDto,ExternalAppKind,
+ExternalAppOptionDto,ExternalOpenAction
 } from "./ipc/externalApps.types";
 
 export type {
-  ProjectRegistryRepairReportDto,
-  ProjectRegistryDiagnosticsDto,
-  WorkspaceMetadataRecoveryHintDto,
-  WorkspaceMetadataRecoveryReportDto,
-  WorkspaceProjectRegistryReconcileSkippedDto,
-  WorkspaceProjectRegistryReconcileReportDto,
-  WorkspaceBootstrapDto,
-  ProjectIconDto,
-  ProjectIconResolutionDto,
-  WorkspaceArchitectPlanReplicaDto,
-  WorkspaceArchitectPlanSummaryDto,
-  WorkspaceArchitectPlanRecordDto,
-  WorkspaceArchitectPlanRuntimeStatusDto,
-  WorkspaceArchitectPlanListDto,
-  WorkspaceArchitectPlanActivationHeadDto,
-  WorkspaceArchitectChatMessageDto,
-  WorkspaceArchitectPlanTranscriptDto,
-  WorkspaceMetadataDto,
-  WorkspaceManualFeatureExecutionTargetDto,
-  WorkspaceManualFeatureMergeWorkflowRepositoryDto,
-  WorkspaceManualFeatureMergeWorkflowDto,
-  WorkspaceManualFeatureDto,
-  DebugResetProjectReportDto,
+DebugResetProjectReportDto,ProjectIconDto,
+ProjectIconResolutionDto,ProjectRegistryDiagnosticsDto,ProjectRegistryRepairReportDto,WorkspaceArchitectChatMessageDto,WorkspaceArchitectPlanActivationHeadDto,WorkspaceArchitectPlanListDto,WorkspaceArchitectPlanRecordDto,WorkspaceArchitectPlanReplicaDto,WorkspaceArchitectPlanRuntimeStatusDto,WorkspaceArchitectPlanSummaryDto,WorkspaceArchitectPlanTranscriptDto,WorkspaceBootstrapDto,WorkspaceManualFeatureDto,WorkspaceManualFeatureExecutionTargetDto,WorkspaceManualFeatureMergeWorkflowDto,WorkspaceManualFeatureMergeWorkflowRepositoryDto,WorkspaceMetadataDto,WorkspaceMetadataRecoveryHintDto,
+WorkspaceMetadataRecoveryReportDto,WorkspaceProjectRegistryReconcileReportDto,WorkspaceProjectRegistryReconcileSkippedDto
 } from "./ipc/workspace.types";
 
 export {
-  parseProviderInputItemsJson,
-  parseProviderTurnStateJson,
-  parseToolTracesJson,
-  aiStartChatGptAuth,
-  aiCancelChatGptAuth,
-  aiGetCopilotStatus,
-  aiDownloadCopilotRuntime,
-  aiCancelCopilotRuntimeDownload,
-  aiStartCopilotAuth,
-  aiCancelCopilotAuth,
-  aiDisconnectProviderAuth,
-  aiSyncProviderModels,
-  aiProvisionMacroAi,
-  aiGetDevProviderOverrides,
-  aiStreamChat,
-  aiCancelStream,
-  aiSubmitToolResult,
+aiCancelChatGptAuth,aiCancelCopilotAuth,aiCancelCopilotRuntimeDownload,aiCancelStream,aiDisconnectProviderAuth,aiDownloadCopilotRuntime,aiGetCopilotStatus,aiGetDevProviderOverrides,aiProvisionMacroAi,aiStartChatGptAuth,aiStartCopilotAuth,aiStreamChat,aiSubmitToolResult,aiSyncProviderModels,parseProviderInputItemsJson,
+parseProviderTurnStateJson,
+parseToolTracesJson
 } from "./ipc/ai";
 
 export type {
-  FsFileContentDto,
-  FsDirEntryDto,
-  WorkspaceFileSearchRootDto,
-  WorkspaceFileSearchResultDto,
-  FsFileStatsDto,
-  FsWriteResultDto,
+FsDirEntryDto,FsFileContentDto,FsFileStatsDto,
+FsWriteResultDto,WorkspaceFileSearchResultDto,WorkspaceFileSearchRootDto
 } from "./ipc/filesystem.types";
 
 export type {
-  RepositoryInstructionProjectInputDto,
-  RepositoryInstructionSourceDto,
-  RepositoryInstructionIssueDto,
-  RepositoryInstructionLoadResultDto,
+RepositoryInstructionIssueDto,
+RepositoryInstructionLoadResultDto,RepositoryInstructionProjectInputDto,
+RepositoryInstructionSourceDto
 } from "./ipc/repositoryInstructions.types";
 
 export type {
-  ToolValidationResultDto,
-  ToolModePolicyDto,
-  WorkspaceScope,
+ToolModePolicyDto,ToolValidationResultDto,WorkspaceScope
 } from "./ipc/workspaceTools.types";
 
 export type {
-  MCPCallToolResponseDto,
+MCPCallToolResponseDto
 } from "./ipc/mcp.types";
 
 export type {
-  SkillListResponseDto,
-  SkillDetailResponseDto,
-  SkillResourceReadResponseDto,
+SkillDetailResponseDto,SkillListResponseDto,SkillResourceReadResponseDto
 } from "./ipc/skills.types";
 
 export type {
-  TerminalSessionDto,
-  TerminalTabDto,
-  TerminalPromptContextInput,
-  TerminalOutputEvent,
+TerminalOutputEvent,TerminalPromptContextInput,TerminalSessionDto,
+TerminalTabDto
 } from "./ipc/terminal.types";
 
 export type {
-  FrontendLogLevel,
-  FrontendLogParams,
-  AppDiagnosticReportPreviewDto,
+AppDiagnosticReportPreviewDto,FrontendLogLevel,
+FrontendLogParams
 } from "./ipc/diagnostics.types";
 
 export {
-  gitStatus,
-  gitLog,
-  gitLogPage,
-  gitBranchList,
-  gitBranchCreate,
-  gitBranchDelete,
-  gitBranchDeleteRemote,
-  gitCheckout,
-  gitMerge,
-  gitGuardedMergeState,
-  gitWorkflow,
-  gitWorkflowCleanup,
-  gitStartMergeResolution,
-  gitMergeCheck,
-  gitFastForward,
-  gitRebaseCheck,
-  gitRebaseBranch,
-  gitCommit,
-  gitAdd,
-  gitRestorePaths,
-  gitReset,
-  gitAbortMerge,
-  gitStash,
-  gitDiff,
-  gitReadFilePair,
-  gitReviewSnapshot,
-  gitCancelReview,
-  directCheckpointEnsure,
-  directCheckpointRemove,
-  directCheckpointResolveId,
-  directReviewSnapshot,
-  directReviewFile,
-  directStagePaths,
-  directUnstagePaths,
-  directRestoreWorktreePaths,
-  directAcceptChanges,
-  gitReviewFile,
-  gitReadConflictFile,
-  gitWriteConflictResolution,
-  gitAcceptConflictSide,
-  gitCompleteMerge,
-  gitGetTree,
-  gitWorktreeInspect,
-  gitTaskStartPoints,
-  gitWorktreeCreate,
-  gitWorktreeRemove,
-  gitBranchWorktreeInspect,
-  gitBranchWorktreeCreate,
-  gitBranchWorktreeRemove,
-  gitPush,
-  gitRemoteAddOrigin,
-  gitFetch,
-  gitPull,
-  gitPrepareGuardedBranchSync,
-  gitGuardedBranchSync,
+directAcceptChanges,directCheckpointEnsure,
+directCheckpointRemove,
+directCheckpointResolveId,directRestoreWorktreePaths,directReviewFile,directReviewSnapshot,directStagePaths,
+directUnstagePaths,gitAbortMerge,gitAcceptConflictSide,gitAdd,gitBranchCreate,
+gitBranchDelete,
+gitBranchDeleteRemote,gitBranchList,gitBranchWorktreeCreate,gitBranchWorktreeInspect,gitBranchWorktreeRemove,gitCancelReview,gitCheckout,gitCommit,gitCompleteMerge,gitDiff,gitFastForward,gitFetch,gitGetTree,gitGuardedBranchSync,gitGuardedMergeState,gitLog,
+gitLogPage,gitMerge,gitMergeCheck,gitPrepareGuardedBranchSync,gitPull,gitPush,gitReadConflictFile,gitReadFilePair,gitRebaseBranch,gitRebaseCheck,gitRemoteAddOrigin,gitReset,gitRestorePaths,gitReviewFile,gitReviewSnapshot,gitStartMergeResolution,gitStash,gitStatus,gitTaskStartPoints,gitWorkflow,
+gitWorkflowCleanup,gitWorktreeCreate,gitWorktreeInspect,gitWorktreeRemove,gitWriteConflictResolution
 } from "./ipc/git";
 
 export {
-  frontendLog,
-  appDiagnosticGenerate,
-  appDiagnosticSave,
+appDiagnosticGenerate,
+appDiagnosticSave,frontendLog
 } from "./ipc/diagnostics";
 
 export {
-  getDatabaseInitializationStatus,
-  retryDatabaseInitialization,
+getDatabaseInitializationStatus,
+retryDatabaseInitialization
 } from "./ipc/database";
 
 export {
-  recordToolInvocation,
-  completeToolInvocation,
-  markToolInvocationUnknown,
-  listUnresolvedToolInvocations,
+completeToolInvocation,listUnresolvedToolInvocations,markToolInvocationUnknown,recordToolInvocation
 } from "./ipc/toolInvocations";
 
 export {
-  listConversations,
-  getChatSnapshot,
-  getChatBootstrapSnapshot,
-  getConversation,
-  createConversation,
-  renameConversation,
-  updateConversationDetails,
-  updateConversationScope,
-  updateConversationAISelection,
-  deleteConversation,
-  deleteConversations,
-  togglePinConversation,
-  listMessages,
-  getConversationSourceSnapshot,
-  searchMessages,
-  dbGetArchitectPlanConversationSync,
-  dbGetArchitectPlanConversationSyncForPlan,
-  dbUpsertArchitectPlanConversationSync,
-  dbDeleteArchitectPlanConversationSync,
-  dbGetConversationCompactionState,
-  dbUpsertConversationCompactionState,
-  dbDeleteConversationCompactionState,
-  dbInsertConversationCompactionEvent,
-  listConversationCitations,
-  getConversationCitationContent,
-  upsertConversationCitation,
-  deleteConversationCitation,
-  deleteConversationCitations,
-  getConversationToolboxState,
-  upsertConversationToolboxState,
-  deleteConversationToolboxState,
-  createMessage,
-  importMessages,
-  updateMessage,
-  deleteMessagesAfter,
-  deleteConversationTurn,
-  dbTrimConversationReplay,
-  dbPrepareConversationReplay,
-  dbRestoreConversationReplay,
-  dbCompleteConversationReplay,
-  dbMarkConversationReplayLaunched,
-  dbFinalizeConversationReplay,
+createConversation,createMessage,dbCompleteConversationReplay,dbDeleteArchitectPlanConversationSync,dbDeleteConversationCompactionState,dbFinalizeConversationReplay,dbGetArchitectPlanConversationSync,
+dbGetArchitectPlanConversationSyncForPlan,dbGetConversationCompactionState,dbInsertConversationCompactionEvent,dbMarkConversationReplayLaunched,dbPrepareConversationReplay,
+dbRestoreConversationReplay,dbTrimConversationReplay,dbUpsertArchitectPlanConversationSync,dbUpsertConversationCompactionState,deleteConversation,deleteConversationCitation,
+deleteConversationCitations,deleteConversationToolboxState,deleteConversationTurn,deleteConversations,deleteMessagesAfter,getChatBootstrapSnapshot,getChatSnapshot,getConversation,getConversationCitationContent,getConversationSourceSnapshot,getConversationToolboxState,importMessages,listConversationCitations,listConversations,listMessages,renameConversation,searchMessages,togglePinConversation,updateConversationAISelection,updateConversationDetails,
+updateConversationScope,updateMessage,upsertConversationCitation,upsertConversationToolboxState
 } from "./ipc/conversations";
 
 export {
-  fsReadFile,
-  fsReadFileWithOptions,
-  fsWriteFile,
-  fsListDir,
-  fsSearchFiles,
-  fsStat,
-  fsExists,
-  fsDelete,
-  fsCreateDir,
-  fsCopy,
-  fsMove,
+fsCopy,fsCreateDir,fsDelete,fsExists,fsListDir,fsMove,fsReadFile,
+fsReadFileWithOptions,fsSearchFiles,
+fsStat,fsWriteFile
 } from "./ipc/filesystem";
 
 export {
-  repositoryInstructionsLoad,
+repositoryInstructionsLoad
 } from "./ipc/repositoryInstructions";
 
 export {
-  listProviderConfigs,
-  getProviderConfig,
-  revealProviderApiKey,
-  updateProviderConfig,
-  createProviderConfig,
-  deleteProviderConfig,
-  listProviderModels,
-  upsertProviderModels,
-  registerManualModel,
-  updateManualModel,
-  deleteManualModel,
-  setProviderModelEnabled,
-  setAllProviderModelsEnabled,
-  getProviderSettings,
-  updateProviderSettings,
+createProviderConfig,deleteManualModel,deleteProviderConfig,getProviderConfig,getProviderSettings,listProviderConfigs,listProviderModels,registerManualModel,revealProviderApiKey,setAllProviderModelsEnabled,setProviderModelEnabled,updateManualModel,updateProviderConfig,updateProviderSettings,upsertProviderModels
 } from "./ipc/providers";
 
 export {
-  listSpeechProviderConfigs,
-  createSpeechProviderConfig,
-  updateSpeechProviderConfig,
-  deleteSpeechProviderConfig,
-  transcribeSpeech,
+createSpeechProviderConfig,deleteSpeechProviderConfig,listSpeechProviderConfigs,transcribeSpeech,updateSpeechProviderConfig
 } from "./ipc/speech";
 
 export {
-  macroBranchEnsure,
-  macroBranchStatus,
-  macroBranchCommitIfDirty,
-  macroBranchPush,
-  macroBranchPull,
+macroBranchCommitIfDirty,macroBranchEnsure,macroBranchPull,macroBranchPush,macroBranchStatus
 } from "./ipc/metadataSync";
 
 export {
-  workspaceGetBootstrap,
-  workspaceResolveProjectIcons,
-  workspaceListProjects,
-  workspaceListTasks,
-  workspaceGetMetadata,
-  workspaceGetActiveRoot,
-  workspaceQuarantineLegacyStateLock,
-  workspaceArchitectListPlans,
-  workspaceArchitectActivatePlanHead,
-  workspaceArchitectActivatePlanChat,
-  workspaceArchitectInvalidate,
-  workspacePreviewProjectGitSetup,
-  workspaceCancelProjectOperation,
-  workspaceCreateProjectWithGitSetup,
-  workspaceUpdateProjectGitFlowWithSetup,
-  workspaceSetActiveRoot,
-  workspaceCreateProject,
-  workspaceCreateNewProjectRepo,
-  workspaceImportGitRepo,
-  workspaceRenameProjectGroup,
-  workspaceCreateProjectGroup,
-  workspaceMoveProjectToGroup,
-  workspaceRenameProject,
-  workspaceUpdateProjectGitFlow,
-  workspaceUpdateProjectAccess,
-  workspacePreviewProjectAccessChange,
-  workspaceArchiveProjectGroup,
-  workspaceArchiveProject,
-  workspaceRestoreProjectGroup,
-  workspaceRestoreProject,
-  workspaceRemoveProjectGroup,
-  workspaceRemoveProject,
-  workspaceDebugResetProject,
-  workspaceCloseProject,
-  workspaceGetProjectRegistryDiagnostics,
-  workspaceRecoverMissingMetadata,
-  workspaceDiscoverRecoverableProjects,
-  workspaceReconcileProjectRegistryFromHints,
-  workspaceCreateManualFeatureDraft,
-  workspaceFinalizeManualFeature,
-  workspaceBindManualFeatureDirectCheckpoint,
-  workspaceRevertManualFeatureToDraft,
-  workspaceDeleteManualFeatureDraft,
-  workspaceAcquirePlanLifecycleLock,
-  workspaceRenewPlanLifecycleLock,
-  workspaceReleasePlanLifecycleLock,
-  workspaceAcquireTaskLifecycleLock,
-  workspaceRenewTaskLifecycleLock,
-  workspaceReleaseTaskLifecycleLock,
-  workspaceRenameManualFeature,
-  workspaceArchiveManualFeature,
-  workspaceRestoreManualFeature,
-  workspaceDeleteManualFeature,
-  workspaceUpdateStandaloneTaskStatus,
-  workspaceUpdateManualFeatureMergeWorkflow,
+workspaceAcquirePlanLifecycleLock,workspaceAcquireTaskLifecycleLock,workspaceArchitectActivatePlanChat,workspaceArchitectActivatePlanHead,workspaceArchitectInvalidate,workspaceArchitectListPlans,workspaceArchiveManualFeature,workspaceArchiveProject,workspaceArchiveProjectGroup,workspaceBindManualFeatureDirectCheckpoint,workspaceCancelProjectOperation,workspaceCloseProject,workspaceCreateManualFeatureDraft,workspaceCreateNewProjectRepo,workspaceCreateProject,workspaceCreateProjectGroup,workspaceCreateProjectWithGitSetup,workspaceDebugResetProject,workspaceDeleteManualFeature,workspaceDeleteManualFeatureDraft,workspaceDiscoverRecoverableProjects,workspaceFinalizeManualFeature,workspaceGetActiveRoot,workspaceGetBootstrap,workspaceGetMetadata,workspaceGetProjectRegistryDiagnostics,workspaceImportGitRepo,workspaceListProjects,
+workspaceListTasks,workspaceMoveProjectToGroup,workspacePreviewProjectAccessChange,workspacePreviewProjectGitSetup,workspaceQuarantineLegacyStateLock,workspaceReconcileProjectRegistryFromHints,workspaceRecoverMissingMetadata,workspaceReleasePlanLifecycleLock,workspaceReleaseTaskLifecycleLock,workspaceRemoveProject,workspaceRemoveProjectGroup,workspaceRenameManualFeature,workspaceRenameProject,workspaceRenameProjectGroup,workspaceRenewPlanLifecycleLock,workspaceRenewTaskLifecycleLock,workspaceResolveProjectIcons,workspaceRestoreManualFeature,workspaceRestoreProject,workspaceRestoreProjectGroup,workspaceRevertManualFeatureToDraft,workspaceSetActiveRoot,workspaceUpdateManualFeatureMergeWorkflow,workspaceUpdateProjectAccess,workspaceUpdateProjectGitFlow,workspaceUpdateProjectGitFlowWithSetup,workspaceUpdateStandaloneTaskStatus
 } from "./ipc/workspace";
 
 export {
-  dbGetSetting,
-  dbSetSetting,
-  dbGetAppSetting,
-  dbSetAppSetting,
-  dbDeleteAppSetting,
-  dbCompareAndSwapAppSetting,
-  dbGetProjectContextState,
-  dbUpsertProjectContextState,
-  dbDeleteProjectContextState,
-  dbGetSessionContextState,
-  dbUpsertSessionContextState,
-  dbReconcileProjectRegistry,
+dbCompareAndSwapAppSetting,dbDeleteAppSetting,dbDeleteProjectContextState,dbGetAppSetting,dbGetProjectContextState,dbGetSessionContextState,dbGetSetting,dbReconcileProjectRegistry,dbSetAppSetting,dbSetSetting,dbUpsertProjectContextState,dbUpsertSessionContextState
 } from "./ipc/settings";
 
 export {
-  openExternalTarget,
-  listExternalApps,
+listExternalApps,openExternalTarget
 } from "./ipc/externalApps";
 
 export {
-  validateToolExecution,
-  getToolModePolicy,
-  executeWorkspaceTool,
-  cancelWorkspaceTool,
+cancelWorkspaceTool,executeWorkspaceTool,getToolModePolicy,validateToolExecution
 } from "./ipc/workspaceTools";
 
 export {
-  mcpStoreEnvSecret,
-  mcpDeleteEnvSecret,
-  mcpStoreOAuthClientSecret,
-  mcpDeleteOAuthClientSecret,
-  mcpOAuthAuthorize,
-  mcpOAuthLogout,
-  MCP_RUNTIME_EVENT_NAME,
-  mcpRuntimeGetSnapshot,
-  mcpRuntimeConnect,
-  mcpRuntimeDisconnect,
-  mcpRuntimeRefreshCatalog,
-  mcpRuntimeCallTool,
-  mcpRuntimeCancelOperation,
-  mcpRuntimeOpenInteractionPort,
-  mcpRuntimeCloseInteractionPort,
-  mcpRuntimeListPendingInteractions,
-  mcpRuntimeRespondToInteraction,
+MCP_RUNTIME_EVENT_NAME,mcpDeleteEnvSecret,mcpDeleteOAuthClientSecret,
+mcpOAuthAuthorize,
+mcpOAuthLogout,mcpRuntimeCallTool,
+mcpRuntimeCancelOperation,mcpRuntimeCloseInteractionPort,mcpRuntimeConnect,
+mcpRuntimeDisconnect,mcpRuntimeGetSnapshot,mcpRuntimeListPendingInteractions,mcpRuntimeOpenInteractionPort,mcpRuntimeRefreshCatalog,mcpRuntimeRespondToInteraction,mcpStoreEnvSecret,mcpStoreOAuthClientSecret
 } from "./ipc/mcp";
 
 export {
-  skillsList,
-  skillsGet,
-  skillsInstallFromLocalPath,
-  skillsCreateTemplate,
-  skillsOpenLocation,
-  skillsReadResource,
-  skillsRunScript,
+skillsCreateTemplate,skillsGet,
+skillsInstallFromLocalPath,skillsList,skillsOpenLocation,
+skillsReadResource,
+skillsRunScript
 } from "./ipc/skills";
 
 export {
-  terminalCreateSession,
-  terminalRun,
-  terminalRead,
-  terminalKill,
-  terminalListTabs,
-  terminalCreateTab,
-  terminalStartCommandTab,
-  terminalReconnectTab,
-  terminalReadTab,
-  terminalUpdateTabMetadata,
-  terminalWriteInput,
-  terminalResize,
-  terminalExecuteCommand,
-  terminalInterrupt,
-  terminalClearTab,
-  terminalCloseTab,
+terminalClearTab,
+terminalCloseTab,terminalCreateSession,terminalCreateTab,terminalExecuteCommand,
+terminalInterrupt,terminalKill,
+terminalListTabs,terminalRead,terminalReadTab,terminalReconnectTab,terminalResize,terminalRun,terminalStartCommandTab,terminalUpdateTabMetadata,
+terminalWriteInput
 } from "./ipc/terminal";
 
 export {
-  configGetSnapshot,
-  configGetDocument,
-  configGetSchema,
-  configValidateDocument,
-  configApplyPatch,
-  configApplyAgentPatch,
-  configResetPath,
-  configReload,
-  configOpenDirectory,
-  configAcceptPendingChange,
-  configRejectPendingChange,
-  configListPendingChanges,
-  configListOrphanSecrets,
-  configDeleteOrphanSecret,
-  configAgentList,
-  configAgentGet,
-  configAgentValidate,
-  configAgentPatch,
+configAcceptPendingChange,configAgentGet,configAgentList,configAgentPatch,configAgentValidate,configApplyAgentPatch,configApplyPatch,configDeleteOrphanSecret,configGetDocument,
+configGetSchema,configGetSnapshot,configListOrphanSecrets,configListPendingChanges,configOpenDirectory,configRejectPendingChange,configReload,configResetPath,configValidateDocument
 } from "./ipc/config";
 
 export type {
-  OrphanSecretDto,
+OrphanSecretDto
 } from "./ipc/config.types";
 
 export type {
-  WebSearchSecretStatus,
-  NativeWebSearchResult,
-  NativeWebFetchResource,
+NativeWebFetchResource,NativeWebSearchResult,WebSearchSecretStatus
 } from "./ipc/web.types";
 
 export {
-  webSearchGetSecretStatus,
-  webSearchSetSecret,
-  webSearchExecute,
-  webFetchExecute,
-  cancelWebSearchExecution,
+cancelWebSearchExecution,webFetchExecute,webSearchExecute,webSearchGetSecretStatus,
+webSearchSetSecret
 } from "./ipc/web";
 
 export type {
-  StateSnapshotDto,
+StateSnapshotDto
 } from "./ipc/state.types";
 
 export {
-  stateGetSnapshot,
-  stateSetValue,
-  stateDeleteValue,
-  stateClear,
+stateClear,stateDeleteValue,stateGetSnapshot,
+stateSetValue
 } from "./ipc/state";
 
 export {
-  appUpdateStatus,
-  appUpdateCheckAndStage,
-  appUpdateExitAfterCleanShutdown,
-  appExitCleanly,
-  appUpdateDiscard,
-  appUpdateInstallNow,
-  appInstallerCloseRequestPending,
-  appInstallerCloseRespond,
+appExitCleanly,appInstallerCloseRequestPending,
+appInstallerCloseRespond,appUpdateCheckAndStage,appUpdateDiscard,appUpdateExitAfterCleanShutdown,appUpdateInstallNow,appUpdateStatus
 } from "./ipc/updates";
 
 export type {
-  NativeStagedUpdateDto,
-  NativeAppUpdateSnapshotDto,
+NativeAppUpdateSnapshotDto,NativeStagedUpdateDto
 } from "./ipc/updates.types";
 
 export {
-  isTauriAvailable,
-  isRemoteBackendAvailable,
-  safeInvoke,
+isRemoteBackendAvailable,isTauriAvailable,safeInvoke
 } from "./ipc/runtime";
 
 export type {
-  LocalBackupStatus,
+LocalBackupStatus
 } from "./ipc/backup.types";
 
 export {
-  localBackupSchedule,
-  localBackupStatus,
-  localBackupAcknowledge,
+localBackupAcknowledge,localBackupSchedule,
+localBackupStatus
 } from "./ipc/backup";
 
 export type {
-  MCPCatalogDto,
-  MCPProtocolEra,
-  MCPProtocolMode,
-  MCPRuntimeEvent,
-  McpInteractionRequest,
-  McpInteractionResponse,
-  MCPRuntimeKey,
-  MCPRuntimeSelector,
-  MCPRuntimeServerSnapshot,
-  MCPRuntimeSnapshotDto,
-  MCPRuntimeStatus,
+MCPCatalogDto,
+MCPProtocolEra,
+MCPProtocolMode,
+MCPRuntimeEvent,MCPRuntimeKey,
+MCPRuntimeSelector,
+MCPRuntimeServerSnapshot,
+MCPRuntimeSnapshotDto,
+MCPRuntimeStatus,McpInteractionRequest,
+McpInteractionResponse
 } from "./contracts/serviceProvider";
 
-export { readExecutionApprovals, decideExecutionApproval, resolveExecutionCardTask, deliverExecution, preflightExecution, executionHostFailed, executionHostNextCompile, executionHostCompleteCompile, executionHostNextWork030, executionHostCompleteWork030, listExecutionRuns, findExecutionStart, readExecutionDiagnostic, executionModelChoices, executionHostReady, startExecution, stopExecution, readExecutionSnapshot, readExecutionProjection, readExecutionEvents } from './ipc/agsdlExecution';
+export { executionHostCompleteCompile,executionHostCompleteWork030,executionHostFailed,executionHostNextCompile,executionHostNextWork030,executionHostReady,executionModelChoices,preflightExecution,stopExecution } from './ipc/agsdlExecution';
 export { httpReleaseWebviewResource } from "./ipc/httpResources";
 
-export { executionHostOwners, executionHostInspect, executionHostBegin, executionHostPrepareTerminal, executionHostCommitTerminal, executionHostAppendResponse, executionHostReadResponses, executionHostCloseResponses, executionHostRegisterProvider, executionHostDispatchProvider, executionHostEndProvider } from './ipc/agsdlExecution';
 
-export { stageExecutionIntent, readExecutionIntents, readExecutionIntent, submitExecutionIntent, closeExecutionIntent, ensureExecutionStop } from './ipc/agsdlExecution';
-export { stageExecutionIntentVersioned, readExecutionIntentsVersioned, readExecutionIntentVersioned, submitExecutionIntentVersioned, closeExecutionIntentVersioned } from './ipc/agsdlExecutionIntentVersioned';
+
+export { closeExecutionIntentVersioned,readExecutionIntentVersioned,readExecutionIntentsVersioned,stageExecutionIntentVersioned,submitExecutionIntentVersioned } from './ipc/agsdlExecutionIntentVersioned';
 
 export * from "./ipc/pilot";
 
-export { listMessagesBounded, conversationSetArchives, conversationMetadata, conversationResponseVersion, conversationAcknowledge, conversationAction, conversationImportArchives, getMessage, getPilotReflectionMessage } from './ipc/conversationManagement';
-export type { ConversationMetadata, ConversationActionInput, ConversationActionResult, PilotReflectionMessage, PilotReflectionMessageRead, PilotReflectionToolAnchor } from './ipc/conversationManagement';
+export { conversationAcknowledge,conversationAction,conversationImportArchives,conversationMetadata,conversationResponseVersion,conversationSetArchives,getMessage,getPilotReflectionMessage,listMessagesBounded } from './ipc/conversationManagement';
+export type { ConversationActionInput,ConversationActionResult,ConversationMetadata,PilotReflectionMessage,PilotReflectionMessageRead,PilotReflectionToolAnchor } from './ipc/conversationManagement';
 
-export type { HostTelemetryDto, HostTelemetryAvailability, HostTelemetryReason } from "../types/generated/ipc";
+export type { HostTelemetryAvailability,HostTelemetryDto,HostTelemetryReason } from "../types/generated/ipc";
 
 export { hostTelemetryRead } from "./ipc/hostTelemetry";
 
@@ -676,8 +295,8 @@ export * from './ipc/chatAdmission';
 
 // Versioned transport uses the same native Start/snapshot commands and rejects
 // a historical snapshot. Native qualification still gates 0.3 admission.
-export { submitExecutionHuman030, startExecution030, stopExecution030, readExecutionSnapshot030, readExecutionHumans030, readExecutionRuntimeProjection030, listExecutionRuns030, readExecutionRunCorrelation030 } from './ipc/agsdlExecution030';
-export type { StartRequest030, PublicSnapshot030, PublicStartReceipt030 } from './ipc/agsdlExecution030';
 export type { ExecutionRunCorrelation030 } from '../types/generated/ipc';
+export { listExecutionRuns030,readExecutionHumans030,readExecutionRunCorrelation030,readExecutionRuntimeProjection030,readExecutionSnapshot030,startExecution030,stopExecution030,submitExecutionHuman030 } from './ipc/agsdlExecution030';
+export type { PublicSnapshot030,PublicStartReceipt030,StartRequest030 } from './ipc/agsdlExecution030';
 
 export { deliverExecution030 } from './ipc/agsdlExecution030';

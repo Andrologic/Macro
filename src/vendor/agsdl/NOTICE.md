@@ -17,28 +17,19 @@ The validation rules and lossless number scanner are unchanged. The example is
 the official, non-normative general-purpose-system.json at the same tag.
 Validation reports concern their named operations, not execution readiness.
 
-## AgSDL 0.2.0
+## Shared helpers originating in AgSDL 0.2.0
 
 Source: https://github.com/Andrologic/AgSDL/tree/v0.2.0
 Tag commit: ae478d6203dd1571af064317238fd0a0f7dece75. Apache-2.0,
-covered by the included LICENSE. Files under `v0.2/` contain the published
-static reader, derived schema and lossless lexical scanner.
+covered by the included LICENSE. Macro retired the 0.2 reader and execution
+adapters. Its browser-adapted lexical scanner and exact-value helpers remain
+under `shared/` because the 0.3 reader and controllers use them.
 
-Browser adaptations are marked in reader.mjs, values.mjs, declarations.mjs and
-json.mjs: CLI I/O is omitted, the schema is bundled locally, Uint8Array replaces
-Buffer and ip.mjs supplies IPv6 syntax validation instead of node:net.
-The declaration and flow checks are unchanged. No source URI is fetched.
-Reports retain their official scope and executionSupport: not-assessed.
-
-The historical 0.1.0 reader remains separate for existing documents. Its reports
-are never presented as 0.2.0 reports.
-
-Macro's inline conformance modules `src/services/agsdlExecution/content.ts` and
-`constraints.ts` adapt the published 0.2.0 Python helpers `sources.py`,
-`check_delivery.py` and `check_completion.py` under the same Apache-2.0 license.
-Attribution is retained in those modules. They deliberately reject URI and
-non-inline media for Macro's initial execution profile. The vendor reader's
-semantics are unchanged; only TypeScript declarations are extended.
+`shared/json.mjs` uses Uint8Array and TextDecoder instead of Buffer.
+`shared/values.mjs` retains exact numeric equality and decimal comparisons;
+the retired 0.2 value-shape validator and schema were removed. Imports were
+adapted locally. These files are not byte-identical upstream files. No source
+URI is fetched by these helpers.
 
 ## AgSDL 0.3.0
 
@@ -53,8 +44,8 @@ conformance corpus, examples, specification and development-only Python oracle
 are pinned under `dev/agsdl/fixtures/v0.3/`, with file hashes in provenance.json.
 Python is used only by development parity checks, never by the product reader.
 
-The 0.3 parser shares only the NumberToken class with the 0.2 scanner so exact
-values remain compatible with Macro's execution helpers. Parsing and validation
+The 0.3 parser uses the single NumberToken class from `shared/json.mjs`,
+also used by Macro's exact-value helpers. Parsing and validation
 rules remain edition-specific. The 0.1 report adapter keeps its historical
 serializer.
 
@@ -66,12 +57,7 @@ the reference order of child and bound diagnostics. The parity gate compares
 ordered diagnostic codes, severities, locations and joins; human-readable
 messages may use JavaScript JSON formatting instead of Python repr.
 
-## Shared lexical and exact-value helpers
-
-`shared/json.mjs`, `shared/values.mjs`, and their declarations were moved
-from Macro's browser-adapted 0.2 reader. Imports in both edition readers and
-Macro controllers were adjusted locally. Their lexical and exact-number
-behavior is retained, including a single shared NumberToken class. The
-0.2 schema remains here temporarily for its static reader. These are local
-adaptations, not byte-identical upstream files. Apache-2.0 attribution above
-and the adjacent LICENSE continue to apply.
+The imports from the shared helpers were adjusted locally during retirement.
+The 0.3 JavaScript modules are Macro adaptations, not unchanged upstream files.
+The pinned schemas, harness modules and official corpus retain their recorded
+bytes and attribution.

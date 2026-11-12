@@ -16,7 +16,7 @@ use super::{
     failure,
     flow030::{FlowEffect030, FlowEffectKind030, FlowIdentity030, FlowState030},
     opaque, validate_json,
-    work_protocol030::{CheckRequest030, ProtocolDecision030, ProtocolEvent030},
+    work_dto030::{CheckRequest030, ProtocolDecision030, ProtocolEvent030},
     Result,
 };
 use crate::{

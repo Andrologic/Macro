@@ -12,7 +12,7 @@ use crate::db::agsdl_execution::{
     },
     flow_work_protocol030,
     start030::StartCapture030,
-    work_protocol030::ProtocolEvent030,
+    work_dto030::ProtocolEvent030,
 };
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
@@ -239,7 +239,6 @@ async fn real_controller_commit_lost_ack_requires_exact_native_readback() {
             resource: 0,
         })),
         Arc::new(tokio::sync::Mutex::new(())),
-        Default::default(),
         Default::default(),
     ));
     let hook = host.flow030().install_work_commit_hook(&id, "event");

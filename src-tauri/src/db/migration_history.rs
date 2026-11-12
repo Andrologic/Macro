@@ -61,6 +61,7 @@ pub(crate) const NAMES: &[&str] = &[
     "039_execution_call_protocol030",
     "040_execution_flow_human_clock030",
     "041_execution_flow_interrupted030",
+    "042_retire_execution020",
 ];
 
 pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {
@@ -124,6 +125,7 @@ pub(crate) async fn canonical_versions(c: &mut SqliteConnection) -> DbResult<Vec
         || versions.contains(&39) && !versions.contains(&38)
         || versions.contains(&40) && !versions.contains(&39)
         || versions.contains(&41) && !versions.contains(&40)
+        || versions.contains(&42) && !versions.contains(&41)
     {
         return Err(DbError::Migration(
             "Inconsistent AgSDL migration history".into(),
@@ -196,6 +198,9 @@ pub(crate) async fn remove_reference_schema(
     c: &mut SqliteConnection,
     versions: &[i64],
 ) -> DbResult<()> {
+    if !versions.contains(&42) {
+        restore_execution020_reference(c).await?;
+    }
     // This connection is a disposable, empty reference. Reconstruct the
     // historical definition before removing the new foreign-key parent.
     if !versions.contains(&41) {
@@ -416,5 +421,49 @@ pub(crate) async fn remove_reference_schema(
             sqlx::query(statement).execute(&mut *c).await?;
         }
     }
+    Ok(())
+}
+
+/// Reconstruct only the old schema on the disposable empty backup reference.
+/// This is never applied to an application database or to archive rows.
+pub(super) async fn restore_execution020_reference(c: &mut SqliteConnection) -> DbResult<()> {
+    if table_exists(c, "engine_systems".into()).await? {
+        return Ok(());
+    }
+    for sql in [
+        include_str!("migrations/011_agsdl_execution.sql"),
+        include_str!("migrations/012_execution_host.sql"),
+        include_str!("migrations/014_execution_process_receipts.sql"),
+        include_str!("migrations/016_execution_native_operations.sql"),
+        include_str!("migrations/017_execution_work_protocol.sql"),
+        include_str!("migrations/018_execution_work_admission.sql"),
+        include_str!("migrations/029_execution_human_public.sql"),
+    ] {
+        sqlx::raw_sql(sql).execute(&mut *c).await?;
+    }
+    sqlx::query("DROP TABLE engine_ui_intents")
+        .execute(&mut *c)
+        .await?;
+    sqlx::raw_sql(include_str!("migrations/013_execution_ui_intents.sql"))
+        .execute(&mut *c)
+        .await?;
+    sqlx::raw_sql(include_str!(
+        "migrations/032_execution_ui_intent_start030.sql"
+    ))
+    .execute(&mut *c)
+    .await?;
+    let flow = include_str!("migrations/030_execution_flow.sql");
+    let offset = flow
+        .find("CREATE TRIGGER engine_start020_reject_030")
+        .expect("historical trigger");
+    sqlx::raw_sql(&flow[offset..]).execute(&mut *c).await?;
+    let entries = include_str!("migrations/031_execution_start_entry.sql");
+    let start = entries
+        .find("CREATE TRIGGER engine_start030_entry_reject_020")
+        .expect("historical trigger");
+    let end = entries
+        .find("CREATE TRIGGER engine_start030_entry_immutable")
+        .expect("historical trigger");
+    sqlx::raw_sql(&entries[start..end]).execute(&mut *c).await?;
     Ok(())
 }

@@ -1,22 +1,22 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach,beforeEach,describe,expect,it,mock } from 'bun:test';
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
+import { createRoot,type Root } from 'react-dom/client';
+import { services } from '../../services';
+import { buildReviewTaskSummary } from '../../services/implementMultiRepoSummary';
+import {
+DEFAULT_IMPLEMENT_VIEW_FILTERS,
+} from '../../services/viewFilterPreferences';
 import type { useAppStore as UseAppStoreHook } from '../../stores/useAppStore';
 import type { useChatStore as UseChatStoreHook } from '../../stores/useChatStore';
 import type { useFileChangesStore as UseFileChangesStoreHook } from '../../stores/useFileChangesStore';
 import type { useTaskStore as UseTaskStoreHook } from '../../stores/useTaskStore';
-import {
-  DEFAULT_IMPLEMENT_VIEW_FILTERS,
-} from '../../services/viewFilterPreferences';
 import { useViewFilterStore } from '../../stores/useViewFilterStore';
-import { buildReviewTaskSummary } from '../../services/implementMultiRepoSummary';
-import type { ProjectGitFlowSettings, TaskStatus } from '../../types';
 import {
-  createTranslationMock,
-  installReactI18nextMock,
+createTranslationMock,
+installReactI18nextMock,
 } from '../../test-utils/reactI18nextMock';
-import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../../test-utils/tauriRuntime';
-import { services } from '../../services';
+import { installTauriRuntimeMock,removeTauriRuntimeMock } from '../../test-utils/tauriRuntime';
+import type { ProjectGitFlowSettings,TaskStatus } from '../../types';
 
 let useAppStore!: typeof UseAppStoreHook;
 let useChatStore!: typeof UseChatStoreHook;
@@ -37,9 +37,9 @@ let notifyMock!: {
 
 import { createInstance } from 'i18next';
 import fr from '../../i18n/locales/fr.json';
-import frImplement from '../../i18n/locales/segments/implement-fr.json';
-import enImplement from '../../i18n/locales/segments/implement-en.json';
 import frAgsdl from '../../i18n/locales/segments/agsdl-fr.json';
+import enImplement from '../../i18n/locales/segments/implement-en.json';
+import frImplement from '../../i18n/locales/segments/implement-fr.json';
 const frenchTranslator = createInstance();
 await frenchTranslator.init({ showSupportNotice: false, lng: 'fr', resources: { fr: { translation: { ...fr, implement: frImplement } } } });
 frenchTranslator.addResourceBundle('fr', 'agsdl', { agsdl: frAgsdl });
@@ -562,47 +562,6 @@ describe('TaskQueue', () => {
     expect(useAppStore.getState().mode).toBe('Implement');
     await act(async () => { document.querySelector<HTMLButtonElement>('[role="dialog"] button[aria-label="Close"]')!.click(); await flushRender(); });
     expect(document.querySelector('[role="dialog"]')).toBeNull();
-  });
-
-  it('keeps a failed Call visible by default, opens its captured graph on click and hides native legacy actions', async () => {
-    const { workflowCallFailureFixture } = await import('../../services/workflowAgentTasks.fixtures');
-    const { projectWorkflowAgentTasks } = await import('../../services/workflowAgentTasks');
-    const f = await workflowCallFailureFixture();
-    const tasks = projectWorkflowAgentTasks(f.plan, f.snapshot, f.projection, []);
-    seedTasks(tasks.map(task => ({ ...task })));
-    useViewFilterStore.setState({ implement: { ...DEFAULT_IMPLEMENT_VIEW_FILTERS }, isHydrated: true });
-    const activateTask = mock(async () => { throw new Error('Native rows must not activate legacy Tasks'); });
-    useTaskStore.setState({ activateTask });
-    const seen: Array<[string, unknown]> = [];
-    installTauriRuntimeMock(mock(async (command, payload) => {
-      seen.push([command, payload]);
-      if (command === 'execution_read_snapshot') return f.snapshot;
-      if (command === 'execution_read_projection') return f.projection;
-      if (command === 'execution_pending_approvals') return { approvals: [], incomplete: false };
-      return null;
-    }));
-    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
-    const cards = document.querySelectorAll<HTMLElement>('[data-tour-id="implement-task-card"]');
-    expect(cards).toHaveLength(1);
-    expect(cards[0].textContent).toContain('View workflow');
-    expect(tasks[0].status).toBe('Completed');
-    expect(cards[0].querySelector('button[title="Run commands"]')).toBeNull();
-    const waiting = [...document.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Waiting1')!;
-    expect(waiting).toBeDefined();
-    await act(async () => { waiting.click(); await flushRender(); });
-    expect(document.querySelectorAll('[data-tour-id="implement-task-card"]')).toHaveLength(1);
-    expect(useViewFilterStore.getState().implement.status).toBe('waiting');
-    await act(async () => { cards[0].querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')!.click(); await flushRender(); });
-    const actions = [...document.querySelectorAll('[role="menuitem"]')].map(item => item.textContent);
-    expect(actions).toContain('View workflow');
-    for (const action of ['Rename', 'Start review', 'Reopen', 'Archive', 'Delete']) expect(actions).not.toContain(action);
-    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await flushRender(); });
-    await act(async () => { cards[0].click(); await import('./TaskExecutionGraphDialog'); await flushRender(); });
-    expect(activateTask).not.toHaveBeenCalled();
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Workflow execution');
-    expect([...document.querySelectorAll('[role="dialog"] button')].some(button => button.textContent === 'Open task')).toBe(false);
-    expect(seen.some(([command, payload]) => command === 'execution_read_snapshot' &&
-      (payload as { systemStartId?: string })?.systemStartId === f.snapshot.systemStartId)).toBe(true);
   });
 
   it.each(['exception', 'service'] as const)('reports a rejected rename from a %s error, clears pending state and keeps the dialog available for retry', async kind => {

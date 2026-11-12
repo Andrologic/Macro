@@ -1,7 +1,7 @@
 //! Native ownership of the resident execution webview. A label is not an identity.
 use crate::core::db_state::DbPool;
 use crate::db::agsdl_execution::{self as repository, dto::EngineOwner, failure, Result};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
@@ -78,7 +78,6 @@ struct OwnedHost {
 pub(crate) struct HostState(
     Mutex<Option<OwnedHost>>,
     Arc<tokio::sync::Mutex<()>>,
-    crate::agsdl_host_tools::ToolExecutors,
     crate::agsdl_host_flow030::FlowHost030,
 );
 
@@ -108,7 +107,6 @@ pub(crate) fn route_attestation_test_host030(owner: EngineOwner, generation: &st
             resource: 0,
         })),
         Arc::new(tokio::sync::Mutex::new(())),
-        Default::default(),
         Default::default(),
     )
 }
@@ -403,14 +401,12 @@ impl HostStartLease {
 
 impl HostState {
     pub(crate) fn flow030(&self) -> &crate::agsdl_host_flow030::FlowHost030 {
-        &self.3
+        &self.2
     }
     pub(crate) fn admission_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
         self.1.clone()
     }
-    pub(crate) fn tools(&self) -> &crate::agsdl_host_tools::ToolExecutors {
-        &self.2
-    }
+
     pub(crate) async fn admission_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.1.lock().await
     }
@@ -577,176 +573,10 @@ impl HostState {
     /// epoch/stop/revision guard. A committed replay never invokes the mailbox.
     /// This reserves checks only; physical execution requires a separate
     /// native admission and one durable claim under the Stop gate.
-    pub(crate) async fn transition_work030(
-        &self,
-        pool: &sqlx::SqlitePool,
-        input: &repository::work_protocol030::ProtocolEvent030,
-        cancelled: &tokio_util::sync::CancellationToken,
-    ) -> Result<repository::work_protocol030::ProtocolDecision030> {
-        self.transition_work030_inner(pool, input, None, cancelled)
-            .await
-    }
 
-    pub(crate) async fn transition_visible_work030(
-        &self,
-        pool: &sqlx::SqlitePool,
-        input: &repository::work_protocol030::ProtocolEvent030,
-        emission: &repository::responses::Emission,
-        cancelled: &tokio_util::sync::CancellationToken,
-    ) -> Result<repository::work_protocol030::ProtocolDecision030> {
-        self.transition_work030_inner(pool, input, Some(emission), cancelled)
-            .await
-    }
-
-    async fn transition_work030_inner(
-        &self,
-        pool: &sqlx::SqlitePool,
-        input: &repository::work_protocol030::ProtocolEvent030,
-        emission: Option<&repository::responses::Emission>,
-        cancelled: &tokio_util::sync::CancellationToken,
-    ) -> Result<repository::work_protocol030::ProtocolDecision030> {
-        use repository::work_protocol030::{
-            self as protocol, EventReservation030, ProtocolDecision030,
-        };
-
-        if emission.is_none() {
-            protocol::reject_visible_without_response(input)?;
-        }
-        let admission = protocol::read_admission(pool, &input.context, input.control).await?;
-        let reservation = {
-            let lease = self.start_lease().await?;
-            if lease.owner(&input.context.owner.system_start_id)? != input.context.owner {
-                return Err(failure(
-                    "PERMISSION",
-                    "work",
-                    "Work belongs to another host epoch",
-                ));
-            }
-            let reservation = protocol::reserve_event(pool, input).await?;
-            lease.ensure_live()?;
-            reservation
-        };
-        let ticket = match reservation {
-            EventReservation030::Committed { decision } => {
-                if let Some(emission) = emission {
-                    protocol::verify_visible_commit(pool, input, &decision, emission).await?;
-                } else {
-                    protocol::reject_visible_without_response(input)?;
-                }
-                return Ok(decision);
-            }
-            EventReservation030::Pending { ticket } => ticket,
-        };
-        let (output, host) = self
-            .evaluate_work030(
-                crate::agsdl_host_work::HostWorkInput030 {
-                    context: input.context.clone(),
-                    event_id: input.event_id.clone(),
-                    expected_revision: input.expected_revision.clone(),
-                    contract_json: ticket.contract_json.clone(),
-                    state_json: ticket.state_json.clone(),
-                    event_json: input.event_json.clone(),
-                    options_json: admission.options_json,
-                },
-                cancelled,
-            )
-            .await?;
-        if cancelled.is_cancelled() {
-            return Err(failure(
-                "INTERRUPTED",
-                "work",
-                "Work transition was cancelled",
-            ));
-        }
-        let check =
-            crate::agsdl_host_work::reserved_check030(&input.context, &output.receipt_json)?;
-        let decision = ProtocolDecision030 {
-            state_json: output.state_json,
-            receipt_json: output.receipt_json,
-            check,
-        };
-        if let Err(error) = self
-            .commit_work030_inner(pool, &host, &ticket, &decision, emission, cancelled)
-            .await
-        {
-            if error.code == "UNCERTAIN" {
-                // Read only: a durable result does not renew a revoked lease and
-                // cannot authorize a second physical dispatch.
-                let observation = tokio::time::timeout(
-                    std::time::Duration::from_secs(1),
-                    crate::agsdl_host_work::observe_commit030(pool, &ticket, &decision),
-                )
-                .await;
-                let message = match observation {
-                    Ok(Ok(crate::agsdl_host_work::DurableCommitObservation030::Committed)) => {
-                        "Work decision is durable; no effect may be replayed"
-                    }
-                    Ok(Ok(crate::agsdl_host_work::DurableCommitObservation030::Unresolved)) => {
-                        "Work decision remains uncertain; no effect may be replayed"
-                    }
-                    _ => "Work decision could not be inspected; no effect may be replayed",
-                };
-                return Err(failure("UNCERTAIN", "work", message));
-            }
-            return Err(error);
-        }
-        Ok(decision)
-    }
     /// Only the short SQL commit holds the lifecycle lease. Cancellation or
     /// retirement can leave the commit outcome unknown; it never authorizes IO.
-    #[cfg(test)]
-    async fn commit_work030(
-        &self,
-        pool: &sqlx::SqlitePool,
-        host: &Arc<Incarnation>,
-        ticket: &repository::work_protocol030::TransitionTicket030,
-        decision: &repository::work_protocol030::ProtocolDecision030,
-        cancelled: &tokio_util::sync::CancellationToken,
-    ) -> Result<()> {
-        self.commit_work030_inner(pool, host, ticket, decision, None, cancelled)
-            .await
-    }
 
-    async fn commit_work030_inner(
-        &self,
-        pool: &sqlx::SqlitePool,
-        host: &Arc<Incarnation>,
-        ticket: &repository::work_protocol030::TransitionTicket030,
-        decision: &repository::work_protocol030::ProtocolDecision030,
-        emission: Option<&repository::responses::Emission>,
-        cancelled: &tokio_util::sync::CancellationToken,
-    ) -> Result<()> {
-        let _lease = host.lifecycle.clone().read_owned().await;
-        if !host.live.load(Ordering::SeqCst)
-            || !host.ready.load(Ordering::SeqCst)
-            || cancelled.is_cancelled()
-        {
-            return Err(failure(
-                "INTERRUPTED",
-                "work",
-                "Work host was revoked before commit",
-            ));
-        }
-        tokio::select! {
-            biased;
-            _ = host.retired.cancelled() => return Err(failure("UNCERTAIN", "work", "Host retired during commit; inspect durable state")),
-            _ = cancelled.cancelled() => return Err(failure("UNCERTAIN", "work", "Work cancelled during commit; inspect durable state")),
-            result = async {
-                match emission {
-                    Some(value) => repository::work_protocol030::commit_visible_event(pool, ticket, decision, value).await,
-                    None => repository::work_protocol030::commit_event(pool, ticket, decision).await,
-                }
-            } => { result?; }
-        }
-        if !host.live.load(Ordering::SeqCst) || cancelled.is_cancelled() {
-            return Err(failure(
-                "UNCERTAIN",
-                "work",
-                "Work host retired after commit; inspect durable state",
-            ));
-        }
-        Ok(())
-    }
     /// Called only by native capture after the durable start receipt. There is no
     /// IPC that lets a caller claim an arbitrary system or choose its epoch.
     pub(crate) fn attach_owner(&self, caller: &Webview, owner: EngineOwner) -> Result<()> {
@@ -845,7 +675,7 @@ pub(crate) async fn fence_generation(
     owners: &[EngineOwner],
     generation: &str,
 ) -> Result<()> {
-    repository::revoke_host_owners(pool, owners).await?;
+    let _ = owners;
     crate::agsdl_host_flow030::revoke_generation(pool, generation).await
 }
 
@@ -943,51 +773,6 @@ fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
             .await
             {
                 tracing::warn!(code = %error.code, "Native flow retirement remains pending");
-            }
-            for owner in &owners {
-                if let Ok(projection) =
-                    repository::read_projection(&pool, &owner.system_start_id).await
-                {
-                    for activation in projection.activations {
-                        if let Ok(effects) =
-                            repository::read_effects(&pool, &activation.delivery.delivery.work)
-                                .await
-                        {
-                            for effect in effects {
-                                if effect.registered.context.owner != *owner
-                                    || effect.status == "ended"
-                                {
-                                    continue;
-                                }
-                                // A controlled native runner may be waiting for a Macro
-                                // Tool. Revoke that owned executor as well as its provider.
-                                crate::agsdl_host_tools::cancel(&effect.registered);
-                                let native = serde_json::from_str::<serde_json::Value>(
-                                    &effect.registered.invocation_json,
-                                )
-                                .ok()
-                                .is_some_and(|value| {
-                                    value["kind"] == "codex-app-server-v1"
-                                        || value["kind"] == "claude-sdk-v1"
-                                });
-                                if !native || effect.status == "ended" {
-                                    continue;
-                                }
-                                if let repository::dto::EngineEffectIdentity::Provider {
-                                    provider_attempt_id,
-                                } = effect.registered.effect
-                                {
-                                    let _ = crate::agsdl_host_provider::finish(
-                                        &app,
-                                        effect.registered.context,
-                                        provider_attempt_id,
-                                    )
-                                    .await;
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
         // A native replacement follows durable fencing, never a Flow polling tick.
@@ -1124,30 +909,14 @@ pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 #[tauri::command]
 pub(crate) fn execution_host_ready(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     webview: Webview,
     state: tauri::State<'_, HostState>,
 ) -> Result<String> {
     let host = state.authenticate(&webview)?;
-    if !host.ready.swap(true, Ordering::SeqCst) {
-        // Do not await the compiler here: the JS mailbox starts after this handshake.
-        let database = app.state::<DbPool>().inner().clone();
-        let gate = state.admission_lock();
-        let recovering = host.clone();
-        // This synchronous command runs on the main thread, outside a Tokio context.
-        tauri::async_runtime::spawn(reattach_retained(
-            database,
-            recovering,
-            gate,
-            std::time::Duration::from_secs(2),
-        ));
-    }
+    host.ready.store(true, Ordering::SeqCst);
     Ok(host.generation.clone())
 }
-
-#[cfg(test)]
-#[path = "agsdl_host_recovery_tests.rs"]
-mod recovery_tests;
 
 #[cfg(test)]
 #[path = "agsdl_host_flow030_tests.rs"]
@@ -1540,269 +1309,8 @@ pub(crate) fn execution_host_failed(
     Ok(())
 }
 
-#[tauri::command]
-pub(crate) fn execution_host_owners(
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-) -> Result<Vec<EngineOwner>> {
-    let host = state.authenticate(&webview)?;
-    let owners = host
-        .owners
-        .lock()
-        .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?;
-    Ok(owners.values().cloned().collect())
-}
-#[tauri::command]
-pub(crate) async fn execution_host_inspect(
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-    database: tauri::State<'_, DbPool>,
-    owner: EngineOwner,
-) -> Result<repository::inspection::HostInspection> {
-    state.authenticate_owner(&webview, &owner)?;
-    let pool = database
-        .wait_until_ready()
-        .await
-        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
-    let result = repository::inspection::read(&pool, &owner).await?;
-    state.authenticate_owner(&webview, &owner)?;
-    Ok(result)
-}
-#[tauri::command]
-pub(crate) async fn execution_host_begin(
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-    database: tauri::State<'_, DbPool>,
-    owner: EngineOwner,
-    delivery_id: String,
-) -> Result<repository::inspection::HostAdmission> {
-    state.authenticate_owner(&webview, &owner)?;
-    let pool = database
-        .wait_until_ready()
-        .await
-        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
-    let result = repository::begin(&pool, &owner, &delivery_id).await?;
-    state.authenticate_owner(&webview, &owner)?;
-    Ok(result.into())
-}
-
-#[tauri::command]
-pub(crate) async fn execution_host_prepare_terminal(
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-    database: tauri::State<'_, DbPool>,
-    request: repository::prepared::Prepare,
-) -> Result<String> {
-    let generation = state.authenticate_owner(&webview, &request.owner)?;
-    let pool = database
-        .wait_until_ready()
-        .await
-        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
-    repository::prepared::prepare(&pool, &generation, request).await
-}
-#[tauri::command]
-pub(crate) async fn execution_host_commit_terminal(
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-    database: tauri::State<'_, DbPool>,
-    owner: EngineOwner,
-    witness_id: String,
-) -> Result<repository::dto::EngineTerminalCommit> {
-    let generation = state.authenticate_owner(&webview, &owner)?;
-    let pool = database
-        .wait_until_ready()
-        .await
-        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
-    repository::prepared::commit(&pool, &generation, &owner, &witness_id).await
-}
-#[tauri::command]
-pub(crate) async fn execution_host_append_response(
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-    database: tauri::State<'_, DbPool>,
-    emission: repository::responses::Emission,
-) -> Result<bool> {
-    state.authenticate_owner(&webview, &emission.context.owner)?;
-    let pool = database
-        .wait_until_ready()
-        .await
-        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
-    repository::responses::append(&pool, emission).await
-}
-#[tauri::command]
-pub(crate) async fn execution_host_read_responses(
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-    database: tauri::State<'_, DbPool>,
-    owner: EngineOwner,
-    work: repository::dto::EngineWork,
-) -> Result<(Vec<repository::responses::Emission>, String)> {
-    state.authenticate_owner(&webview, &owner)?;
-    let pool = database
-        .wait_until_ready()
-        .await
-        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
-    let result = repository::responses::read(&pool, &owner, &work).await?;
-    state.authenticate_owner(&webview, &owner)?;
-    Ok(result)
-}
-#[tauri::command]
-pub(crate) async fn execution_host_close_responses(
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-    database: tauri::State<'_, DbPool>,
-    closure: repository::responses::Closure,
-) -> Result<repository::responses::Closure> {
-    state.authenticate_owner(&webview, &closure.owner)?;
-    let pool = database
-        .wait_until_ready()
-        .await
-        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
-    repository::responses::close(&pool, closure).await
-}
-
-#[tauri::command]
-pub(crate) async fn execution_host_mark_uncertain(
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-    database: tauri::State<'_, DbPool>,
-    owner: EngineOwner,
-    work: repository::dto::EngineWork,
-    reason: String,
-) -> Result<()> {
-    state.authenticate_owner(&webview, &owner)?;
-    if reason.len() > 2048 {
-        return Err(failure(
-            "CORRELATION",
-            "reason",
-            "Uncertainty reason exceeds its bound",
-        ));
-    }
-    let pool = database
-        .wait_until_ready()
-        .await
-        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
-    repository::mark_uncertain(&pool, &owner, &work, &reason).await?;
-    state.authenticate_owner(&webview, &owner)?;
-    Ok(())
-}
-
 // One supervisor belongs to the physical incarnation. Transient failures are
 // retried at a bounded rate until retirement; an old Start receipt never dispatches work.
-async fn reattach_retained(
-    database: DbPool,
-    host: Arc<Incarnation>,
-    gate: Arc<tokio::sync::Mutex<()>>,
-    retry_delay: std::time::Duration,
-) {
-    let mut incompatible = BTreeSet::new();
-    while host.live.load(Ordering::SeqCst) {
-        let pool = tokio::select! {
-            _ = host.retired.cancelled() => return,
-            pool = database.wait_until_ready() => pool,
-        };
-        let result = match pool {
-            Ok(pool) => reattach_pass(&pool, &host, &gate, &mut incompatible).await,
-            Err(_) => Err(failure("STORAGE", "", "Execution database unavailable")),
-        };
-        match result {
-            Ok(false) => return, // Every retained candidate is attached or incompatible.
-            Ok(true) => {}
-            Err(error) => tracing::warn!(code = %error.code, "Execution host recovery will retry"),
-        }
-        tokio::select! {
-            _ = host.retired.cancelled() => return,
-            _ = tokio::time::sleep(retry_delay) => {},
-        }
-    }
-}
-
-async fn reattach_pass(
-    pool: &sqlx::SqlitePool,
-    host: &Arc<Incarnation>,
-    gate: &tokio::sync::Mutex<()>,
-    incompatible: &mut BTreeSet<String>,
-) -> Result<bool> {
-    // Never hold the lifecycle lease while sleeping between scans. Retirement
-    // still waits for a committed owner to be recorded before revoking it.
-    let lease = HostStartLease {
-        host: host.clone(),
-        _guard: host.lifecycle.clone().read_owned().await,
-    };
-    lease.ensure_live()?;
-    let mut after = String::new();
-    let mut retry_needed = false;
-    loop {
-        let candidates = repository::retained_for_resume(pool, &after).await?;
-        if candidates.is_empty() {
-            return Ok(retry_needed);
-        }
-        for (snapshot, capture) in candidates {
-            after = snapshot.system_start_id.clone();
-            lease.ensure_live()?;
-            if lease.owner(&snapshot.system_start_id).is_ok()
-                || incompatible.contains(&snapshot.system_start_id)
-            {
-                continue;
-            }
-            match reattach_candidate(pool, &lease, gate, &snapshot, capture).await {
-                Ok(true) => {}
-                Ok(false) => {
-                    incompatible.insert(snapshot.system_start_id);
-                }
-                Err(error) => {
-                    retry_needed = true;
-                    // A busy compiler or failed SQL operation for A cannot hide B.
-                    tracing::warn!(code = %error.code, "Retained execution recovery will retry");
-                }
-            }
-        }
-    }
-}
-
-async fn reattach_candidate(
-    pool: &sqlx::SqlitePool,
-    lease: &HostStartLease,
-    gate: &tokio::sync::Mutex<()>,
-    snapshot: &repository::dto::EngineSnapshot,
-    capture: repository::capture::PrivateCapture,
-) -> Result<bool> {
-    if capture.implementation_digest != "macro-native-host/1" {
-        return Ok(false);
-    }
-    let verified = lease
-        .host
-        .compiler
-        .compile(
-            lease.generation(),
-            snapshot.source.clone(),
-            snapshot.authored_source.clone(),
-            capture.registry_json,
-        )
-        .await?;
-    let result: serde_json::Value = serde_json::from_str(&verified.result_json)?;
-    let Some(compiled) = result
-        .get("compiledPlanJson")
-        .and_then(serde_json::Value::as_str)
-    else {
-        return Ok(false);
-    };
-    // Exact equality includes every captured implementation version. Incompatible
-    // captures stay closed without replaying effects or rotating their epoch.
-    if verified.generation != lease.generation()
-        || !crate::db::exact_json::equal(compiled, &snapshot.compiled_plan_json)?
-    {
-        return Ok(false);
-    }
-    let _gate = gate.lock().await;
-    lease.ensure_live()?;
-    if lease.owner(&snapshot.system_start_id).is_ok() {
-        return Ok(true);
-    }
-    let owner = repository::resume(pool, &snapshot.system_start_id, &snapshot.versions).await?;
-    lease.retain_committed_owner(owner)?;
-    Ok(true)
-}
 
 // Manual qualification only. The native slot authorizes one existing delivery;
 // an event from another webview cannot manufacture an admission or owner.
@@ -1811,100 +1319,7 @@ pub(crate) fn execution_qa_available(app: tauri::AppHandle) -> bool {
     cfg!(all(debug_assertions, feature = "browser-runtime-debug"))
         && app.config().identifier.starts_with("com.macro.desktop.qa.")
 }
-#[tauri::command]
-pub(crate) async fn execution_qa_run(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, HostState>,
-    database: tauri::State<'_, DbPool>,
-    system_start_id: String,
-    delivery_id: String,
-) -> Result<()> {
-    use tauri::Emitter;
-    if !execution_qa_available(app.clone()) {
-        return Err(failure(
-            "RUNTIME_UNAVAILABLE",
-            "",
-            "Manual qualification is disabled",
-        ));
-    }
-    let lease = state.start_lease().await?;
-    let owner = lease.owner(&system_start_id)?;
-    let pool = database
-        .wait_until_ready()
-        .await
-        .map_err(|_| failure("STORAGE", "", "Database unavailable"))?;
-    let inspection = repository::inspection::read(&pool, &owner).await?;
-    let plan: serde_json::Value = serde_json::from_str(&inspection.snapshot.compiled_plan_json)?;
-    let delivery = inspection
-        .projection
-        .activations
-        .iter()
-        .find(|activation| activation.delivery.delivery.delivery_id == delivery_id);
-    if plan.get("entry") != Some(&serde_json::Value::Null)
-        || !delivery.is_some_and(|activation| {
-            activation.work_state == "queued"
-                && activation
-                    .delivery
-                    .delivery
-                    .work
-                    .agent_instance_id
-                    .is_some()
-        })
-    {
-        return Err(failure(
-            "CORRELATION",
-            "delivery",
-            "Manual qualification requires a queued graphless Agent delivery",
-        ));
-    }
-    lease.ensure_live()?;
-    let mut slot = lease
-        .host
-        .qa_request
-        .lock()
-        .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "QA request unavailable"))?;
-    if slot.is_some() {
-        return Err(failure(
-            "RUNTIME_UNAVAILABLE",
-            "",
-            "A manual qualification request is pending",
-        ));
-    }
-    *slot = Some((system_start_id, delivery_id));
-    if app.emit_to(LABEL, "agsdl-qa-wake", ()).is_err() {
-        *slot = None;
-        return Err(failure("RUNTIME_UNAVAILABLE", "", "Host wake failed"));
-    }
-    Ok(())
-}
-#[tauri::command]
-pub(crate) fn execution_host_qa_take(
-    app: tauri::AppHandle,
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-) -> Result<Option<(EngineOwner, String)>> {
-    if !execution_qa_available(app) {
-        return Ok(None);
-    }
-    let host = state.authenticate(&webview)?;
-    let request = host
-        .qa_request
-        .lock()
-        .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "QA request unavailable"))?
-        .take();
-    request
-        .map(|(system, delivery)| {
-            let owner = host
-                .owners
-                .lock()
-                .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Owner unavailable"))?
-                .get(&system)
-                .cloned()
-                .ok_or_else(|| failure("CORRELATION", "", "QA owner is absent"))?;
-            Ok((owner, delivery))
-        })
-        .transpose()
-}
+
 #[tauri::command]
 pub(crate) async fn execution_qa_replace_host(
     app: tauri::AppHandle,

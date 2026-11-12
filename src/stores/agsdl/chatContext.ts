@@ -1,16 +1,15 @@
-import { readExecutionSnapshot, readExecutionDiagnostic } from "../../services/tauriIpc";
-import { captureRuntimeSelection, sameRuntimeReference, isAgsdlReference, type RuntimeSelectionCapture } from "../../services/agsdl/runtimeSelection";
-import { readAgsdlSelectionPayload, readRuntimeCapture, stripAgsdlChatContext } from '../../services/agsdl/chatContextPayload';
-export { agsdlContextForModel } from '../../services/agsdl/chatContextPayload';
-import { serializeAgsdlChatContext } from "../../services/agsdl/selectionContext";
-export { serializeAgsdlChatContext } from "../../services/agsdl/selectionContext";
 import i18n from "../../i18n";
-import type { AgsdlSelectionReference, AgsdlDocumentReference, AgsdlRuntimeReference, ContextReference } from "../../types";
-import { getArchitectPlan } from "../../services/architectPlanService";
-import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../useAgsdlStore";
-import { list, object, readDocument, sourceAt } from "../../services/agsdl/document";
-import { useChatStore } from "../useChatStore";
+import { readAgsdlSelectionPayload,readRuntimeCapture,stripAgsdlChatContext } from '../../services/agsdl/chatContextPayload';
+import { list,object,readDocument,sourceAt } from "../../services/agsdl/document";
+import { isAgsdlReference,sameRuntimeReference,type RuntimeSelectionCapture } from "../../services/agsdl/runtimeSelection";
+import { serializeAgsdlChatContext } from "../../services/agsdl/selectionContext";
 import { AgsdlUserError } from "../../services/agsdl/userErrors";
+import { getArchitectPlan } from "../../services/architectPlanService";
+import type { AgsdlDocumentReference,AgsdlRuntimeReference,AgsdlSelectionReference,ContextReference } from "../../types";
+import { agsdlSessionKey,useAgsdlStore,type AgsdlTarget } from "../useAgsdlStore";
+import { useChatStore } from "../useChatStore";
+export { agsdlContextForModel } from '../../services/agsdl/chatContextPayload';
+export { serializeAgsdlChatContext } from "../../services/agsdl/selectionContext";
 
 export type AgsdlChatContext = AgsdlSelectionReference;
 
@@ -137,9 +136,8 @@ export async function captureAgsdlChatContext(context: AgsdlChatContext | undefi
   };
   await ownsDestination();
   const previous = readRuntimeCapture(previousHidden);
-  const capture = previous && sameRuntimeReference(context, previous.reference) ? previous : await captureRuntimeSelection(context, {
-    snapshot: readExecutionSnapshot, diagnostic: readExecutionDiagnostic,
-  });
+  if (!previous || !sameRuntimeReference(context, previous.reference)) throw new Error('agsdl.unsupportedEdition020');
+  const capture = previous;
   await ownsDestination();
   return capture;
 }

@@ -241,6 +241,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (39, "039_execution_call_protocol030".into()),
             (40, "040_execution_flow_human_clock030".into()),
             (41, "041_execution_flow_interrupted030".into()),
+            (42, "042_retire_execution020".into()),
         ]
     );
 }
@@ -327,7 +328,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&41)
+        Some(&42)
     );
 }
 
@@ -1245,6 +1246,9 @@ pub(crate) async fn published_branch_database(
     )
     .await
     .unwrap();
+    migration_history::restore_execution020_reference(&mut connection)
+        .await
+        .unwrap();
     drop_develop_after9(&mut connection).await;
     sqlx::query("DROP TABLE migration_identity_history")
         .execute(&mut connection)
@@ -1348,16 +1352,15 @@ async fn legacy_protocol_identities_are_normalized_without_losing_admission_data
         .execute(&mut old).await.unwrap();
     old.close().await.unwrap();
     let upgraded = create_pool(&path).await.unwrap();
-    let event_ticket: String = sqlx::query_scalar(
-        "SELECT ticket_json FROM engine_work_events030 WHERE system_id='run' AND event_id='event'",
-    )
-    .fetch_one(&upgraded)
-    .await
-    .unwrap();
-    assert_eq!(event_ticket, ticket);
-    let check: (i64, String) = sqlx::query_as("SELECT c.claimed,e.record_json FROM engine_work_checks030 c JOIN engine_effects e ON e.system_id=c.system_id AND e.effect_key=c.effect_key WHERE c.system_id='run' AND c.check_id='check'")
-        .fetch_one(&upgraded).await.unwrap();
-    assert_eq!(check, (1, effect.into()));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM sqlite_schema WHERE name='engine_work_events030'"
+        )
+        .fetch_one(&upgraded)
+        .await
+        .unwrap(),
+        0
+    );
     let names: Vec<(i64, String)> = sqlx::query_as("SELECT version,name FROM schema_migrations WHERE version IN (17,18,27,28) ORDER BY version")
         .fetch_all(&upgraded).await.unwrap();
     assert_eq!(
@@ -1378,10 +1381,6 @@ async fn legacy_protocol_identities_are_normalized_without_losing_admission_data
             (18, "018_execution_work_admission".into())
         ]
     );
-    let admission: (String, String) = sqlx::query_as("SELECT options_json,evidence_json FROM engine_work_admission030 WHERE system_id='run' AND activation_id='work'")
-        .fetch_one(&upgraded).await.unwrap();
-    assert_eq!(admission.0, r#"{ "limit":9007199254740993 }"#);
-    assert_eq!(admission.1, r#"{ "proof":true }"#);
     upgraded.close().await;
     create_pool(&path).await.unwrap().close().await;
 }
@@ -1434,7 +1433,7 @@ async fn joins_both_published_v10_histories_without_replacing_stamps_or_data() {
                 .fetch_one(&upgraded)
                 .await
                 .unwrap(),
-            41
+            42
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1459,13 +1458,13 @@ async fn joins_both_published_v10_histories_without_replacing_stamps_or_data() {
         }
         if !visible_search {
             assert_eq!(
-                sqlx::query_scalar::<_, String>(
-                    "SELECT snapshot_json FROM engine_systems WHERE system_id='system'"
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT count(*) FROM sqlite_schema WHERE name='engine_systems'"
                 )
                 .fetch_one(&upgraded)
                 .await
                 .unwrap(),
-                "{\"keep\":true}"
+                0
             );
             assert_eq!(
                 sqlx::query_scalar::<_, String>(
@@ -1599,6 +1598,15 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
         .unwrap(),
         stamps
     );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT snapshot_json FROM engine_systems WHERE system_id='historical'"
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap(),
+        snapshot
+    );
     sqlx::query("DROP TRIGGER fail_protocol_stamp")
         .execute(&mut connection)
         .await
@@ -1606,20 +1614,22 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
     connection.close().await.unwrap();
     let upgraded = create_pool(&path).await.unwrap();
     assert_eq!(
-        sqlx::query_scalar::<_, String>(
-            "SELECT snapshot_json FROM engine_systems WHERE system_id='historical'"
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM sqlite_schema WHERE name='engine_systems'"
         )
         .fetch_one(&upgraded)
         .await
         .unwrap(),
-        snapshot
+        0
     );
     assert_eq!(sqlx::query_as::<_, (i64,String,String)>("SELECT version,name,applied_at FROM schema_migrations WHERE version<27 ORDER BY version").fetch_all(&upgraded).await.unwrap(), stamps);
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_work_protocol030")
-            .fetch_one(&upgraded)
-            .await
-            .unwrap(),
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM sqlite_schema WHERE name='engine_work_protocol030'"
+        )
+        .fetch_one(&upgraded)
+        .await
+        .unwrap(),
         0
     );
     assert_eq!(
@@ -1627,7 +1637,7 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        41
+        42
     );
     assert_eq!(
         sqlx::query("PRAGMA foreign_key_check")
@@ -1676,6 +1686,15 @@ async fn admission018_upgrades_v17_and_rolls_back_failed_stamp() {
             .unwrap(),
         0
     );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT snapshot_json FROM engine_systems WHERE system_id='historical18'"
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap(),
+        original
+    );
     sqlx::query("DROP TRIGGER fail_admission_stamp")
         .execute(&mut connection)
         .await
@@ -1683,20 +1702,20 @@ async fn admission018_upgrades_v17_and_rolls_back_failed_stamp() {
     connection.close().await.unwrap();
     let upgraded = create_pool(&path).await.unwrap();
     assert_eq!(
-        sqlx::query_scalar::<_, String>(
-            "SELECT snapshot_json FROM engine_systems WHERE system_id='historical18'"
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM sqlite_schema WHERE name='engine_systems'"
         )
         .fetch_one(&upgraded)
         .await
         .unwrap(),
-        original
+        0
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT max(version) FROM schema_migrations")
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        41
+        42
     );
     assert!(sqlx::query("PRAGMA foreign_key_check")
         .fetch_all(&upgraded)
@@ -1814,6 +1833,16 @@ async fn flow030_migration_preserves_capture_and_rejects_cross_version_request_r
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("flow030.db");
     let pool = create_pool(&path).await.unwrap();
+    {
+        let mut c = pool.acquire().await.unwrap();
+        migration_history::restore_execution020_reference(&mut c)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version=42")
+            .execute(&mut *c)
+            .await
+            .unwrap();
+    }
     sqlx::raw_sql("INSERT INTO engine_systems VALUES ('old','old-request','{}','{}','[]','{}');
         INSERT INTO engine_flow030_runs VALUES ('new','flow','snapshot','capture-epoch','{}','{}','{}');
         INSERT INTO engine_flow030_events VALUES ('new','flow','enter','{}','{}',NULL);
@@ -1852,6 +1881,16 @@ async fn start030_entry_reservation_conflicts_with_both_execution_versions() {
     let pool = create_pool(&temp.path().join("flow-entries.db"))
         .await
         .unwrap();
+    {
+        let mut c = pool.acquire().await.unwrap();
+        migration_history::restore_execution020_reference(&mut c)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version=42")
+            .execute(&mut *c)
+            .await
+            .unwrap();
+    }
     sqlx::raw_sql(
         r#"
         INSERT INTO engine_systems VALUES ('old','old-request','{}','{}','[]','{}');
@@ -1982,7 +2021,8 @@ async fn upgrades_038_to_call_039_then_clock_040_and_reopens_without_replay() {
         vec![
             (39, "039_execution_call_protocol030".into()),
             (40, "040_execution_flow_human_clock030".into()),
-            (41, "041_execution_flow_interrupted030".into())
+            (41, "041_execution_flow_interrupted030".into()),
+            (42, "042_retire_execution020".into())
         ]
     );
     let schemas:Vec<(String,String)>=sqlx::query_as("SELECT name,sql FROM sqlite_master WHERE name LIKE 'engine_flow030_%' AND sql IS NOT NULL ORDER BY name").fetch_all(&pool).await.unwrap();
@@ -1994,4 +2034,136 @@ async fn upgrades_038_to_call_039_then_clock_040_and_reopens_without_replay() {
     let pool = create_pool(&path).await.unwrap();
     let reopened:Vec<(String,String)>=sqlx::query_as("SELECT name,sql FROM sqlite_master WHERE name LIKE 'engine_flow030_%' AND sql IS NOT NULL ORDER BY name").fetch_all(&pool).await.unwrap();
     assert_eq!(schemas, reopened);
+}
+
+#[tokio::test]
+async fn retirement042_removes_only_legacy_execution_and_preserves_native030_bytes() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("retirement.db");
+    let pool = create_pool(&path).await.unwrap();
+    {
+        let mut c = pool.acquire().await.unwrap();
+        migration_history::restore_execution020_reference(&mut c)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version=42")
+            .execute(&mut *c)
+            .await
+            .unwrap();
+        sqlx::raw_sql(r#"
+            INSERT INTO engine_flow030_runs VALUES ('s','f','snapshot','capture','{"lexeme":9007199254740993}','{}','{"revision":"9007199254740993"}');
+            INSERT INTO engine_start030_requests VALUES ('request','{"profile":"macro-agsdl-030-v1","entry":null}','s','f','snapshot','capture','{"n":1e9999}','{}');
+            INSERT INTO engine_flow030_events VALUES ('s','f','event','{"n":9007199254740993}','{}',NULL);
+            INSERT INTO engine_flow030_outbox VALUES ('s','f','effect','event','{}','owner','pending',NULL);
+            INSERT INTO app_settings (key,value_json,updated_at) VALUES ('retirement-sentinel','{"n":9007199254740993}','synthetic');
+        "#).execute(&mut *c).await.unwrap();
+    }
+    let before: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT source_json,plan_json,state_json FROM engine_flow030_runs")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    let stamps: Vec<(i64, String, String)> =
+        sqlx::query_as("SELECT version,name,applied_at FROM schema_migrations")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    pool.close().await;
+    let pool = create_pool(&path).await.unwrap();
+    assert_eq!(
+        before,
+        sqlx::query_as::<_, (String, String, String)>(
+            "SELECT source_json,plan_json,state_json FROM engine_flow030_runs"
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT capture_json FROM engine_start030_requests")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        r#"{"n":1e9999}"#
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT value_json FROM app_settings WHERE key='retirement-sentinel'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        r#"{"n":9007199254740993}"#
+    );
+    assert_eq!(
+        stamps,
+        sqlx::query_as::<_, (i64, String, String)>(
+            "SELECT version,name,applied_at FROM schema_migrations WHERE version<42"
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    );
+    for name in [
+        "engine_systems",
+        "engine_deliveries",
+        "engine_effects",
+        "engine_events",
+        "engine_responses",
+        "engine_response_closures",
+        "engine_host_captures",
+        "engine_approvals",
+        "engine_prepared_terminals",
+        "engine_effect_processes",
+        "engine_native_operations",
+        "engine_work_protocol030",
+        "engine_work_events030",
+        "engine_work_checks030",
+        "engine_human_requests030",
+        "engine_human_works030",
+        "engine_human_link_events030",
+        "engine_work_admission030",
+        "engine_human_public030",
+        "engine_human_public_works030",
+        "engine_human_submissions030",
+        "engine_human_projection030",
+    ] {
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM sqlite_schema WHERE name=?")
+                .bind(name)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0,
+            "{name}"
+        );
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_flow030_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_flow030_outbox")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .is_empty());
+    pool.close().await;
+    let pool = create_pool(&path).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_flow030_runs")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
 }

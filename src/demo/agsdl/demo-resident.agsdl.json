@@ -1,128 +1,22 @@
 {
-  "contract": "agsdl-0.2.0",
+  "contract": "agsdl-0.3.0",
   "id": "demo-resident",
-  "content": {
-    "commercialPolicy": {
-      "uri": "docs://meridian/politique-commerciale.md",
-      "mediaType": "text/markdown"
-    }
-  },
-  "bindings": {
-    "engine": {
-      "contract": {
-        "identity": "macro/agent-engine",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      }
-    },
-    "ordersLookup": {
-      "contract": {
-        "identity": "macro/order-system",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "meridian/orders-api",
-        "version": "1"
-      },
-      "effects": "none"
-    },
-    "crm": {
-      "contract": {
-        "identity": "macro/crm",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "hubspot/http",
-        "version": "1"
-      },
-      "effects": "none"
-    }
-  },
-  "configurations": {
-    "conseil": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "crm": "crm"
-      }
-    },
-    "commandes": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "crm": "crm",
-        "orders": "ordersLookup"
-      }
-    }
-  },
+  "title": "Équipe support permanente",
   "agents": {
     "concierge": {
-      "configuration": "conseil",
-      "prompt": [
-        {
-          "value": "Clarifier la demande et identifier le bon interlocuteur. Conserver l’historique des échanges avec le client."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Clarifier la demande et identifier le bon interlocuteur. Conserver l’historique des échanges avec le client."
     },
     "orders": {
-      "configuration": "commandes",
-      "prompt": [
-        {
-          "value": "Expliquer l’état d’une commande à partir des ressources fournies. Demander les références manquantes."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Expliquer l’état d’une commande à partir des ressources fournies. Demander les références manquantes."
     },
     "policy": {
-      "configuration": "conseil",
-      "prompt": [
-        {
-          "value": "Expliquer la politique commerciale applicable et les cas qui demandent une décision humaine."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      },
-      "resources": {
-        "policy": {
-          "ref": "commercialPolicy"
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Expliquer la politique commerciale applicable et les cas qui demandent une décision humaine."
     }
   }
 }

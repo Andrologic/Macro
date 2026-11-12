@@ -1,14 +1,11 @@
-import { compilePlan030, type VersionedCompilationResult } from './compiler';
-import type { CapturedRegistry } from './registry';
-import type { CapturedRegistry030 } from './contracts030';
-import type { SourceRevision } from './contracts';
-import type { NativeToolPolicyResult } from './nativeToolPolicy';
-import { compileStaticGraph030 } from './compilerGraph030';
-import { resolveRouteMessage030 } from './messages030';
-import type { ExactJsonText } from './contracts';
-import { ConformanceError, decode, has, record, type ExactObject } from './exact';
-import { SchemaChecker } from '../../vendor/agsdl/v0.3/schemacheck.mjs';
 import schema030 from '../../vendor/agsdl/v0.3/schema/agsdl.schema.json';
+import { SchemaChecker } from '../../vendor/agsdl/v0.3/schemacheck.mjs';
+import { compilePlan030 } from './compiler030';
+import { compileStaticGraph030 } from './compilerGraph030';
+import type { ExactJsonText,SourceRevision } from './contracts';
+import type { CapturedRegistry030,CompilationResult030 } from './contracts030';
+import { ConformanceError,decode,has,record,type ExactObject } from './exact';
+import { resolveRouteMessage030 } from './messages030';
 
 // Keep in sync with CompileBroker's native transport bound, measured in UTF-8 bytes.
 export const HOST_COMPILE_RESULT_LIMIT = 8_000_000;
@@ -16,7 +13,6 @@ interface Validations {
   readonly entryValidation?: { readonly messageJson: unknown; readonly valid: boolean; readonly shapeValid?: boolean; readonly unassessed?: readonly string[] };
   readonly deliveryValidation?: { readonly input: unknown; readonly valid: boolean; readonly shapeValid?: boolean; readonly unassessed?: readonly string[] };
   readonly callValidation?: { readonly input: unknown; readonly prepared: unknown };
-  readonly toolPolicy?: NativeToolPolicyResult;
 }
 
 const hostMessageShape030 = new SchemaChecker({ type: 'object', additionalProperties: false,
@@ -51,7 +47,7 @@ function validateHostMessage030(raw: unknown, document: ExactObject): { valid: b
   }
 }
 /** A size refusal belongs to this document. Correlation errors still reach the host failure path. */
-export function encodeHostCompilation(result: VersionedCompilationResult, registry: CapturedRegistry | CapturedRegistry030, validations: Validations): string {
+export function encodeHostCompilation(result: CompilationResult030, registry: CapturedRegistry030, validations: Validations): string {
   const encoded = JSON.stringify({ ...result, capturedRegistryJson: JSON.stringify(registry), ...validations });
   if (new TextEncoder().encode(encoded).byteLength <= HOST_COMPILE_RESULT_LIMIT) return encoded;
   const diagnostic = { code: 'INPUT_LIMIT', pointer: '', message: 'Expanded compilation exceeds the native result limit.' };
@@ -64,7 +60,6 @@ export function encodeHostCompilation(result: VersionedCompilationResult, regist
     entryValidation: validations.entryValidation && { messageJson: validations.entryValidation.messageJson, valid: false },
     deliveryValidation: validations.deliveryValidation && { input: validations.deliveryValidation.input, valid: false },
     callValidation: validations.callValidation && { input: validations.callValidation.input, prepared: null },
-    toolPolicy: validations.toolPolicy && { input: validations.toolPolicy.input, decision: 'deny', summary: diagnostic.message, detail: null, code: diagnostic.code },
   });
 }
 

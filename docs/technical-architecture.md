@@ -405,28 +405,23 @@ Le moteur Implement utilise encore les enregistrements d’exécution historique
 
 `src/services/agsdl` contient la projection du graphe, les modifications
 atomiques par pointeurs JSON et les exemples. `src/stores/agsdl/tools.ts`
-orchestre les outils de lecture et de modification du document. Les lecteurs de
-référence 0.2.0 et 0.1.0 sont fournis sous leur licence dans `src/vendor/agsdl`,
-avec leurs adaptations navigateur documentées. Le dispatch dépend du contrat
-explicite ; le lecteur 0.1.0 reste réservé aux documents historiques. Le rapport
-0.2.0 conserve sa portée statique et son JSON sans perte numérique. Les
-métadonnées Macro de conception et de présentation vivent dans l’enveloppe du
-plan pour respecter le schéma fermé 0.2.0. Voir [AgSDL 0.2.0](agsdl-020.md). Le sérialiseur conserve les jetons
-numériques et les valeurs opaques ; les objets de projection JavaScript ne sont
-pas utilisés pour réécrire le document entier. Une mutation d’outil vérifie la
-conversation propriétaire, le statut brouillon et la révision lue. Ces outils
-sont exposés uniquement dans Architect, avec la politique partagée des outils.
-Le moteur résident AgSDL utilise le transport fournisseur et les outils natifs de
-Macro, ou les adaptateurs Codex et Claude explicitement capturés. Codex lance le CLI
-officiel en app-server sous un profil privé et conserve le scheduler existant.
-Les outils natifs Codex suivent sa politique de sandbox ; les admissions,
-références privées, réponses et terminaux restent sous autorité Macro. Le profil `macro-serial-inline-v1` compile une capture immuable avant Start ;
-le journal SQLite fait autorité pour les admissions, les approbations, les effets,
-les réponses et Stop. Le navigateur ne possède ni les droits d'exécution ni la
-preuve de terminaison. Claude utilise un SDK et un CLI externes, un pont MCP
-limité aux outils Macro capturés, le même journal et le même superviseur. Voir les
-[contrats du moteur](agsdl-engine-architecture.md) et le
-[profil Claude contrôlé](agsdl-claude-controlled.md).
+orchestre les outils de lecture et de modification du document. Les lecteurs de référence 0.3 et 0.1 sont fournis sous leur licence dans
+`src/vendor/agsdl`, avec leurs adaptations navigateur documentées. Le dispatch
+est explicite. L’édition 0.2 est refusée à l’ouverture ; son exécution, son
+édition et la conversion automatique des anciens plans sont retirées. Les
+métadonnées Macro de conception et de présentation vivent dans l’enveloppe 0.3.
+Le sérialiseur conserve les lexèmes numériques et les valeurs opaques. Une
+mutation d’outil vérifie la conversation propriétaire, le statut brouillon et
+la révision lue.
+
+Le moteur 0.3 garde ses contrôleurs TypeScript purs et les ports natifs existants.
+Le superviseur, SQLite, les captures et les preuves de fin physique conservent
+leur autorité. Le profil Codex et les appels confinés qualifiés restent ceux de
+la phase 3 ; les déclarations d’un harness ne prouvent pas son installation ni
+sa qualification. La migration 042 retire uniquement les 22 tables obsolètes,
+sans changer les domaines Macro ni les tables de flow, de Start et d’intentions
+0.3. Voir [AgSDL 0.3](agsdl-030.md) et les
+[contrats du moteur](agsdl-engine-architecture.md).
 
 Une perte du host révoque son epoch et bloque les continuations anciennes. Les
 exécuteurs natifs peuvent encore enregistrer leurs reçus de fin corrélés, sans
@@ -2431,7 +2426,7 @@ catalogue de tâches d'Operate. Les identités et états proviennent du journal
 natif ; les tâches ne déclenchent pas un second chat ni un worktree Git.
 
 Les constructeurs et les blueprints inclus créent en [AgSDL 0.3](agsdl-030.md).
-Les branches de construction historiques restent explicitement 0.1/0.2. La
+La construction historique 0.1 reste explicite ; 0.2 est refusée. La
 copie d’un blueprint conserve son édition et ses octets. `guide030.ts` fournit
 la référence d’auteur chargée à la demande ; `tools.ts` garde les guides des
 sources importées, la pagination UTF-8 et les contrôles de révision.
@@ -2439,7 +2434,7 @@ sources importées, la pagination UTF-8 et les contrôles de révision.
 elle ne déduit aucune installation depuis les préférences des fournisseurs Chat
 et n’ajoute pas d’IPC. Le runtime reste propriétaire de la qualification.
 
-En 0.2/0.3, les informations de conception et de présentation sont dans
+En 0.3, les informations de conception et de présentation sont dans
 l’enveloppe du plan, hors source. Les adaptations ciblent une chaîne existante
 sans réécrire les autres valeurs. La revue 0.3 utilise les pointeurs source des
 agents, routes et compositions, indépendamment de la projection du viewer.

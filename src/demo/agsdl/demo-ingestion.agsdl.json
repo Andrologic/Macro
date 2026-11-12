@@ -1,189 +1,62 @@
 {
-  "contract": "agsdl-0.2.0",
+  "contract": "agsdl-0.3.0",
   "id": "demo-ingestion",
-  "content": {
-    "supplierFile": {
-      "uri": "sftp://fournisseurs.helio.example/catalogue-2026-01.csv",
-      "mediaType": "text/csv"
-    }
-  },
-  "bindings": {
-    "engine": {
-      "contract": {
-        "identity": "macro/agent-engine",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      }
-    },
-    "catalogValidation": {
-      "contract": {
-        "identity": "macro/schema-validation",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      },
-      "effects": "none"
-    },
-    "catalogStorage": {
-      "contract": {
-        "identity": "macro/catalog-store",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "helio/catalog-api",
-        "version": "1"
-      },
-      "effects": "external"
-    },
-    "warehouse": {
-      "contract": {
-        "identity": "macro/sql-warehouse",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "duckdb/local",
-        "version": "1"
-      },
-      "effects": "none"
-    }
-  },
-  "configurations": {
-    "analyse": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "warehouse": "warehouse"
-      }
-    },
-    "redaction": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      }
-    }
-  },
+  "title": "Import de catalogue",
   "agents": {
     "inspect": {
-      "configuration": "analyse",
-      "prompt": [
-        {
-          "value": "Détecter les colonnes, le séparateur et les champs obligatoires. Signaler les changements de format."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      },
-      "resources": {
-        "file": {
-          "ref": "supplierFile"
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Détecter les colonnes, le séparateur et les champs obligatoires. Signaler les changements de format."
     },
     "normalize": {
-      "configuration": "analyse",
-      "prompt": [
-        {
-          "value": "Uniformiser les prix, les devises et les identifiants. Chaque ligne respecte le schéma du catalogue ; signaler à part les valeurs d’origine modifiées."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "application/json"
-            ],
-            "required": true,
-            "valueSchema": {
-              "type": "object",
-              "properties": {
-                "lines": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "sku": {
-                        "type": "string"
-                      },
-                      "price": {
-                        "type": "number"
-                      },
-                      "currency": {
-                        "type": "string",
-                        "enum": [
-                          "EUR",
-                          "USD"
-                        ]
-                      }
-                    },
-                    "required": [
-                      "sku",
-                      "price",
-                      "currency"
-                    ],
-                    "additionalProperties": false
-                  }
-                }
-              },
-              "required": [
-                "lines"
-              ],
-              "additionalProperties": false
-            }
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Uniformiser les prix, les devises et les identifiants. Chaque ligne respecte le schéma du catalogue ; signaler à part les valeurs d’origine modifiées."
     },
     "repair": {
-      "configuration": "analyse",
-      "prompt": [
-        {
-          "value": "Expliquer les lignes rejetées et proposer une correction. Ne pas supprimer silencieusement les doublons."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Expliquer les lignes rejetées et proposer une correction. Ne pas supprimer silencieusement les doublons."
     },
     "report": {
-      "configuration": "redaction",
-      "prompt": [
-        {
-          "value": "Présenter le nombre de lignes acceptées, rejetées et modifiées, avec des exemples."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Présenter le nombre de lignes acceptées, rejetées et modifiées, avec des exemples."
+    },
+    "scene-checkedNormalization-validate": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Contrôler le schéma"
+    },
+    "scene-checkedNormalization-valid": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Catalogue conforme ?"
+    },
+    "scene-checkedNormalization-correctable": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Format à corriger ?"
+    },
+    "scene-checkedNormalization-feedback": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Renvoyer les erreurs de format"
+    },
+    "scene-main-prepare": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Préparer les lignes"
+    },
+    "scene-main-store": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Enregistrer le catalogue"
+    },
+    "scene-main-handoff": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre les statistiques"
     }
   },
   "flow": {
@@ -192,27 +65,14 @@
       "inspect": {
         "type": "agent",
         "agent": "inspect",
-        "next": [
-          "prepare"
-        ]
+        "title": "Analyser le fichier",
+        "next": "prepare"
       },
       "prepare": {
-        "type": "prepare",
-        "message": {
-          "resources": {
-            "report": {
-              "source": {
-                "path": [
-                  "results",
-                  "report"
-                ]
-              }
-            }
-          }
-        },
-        "next": [
-          "normalization"
-        ]
+        "type": "agent",
+        "agent": "scene-main-prepare",
+        "title": "Préparer les lignes",
+        "next": "normalization"
       },
       "normalization": {
         "type": "compose",
@@ -220,179 +80,92 @@
         "agents": {
           "normalizer": "normalize"
         },
+        "title": "Normaliser le catalogue",
         "next": {
           "valid": [
-            "store"
+            "repair"
           ],
           "invalid": [
             "repair"
           ]
-        },
-        "onError": [
-          "repair"
-        ]
+        }
       },
       "repair": {
         "type": "agent",
         "agent": "repair",
-        "next": [
-          "handoff"
-        ]
+        "title": "Traiter les anomalies",
+        "next": "store"
       },
       "store": {
-        "type": "call",
-        "binding": "catalogStorage",
-        "next": [
-          "handoff"
-        ],
-        "scope": {
-          "action": "store",
-          "resources": [
-            "catalog:helio/fournisseurs"
-          ],
-          "context": {
-            "value": "Import du catalogue de janvier 2026"
-          }
-        }
+        "type": "agent",
+        "agent": "scene-main-store",
+        "title": "Enregistrer le catalogue",
+        "next": "handoff"
       },
       "handoff": {
-        "type": "prepare",
-        "message": {
-          "resources": {
-            "report": {
-              "source": {
-                "path": [
-                  "results",
-                  "report"
-                ]
-              }
-            }
-          }
-        },
-        "next": [
-          "report"
-        ]
+        "type": "agent",
+        "agent": "scene-main-handoff",
+        "title": "Transmettre les statistiques",
+        "next": "report"
       },
       "report": {
         "type": "agent",
         "agent": "report",
-        "next": []
+        "title": "Présenter le bilan"
       }
     }
   },
   "compositions": {
     "checkedNormalization": {
-      "agentParameters": [
-        "normalizer"
-      ],
       "entry": "normalize",
-      "outputs": [
-        "valid",
-        "invalid"
-      ],
       "steps": {
         "normalize": {
           "type": "agent",
           "agent": {
             "parameter": "normalizer"
           },
-          "next": [
-            "validate"
-          ],
-          "maxVisits": 3,
-          "onError": [
-            "correctable"
-          ]
+          "title": "Normaliser les données",
+          "next": "validate"
         },
         "validate": {
-          "type": "call",
-          "binding": "catalogValidation",
-          "next": [
-            "valid"
-          ],
-          "onError": [
-            {
-              "error": true
-            }
-          ]
+          "type": "agent",
+          "agent": "scene-checkedNormalization-validate",
+          "title": "Contrôler le schéma",
+          "next": "valid"
         },
         "valid": {
-          "type": "condition",
-          "test": {
-            "equals": [
-              {
-                "path": [
-                  "text"
-                ]
-              },
-              {
-                "value": "Valide"
-              }
-            ]
-          },
-          "next": {
-            "true": [
-              {
-                "output": "valid"
-              }
-            ],
-            "false": [
-              {
-                "output": "invalid"
-              }
-            ]
-          }
+          "type": "agent",
+          "agent": "scene-checkedNormalization-valid",
+          "title": "Catalogue conforme ?",
+          "next": "correctable"
         },
         "correctable": {
-          "type": "condition",
-          "test": {
-            "equals": [
-              {
-                "path": [
-                  "error",
-                  "code"
-                ]
-              },
-              {
-                "value": "OUTPUT_CONSTRAINT"
-              }
-            ]
-          },
-          "next": {
-            "true": [
-              "feedback"
-            ],
-            "false": [
-              {
-                "output": "invalid"
-              }
-            ]
-          }
+          "type": "agent",
+          "agent": "scene-checkedNormalization-correctable",
+          "title": "Format à corriger ?",
+          "next": "feedback"
         },
         "feedback": {
-          "type": "prepare",
-          "message": {
-            "prompt": [
-              {
-                "value": "Corriger le résultat selon les erreurs de validation jointes."
-              }
-            ],
-            "resources": {
-              "outputErrors": {
-                "select": {
-                  "path": [
-                    "error"
-                  ]
-                },
-                "mediaType": "application/json"
-              }
+          "type": "agent",
+          "agent": "scene-checkedNormalization-feedback",
+          "title": "Renvoyer les erreurs de format",
+          "next": {
+            "valid": {
+              "output": "valid"
+            },
+            "invalid": {
+              "output": "invalid"
             }
-          },
-          "next": [
-            "normalize"
-          ]
+          }
         }
-      }
+      },
+      "parameters": [
+        "normalizer"
+      ],
+      "outputs": [
+        "valid",
+        "invalid"
+      ]
     }
   }
 }

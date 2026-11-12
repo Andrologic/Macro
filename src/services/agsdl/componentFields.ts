@@ -1,6 +1,6 @@
-import { keyId, list, object, readDocument, text, pointerPart } from "./document";
-import type { ViewerCard } from "./viewer";
 import type { AgsdlChange } from "../../types/agsdl";
+import { keyId,list,object,pointerPart,readDocument,text } from "./document";
+import type { ViewerCard } from "./viewer";
 
 export interface ComponentField {
   path: string;
@@ -17,23 +17,6 @@ export interface ComponentField {
 export function componentFields(source: string, card: ViewerCard): ComponentField[] {
   if (card.edition030) return [];
   const doc = readDocument(source);
-  if (doc.contract === "agsdl-0.2.0") {
-    const name = text(card.details.agentName);
-    if (!["Agent", "agent"].includes(card.kind) || !name || !Object.hasOwn(object(doc.agents), name)) return [];
-    const agent = object(object(doc.agents)[name]);
-    const agentPath = `/agents/${pointerPart(name)}`;
-    const fields = list(agent.prompt).flatMap((use, index): ComponentField[] => {
-      const content = object(use);
-      const reference = text(content.ref);
-      const value = reference ? object(object(doc.content)[reference]) : content;
-      if (typeof value.value !== "string" || Object.hasOwn(value, "uri")) return [];
-      const parent = reference ? "/content" : `${agentPath}/prompt`;
-      const container = reference ? pointerPart(reference) : String(index);
-      return [{ path: `${parent}/${container}/value`, parent, container, containerExists: true,
-        value: value.value, kind: "instructions", shared: !!reference }];
-    });
-    return fields.filter((field, index) => fields.findIndex(other => other.path === field.path) === index);
-  }
   const definitions = list(doc.definitions).map(object);
   let owner = card.details;
   let path = card.path;

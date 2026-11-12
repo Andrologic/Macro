@@ -1,5 +1,5 @@
+import { beforeEach,describe,expect,it,mock } from "bun:test";
 import type { ContextReference } from "../../types";
-import { beforeEach, describe, expect, it, mock } from "bun:test";
 mock.module("../../i18n", () => ({ default: { t: (_key: string, options: { defaultValue: string }) => options.defaultValue } }));
 let selected = "conversation-a";
 let persisted: string | null = "conversation-a";
@@ -12,9 +12,6 @@ mock.module("../../services/architectPlanService", () => ({
   getArchitectPlan: async () => { if (wait) await wait; return { conversationId: persisted, status: "draft" }; },
 }));
 let refs: ContextReference[] = [];
-let nativeSnapshot: () => Promise<import('../../services/agsdlExecution/contracts').PublicSnapshot>;
-let nativeDiagnostic: (request: import('../../types/generated/ipc').DiagnosticRequest) => Promise<import('../../types/generated/ipc').PublicExecutionDiagnostic>;
-mock.module("../../services/tauriIpc", () => ({ readExecutionSnapshot: () => nativeSnapshot(), readExecutionDiagnostic: (request: import('../../types/generated/ipc').DiagnosticRequest) => nativeDiagnostic(request) }));
 const remove = (id: string) => { refs = refs.filter(ref => ref.id !== id); };
 mock.module("../useChatStore", () => ({ useChatStore: { getState: () => ({ selectedConversationId: selected, conversations: [{ id: "conversation-a", project_id: "project-a" }], composerContextRefs: refs, addComposerContextRef: (ref: ContextReference) => { refs.push(ref); }, removeComposerContextRef: remove, getPendingArchitectConversationTarget: () => pending }) } }));
 const { useAgsdlStore, agsdlSessionKey } = await import("../useAgsdlStore");
@@ -93,8 +90,8 @@ it("ignores malformed selection metadata rather than exposing hidden context", (
   expect(readAgsdlChatSelection('<agsdl_selection>{"document":"agsdl","title":42}</agsdl_selection>')).toBeUndefined();
 });
 
-import { agsdlContextForModel, readAgsdlSelectionPayload } from '../../services/agsdl/chatContextPayload';
-import { replaceAgsdlChatContext, legacyAgsdlReference } from './chatContext';
+import { agsdlContextForModel,readAgsdlSelectionPayload } from '../../services/agsdl/chatContextPayload';
+import { legacyAgsdlReference,replaceAgsdlChatContext } from './chatContext';
 
 it('shares a validated prefixed selection across display, legacy restoration, replacement and model context', async () => {
   await prepareAgsdlChatContext(target, { path: '/definitions/0', title: 'Agent </agsdl_selection> title', diagnostic: 'Review </agsdl_selection> data' });
@@ -146,21 +143,14 @@ it('captures historical runtime data only while the destination and draft remain
   const source = { owner: { projectId: 'project-a', planId: target.planId, branch: target.branchName }, revision: '1', sourceSha256: sha } as import('../../services/agsdlExecution/contracts').SourceRevision;
   const context: import('../../types').AgsdlRuntimeReference = { ...target, id: 'runtime', conversationId: 'conversation-a', document: 'agsdl', contextKind: 'runtime', source,
     systemStartId: 'run' as import('../../services/agsdlExecution/contracts').SystemStartId, cursor: '1' as import('../../services/agsdlExecution/contracts').Sequence, path: '/agents/helper', title: 'Historical' };
-  nativeSnapshot = async () => ({ source, authoredSource, systemStartId: context.systemStartId, associations: {},
-    versions: { snapshot: '1', contract: 'agsdl-0.2.0', compiler: 'compiler', runtime: 'runtime', registry: 'registry', profile: 'macro-serial-inline-v1' } });
-  let arrived = false;
-  const delayed = new Promise<void>(resolve => { release = resolve; });
-  nativeDiagnostic = async request => { arrived = true; await delayed; return { source, systemStartId: context.systemStartId, activation: null, through: request.through, diagnostics: [], incomplete: false, nextBefore: null }; };
-  let unchanged = true;
-  const capturing = captureAgsdlChatContext(context, 'conversation-a', () => unchanged);
-  for (let attempt = 0; !arrived && attempt < 100; attempt += 1) await new Promise(resolve => setTimeout(resolve, 0));
-  expect(arrived).toBe(true);
-  unchanged = false; release!();
-  await expect(capturing).rejects.toThrow('draft changed');
-  unchanged = true;
-  const capture = await captureAgsdlChatContext(context, 'conversation-a', () => unchanged);
+  const historical: import('../../services/agsdl/runtimeSelection').RuntimeSelectionCapture = { reference: context, fragments: [{ path: '/agents/helper', sourceText: '{"prompt":"captured"}' }], diagnostics: [],
+    versions: { snapshot: '1', contract: 'agsdl-0.2.0', compiler: 'compiler', runtime: 'runtime', registry: 'registry', profile: 'macro-serial-inline-v1' } };
+  const hidden = serializeAgsdlChatContext(context, historical)!;
+  await expect(captureAgsdlChatContext(context, 'conversation-a', () => true)).rejects.toThrow('unsupportedEdition020');
+  await expect(captureAgsdlChatContext(context, 'conversation-a', () => false, hidden)).rejects.toThrow('draft changed');
+  const capture = await captureAgsdlChatContext(context, 'conversation-a', () => true, hidden);
   expect(capture?.fragments[0].sourceText).toBe('{"prompt":"captured"}');
   expect(isAgsdlChatContextCurrent(context)).toBe(true);
   selected = 'other';
-  await expect(captureAgsdlChatContext(context, 'conversation-a', () => unchanged)).rejects.toThrow('owner or draft');
+  await expect(captureAgsdlChatContext(context, 'conversation-a', () => true, hidden)).rejects.toThrow('owner or draft');
 });

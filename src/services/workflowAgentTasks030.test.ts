@@ -1,12 +1,18 @@
-import { afterEach, expect, it, mock } from 'bun:test';
+import { afterEach,expect,it,mock } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { configureWorkflowRunAccess030, configureProductionWorkflowRunAccess030, getWorkflowRunAccess030,
-  loadWorkflowAgentTasks, projectWorkflowAgentTasks030, readWorkflowRun030, workflowRunAccessSnapshot030, workflowPhaseStates030 } from './workflowAgentTasks';
-import { nativeAgentRunFixture030, nativeIntentFor030, nativeTransportFor030 } from './agsdl/runAccess030.testSupport';
+import { installTauriRuntimeMock,removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 import { createRunInspectionAccess030 } from './agsdl/runAccess030';
-import { workflowTaskFixture } from './workflowAgentTasks.fixtures';
-import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
+import { nativeAgentRunFixture030,nativeIntentFor030,nativeTransportFor030 } from './agsdl/runAccess030.testSupport';
 import type { ArchitectPlanRecord } from './architectPlanService';
+import {
+configureProductionWorkflowRunAccess030,
+configureWorkflowRunAccess030,
+getWorkflowRunAccess030,
+loadWorkflowAgentTasks,projectWorkflowAgentTasks030,readWorkflowRun030,
+workflowPhaseStates030,
+workflowRunAccessSnapshot030
+} from './workflowAgentTasks';
+import { workflowTaskFixture } from './workflowAgentTasks.fixtures';
 
 const plan = { id:'sample-plan',title:'Native task',targetBranch:'develop',projectIds:['sample-project'],conversationId:'design-conversation' } as ArchitectPlanRecord;
 afterEach(() => { configureWorkflowRunAccess030(undefined); removeTauriRuntimeMock(); });
@@ -24,7 +30,6 @@ it('discovers actual 030 requests separately from legacy engine_systems and init
     if (command === 'execution_read_run_correlation030') return transport.readExecutionRunCorrelation030(args?.scope, args?.systemStartId);
     if (command === 'execution_read_runtime_projection030') return f.runtime;
     if (command === 'execution_read_humans030') throw {code:'NOT_FOUND',message:'True-flow has no legacy Stored row'};
-    if (command === 'execution_read_projection') return old.projection;
     if (command === 'execution_pending_approvals') return {approvals:[],incomplete:false};
     throw new Error(command);
   }));
@@ -35,7 +40,7 @@ it('discovers actual 030 requests separately from legacy engine_systems and init
   expect(workflowRunAccessSnapshot030()).toBe(registry);
   expect(getWorkflowRunAccess030({owner:f.capture.source.owner,conversationId:plan.conversationId})).toBe(bundle);
   expect(seen).toEqual([]);
-  const tasks = await loadWorkflowAgentTasks([old.plan,{...plan,agsdl:{revision:1,source:f.capture.authoredSource,annexes:{}}}],null);
+  const tasks = await loadWorkflowAgentTasks([old.plan,{...plan,agsdl:{revision:1,source:f.capture.authoredSource,annexes:{}}}],null,{...old.ports,runs:async request=>({runs:request.owner.projectId==='project'?[old.summary]:[],nextCursor:null})});
   expect(tasks).toHaveLength(3);
   const native = tasks.find(item=>item.workflow_execution?.systemStartId === f.capture.systemStartId)!;
   expect(native.status).toBe('Completed');
@@ -95,7 +100,7 @@ it('covers exactly the nine phases published by Rust and keeps done physical wor
 it('never reads 030 intents for conversations without a 030 source and always loads their historical tasks', async () => {
   const old = await workflowTaskFixture(); let factories = 0;
   configureWorkflowRunAccess030(() => { factories++; throw new Error('No 030 reader should be created'); });
-  for (const agsdl of [undefined, old.plan.agsdl, {revision:1,source:'{',annexes:{}}]) {
+  for (const agsdl of [undefined, {revision:1,source:'{"contract":"agsdl-0.2.0"}',annexes:{}}, {revision:1,source:'{',annexes:{}}]) {
     const tasks = await loadWorkflowAgentTasks([{...old.plan,conversationId:'design-conversation',agsdl}],null,old.ports);
     expect(tasks).toHaveLength(2);
     expect(tasks.every(item=>item.workflow_execution?.systemStartId===old.snapshot.systemStartId)).toBe(true);

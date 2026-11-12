@@ -1,15 +1,15 @@
-import { afterEach, expect, it } from 'bun:test';
+import { afterEach,expect,it } from 'bun:test';
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { WorkflowGraph } from './WorkflowGraph';
-import { projectViewer } from '../../services/agsdl/viewer';
-import { projectSystemOverview } from '../../services/agsdl/systemOverview';
+import { createRoot,type Root } from 'react-dom/client';
 import { demoPlans } from '../../demo/fixtures';
+import { projectSystemOverview } from '../../services/agsdl/systemOverview';
+import { projectViewer } from '../../services/agsdl/viewer';
+import { WorkflowGraph } from './WorkflowGraph';
 
 let root: Root | undefined;
-const render = async (id: string) => {
+const render = async (id: string, source?: string) => {
   const plan = demoPlans.find(item => item.id === id)!;
-  const projected = projectViewer(plan.agsdl.source, plan.agsdl);
+  const projected = projectViewer(source ?? plan.agsdl.source, plan.agsdl);
   const graph = projectSystemOverview(projected.graphs[0], projected.declarations.filter(item => ['Agent', 'System'].includes(item.kind)));
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   await act(async () => root!.render(<WorkflowGraph cards={graph.cards} edges={graph.edges} entry={graph.entry} compositions={projected.graphs} declarations={projected.declarations}
@@ -39,14 +39,14 @@ it('marks the entry step and how each join collects its members', async () => {
   expect(entries[0].parentElement?.querySelector('.agsdl-node-title')?.textContent).toBe('Responsable d’astreinte');
   act(() => root?.unmount()); incident.remove();
 
-  const crisis = await render('demo-crisis');
-  expect([...crisis.querySelectorAll('.agsdl-node-mode')].map(chip => chip.className)).toEqual(['agsdl-node-mode is-first', 'agsdl-node-mode is-all']);
+  const crisis = await render('demo-crisis', JSON.stringify({ contract: 'agsdl-0.3.0', id: 'joins', agents: {a:{harness:'codex'}}, flow: {entry:'fork',steps:{ fork:{type:'agent',agent:'a',next:['a','b']}, a:{type:'agent',agent:'a',next:'join'}, b:{type:'agent',agent:'a',next:'join'}, join:{type:'join',quorum:{count:1},remaining:'stop',next:{reached:'fork2',missed:[]}}, fork2:{type:'agent',agent:'a',next:['c','d']}, c:{type:'agent',agent:'a',next:'all'}, d:{type:'agent',agent:'a',next:'all'}, all:{type:'join',next:[]} }}}));
+  expect([...crisis.querySelectorAll('.agsdl-node-mode')].map(chip => chip.className)).toEqual(['agsdl-node-mode is-quorum', 'agsdl-node-mode is-all']);
 });
 
 it('unfolds a composition step in place and folds it back from the frame heading', async () => {
   const crisis = await render('demo-crisis');
   const titles = () => [...crisis.querySelectorAll('.agsdl-graph-node .agsdl-node-title')].map(node => node.textContent);
-  const intervention = [...crisis.querySelectorAll<HTMLButtonElement>('.agsdl-graph-node')].find(block => block.querySelector('.agsdl-node-subtitle')?.textContent === 'Préparer une intervention')!;
+  const intervention = crisis.querySelector<HTMLButtonElement>('.is-subprocess')!;
   await act(async () => intervention.click());
   expect(titles()).toContain('Concepteur de l’intervention');
   expect(crisis.querySelectorAll('.agsdl-composition-frame')).toHaveLength(1);

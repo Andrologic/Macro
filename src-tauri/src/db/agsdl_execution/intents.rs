@@ -1,6 +1,14 @@
 //! Durable product intent protocol. Admission authority remains native.
 use super::*;
-use crate::agsdl_host_capture::ExecutionExternalDelivery;
+// Rejected legacy payload shape, retained only for a precise admission refusal.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutionExternalDelivery {
+    pub system_start_id: String,
+    pub delivery_id: String,
+    pub agent_name: String,
+    pub message_json: String,
+}
 use public::PublicStartReceipt;
 
 macro_rules! object {
@@ -256,10 +264,8 @@ fn validate_payload(
     }
     let message = match payload {
         ExecutionIntentPayload::Start { request } => {
-            if !matches!(
-                request.profile.as_str(),
-                "macro-serial-inline-v1" | "macro-agsdl-030-v1"
-            ) || request.associations.workspace_id.is_some()
+            if !matches!(request.profile.as_str(), "macro-agsdl-030-v1")
+                || request.associations.workspace_id.is_some()
                 || request.associations.conversation_id.is_some()
             {
                 return Err(error(InvalidRequest));
@@ -403,45 +409,8 @@ async fn public(db: &mut SqliteConnection, row: Retained) -> IntentResult<Public
                     .map(|entry| entry.delivery_id.clone()),
             },
         })
-    } else if let Some(system) = &row.admitted {
-        let stored = load(db, system).await.map_err(storage)?;
-        if stored.snapshot.source != *source(&row.payload) {
-            return Err(error(ExecutionIntentErrorCode::StorageUncertain));
-        }
-        Some(match &row.payload {
-            ExecutionIntentPayload::Start { request } => {
-                let actual: String = sqlx::query_scalar("SELECT request_json FROM engine_systems WHERE system_id = ? AND request_id = ?")
-                    .bind(system).bind(&request.request_id).fetch_one(&mut *db).await?;
-                if actual != serde_json::to_string(request)? {
-                    return Err(error(ExecutionIntentErrorCode::StorageUncertain));
-                }
-                ExecutionIntentAdmission::Start {
-                    receipt: EngineStartReceipt {
-                        system_start_id: system.clone(),
-                        flow_invocation_id: stored.state.invocation_id,
-                        snapshot: stored.snapshot,
-                    }
-                    .into(),
-                }
-            }
-            ExecutionIntentPayload::Deliver { request, .. } => {
-                let actual: String = sqlx::query_scalar("SELECT receipt_json FROM engine_deliveries WHERE delivery_id = ? AND system_id = ?")
-                    .bind(&request.delivery_id).bind(system).fetch_one(&mut *db).await?;
-                let receipt: EngineAcceptedDelivery = serde_json::from_str(&actual)?;
-                let agent = stored
-                    .state
-                    .agents
-                    .get(&request.agent_name)
-                    .ok_or_else(|| error(ExecutionIntentErrorCode::StorageUncertain))?;
-                if request.system_start_id != *system
-                    || receipt.delivery.input.value_json != request.message_json
-                    || receipt.delivery.work.agent_instance_id.as_deref() != Some(&agent.id)
-                {
-                    return Err(error(ExecutionIntentErrorCode::StorageUncertain));
-                }
-                ExecutionIntentAdmission::Deliver { receipt }
-            }
-        })
+    } else if row.admitted.is_some() {
+        return Err(error(ExecutionIntentErrorCode::StorageUncertain));
     } else {
         None
     };
@@ -477,8 +446,8 @@ async fn public(db: &mut SqliteConnection, row: Retained) -> IntentResult<Public
 }
 async fn absence(db: &mut SqliteConnection, payload: &ExecutionIntentPayload) -> IntentResult<()> {
     let (request_id, delivery_id) = keys(payload);
-    let admitted: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_systems WHERE request_id = ?) OR EXISTS(SELECT 1 FROM engine_start030_requests WHERE request_id = ?) OR EXISTS(SELECT 1 FROM engine_deliveries WHERE delivery_id = ?) OR EXISTS(SELECT 1 FROM engine_start030_entries WHERE delivery_id = ?)")
-        .bind(request_id).bind(request_id).bind(delivery_id).bind(delivery_id).fetch_one(db).await?;
+    let admitted: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_start030_requests WHERE request_id = ?) OR EXISTS(SELECT 1 FROM engine_start030_entries WHERE delivery_id = ?)")
+        .bind(request_id).bind(delivery_id).fetch_one(db).await?;
     if admitted != 0 {
         return Err(error(ExecutionIntentErrorCode::IdentityConflict));
     }
@@ -488,25 +457,9 @@ async fn target(
     db: &mut SqliteConnection,
     payload: &ExecutionIntentPayload,
 ) -> IntentResult<Option<ExecutionIntentRefusalCode>> {
-    if let ExecutionIntentPayload::Deliver { source, request } = payload {
-        let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_systems WHERE system_id = ?)")
-                .bind(&request.system_start_id)
-                .fetch_one(&mut *db)
-                .await?;
-        if !exists {
-            return Ok(Some(ExecutionIntentRefusalCode::TargetInvalid));
-        }
-        let stored = load(db, &request.system_start_id).await.map_err(storage)?;
-        if stored.snapshot.source != *source
-            || !stored.policies.is_empty()
-            || !stored.state.agents.contains_key(&request.agent_name)
-        {
-            return Ok(Some(ExecutionIntentRefusalCode::TargetInvalid));
-        }
-        if !matches!(stored.state.stop, EngineStopState::None) {
-            return Ok(Some(ExecutionIntentRefusalCode::TargetClosed));
-        }
+    let _ = db;
+    if matches!(payload, ExecutionIntentPayload::Deliver { .. }) {
+        return Ok(Some(ExecutionIntentRefusalCode::TargetInvalid));
     }
     Ok(None)
 }
@@ -969,74 +922,6 @@ pub(crate) async fn reserve_start(
     }
     Ok(())
 }
-pub(super) async fn reserve_delivery(
-    db: &mut SqliteConnection,
-    delivery: &EngineDelivery,
-    stored: &Stored,
-    link: Option<&IntentAdmissionLink>,
-) -> Result<()> {
-    if let Some(link) = link {
-        require(
-            source(&link.payload) == &stored.snapshot.source,
-            "Delivery admission source differs",
-        )?;
-        let matches = match &link.payload {
-            ExecutionIntentPayload::Start { request } => {
-                request.entry.as_ref().is_some_and(|entry| {
-                    entry.delivery_id == delivery.delivery_id
-                        && entry.message_json == delivery.input.value_json
-                })
-            }
-            ExecutionIntentPayload::Deliver { request, .. } => {
-                request.system_start_id == delivery.work.system_start_id
-                    && request.delivery_id == delivery.delivery_id
-                    && request.message_json == delivery.input.value_json
-                    && stored
-                        .state
-                        .agents
-                        .get(&request.agent_name)
-                        .is_some_and(|agent| {
-                            delivery.work.agent_instance_id.as_deref() == Some(&agent.id)
-                        })
-                    && delivery.work.step.is_none()
-            }
-        };
-        require(matches, "Wrong delivery admission link")?;
-    }
-    reserved(db, "delivery_id", &delivery.delivery_id, link).await
-}
-pub(crate) async fn attach(
-    db: &mut SqliteConnection,
-    link: &IntentAdmissionLink,
-    system: &str,
-) -> Result<()> {
-    let row = find(db, &link.key)
-        .await
-        .map_err(|_| failure("STORAGE", "", "Cannot read intent admission"))?
-        .ok_or_else(|| failure("INTENT_IDENTITY_CONFLICT", "", "Missing intent"))?;
-    conversation(db, &row.key.scope).await.map_err(|_| {
-        failure(
-            "INTENT_SCOPE_INVALID",
-            "",
-            "Intent conversation is no longer valid",
-        )
-    })?;
-    require(
-        row.admitted030.is_none(),
-        "Conflicting intent admission version",
-    )?;
-    if let Some(admitted) = &row.admitted {
-        require(admitted == system, "Conflicting intent admission")?;
-        return Ok(());
-    }
-    require(
-        row.status == "submissionPending",
-        "First intent admission must be pending",
-    )?;
-    update(db, &row, "admitted", None, None, None, Some(system))
-        .await
-        .map_err(|_| failure("STORAGE", "", "Cannot attach intent admission"))
-}
 
 /// Link an authenticated 0.3 Start to its reservation inside the Start transaction.
 pub(crate) async fn attach030(
@@ -1140,7 +1025,7 @@ mod tests {
                         revision: "9007199254740993".into(),
                         source_sha256: "a".repeat(64),
                     },
-                    profile: "macro-serial-inline-v1".into(),
+                    profile: "macro-agsdl-030-v1".into(),
                     associations: EngineAssociations::default(),
                     request_id: "start".into(),
                     entry: Some(EngineEntry {

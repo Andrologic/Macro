@@ -1,7 +1,6 @@
+import { defaultDesign,type AgsdlAuthoringContract,type AgsdlEnvelopeMetadata } from "./design";
 import { LEGACY_AGSDL_CONTRACT } from "./document";
-import { defaultDesign, type AgsdlEnvelopeMetadata, type AgsdlAuthoringContract, type AgsdlDisplayMetadata } from "./design";
 import { productExample030 } from "./examples030";
-import { MACRO_ENGINE_CONTRACT, MACRO_ENGINE_IMPLEMENTATION } from "./macroAgentConfiguration";
 
 export const AGSDL_EXAMPLES = [
   "release",
@@ -227,27 +226,7 @@ export function createLegacyExample(kind: AgsdlExample): string {
 export function createExample(kind: AgsdlExample, contract: AgsdlAuthoringContract = 'agsdl-0.3.0'): string {
   if (contract === LEGACY_AGSDL_CONTRACT) return createLegacyExample(kind);
   if (contract === 'agsdl-0.3.0') return JSON.stringify(productExample030(kind), null, 2);
-  if (contract !== 'agsdl-0.2.0') throw new Error('Unsupported AgSDL example contract.');
-  const stages = workflows[kind];
-  const agents = Object.fromEntries(stages.map(([id, _title, body]) => [id, {
-    configuration: 'project',
-    prompt: [{ value: body }, { ref: 'projectGuidance' }],
-    interface: { inputMediaTypes: ['text/plain', 'application/json'], outputMediaTypes: ['text/plain'], results: { report: { mediaTypes: ['text/plain'], required: true } } },
-  }]));
-  const steps = Object.fromEntries(stages.flatMap(([id], index) => {
-    const next = stages[index + 1]?.[0];
-    return [
-      [id, { type: 'agent', agent: id, next: next ? [`prepare-${next}`] : [] }],
-      ...(next ? [[`prepare-${next}`, { type: 'prepare', message: { resources: { report: { source: { path: ['results', 'report'] } } } }, next: [next] }]] : []),
-    ];
-  }));
-  return JSON.stringify({
-    contract: 'agsdl-0.2.0', id: `example-${kind}`,
-    content: { projectGuidance: { value: 'Replace with the project checklist, commands and conventions before execution.' } },
-    bindings: { engine: { contract: MACRO_ENGINE_CONTRACT, implementation: MACRO_ENGINE_IMPLEMENTATION } },
-    configurations: { project: { engine: 'engine' } },
-    agents, flow: { entry: stages[0][0], steps },
-  }, null, 2);
+  throw new Error('agsdl.unsupportedEdition020');
 }
 
 /** Human labels travel with the Macro envelope; AgSDL names remain stable source identities. */
@@ -262,13 +241,5 @@ export function createExampleDocument(kind: AgsdlExample, contract: AgsdlAuthori
       '/flow/steps/review': { title: 'Independent review' },
     } },
   };
-  const cards: NonNullable<AgsdlDisplayMetadata['cards']> = {};
-  for (const [id, title] of workflows[kind]) {
-    cards[`/agents/${id}`] = { title };
-    cards[`/flow/steps/${id}`] = { title };
-    cards[`/flow/steps/prepare-${id}`] = { title: `Report for ${title}` };
-  }
-  // The first Agent receives the entry Message directly, so it has no Prepare step.
-  delete cards[`/flow/steps/prepare-${workflows[kind][0][0]}`];
-  return { source: createExample(kind, contract), annexes: {}, design: defaultDesign(), display: { title: kind[0].toUpperCase() + kind.slice(1), cards } };
+  throw new Error('agsdl.unsupportedEdition020');
 }

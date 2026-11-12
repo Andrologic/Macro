@@ -281,7 +281,6 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
         })),
         Arc::new(tokio::sync::Mutex::new(())),
         Default::default(),
-        Default::default(),
     );
     let compiler = incarnation.clone();
     let worker = tokio::spawn(async move {
@@ -736,7 +735,6 @@ async fn exercise_handoff(mode: u8) {
         })),
         Arc::new(tokio::sync::Mutex::new(())),
         Default::default(),
-        Default::default(),
     );
     let runtime = host.flow030();
     let event = FlowEvent030 {
@@ -1088,7 +1086,7 @@ async fn exercise_handoff(mode: u8) {
             .bind(&identity.system_start_id).bind(&identity.flow_invocation_id).bind(&attempt.work().activation_id)
             .fetch_one(&pool).await.unwrap();
         assert_eq!(durable_contract, contract);
-        let input = crate::db::agsdl_execution::work_protocol030::ProtocolEvent030 {
+        let input = crate::db::agsdl_execution::work_dto030::ProtocolEvent030 {
             context,
             event_id: "fixture-event".into(),
             expected_revision: "0".into(),
@@ -1102,7 +1100,7 @@ async fn exercise_handoff(mode: u8) {
             })
             .to_string(),
             native_call: Some(
-                crate::db::agsdl_execution::work_protocol030::NativeCall030 {
+                crate::db::agsdl_execution::work_dto030::NativeCall030 {
                     provider_attempt_id: attempt.provider_attempt_id().into(),
                     native_call_id: "fixture-call".into(),
                 },
@@ -1437,7 +1435,7 @@ async fn exercise_handoff(mode: u8) {
         use crate::db::agsdl_execution::{
             dto::{EngineContext, EngineWork},
             flow_work_protocol030::{self, FlowWorkTicket030},
-            work_protocol030::{ProtocolDecision030, ProtocolEvent030},
+            work_dto030::{ProtocolDecision030, ProtocolEvent030},
         };
         let owner = EngineOwner {
             system_start_id: "system".into(),

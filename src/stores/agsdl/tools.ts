@@ -1,14 +1,14 @@
+import { readDesign,updateDesignMetadata,validDisplayMetadata,type AgsdlDisplayMetadata,type DesignMetadata } from "../../services/agsdl/design";
+import { list,object,pointerPart,readDocument,scanSource,sourceAt,text } from "../../services/agsdl/document";
+import { AGSDL_EXAMPLES,createExampleDocument,type AgsdlExample } from "../../services/agsdl/examples";
 import { guide03 } from "../../services/agsdl/guide030";
-import { unassessedHarnessCatalogue, type ReadAgsdlHarnessCatalogue } from "../../services/agsdl/harnessCatalogue";
-import { getArchitectPlan } from "../../services/architectPlanService";
-import { agsdlSessionKey, useAgsdlStore } from "../useAgsdlStore";
-import { list, object, readDocument, sourceAt, text, pointerPart, scanSource } from "../../services/agsdl/document";
-import { AGSDL_EXAMPLES, createExampleDocument, type AgsdlExample } from "../../services/agsdl/examples";
-import type { AgsdlChange } from "../../types/agsdl";
-import { readDesign, updateDesignMetadata, validDisplayMetadata, type DesignMetadata, type AgsdlDisplayMetadata } from "../../services/agsdl/design";
+import { unassessedHarnessCatalogue,type ReadAgsdlHarnessCatalogue } from "../../services/agsdl/harnessCatalogue";
 import { macroNativeModelEdition } from "../../services/agsdl/nativeModelEdition";
+import { getArchitectPlan } from "../../services/architectPlanService";
+import { paginateTextBytes,TOOL_OUTPUT_LIMITS } from "../../shared/toolOutputLimits";
+import type { AgsdlChange } from "../../types/agsdl";
+import { agsdlSessionKey,useAgsdlStore } from "../useAgsdlStore";
 import { useProviderStore } from "../useProviderStore";
-import { paginateTextBytes, TOOL_OUTPUT_LIMITS } from "../../shared/toolOutputLimits";
 
 /** An authoring request was refused without changing the source. */
 export class AgsdlAuthoringRefusal extends Error {
@@ -39,27 +39,8 @@ const legacyGuide = {
 };
 
 
-const guide02 = {
-  contract: "agsdl-0.2.0",
-  workflow: "Read source and revision. Follow outline.next_offset with section: outline, offset and expected_revision until null to discover every declaration; read each path for its exact source. Full static reports are available with section: report and report_index. Read each *_omitted.section explicitly before editing its data. For any text_page, concatenate content in next_offset order for the same revision before parsing the JSON text. Apply atomic JSON-pointer changes with the returned revision, preserve opaque settings and numeric tokens, then inspect fresh diagnostics. Preserve imported editions and author a separate 0.2.0 document only after deliberate migration of intent and losses.",
-  document: "The closed document requires contract:'agsdl-0.2.0', id, agents, configurations and bindings. Optional fields are content, skills, flow, compositions and baseUri. id and catalog names match ^[A-Za-z][A-Za-z0-9_-]*$. Catalogs are maps. Use only the 0.2.0 shapes. Unknown fields fail validation, except in literal values, settings and external requirement parameters.",
-  agent_shape: { configuration: "main", prompt: [{ value: "Reply briefly to the received message.", mediaType: "text/plain" }], interface: { inputMediaTypes: ["text/plain"], outputMediaTypes: ["text/plain"], results: {} } },
-  configuration_shape: { engine: "desktop", settings: { providerId: "COPY_FROM_MODELS", modelId: "COPY_FROM_MODELS", mode: "Chat", maxTurns: 1 }, tools: {} },
-  shapes: "agent_shape and configuration_shape are literal shape examples. Agent prompt is an ordered array, not a single Source. Tools belong to Configuration, not Agent. Copy the selected model's edition object into configuration.model; placeholders are not runnable. A binding named desktop needs the Engine contract and implementation shown in runtime. mode accepts Chat, Architect, Implement or build; inline is not a mode. For a graphless system, omit flow entirely.",
-  content: "A source has exactly value or uri, with optional mediaType. A content use may instead be {ref:catalogName}. When an interface restricts inputMediaTypes, declare a matching mediaType on every delivered Source, including prepared prompt instructions. Messages separate ordered prompt instructions from named resources containing information. An Agent declares a fixed configuration name or {select:Operand,cases:map}; successful selection before initialization remains fixed for that persistent Agent. Skills expand in declared order before the Agent prompt and cannot overwrite resource names. An interface uses inputMediaTypes, outputMediaTypes and named results with mediaTypes, optional required and the bounded valueSchema constraint language. URI access and media delivery require integration evidence. Relative URIs use only their originating explicit baseUri; preserve unresolved origins.",
-  flow: "Optional flow contains entry and a steps map. Steps have type agent, call, condition, prepare, join, approval or compose and their type-specific closed fields. next lists activate every destination; agent decisions use an explicit decision binding, choices and a matching next map. condition uses test and true/false next lists. prepare authors message roles. Operands resolve against the current incoming value. Agent completion is {text:string,results:map,choice?:string}; call completion exposes data. After an Agent, prepare a text resource with {select:{path:['text']},mediaType:'text/plain'}. source copies a complete content Source object, while select wraps a value. Direct Agent completion transfers visible text as information; prepared Messages retain prompt/resources. call results expose data; join results expose members. Default Agent delivery is queue. Steering, joins, loops, bounded composition and approval chains need their declared 0.2.0 constraints and scoped static checks. Normal path termination is an absent or empty next list. Use onError for explicit recovery.",
-  flow_shapes: "Use operands {value:literal} or {path:[stringOrNonnegativeIndex,...]}. Predicates are {equals:[Operand,Operand]}, {all:[Predicate,...]} or {not:Predicate}. An agent step requires agent; optional decision is {binding,choices}, delivery is queue|steering and steers names its ordinary owner step. call requires binding and may map arguments to Operands. condition requires test and next:{true:[steps],false:[steps]}. prepare requires message:{prompt?,resources?}; prepared resources may use a Content, {select:Operand,mediaType?} or {source:Operand}. join requires after and members; mode is all|first, first requires accept, and remaining is stop-and-wait|finish. approval requires call, binding, timeoutMs, validForMs and next:{approved:[steps],denied:[steps]}; call names the protected action step. Protected targets require scope:{action,resources:[descriptions],context:Operand}. compose requires composition, agents and a next map covering composition outputs. A composition requires entry, steps and outputs, with optional agentParameters; its body is non-nested and serial or conditional. Ordinary steps may declare maxVisits and onError; compose has onError but no maxVisits. Validate the bounded Join and approval structure before reporting it as structurally valid.",
-  runtime: "Macro remains the engine selected for Macro-authored configurations. Declare a named binding with contract:{identity:'macro/agent-engine',version:'1'} and implementation:{identity:'macro/desktop',version:'1'}, then configuration.engine names that binding. Select providerId and modelId from macro_models, copy that model's edition into configuration.model and put the identifiers in configuration.settings; preserve all other settings, Engine/Tool declarations and explicit Model editions. The identities are external declarations and confer no support. The manual selector edits only fixed configurations with this exact Engine declaration and no separate model edition. Shared configurations affect every Agent that names them; dynamic cases remain explicit. Imported foreign bindings remain readable and require deliberate conversion. Configuration and skill changes require stop, edit and start in a consuming integration. For the current Macro serial inline runtime, use fixed configurations with settings limited to providerId, modelId, mode, maxTurns and reasoningEffort. The profile accepts inline content, agent, prepare, condition and call steps with serial routes and maxVisits; omit compositions, including empty catalogs. Authoring does not launch execution, and native Preflight is required to verify runtime readiness.",
-  support: "bindings separate versioned contract and implementation, with optional settings, requires, claims and effects. Configuration tools map local names to declared bindings. Requirements name an exact contract edition plus optional parameters. Claims use requirement, status supported/unsupported/unknown and optional evidence SHA-256. Exact claims cover only their owning declaration, including settings and selected Engine/Model/Tools. Reassess or remove configuration claims after editing that declaration; preserve unchanged binding claims. Missing/unknown claims or support without evidence remain unknown. declared-supported is an assertion whose evidence was not verified. Report incompatible and unknown requirements independently. executionSupport stays not-assessed; structural validity, available provider names and human Agent responses do not prove execution or approval enforcement.",
-  design: "Macro design intent lives in the editor envelope's design metadata, outside this closed AgSDL source. design_context supplies {version:1,kind:system|blueprint,purpose,context,rules:[{id,title,instructions}],requirements:[{id,label,description,value,targetPath?}],origin?:{planId,name,revision}}. Edit it through agsdl_update design_json with the full desired design_context serialized as JSON and the current revision. Keep requirement and rule ids stable; empty values identify information still needed. Apply agreed values to prompt/resources, settings and declared flow controls. Design intent grants no runtime enforcement. Use explicit scopes and approval declarations for protected admission; actual Tool invocation admission remains an external integration requirement. Preserve unknown editor metadata and provenance.",
-  presentation: "Use descriptive Agent and step map names. Keep executable instructions in Agent/skill prompts or prepared Messages. Read display_context for Macro presentation metadata {title?:string,cards?:{JSONPointer:{title?:string,description?:string,macroGroup?:string}}}. Edit it through agsdl_update display_json, a JSON object patch with the current revision. Supplied cards paths must exist in the document. Omitted fields and cards retain their values; an empty string clears a display override. Preserve unknown metadata and keep source map names and pointer identities stable when changing labels. Closed declarations do not accept annotations or presentation-only fields. Routes show declared flow; distinguish their delivery roles and provenance from executable support.",
-  scope: "Plan document authoring and scoped static declaration checks only. No described Agents are executed, dependency code or URI payloads are not fetched, and external evidence is not verified. Retain original edition markers, reports, annexes and migration provenance. A draft may contain diagnostics while its design is refined.",
-};
-
-/** Imported editions retain their vocabulary; only new intentions default to 0.3. */
 export function agsdlAuthoringGuide(contract: unknown, empty = false) {
   if (contract === "agsdl-0.1.0") return legacyGuide;
-  if (contract === "agsdl-0.2.0") return guide02;
   if (contract === "agsdl-0.3.0" || empty) return guide03;
   return { contract: typeof contract === "string" && bytes(contract) < 256 ? contract : null, ...(typeof contract === "string" && bytes(contract) >= 256 ? { contract_omitted: true } : {}), supported: false,
     workflow: "Preserve this source and its marker. Read diagnostics and repair the explicit edition or malformed JSON through a deliberate source replacement. Select a supported authoring guide only after reading the resulting document. Unknown editions have no inferred AgSDL semantics or execution support." };
@@ -76,7 +57,7 @@ const catalogNames = (contract: unknown) => contract === "agsdl-0.3.0"
   : ["agents", "configurations", "bindings", "content", "skills", "compositions"];
 function inventory(doc: Record<string, unknown>, path: string): InventoryEntry[] {
   const entries: InventoryEntry[] = [];
-  if (doc.contract === "agsdl-0.2.0" || doc.contract === "agsdl-0.3.0") {
+  if (doc.contract === "agsdl-0.3.0") {
     for (const catalog of catalogNames(doc.contract)) {
       for (const name of Object.keys(object(doc[catalog]))) entries.push({ catalog, name, path: `/${catalog}/${pointerPart(name)}` });
     }
@@ -100,7 +81,7 @@ function integerArg(args: Record<string, unknown>, key: string, fallback: number
   return value;
 }
 function inventoryPage(doc: Record<string, unknown>, entries: InventoryEntry[], args: Record<string, unknown>) {
-  if (!["agsdl-0.1.0", "agsdl-0.2.0", "agsdl-0.3.0"].includes(text(doc.contract))) {
+  if (!["agsdl-0.1.0", "agsdl-0.3.0"].includes(text(doc.contract))) {
     return { contract: bytes(doc.contract ?? null) < 256 ? doc.contract : undefined, supported: false };
   }
   const offset = integerArg(args, "offset", 0), limit = Math.min(integerArg(args, "limit", 100), 200);
@@ -156,7 +137,7 @@ function addBounded(response: Record<string, unknown>, key: string, value: unkno
 
 /** Merge supplied display fields without changing source identities or discarding unknown metadata. */
 export function updateAgsdlDisplayMetadata(source: string, previous: AgsdlDisplayMetadata | undefined, update: unknown): AgsdlDisplayMetadata {
-  if (!["agsdl-0.2.0", "agsdl-0.3.0"].includes(text(readDocument(source).contract))) throw new Error("display_json requires AgSDL 0.2.0 or 0.3.0.");
+  if (!["agsdl-0.3.0"].includes(text(readDocument(source).contract))) throw new Error("display_json requires AgSDL 0.3.0.");
   if (!validDisplayMetadata(update) || (previous !== undefined && !validDisplayMetadata(previous))) throw new Error("The display metadata is malformed. Its original contents have been preserved.");
   const next = { ...structuredClone(previous), ...structuredClone(update) };
   if (update.cards !== undefined) {
@@ -374,7 +355,7 @@ async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
     }
     addBounded(response, "annex_ids", Object.keys(session.annexes), "annex_ids", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
     addBounded(response, "design_context", designContext, "design", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
-    if (doc.contract === "agsdl-0.2.0" || doc.contract === "agsdl-0.3.0") addBounded(response, "display_context", session.display ?? {}, "display", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
+    if (doc.contract === "agsdl-0.3.0") addBounded(response, "display_context", session.display ?? {}, "display", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
     addBounded(response, usesHarnessCatalogue ? "harness_catalogue" : "macro_models", models, "models", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
     if (!session.source) response.examples = AGSDL_EXAMPLES;
   }

@@ -571,6 +571,9 @@ async fn connect_transfer_sqlite_full_returns_no_prefix_and_rolls_back_storage_c
         )
         .await
         .unwrap();
+    // Schema retirement leaves reusable pages. Compact only this temporary test
+    // database so the existing max_page_count bound still injects SQLITE_FULL.
+    sqlx::query("VACUUM").execute(&pool).await.unwrap();
     let pages: i64 = sqlx::query_scalar("PRAGMA page_count")
         .fetch_one(&pool)
         .await

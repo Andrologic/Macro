@@ -2,14 +2,12 @@
 //! These reexports expose data shapes, not application execution or transport authority.
 
 pub mod execution {
-    pub use crate::agsdl_host_capture::{
-        ExecutionExternalDelivery, ExecutionPreflight, ExecutionPreflightRequest,
-    };
+    pub use crate::agsdl_host_capture::{ExecutionPreflight, ExecutionPreflightRequest};
     pub use crate::agsdl_host_catalogue::{
         NativeModelCatalogue, NativeModelChoice, NativeModelEdition, UnavailableProvider,
     };
-    pub use crate::agsdl_host_claude::{ClaudeStatus, HostClaudeReceipt, HostClaudeRequest};
-    pub use crate::agsdl_host_codex::{CodexStatus, HostCodexReceipt, HostCodexRequest};
+    pub use crate::agsdl_host_claude::ClaudeStatus;
+    pub use crate::agsdl_host_codex::CodexStatus;
     pub use crate::agsdl_host_compiler::HostCompileJob;
     pub use crate::agsdl_host_flow030::{DeliveryReceipt030, DeliveryRequest030};
     pub use crate::agsdl_host_projection030::{
@@ -20,7 +18,6 @@ pub mod execution {
         HostRouteCompletion030, HostRouteJob030, HostRouteOutput030,
     };
     pub use crate::agsdl_host_tasks::{PublicTaskTarget, ResolveCardTask, ResolvedCardTask};
-    pub use crate::agsdl_host_tools::{HostToolInvocation, HostToolReceipt};
     pub use crate::agsdl_host_work::{
         HostWorkCompletion030, HostWorkInput030, HostWorkJob030, HostWorkOutput030,
     };
@@ -35,16 +32,12 @@ pub mod execution {
         PhaseCount030, PublicRunSummary030, RunListRequest030, RunPage030,
     };
     pub use crate::db::agsdl_execution::dto::*;
-    pub use crate::db::agsdl_execution::inspection::{HostAdmission, HostInspection};
     pub use crate::db::agsdl_execution::intents::*;
-    pub use crate::db::agsdl_execution::prepared::{Prepare, Validation};
     pub use crate::db::agsdl_execution::public::*;
     pub use crate::db::agsdl_execution::public030::{
         HumanAnswer030, HumanContent030, HumanContinuation030, HumanDecision030, HumanPage030,
         HumanScope030, PublicHumanRequest030,
     };
-
-    pub use crate::db::agsdl_execution::responses::{Closure, Emission};
 }
 
 pub mod db {

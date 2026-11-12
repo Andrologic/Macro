@@ -1,9 +1,8 @@
-import { describe, expect, it } from "bun:test";
+import { describe,expect,it } from "bun:test";
 import type { CatalogedImplementTask } from "../implementTaskCatalog";
-import { convertLegacyPlan } from "./legacy";
 import { createLegacyExample } from "./examples";
+import { groupTaskState,trackCardTasks,type TrackedTask } from "./taskTracking";
 import { projectViewer } from "./viewer";
-import { groupTaskState, trackCardTasks, type TrackedTask } from "./taskTracking";
 
 const target = { projectId: "project", planId: "plan", branchName: "feature/example" };
 const card = () => ({ ...projectViewer(createLegacyExample("feature")).graphs[0].cards[0], details: { displayAnnotations: { macroTaskId: "task" } } });
@@ -28,19 +27,6 @@ describe("AgSDL live task tracking", () => {
     expect(trackCardTasks([native], target, tasks, new Set(), {})).toEqual({});
     const legacy = { ...native, path: "/legacy/0" };
     expect(trackCardTasks([legacy], target, tasks, new Set(), {})[legacy.path].state).toBe("completed");
-  });
-  it("keeps explicit legacy task identity in the 0.2 display envelope and rejects ambiguity", () => {
-    const converted = convertLegacyPlan({ id: "plan", title: "Legacy plan", label: "Legacy", description: "", predictedBranches: [], nodes: [
-      { id: "one", title: "First", description: "Review", type: "task", status: "completed", todos: [], dependencies: [], artifactContracts: [] },
-    ] });
-    expect(converted).not.toBeNull();
-    const cards = projectViewer(converted!.source, converted!).declarations.filter(card => card.kind === "Agent");
-    expect(cards[0].path).toBe("/agents/agent-1");
-    const matching = task({ node_id: "one" });
-    expect(trackCardTasks(cards, target, [matching], new Set(), {})[cards[0].path].state).toBe("completed");
-    for (const tasks of [[matching, { ...matching }], [task({ node_id: "one", plan_id: "other" })], [task({ node_id: "one", plan_storage_branch: "other" })], [task({ node_id: "one", archived_at: "2026-01-01" })]]) {
-      expect(trackCardTasks(cards, target, tasks, new Set(), {})).toEqual({});
-    }
   });
   it("shows attention states in folded groups without inventing completion", () => {
     const done: TrackedTask = { taskId: "one", title: "One", state: "completed" };

@@ -342,7 +342,6 @@ impl Fixture {
             })),
             Default::default(),
             Default::default(),
-            Default::default(),
         );
         host.flow030()
             .install_runtime_fixture_control(&host, owner.clone(), identity.clone());
@@ -403,7 +402,7 @@ struct ScriptedAgent {
     protocol: tokio::sync::mpsc::Sender<(
         Value,
         tokio::sync::oneshot::Sender<
-            Result<crate::db::agsdl_execution::work_protocol030::ProtocolDecision030>,
+            Result<crate::db::agsdl_execution::work_dto030::ProtocolDecision030>,
         >,
     )>,
     plan_lock: Option<Arc<crate::agsdl_host_work_admission030::NativePlanLock030>>,
@@ -505,7 +504,7 @@ impl AgentExecutor030 for Executor {
         let (protocol, mut protocol_events) = tokio::sync::mpsc::channel::<(
             Value,
             tokio::sync::oneshot::Sender<
-                Result<crate::db::agsdl_execution::work_protocol030::ProtocolDecision030>,
+                Result<crate::db::agsdl_execution::work_dto030::ProtocolDecision030>,
             >,
         )>(1);
         let plan_lock = self
@@ -1483,10 +1482,12 @@ async fn delivery030_validates_retained_capture_and_is_idempotent_without_legacy
     );
     assert_eq!(
         0,
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_deliveries")
-            .fetch_one(&f.pool)
-            .await
-            .unwrap()
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='engine_deliveries'"
+        )
+        .fetch_one(&f.pool)
+        .await
+        .unwrap()
     );
     pump.abort();
     let _ = pump.await;

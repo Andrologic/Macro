@@ -97,49 +97,6 @@ pub(crate) fn captured_work_contract030(
     Ok(contract.to_owned())
 }
 
-/// A readback reports persistence only. Even a committed decision never grants
-/// permission to dispatch a physical effect after the caller lost its lease.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DurableCommitObservation030 {
-    Committed,
-    Unresolved,
-}
-
-pub(crate) async fn observe_commit030(
-    pool: &sqlx::SqlitePool,
-    expected: &crate::db::agsdl_execution::work_protocol030::TransitionTicket030,
-    decision: &crate::db::agsdl_execution::work_protocol030::ProtocolDecision030,
-) -> Result<DurableCommitObservation030> {
-    use crate::db::agsdl_execution::work_protocol030::read_protocol_events;
-    let records = read_protocol_events(pool, &expected.input.context.work).await?;
-    let Some(record) = records
-        .into_iter()
-        .find(|record| record.ticket.input.event_id == expected.input.event_id)
-    else {
-        // A read can race a submitted commit or a still-pending rollback. Absence
-        // therefore cannot establish that any IO is safe to repeat.
-        return Ok(DurableCommitObservation030::Unresolved);
-    };
-    if record.ticket != *expected {
-        return Err(failure(
-            "CORRELATION",
-            "work",
-            "Durable transition ticket differs",
-        ));
-    }
-    match (record.decision, record.committed_state) {
-        (Some(stored), Some(_)) if stored == *decision => {
-            Ok(DurableCommitObservation030::Committed)
-        }
-        (None, None) => Ok(DurableCommitObservation030::Unresolved),
-        _ => Err(failure(
-            "CORRELATION",
-            "work",
-            "Durable transition decision differs",
-        )),
-    }
-}
-
 #[derive(Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReceiptOwner030 {
@@ -175,8 +132,8 @@ struct CheckIdentity030 {
 pub(crate) fn reserved_check030(
     context: &EngineContext,
     receipt_json: &str,
-) -> Result<Option<crate::db::agsdl_execution::work_protocol030::CheckRequest030>> {
-    use crate::db::agsdl_execution::work_protocol030::CheckRequest030;
+) -> Result<Option<crate::db::agsdl_execution::work_dto030::CheckRequest030>> {
+    use crate::db::agsdl_execution::work_dto030::CheckRequest030;
     validate_json(receipt_json)?;
     let receipt: WorkReceipt030 = serde_json::from_str(receipt_json)?;
     let instance = context

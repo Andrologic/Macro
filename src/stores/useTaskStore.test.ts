@@ -1,25 +1,25 @@
+import { afterEach,beforeEach,describe,expect,it,mock,spyOn } from 'bun:test';
+import { installArchitectPlanPorts,type ArchitectPlanServiceAppState } from '../services/architectPlanReadContext';
 import { createLifecycleScope } from '../services/lifecycleScope';
-import { installArchitectPlanPorts, type ArchitectPlanServiceAppState } from '../services/architectPlanReadContext';
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import type {
+MergeWorkflowRepositoryResult,
+MergeWorkflowRuntimeState,
+} from '../services/mergeWorkflow';
+import { getPlanActivationCandidateTask } from '../services/planActivationCandidate';
 import {
-  REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
-  REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
+buildPlanFinalizationFailureState,
+toBlockedPlanFinalizationState,
+} from '../services/planFinalization';
+import {
+REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
+REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
 } from '../services/serviceRuntime';
 import type {
-  GitMergeCheckDto,
-  GitWorkflowSessionDto,
-  GitWorktreeInspectionDto,
+GitMergeCheckDto,
+GitWorkflowSessionDto,
+GitWorktreeInspectionDto,
 } from '../services/tauriIpc';
-import type {
-  MergeWorkflowRepositoryResult,
-  MergeWorkflowRuntimeState,
-} from '../services/mergeWorkflow';
-import {
-  buildPlanFinalizationFailureState,
-  toBlockedPlanFinalizationState,
-} from '../services/planFinalization';
-import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
-import { getPlanActivationCandidateTask } from '../services/planActivationCandidate';
+import { installTauriRuntimeMock,removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 import type { ImplementTask } from './useTaskStore';
 
 const { clearPlanRuntimeStateSnapshot } = await import('./planRuntimeState');
@@ -782,9 +782,14 @@ describe('getPlanActivationCandidateTask', () => {
 describe('useTaskStore refreshFromPlan selection reconciliation', () => {
   it('refreshes native Agent Tasks in place, marks read failures stale and rejects legacy status writes', async () => {
     const { workflowTaskFixture } = await import('../services/workflowAgentTasks.fixtures');
-    const { projectWorkflowAgentTasks } = await import('../services/workflowAgentTasks');
+    const { projectWorkflowAgentTasks030, configureWorkflowRunAccess030, getWorkflowRunAccess030 } = await import('../services/workflowAgentTasks');
     const f = await workflowTaskFixture();
-    const tasks = projectWorkflowAgentTasks(f.plan, f.snapshot, f.projection, []);
+    const tasks = projectWorkflowAgentTasks030(f.plan, await f.ports.inspect!(f.snapshot));
+    const { nativeTransportFor030 } = await import('../services/agsdl/runAccess030.testSupport');
+    const { createRunInspectionAccess030 } = await import('../services/agsdl/runAccess030');
+    const { transport, scope } = nativeTransportFor030(f.fixture);
+    configureWorkflowRunAccess030(() => ({ access: createRunInspectionAccess030(scope, transport) }));
+    getWorkflowRunAccess030(scope);
     const { useTaskStore, getTaskLifecycleCapabilities } = await loadIsolatedTaskStore();
     useTaskStore.setState({ tasks: [buildTask(), ...tasks] });
     let fail = false;
@@ -795,12 +800,18 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
         if (release !== undefined) await new Promise<void>(resolve => { release = resolve; });
         return f.snapshot;
       }
-      if (command === 'execution_read_projection') return f.projection;
-      if (command === 'execution_pending_approvals') return { approvals: [], incomplete: false };
       throw new Error(`Unexpected ${command}`);
     });
-    f.projection.activations[0] = f.activation('1', 'terminal', 'completed');
-    f.projection.cursor = '11' as typeof f.projection.cursor;
+    const visit = f.fixture.runtime.items.find(item => item.kind === 'activation');
+    if (visit?.kind !== 'activation') throw new Error('Missing synthetic native visit');
+    visit.value.phase = 'done'; visit.value.physical = false;
+    for (const item of f.fixture.runtime.items) if (item.kind === 'instance' && item.value.agent === 'worker') {
+      item.value.currentActivationId = null; item.value.discarded = true;
+    }
+    f.fixture.summary.revision = f.fixture.runtime.revision = '9007199254740994';
+    f.fixture.summary.verdict = f.fixture.runtime.verdict = 'succeeded';
+    f.fixture.summary.physicalPending = '0';
+    f.fixture.summary.phaseCounts = [{ phase: 'done', count: '1' }];
     await useTaskStore.getState().refreshWorkflowTasks();
     expect(useTaskStore.getState().tasks.find((task: ImplementTask) => task.id === tasks[0].id)?.status).toBe('Completed');
     expect(useTaskStore.getState().tasks).toHaveLength(3);
@@ -824,6 +835,7 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
     release();
     await pending;
     expect(useTaskStore.getState().tasks.map((task: ImplementTask) => task.id)).toEqual(['other-task']);
+    configureWorkflowRunAccess030(undefined);
   });
 
   it('does not continue catalog recovery after the bootstrap owner stops', async () => {

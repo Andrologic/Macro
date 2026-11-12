@@ -257,7 +257,6 @@ impl Fixture {
             })),
             Default::default(),
             Default::default(),
-            Default::default(),
         ));
         host.flow030()
             .install_runtime_fixture_control(&host, owner.clone(), identity.clone());

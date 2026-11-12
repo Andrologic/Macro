@@ -1411,7 +1411,8 @@ async fn combines_call_039_and_human_clock_040_without_schema_conflict() {
         vec![
             (39, "039_execution_call_protocol030".into()),
             (40, "040_execution_flow_human_clock030".into()),
-            (41, "041_execution_flow_interrupted030".into())
+            (41, "041_execution_flow_interrupted030".into()),
+            (42, "042_retire_execution020".into())
         ]
     );
     let tables: i64 = sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('engine_flow030_calls','engine_flow030_call_causes','engine_flow030_call_diagnostics','engine_flow030_clock','engine_flow030_handoff_clock')").fetch_one(&f.broker.pool).await.unwrap();

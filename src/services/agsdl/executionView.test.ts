@@ -1,12 +1,12 @@
-import { expect, it } from "bun:test";
-import { appendProjection, executionProfileForContract, groupNativeState, nativeCardActivations, nativeRunState } from "./executionView";
+import { expect,it } from "bun:test";
+import { appendProjection,executionProfileForContract,groupNativeState,nativeCardActivations,nativeRunState } from "./executionView";
 
-import type { PublicProjection, PublicSnapshot, PublicActivation, SourceRevision, SystemStartId, Sequence } from "../agsdlExecution/contracts";
-import { projectViewer } from "./viewer";
+import type { PublicActivation,PublicProjection,PublicSnapshot,Sequence,SourceRevision,SystemStartId } from "../agsdlExecution/contracts";
 import { createExample } from "./examples";
+import { projectViewer } from "./viewer";
 
 it('selects the profile from the explicit document contract', () => {
-  expect(executionProfileForContract('agsdl-0.2.0')).toBe('macro-serial-inline-v1');
+  expect(executionProfileForContract('agsdl-0.2.0')).toBeUndefined();
   expect(executionProfileForContract('agsdl-0.3.0')).toBe('macro-agsdl-030-v1');
   expect(executionProfileForContract('agsdl-0.1.0')).toBeUndefined();
   expect(executionProfileForContract(undefined)).toBeUndefined();

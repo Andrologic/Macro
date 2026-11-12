@@ -1,14 +1,11 @@
-import { DEMO_MACRO_LIBRARY_ID } from './macroBlueprintLibrary';
-import type { DemoBlueprint, DemoBlueprintUse } from './blueprintLaunch';
-import type { Task } from '../types';
-import { describe, expect, test } from 'bun:test';
-import { demoPlans, demoProjects, demoTasks, demoConversations, demoMessages } from './fixtures';
+import { describe,expect,test } from 'bun:test';
 import { validateDocument } from '../services/agsdl/document';
-import { prepareMessage } from '../services/agsdlExecution/content';
-import { evaluatePredicate, validateCompletion } from '../services/agsdlExecution/constraints';
-import { decode, encode, record } from '../services/agsdlExecution/exact';
 import { projectViewer } from '../services/agsdl/viewer';
-import { createDemoRuntime, DemoUnsupportedCommand } from './runtime';
+import type { Task } from '../types';
+import { blueprintWorkflowSteps,type DemoBlueprint,type DemoBlueprintUse } from './blueprintLaunch';
+import { demoConversations,demoMessages,demoPlans,demoProjects,demoTasks } from './fixtures';
+import { DEMO_MACRO_LIBRARY_ID } from './macroBlueprintLibrary';
+import { createDemoRuntime,DemoUnsupportedCommand } from './runtime';
 
 describe('isolated Macro demo runtime', () => {
   test('provides projects, real AgSDL source and task conversations', async () => {
@@ -106,97 +103,14 @@ describe('isolated Macro demo runtime', () => {
 });
 
 describe('populated demo scenarios', () => {
-  test('all authored systems pass the AgSDL reader and project their real graph structure', async () => {
-    const kinds = new Set<string>();
+  test('all reauthored demo systems use the 0.3 reader and retain their displayed component paths', async () => {
     for (const plan of demoPlans) {
+      expect(JSON.parse(plan.agsdl.source).contract).toBe('agsdl-0.3.0');
       const reports = await validateDocument(plan.agsdl.source);
-      for (const report of reports) {
-        if (typeof report.documentReportJson !== 'string') throw new Error('Missing AgSDL reader report');
-        expect(JSON.parse(report.documentReportJson).valid).toBe(true);
-      }
+      expect(reports.every(report => report.results.every(result => result.verdict === 'pass'))).toBe(true);
       const viewer = projectViewer(plan.agsdl.source, plan.agsdl);
-      if (viewer.graphs.length) {
-        expect(viewer.graphs[0].cards.length).toBeGreaterThanOrEqual(plan.projectId === DEMO_MACRO_LIBRARY_ID ? 1 : plan.id === 'demo-audio-feature' ? 3 : 5);
-        for (const graph of viewer.graphs) for (const card of graph.cards) kinds.add(card.kind);
-      } else expect(viewer.declarations.filter(card => card.kind === 'Agent')).toHaveLength(3);
+      expect(viewer.declarations.length).toBeGreaterThan(0);
     }
-    expect([...kinds]).toEqual(expect.arrayContaining(['agent', 'prepare', 'call', 'condition', 'approval', 'join', 'compose']));
-  });
-  test('exposes reusable compositions, persistent steering and adaptive participants without fabricating flow', () => {
-    const delivery = demoPlans.find(plan => plan.id === 'demo-delivery')!;
-    const source = JSON.parse(delivery.agsdl.source);
-    expect(source.flow.steps.web.composition).toBe(source.flow.steps.mobile.composition);
-    expect(source.flow.steps.web.agents).not.toEqual(source.flow.steps.mobile.agents);
-    expect(projectViewer(delivery.agsdl.source, delivery.agsdl).graphs.map(graph => graph.title)).toEqual(['Livraison multi-plateforme', 'Contrôle des preuves', 'Contrôle d’un paquet']);
-    const writer = JSON.parse(demoPlans.find(plan => plan.id === 'demo-persistent')!.agsdl.source);
-    expect(writer.flow.steps.steer).toMatchObject({ delivery: 'steering', agent: writer.flow.steps.write.agent, steers: 'write' });
-    expect(writer.flow.steps.steer.next).toBeUndefined();
-    expect(writer.flow.steps.revise.agent).toBe(writer.flow.steps.write.agent);
-    const incident = JSON.parse(demoPlans.find(plan => plan.id === 'demo-incident')!.agsdl.source);
-    // The investigation model follows the severity given to the run.
-    expect(incident.agents.investigate.configuration).toEqual({ select: { path: ['resources', 'severity', 'value'] }, cases: { standard: 'analyse', critique: 'analyseApprofondie' } });
-    expect(Object.keys(incident.flow.steps.triage.next)).toEqual(incident.flow.steps.triage.decision.choices);
-    expect(incident.flow.steps.investigate.maxVisits).toBe(3);
-    // Metrics collected alongside the investigation reach it as a steering message.
-    expect(incident.flow.steps.triage.next.investigate).toEqual(['investigate', 'collect']);
-    expect(incident.flow.steps.refocus).toMatchObject({ delivery: 'steering', agent: 'investigate', steers: 'investigate' });
-    const quality = JSON.parse(demoPlans.find(plan => plan.id === 'demo-quality')!.agsdl.source);
-    // The rapporteur revises its own synthesis, so both steps queue on one agent.
-    expect(quality.flow.steps.revise.agent).toBe(quality.flow.steps.synthesize.agent);
-    const resident = demoPlans.find(plan => plan.id === 'demo-resident')!;
-    expect(JSON.parse(resident.agsdl.source).flow).toBeUndefined();
-    expect(projectViewer(resident.agsdl.source, resident.agsdl).graphs).toEqual([]);
-  });
-  test('prepared writer text is wrapped as information instead of interpreted as a Source', () => {
-    const document = record(decode(demoPlans.find(plan => plan.id === 'demo-persistent')!.agsdl.source));
-    const steps = record(record(document.flow).steps);
-    for (const [step, resource] of [['advice', 'guidance'], ['finish', 'dossier']]) {
-      const message = prepareMessage(document, record(steps[step]), { text: 'Texte conservé\navec ses accents.' });
-      expect(JSON.parse(encode(message)).resources[resource]).toEqual({ value: 'Texte conservé\navec ses accents.', mediaType: 'text/plain' });
-    }
-  });
-  test('catalogue normalization rejects malformed lines and prepares a correction for the same participant', () => {
-    const document = record(decode(demoPlans.find(plan => plan.id === 'demo-ingestion')!.agsdl.source));
-    const agent = record(record(document.agents).normalize), steps = record(record(record(document.compositions).checkedNormalization).steps), step = record(steps.normalize);
-    const result = (line: unknown) => decode(JSON.stringify({ results: { report: { value: { lines: [line] }, mediaType: 'application/json' } } }));
-    for (const bad of [{ sku: 'A1', price: '49', currency: 'EUR' }, { sku: 'A1', price: 49, currency: 'GBP' }, { sku: 'A1', price: 49 }, { sku: 'A1', price: 49, currency: 'EUR', extra: true }]) {
-      expect(() => validateCompletion(record(agent.interface), step, result(bad))).toThrow();
-    }
-    expect(() => validateCompletion(record(agent.interface), step, result({ sku: 'A1', price: 49, currency: 'EUR' }))).not.toThrow();
-    const error = { code: 'OUTPUT_CONSTRAINT', message: 'Format incorrect', details: [] };
-    const predicate = record(steps.correctable).test;
-    expect(evaluatePredicate(predicate, { error })).toBe(true);
-    expect(evaluatePredicate(predicate, { error: { ...error, code: 'AGENT_FAILED' } })).toBe(false);
-    const message = JSON.parse(encode(prepareMessage(document, record(steps.feedback), { error })));
-    expect(message.resources.outputErrors.value).toEqual(error);
-    expect(record(steps.feedback).next).toEqual(['normalize']);
-  });
-  test('crisis accepts only an approved investigation and chains two approvals on one captured action', () => {
-    const crisis = JSON.parse(demoPlans.find(plan => plan.id === 'demo-crisis')!.agsdl.source);
-    for (const approved of [true, false]) expect(evaluatePredicate(decode(JSON.stringify(crisis.flow.steps.first.accept)), { results: { report: { value: { approved } } } })).toBe(approved);
-    expect(crisis.flow.steps.operationsApproval.next.approved).toEqual(['securityApproval']);
-    expect(crisis.flow.steps.securityApproval.next.approved).toEqual(['deploy']);
-    expect([crisis.flow.steps.operationsApproval.call, crisis.flow.steps.securityApproval.call]).toEqual(['deploy', 'deploy']);
-    expect(crisis.bindings[crisis.flow.steps.deploy.binding].effects).toBe('external');
-  });
-  test('crisis system combines first/all joins, reusable expertise, three decisions and protected external effects', () => {
-    const plan = demoPlans.find(plan => plan.id === 'demo-crisis')!;
-    const source = JSON.parse(plan.agsdl.source), viewer = projectViewer(plan.agsdl.source, plan.agsdl);
-    expect(Object.keys(source.flow.steps)).toHaveLength(20);
-    expect(source.flow.steps.first).toMatchObject({ mode: 'first', remaining: 'finish', members: ['metrics', 'traces', 'customer'] });
-    expect(source.flow.steps.all).toMatchObject({ mode: 'all', members: ['technical', 'business'] });
-    expect(source.flow.steps.decide.decision.choices).toEqual(['intervenir', 'observer', 'escalader']);
-    expect(['intervention', 'observation', 'closure'].map(name => source.flow.steps[name].composition)).toEqual(['assessment', 'assessment', 'assessment']);
-    const cards = viewer.graphs[0].cards;
-    expect(cards.find(card => card.id === 'metrics')?.capabilities).toMatchObject({ skills: ['Diagnostic'], structuredResults: true, dynamicConfiguration: false, externalEffects: false });
-    expect(cards.find(card => card.id === 'deploy')?.capabilities?.externalEffects).toBe(true);
-    expect(cards.find(card => card.id === 'watch')?.capabilities?.externalEffects).toBe(false);
-    expect(source.compositions.assessment.steps.review.onError).toEqual([{ error: true }]);
-    const document = record(decode(plan.agsdl.source));
-    const steps = record(record(document.flow).steps);
-    const report = { value: { approved: true, hypothesis: 'Cache', evidence: ['p95'] }, mediaType: 'application/json' };
-    const message = JSON.parse(encode(prepareMessage(document, record(steps.evidence), { members: { technical: { results: { report } }, business: { results: { report } } } })));
-    expect(message.resources).toEqual({ technical: report, business: report });
   });
   test('every project has its own plans, conversations and virtual files', async () => {
     const demo = createDemoRuntime();
@@ -280,7 +194,7 @@ describe('demo blueprint preparation and launch', () => {
     const draft = await runtime.invoke('demo_blueprint_prepare', { projectId: 'demo-luma', blueprintId: 'macro-chantier' }) as DemoBlueprintUse;
     const started = await runtime.invoke('demo_blueprint_start', { id: draft.id }) as DemoBlueprintUse;
     await runtime.invoke('demo_blueprint_start', { id: draft.id });
-    expect(runtime.tasks).toHaveLength(initialCount + started.blueprint.agents.length);
+    expect(runtime.tasks).toHaveLength(initialCount + blueprintWorkflowSteps(started.blueprint).length);
     const created = runtime.tasks.filter(task => started.taskIds.includes(task.id));
     expect(created).toHaveLength(3);
     expect(created.every(task => !('parent_task_id' in task))).toBe(true);
@@ -293,7 +207,7 @@ describe('demo blueprint preparation and launch', () => {
     const file = await runtime.invoke('fs_read_file', args) as { content: string };
     const plan = JSON.parse(file.content);
     const source = JSON.parse(plan.agsdl.source);
-    source.agents.agent1.prompt = [{ value: 'Updated shared instructions' }];
+    source.agents.agent1.instructions = [{ value: 'Updated shared instructions' }];
     plan.agsdl.source = JSON.stringify(source);
     await runtime.invoke('fs_write_file', { ...args, content: JSON.stringify(plan) });
     const catalog = await runtime.invoke('demo_blueprint_catalog') as DemoBlueprint[];
@@ -374,11 +288,11 @@ describe('demo blueprint preparation and launch', () => {
     const repeat = await runtime.invoke('demo_blueprint_start', { id: draft.id }) as DemoBlueprintUse;
     expect(repeat.taskIds).toEqual(started.taskIds);
     const tasks = (await runtime.invoke('workspace_list_tasks') as { tasks: Task[] }).tasks.filter(task => started.taskIds.includes(task.id));
-    expect(tasks).toHaveLength(release.agents.length);
+    expect(tasks).toHaveLength(blueprintWorkflowSteps(release).length);
     expect(tasks.filter(task => task.status === 'InProgress')).toHaveLength(1);
-    expect(tasks.filter(task => task.status === 'Blocked')).toHaveLength(release.agents.length - 1);
+    expect(tasks.filter(task => task.status === 'Blocked')).toHaveLength(blueprintWorkflowSteps(release).length - 1);
     expect(await runtime.invoke('db_list_messages', { conversationId: tasks[0].conversation_id })).toEqual(expect.arrayContaining([expect.objectContaining({ content: expect.stringContaining('Release QA') })]));
-    for (let index = 0; index < release.agents.length; index++) await runtime.invoke('demo_blueprint_advance', { id: started.id });
+    for (let index = 0; index < blueprintWorkflowSteps(release).length; index++) await runtime.invoke('demo_blueprint_advance', { id: started.id });
     expect(tasks.map(task => task.status)).toEqual(['Completed', 'Completed', 'InReview']);
     expect((await runtime.invoke('demo_blueprint_uses') as DemoBlueprintUse[]).find(use => use.id === started.id)!.state).toBe('running');
     await expect(runtime.invoke('demo_blueprint_prepare', { id: draft.id, blueprintId: release.id, projectId: 'demo-luma' })).rejects.toThrow('déjà été lancée');

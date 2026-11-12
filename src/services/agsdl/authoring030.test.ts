@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'bun:test';
-import { createEmptySystemDocument, readDesign, withDocumentDesign, adaptationChanges, manualMigrationInventory } from './design';
-import { AGSDL_EXAMPLES, createExample, createExampleDocument } from './examples';
-import { authoringPatterns030 } from './examples030';
+import { describe,expect,it } from 'bun:test';
+import { createEmptySystemDocument,readDesign,withDocumentDesign } from './design';
 import { reviewDesignChanges } from './designReview';
+import { AGSDL_EXAMPLES,createExample,createExampleDocument } from './examples';
+import { authoringPatterns030 } from './examples030';
 
 const changed = (source: string, edit: (doc: ReturnType<typeof JSON.parse>) => void) => {
   const doc = JSON.parse(source); edit(doc); return JSON.stringify(doc);
@@ -16,7 +16,7 @@ describe('0.3 authoring defaults and historical editions', () => {
     expect(JSON.parse(createEmptySystemDocument('Default').source).contract).toBe('agsdl-0.3.0');
   });
   it('retains exact source, annexes, provenance and opaque metadata during metadata-only edits', () => {
-    for (const contract of ['agsdl-0.2.0', 'agsdl-0.3.0'] as const) {
+    for (const contract of ['agsdl-0.3.0'] as const) {
       const draft = createEmptySystemDocument('Copy', contract);
       const source = draft.source.replace('"agents": {}', '"agents" : {}');
       const origin = { planId: 'template', name: 'Template', revision: 3 };
@@ -37,20 +37,10 @@ describe('0.3 authoring defaults and historical editions', () => {
       expect(doc.agents.review).toMatchObject({ harness: 'claude-code', permissions: 'read-only' });
       expect(doc.flow.steps.review.instance).toBe('new');
       expect(doc.flow.steps.implement.next.message.resources.report.from).toEqual(['results', 'report']);
-      for (const contract of ['agsdl-0.1.0', 'agsdl-0.2.0'] as const) expect(JSON.parse(createExample(kind, contract)).contract).toBe(contract);
+      for (const contract of ['agsdl-0.1.0'] as const) expect(JSON.parse(createExample(kind, contract)).contract).toBe(contract);
       expect(createExampleDocument(kind).display?.cards?.['/agents/review']).toMatchObject({ title: 'Independent review' });
     }
     expect(Object.keys(authoringPatterns030())).toEqual(['assistant', 'instructs', 'fanout', 'quorum', 'composition', 'approval']);
-  });
-  it('targets only existing string slots and inventories migration without rewriting the original', () => {
-    const draft = createExampleDocument('feature');
-    const before = { ...draft.design!, requirements: [{ id: 'guide', label: 'Guide', description: '', value: '', targetPath: '/content/projectGuidance/value' }] };
-    const edits = adaptationChanges(draft.source, before, { ...before, requirements: [{ ...before.requirements[0], value: 'Run project checks.' }] });
-    expect(edits).toEqual([{ op: 'set', path: '/content/projectGuidance/value', valueJson: '"Run project checks."' }]);
-    const invalid = { ...before, requirements: [{ ...before.requirements[0], targetPath: '/agents' }] };
-    expect(() => adaptationChanges(draft.source, invalid, { ...invalid, requirements: [{ ...invalid.requirements[0], value: 'text' }] })).toThrow('existing string');
-    const historical = createExample('feature', 'agsdl-0.2.0').replace('"content": {', '"content": {"opaque":{"value":9007199254740993123},');
-    expect(manualMigrationInventory(historical)).toMatchObject({ from: 'agsdl-0.2.0', to: 'agsdl-0.3.0', originalSource: historical });
   });
 });
 

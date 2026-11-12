@@ -1925,7 +1925,7 @@ mod tests {
                 "Keep café transcript"
             );
             if variant >= 2 {
-                assert_eq!(sqlx::query_scalar::<_,String>("SELECT snapshot_json FROM engine_systems WHERE system_id='preserved-system'").fetch_one(&pool).await.unwrap(), "{}");
+                assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='engine_systems'").fetch_one(&pool).await.unwrap(), 0);
             }
             pool.close().await;
             check_database(&path).await.unwrap();
@@ -3990,7 +3990,7 @@ mod catalog_backup_tests {
             .execute(&mut db)
             .await
             .unwrap();
-        sqlx::query("UPDATE sqlite_master SET sql = replace(sql, 'CHECK (json_valid(snapshot_json))', '') WHERE name='engine_systems'").execute(&mut db).await.unwrap();
+        sqlx::query("UPDATE sqlite_master SET sql = replace(sql, 'CHECK(json_valid(state_json))', '') WHERE name='engine_flow030_runs'").execute(&mut db).await.unwrap();
         sqlx::query("PRAGMA writable_schema=OFF")
             .execute(&mut db)
             .await
@@ -4085,27 +4085,19 @@ mod catalog_backup_tests {
     }
 
     #[tokio::test]
-    async fn admission018_filled_options_survive_export_and_restore() {
+    async fn native_flow030_exact_state_survives_export_and_restore() {
         let (temp, data, config) = tests::profile().await;
         let mut db = connection(&data.join("macro.db")).await.unwrap();
-        sqlx::query("INSERT INTO engine_systems VALUES ('run','request','{}','{}','[]','{}')")
-            .execute(&mut db)
-            .await
-            .unwrap();
+        let options = r#"{ "budget":9007199254740993, "limit":1.0 }"#;
+        let evidence = r#"{ "lock":"synthetic" }"#;
         sqlx::query(
-            "INSERT INTO engine_work_protocol030 VALUES ('run','work','{}','{}','{}','{}','0')",
+            "INSERT INTO engine_flow030_runs VALUES ('run','flow','snapshot','epoch','{}',?,?)",
         )
+        .bind(options)
+        .bind(evidence)
         .execute(&mut db)
         .await
         .unwrap();
-        let options = r#"{ "budget":9007199254740993, "limit":1.0 }"#;
-        let evidence = r#"{ "lock":"synthetic" }"#;
-        sqlx::query("INSERT INTO engine_work_admission030 VALUES ('run','work',?,?)")
-            .bind(options)
-            .bind(evidence)
-            .execute(&mut db)
-            .await
-            .unwrap();
         db.close().await.unwrap();
         let dir = data.join("local-backup");
         fs::create_dir_all(&dir).unwrap();
@@ -4124,7 +4116,7 @@ mod catalog_backup_tests {
         let archive = load_archive(&path).unwrap();
         validate(&archive).await.unwrap();
         let mut db = connection(&data.join("macro.db")).await.unwrap();
-        sqlx::query("UPDATE engine_work_admission030 SET options_json='{}', evidence_json='{}'")
+        sqlx::query("UPDATE engine_flow030_runs SET state_json='{}'")
             .execute(&mut db)
             .await
             .unwrap();
@@ -4132,13 +4124,17 @@ mod catalog_backup_tests {
         tests::queue_restore(&data, &archive);
         process_startup(&data, &config).await.unwrap();
         let mut restored = connection(&data.join("macro.db")).await.unwrap();
-        let row: (String, String) = sqlx::query_as("SELECT options_json,evidence_json FROM engine_work_admission030 WHERE system_id='run' AND activation_id='work'")
-            .fetch_one(&mut restored).await.unwrap();
+        let row: (String, String) = sqlx::query_as(
+            "SELECT plan_json,state_json FROM engine_flow030_runs WHERE system_id='run'",
+        )
+        .fetch_one(&mut restored)
+        .await
+        .unwrap();
         assert_eq!(row, (options.to_owned(), evidence.to_owned()));
     }
 
     #[tokio::test]
-    async fn legacy_030_admission_survives_real_archive_restore_and_normalization() {
+    async fn historical_execution_archive_restores_then_retires_legacy_admission() {
         let (temp, target_data, config) = tests::profile().await;
         let old_data = temp.path().join("old-data");
         fs::create_dir_all(&old_data).unwrap();
@@ -4174,15 +4170,7 @@ mod catalog_backup_tests {
         let pool = crate::db::create_pool(&target_data.join("macro.db"))
             .await
             .unwrap();
-        let admission: (String, String) = sqlx::query_as("SELECT options_json,evidence_json FROM engine_work_admission030 WHERE system_id='run' AND activation_id='work'")
-            .fetch_one(&pool).await.unwrap();
-        assert_eq!(
-            admission,
-            (
-                r#"{ "limit":9007199254740993 }"#.into(),
-                r#"{ "proof":true }"#.into()
-            )
-        );
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='engine_work_admission030'").fetch_one(&pool).await.unwrap(), 0);
         let stamps: Vec<(i64, String)> = sqlx::query_as("SELECT version,name FROM schema_migrations WHERE version IN (17,18,27,28) ORDER BY version")
             .fetch_all(&pool).await.unwrap();
         assert_eq!(

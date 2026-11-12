@@ -50,16 +50,11 @@ pub async fn execution_start<R: tauri::Runtime>(
             .await?;
             return Ok(public_start030(&request, &retained));
         }
-        crate::agsdl_host_capture::start(
-            &host,
-            &manager,
-            &pool(&state).await?,
-            &workspace,
-            request,
-            &git,
-        )
-        .await
-        .map(Into::into)
+        Err(repository::failure(
+            "UNSUPPORTED_EDITION",
+            "profile",
+            "Only AgSDL 0.3 execution is supported",
+        ))
     })
     .await
     .map_err(|_| {
@@ -93,7 +88,7 @@ pub(crate) fn public_start030(
 pub async fn execution_stop<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, DbPool>,
-    host: State<'_, crate::agsdl_host::HostState>,
+    _host: State<'_, crate::agsdl_host::HostState>,
     request: EngineStopRequest,
 ) -> repository::Result<PublicStopState> {
     let pool = pool(&state).await?;
@@ -124,68 +119,11 @@ pub async fn execution_stop<R: tauri::Runtime>(
         })
         .await;
     }
-    let gate = host.admission_gate().await;
-    repository::stop(&pool, request.clone()).await?;
-    stop_effects(
-        app,
-        &pool,
-        &request.system_start_id,
-        request.activation_id.as_deref(),
-        gate,
-    )
-    .await
-}
-
-async fn stop_effects<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    pool: &sqlx::SqlitePool,
-    system_start_id: &str,
-    activation_id: Option<&str>,
-    gate: tokio::sync::MutexGuard<'_, ()>,
-) -> repository::Result<PublicStopState> {
-    repository::process_recovery::close_dead_process_effects(pool, system_start_id, activation_id)
-        .await?;
-    repository::confirm_stopped_undispatched_calls(pool, system_start_id, activation_id).await?;
-    let projection = repository::read_projection(&pool, system_start_id).await?;
-    let mut joins = Vec::new();
-    for activation in projection.activations {
-        let work = &activation.delivery.delivery.work;
-        if activation_id.is_some_and(|id| id != &work.activation_id) {
-            continue;
-        }
-        for effect in repository::read_effects(&pool, work).await? {
-            if effect.status == "ended" {
-                continue;
-            }
-            crate::agsdl_host_tools::cancel(&effect.registered);
-            if let EngineEffectIdentity::Provider {
-                provider_attempt_id,
-            } = effect.registered.effect
-            {
-                let app = app.clone();
-                let context = effect.registered.context;
-                // The task survives loss of the UI acknowledgement.
-                joins.push(tokio::spawn(async move {
-                    crate::agsdl_host_provider::finish(&app, context, provider_attempt_id).await
-                }));
-            }
-        }
-    }
-    drop(gate);
-    // Other Agents can reach their own admission while physical joins are pending.
-    for join in joins {
-        join.await.map_err(|_| {
-            repository::failure(
-                "STOP_PENDING",
-                "",
-                "Native termination acknowledgement was lost",
-            )
-        })??;
-    }
-    repository::confirm_stopped_retired_work(pool, system_start_id).await?;
-    repository::read_stop_target(&pool, system_start_id, activation_id)
-        .await
-        .map(Into::into)
+    Err(repository::failure(
+        "NOT_FOUND",
+        "systemStartId",
+        "AgSDL 0.3 run not found",
+    ))
 }
 
 async fn owned_stop(
@@ -235,21 +173,11 @@ pub async fn execution_ensure_stop<R: tauri::Runtime>(
                 .await?;
             return Ok(result);
         }
-        let gate = host.admission_gate().await;
-        repository::ensure_stop(
-            &pool,
-            &request.system_start_id,
-            request.activation_id.as_deref(),
-        )
-        .await?;
-        stop_effects(
-            app.clone(),
-            &pool,
-            &request.system_start_id,
-            request.activation_id.as_deref(),
-            gate,
-        )
-        .await
+        Err(repository::failure(
+            "NOT_FOUND",
+            "systemStartId",
+            "AgSDL 0.3 run not found",
+        ))
     })
     .await
 }
@@ -299,33 +227,11 @@ pub(crate) async fn read_public_snapshot(
             associations: request.associations,
         });
     }
-    repository::read_snapshot(pool, system_start_id)
-        .await
-        .map(Into::into)
-}
-#[tauri::command]
-pub async fn execution_read_projection(
-    state: State<'_, DbPool>,
-    system_start_id: String,
-    page: Option<ProjectionPage>,
-) -> repository::Result<PublicProjection> {
-    repository::public::projection(&pool(&state).await?, &system_start_id, page.as_ref()).await
-}
-#[tauri::command]
-pub async fn execution_read_events(
-    state: State<'_, DbPool>,
-    system_start_id: String,
-    after: Option<String>,
-    limit: u32,
-) -> repository::Result<PublicEventPage> {
-    repository::read_events(
-        &pool(&state).await?,
-        &system_start_id,
-        after.as_deref(),
-        limit,
-    )
-    .await
-    .map(Into::into)
+    Err(repository::failure(
+        "NOT_FOUND",
+        "systemStartId",
+        "AgSDL 0.3 capture not found",
+    ))
 }
 
 #[tauri::command]
@@ -334,14 +240,6 @@ pub async fn execution_model_choices(
     config_manager: State<'_, crate::config::ConfigManager>,
 ) -> repository::Result<crate::agsdl_host_catalogue::NativeModelCatalogue> {
     crate::agsdl_host_catalogue::choices(&config_manager, &pool(&state).await?).await
-}
-
-#[tauri::command]
-pub async fn execution_list_runs(
-    state: State<'_, DbPool>,
-    request: repository::discovery::RunListRequest,
-) -> repository::Result<repository::discovery::RunPage> {
-    repository::discovery::list_runs(&pool(&state).await?, request).await
 }
 
 #[tauri::command]
@@ -369,22 +267,6 @@ pub(crate) async fn list_runs030_scoped(
     .await?;
     repository::discovery030::list_runs030(pool, request).await
 }
-#[tauri::command]
-pub async fn execution_find_start(
-    state: State<'_, DbPool>,
-    owner: EngineSourceOwner,
-    request_id: String,
-) -> repository::Result<Option<PublicStartReceipt>> {
-    repository::discovery::find_start(&pool(&state).await?, &owner, &request_id).await
-}
-
-#[tauri::command]
-pub async fn execution_read_diagnostic(
-    state: State<'_, DbPool>,
-    request: repository::diagnostics::DiagnosticRequest,
-) -> repository::Result<repository::diagnostics::PublicExecutionDiagnostic> {
-    repository::diagnostics::read(&pool(&state).await?, request).await
-}
 
 #[tauri::command]
 pub async fn execution_preflight(
@@ -407,37 +289,6 @@ pub async fn execution_preflight(
     Ok(result)
 }
 
-#[tauri::command]
-pub async fn execution_deliver(
-    app: tauri::AppHandle,
-    request: crate::agsdl_host_capture::ExecutionExternalDelivery,
-) -> repository::Result<EngineAcceptedDelivery> {
-    tokio::spawn(async move {
-        let database = app.state::<DbPool>();
-        let host = app.state::<crate::agsdl_host::HostState>();
-        crate::agsdl_host_capture::deliver(&host, &pool(&database).await?, request).await
-    })
-    .await
-    .map_err(|_| {
-        repository::failure(
-            "RUNTIME_UNAVAILABLE",
-            "",
-            "Delivery acknowledgement was lost",
-        )
-    })?
-}
-
-#[tauri::command]
-pub async fn execution_resolve_card_task(
-    state: State<'_, DbPool>,
-    workspace: State<'_, crate::WorkspaceMetadataRoot>,
-    git: State<'_, crate::git::GitState>,
-    request: crate::agsdl_host_tasks::ResolveCardTask,
-) -> repository::Result<Option<crate::agsdl_host_tasks::ResolvedCardTask>> {
-    let workspace = workspace.0.read().await.clone();
-    crate::agsdl_host_tasks::resolve(&pool(&state).await?, &workspace, &git, request).await
-}
-
 /// Read only the native-attested public view. A page cursor is scoped to the
 /// complete captured source and is invalidated when its requests change.
 #[tauri::command]
@@ -447,21 +298,6 @@ pub async fn execution_read_humans030(
     continuation: Option<repository::public030::HumanContinuation030>,
 ) -> repository::Result<repository::public030::HumanPage030> {
     crate::agsdl_host_human_projection030::read(&pool(&state).await?, scope, continuation).await
-}
-
-#[tauri::command]
-pub async fn execution_pending_approvals(
-    state: State<'_, DbPool>,
-    request: repository::approvals::ApprovalScope,
-) -> repository::Result<repository::approvals::ApprovalPage> {
-    repository::approvals::pending_public(&pool(&state).await?, request).await
-}
-#[tauri::command]
-pub async fn execution_decide_approval(
-    state: State<'_, DbPool>,
-    request: repository::approvals::ApprovalDecision,
-) -> repository::Result<repository::approvals::PublicApproval> {
-    repository::approvals::decide_public(&pool(&state).await?, request).await
 }
 
 fn intent_failure(failure: EngineFailure) -> ExecutionIntentError {
@@ -587,29 +423,18 @@ async fn submit_retained(
                 .await
                 .map(|_| ())
             } else {
-                crate::agsdl_host_capture::start_linked(
-                    &host,
-                    &manager,
-                    &pool,
-                    &workspace,
-                    request.clone(),
-                    &git,
-                    Some(&link),
-                )
-                .await
-                .map(|_| ())
+                Err(repository::failure(
+                    "UNSUPPORTED_EDITION",
+                    "profile",
+                    "Only AgSDL 0.3 execution is supported",
+                ))
             }
         }
-        ExecutionIntentPayload::Deliver { request, .. } => {
-            crate::agsdl_host_capture::deliver_linked(
-                &host,
-                &pool,
-                request.clone(),
-                Some((&link, &workspace)),
-            )
-            .await
-            .map(|_| ())
-        }
+        ExecutionIntentPayload::Deliver { .. } => Err(repository::failure(
+            "UNSUPPORTED_EDITION",
+            "payload",
+            "Use the AgSDL 0.3 delivery command",
+        )),
     };
     let guard = intent_scope(&app, &key.scope).await?;
     match result {

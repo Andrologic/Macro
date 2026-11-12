@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'bun:test';
-import { applyChanges, validateDocument } from './document';
-import { createLegacyEmptySystem as createEmptySystem, designChanges, readDesign } from './design';
+import { describe,expect,it } from 'bun:test';
+import { createLegacyEmptySystem as createEmptySystem,designChanges,readDesign } from './design';
+import { applyChanges,validateDocument } from './document';
 
 describe('system design metadata', () => {
   it('creates a valid declaration draft without inventing a graph or runtime', async () => {
@@ -57,106 +57,40 @@ describe('system design metadata', () => {
   });
 });
 
-import { createEmptySystemDocument, manualMigrationInventory, withDocumentDesign } from './design';
-import { createExample, createExampleDocument, AGSDL_EXAMPLES } from './examples';
+import { createEmptySystemDocument,withDocumentDesign } from './design';
 
-describe('AgSDL 0.2 design envelopes', () => {
+describe('AgSDL 0.3 design envelopes', () => {
   it('keeps Macro metadata outside the closed document and preserves source exactly', async () => {
-    const draft = createEmptySystemDocument('Préparer la release', 'agsdl-0.2.0');
+    const draft = createEmptySystemDocument('Préparer la release', 'agsdl-0.3.0');
     const source = draft.source.replace('"agents": {}', '"agents" : {}');
     const changed = withDocumentDesign(source, { ...readDesign(source, draft.design), purpose: 'Publier après vérification' }, draft);
     expect(changed.source).toBe(source);
     expect(readDesign(changed.source, changed.design).purpose).toBe('Publier après vérification');
-    expect(JSON.parse(changed.source)).toEqual({ contract: 'agsdl-0.2.0', id: JSON.parse(source).id, agents: {}, configurations: {}, bindings: {} });
+    expect(JSON.parse(changed.source)).toEqual({ contract: 'agsdl-0.3.0', id: JSON.parse(source).id, title: 'Préparer la release', agents: {} });
     expect(changed.display?.title).toBe('Préparer la release');
     expect((await validateDocument(source))[0].results.every(result => result.verdict === 'pass')).toBe(true);
     expect(() => designChanges(source, readDesign(source))).toThrow('envelope');
   });
   it('rejects malformed envelope metadata without discarding it', () => {
-    const draft = createEmptySystemDocument('Test', 'agsdl-0.2.0');
+    const draft = createEmptySystemDocument('Test', 'agsdl-0.3.0');
     const malformed = { ...draft.design!, version: 2 };
     expect(() => readDesign(draft.source, malformed as never)).toThrow('preserved');
   });
   it('keeps existing row extensions and supports removal of optional target paths', () => {
-    const draft = createEmptySystemDocument('Test', 'agsdl-0.2.0');
+    const draft = createEmptySystemDocument('Test', 'agsdl-0.3.0');
     const design = { ...draft.design!, requirements: [{ id: 'guide', label: 'Guide', description: '', value: '', targetPath: '/content/guide/value', extension: 'retained' }] };
     const next = { ...design, requirements: [{ id: 'guide', label: 'Instructions', description: '', value: 'Check evidence' }] };
     const updated = withDocumentDesign(draft.source, next, { design });
     expect(updated.design?.requirements[0] as unknown).toEqual({ id: 'guide', label: 'Instructions', description: '', value: 'Check evidence', extension: 'retained' });
   });
-  it('inventories a manual migration while retaining original source bytes', () => {
-    const source = createEmptySystem('Historical');
-    const inventory = manualMigrationInventory(source);
-    expect(inventory.originalSource).toBe(source);
-    expect(inventory.to).toBe('agsdl-0.3.0');
-    expect(inventory.requiresAuthoring).toContain('persistent-agent-lifecycle');
-    expect(JSON.parse(source).contract).toBe('agsdl-0.1.0');
-  });
-  it('ships human labels as presentation metadata without adding source fields', () => {
-    const document = createExampleDocument('release', 'agsdl-0.2.0'), doc = JSON.parse(document.source);
-    expect(document.display?.cards?.['/agents/review'].title).toBe('PR review');
-    expect(document.display?.cards?.['/flow/steps/review'].title).toBe('PR review');
-    expect(doc.agents.review.title).toBeUndefined();
-    expect(doc.bindings.engine.contract.identity).toBe('macro/agent-engine');
-    expect(doc.configurations.project.settings?.providerId).toBeUndefined();
-    expect(doc.configurations.project.settings?.access).toBeUndefined();
-    expect(doc.bindings.engine.claims).toBeUndefined();
-  });
-  it('creates valid 0.2 examples with authored configurations and explicit transfer', async () => {
-    for (const kind of AGSDL_EXAMPLES) {
-      const source = createExample(kind, 'agsdl-0.2.0'), doc = JSON.parse(source);
-      expect(doc.contract).toBe('agsdl-0.2.0');
-      expect(doc.root).toBeUndefined();
-      expect(doc.configurations.project.engine).toBe('engine');
-      expect(doc.bindings.engine.implementation.identity).toBe('macro/desktop');
-      expect(Object.values(doc.flow.steps).some(step => (step as {type: string}).type === 'prepare')).toBe(true);
-      const reports = await validateDocument(source);
-      expect(reports.flatMap(report => report.results).every(result => result.verdict === 'pass')).toBe(true);
-    }
-  });
 });
 
-import { adaptationChanges, defaultDesign, retainDesignOrigin } from './design';
-
-describe('adaptation support assertions', () => {
-  const requirement = { contract: { identity: 'example/support', version: '1' } };
-  const claims = [{ requirement, status: 'supported', evidence: 'a'.repeat(64) }];
-  const source = JSON.stringify({ contract: 'agsdl-0.2.0', id: 'adapted', agents: {},
-    configurations: { changed: { engine: 'changed', settings: { region: 'old', locale: 'old' }, requires: [requirement], claims }, untouched: { engine: 'untouched', claims } },
-    bindings: { changed: { contract: { identity: 'example/engine', version: '1' }, implementation: { identity: 'example/local', version: '1' }, settings: { region: 'old' }, claims }, untouched: { contract: { identity: 'example/tool', version: '1' }, implementation: { identity: 'example/tool-local', version: '1' }, claims } },
-    content: { guidance: { value: 'old' } },
-  });
-  const designFor = (paths: string[]) => ({ ...defaultDesign(), requirements: paths.map((targetPath, index) => ({ id: `field-${index}`, label: 'Field', description: '', value: 'old', targetPath })) });
-  it('invalidates only the adapted configuration and binding, once per declaration', () => {
-    const before = designFor(['/configurations/changed/settings/region', '/configurations/changed/settings/locale', '/bindings/changed/settings/region']);
-    const changes = adaptationChanges(source, before, { ...before, requirements: before.requirements.map(row => ({ ...row, value: 'new' })) });
-    expect(changes.filter(change => change.op === 'remove')).toEqual([
-      { op: 'remove', path: '/configurations/changed/claims' }, { op: 'remove', path: '/bindings/changed/claims' },
-    ]);
-    const updated = JSON.parse(applyChanges(source, changes));
-    expect(updated.configurations.changed.settings).toEqual({ region: 'new', locale: 'new' });
-    expect(updated.bindings.changed.settings.region).toBe('new');
-    expect(updated.configurations.changed.claims).toBeUndefined();
-    expect(updated.bindings.changed.claims).toBeUndefined();
-    expect(updated.configurations.untouched.claims).toEqual(claims);
-    expect(updated.bindings.untouched.claims).toEqual(claims);
-  });
-  it('preserves assertions when content changes or the source value already matches', () => {
-    const content = designFor(['/content/guidance/value']);
-    const updated = JSON.parse(applyChanges(source, adaptationChanges(source, content, { ...content, requirements: [{ ...content.requirements[0], value: 'new' }] })));
-    expect(updated.content.guidance.value).toBe('new');
-    expect(updated.configurations.changed.claims).toEqual(claims);
-    expect(updated.bindings.changed.claims).toEqual(claims);
-    const before = designFor(['/configurations/changed/settings/region']);
-    before.requirements[0].value = '';
-    expect(adaptationChanges(source, before, { ...before, requirements: [{ ...before.requirements[0], value: 'old' }] })).toEqual([]);
-  });
-});
+import { defaultDesign,retainDesignOrigin } from './design';
 
 it('preserves blueprint provenance when ordinary design edits omit origin in both editions', () => {
   const origin = { branchName: 'develop', planId: 'blueprint', name: 'Blueprint', revision: 2 };
   const next = { ...defaultDesign(), context: 'Edited context' };
-  const modern = createEmptySystemDocument('Copy', 'agsdl-0.2.0');
+  const modern = createEmptySystemDocument('Copy', 'agsdl-0.3.0');
   modern.design!.origin = origin;
   expect(withDocumentDesign(modern.source, next, modern).design?.origin).toEqual(origin);
   expect(withDocumentDesign(modern.source, { ...next, origin: { planId: 'blueprint', name: 'Blueprint', revision: 2 } }, modern).design?.origin).toEqual(origin);

@@ -341,14 +341,6 @@
       "families": [
         "execution"
       ],
-      "name": "Closure",
-      "origin": "macro_lib::db::agsdl_execution::responses::Closure",
-      "path": "Closure.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
       "name": "CodexStatus",
       "origin": "macro_lib::agsdl_host_codex::profile::CodexStatus",
       "path": "CodexStatus.ts"
@@ -862,14 +854,6 @@
       "families": [
         "execution"
       ],
-      "name": "Emission",
-      "origin": "macro_lib::db::agsdl_execution::responses::Emission",
-      "path": "Emission.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
       "name": "EngineAcceptedDelivery",
       "origin": "macro_lib::db::agsdl_execution::dto::EngineAcceptedDelivery",
       "path": "EngineAcceptedDelivery.ts"
@@ -913,22 +897,6 @@
       "name": "EngineDelivery",
       "origin": "macro_lib::db::agsdl_execution::dto::EngineDelivery",
       "path": "EngineDelivery.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "EngineEffect",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineEffect",
-      "path": "EngineEffect.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "EngineEffectIdentity",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineEffectIdentity",
-      "path": "EngineEffectIdentity.ts"
     },
     {
       "families": [
@@ -993,14 +961,6 @@
       "name": "EngineProjection",
       "origin": "macro_lib::db::agsdl_execution::dto::EngineProjection",
       "path": "EngineProjection.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "EngineSettlement",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineSettlement",
-      "path": "EngineSettlement.ts"
     },
     {
       "families": [
@@ -1111,7 +1071,7 @@
         "execution"
       ],
       "name": "ExecutionExternalDelivery",
-      "origin": "macro_lib::agsdl_host_capture::ExecutionExternalDelivery",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionExternalDelivery",
       "path": "ExecutionExternalDelivery.ts"
     },
     {
@@ -1664,65 +1624,9 @@
       "families": [
         "execution"
       ],
-      "name": "HostAdmission",
-      "origin": "macro_lib::db::agsdl_execution::inspection::HostAdmission",
-      "path": "HostAdmission.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "HostAgentState",
-      "origin": "macro_lib::db::agsdl_execution::inspection::HostAgentState",
-      "path": "HostAgentState.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "HostClaudeReceipt",
-      "origin": "macro_lib::agsdl_host_claude::HostClaudeReceipt",
-      "path": "HostClaudeReceipt.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "HostClaudeRequest",
-      "origin": "macro_lib::agsdl_host_claude::HostClaudeRequest",
-      "path": "HostClaudeRequest.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "HostCodexReceipt",
-      "origin": "macro_lib::agsdl_host_codex::HostCodexReceipt",
-      "path": "HostCodexReceipt.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "HostCodexRequest",
-      "origin": "macro_lib::agsdl_host_codex::HostCodexRequest",
-      "path": "HostCodexRequest.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
       "name": "HostCompileJob",
       "origin": "macro_lib::agsdl_host_compiler::HostCompileJob",
       "path": "HostCompileJob.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "HostInspection",
-      "origin": "macro_lib::db::agsdl_execution::inspection::HostInspection",
-      "path": "HostInspection.ts"
     },
     {
       "families": [
@@ -1771,22 +1675,6 @@
       "name": "HostTelemetryReason",
       "origin": "macro_lib::host_telemetry::HostTelemetryReason",
       "path": "HostTelemetryReason.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "HostToolInvocation",
-      "origin": "macro_lib::agsdl_host_tools::HostToolInvocation",
-      "path": "HostToolInvocation.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "HostToolReceipt",
-      "origin": "macro_lib::agsdl_host_tools::HostToolReceipt",
-      "path": "HostToolReceipt.ts"
     },
     {
       "families": [
@@ -2176,14 +2064,6 @@
       "families": [
         "execution"
       ],
-      "name": "PersistedEffect",
-      "origin": "macro_lib::db::agsdl_execution::PersistedEffect",
-      "path": "PersistedEffect.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
       "name": "PhaseCount030",
       "origin": "macro_lib::db::agsdl_execution::discovery030::PhaseCount030",
       "path": "PhaseCount030.ts"
@@ -2475,14 +2355,6 @@
       "name": "PreflightDiagnostic",
       "origin": "macro_lib::agsdl_host_capture::PreflightDiagnostic",
       "path": "PreflightDiagnostic.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "Prepare",
-      "origin": "macro_lib::db::agsdl_execution::prepared::Prepare",
-      "path": "Prepare.ts"
     },
     {
       "families": [
@@ -3355,14 +3227,6 @@
       "name": "UpsertSessionContextStateInput",
       "origin": "macro_lib::db::models::UpsertSessionContextStateInput",
       "path": "UpsertSessionContextStateInput.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "Validation",
-      "origin": "macro_lib::db::agsdl_execution::prepared::Validation",
-      "path": "Validation.ts"
     },
     {
       "families": [

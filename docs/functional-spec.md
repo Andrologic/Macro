@@ -280,11 +280,9 @@ s’ouvrent dans cette fiche. La bibliothèque permet de prévisualiser le point
 départ et conserve les sources lisibles si une autre source échoue au chargement.
 
 Les contrôles de document et les champs à compléter accompagnent la conception
-progressive. Ils ne certifient pas l’exécution. Les agents peuvent conserver le
-moteur Macro ou choisir explicitement Codex ou Claude lorsque leur profil
-est disponible. Codex conserve ses outils natifs isolés ; Claude utilise les outils
-Macro contrôlés. Voir les profils [Codex](agsdl-codex-native.md) et
-[Claude](agsdl-claude-controlled.md).
+progressive. Ils ne certifient pas l’exécution. Le profil 0.3 qualifié et ses refus sont décrits dans
+[AgSDL 0.3](agsdl-030.md) et [Codex natif](agsdl-codex-native.md).
+
 
 Trois capacités restent distinctes :
 - la conception du document, décrite ci-dessous, disponible ;
@@ -310,8 +308,10 @@ des anciennes tâches.
 #### Visualisation AgSDL
 
 Les nouvelles créations et les blueprints inclus utilisent [AgSDL 0.3](agsdl-030.md).
-Une copie conserve l’édition de son modèle. Les documents 0.1/0.2 gardent leur
-source, leurs annexes et leurs guides sans conversion implicite. Les outils
+Une copie conserve l’édition prise en charge de son modèle. Les documents 0.1
+gardent leur source, leurs annexes et leur guide. Ouvrir un document 0.2 affiche
+clairement une édition non supportée ; aucune conversion ni exécution de repli
+n’est effectuée. Les outils
 chargent le guide de la source à la demande, avec le guide 0.3 pour une source
 vide. Un catalogue de modèles Chat ne prouve pas la disponibilité d’un harness
 natif ; sans raccord qualifié, le catalogue 0.3 reste explicitement non évalué.

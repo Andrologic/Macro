@@ -1,10 +1,10 @@
-import { describe, expect, it } from 'bun:test';
-import { compilePlan, compileVersionedPlan } from './compiler';
-import { sourceDigest } from './sourceDigest';
+import { describe,expect,it } from 'bun:test';
+import { compileVersionedPlan } from './compiler';
 import { compilePlan030 } from './compiler030';
-import type { CapturedRegistry030 } from './contracts030';
-import { clone, decode, encode, record, type ExactObject } from './exact';
 import type { SourceRevision } from './contracts';
+import type { CapturedRegistry030 } from './contracts030';
+import { clone,decode,encode,record,type ExactObject } from './exact';
+import { sourceDigest } from './sourceDigest';
 
 const evidence = encode({ receipt: 'synthetic-native-qualification' });
 function document030(): ExactObject {
@@ -163,11 +163,8 @@ describe('0.3 compiler wire plan', () => {
     } } };
     expect((await compile(valid)).static.valid).toBe(false);
   });
-  it('keeps 0.2 strict and dispatches an explicit 0.3 document without migration', async () => {
+  it('compiles an explicit 0.3 document without migration', async () => {
     const doc = document030(), authored = encode(doc), source = await sourceFor(authored), registry = registry030(doc);
-    const historical = await compilePlan(authored, source, registry as never);
-    expect(historical.static.valid).toBe(false);
-    expect(historical.plan).toBeNull();
     const versioned = await compileVersionedPlan(authored, source, registry);
     expect(versioned.plan?.format).toBe('macro-agsdl-compiled-plan/2');
   });

@@ -1,701 +1,162 @@
 {
-  "contract": "agsdl-0.2.0",
+  "contract": "agsdl-0.3.0",
   "id": "demo-crisis",
-  "content": {
-    "incident": {
-      "value": {
-        "service": "catalog",
-        "latencyP95": 840,
-        "failedOrders": 17,
-        "targetP95": 250
-      },
-      "mediaType": "application/json"
-    },
-    "mode": {
-      "value": "thorough",
-      "mediaType": "text/plain"
-    }
-  },
-  "bindings": {
-    "engine": {
-      "contract": {
-        "identity": "macro/agent-engine",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      }
-    },
-    "decision": {
-      "contract": {
-        "identity": "macro/structured-choice",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      },
-      "effects": "none"
-    },
-    "operationsApproval": {
-      "contract": {
-        "identity": "macro/human-approval",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      },
-      "effects": "none"
-    },
-    "securityApproval": {
-      "contract": {
-        "identity": "macro/human-approval",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      },
-      "effects": "none"
-    },
-    "deployment": {
-      "contract": {
-        "identity": "macro/service-deployment",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "argo/http",
-        "version": "1"
-      },
-      "effects": "external"
-    },
-    "analytics": {
-      "contract": {
-        "identity": "macro/product-analytics",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "posthog/http",
-        "version": "1"
-      },
-      "effects": "none"
-    },
-    "observability": {
-      "contract": {
-        "identity": "macro/observability",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "grafana/http",
-        "version": "1"
-      },
-      "effects": "none"
-    }
-  },
-  "configurations": {
-    "analyseApprofondie": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-opus-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "telemetry": "observability"
-      }
-    },
-    "analyse": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "telemetry": "observability",
-        "journeys": "analytics"
-      }
-    },
-    "approfondi": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-opus-5-5",
-        "version": "1"
-      }
-    },
-    "redaction": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      }
-    }
-  },
+  "title": "Cellule de crise",
   "agents": {
     "metrics": {
-      "configuration": "analyseApprofondie",
-      "prompt": [
-        {
-          "value": "Chercher une cause dans les métriques. Produire report JSON avec approved, hypothesis et evidence. approved doit être étayé par des preuves."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "application/json"
-            ],
-            "required": true,
-            "valueSchema": {
-              "type": "object",
-              "properties": {
-                "approved": {
-                  "type": "boolean"
-                },
-                "hypothesis": {
-                  "type": "string"
-                },
-                "evidence": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": [
-                "approved",
-                "hypothesis",
-                "evidence"
-              ],
-              "additionalProperties": false
-            }
-          }
-        }
-      },
-      "skills": [
-        "diagnosis"
-      ]
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Chercher une cause dans les métriques. Produire report JSON avec approved, hypothesis et evidence. approved doit être étayé par des preuves."
     },
     "traces": {
-      "configuration": "analyseApprofondie",
-      "prompt": [
-        {
-          "value": "Chercher une cause dans les traces. Produire report JSON avec approved, hypothesis et evidence."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "application/json"
-            ],
-            "required": true,
-            "valueSchema": {
-              "type": "object",
-              "properties": {
-                "approved": {
-                  "type": "boolean"
-                },
-                "hypothesis": {
-                  "type": "string"
-                },
-                "evidence": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": [
-                "approved",
-                "hypothesis",
-                "evidence"
-              ],
-              "additionalProperties": false
-            }
-          }
-        }
-      },
-      "skills": [
-        "diagnosis"
-      ]
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Chercher une cause dans les traces. Produire report JSON avec approved, hypothesis et evidence."
     },
     "customer": {
-      "configuration": "analyse",
-      "prompt": [
-        {
-          "value": "Examiner les parcours affectés. Produire report JSON avec approved, hypothesis et evidence."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "application/json"
-            ],
-            "required": true,
-            "valueSchema": {
-              "type": "object",
-              "properties": {
-                "approved": {
-                  "type": "boolean"
-                },
-                "hypothesis": {
-                  "type": "string"
-                },
-                "evidence": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": [
-                "approved",
-                "hypothesis",
-                "evidence"
-              ],
-              "additionalProperties": false
-            }
-          }
-        }
-      },
-      "skills": [
-        "diagnosis"
-      ]
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Examiner les parcours affectés. Produire report JSON avec approved, hypothesis et evidence."
     },
     "lead": {
-      "configuration": "approfondi",
-      "prompt": [
-        {
-          "value": "Examiner la piste sous members et choisir intervenir, observer ou escalader selon le risque et les preuves."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Examiner la piste sous members et choisir intervenir, observer ou escalader selon le risque et les preuves."
     },
     "planner": {
-      "configuration": "approfondi",
-      "prompt": [
-        {
-          "value": "Préparer une intervention réversible. Produire report JSON avec approved, hypothesis et evidence."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "application/json"
-            ],
-            "required": true,
-            "valueSchema": {
-              "type": "object",
-              "properties": {
-                "approved": {
-                  "type": "boolean"
-                },
-                "hypothesis": {
-                  "type": "string"
-                },
-                "evidence": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": [
-                "approved",
-                "hypothesis",
-                "evidence"
-              ],
-              "additionalProperties": false
-            }
-          }
-        }
-      },
-      "skills": [
-        "risk"
-      ]
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Préparer une intervention réversible. Produire report JSON avec approved, hypothesis et evidence."
     },
     "observer": {
-      "configuration": "analyse",
-      "prompt": [
-        {
-          "value": "Évaluer la surveillance nécessaire. Produire report JSON avec approved, hypothesis et evidence."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "application/json"
-            ],
-            "required": true,
-            "valueSchema": {
-              "type": "object",
-              "properties": {
-                "approved": {
-                  "type": "boolean"
-                },
-                "hypothesis": {
-                  "type": "string"
-                },
-                "evidence": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": [
-                "approved",
-                "hypothesis",
-                "evidence"
-              ],
-              "additionalProperties": false
-            }
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Évaluer la surveillance nécessaire. Produire report JSON avec approved, hypothesis et evidence."
     },
     "technical": {
-      "configuration": "analyse",
-      "prompt": [
-        {
-          "value": "Vérifier la latence et les erreurs après la décision. Produire report JSON avec approved, hypothesis et evidence."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "application/json"
-            ],
-            "required": true,
-            "valueSchema": {
-              "type": "object",
-              "properties": {
-                "approved": {
-                  "type": "boolean"
-                },
-                "hypothesis": {
-                  "type": "string"
-                },
-                "evidence": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": [
-                "approved",
-                "hypothesis",
-                "evidence"
-              ],
-              "additionalProperties": false
-            }
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier la latence et les erreurs après la décision. Produire report JSON avec approved, hypothesis et evidence."
     },
     "business": {
-      "configuration": "analyse",
-      "prompt": [
-        {
-          "value": "Vérifier les commandes et les parcours clients. Produire report JSON avec approved, hypothesis et evidence."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "application/json"
-            ],
-            "required": true,
-            "valueSchema": {
-              "type": "object",
-              "properties": {
-                "approved": {
-                  "type": "boolean"
-                },
-                "hypothesis": {
-                  "type": "string"
-                },
-                "evidence": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": [
-                "approved",
-                "hypothesis",
-                "evidence"
-              ],
-              "additionalProperties": false
-            }
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier les commandes et les parcours clients. Produire report JSON avec approved, hypothesis et evidence."
     },
     "reviewer": {
-      "configuration": "approfondi",
-      "prompt": [
-        {
-          "value": "Comparer toutes les preuves transmises. Produire report JSON avec approved, hypothesis et evidence."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "application/json"
-            ],
-            "required": true,
-            "valueSchema": {
-              "type": "object",
-              "properties": {
-                "approved": {
-                  "type": "boolean"
-                },
-                "hypothesis": {
-                  "type": "string"
-                },
-                "evidence": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": [
-                "approved",
-                "hypothesis",
-                "evidence"
-              ],
-              "additionalProperties": false
-            }
-          }
-        }
-      },
-      "skills": [
-        "risk"
-      ]
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Comparer toutes les preuves transmises. Produire report JSON avec approved, hypothesis et evidence."
     },
     "verifier": {
-      "configuration": "approfondi",
-      "prompt": [
-        {
-          "value": "Contre-expertiser le rapport transmis sans l’avoir rédigé. Vérifier que chaque preuve soutient l’hypothèse. Produire report JSON : approved vaut true seulement si les preuves suffisent ; reprendre l’hypothèse retenue et les preuves vérifiées."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "application/json"
-            ],
-            "required": true,
-            "valueSchema": {
-              "type": "object",
-              "properties": {
-                "approved": {
-                  "type": "boolean"
-                },
-                "hypothesis": {
-                  "type": "string"
-                },
-                "evidence": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": [
-                "approved",
-                "hypothesis",
-                "evidence"
-              ],
-              "additionalProperties": false
-            }
-          }
-        }
-      },
-      "skills": [
-        "risk"
-      ]
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Contre-expertiser le rapport transmis sans l’avoir rédigé. Vérifier que chaque preuve soutient l’hypothèse. Produire report JSON : approved vaut true seulement si les preuves suffisent ; reprendre l’hypothèse retenue et les preuves vérifiées."
     },
     "report": {
-      "configuration": "redaction",
-      "prompt": [
-        {
-          "value": "Présenter les faits, les décisions, les effets observés et les points à suivre."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      },
-      "skills": [
-        "reporting"
-      ]
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Présenter les faits, les décisions, les effets observés et les points à suivre."
     },
     "escalation": {
-      "configuration": "redaction",
-      "prompt": [
-        {
-          "value": "Expliquer le refus ou les preuves manquantes. Préparer les questions à trancher sans lancer d’intervention."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Expliquer le refus ou les preuves manquantes. Préparer les questions à trancher sans lancer d’intervention."
     },
     "recovery": {
-      "configuration": "analyseApprofondie",
-      "prompt": [
-        {
-          "value": "Identifier la frontière qui a échoué. Vérifier les effets réels avant toute nouvelle tentative."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Identifier la frontière qui a échoué. Vérifier les effets réels avant toute nouvelle tentative."
+    },
+    "scene-assessment-handoff": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre le rapport"
+    },
+    "scene-assessment-check": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Preuves suffisantes ?"
+    },
+    "scene-main-launch": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Ouvrir les trois investigations"
+    },
+    "scene-main-first": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Première piste étayée"
+    },
+    "scene-main-operationsApproval": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Accord opérations"
+    },
+    "scene-main-securityApproval": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Accord sécurité"
+    },
+    "scene-main-deploy": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Intervenir sur le service"
+    },
+    "scene-main-watch": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Déclencher les contrôles"
+    },
+    "scene-main-all": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Attendre les deux contrôles"
+    },
+    "scene-main-evidence": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Rassembler les preuves"
     }
   },
   "flow": {
     "entry": "launch",
     "steps": {
       "launch": {
-        "type": "prepare",
-        "message": {
-          "prompt": [
-            {
-              "value": "Incident catalogue : identifier une piste étayée et préserver les commandes."
-            }
-          ],
-          "resources": {
-            "mode": {
-              "ref": "mode"
-            },
-            "incident": {
-              "ref": "incident"
-            }
-          }
-        },
-        "next": [
-          "metrics",
-          "traces",
-          "customer"
-        ]
+        "type": "agent",
+        "agent": "scene-main-launch",
+        "title": "Ouvrir les trois investigations",
+        "next": "metrics"
       },
       "metrics": {
         "type": "agent",
         "agent": "metrics",
-        "next": [
-          "first"
-        ]
+        "title": "Analyser les métriques",
+        "next": "traces"
       },
       "traces": {
         "type": "agent",
         "agent": "traces",
-        "next": [
-          "first"
-        ]
+        "title": "Analyser les traces",
+        "next": "customer"
       },
       "customer": {
         "type": "agent",
         "agent": "customer",
-        "next": [
-          "first"
-        ]
+        "title": "Analyser les parcours",
+        "next": "first"
       },
       "first": {
-        "type": "join",
-        "after": "launch",
-        "members": [
-          "metrics",
-          "traces",
-          "customer"
-        ],
-        "mode": "first",
-        "accept": {
-          "equals": [
-            {
-              "path": [
-                "results",
-                "report",
-                "value",
-                "approved"
-              ]
-            },
-            {
-              "value": true
-            }
-          ]
-        },
-        "remaining": "finish",
-        "next": [
-          "decide"
-        ],
-        "onError": [
-          "recovery"
-        ]
+        "type": "agent",
+        "agent": "scene-main-first",
+        "title": "Première piste étayée",
+        "next": "decide"
       },
       "decide": {
         "type": "agent",
         "agent": "lead",
-        "decision": {
-          "binding": "decision",
-          "choices": [
-            "intervenir",
-            "observer",
-            "escalader"
-          ]
-        },
-        "next": {
-          "intervenir": [
-            "intervention"
-          ],
-          "observer": [
-            "observation"
-          ],
-          "escalader": [
-            "escalation"
-          ]
-        }
+        "title": "Choisir la réponse",
+        "next": "intervention"
       },
       "intervention": {
         "type": "compose",
@@ -703,17 +164,15 @@
         "agents": {
           "specialist": "planner"
         },
+        "title": "Préparer une intervention",
         "next": {
           "ready": [
-            "operationsApproval"
+            "observation"
           ],
           "revise": [
-            "escalation"
+            "observation"
           ]
-        },
-        "onError": [
-          "recovery"
-        ]
+        }
       },
       "observation": {
         "type": "compose",
@@ -721,167 +180,63 @@
         "agents": {
           "specialist": "observer"
         },
+        "title": "Évaluer la surveillance",
         "next": {
           "ready": [
-            "watch"
+            "operationsApproval"
           ],
           "revise": [
-            "escalation"
+            "operationsApproval"
           ]
-        },
-        "onError": [
-          "recovery"
-        ]
+        }
       },
       "operationsApproval": {
-        "type": "approval",
-        "call": "deploy",
-        "binding": "operationsApproval",
-        "timeoutMs": 600000,
-        "validForMs": 900000,
-        "next": {
-          "approved": [
-            "securityApproval"
-          ],
-          "denied": [
-            "escalation"
-          ]
-        },
-        "onError": [
-          "recovery"
-        ]
+        "type": "agent",
+        "agent": "scene-main-operationsApproval",
+        "title": "Accord opérations",
+        "next": "securityApproval"
       },
       "securityApproval": {
-        "type": "approval",
-        "call": "deploy",
-        "binding": "securityApproval",
-        "timeoutMs": 300000,
-        "validForMs": 300000,
-        "next": {
-          "approved": [
-            "deploy"
-          ],
-          "denied": [
-            "escalation"
-          ]
-        },
-        "onError": [
-          "recovery"
-        ]
+        "type": "agent",
+        "agent": "scene-main-securityApproval",
+        "title": "Accord sécurité",
+        "next": "deploy"
       },
       "deploy": {
-        "type": "call",
-        "binding": "deployment",
-        "arguments": {
-          "assessment": {
-            "path": [
-              "results",
-              "report",
-              "value"
-            ]
-          }
-        },
-        "scope": {
-          "action": "deploy",
-          "resources": [
-            "service:helio/catalog-api"
-          ],
-          "context": {
-            "path": []
-          }
-        },
-        "next": [
-          "watch"
-        ],
-        "onError": [
-          "recovery"
-        ]
+        "type": "agent",
+        "agent": "scene-main-deploy",
+        "title": "Intervenir sur le service",
+        "next": "watch"
       },
       "watch": {
-        "type": "prepare",
-        "message": {
-          "prompt": [
-            {
-              "value": "Contrôler les indicateurs techniques et les parcours métier."
-            }
-          ],
-          "resources": {
-            "observation": {
-              "select": {
-                "path": []
-              },
-              "mediaType": "application/json"
-            }
-          }
-        },
-        "next": [
-          "technical",
-          "business"
-        ]
+        "type": "agent",
+        "agent": "scene-main-watch",
+        "title": "Déclencher les contrôles",
+        "next": "technical"
       },
       "technical": {
         "type": "agent",
         "agent": "technical",
-        "next": [
-          "all"
-        ]
+        "title": "Vérifier les indicateurs",
+        "next": "business"
       },
       "business": {
         "type": "agent",
         "agent": "business",
-        "next": [
-          "all"
-        ]
+        "title": "Vérifier les commandes",
+        "next": "all"
       },
       "all": {
-        "type": "join",
-        "after": "watch",
-        "members": [
-          "technical",
-          "business"
-        ],
-        "mode": "all",
-        "next": [
-          "evidence"
-        ],
-        "onError": [
-          "recovery"
-        ]
+        "type": "agent",
+        "agent": "scene-main-all",
+        "title": "Attendre les deux contrôles",
+        "next": "evidence"
       },
       "evidence": {
-        "type": "prepare",
-        "message": {
-          "resources": {
-            "technical": {
-              "source": {
-                "path": [
-                  "members",
-                  "technical",
-                  "results",
-                  "report"
-                ]
-              }
-            },
-            "business": {
-              "source": {
-                "path": [
-                  "members",
-                  "business",
-                  "results",
-                  "report"
-                ]
-              }
-            }
-          },
-          "prompt": [
-            {
-              "value": "Auditer les deux contrôles joints et statuer sur la clôture."
-            }
-          ]
-        },
-        "next": [
-          "closure"
-        ]
+        "type": "agent",
+        "agent": "scene-main-evidence",
+        "title": "Rassembler les preuves",
+        "next": "closure"
       },
       "closure": {
         "type": "compose",
@@ -889,175 +244,79 @@
         "agents": {
           "specialist": "reviewer"
         },
+        "title": "Auditer la clôture",
         "next": {
           "ready": [
             "report"
           ],
           "revise": [
-            "escalation"
+            "report"
           ]
-        },
-        "onError": [
-          "recovery"
-        ]
+        }
       },
       "report": {
         "type": "agent",
         "agent": "report",
-        "next": []
+        "title": "Rapport de clôture",
+        "next": "escalation"
       },
       "escalation": {
         "type": "agent",
         "agent": "escalation",
-        "next": []
+        "title": "Coordination humaine",
+        "next": "recovery"
       },
       "recovery": {
         "type": "agent",
         "agent": "recovery",
-        "next": []
+        "title": "Examiner l’échec technique"
       }
     }
   },
   "compositions": {
     "assessment": {
-      "agentParameters": [
-        "specialist"
-      ],
       "entry": "review",
-      "outputs": [
-        "ready",
-        "revise"
-      ],
       "steps": {
         "review": {
           "type": "agent",
           "agent": {
             "parameter": "specialist"
           },
-          "next": [
-            "handoff"
-          ],
-          "onError": [
-            {
-              "error": true
-            }
-          ],
-          "maxVisits": 2
+          "title": "Mobiliser le spécialiste",
+          "next": "handoff"
         },
         "handoff": {
-          "type": "prepare",
-          "message": {
-            "prompt": [
-              {
-                "value": "Contre-expertiser ce rapport avant toute suite."
-              }
-            ],
-            "resources": {
-              "report": {
-                "source": {
-                  "path": [
-                    "results",
-                    "report"
-                  ]
-                }
-              }
-            }
-          },
-          "next": [
-            "counterCheck"
-          ]
+          "type": "agent",
+          "agent": "scene-assessment-handoff",
+          "title": "Transmettre le rapport",
+          "next": "counterCheck"
         },
         "counterCheck": {
           "type": "agent",
           "agent": "verifier",
-          "next": [
-            "check"
-          ],
-          "onError": [
-            {
-              "error": true
-            }
-          ]
+          "title": "Contre-expertiser",
+          "next": "check"
         },
         "check": {
-          "type": "condition",
-          "test": {
-            "all": [
-              {
-                "equals": [
-                  {
-                    "path": [
-                      "results",
-                      "report",
-                      "value",
-                      "approved"
-                    ]
-                  },
-                  {
-                    "value": true
-                  }
-                ]
-              },
-              {
-                "not": {
-                  "equals": [
-                    {
-                      "path": [
-                        "results",
-                        "report",
-                        "value",
-                        "hypothesis"
-                      ]
-                    },
-                    {
-                      "value": ""
-                    }
-                  ]
-                }
-              }
-            ]
-          },
+          "type": "agent",
+          "agent": "scene-assessment-check",
+          "title": "Preuves suffisantes ?",
           "next": {
-            "true": [
-              {
-                "output": "ready"
-              }
-            ],
-            "false": [
-              {
-                "output": "revise"
-              }
-            ]
-          },
-          "onError": [
-            {
-              "error": true
+            "ready": {
+              "output": "ready"
+            },
+            "revise": {
+              "output": "revise"
             }
-          ]
+          }
         }
-      }
-    }
-  },
-  "skills": {
-    "diagnosis": {
-      "prompt": [
-        {
-          "value": "Séparer les observations des hypothèses et joindre les mesures qui les étayent."
-        }
-      ]
-    },
-    "risk": {
-      "prompt": [
-        {
-          "value": "Examiner la réversibilité et l’impact sur les commandes avant toute intervention."
-        }
-      ]
-    },
-    "reporting": {
-      "prompt": [
-        {
-          "value": "Présenter les décisions et les preuves dans un compte rendu concis."
-        }
+      },
+      "parameters": [
+        "specialist"
+      ],
+      "outputs": [
+        "ready",
+        "revise"
       ]
     }
   }

@@ -1,75 +1,75 @@
-import { normalizePlanIcon } from './planIcon';
-import type { ArchitectPlanServiceDependencies } from './architectPlanReadContext';
-import type { PlanNode, PredictedBranch } from '../types';
-import { retainDesignOrigin, updateDesignMetadata, validDisplayMetadata } from './agsdl/design';
+import type { PlanNode,PredictedBranch } from '../types';
 import { devLogger } from '../utils/devLogger';
-import { isCanonicalArchitectPlan } from './architectPlanPresentation';
-import { type ValidProjectRegistrySnapshot } from './validProjectRegistry';
-import { normalizeArchitectPlanIdList } from './architectPlanScope';
+import { retainDesignOrigin,updateDesignMetadata,validDisplayMetadata } from './agsdl/design';
 import {
-  normalizeArchitectPlanGitFlowMetadata,
-  normalizeArchitectPlanKind,
-  type ArchitectPlanGitFlowMetadata,
-  type ArchitectPlanKind,
+normalizeArchitectPlanGitFlowMetadata,
+normalizeArchitectPlanKind,
+type ArchitectPlanGitFlowMetadata,
+type ArchitectPlanKind,
 } from './architectPlanKinds';
 import {
-  assertPlanReplicaSetWritable,
-  getArchitectPlan,
-  readArchitectPlanSnapshot,
-  loadPlanReplicaSet,
-  readAggregatedIndex,
-  type CreateArchitectPlanInput,
-} from './architectPlanReadService';
+buildRemoveReplicaMutationTarget,
+buildUpsertReplicaMutationTarget,
+enqueueArchitectPlanCreation,
+enqueueArchitectPlanMutation,
+getPlanExecutionModes,
+runArchitectPlanReplicaMutation,
+type ArchitectPlanReplicaMutationTarget,
+} from './architectPlanMutationPersistence';
+import { isCanonicalArchitectPlan } from './architectPlanPresentation';
+import type { ArchitectPlanServiceDependencies } from './architectPlanReadContext';
 import {
-  createGitFlowMetadataNormalizationContext,
-  dedupeScopes,
-  ensurePlanScopes,
-  existingMetadataScope,
-  invalidateArchitectPlanRuntimeCaches,
-  loadArchitectPlanRegistrySnapshot,
-  resolveArchitectPlanServiceDependencies,
-  type ResolvedArchitectPlanServiceDependencies,
+createGitFlowMetadataNormalizationContext,
+dedupeScopes,
+ensurePlanScopes,
+existingMetadataScope,
+invalidateArchitectPlanRuntimeCaches,
+loadArchitectPlanRegistrySnapshot,
+resolveArchitectPlanServiceDependencies,
+type ResolvedArchitectPlanServiceDependencies,
 } from './architectPlanReadContext';
 import {
-  applyArchitectPlanLifecycleForStatus,
-  areArchitectPlansSemanticallyEqual,
-  assertGitFlowTargetBranch,
-  createAvailablePlanSlug,
-  getArchitectPlanCrudCapabilities,
-  getArchitectPlanEffectiveTargetBranchesByProjectId,
-  isArchitectPlanReplicaDivergenceError,
-  isArchitectPlanRestorableStatus,
-  isArchitectPlanSlugMutable,
-  mergeGitFlowTargetBranchesByProjectId,
-  normalizeBranchName,
-  normalizeContextProjectIds,
-  normalizePersistedExecutionModes,
-  normalizePlanLabel,
-  normalizePlanNodes,
-  normalizePlanPredictedBranches,
-  normalizeProjectIds,
-  normalizeTargetBranchesByProjectId,
-  resolveArchivedArchitectPlanRestoreStatus,
-  resolvePlanProjectIds,
-  sanitizeArchitectPlanRecord,
-  sanitizeId,
-  slugifyPlanTitle,
-  stableSerialize,
-  throwPlanMetadataMissing,
-  type ArchitectPlanRecord,
-  type ArchitectPlanReplicaSet,
-  type ArchitectPlanStatus,
+applyArchitectPlanLifecycleForStatus,
+areArchitectPlansSemanticallyEqual,
+assertGitFlowTargetBranch,
+createAvailablePlanSlug,
+getArchitectPlanCrudCapabilities,
+getArchitectPlanEffectiveTargetBranchesByProjectId,
+isArchitectPlanReplicaDivergenceError,
+isArchitectPlanRestorableStatus,
+isArchitectPlanSlugMutable,
+mergeGitFlowTargetBranchesByProjectId,
+normalizeBranchName,
+normalizeContextProjectIds,
+normalizePersistedExecutionModes,
+normalizePlanLabel,
+normalizePlanNodes,
+normalizePlanPredictedBranches,
+normalizeProjectIds,
+normalizeTargetBranchesByProjectId,
+resolveArchivedArchitectPlanRestoreStatus,
+resolvePlanProjectIds,
+sanitizeArchitectPlanRecord,
+sanitizeId,
+slugifyPlanTitle,
+stableSerialize,
+throwPlanMetadataMissing,
+type ArchitectPlanRecord,
+type ArchitectPlanReplicaSet,
+type ArchitectPlanStatus,
 } from './architectPlanReadModel';
 import {
-  buildRemoveReplicaMutationTarget,
-  buildUpsertReplicaMutationTarget,
-  enqueueArchitectPlanCreation,
-  enqueueArchitectPlanMutation,
-  getPlanExecutionModes,
-  runArchitectPlanReplicaMutation,
-  type ArchitectPlanReplicaMutationTarget,
-} from './architectPlanMutationPersistence';
-import { readIndexAtScope, readPlanChatAtScope } from './architectPlanReplicaStorage';
+assertPlanReplicaSetWritable,
+getArchitectPlan,
+loadPlanReplicaSet,
+readAggregatedIndex,
+readArchitectPlanSnapshot,
+type CreateArchitectPlanInput,
+} from './architectPlanReadService';
+import { readIndexAtScope,readPlanChatAtScope } from './architectPlanReplicaStorage';
+import { normalizeArchitectPlanIdList } from './architectPlanScope';
+import { normalizePlanIcon } from './planIcon';
+import { type ValidProjectRegistrySnapshot } from './validProjectRegistry';
 
 export const createArchitectPlanId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -254,54 +254,6 @@ export const createArchitectPlan = async (
   deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
 ): Promise<ArchitectPlanRecord> =>
   enqueueArchitectPlanCreation(input.branchName, () => createArchitectPlanUnlocked(input, deps));
-
-/** Convert the plan document without changing its lifecycle or execution records. */
-export const migrateArchitectPlanToAgsdl = async (
-  branchName: string,
-  planId: string,
-  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies(),
-): Promise<ArchitectPlanRecord | null> => {
-  const normalizedBranch = normalizeBranchName(branchName);
-  assertGitFlowTargetBranch(normalizedBranch);
-  const safeId = sanitizeId(planId);
-  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
-    const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
-    const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, { registrySnapshot }, deps);
-    if (!replicaSet) return null;
-    const existing = replicaSet.canonical.plan;
-    if (existing.agsdl || existing.status === 'deleted') return existing;
-    const { convertLegacyPlan } = await import('./agsdl/legacy');
-    const agsdl = convertLegacyPlan(existing);
-    if (!agsdl) return existing;
-    if (existing.missingProjectIds?.length) {
-      throw new Error('Restore the missing project replicas before converting this plan.');
-    }
-    assertAgsdlEditorDocument(agsdl);
-    const next = { ...existing, agsdl, revision: (existing.revision || 1) + 1 };
-    const scopes = dedupeScopes([
-      ...replicaSet.expectedScopes,
-      ...replicaSet.snapshots.map((snapshot) => snapshot.scope),
-    ]);
-    const targets = await Promise.all(scopes.map((scope) => buildUpsertReplicaMutationTarget({
-      scope,
-      branchName: normalizedBranch,
-      plan: next,
-      registrySnapshot,
-      chatMessageCount: replicaSet.canonical.manifest.conversation.messageCount,
-    })));
-    await runArchitectPlanReplicaMutation({
-      branchName: normalizedBranch,
-      planId: safeId,
-      operation: 'update',
-      targets,
-      registrySnapshot,
-      deps,
-      commitMessage: `chore(metadata): convert architect plan to AgSDL ${safeId}`,
-    });
-    invalidateArchitectPlanRuntimeCaches({ branchName: normalizedBranch, planId: safeId });
-    return (await getArchitectPlan(normalizedBranch, safeId, deps)) || next;
-  });
-};
 
 export interface UpdateArchitectPlanInput {
   agsdl?: Omit<import('../types/agsdl').AgsdlEditorDocument, 'revision'>;
@@ -1087,7 +1039,6 @@ export const archiveArchitectPlan = async (
 /** Serialized plan commands, including task status derivation under the branch queue without a store or UI dependency. */
 export interface ArchitectPlanMutationService {
   createArchitectPlan: typeof createArchitectPlan;
-  migrateArchitectPlanToAgsdl: typeof migrateArchitectPlanToAgsdl;
   updateArchitectPlan: typeof updateArchitectPlan;
   mutateArchitectPlan: typeof mutateArchitectPlan;
   mutateArchitectPlanTaskStatus: typeof mutateArchitectPlanTaskStatus;
@@ -1102,7 +1053,6 @@ export const createArchitectPlanMutationService = (overrides: ArchitectPlanServi
   const deps = resolveArchitectPlanServiceDependencies(overrides);
   return {
     createArchitectPlan: (input) => createArchitectPlan(input, deps),
-    migrateArchitectPlanToAgsdl: (branchName, planId) => migrateArchitectPlanToAgsdl(branchName, planId, deps),
     updateArchitectPlan: (input) => updateArchitectPlan(input, deps),
     mutateArchitectPlan: (input, deriveUpdate) => mutateArchitectPlan(input, deriveUpdate, deps),
     mutateArchitectPlanTaskStatus: (input, deriveUpdate) => mutateArchitectPlanTaskStatus(input, deriveUpdate, deps),

@@ -1,18 +1,18 @@
-import { afterEach, expect, it } from 'bun:test';
+import { afterEach,expect,it } from 'bun:test';
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { WorkflowBlockOverlay, WorkflowBlockSummary } from './WorkflowBlockOverlay';
-import { WorkflowGraphPopup, type GraphPopupAction } from './WorkflowGraphPopup';
-import { Dialog } from '../ui/Dialog';
-import { projectViewer } from '../../services/agsdl/viewer';
-import { createExample } from '../../services/agsdl/examples';
+import { createRoot,type Root } from 'react-dom/client';
 import { blockDetails } from '../../services/agsdl/blockDetails';
+import { createExample } from '../../services/agsdl/examples';
+import { projectViewer } from '../../services/agsdl/viewer';
+import { Dialog } from '../ui/Dialog';
+import { WorkflowBlockOverlay,WorkflowBlockSummary } from './WorkflowBlockOverlay';
+import { WorkflowGraphPopup,type GraphPopupAction } from './WorkflowGraphPopup';
 
 let root: Root | undefined;
 let host: HTMLDivElement;
 afterEach(() => { act(() => root?.unmount()); host?.remove(); });
-const projected = projectViewer(createExample('release', 'agsdl-0.2.0'));
-const card = projected.graphs[0].cards[0];
+const projected = projectViewer(createExample('release', 'agsdl-0.3.0'));
+const card = projected.graphs[0].cards.find(card => card.kind === 'agent')!;
 const details = blockDetails(card, projected.declarations);
 const actions = (run = () => {}): GraphPopupAction[] => [
   { label: 'Details', icon: null, run }, { label: 'Open task', icon: null, run },
@@ -43,7 +43,7 @@ it('shows a delayed configuration preview without repeating the block, then dism
   const { block } = await mount();
   await hover(block);
   const preview = document.querySelector('[role="tooltip"]');
-  const instructions = details.find(detail => detail.key === 'instructions')!.values[0];
+  const instructions = card.promptSources![0].text!;
   expect(preview?.textContent).toContain(instructions);
   // Title, neighbours and state are already on the canvas.
   expect(preview?.textContent).not.toContain('Release checklist');
@@ -110,7 +110,7 @@ it('supports a canvas menu without requiring a block or changing selection', asy
 
 it('prefers the agent instruction over shared skill guidance in the compact preview', async () => {
   await mount();
-  await act(async () => root!.render(<WorkflowBlockSummary card={{ ...card, promptSources: [
+  await act(async () => root!.render(<WorkflowBlockSummary card={{ ...card, edition030: undefined, promptSources: [
     { kind: 'text', mediaType: 'text/plain', text: 'Shared policy', reference: { label: 'policy', source: 'unknown' } },
     { kind: 'text', mediaType: 'text/plain', text: 'Check the release prerequisites.' },
   ] }} />));

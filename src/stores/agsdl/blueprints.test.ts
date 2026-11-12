@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'bun:test';
-import { agsdlSessionKey, type AgsdlSession, type useAgsdlStore } from '../useAgsdlStore';
-import type { ArchitectPlanRecord } from '../../services/architectPlanService';
-import { builtInDesignSources, instantiateDesign, listDesignSources, saveBlueprint, type BlueprintDependencies } from './blueprints';
+import { describe,expect,it } from 'bun:test';
 import { readDesign } from '../../services/agsdl/design';
+import type { ArchitectPlanRecord } from '../../services/architectPlanService';
+import { agsdlSessionKey,type AgsdlSession,type useAgsdlStore } from '../useAgsdlStore';
+import { builtInDesignSources,instantiateDesign,listDesignSources,saveBlueprint,type BlueprintDependencies } from './blueprints';
 
 const target = { branchName: 'feature/design', planId: 'source' };
 function harness(source = '') {
@@ -159,7 +159,7 @@ describe('included blueprint adaptation', () => {
 
 it('copies and saves all supported editions without rewriting source or annexes', async () => {
   const { createExampleDocument } = await import('../../services/agsdl/examples');
-  for (const contract of ['agsdl-0.1.0', 'agsdl-0.2.0', 'agsdl-0.3.0'] as const) {
+  for (const contract of ['agsdl-0.1.0', 'agsdl-0.3.0'] as const) {
     const draft = createExampleDocument('feature', contract);
     const source = draft.source.replace('"contract":', '"contract" :');
     const h = harness();

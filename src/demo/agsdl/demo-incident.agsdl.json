@@ -1,174 +1,47 @@
 {
-  "contract": "agsdl-0.2.0",
+  "contract": "agsdl-0.3.0",
   "id": "demo-incident",
-  "content": {
-    "severity": {
-      "value": "critique",
-      "mediaType": "text/plain"
-    }
-  },
-  "bindings": {
-    "engine": {
-      "contract": {
-        "identity": "macro/agent-engine",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      }
-    },
-    "telemetry": {
-      "contract": {
-        "identity": "macro/observability",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "grafana/http",
-        "version": "1"
-      },
-      "effects": "none"
-    },
-    "classification": {
-      "contract": {
-        "identity": "macro/structured-choice",
-        "version": "1"
-      },
-      "implementation": {
-        "identity": "macro/desktop",
-        "version": "1"
-      },
-      "effects": "none"
-    }
-  },
-  "configurations": {
-    "rapide": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-haiku-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "telemetry": "telemetry"
-      }
-    },
-    "analyse": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "telemetry": "telemetry"
-      }
-    },
-    "analyseApprofondie": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-opus-5-5",
-        "version": "1"
-      },
-      "tools": {
-        "telemetry": "telemetry"
-      }
-    },
-    "redaction": {
-      "engine": "engine",
-      "model": {
-        "identity": "claude-sonnet-5-5",
-        "version": "1"
-      }
-    }
-  },
+  "title": "Diagnostic d’incident",
   "agents": {
     "triage": {
-      "configuration": "rapide",
-      "prompt": [
-        {
-          "value": "Délimiter la période, les utilisateurs concernés et les symptômes observés."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Délimiter la période, les utilisateurs concernés et les symptômes observés."
     },
     "investigate": {
-      "configuration": {
-        "select": {
-          "path": [
-            "resources",
-            "severity",
-            "value"
-          ]
-        },
-        "cases": {
-          "standard": "analyse",
-          "critique": "analyseApprofondie"
-        }
-      },
-      "prompt": [
-        {
-          "value": "Comparer les traces avec les métriques. Présenter une hypothèse vérifiable, sans la confondre avec un fait."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      },
-      "resources": {
-        "severity": {
-          "ref": "severity"
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Comparer les traces avec les métriques. Présenter une hypothèse vérifiable, sans la confondre avec un fait."
     },
     "verify": {
-      "configuration": "analyseApprofondie",
-      "prompt": [
-        {
-          "value": "Vérifier l’hypothèse contre les traces. Répondre Confirmée uniquement avec une preuve."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier l’hypothèse contre les traces. Répondre Confirmée uniquement avec une preuve."
     },
     "conclude": {
-      "configuration": "redaction",
-      "prompt": [
-        {
-          "value": "Résumer la cause, l’impact et les mesures de prévention."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Résumer la cause, l’impact et les mesures de prévention."
+    },
+    "scene-main-collect": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Collecter les métriques"
+    },
+    "scene-main-metrics": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Préparer les métriques"
+    },
+    "scene-main-handoff": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre l’hypothèse"
+    },
+    "scene-main-confirmed": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Hypothèse confirmée ?"
     }
   },
   "flow": {
@@ -177,128 +50,55 @@
       "triage": {
         "type": "agent",
         "agent": "triage",
-        "next": {
-          "investigate": [
-            "investigate",
-            "collect"
-          ],
-          "escalate": [
-            "conclude"
-          ]
-        },
-        "decision": {
-          "binding": "classification",
-          "choices": [
-            "investigate",
-            "escalate"
-          ]
-        }
+        "title": "Qualifier l’incident",
+        "next": "collect"
       },
       "collect": {
-        "type": "call",
-        "binding": "telemetry",
-        "next": [
-          "metrics"
-        ],
-        "arguments": {
-          "interval": {
-            "value": "15m"
-          },
-          "service": {
-            "value": "catalog-api"
-          }
-        }
+        "type": "agent",
+        "agent": "scene-main-collect",
+        "title": "Collecter les métriques",
+        "next": "metrics"
       },
       "metrics": {
-        "type": "prepare",
-        "message": {
-          "prompt": [
-            {
-              "value": "Intégrer les métriques des 15 dernières minutes à l’hypothèse en cours."
-            }
-          ],
-          "resources": {
-            "metrics": {
-              "select": {
-                "path": [
-                  "data"
-                ]
-              },
-              "mediaType": "application/json"
-            }
-          }
-        },
-        "next": [
-          "refocus"
-        ]
+        "type": "agent",
+        "agent": "scene-main-metrics",
+        "title": "Préparer les métriques",
+        "next": "refocus"
       },
       "refocus": {
         "type": "agent",
         "agent": "investigate",
-        "delivery": "steering",
-        "steers": "investigate"
+        "title": "Recentrer l’analyse",
+        "next": "investigate"
       },
       "investigate": {
         "type": "agent",
         "agent": "investigate",
-        "next": [
-          "handoff"
-        ],
-        "maxVisits": 3
+        "title": "Examiner les traces",
+        "next": "handoff"
       },
       "handoff": {
-        "type": "prepare",
-        "message": {
-          "resources": {
-            "report": {
-              "source": {
-                "path": [
-                  "results",
-                  "report"
-                ]
-              }
-            }
-          }
-        },
-        "next": [
-          "verify"
-        ]
+        "type": "agent",
+        "agent": "scene-main-handoff",
+        "title": "Transmettre l’hypothèse",
+        "next": "verify"
       },
       "verify": {
         "type": "agent",
         "agent": "verify",
-        "next": [
-          "confirmed"
-        ],
-        "maxVisits": 3
+        "title": "Tester l’hypothèse",
+        "next": "confirmed"
       },
       "confirmed": {
-        "type": "condition",
-        "test": {
-          "equals": [
-            {
-              "path": [
-                "text"
-              ]
-            },
-            {
-              "value": "Confirmée"
-            }
-          ]
-        },
-        "next": {
-          "true": [
-            "conclude"
-          ],
-          "false": [
-            "investigate"
-          ]
-        }
+        "type": "agent",
+        "agent": "scene-main-confirmed",
+        "title": "Hypothèse confirmée ?",
+        "next": "conclude"
       },
       "conclude": {
         "type": "agent",
         "agent": "conclude",
-        "next": []
+        "title": "Rédiger le post-mortem"
       }
     }
   }
