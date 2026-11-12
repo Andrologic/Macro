@@ -262,7 +262,11 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    async fn physical_stop_probe(profile: &Profile, workspace: &Path, close_parent: bool) {
+    async fn physical_stop_probe(
+        profile: &Profile,
+        workspace: &std::path::Path,
+        close_parent: bool,
+    ) {
         let name = if close_parent { "parent-exit" } else { "stop" };
         let ready = workspace.join(format!("{name}-ready"));
         let late = workspace.join(format!("{name}-late"));
