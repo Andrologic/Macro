@@ -2,7 +2,7 @@ import type { FlowAgent } from './flowActivation';
 import type { ResidentAgentRequest } from './residentAgent';
 import type { ExactJsonText, MemoryCheckpoint, Sequence } from './contracts';
 import { decode, encode, equal, fail, record, text, type ExactObject } from './exact';
-import { sourceDigest } from './compiler';
+import { sourceDigest } from './sourceDigest';
 import { closeRetainedResponses } from './retainedResponses';
 import { ExactResponseCollection } from './responses';
 import { nativeResidentAgentPorts } from './residentAgent';

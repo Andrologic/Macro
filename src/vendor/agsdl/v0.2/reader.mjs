@@ -1,5 +1,5 @@
 // Macro browser port: CLI file I/O is omitted. Static checks are unchanged.
-import { parse, stringify, shape } from './values.mjs';
+import { parse, stringify, shape } from '../shared/values.mjs';
 import { checkDeclarations } from './declarations.mjs';
 import { checkGraphs } from './graphs.mjs';
 export function read(bytes) {

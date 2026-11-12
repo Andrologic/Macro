@@ -3,7 +3,7 @@ import type { EngineSourceOwner, ExecutionIntentScope, ExecutionRunCorrelation03
 import { listExecutionRuns030, readExecutionSnapshot030, readExecutionRuntimeProjection030,
   readExecutionHumans030, readExecutionIntentsVersioned, readExecutionRunCorrelation030 } from '../tauriIpc';
 import { MacroServiceError, toServiceError } from '../contracts/errors';
-import { sourceDigest } from '../agsdlExecution/compiler';
+import { sourceDigest } from '../agsdlExecution/sourceDigest';
 import { readDocument } from './document';
 import { readHumanFacts030, sameHumanScope030 } from './humanReadAccess030';
 import { loadRuntimeProjection030, retainedRunValue030, runtimeSections030 } from './runtimeProjection030';

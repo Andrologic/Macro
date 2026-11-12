@@ -5,7 +5,7 @@ import { readDocument } from './agsdl/document';
 import { readDesign, withDocumentDesign } from './agsdl/design';
 import { assertProjection, executionInput, executionProfileForContract, executionPrompt } from './agsdl/executionView';
 import { sameSource } from './agsdl/runtimeSelection';
-import { sourceDigest } from './agsdlExecution/compiler';
+import { sourceDigest } from './agsdlExecution/sourceDigest';
 import { sanitizeId } from './architectPlanReadModel';
 import type { ExecutionPreflight } from '../types/generated/ipc';
 import type {

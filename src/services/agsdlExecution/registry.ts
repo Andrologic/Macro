@@ -3,7 +3,7 @@ import { MACRO_TOOL_REGISTRY } from '../../shared/macroToolRegistry';
 import type { MCPTool } from '../../types';
 import { assertUniqueMCPToolIds } from '../mcp/normalization';
 import { read } from '../../vendor/agsdl/v0.2/reader.mjs';
-import { schema, satisfies, type as valueType } from '../../vendor/agsdl/v0.2/values.mjs';
+import { schema, satisfies, type as valueType } from '../../vendor/agsdl/shared/values.mjs';
 import type { ExactJsonText, FrozenAgentConfiguration } from './contracts';
 import { NumberToken, clone, decimal, decode, encode, equal, fail, has, list, record, shape, text, type ExactObject, type ExactValue } from './exact';
 

@@ -1,7 +1,8 @@
 import { describe, expect, it, spyOn } from 'bun:test';
 import * as exact from './exact';
 import { clone, decode, encode, record } from './exact';
-import { compilePlan, sourceDigest, type CompilationResult } from './compiler';
+import { compilePlan, type CompilationResult } from './compiler';
+import { sourceDigest } from './sourceDigest';
 import { documentFixture, id, registryFixture } from './conformanceFixtures';
 import type { SourceRevision } from './contracts';
 import type { CapturedRegistry } from './registry';

@@ -1,4 +1,4 @@
-import { clone, decimal, NumberToken, parse } from "../../vendor/agsdl/v0.2/values.mjs";
+import { clone, decimal, NumberToken, parse } from "../../vendor/agsdl/shared/values.mjs";
 import { readDesign, defaultDesign, type AgsdlEnvelopeMetadata } from "./design";
 import { keyId, list, object, pointerPart, readDocument, text } from "./document";
 import { projectViewer, type ViewerCard } from "./viewer";

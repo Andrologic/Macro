@@ -1,7 +1,7 @@
 /** Inline output checking follows official check_completion.py, Apache-2.0.
  * AgSDL 0.2.0 ae478d6203dd1571af064317238fd0a0f7dece75; vendor NOTICE applies.
  */
-import { schema, satisfies } from '../../vendor/agsdl/v0.2/values.mjs';
+import { schema, satisfies } from '../../vendor/agsdl/shared/values.mjs';
 import { completionText, inlineSource, normalizeMessage, operandValue, validateOrigin } from './content';
 import type { ExactJsonText, FlowValue } from './contracts';
 import { resolveBinding, validateRegisteredArguments, verifyResultConstraint } from './registry';

@@ -10,7 +10,7 @@ import {
   shape,
   schema,
   pointer,
-} from './values.mjs';
+} from '../shared/values.mjs';
 
 // RFC 3986 components retain absent versus explicitly empty query/fragment.
 export function uriParts(text) {

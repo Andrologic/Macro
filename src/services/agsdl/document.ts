@@ -2,7 +2,7 @@ import { run, stringify as stringifyLegacy } from "../../vendor/agsdl/browser-re
 import { parse, read as read030, NumberToken, stringify, ModuleError } from "../../vendor/agsdl/v0.3/reader.mjs";
 import type { ExactObject, ReaderOptions030, Report030 } from "../../vendor/agsdl/v0.3/reader.mjs";
 import { read as read020 } from "../../vendor/agsdl/v0.2/reader.mjs";
-import { stringify as stringify020 } from "../../vendor/agsdl/v0.2/values.mjs";
+import { stringify as stringify020 } from "../../vendor/agsdl/shared/values.mjs";
 import type { AgsdlChange, AgsdlReport } from "../../types/agsdl";
 import { rememberSourceLocations, workerRequest } from "./reader030WorkerProtocol";
 import type { WorkerResponse } from "./reader030WorkerProtocol";

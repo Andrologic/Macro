@@ -1,5 +1,6 @@
 import { expect, it } from 'bun:test';
-import { compilePlan, sourceDigest } from './compiler';
+import { compilePlan } from './compiler';
+import { sourceDigest } from './sourceDigest';
 import { documentFixture, id, json } from './conformanceFixtures';
 import { decode, encode, record, type ExactObject } from './exact';
 import { buildNativeRegistry, type NativeRegistryObservation } from './nativeRegistry';

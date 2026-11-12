@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import { compilePlan, compileVersionedPlan, sourceDigest } from './compiler';
+import { compilePlan, compileVersionedPlan } from './compiler';
+import { sourceDigest } from './sourceDigest';
 import { compilePlan030 } from './compiler030';
 import type { CapturedRegistry030 } from './contracts030';
 import { clone, decode, encode, record, type ExactObject } from './exact';

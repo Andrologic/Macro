@@ -9,7 +9,7 @@ import type { PublicApproval } from '../types/generated/ipc';
 import type { AgentInstanceId, PublicActivation, PublicProjection, PublicSnapshot, SourceRevision, SystemStartId } from './agsdlExecution/contracts';
 import * as ipc from './ipc/agsdlExecution';
 import { assertProjection, appendProjection } from './agsdl/executionView';
-import { sourceDigest } from './agsdlExecution/compiler';
+import { sourceDigest } from './agsdlExecution/sourceDigest';
 import { compareSequence, sameWork } from './agsdlExecution/invariants';
 import { runCaptureKey030 } from './agsdl/runGraphProjection030';
 import { retainedRunValue030 } from './agsdl/runtimeProjection030';

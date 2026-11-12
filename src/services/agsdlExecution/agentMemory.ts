@@ -1,6 +1,6 @@
 import type { StreamMessage, ToolCall } from '../ai/contracts';
 import type { AgentInstanceId, ExactJsonText, FrozenAgentConfiguration, MemoryCheckpoint, Sequence } from './contracts';
-import { sourceDigest } from './compiler';
+import { sourceDigest } from './sourceDigest';
 import { inlineSource } from './content';
 import { decode, encode, fail, list, record, type ExactObject, type ExactValue } from './exact';
 import { metadataArray, metadataObject, metadataText } from './metadata';

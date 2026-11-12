@@ -2,7 +2,8 @@ import type { Closure, EngineActivation, EngineMemory, EngineOwner, HostInspecti
 import * as ipc from '../ipc/agsdlExecution';
 import { callResult, completionResult, prepareCall } from './constraints';
 import { deliveryMessage, validateInput } from './content';
-import { COMPILER_VERSION, CONFORMANCE_VERSION, sourceDigest, type CompiledPlan } from './compiler';
+import { COMPILER_VERSION, CONFORMANCE_VERSION, type CompiledPlan } from './compiler';
+import { sourceDigest } from './sourceDigest';
 import type { ExecutionContext, FrozenAgentConfiguration, MemoryCheckpoint } from './contracts';
 import { ConformanceError, decode, encode, equal, fail, record, text, type ExactObject } from './exact';
 import { evaluatePureStep, flowFailure, flowInput, retainedAgentOutcome } from './flowValues';

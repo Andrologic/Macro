@@ -4,7 +4,7 @@ import { validate } from '../../vendor/agsdl/v0.3/valueschema.mjs';
 import type { EngineContext } from '../../types/generated/ipc/EngineContext';
 import type { ExactJsonText, SourceRevision } from './contracts';
 import type { CapturedRegistry030 } from './contracts030';
-import { sourceDigest } from './compiler';
+import { sourceDigest } from './sourceDigest';
 import { compilePlan030 } from './compiler030';
 import { connectValueSchemaValidator030 } from './valueSchemaPort030';
 import { EMPTY_WORK_JOURNAL030 } from './hostWorkJournal030';

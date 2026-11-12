@@ -6,7 +6,7 @@ import {
   duplicates,
   clone,
   pointer,
-} from './values.mjs';
+} from '../shared/values.mjs';
 const routeLists = (s) =>
   Array.isArray(s.next)
     ? [['next', s.next]]

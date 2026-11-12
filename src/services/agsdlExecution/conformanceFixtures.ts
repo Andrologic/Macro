@@ -3,7 +3,8 @@ import type { CapturedRegistry, BindingAttestation } from './registry';
 import { ENGINE_CAPABILITIES, INVOCATION_CAPABILITIES } from './registry';
 import { decode, encode, record, type ExactObject } from './exact';
 import type { ExactJsonText, ExecutionContext, Identity, SourceRevision } from './contracts';
-import { compilePlan, sourceDigest } from './compiler';
+import { compilePlan } from './compiler';
+import { sourceDigest } from './sourceDigest';
 
 export const json = (value: string) => value as ExactJsonText;
 export const id = <K extends string>(value: string) => value as Identity<K>;

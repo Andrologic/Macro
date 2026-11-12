@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { compilePlan030 } from './compiler030';
-import { sourceDigest } from './compiler';
+import { sourceDigest } from './sourceDigest';
 import { createHostRoutePort030 } from './hostRouteBroker030';
 import type { ExactJsonText, SourceRevision } from './contracts';
 import type { CapturedRegistry030 } from './contracts030';

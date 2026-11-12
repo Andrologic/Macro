@@ -65,3 +65,13 @@ Exact snapshots use the lossless serializer and parser, retaining numeric tokens
 the reference order of child and bound diagnostics. The parity gate compares
 ordered diagnostic codes, severities, locations and joins; human-readable
 messages may use JavaScript JSON formatting instead of Python repr.
+
+## Shared lexical and exact-value helpers
+
+`shared/json.mjs`, `shared/values.mjs`, and their declarations were moved
+from Macro's browser-adapted 0.2 reader. Imports in both edition readers and
+Macro controllers were adjusted locally. Their lexical and exact-number
+behavior is retained, including a single shared NumberToken class. The
+0.2 schema remains here temporarily for its static reader. These are local
+adaptations, not byte-identical upstream files. Apache-2.0 attribution above
+and the adjacent LICENSE continue to apply.

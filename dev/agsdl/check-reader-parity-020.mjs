@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
 import { read } from '../../src/vendor/agsdl/v0.2/reader.mjs';
-import { stringify } from '../../src/vendor/agsdl/v0.2/values.mjs';
+import { stringify } from '../../src/vendor/agsdl/shared/values.mjs';
 import { isIP } from '../../src/vendor/agsdl/v0.2/ip.mjs';
 import { isIP as nodeIsIP } from 'node:net';
 

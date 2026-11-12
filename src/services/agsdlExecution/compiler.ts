@@ -1,3 +1,5 @@
+import { sourceDigest } from './sourceDigest';
+export { sourceDigest } from './sourceDigest';
 import { read } from '../../vendor/agsdl/v0.2/reader.mjs';
 import { agentContent, inlineSource } from './content';
 import type { Diagnostic, EngineVersions, ExactJsonText, FrozenAgentConfiguration, RuntimeAssessment, SourceRevision, StaticAssessment, StepAddress } from './contracts';
@@ -113,11 +115,6 @@ function profilePreflight(document: ExactObject): void {
       }
     }
   }
-}
-export async function sourceDigest(authoredSource: string): Promise<string> {
-  const bytes = new TextEncoder().encode(authoredSource);
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 /** Called only after native canonical owner/revision lookup. SHA is checked again here.
  * No registration, admission, provider dispatch or side effects are performed.

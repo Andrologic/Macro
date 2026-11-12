@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { parse, NumberToken, stringify } from './json.mjs';
-import { NumberToken as ExecutionToken } from '../v0.2/values.mjs';
+import { NumberToken as ExecutionToken } from '../shared/values.mjs';
 import { equal, compareNumbers, isInteger, isNumber, isObject, json_type_matches } from './values.mjs';
 import { SchemaChecker, pointer } from './schemacheck.mjs';
 import { consistency, validate, descend, kind_at, is_index } from './valueschema.mjs';

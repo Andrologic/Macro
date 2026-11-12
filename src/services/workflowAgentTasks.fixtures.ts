@@ -3,7 +3,7 @@ import type { ArchitectPlanRecord } from './architectPlanService';
 import type { PublicActivation, PublicProjection, PublicSnapshot } from './agsdlExecution/contracts';
 import type { PublicApproval, PublicRunSummary } from '../types/generated/ipc';
 import type { WorkflowAgentTaskPorts } from './workflowAgentTasks';
-import { sourceDigest } from './agsdlExecution/compiler';
+import { sourceDigest } from './agsdlExecution/sourceDigest';
 import { documentFixture, id } from './agsdlExecution/conformanceFixtures';
 import { clone, encode, record } from './agsdlExecution/exact';
 import { defaultDesign } from './agsdl/design';

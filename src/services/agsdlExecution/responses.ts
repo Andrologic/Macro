@@ -1,4 +1,4 @@
-import { schema } from '../../vendor/agsdl/v0.2/values.mjs';
+import { schema } from '../../vendor/agsdl/shared/values.mjs';
 import type { ExactJsonText, ExecutionContext, ProviderAttemptId, ResponseCollectionPort, Sequence, TypedPublication, VisibleResponseMessage } from './contracts';
 import { validateCompletion } from './constraints';
 import { assembleVisibleText, compareSequence, sameWork } from './invariants';

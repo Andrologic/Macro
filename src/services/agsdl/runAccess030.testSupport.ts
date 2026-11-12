@@ -1,5 +1,5 @@
 import type { PublicExecutionIntent, PublicRunSummary030, RuntimeActivation030, RuntimeProjectionPage030 } from '../../types/generated/ipc';
-import { sourceDigest } from '../agsdlExecution/compiler';
+import { sourceDigest } from '../agsdlExecution/sourceDigest';
 import type { RunReadTransport030 } from './runAccess030';
 import { inspectionFixture030 } from './runInspection030.testSupport';
 

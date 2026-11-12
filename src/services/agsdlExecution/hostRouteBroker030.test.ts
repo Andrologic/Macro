@@ -2,7 +2,7 @@ import { expect, it, mock } from 'bun:test';
 import type { HostRouteJob030 } from '../../types/generated/ipc';
 import type { ExactJsonText, SourceRevision } from './contracts';
 import { compilePlan030 } from './compiler030';
-import { sourceDigest } from './compiler';
+import { sourceDigest } from './sourceDigest';
 import { decode, encode, record } from './exact';
 import type { CapturedRegistry030 } from './contracts030';
 

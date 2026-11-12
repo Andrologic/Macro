@@ -8,7 +8,7 @@ import { sameSource } from './agsdl/runtimeSelection';
 import { resolveTaskReference } from './durableIdentity';
 import * as ipc from './tauriIpc';
 import { isWorkflowAgentTask, workflowAgentTaskId, workflowTaskAgentPaths } from './workflowAgentTasks';
-import { sourceDigest } from './agsdlExecution/compiler';
+import { sourceDigest } from './agsdlExecution/sourceDigest';
 import { validateDocument } from './agsdl/document';
 import { workflowAccessForCapture030, isCapture030, type WorkflowRunAccess030 } from './workflowAgentTasks';
 import { pointerPart } from './agsdl/document';

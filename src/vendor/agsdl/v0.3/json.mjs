@@ -2,7 +2,7 @@
 // Adapted from AgSDL v0.3.0 tooling/agsdl/jsoninput.py and the AgSDL JS scanner.
 // Upstream: https://github.com/Andrologic/AgSDL, see the adjacent LICENSE.
 // Browser adaptation: iterative container traversal; shared 0.2 execution token identity.
-import { NumberToken } from '../v0.2/json.mjs';
+import { NumberToken } from '../shared/json.mjs';
 import { ParseError, pointer } from '../experimental/readers/javascript/json.mjs';
 export { NumberToken, ParseError, pointer };
 export { stringify } from './values.mjs';

@@ -6,7 +6,8 @@ import { agentContent, deliveryMessage, prepareMessage } from './content';
 import { evaluatePredicate, validateCompletion } from './constraints';
 import { clone, decode, encode, equal, record } from './exact';
 import { documentFixture, id, registryFixture } from './conformanceFixtures';
-import { compilePlan, sourceDigest } from './compiler';
+import { compilePlan } from './compiler';
+import { sourceDigest } from './sourceDigest';
 import type { FlowValue } from './contracts';
 
 const referenceDir = process.env.AGSDL_REFERENCE_DIR;

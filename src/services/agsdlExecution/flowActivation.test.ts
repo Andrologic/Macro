@@ -6,7 +6,7 @@ import { executeFlowActivation, loadFlowCapture, resolveFlowVisitLimit, prepareF
 import { ConformanceError, decode, record, shape } from './exact';
 import { flowDelivery, flowFixture, flowOwner, exactRecord } from './flowTestFixtures';
 import { evaluatePureStep, flowFailure, retainedAgentOutcome } from './flowValues';
-import { schema } from '../../vendor/agsdl/v0.2/values.mjs';
+import { schema } from '../../vendor/agsdl/shared/values.mjs';
 import { json } from './conformanceFixtures';
 import type { Sequence } from './contracts';
 

@@ -12,7 +12,7 @@ import type { ExecutionPreflight, PublicRunSummary, ApprovalPage, PublicExecutio
 import { assertProjection, appendProjection, assertDiagnosticPage, executionInput, executionProfileForContract, executionPrompt } from "../services/agsdl/executionView";
 import { sameSource } from "../services/agsdl/runtimeSelection";
 import { PRODUCT_RUNTIME_AVAILABLE } from "../services/agsdlExecution/compiler";
-import { sourceDigest } from "../services/agsdlExecution/compiler";
+import { sourceDigest } from '../services/agsdlExecution/sourceDigest';
 import { readDocument } from "../services/agsdl/document";
 import { loadHumanRequests030 } from "../services/agsdl/humanRequests030";
 import { loadRuntimeProjection030 } from "../services/agsdl/runtimeProjection030";

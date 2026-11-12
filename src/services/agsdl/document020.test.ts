@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { applyChanges, sourceAt, validateDocument } from "./document";
 import { read } from "../../vendor/agsdl/v0.2/reader.mjs";
-import { stringify } from "../../vendor/agsdl/v0.2/values.mjs";
+import { stringify } from "../../vendor/agsdl/shared/values.mjs";
 import { localizeDiagnostics } from "./diagnostics";
 import type { ViewerCard } from "./viewer";
 

@@ -1,6 +1,7 @@
 import { expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { compilePlan, sourceDigest } from './compiler';
+import { compilePlan } from './compiler';
+import { sourceDigest } from './sourceDigest';
 import { id, json } from './conformanceFixtures';
 import { buildNativeRegistry, type NativeRegistryObservation } from './nativeRegistry';
 import { compileHost030, encodeHostCompilation, HOST_COMPILE_RESULT_LIMIT } from './hostCompilation';

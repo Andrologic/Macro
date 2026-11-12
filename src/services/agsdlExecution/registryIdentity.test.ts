@@ -3,7 +3,8 @@ import { assertUniqueMCPToolIds } from '../mcp/normalization';
 import { agentContent } from './content';
 import { documentFixture, registryFixture, compileFixture, invocationFixture, json, id } from './conformanceFixtures';
 import { clone, decode, encode, record } from './exact';
-import { sourceDigest, type CompilationResult } from './compiler';
+import { type CompilationResult } from './compiler';
+import { sourceDigest } from './sourceDigest';
 import { captureAgent, captureRegistry, resolveBinding, type CapturedRegistry } from './registry';
 
 function mcpFixture() {

@@ -1,6 +1,6 @@
 import {
   NumberToken, clone, decimal, equal, parse, shape, stringify,
-} from '../../vendor/agsdl/v0.2/values.mjs';
+} from '../../vendor/agsdl/shared/values.mjs';
 import type { ExactJsonText, ExactValuePort, ExecutionFailure, WorkIdentity } from './contracts';
 
 export type ExactValue = null | boolean | string | NumberToken | ExactValue[] | ExactObject;

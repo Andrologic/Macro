@@ -3,7 +3,7 @@
  * See src/vendor/agsdl/NOTICE.md and LICENSE. URI transfer is deliberately refused.
  */
 import { baseParts } from '../../vendor/agsdl/v0.2/declarations.mjs';
-import { schema } from '../../vendor/agsdl/v0.2/values.mjs';
+import { schema } from '../../vendor/agsdl/shared/values.mjs';
 import type { ExactJsonText, FlowValue } from './contracts';
 import { assembleVisibleText } from './invariants';
 import { NumberToken, at, clone, decimal, decode, encode, fail, has, list, record, shape, text, type ExactObject, type ExactValue } from './exact';
