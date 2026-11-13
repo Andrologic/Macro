@@ -3,9 +3,6 @@
   "baseRef": "627ea641d8ab1439ca41e9cd68bb07454ea33c49",
   "counts": {
     "rust": {
-      "src-tauri/src/agsdl_content/file_helper.rs": {
-        "crate:core": 1
-      },
       "src-tauri/src/agsdl_content/mod.rs": {
         "crate:db": 2,
         "token:ts_rs": 5

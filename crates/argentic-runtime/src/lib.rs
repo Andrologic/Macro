@@ -29,3 +29,5 @@ pub mod host;
 
 /// Shared physical process lifecycle and containment.
 pub mod process;
+
+pub mod content_io;

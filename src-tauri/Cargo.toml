@@ -38,7 +38,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 browser-runtime-debug = ["dep:tauri-remote-ui"]
-agsdl-content-qa = []
+agsdl-content-qa = ["argentic-runtime/agsdl-content-qa"]
 agsdl-engine-qa = []
 custom-protocol = ["tauri/custom-protocol"]
 

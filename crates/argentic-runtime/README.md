@@ -28,3 +28,14 @@ is introduced here.
 
 The filesystem permission implementation is runtime-owned because normalization
 resolves real paths and links. Its TypeScript wire mirrors remain in Macro.
+
+## Native content reader
+
+The runtime builds the existing Swift content bridge into a static archive on
+macOS. The host executable calls `content_io::file_helper::initialize` before
+its normal startup so that reader subprocesses dispatch before application
+initialization. It must preserve the weak link to LightweightCodeRequirements
+(`-Wl,-weak_framework,LightweightCodeRequirements`) when targeting macOS before
+14.4; Macro does this in its build script. This is the same native bridge and
+qualification gate, not a second reader or a new qualification. Debug QA hooks
+remain behind the explicit `agsdl-content-qa` feature.

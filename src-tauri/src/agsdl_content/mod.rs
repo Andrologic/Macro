@@ -1,6 +1,6 @@
 //! Host-owned content effects. A receipt records bytes; it never grants access.
 pub(crate) mod file_helper;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions))]
 mod macos_launcher;
 #[cfg(all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions))]
 pub(crate) mod qa;
@@ -40,13 +40,8 @@ pub(crate) struct ContentError {
 pub(crate) type ContentResult<T> = std::result::Result<T, ContentError>;
 /// The host attaches physical reader cleanup to the existing work owner.
 /// This port has no dependency on a window, application or database.
-pub(crate) type ContentResourceOwner = Arc<
-    dyn Fn(
-            tokio::task::JoinHandle<std::result::Result<(), String>>,
-        ) -> std::result::Result<(), String>
-        + Send
-        + Sync,
->;
+pub(crate) use argentic_runtime::content_io::ContentResourceOwner;
+
 fn error(code: &str, message: impl ToString) -> ContentError {
     ContentError {
         code: code.into(),
