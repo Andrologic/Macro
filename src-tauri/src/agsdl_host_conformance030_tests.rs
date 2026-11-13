@@ -7,6 +7,7 @@ use crate::agsdl_host_scenario030::{
     self as scenarios, ExampleResult030, TimelineEvent030, WorkKey030,
 };
 use crate::agsdl_host_work_admission030::{AttestedWorkPolicy030, PreparedEffectiveAgentWork030};
+use crate::core::process::{background_command, background_tokio_command};
 use crate::db::agsdl_execution::{flow030::*, start030::StartCapture030, Result};
 use futures::{future::BoxFuture, FutureExt};
 use serde_json::{json, Value};
@@ -34,7 +35,7 @@ struct BunHost {
 }
 impl BunHost {
     fn start() -> Self {
-        let mut child = crate::core::process::background_tokio_command("bun")
+        let mut child = background_tokio_command("bun")
             .arg("dev/agsdl/conformance-host030.ts")
             .current_dir(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1128,13 +1129,13 @@ fn agsdl030_conformance_runs_with_only_bun_removed_from_path() {
         paths.push(target);
     }
     let path = std::env::join_paths(paths).unwrap();
-    let absent = std::process::Command::new("bun")
+    let absent = background_command("bun")
         .arg("--version")
         .env("PATH", &path)
         .output()
         .unwrap_err();
     assert_eq!(absent.kind(), std::io::ErrorKind::NotFound);
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
+    let output = background_command(std::env::current_exe().unwrap())
         .args([
             "agsdl_host::conformance030_tests::agsdl030_conformance_all_37_scenarios",
             "--exact",

@@ -8,6 +8,7 @@ use crate::{
     },
     argentic_runtime::native_json::Decoder,
     argentic_values_conformance030_tests::Oracle,
+    core::process::background_tokio_command,
 };
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
@@ -265,13 +266,13 @@ async fn clock_oracle_missing_dead_and_silent_are_hard_failures() {
     use futures::FutureExt;
     use std::panic::AssertUnwindSafe;
     assert!(
-        std::panic::catch_unwind(|| Oracle::start_command(tokio::process::Command::new(
+        std::panic::catch_unwind(|| Oracle::start_command(background_tokio_command(
             "argentic-missing-oracle-030"
         )))
         .is_err()
     );
     for script in ["process.exit(7)", "setInterval(() => {}, 1000)"] {
-        let mut command = crate::core::process::background_tokio_command("bun");
+        let mut command = background_tokio_command("bun");
         command.args(["-e", script]);
         let mut oracle = Oracle::start_command(command);
         let failed = AssertUnwindSafe(oracle.request_kind(
