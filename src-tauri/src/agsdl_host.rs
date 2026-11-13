@@ -1,7 +1,8 @@
 //! Process-owned execution engine and a separate transitional resident webview.
+use crate::ai::stream_tasks;
 use crate::core::db_state::DbPool;
 use crate::db::agsdl_execution::{self as repository, dto::EngineOwner, failure, Result};
-use sqlx::SqlitePool;
+use sqlx::{query, query_scalar, Row, SqlitePool};
 use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -31,7 +32,7 @@ impl Incarnation {
     fn admit_owned<F>(
         &self,
         owner: &EngineOwner,
-        tasks: &crate::ai::stream_tasks::StreamTasks,
+        tasks: &stream_tasks::StreamTasks,
         request_id: String,
         work: F,
     ) -> Result<()>
@@ -251,7 +252,7 @@ impl HostStartLease {
     pub(crate) fn admit_owned_stream<F>(
         &self,
         owner: &EngineOwner,
-        tasks: &crate::ai::stream_tasks::StreamTasks,
+        tasks: &stream_tasks::StreamTasks,
         request_id: String,
         work: F,
     ) -> Result<()>
@@ -266,7 +267,7 @@ impl HostStartLease {
     pub(crate) fn admit_owned_agent_stream030<F>(
         &self,
         attempt: &crate::agsdl_host_flow030::FlowWorkAttempt030,
-        tasks: &crate::ai::stream_tasks::StreamTasks,
+        tasks: &stream_tasks::StreamTasks,
         request_id: String,
         work: F,
     ) -> Result<()>
@@ -321,10 +322,10 @@ impl HostStartLease {
     /// durable claim before calling; this attachment does not grant authority.
     pub(crate) fn attach_owned_operation030(
         &self,
-        tasks: &crate::ai::stream_tasks::StreamTasks,
+        tasks: &stream_tasks::StreamTasks,
         parent_request_id: &str,
-        operation: crate::ai::stream_tasks::OwnedOperation030,
-    ) -> Result<crate::ai::stream_tasks::OwnedOperationPermit030> {
+        operation: stream_tasks::OwnedOperation030,
+    ) -> Result<stream_tasks::OwnedOperationPermit030> {
         let _handoff = self
             .host
             .handoff
@@ -453,12 +454,112 @@ impl HostStartLease {
 }
 
 impl HostState {
+    fn native_incarnation(&self) -> Result<Arc<Incarnation>> {
+        self.0
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host state unavailable"))?
+            .as_ref()
+            .map(|host| host.incarnation.clone())
+            .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "", "Host not installed"))
+    }
+
+    /// All process-owned runs, including call-only flows and unselected plans.
+    /// Database/decoding failures are errors, never an empty activity snapshot.
+    pub(crate) async fn shutdown_active_runs(&self, pool: &SqlitePool) -> Result<Vec<String>> {
+        let host = self.native_incarnation()?;
+        let _admission = self.admission_lock().lock_owned().await;
+        self.shutdown_active_runs_for(pool, &host).await
+    }
+
+    async fn shutdown_active_runs_for(
+        &self,
+        pool: &SqlitePool,
+        host: &Incarnation,
+    ) -> Result<Vec<String>> {
+        let rows = query("SELECT o.system_id,o.invocation_id,o.snapshot_id,o.capture_epoch,o.owner_epoch,r.state_json FROM engine_flow030_owners o JOIN engine_flow030_runs r ON r.system_id=o.system_id AND r.invocation_id=o.invocation_id WHERE o.generation=? ORDER BY o.system_id")
+            .bind(&host.generation).fetch_all(pool).await?;
+        let owners = host
+            .owners
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?;
+        let mut active = Vec::new();
+        for row in rows {
+            let system: String = row.try_get("system_id")?;
+            let state: repository::flow030::FlowState030 =
+                serde_json::from_str(row.try_get("state_json")?)?;
+            if state.identity.system_start_id != system
+                || state.identity.flow_invocation_id != row.get::<String, _>("invocation_id")
+                || state.identity.snapshot_id != row.get::<String, _>("snapshot_id")
+                || state.identity.epoch != row.get::<String, _>("capture_epoch")
+                || !owners
+                    .get(&system)
+                    .is_some_and(|owner| owner.owner_epoch == row.get::<String, _>("owner_epoch"))
+            {
+                return Err(failure("CORRELATION", "", "Native shutdown owner differs"));
+            }
+            if state.verdict.is_none() || state.activations.iter().any(|work| work.physical) {
+                active.push(system);
+            }
+        }
+        Ok(active)
+    }
+
+    /// Consent ids only restrict the operation. The native incarnation and its
+    /// retained controls select the owners; the caller cannot supply authority.
+    pub(crate) async fn prepare_shutdown(
+        &self,
+        pool: &SqlitePool,
+        tasks: &stream_tasks::StreamTasks,
+        approved: &[String],
+    ) -> Result<()> {
+        let host = self.native_incarnation()?;
+        {
+            // Wait only for system Starts, not execution leases held by live
+            // calls. Those calls need their supervisor to commit Stop and join.
+            let _starts = self.flow030().start_admission.write().await;
+            let _admission = self.admission_lock().lock_owned().await;
+            if self
+                .shutdown_active_runs_for(pool, &host)
+                .await?
+                .iter()
+                .any(|id| !approved.contains(id))
+            {
+                return Err(failure(
+                    "SHUTDOWN_ACTIVITY_CHANGED",
+                    "",
+                    "New native work requires consent",
+                ));
+            }
+            self.flow030()
+                .shutdown_started
+                .store(true, Ordering::SeqCst);
+        }
+        // Revoking live leases first would prevent supervisors from persisting
+        // their joined call receipts. Stop under existing controls, drain, then
+        // revoke the incarnation. A cancelled waiter leaves those owners intact.
+        if let Err(error) = stop_retired_flows(self.flow030(), pool, tasks, &host.generation).await
+        {
+            if error.code != "STOP_PENDING" {
+                return Err(error);
+            }
+        }
+        for control in self.flow030().retiring_controls(&host.generation)? {
+            let system = &control.identity().system_start_id;
+            if self.flow030().supervisors.is_registered(system)? {
+                self.flow030().supervisors.wake(system);
+                self.flow030().supervisors.wait(system).await?;
+            }
+        }
+        stop_retired_flows(self.flow030(), pool, tasks, &host.generation).await?;
+        self.revoke_native(pool, tasks).await
+    }
+
     /// Explicit native retirement is independent of resident replacement.
     /// Retrying reconciles the same revoked incarnation; it never recreates it.
     pub(crate) async fn revoke_native(
         &self,
         pool: &SqlitePool,
-        tasks: &crate::ai::stream_tasks::StreamTasks,
+        tasks: &stream_tasks::StreamTasks,
     ) -> Result<()> {
         let host = self
             .0
@@ -518,7 +619,7 @@ impl HostState {
         &self,
         caller: &Webview,
         owner: &EngineOwner,
-        tasks: &crate::ai::stream_tasks::StreamTasks,
+        tasks: &stream_tasks::StreamTasks,
         request_id: String,
         work: F,
     ) -> Result<()>
@@ -774,14 +875,14 @@ pub(crate) async fn fence_generation(
 async fn stop_retired_flows(
     runtime: &crate::agsdl_host_flow030::FlowHost030,
     pool: &SqlitePool,
-    tasks: &crate::ai::stream_tasks::StreamTasks,
+    tasks: &stream_tasks::StreamTasks,
     generation: &str,
 ) -> Result<()> {
     use repository::flow030::{FlowEvent030, FlowEventKind030};
     let mut pending = false;
     for control in runtime.retiring_controls(generation)? {
         let identity = control.identity();
-        let exists: bool = sqlx::query_scalar(
+        let exists: bool = query_scalar(
             "SELECT EXISTS(SELECT 1 FROM engine_flow030_owners WHERE system_id=? AND invocation_id=?)",
         )
         .bind(&identity.system_start_id)
@@ -795,7 +896,7 @@ async fn stop_retired_flows(
         let view = control.read(pool).await?;
         if !view.state.stopping && view.state.verdict.is_none() {
             control
-                .apply(
+                .apply_shutdown_stop(
                     pool,
                     &FlowEvent030 {
                         identity: identity.clone(),
@@ -1027,8 +1128,8 @@ mod tests {
         drop(calls);
     }
 
-    fn test_operation030() -> crate::ai::stream_tasks::OwnedOperation030 {
-        crate::ai::stream_tasks::OwnedOperation030 {
+    fn test_operation030() -> stream_tasks::OwnedOperation030 {
+        stream_tasks::OwnedOperation030 {
             identity: crate::db::agsdl_execution::flow030::FlowIdentity030 {
                 system_start_id: "system".into(),
                 flow_invocation_id: "flow".into(),
@@ -1071,7 +1172,7 @@ mod tests {
                 host: host.clone(),
                 _guard: host.lifecycle.clone().read_owned().await,
             };
-            let tasks = crate::ai::stream_tasks::StreamTasks::default();
+            let tasks = stream_tasks::StreamTasks::default();
             let inner = tasks.clone();
             let (go, proceed) = tokio::sync::oneshot::channel();
             let (done, observed) = tokio::sync::oneshot::channel();
@@ -1182,7 +1283,7 @@ mod tests {
             host: host.clone(),
             _guard: host.lifecycle.clone().read_owned().await,
         };
-        let tasks = crate::ai::stream_tasks::StreamTasks::default();
+        let tasks = stream_tasks::StreamTasks::default();
         let polled = Arc::new(AtomicBool::new(false));
         let observed = polled.clone();
         lease

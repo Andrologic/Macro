@@ -53,6 +53,8 @@ import { notify } from '../components/ui/toastService';
 import i18n from '../i18n';
 import {
   appExitCleanly,
+  appShutdownActiveRuns,
+  appShutdownPrepare,
   appInstallerCloseRequestPending,
   appInstallerCloseRespond,
   appUpdateExitAfterCleanShutdown,
@@ -91,7 +93,9 @@ const getSelectedProjectGroupWorkspacePaths = (): string[] => {
   );
 };
 
-const getRestartSafetySnapshot = (): RestartSafetySnapshot => {
+const getRestartSafetySnapshot = async (): Promise<RestartSafetySnapshot> => {
+  // A failed native read must reach the close error path, never become "idle".
+  const executionIds = await appShutdownActiveRuns();
   const chatState = useChatStore.getState();
   const taskState = useTaskStore.getState();
   return selectRestartSafetySnapshot({
@@ -100,6 +104,7 @@ const getRestartSafetySnapshot = (): RestartSafetySnapshot => {
     conversationCompactionStatusById: chatState.conversationCompactionStatusById,
     tasks: taskState.tasks,
     taskCommandRuns: taskState.taskCommandRuns,
+    executionIds,
   });
 };
 
@@ -533,7 +538,7 @@ export function useWindowRestoration() {
       let releaseShutdownGate: (() => void) | null = null;
       try {
         installerRequestedClose = await appInstallerCloseRequestPending();
-        const approvedSafety = getRestartSafetySnapshot();
+        const approvedSafety = await getRestartSafetySnapshot();
         if (approvedSafety.hasActiveWork) {
           if (!(await confirmCloseWithActiveWork(approvedSafety.activeWorkCount))) {
             if (installerRequestedClose) {
@@ -545,7 +550,7 @@ export function useWindowRestoration() {
         }
 
         releaseShutdownGate = beginAppShutdownGate();
-        const safetyAfterConsent = getRestartSafetySnapshot();
+        const safetyAfterConsent = await getRestartSafetySnapshot();
         if (
           hasUnapprovedRestartSafetyActivity(approvedSafety, safetyAfterConsent)
           && !(await confirmCloseWithActiveWork(safetyAfterConsent.activeWorkCount))
@@ -561,6 +566,8 @@ export function useWindowRestoration() {
 
         const { macroPilotRuntime } = await import('../composition/macroPilotDesktop');
         await runWithPotentialShutdown(async () => {
+          // Flush failures and declined consent leave native ownership intact.
+          await appShutdownPrepare((safetyAfterConsent.activeExecutions ?? []).map(activity => activity.id));
           if (installerRequestedClose) {
             await appInstallerCloseRespond(true);
             await appExitCleanly();

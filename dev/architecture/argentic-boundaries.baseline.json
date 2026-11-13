@@ -32,11 +32,11 @@
         "crate:fs": 2
       },
       "src-tauri/src/agsdl_host.rs": {
-        "crate:ai": 13,
+        "crate:ai": 1,
         "crate:core": 1,
         "crate:db": 2,
         "token:AppHandle": 6,
-        "token:sqlx": 2,
+        "token:sqlx": 1,
         "token:tauri": 38
       },
       "src-tauri/src/agsdl_host_call_authority030.rs": {
@@ -293,15 +293,15 @@
         "token:tauri": 19
       },
       "src-tauri/src/agsdl_host_runtime030_tests.rs": {
-        "crate:ai": 12,
+        "crate:ai": 1,
         "crate:commands": 6,
         "crate:config": 2,
-        "crate:db": 43,
+        "crate:db": 42,
         "crate:fs": 1,
         "crate:git": 2,
-        "crate:secrets": 8,
+        "crate:secrets": 1,
         "crate:workspace": 3,
-        "token:sqlx": 16,
+        "token:sqlx": 7,
         "token:tauri": 9
       },
       "src-tauri/src/agsdl_host_scenario030.rs": {

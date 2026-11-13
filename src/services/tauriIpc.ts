@@ -236,7 +236,7 @@ stateSetValue
 } from "./ipc/state";
 
 export {
-appExitCleanly,appInstallerCloseRequestPending,
+appExitCleanly,appShutdownActiveRuns,appShutdownPrepare,appInstallerCloseRequestPending,
 appInstallerCloseRespond,appUpdateCheckAndStage,appUpdateDiscard,appUpdateExitAfterCleanShutdown,appUpdateInstallNow,appUpdateStatus
 } from "./ipc/updates";
 

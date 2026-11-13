@@ -9,7 +9,7 @@ import {
 } from "./contextCompactionSession";
 import { isConversationRuntimeActive } from "../stores/chat/chatRuntimeState";
 
-export type RestartSafetyActivityKind = "agent" | "implement";
+export type RestartSafetyActivityKind = "agent" | "implement" | "execution";
 
 export interface RestartSafetyActivity {
   id: string;
@@ -21,6 +21,7 @@ export interface RestartSafetyActivity {
 export interface RestartSafetySnapshot {
   activeAgents: RestartSafetyActivity[];
   activeImplementations: RestartSafetyActivity[];
+  activeExecutions?: RestartSafetyActivity[];
   activeAgentCount: number;
   activeImplementationCount: number;
   activeWorkCount: number;
@@ -37,8 +38,9 @@ export const hasUnapprovedRestartSafetyActivity = (
   const approvedKeys = new Set([
     ...approved.activeAgents.map(restartSafetyActivityKey),
     ...approved.activeImplementations.map(restartSafetyActivityKey),
+    ...(approved.activeExecutions ?? []).map(restartSafetyActivityKey),
   ]);
-  return [...current.activeAgents, ...current.activeImplementations].some(
+  return [...current.activeAgents, ...current.activeImplementations, ...(current.activeExecutions ?? [])].some(
     (activity) => !approvedKeys.has(restartSafetyActivityKey(activity)),
   );
 };
@@ -60,6 +62,8 @@ export interface RestartSafetySelectorInput {
   taskCommandRuns?: Readonly<
     Record<string, RestartSafetyTaskCommandRun | undefined>
   >;
+  /** Complete process-owned run ids read through the native shutdown port. */
+  executionIds?: ReadonlyArray<string>;
 }
 
 const hasUsableId = (value: unknown): value is string =>
@@ -160,21 +164,26 @@ const collectActiveImplementations = (
 
 /**
  * Returns the serializable work snapshot used to guard an application restart.
- * Only transient agent runtimes, compaction work, and active Implement command
- * runs block the restart. Durable task statuses alone do not.
+ * Transient Chat/Implement work and supplied native executions block shutdown.
+ * Durable task statuses alone do not attest active native work.
  */
 export const selectRestartSafetySnapshot = (
   input: RestartSafetySelectorInput,
 ): RestartSafetySnapshot => {
   const activeAgents = collectActiveAgentActivities(input);
   const activeImplementations = collectActiveImplementations(input);
+  const activeExecutions = [...new Set(input.executionIds ?? [])].map(id => ({
+    id, kind: "execution" as const, phase: "active", title: null,
+  }));
+  const activeWorkCount = activeAgents.length + activeImplementations.length + activeExecutions.length;
 
   return {
     activeAgents,
     activeImplementations,
+    ...(input.executionIds === undefined ? {} : { activeExecutions }),
     activeAgentCount: activeAgents.length,
     activeImplementationCount: activeImplementations.length,
-    activeWorkCount: activeAgents.length + activeImplementations.length,
-    hasActiveWork: activeAgents.length > 0 || activeImplementations.length > 0,
+    activeWorkCount,
+    hasActiveWork: activeWorkCount > 0,
   };
 };

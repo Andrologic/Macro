@@ -19,6 +19,16 @@ export async function appExitCleanly(): Promise<void> {
   return invoke<void>('app_exit_cleanly');
 }
 
+/** Process-owned executions, independent of the selected project or panel. */
+export async function appShutdownActiveRuns(): Promise<string[]> {
+  return invoke<string[]>('app_shutdown_active_runs');
+}
+
+/** The ids limit consent; native ownership determines what is retired. */
+export async function appShutdownPrepare(approvedRuns: string[]): Promise<void> {
+  return invoke<void>('app_shutdown_prepare', { approvedRuns });
+}
+
 export async function appUpdateDiscard(): Promise<void> {
   return invoke<void>('app_update_discard');
 }

@@ -4,12 +4,15 @@ use super::*;
 use crate::agsdl_host_flow030 as flow;
 use crate::agsdl_host_runtime030::*;
 use crate::agsdl_host_work_admission030::{AttestedWorkPolicy030, PreparedEffectiveAgentWork030};
+use crate::ai::{stream_tasks::StreamTasks, AiState};
 use crate::db::agsdl_execution::{
     flow030::{FlowEffect030, FlowEvent030, FlowEventKind030, FlowIdentity030},
-    start030::StartCapture030,
+    start030::{self, StartCapture030},
 };
+use crate::secrets;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use sqlx::{query, query_scalar};
 use tokio::sync::{watch, Notify};
 use tokio_util::sync::CancellationToken;
 
@@ -33,7 +36,7 @@ impl crate::db::agsdl_execution::flow_store030::Authority030 for FixtureStart030
         id: &'a FlowIdentity030,
     ) -> crate::db::agsdl_execution::flow_store030::CheckFuture<'a> {
         Box::pin(async move {
-            let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_flow030_owners WHERE system_id=? AND invocation_id=? AND owner_epoch='owner' AND generation='generation' AND status='live')")
+            let exists: bool = query_scalar("SELECT EXISTS(SELECT 1 FROM engine_flow030_owners WHERE system_id=? AND invocation_id=? AND owner_epoch='owner' AND generation='generation' AND status='live')")
                 .bind(&id.system_start_id).bind(&id.flow_invocation_id).fetch_one(db).await?;
             if exists {
                 Ok(())
@@ -101,7 +104,7 @@ impl crate::db::agsdl_execution::start030::StartAuthority030 for FixtureStart030
         capture: &StartCapture030,
     ) -> crate::db::agsdl_execution::Result<()> {
         let raw = serde_json::to_vec(capture)?;
-        sqlx::query("INSERT INTO engine_flow030_owners VALUES (?,?,?,?,?,?,?,?)")
+        query("INSERT INTO engine_flow030_owners VALUES (?,?,?,?,?,?,?,?)")
             .bind(&capture.identity.system_start_id)
             .bind(&capture.identity.flow_invocation_id)
             .bind(&capture.identity.snapshot_id)
@@ -134,6 +137,9 @@ impl Fixture {
         Self::with_document_in_run(document, "system").await
     }
     async fn with_document_in_run(document: Value, run: &str) -> Self {
+        Self::with_capabilities(document, run, &[]).await
+    }
+    async fn with_capabilities(document: Value, run: &str, capabilities: &[&str]) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let workspace = root.join("workspace");
@@ -171,7 +177,12 @@ impl Fixture {
             &observed,
         )
         .unwrap();
-        let registry = json!({"format":"macro-agsdl-registry/030","version":"fixture","modules":[{"harness":"codex","moduleJson":crate::agsdl_host_codex030::approvals::module030()}],"harnesses":[harness],"agents":agents,"hostCapabilities":[{"name":"approval","support":"native","evidenceJson":"{\"runtime\":\"synthetic-human-clock\"}"}]});
+        let mut registry = json!({"format":"macro-agsdl-registry/030","version":"fixture","modules":[{"harness":"codex","moduleJson":crate::agsdl_host_codex030::approvals::module030()}],"harnesses":[harness],"agents":agents,"hostCapabilities":[{"name":"approval","support":"native","evidenceJson":"{\"runtime\":\"synthetic-human-clock\"}"}]});
+        for name in capabilities {
+            registry["hostCapabilities"].as_array_mut().unwrap().push(json!({
+                "name": name, "support": "native", "evidenceJson": "{\"runtime\":\"synthetic-shutdown-reader\"}"
+            }));
+        }
         let receipt = crate::agsdl_host_compiler::CompileBroker::default()
             .compile_native(
                 "generation",
@@ -202,14 +213,9 @@ impl Fixture {
             authored_source:authored, compiled_plan_json:plan.clone(), registry_json:registry.to_string(), private_capture_json:json!({"format":"macro-native-flow-capture/030","callPermissionsJson":permissions,"callScopeJson":scope.to_string()}).to_string() };
         let pool = crate::db::create_pool(&root.join("run.db")).await.unwrap();
         let request = serde_json::from_value(json!({"source":source,"profile":"macro-agsdl-030-v1", "associations":{}, "requestId":"request", "entry":{"deliveryId":"delivery", "messageJson":"{\"prompt\":\"Start\"}"}})).unwrap();
-        crate::db::agsdl_execution::start030::start_linked(
-            &pool,
-            &request,
-            &FixtureStart030 { capture },
-            None,
-        )
-        .await
-        .unwrap();
+        start030::start_linked(&pool, &request, &FixtureStart030 { capture }, None)
+            .await
+            .unwrap();
         let owner = EngineOwner {
             system_start_id: run.into(),
             owner_epoch: "owner".into(),
@@ -249,10 +255,7 @@ impl Fixture {
             identity,
         }
     }
-    fn emitter(
-        &self,
-        tasks: &crate::ai::stream_tasks::StreamTasks,
-    ) -> Arc<dyn Fn(String) -> EventEmitter030 + Send + Sync> {
+    fn emitter(&self, tasks: &StreamTasks) -> Arc<dyn Fn(String) -> EventEmitter030 + Send + Sync> {
         let (host, pool, config) = (self.host.clone(), self.pool.clone(), self.config.clone());
         let tasks = tasks.clone();
         Arc::new(move |_| {
@@ -370,7 +373,7 @@ impl AgentExecutor030 for FakeExecutor {
 #[tokio::test]
 async fn distinct_executor_chains_two_works_without_double_dispatch() {
     let f = Fixture::new(true).await;
-    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let tasks = StreamTasks::default();
     let starts = Arc::new(AtomicUsize::new(0));
     let executor = Arc::new(FakeExecutor {
         starts: starts.clone(),
@@ -416,7 +419,7 @@ async fn distinct_executor_chains_two_works_without_double_dispatch() {
 #[tokio::test]
 async fn stop_remains_responsive_and_waits_for_physical_end() {
     let f = Fixture::new(false).await;
-    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let tasks = StreamTasks::default();
     let cleanup = Arc::new(Notify::new());
     let started = Arc::new(Notify::new());
     let cancelled = Arc::new(Notify::new());
@@ -495,7 +498,7 @@ async fn stop_remains_responsive_and_waits_for_physical_end() {
 #[tokio::test]
 async fn an_unowned_claim_is_interrupted_and_never_retried() {
     let f = Fixture::new(false).await;
-    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let tasks = StreamTasks::default();
     drop(
         flow::claim_next(f.host.flow030(), &f.host, &f.pool, &f.identity)
             .await
@@ -562,7 +565,7 @@ impl RuntimeClock030 for WakeRaceClock {
 #[tokio::test]
 async fn accepted_completion_and_stop_do_not_route_or_double_send() {
     let f = Fixture::new(true).await;
-    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let tasks = StreamTasks::default();
     let cleanup = Arc::new(Notify::new());
     let submitted = Arc::new(Notify::new());
     let cancelled = Arc::new(Notify::new());
@@ -657,7 +660,7 @@ async fn stop_during_physical_controller_evaluation_retains_the_join() {
     let reached = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     f.pause_physical_evaluation(reached.clone(), release.clone());
-    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let tasks = StreamTasks::default();
     let starts = Arc::new(AtomicUsize::new(0));
     let executors: Executors030 = Executors030 {
         agents: Arc::new(FakeExecutor {
@@ -711,7 +714,7 @@ async fn stop_during_physical_controller_evaluation_retains_the_join() {
 async fn stop_before_the_first_handoff_settles_an_unadmitted_start() {
     let f = Fixture::new(false).await;
     stop_fixture(&f, "stop-before-handoff").await;
-    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let tasks = StreamTasks::default();
     let starts = Arc::new(AtomicUsize::new(0));
     let executors: Executors030 = Executors030 {
         agents: Arc::new(FakeExecutor {
@@ -799,7 +802,7 @@ impl AgentExecutor030 for StopBeforeClaimExecutor {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_between_preparation_and_claim_does_not_start_or_interrupt_the_supervisor() {
     let f = Fixture::new(false).await;
-    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let tasks = StreamTasks::default();
     let starts = Arc::new(AtomicUsize::new(0));
     let executors: Executors030 = Executors030 {
         agents: Arc::new(StopBeforeClaimExecutor {
@@ -848,7 +851,7 @@ async fn qualified_codex_registry_and_policy_run_the_write_review_demo() {
             "write":{"type":"agent","agent":"writer","maxVisits":3,"next":"review"},
             "review":{"type":"agent","agent":"reviewer","maxVisits":3,"next":{"approve":[],"revise":"write"}}}}});
     let f = Fixture::with_document(document).await;
-    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let tasks = StreamTasks::default();
     let starts = Arc::new(AtomicUsize::new(0));
     let executors: Executors030 = Executors030 {
         agents: Arc::new(FakeExecutor {
@@ -904,6 +907,73 @@ async fn qualified_codex_registry_and_policy_run_the_write_review_demo() {
                 .message_json
                 .as_deref()
                 .is_some_and(|message| message.contains("Synthetic draft"))));
+}
+
+#[tokio::test]
+async fn shutdown_snapshot_reads_all_owned_call_only_runs_and_fails_closed() {
+    let document = json!({"contract":"agsdl-0.3.0","id":"shutdown-calls","agents":{},
+        "flow":{"entry":"call","steps":{"call":{"type":"call","command":"true"}}}});
+    let f = Fixture::with_capabilities(document.clone(), "first", &["call.command"]).await;
+    let other = Fixture::with_capabilities(document, "unselected", &["call.command"]).await;
+    let raw: String = query_scalar("SELECT capture_json FROM engine_start030_requests")
+        .fetch_one(&other.pool)
+        .await
+        .unwrap();
+    let capture = serde_json::from_str::<StartCapture030>(&raw).unwrap();
+    let request = serde_json::from_value(json!({"source": capture.source,
+        "profile":"macro-agsdl-030-v1","associations":{},"requestId":"second-request",
+        "entry":{"deliveryId":"second-delivery","messageJson":"{}"}}))
+    .unwrap();
+    start030::start_linked(&f.pool, &request, &FixtureStart030 { capture }, None)
+        .await
+        .unwrap();
+    f.incarnation
+        .owners
+        .lock()
+        .unwrap()
+        .insert("unselected".into(), other.owner.clone());
+    assert_eq!(
+        f.host.shutdown_active_runs(&f.pool).await.unwrap(),
+        ["first", "unselected"]
+    );
+    // A terminal label cannot conceal resources that are still physically pending.
+    query("UPDATE engine_flow030_runs SET state_json=json_set(state_json,'$.verdict','cancelled') WHERE system_id='first'")
+        .execute(&f.pool).await.unwrap();
+    assert_eq!(
+        f.host.shutdown_active_runs(&f.pool).await.unwrap(),
+        ["first", "unselected"]
+    );
+    query("UPDATE engine_flow030_runs SET state_json='{}' WHERE system_id='unselected'")
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    assert!(f.host.shutdown_active_runs(&f.pool).await.is_err());
+}
+
+#[tokio::test]
+async fn shutdown_failed_stop_does_not_commit_an_interruption_marker() {
+    let f = Fixture::new(false).await;
+    let approved = f.host.shutdown_active_runs(&f.pool).await.unwrap();
+    query("CREATE TRIGGER reject_shutdown_stop BEFORE INSERT ON engine_flow030_events WHEN NEW.event_id LIKE 'retire:%' BEGIN SELECT RAISE(ABORT, 'synthetic Stop persistence failure'); END")
+        .execute(&f.pool).await.unwrap();
+    assert!(f
+        .host
+        .prepare_shutdown(&f.pool, &StreamTasks::default(), &approved)
+        .await
+        .is_err());
+    let interrupted: bool =
+        query_scalar("SELECT EXISTS(SELECT 1 FROM engine_flow030_interruptions)")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+    assert!(
+        !interrupted,
+        "a failed native Stop must not publish an interruption"
+    );
+    assert!(
+        f.host.start_lease().await.is_ok(),
+        "failed cleanup keeps native ownership"
+    );
 }
 
 struct CommandFixture {
@@ -1002,7 +1072,7 @@ impl CommandFixture {
             )))
             .manage(TestAgentExecutor030(executor));
         if with_ai {
-            builder = builder.manage(crate::ai::AiState::default());
+            builder = builder.manage(AiState::default());
         }
         let app = builder
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -1027,19 +1097,17 @@ impl CommandFixture {
         self.app.state::<HostState>()
     }
     async fn only_system(&self) -> String {
-        sqlx::query_scalar("SELECT system_id FROM engine_start030_requests")
+        query_scalar("SELECT system_id FROM engine_start030_requests")
             .fetch_one(&self.fixture.pool)
             .await
             .unwrap()
     }
     async fn interrupted(&self, system: &str) -> bool {
-        sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM engine_flow030_interruptions WHERE system_id=?)",
-        )
-        .bind(system)
-        .fetch_one(&self.fixture.pool)
-        .await
-        .unwrap()
+        query_scalar("SELECT EXISTS(SELECT 1 FROM engine_flow030_interruptions WHERE system_id=?)")
+            .bind(system)
+            .fetch_one(&self.fixture.pool)
+            .await
+            .unwrap()
     }
     async fn finish(self) {
         let workspace = self
@@ -1067,10 +1135,96 @@ fn fake_executor() -> FakeExecutor {
 }
 
 #[tokio::test]
+async fn shutdown_rechecks_consent_and_retries_without_losing_physical_ownership() {
+    let _secret_guard = secrets::lock_test_store();
+    let secret_root = tempfile::tempdir().unwrap();
+    secrets::init(secret_root.path()).unwrap();
+    let executor = Arc::new(FakeExecutor {
+        cleanup: Some(Arc::new(Notify::new())),
+        ..fake_executor()
+    });
+    let f = CommandFixture::new(executor.clone(), true).await;
+    let receipt = f.start().await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        executor.started.notified(),
+    )
+    .await
+    .unwrap();
+    let host = f.host();
+    let ai = f.app.state::<AiState>();
+    assert_eq!(
+        host.prepare_shutdown(&f.fixture.pool, &ai.stream_tasks, &[])
+            .await
+            .unwrap_err()
+            .code,
+        "SHUTDOWN_ACTIVITY_CHANGED"
+    );
+    assert!(!host.flow030().shutdown_started.load(Ordering::SeqCst));
+    assert!(!f.interrupted(&receipt.system_start_id).await);
+    let approved = host.shutdown_active_runs(&f.fixture.pool).await.unwrap();
+    assert_eq!(approved, [receipt.system_start_id.clone()]);
+    {
+        let attempt = host.prepare_shutdown(&f.fixture.pool, &ai.stream_tasks, &approved);
+        tokio::pin!(attempt);
+        tokio::select! {
+            result = &mut attempt => panic!("shutdown returned before physical cleanup: {result:?}"),
+            _ = executor.cancelled.notified() => (),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => panic!("shutdown did not reach native Stop"),
+        }
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), &mut attempt)
+                .await
+                .is_err(),
+            "shutdown must wait for the retained executor's physical cleanup"
+        );
+        // Dropping just this waiter models an incomplete IPC attempt. The
+        // registry still owns the executor and its eventual cleanup receipt.
+    }
+    assert!(
+        host.start_lease().await.is_ok(),
+        "cleanup leases must remain live"
+    );
+    assert_eq!(f.start().await.unwrap_err().code, "SHUTDOWN_PENDING");
+    assert_eq!(
+        host.shutdown_active_runs(&f.fixture.pool).await.unwrap(),
+        approved
+    );
+    assert!(f.interrupted(&receipt.system_start_id).await);
+    executor.cleanup.as_ref().unwrap().notify_one();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        host.prepare_shutdown(&f.fixture.pool, &ai.stream_tasks, &approved),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(host.start_lease().await.is_err());
+    assert!(host
+        .shutdown_active_runs(&f.fixture.pool)
+        .await
+        .unwrap()
+        .is_empty());
+    let status: String = query_scalar("SELECT status FROM engine_flow030_owners")
+        .fetch_one(&f.fixture.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "revoked");
+    assert_eq!(
+        executor.starts.load(Ordering::SeqCst),
+        1,
+        "no late successor after Stop"
+    );
+    drop(ai);
+    drop(host);
+    f.finish().await;
+}
+
+#[tokio::test]
 async fn native_flow_choices_preserve_received_prompt_through_entry_and_route() {
     use crate::agsdl_host_human030::{HumanAnswer030, HumanOrigin030, HumanSubmission030};
     use crate::agsdl_host_human_executor030::{HumanClockRuntime030, HumanExecutor030};
-    use crate::ai::stream_tasks::StreamTasks;
+    use StreamTasks;
     let document = json!({"contract":"agsdl-0.3.0","id":"human-prompt-continuity",
         "agents":{"worker":{"harness":"codex","permissions":"read-only"}},
         "flow":{"entry":"first","steps":{
@@ -1110,7 +1264,7 @@ async fn native_flow_choices_preserve_received_prompt_through_entry_and_route() 
             .unwrap();
         for comment in ["First choice", "Second choice"] {
             let request = loop {
-                let request: Option<String> = sqlx::query_scalar("SELECT request_id FROM engine_flow030_human_requests WHERE system_id=? AND kind='approval' AND resolution_json IS NULL ORDER BY rowid LIMIT 1")
+                let request: Option<String> = query_scalar("SELECT request_id FROM engine_flow030_human_requests WHERE system_id=? AND kind='approval' AND resolution_json IS NULL ORDER BY rowid LIMIT 1")
                     .bind(&identity.system_start_id).fetch_optional(&pool).await.unwrap();
                 if let Some(request) = request {
                     break request;
@@ -1118,13 +1272,12 @@ async fn native_flow_choices_preserve_received_prompt_through_entry_and_route() 
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             };
             let _operation = broker.operation.lock().await;
-            let source: String = sqlx::query_scalar(
-                "SELECT capture_json FROM engine_start030_requests WHERE system_id=?",
-            )
-            .bind(&identity.system_start_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+            let source: String =
+                query_scalar("SELECT capture_json FROM engine_start030_requests WHERE system_id=?")
+                    .bind(&identity.system_start_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
             let source: StartCapture030 = serde_json::from_str(&source).unwrap();
             broker
                 .submit(
@@ -1200,7 +1353,7 @@ async fn native_flow_choices_preserve_received_prompt_through_entry_and_route() 
     assert_eq!(message["comments"][0]["comment"], "First choice");
     assert_eq!(message["comments"][1]["comment"], "Second choice");
     let sources: Vec<String> =
-        sqlx::query_scalar("SELECT source_json FROM engine_flow030_route_source_attestations")
+        query_scalar("SELECT source_json FROM engine_flow030_route_source_attestations")
             .fetch_all(&f.pool)
             .await
             .unwrap();
@@ -1213,9 +1366,9 @@ async fn native_flow_choices_preserve_received_prompt_through_entry_and_route() 
 }
 #[tokio::test]
 async fn execution_start_attaches_supervisor_and_completes_write_review() {
-    let _secret_guard = crate::secrets::lock_test_store();
+    let _secret_guard = secrets::lock_test_store();
     let secret_root = tempfile::tempdir().unwrap();
-    crate::secrets::init(secret_root.path()).unwrap();
+    secrets::init(secret_root.path()).unwrap();
     let executor = Arc::new(fake_executor());
     let f = CommandFixture::new(executor.clone(), true).await;
     // No repository is required by Start or history, even beneath another repo.
@@ -1348,7 +1501,7 @@ async fn execution_start_attaches_supervisor_and_completes_write_review() {
         .err()
         .unwrap();
     assert_eq!(error.code, "UNSUPPORTED_030_FEATURE");
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM engine_start030_requests")
+    let count: i64 = query_scalar("SELECT COUNT(*) FROM engine_start030_requests")
         .fetch_one(&f.fixture.pool)
         .await
         .unwrap();
@@ -1358,9 +1511,9 @@ async fn execution_start_attaches_supervisor_and_completes_write_review() {
 
 #[tokio::test]
 async fn execution_stop_waits_for_fake_executor_physical_end() {
-    let _secret_guard = crate::secrets::lock_test_store();
+    let _secret_guard = secrets::lock_test_store();
     let secret_root = tempfile::tempdir().unwrap();
-    crate::secrets::init(secret_root.path()).unwrap();
+    secrets::init(secret_root.path()).unwrap();
     let executor = Arc::new(FakeExecutor {
         cleanup: Some(Arc::new(Notify::new())),
         ..fake_executor()
@@ -1454,14 +1607,14 @@ async fn execution_stop_waits_for_fake_executor_physical_end() {
 
 #[tokio::test]
 async fn execution_start_attachment_failure_releases_waiters_even_when_marker_fails() {
-    let _secret_guard = crate::secrets::lock_test_store();
+    let _secret_guard = secrets::lock_test_store();
     let secret_root = tempfile::tempdir().unwrap();
-    crate::secrets::init(secret_root.path()).unwrap();
+    secrets::init(secret_root.path()).unwrap();
     for fail_marker in [false, true] {
         // Missing managed state fails after commit, before supervisor attachment.
         let f = CommandFixture::new(Arc::new(fake_executor()), false).await;
         if fail_marker {
-            sqlx::query("CREATE TRIGGER fail_marker BEFORE INSERT ON engine_flow030_interruptions BEGIN SELECT RAISE(ABORT, 'synthetic storage failure'); END").execute(&f.fixture.pool).await.unwrap();
+            query("CREATE TRIGGER fail_marker BEFORE INSERT ON engine_flow030_interruptions BEGIN SELECT RAISE(ABORT, 'synthetic storage failure'); END").execute(&f.fixture.pool).await.unwrap();
         }
         assert!(f.start().await.is_err());
         let system = f.only_system().await;
@@ -1474,7 +1627,7 @@ async fn execution_start_attachment_failure_releases_waiters_even_when_marker_fa
         .is_err());
         assert_eq!(f.interrupted(&system).await, !fail_marker);
         if fail_marker {
-            sqlx::query("DROP TRIGGER fail_marker")
+            query("DROP TRIGGER fail_marker")
                 .execute(&f.fixture.pool)
                 .await
                 .unwrap();
@@ -1513,9 +1666,9 @@ impl AgentExecutor030 for FailingPreparation {
 }
 #[tokio::test]
 async fn supervisor_error_and_panic_mark_interrupted_and_release_waiters() {
-    let _secret_guard = crate::secrets::lock_test_store();
+    let _secret_guard = secrets::lock_test_store();
     let secret_root = tempfile::tempdir().unwrap();
-    crate::secrets::init(secret_root.path()).unwrap();
+    secrets::init(secret_root.path()).unwrap();
     for panic in [false, true] {
         let f = CommandFixture::new(Arc::new(FailingPreparation { panic }), true).await;
         let receipt = f.start().await.unwrap();
@@ -1569,7 +1722,7 @@ async fn supervisor_panic_waits_for_active_executor_cleanup() {
         humans: None,
         clock: Some(Arc::new(PanickingClock)),
     };
-    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let tasks = StreamTasks::default();
     let (_wake, receiver) = watch::channel(0);
     let cancel = CancellationToken::new();
     let supervisor = supervise_with_emitter030(

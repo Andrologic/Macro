@@ -41,6 +41,9 @@ use tokio::sync::OwnedMutexGuard;
 /// A missing response never authorizes a second physical effect.
 #[derive(Default)]
 pub(crate) struct FlowHost030 {
+    // Close only new system admission while existing owners finish native Stop.
+    pub(crate) shutdown_started: std::sync::atomic::AtomicBool,
+    pub(crate) start_admission: tokio::sync::RwLock<()>,
     pub(crate) supervisors: crate::agsdl_host_runtime030::RuntimeRegistry030,
     pub(crate) humans: crate::agsdl_host_human030::HumanRuntime030,
     committing: Mutex<BTreeMap<String, FlowIdentity030>>,
@@ -1246,7 +1249,18 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
     request: &EngineStartRequest,
     link: Option<&IntentAdmissionLink>,
 ) -> Result<RetainedStart030> {
+    let _start = runtime.start_admission.read().await;
     let lease = host.start_lease().await?;
+    if runtime
+        .shutdown_started
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return Err(failure(
+            "SHUTDOWN_PENDING",
+            "",
+            "Application shutdown has begun",
+        ));
+    }
     let authority = Start {
         runtime,
         host,
@@ -2837,8 +2851,7 @@ async fn claim_selected<'a>(
 pub(crate) async fn revoke_generation(pool: &SqlitePool, generation: &str) -> Result<()> {
     let mut db = pool.acquire().await?;
     let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-    sqlx::query("INSERT OR IGNORE INTO engine_flow030_interruptions(system_id) SELECT o.system_id FROM engine_flow030_owners o JOIN engine_flow030_runs r ON r.system_id=o.system_id AND r.invocation_id=o.invocation_id WHERE o.generation=? AND json_extract(r.state_json,'$.verdict') IS NULL")
-        .bind(generation).execute(&mut *tx).await?;
+    mark_generation_interrupted_tx(&mut tx, generation, None).await?;
     sqlx::query(
         "UPDATE engine_flow030_owners SET status='revoked' WHERE generation=? AND status='live'",
     )
@@ -2846,6 +2859,16 @@ pub(crate) async fn revoke_generation(pool: &SqlitePool, generation: &str) -> Re
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    Ok(())
+}
+
+async fn mark_generation_interrupted_tx(
+    db: &mut SqliteConnection,
+    generation: &str,
+    system: Option<&str>,
+) -> Result<()> {
+    sqlx::query("INSERT OR IGNORE INTO engine_flow030_interruptions(system_id) SELECT o.system_id FROM engine_flow030_owners o JOIN engine_flow030_runs r ON r.system_id=o.system_id AND r.invocation_id=o.invocation_id WHERE o.generation=? AND (? IS NULL OR o.system_id=?) AND json_extract(r.state_json,'$.verdict') IS NULL")
+        .bind(generation).bind(system).bind(system).execute(db).await?;
     Ok(())
 }
 
@@ -3583,6 +3606,28 @@ impl FlowControl030 {
     /// Cleanup is allowed after live=false; re-admission is not. The caller
     /// constructs physical evidence from the native supervisor, never model IPC.
     pub(crate) async fn apply(&self, pool: &SqlitePool, event: &FlowEvent030) -> Result<Apply030> {
+        self.apply_cleanup(pool, event, false).await
+    }
+
+    /// Record interruption only on the same successful Stop transaction. A
+    /// failed/diagnostic Stop and a natural completion must not publish it.
+    pub(crate) async fn apply_shutdown_stop(
+        &self,
+        pool: &SqlitePool,
+        event: &FlowEvent030,
+    ) -> Result<Apply030> {
+        if !matches!(event.kind, FlowEventKind030::Stop) {
+            return Err(refused());
+        }
+        self.apply_cleanup(pool, event, true).await
+    }
+
+    async fn apply_cleanup(
+        &self,
+        pool: &SqlitePool,
+        event: &FlowEvent030,
+        interrupted: bool,
+    ) -> Result<Apply030> {
         if event.identity != self.identity
             || !matches!(
                 &event.kind,
@@ -3597,9 +3642,20 @@ impl FlowControl030 {
             .execute(&mut *db)
             .await?;
         let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+        if interrupted {
+            mark_generation_interrupted_tx(
+                &mut tx,
+                &self.generation,
+                Some(&self.identity.system_start_id),
+            )
+            .await?;
+        }
         let result = flow_store030::apply_tx(&mut tx, self, event)
             .await
             .map_err(store_error)?;
+        if interrupted && matches!(result, Apply030::Diagnostic(_)) {
+            return Err(refused());
+        }
         tx.commit().await.map_err(|_| uncertain())?;
         Ok(result)
     }

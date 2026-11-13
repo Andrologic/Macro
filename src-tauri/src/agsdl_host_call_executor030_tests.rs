@@ -186,7 +186,16 @@ async fn native_call_stop_joins_real_child_and_never_starts_successor() {
     let doc = document(
         json!({"type":"call","command":"sleep 120 & printf '%s %s' \"$$\" \"$!\" > pids; wait","next":"after","onError":"after"}),
     );
-    stop_and_assert(doc).await;
+    stop_and_assert(doc, false).await;
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[tokio::test]
+async fn native_shutdown_joins_real_call_and_descendant_before_revocation() {
+    let doc = document(
+        json!({"type":"call","command":"sleep 120 & printf '%s %s' \"$$\" \"$!\" > pids; wait","next":"after","onError":"after"}),
+    );
+    stop_and_assert(doc, true).await;
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -197,11 +206,11 @@ async fn native_mcp_stop_joins_real_server_and_child() {
         json!({"type":"call","mcp":{"server":"local","tool":"check"},"next":"after","onError":"after"}),
     );
     doc["mcpServers"] = json!({"local":{"command":["/bin/sh","-c",server]}});
-    stop_and_assert(doc).await;
+    stop_and_assert(doc, false).await;
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-async fn stop_and_assert(mut doc: Value) {
+async fn stop_and_assert(mut doc: Value, shutdown: bool) {
     doc["flow"]["steps"]["after"] = json!({"type":"call","command":"printf forbidden > successor"});
     let (f, tasks) = host_fixture(doc).await;
     let path = f._temp.path().join("workspace/pids");
@@ -221,22 +230,45 @@ async fn stop_and_assert(mut doc: Value) {
     })
     .await;
     let host = f.app.state::<HostState>();
-    crate::agsdl_host_stop030::request(
-        host.flow030(),
-        &f.pool,
-        &tasks,
-        &crate::db::agsdl_execution::dto::EngineStopRequest {
-            system_start_id: f.owner.system_start_id.clone(),
-            request_id: "stop-command".into(),
-            activation_id: None,
-        },
-    )
-    .await
-    .unwrap();
-    drop(host);
+    let view = if shutdown {
+        let generation = host.start_lease().await.unwrap().generation().to_owned();
+        let control = host
+            .flow030()
+            .retiring_controls(&generation)
+            .unwrap()
+            .into_iter()
+            .find(|control| control.identity().system_start_id == f.owner.system_start_id)
+            .unwrap();
+        let approved = host.shutdown_active_runs(&f.pool).await.unwrap();
+        assert_eq!(approved, [f.owner.system_start_id.clone()]);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            host.prepare_shutdown(&f.pool, &tasks, &approved),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(host.start_lease().await.is_err());
+        control.read(&f.pool).await.unwrap()
+    } else {
+        crate::agsdl_host_stop030::request(
+            host.flow030(),
+            &f.pool,
+            &tasks,
+            &crate::db::agsdl_execution::dto::EngineStopRequest {
+                system_start_id: f.owner.system_start_id.clone(),
+                request_id: "stop-command".into(),
+                activation_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        drop(host);
+        finish(&f).await
+    };
     let pids = observed.expect("Confined command did not start");
-    let view = finish(&f).await;
     assert_eq!(view.state.verdict.as_deref(), Some("cancelled"));
+    assert!(!view.state.activations.iter().any(|work| work.physical));
     assert_eq!(view.state.activations.len(), 1);
     assert!(!f._temp.path().join("workspace/successor").exists());
     for pid in pids {

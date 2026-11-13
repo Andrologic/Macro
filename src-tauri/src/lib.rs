@@ -19,6 +19,7 @@ mod native_quit_consent {
     static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
     extern "C" fn should_terminate(_: *mut AnyObject, _: Sel, _: *mut AnyObject) -> usize {
+        let phase = crate::app_shutdown::Phase::begin("appkit_quit_request");
         if let Some(app) = APP.get() {
             if let Some(window) = app.get_webview_window("main") {
                 if let Err(error) = window.close() {
@@ -26,6 +27,7 @@ mod native_quit_consent {
                 }
             }
         }
+        phase.finish(true);
         0 // NSTerminateCancel: the frontend will explicitly exit after flushing.
     }
 
@@ -131,6 +133,7 @@ mod agsdl_host_work_admission030;
 mod agsdl_intent_coordinator;
 pub(crate) mod agsdl_permissions;
 mod app_quit_state;
+mod app_shutdown;
 mod app_updates;
 // Argentic core staged inside Macro (D15 2.c). The product path does not call
 // it before the 2.c.7 switch, which removes this dead-code allowance.
@@ -890,6 +893,8 @@ pub fn run() {
             app_updates::app_update_check_and_stage,
             app_updates::app_update_exit_after_clean_shutdown,
             app_updates::app_exit_cleanly,
+            app_shutdown::app_shutdown_active_runs,
+            app_shutdown::app_shutdown_prepare,
             app_updates::app_update_discard,
             app_updates::app_update_install_now,
             app_updates::app_installer_close_request_pending,
@@ -1310,11 +1315,16 @@ pub fn run() {
             label,
             ..
         } => {
+            tracing::info!(
+                event = "app_shutdown_window_destroyed",
+                main = label == "main"
+            );
             commands::chat_admission::retire_browser_from_native(app_handle, &label);
             commands::pilot_secrets::suspend("window_destroyed");
             app_handle.state::<connect::TransferRuntime>().revoke();
         }
         tauri::RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
+            tracing::info!(event = "app_shutdown_exit_request", explicit = false);
             api.prevent_exit();
             if let Some(window) = app_handle.get_webview_window("main") {
                 if let Err(error) = window.close() {
@@ -1323,36 +1333,56 @@ pub fn run() {
             }
         }
         tauri::RunEvent::ExitRequested { .. } => {
+            let phase = app_shutdown::Phase::begin("exit_requested");
             commands::pilot_secrets::suspend("exit_requested");
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit-requested");
-            commands::git::cancel_all_git_reviews();
-            shutdown_mcp_runtime(app_handle);
-            if !tauri::async_runtime::block_on(
-                app_handle.state::<connect::TransferRuntime>().shutdown(),
-            ) {
+            app_shutdown::run_phase("git_reviews", commands::git::cancel_all_git_reviews);
+            app_shutdown::run_phase("mcp_runtime", || shutdown_mcp_runtime(app_handle));
+            if !app_shutdown::run_phase("connect_runtime", || {
+                tauri::async_runtime::block_on(
+                    app_handle.state::<connect::TransferRuntime>().shutdown(),
+                )
+            }) {
                 tracing::warn!("Connect transport cleanup remains unreconciled");
             }
-            if tauri::async_runtime::block_on(secrets::blocking::shutdown()).is_err() {
+            if app_shutdown::run_phase("owned_secret_operations", || {
+                tauri::async_runtime::block_on(secrets::blocking::shutdown())
+            })
+            .is_err()
+            {
                 tracing::warn!("Secret operation owner did not finish cleanly");
             }
-            fs::watcher::shutdown_watcher(app_handle);
+            app_shutdown::run_phase("filesystem_watcher", || {
+                fs::watcher::shutdown_watcher(app_handle)
+            });
+            phase.finish(true);
         }
         tauri::RunEvent::Exit => {
+            let phase = app_shutdown::Phase::begin("exit");
             commands::pilot_secrets::suspend("process_exit");
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit");
-            commands::git::cancel_all_git_reviews();
-            shutdown_mcp_runtime(app_handle);
-            if !tauri::async_runtime::block_on(
-                app_handle.state::<connect::TransferRuntime>().shutdown(),
-            ) {
+            app_shutdown::run_phase("git_reviews", commands::git::cancel_all_git_reviews);
+            app_shutdown::run_phase("mcp_runtime", || shutdown_mcp_runtime(app_handle));
+            if !app_shutdown::run_phase("connect_runtime", || {
+                tauri::async_runtime::block_on(
+                    app_handle.state::<connect::TransferRuntime>().shutdown(),
+                )
+            }) {
                 tracing::warn!("Connect transport cleanup remains unreconciled");
             }
-            if tauri::async_runtime::block_on(secrets::blocking::shutdown()).is_err() {
+            if app_shutdown::run_phase("owned_secret_operations", || {
+                tauri::async_runtime::block_on(secrets::blocking::shutdown())
+            })
+            .is_err()
+            {
                 tracing::warn!("Secret operation owner did not finish cleanly");
             }
-            fs::watcher::shutdown_watcher(app_handle);
+            app_shutdown::run_phase("filesystem_watcher", || {
+                fs::watcher::shutdown_watcher(app_handle)
+            });
+            phase.finish(true);
         }
         _ => {}
     });
