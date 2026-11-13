@@ -4,9 +4,12 @@ use super::*;
 #[serde(rename_all = "camelCase")]
 pub struct PublicSnapshot {
     pub system_start_id: String,
+    #[ts(as = "super::dto::ipc::EngineSourceRevision")]
     pub source: EngineSourceRevision,
     pub authored_source: String,
+    #[ts(as = "super::dto::ipc::EngineVersions")]
     pub versions: EngineVersions,
+    #[ts(as = "super::dto::ipc::EngineAssociations")]
     pub associations: EngineAssociations,
 }
 impl From<EngineSnapshot> for PublicSnapshot {
@@ -61,6 +64,7 @@ impl From<EngineStopState> for PublicStopState {
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicActivation {
+    #[ts(as = "super::dto::ipc::EngineWork")]
     pub work: EngineWork,
     pub delivery_id: String,
     pub queue_sequence: String,
@@ -85,6 +89,7 @@ pub struct ProjectionPage {
 #[serde(rename_all = "camelCase")]
 pub struct PublicProjection {
     pub system_start_id: String,
+    #[ts(as = "super::dto::ipc::EngineSourceRevision")]
     pub source: EngineSourceRevision,
     pub cursor: String,
     pub agents: Vec<PublicAgent>,
@@ -97,6 +102,7 @@ pub struct PublicProjection {
 pub struct PublicEvent {
     pub system_start_id: String,
     pub sequence: String,
+    #[ts(as = "Option<super::dto::ipc::EngineWork>")]
     pub work: Option<EngineWork>,
     pub kind: String,
 }

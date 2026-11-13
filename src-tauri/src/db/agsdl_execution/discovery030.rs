@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunListRequest030 {
+    #[ts(as = "super::dto::ipc::EngineSourceOwner")]
     pub owner: EngineSourceOwner,
     pub after: Option<String>,
     pub limit: Option<u32>,
@@ -35,7 +36,9 @@ pub struct PublicRunSummary030 {
     pub system_start_id: String,
     pub flow_invocation_id: String,
     pub snapshot_id: String,
+    #[ts(as = "super::dto::ipc::EngineSourceRevision")]
     pub source: EngineSourceRevision,
+    #[ts(as = "super::dto::ipc::EngineVersions")]
     pub versions: EngineVersions,
     pub revision: String,
     pub stopping: bool,

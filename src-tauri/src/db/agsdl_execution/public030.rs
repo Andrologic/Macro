@@ -5,6 +5,7 @@ use super::*;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HumanScope030 {
     pub system_start_id: String,
+    #[ts(as = "super::dto::ipc::EngineSourceRevision")]
     pub source: EngineSourceRevision,
 }
 

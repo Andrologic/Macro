@@ -855,7 +855,7 @@
         "execution"
       ],
       "name": "EngineAcceptedDelivery",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineAcceptedDelivery",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineAcceptedDelivery",
       "path": "EngineAcceptedDelivery.ts"
     },
     {
@@ -863,7 +863,7 @@
         "execution"
       ],
       "name": "EngineActivation",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineActivation",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineActivation",
       "path": "EngineActivation.ts"
     },
     {
@@ -871,7 +871,7 @@
         "execution"
       ],
       "name": "EngineAgentConfiguration",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineAgentConfiguration",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineAgentConfiguration",
       "path": "EngineAgentConfiguration.ts"
     },
     {
@@ -879,7 +879,7 @@
         "execution"
       ],
       "name": "EngineAssociations",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineAssociations",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineAssociations",
       "path": "EngineAssociations.ts"
     },
     {
@@ -887,7 +887,7 @@
         "execution"
       ],
       "name": "EngineDelivery",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineDelivery",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineDelivery",
       "path": "EngineDelivery.ts"
     },
     {
@@ -895,7 +895,7 @@
         "execution"
       ],
       "name": "EngineEntry",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineEntry",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineEntry",
       "path": "EngineEntry.ts"
     },
     {
@@ -903,7 +903,7 @@
         "execution"
       ],
       "name": "EngineEvent",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineEvent",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineEvent",
       "path": "EngineEvent.ts"
     },
     {
@@ -911,7 +911,7 @@
         "execution"
       ],
       "name": "EngineEventPage",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineEventPage",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineEventPage",
       "path": "EngineEventPage.ts"
     },
     {
@@ -919,7 +919,7 @@
         "execution"
       ],
       "name": "EngineFailure",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineFailure",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineFailure",
       "path": "EngineFailure.ts"
     },
     {
@@ -927,7 +927,7 @@
         "execution"
       ],
       "name": "EngineMemory",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineMemory",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineMemory",
       "path": "EngineMemory.ts"
     },
     {
@@ -935,7 +935,7 @@
         "execution"
       ],
       "name": "EngineOutcome",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineOutcome",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineOutcome",
       "path": "EngineOutcome.ts"
     },
     {
@@ -943,7 +943,7 @@
         "execution"
       ],
       "name": "EngineOwner",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineOwner",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineOwner",
       "path": "EngineOwner.ts"
     },
     {
@@ -951,7 +951,7 @@
         "execution"
       ],
       "name": "EngineProjection",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineProjection",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineProjection",
       "path": "EngineProjection.ts"
     },
     {
@@ -959,7 +959,7 @@
         "execution"
       ],
       "name": "EngineSnapshot",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineSnapshot",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineSnapshot",
       "path": "EngineSnapshot.ts"
     },
     {
@@ -967,7 +967,7 @@
         "execution"
       ],
       "name": "EngineSourceOwner",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineSourceOwner",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineSourceOwner",
       "path": "EngineSourceOwner.ts"
     },
     {
@@ -975,7 +975,7 @@
         "execution"
       ],
       "name": "EngineSourceRevision",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineSourceRevision",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineSourceRevision",
       "path": "EngineSourceRevision.ts"
     },
     {
@@ -983,7 +983,7 @@
         "execution"
       ],
       "name": "EngineStartReceipt",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineStartReceipt",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineStartReceipt",
       "path": "EngineStartReceipt.ts"
     },
     {
@@ -991,7 +991,7 @@
         "execution"
       ],
       "name": "EngineStartRequest",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineStartRequest",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineStartRequest",
       "path": "EngineStartRequest.ts"
     },
     {
@@ -999,7 +999,7 @@
         "execution"
       ],
       "name": "EngineStopRequest",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineStopRequest",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineStopRequest",
       "path": "EngineStopRequest.ts"
     },
     {
@@ -1007,7 +1007,7 @@
         "execution"
       ],
       "name": "EngineStopState",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineStopState",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineStopState",
       "path": "EngineStopState.ts"
     },
     {
@@ -1015,7 +1015,7 @@
         "execution"
       ],
       "name": "EngineTerminalCommit",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineTerminalCommit",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineTerminalCommit",
       "path": "EngineTerminalCommit.ts"
     },
     {
@@ -1023,7 +1023,7 @@
         "execution"
       ],
       "name": "EngineValue",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineValue",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineValue",
       "path": "EngineValue.ts"
     },
     {
@@ -1031,7 +1031,7 @@
         "execution"
       ],
       "name": "EngineVersions",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineVersions",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineVersions",
       "path": "EngineVersions.ts"
     },
     {
@@ -1039,7 +1039,7 @@
         "execution"
       ],
       "name": "EngineWork",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineWork",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineWork",
       "path": "EngineWork.ts"
     },
     {

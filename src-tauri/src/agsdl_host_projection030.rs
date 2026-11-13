@@ -2,7 +2,7 @@
 //! A continuation never survives a flow revision or scope change.
 use crate::agsdl_host::HostState;
 use crate::db::agsdl_execution::{
-    dto::EngineSourceRevision,
+    dto::{ipc as ipc_dto, EngineSourceRevision},
     failure,
     flow030::FlowPlan030,
     runtime_projection030::{
@@ -21,6 +21,7 @@ const PAGE_SIZE: usize = 100;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeProjectionScope030 {
     pub system_start_id: String,
+    #[ts(as = "ipc_dto::EngineSourceRevision")]
     pub source: EngineSourceRevision,
     pub snapshot_id: String,
 }
@@ -30,6 +31,7 @@ pub struct RuntimeProjectionScope030 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeProjectionQuery030 {
     pub system_start_id: String,
+    #[ts(as = "ipc_dto::EngineSourceRevision")]
     pub source: EngineSourceRevision,
     pub snapshot_id: Option<String>,
 }

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolveCardTask {
     pub system_start_id: String,
+    #[ts(as = "crate::db::agsdl_execution::dto::ipc::EngineSourceRevision")]
     pub source: EngineSourceRevision,
     pub path: String,
 }

@@ -4,6 +4,7 @@ use super::*;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PublicApproval {
     pub approval_id: String,
+    #[ts(as = "super::dto::ipc::EngineWork")]
     pub work: EngineWork,
     pub tool_name: String,
     pub summary: String,
@@ -13,6 +14,7 @@ pub struct PublicApproval {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApprovalScope {
     pub system_start_id: String,
+    #[ts(as = "super::dto::ipc::EngineSourceRevision")]
     pub source: EngineSourceRevision,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]

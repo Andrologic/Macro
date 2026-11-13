@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecutionPreflightRequest {
+    #[ts(as = "crate::db::agsdl_execution::dto::ipc::EngineSourceOwner")]
     pub owner: EngineSourceOwner,
+    #[ts(as = "Option<crate::db::agsdl_execution::dto::ipc::EngineSourceRevision>")]
     pub expected: Option<EngineSourceRevision>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
@@ -26,6 +28,7 @@ pub struct PreflightDiagnostic {
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecutionPreflight {
+    #[ts(as = "crate::db::agsdl_execution::dto::ipc::EngineSourceRevision")]
     pub source: EngineSourceRevision,
     pub authored_source: String,
     pub static_valid: bool,

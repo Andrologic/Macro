@@ -12,15 +12,16 @@ pub struct ExecutionExternalDelivery {
 use public::PublicStartReceipt;
 
 macro_rules! object {
-    ($name:ident {$($field:ident: $ty:ty),* $(,)?}) => {
+    ($name:ident {$($(#[$attr:meta])* $field:ident: $ty:ty),* $(,)?}) => {
         #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
-        pub struct $name { $(pub $field: $ty),* }
+        pub struct $name { $( $(#[$attr])* pub $field: $ty),* }
     };
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecutionIntentScope {
+    #[ts(as = "super::dto::ipc::EngineSourceOwner")]
     pub owner: EngineSourceOwner,
     pub conversation_id: String,
 }
@@ -44,9 +45,11 @@ pub enum ExecutionIntentFormatVersion {
 )]
 pub enum ExecutionIntentPayload {
     Start {
+        #[ts(as = "super::dto::ipc::EngineStartRequest")]
         request: EngineStartRequest,
     },
     Deliver {
+        #[ts(as = "super::dto::ipc::EngineSourceRevision")]
         source: EngineSourceRevision,
         request: ExecutionExternalDelivery,
     },
@@ -54,7 +57,9 @@ pub enum ExecutionIntentPayload {
 object!(PublicStartReceipt030 {
     system_start_id: String,
     flow_invocation_id: String,
+    #[ts(as = "super::dto::ipc::EngineSourceRevision")]
     source: EngineSourceRevision,
+    #[ts(as = "super::dto::ipc::EngineVersions")]
     versions: EngineVersions,
     entry_delivery_id: Option<String>
 });
@@ -70,9 +75,16 @@ object!(ExecutionRunCorrelation030 {
     deny_unknown_fields
 )]
 pub enum ExecutionIntentAdmission {
-    Start { receipt: PublicStartReceipt },
-    Start030 { receipt: PublicStartReceipt030 },
-    Deliver { receipt: EngineAcceptedDelivery },
+    Start {
+        receipt: PublicStartReceipt,
+    },
+    Start030 {
+        receipt: PublicStartReceipt030,
+    },
+    Deliver {
+        #[ts(as = "super::dto::ipc::EngineAcceptedDelivery")]
+        receipt: EngineAcceptedDelivery,
+    },
 }
 macro_rules! codes {
     ($name:ident {$($variant:ident),*}) => {

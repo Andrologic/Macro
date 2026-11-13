@@ -24,7 +24,7 @@ pub mod execution {
     pub use crate::db::agsdl_execution::discovery030::{
         PhaseCount030, PublicRunSummary030, RunListRequest030, RunPage030,
     };
-    pub use crate::db::agsdl_execution::dto::*;
+    pub use crate::db::agsdl_execution::dto::ipc::*;
     pub use crate::db::agsdl_execution::intents::*;
     pub use crate::db::agsdl_execution::public::*;
     pub use crate::db::agsdl_execution::public030::{

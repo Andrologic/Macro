@@ -5,6 +5,7 @@ use super::*;
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunListRequest {
+    #[ts(as = "super::dto::ipc::EngineSourceOwner")]
     pub owner: EngineSourceOwner,
     pub after: Option<String>,
     pub limit: Option<u32>,
@@ -24,7 +25,9 @@ pub struct PublicRunCounts {
 pub struct PublicRunSummary {
     pub system_start_id: String,
     pub flow_invocation_id: String,
+    #[ts(as = "super::dto::ipc::EngineSourceRevision")]
     pub source: EngineSourceRevision,
+    #[ts(as = "super::dto::ipc::EngineVersions")]
     pub versions: EngineVersions,
     pub cursor: String,
     pub system_stop: PublicStopState,

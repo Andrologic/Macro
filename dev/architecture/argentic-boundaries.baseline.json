@@ -353,22 +353,18 @@
         "crate:db": 1,
         "token:sqlx": 16
       },
-      "src-tauri/src/db/agsdl_execution/dto.rs": {
-        "token:ts_rs": 7
-      },
       "src-tauri/src/db/agsdl_execution/flow_work_protocol030.rs": {
         "crate:ai": 3,
         "token:sqlx": 39
       },
       "src-tauri/src/db/agsdl_execution/mod.rs": {
-        "token:sqlx": 4
+        "token:sqlx": 1
       },
       "src-tauri/src/db/agsdl_execution/public030.rs": {
         "token:ts_rs": 7
       },
       "src-tauri/src/db/agsdl_execution/start030.rs": {
-        "crate:db": 3,
-        "token:sqlx": 5
+        "token:sqlx": 1
       },
       "src-tauri/src/db/agsdl_execution/start030_tests.rs": {
         "crate:db": 4,
