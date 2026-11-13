@@ -187,25 +187,39 @@ struct NormalizedData030(protocol::CallResult030);
 /// Pure data adapter. Production always uses the shared Rust evaluator; the
 /// legacy mailbox constructor exists only for transport-validation fixtures.
 /// Neither a data result nor a transport completion authorizes physical IO.
-pub(crate) struct CallDataBroker030(Arc<RouteBroker030>, Option<String>);
+enum CallDataEvaluation030 {
+    Native(String),
+    #[cfg(test)]
+    Transport,
+}
+pub(crate) struct CallDataBroker030 {
+    route: Arc<RouteBroker030>,
+    evaluation: CallDataEvaluation030,
+}
 #[cfg(test)]
 impl Default for CallDataBroker030 {
     fn default() -> Self {
-        Self(Default::default(), None)
+        Self {
+            route: Default::default(),
+            evaluation: CallDataEvaluation030::Transport,
+        }
     }
 }
 impl CallDataBroker030 {
     pub(crate) fn from_native_route(broker: Arc<RouteBroker030>, generation: String) -> Self {
-        Self(broker, Some(generation))
+        Self {
+            route: broker,
+            evaluation: CallDataEvaluation030::Native(generation),
+        }
     }
     pub(crate) async fn next(&self) -> Result<HostRouteJob030> {
-        self.0.next().await
+        self.route.next().await
     }
     pub(crate) fn complete(&self, generation: &str, result: HostRouteCompletion030) -> Result<()> {
-        self.0.complete(generation, result)
+        self.route.complete(generation, result)
     }
     pub(crate) fn close(&self) {
-        self.0.close();
+        self.route.close();
     }
 
     async fn evaluate(
@@ -214,23 +228,19 @@ impl CallDataBroker030 {
         input: String,
         cancel: &CancellationToken,
     ) -> Result<String> {
-        if let Some(expected) = &self.1 {
-            return self
-                .0
-                .evaluate_native(expected, generation, input, cancel)
-                .await;
+        match &self.evaluation {
+            CallDataEvaluation030::Native(expected) => {
+                self.route
+                    .evaluate_native(expected, generation, input, cancel)
+                    .await
+            }
+            #[cfg(test)]
+            CallDataEvaluation030::Transport => {
+                self.route.evaluate(generation, input, cancel).await
+            }
         }
-        #[cfg(test)]
-        {
-            return self.0.evaluate(generation, input, cancel).await;
-        }
-        #[cfg(not(test))]
-        Err(failure(
-            "RUNTIME_UNAVAILABLE",
-            "route",
-            "Native calculation could not produce a result",
-        ))
     }
+
     async fn prepare(
         &self,
         attempt: &CallAttempt030,
