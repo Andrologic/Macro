@@ -29,3 +29,6 @@ pub(crate) mod valueschema;
 pub(crate) mod work;
 
 extern crate self as argentic_core;
+
+mod native_json;
+pub mod calculation;

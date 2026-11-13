@@ -3142,6 +3142,8 @@ dependencies = [
 name = "macro"
 version = "0.1.8"
 dependencies = [
+ "argentic-core",
+ "argentic-runtime",
  "ast-grep-core",
  "ast-grep-language",
  "async-trait",

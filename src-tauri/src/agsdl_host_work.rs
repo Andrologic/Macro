@@ -395,24 +395,13 @@ impl WorkBroker030 {
                 cancelled,
                 raw_job,
                 move || {
-                    use crate::argentic_core::native::{JsonDecoder, Text};
-                    let decoder = crate::argentic_runtime::native_json::Decoder;
-                    let input = decoder.parse(&Text::from(raw_input)).map_err(|_| {
+                    ::argentic_runtime::calculation::work(&raw_input).map_err(|_| {
                         failure(
                             "RUNTIME_UNAVAILABLE",
                             "work",
                             "Native calculation could not produce a result",
                         )
-                    })?;
-                    crate::argentic_core::work::evaluate_host(&input, &decoder)
-                        .map(|output| output.stringify())
-                        .map_err(|_| {
-                            failure(
-                                "RUNTIME_UNAVAILABLE",
-                                "work",
-                                "Native calculation could not produce a result",
-                            )
-                        })
+                    })
                 },
             )
             .await?;

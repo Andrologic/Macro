@@ -189,12 +189,7 @@ impl RouteBroker030 {
                 cancel,
                 raw_job,
                 move || {
-                    crate::argentic_core::route::data::evaluate(
-                        &crate::argentic_core::native::Text::from(job.input_json),
-                        &crate::argentic_runtime::native_json::Decoder,
-                    )
-                    .map(|output| output.stringify())
-                    .map_err(|_| {
+                    ::argentic_runtime::calculation::route(&job.input_json).map_err(|_| {
                         failure(
                             "RUNTIME_UNAVAILABLE",
                             "route",

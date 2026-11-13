@@ -173,44 +173,12 @@ impl CompileBroker {
                 cancelled,
                 raw_job,
                 move || {
-                    use crate::argentic_core::{
-                        compile::{host, metadata},
-                        native::{s, JsonDecoder, Text},
-                    };
-                    let unavailable = |_| {
-                        failure(
-                            "RUNTIME_UNAVAILABLE",
-                            "",
-                            "Native calculation could not produce a result",
-                        )
-                    };
-                    let registry = crate::argentic_runtime::native_json::Decoder
-                        .parse(&Text::from(captured.registry_json))
-                        .map_err(unavailable)?;
-                    if !registry.get("format").eq_str("macro-agsdl-registry/030") {
-                        return Err(failure(
-                            "RUNTIME_UNAVAILABLE",
-                            "",
-                            "Native calculation could not produce a result",
-                        ));
-                    }
-                    let source = crate::argentic_runtime::native_json::Decoder
-                        .parse(&Text::from(serde_json::to_string(&captured.source)?))
-                        .map_err(|_| {
-                            failure(
-                                "RUNTIME_UNAVAILABLE",
-                                "",
-                                "Native calculation could not produce a result",
-                            )
-                        })?;
-                    let source = metadata::capture_source(&source).map_err(|_| {
-                        failure(
-                            "RUNTIME_UNAVAILABLE",
-                            "",
-                            "Native calculation could not produce a result",
-                        )
-                    })?;
-                    host::compile(&s(captured.authored_source), &source, &registry).map_err(|_| {
+                    ::argentic_runtime::calculation::compile(
+                        &captured.authored_source,
+                        &serde_json::to_string(&captured.source)?,
+                        &captured.registry_json,
+                    )
+                    .map_err(|_| {
                         failure(
                             "RUNTIME_UNAVAILABLE",
                             "",

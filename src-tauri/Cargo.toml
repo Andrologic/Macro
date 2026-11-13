@@ -47,6 +47,8 @@ tauri-build = { version = "=2.7.4", features = [] }
 serde_json = "1"
 
 [dependencies]
+argentic-core = { path = "../crates/argentic-core" }
+argentic-runtime = { path = "../crates/argentic-runtime" }
 # Same locked SQLite library as SQLx, for bounded native BLOB reads.
 libsqlite3-sys = "=0.30.1"
 keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }

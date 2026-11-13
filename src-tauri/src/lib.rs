@@ -141,7 +141,7 @@ mod app_updates;
 mod argentic_clock_conformance030_tests;
 #[cfg(test)]
 mod argentic_compile_conformance030_tests;
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 #[path = "../../crates/argentic-core/src/lib.rs"]
 mod argentic_core;
 #[cfg(test)]
@@ -150,7 +150,7 @@ mod argentic_reader_conformance030_tests;
 mod argentic_route_data_conformance030_tests;
 #[cfg(test)]
 mod argentic_routes_conformance030_tests;
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 mod argentic_runtime;
 #[cfg(test)]
 mod argentic_values_conformance030_tests;
