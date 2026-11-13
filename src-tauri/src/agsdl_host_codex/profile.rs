@@ -1,6 +1,6 @@
 //! A separate native profile owns authentication, config and session files.
 //! It never borrows a user's default CODEX_HOME or provider credentials.
-use crate::config::ConfigManager;
+use crate::agsdl_runtime_adapter::HostContext;
 use crate::core::process::background_contained_tokio_command;
 use crate::db::agsdl_execution::{failure, Result};
 use serde::{Deserialize, Serialize};
@@ -224,7 +224,7 @@ fn private_directory(path: &Path) -> Result<()> {
         ))
     }
 }
-pub(crate) fn prepare(manager: &ConfigManager) -> Result<Profile> {
+pub(crate) fn prepare(manager: &HostContext) -> Result<Profile> {
     let executable = executable().ok_or_else(|| {
         failure(
             "CODEX_NOT_INSTALLED",
@@ -399,7 +399,7 @@ fn qualified_platform() -> bool {
         all(target_os = "macos", target_arch = "aarch64")
     ))
 }
-pub(crate) async fn status(manager: &ConfigManager) -> CodexStatus {
+pub(crate) async fn status(manager: &HostContext) -> CodexStatus {
     let profile = match prepare(manager) {
         Ok(profile) => profile,
         Err(error) => return unavailable(&error.code),

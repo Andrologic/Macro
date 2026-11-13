@@ -253,7 +253,7 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
         retired: Default::default(),
         owners: Mutex::new(BTreeMap::new()),
     });
-    let host = HostState(
+    let host = HostState::from_parts(
         Mutex::new(Some(OwnedHost {
             incarnation: incarnation.clone(),
         })),
@@ -666,7 +666,7 @@ async fn exercise_handoff(mode: u8) {
         retired: Default::default(),
         owners: Mutex::new(BTreeMap::from([("system".into(), owner.clone())])),
     });
-    let host = HostState(
+    let host = HostState::from_parts(
         Mutex::new(Some(OwnedHost {
             incarnation: incarnation.clone(),
         })),

@@ -8,8 +8,8 @@ use crate::db::agsdl_execution::{
 use crate::{
     agsdl_host::HostState,
     agsdl_host_flow030::FlowWorkAttempt030,
+    agsdl_runtime_adapter::HostContext,
     ai::stream_tasks::StreamTasks,
-    config::ConfigManager,
     db::agsdl_execution::{flow_work_protocol030, work_dto030::ProtocolDecision030},
 };
 use sqlx::SqlitePool;
@@ -251,7 +251,7 @@ impl crate::agsdl_host_runtime030::AgentExecutor030 for ScriptedExecutor030 {
 async fn start_scripted_work030<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     pool: &SqlitePool,
-    config: &ConfigManager,
+    config: &HostContext,
     tasks: &StreamTasks,
     owner: &crate::db::agsdl_execution::dto::EngineOwner,
     effect: &FlowEffect030,
@@ -280,7 +280,7 @@ async fn start_scripted_work030<R: tauri::Runtime>(
         plan_lock: Default::default(),
     });
     let emitter = native_event_emitter030(
-        app.clone(),
+        app.state::<HostState>().inner().clone(),
         pool.clone(),
         config.clone(),
         tasks.clone(),
@@ -318,7 +318,7 @@ async fn start_scripted_work030<R: tauri::Runtime>(
 async fn quiesce_scenario030<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     pool: &SqlitePool,
-    config: &ConfigManager,
+    config: &HostContext,
     tasks: &StreamTasks,
     owner: &crate::db::agsdl_execution::dto::EngineOwner,
     humans: &mut ScenarioHumans030,
@@ -356,7 +356,7 @@ async fn quiesce_scenario030<R: tauri::Runtime>(
 struct ScenarioDriver030<'a, R: tauri::Runtime> {
     app: &'a tauri::AppHandle<R>,
     pool: &'a SqlitePool,
-    config: &'a ConfigManager,
+    config: &'a HostContext,
     tasks: &'a StreamTasks,
     owner: &'a crate::db::agsdl_execution::dto::EngineOwner,
     humans: &'a mut ScenarioHumans030,
@@ -580,7 +580,7 @@ impl<R: tauri::Runtime> crate::agsdl_host_runtime030::EffectDriver030 for Scenar
 pub(crate) async fn drive_scenario030<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     pool: &SqlitePool,
-    config: &ConfigManager,
+    config: &HostContext,
     tasks: &StreamTasks,
     owner: &crate::db::agsdl_execution::dto::EngineOwner,
     scenario: crate::agsdl_host_scenario030::PinnedScenario030,

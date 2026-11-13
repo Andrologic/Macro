@@ -232,7 +232,7 @@ impl Fixture {
             retired: Default::default(),
             owners: Mutex::new(BTreeMap::from([(run.into(), owner.clone())])),
         });
-        let host = Arc::new(HostState(
+        let host = Arc::new(HostState::from_parts(
             Mutex::new(Some(OwnedHost {
                 incarnation: incarnation.clone(),
             })),
@@ -265,7 +265,14 @@ impl Fixture {
                         (host.clone(), pool.clone(), config.clone(), tasks.clone());
                     Box::pin(async move {
                         emit_work_event030(
-                            &host, &pool, &config, &tasks, &attempt, "project", &label, body,
+                            &host,
+                            &pool,
+                            &config.engine_context(),
+                            &tasks,
+                            &attempt,
+                            "project",
+                            &label,
+                            body,
                             &cancel,
                         )
                         .await
@@ -280,7 +287,14 @@ impl Fixture {
                     );
                     Box::pin(async move {
                         crate::agsdl_host_completion030::execute(
-                            &host, &pool, &config, &tasks, &attempt, "project", &check, &cancel,
+                            &host,
+                            &pool,
+                            &config.engine_context(),
+                            &tasks,
+                            &attempt,
+                            "project",
+                            &check,
+                            &cancel,
                         )
                         .await
                     })
@@ -393,7 +407,7 @@ async fn distinct_executor_chains_two_works_without_double_dispatch() {
             None,
             &f.host,
             &f.pool,
-            &f.config,
+            &f.config.engine_context(),
             &tasks,
             &f.owner,
             &executors,
@@ -442,8 +456,18 @@ async fn stop_remains_responsive_and_waits_for_physical_end() {
     let (wake, receiver) = watch::channel(0);
     let cancel = CancellationToken::new();
     let emitter = f.emitter(&tasks);
+    let native_config = f.config.engine_context();
     let supervisor = supervise_with_emitter030(
-        None, &f.host, &f.pool, &f.config, &tasks, &f.owner, &executors, receiver, &cancel, emitter,
+        None,
+        &f.host,
+        &f.pool,
+        &native_config,
+        &tasks,
+        &f.owner,
+        &executors,
+        receiver,
+        &cancel,
+        emitter,
     );
     tokio::pin!(supervisor);
     let exercise = async {
@@ -520,7 +544,7 @@ async fn an_unowned_claim_is_interrupted_and_never_retried() {
         None,
         &f.host,
         &f.pool,
-        &f.config,
+        &f.config.engine_context(),
         &tasks,
         &f.owner,
         &executors,
@@ -581,11 +605,12 @@ async fn accepted_completion_and_stop_do_not_route_or_double_send() {
     };
     let (wake, receiver) = watch::channel(0);
     let cancel = CancellationToken::new();
+    let native_config = f.config.engine_context();
     let supervisor = supervise_with_emitter030(
         None,
         &f.host,
         &f.pool,
-        &f.config,
+        &native_config,
         &tasks,
         &f.owner,
         &executors,
@@ -673,11 +698,12 @@ async fn stop_during_physical_controller_evaluation_retains_the_join() {
     };
     let (wake, receiver) = watch::channel(0);
     let cancel = CancellationToken::new();
+    let native_config = f.config.engine_context();
     let supervisor = supervise_with_emitter030(
         None,
         &f.host,
         &f.pool,
-        &f.config,
+        &native_config,
         &tasks,
         &f.owner,
         &executors,
@@ -732,7 +758,7 @@ async fn stop_before_the_first_handoff_settles_an_unadmitted_start() {
             None,
             &f.host,
             &f.pool,
-            &f.config,
+            &f.config.engine_context(),
             &tasks,
             &f.owner,
             &executors,
@@ -819,7 +845,7 @@ async fn stop_between_preparation_and_claim_does_not_start_or_interrupt_the_supe
             None,
             &f.host,
             &f.pool,
-            &f.config,
+            &f.config.engine_context(),
             &tasks,
             &f.owner,
             &executors,
@@ -876,7 +902,7 @@ async fn qualified_codex_registry_and_policy_run_the_write_review_demo() {
             None,
             &f.host,
             &f.pool,
-            &f.config,
+            &f.config.engine_context(),
             &tasks,
             &f.owner,
             &executors,
@@ -1242,7 +1268,7 @@ async fn native_flow_choices_preserve_received_prompt_through_entry_and_route() 
             tasks: tasks.clone(),
         })),
         clock: Some(Arc::new(HumanClockRuntime030 {
-            app: app.handle().clone(),
+            app: app.state::<HostState>().inner().clone(),
             pool: f.pool.clone(),
             tasks: tasks.clone(),
             identity: f.identity.clone(),
@@ -1297,8 +1323,8 @@ async fn native_flow_choices_preserve_received_prompt_through_entry_and_route() 
             broker.pump(&host, &CancellationToken::new()).await.unwrap();
         }
     });
-    let event_app = app.handle().clone();
-    let (pool, config, event_tasks) = (f.pool.clone(), f.config.clone(), tasks.clone());
+    let event_app = app.state::<HostState>().inner().clone();
+    let (pool, config, event_tasks) = (f.pool.clone(), f.config.engine_context(), tasks.clone());
     let emitter = Arc::new(move |project| {
         native_event_emitter030(
             event_app.clone(),
@@ -1313,10 +1339,10 @@ async fn native_flow_choices_preserve_received_prompt_through_entry_and_route() 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         supervise_with_emitter030(
-            Some(app.handle()),
+            Some(app.state::<HostState>().inner()),
             &host,
             &f.pool,
-            &f.config,
+            &f.config.engine_context(),
             &tasks,
             &f.owner,
             &executors,
@@ -1721,11 +1747,12 @@ async fn supervisor_panic_waits_for_active_executor_cleanup() {
     let tasks = StreamTasks::default();
     let (_wake, receiver) = watch::channel(0);
     let cancel = CancellationToken::new();
+    let native_config = f.config.engine_context();
     let supervisor = supervise_with_emitter030(
         None,
         &f.host,
         &f.pool,
-        &f.config,
+        &native_config,
         &tasks,
         &f.owner,
         &executors,

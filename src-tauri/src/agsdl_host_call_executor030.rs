@@ -9,8 +9,8 @@ use crate::{
     agsdl_host_confinement::{FileAccess, OsCeiling, PathScope, SandboxPolicy},
     agsdl_host_flow030::{self as flow, NativeFlowInspection030},
     agsdl_host_runtime030::HostExecutor030,
+    agsdl_runtime_adapter::HostContext,
     ai::stream_tasks::StreamTasks,
-    config::ConfigManager,
     db::agsdl_execution::{
         dto::EngineOwner, failure, flow030::FlowEffect030, start030::StartCapture030, Result,
     },
@@ -22,11 +22,10 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
-use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct CallExecutor030 {
-    pub config: ConfigManager,
+    pub config: HostContext,
     pub pool: SqlitePool,
     pub tasks: StreamTasks,
     pub owner: EngineOwner,
@@ -39,10 +38,10 @@ pub(crate) struct StartedCall030 {
     pub request_id: String,
     pub result: tokio::sync::oneshot::Receiver<Result<Option<JoinedCall030>>>,
 }
-impl<R: tauri::Runtime> HostExecutor030<R> for CallExecutor030 {
+impl HostExecutor030 for CallExecutor030 {
     fn start(
         &self,
-        app: tauri::AppHandle<R>,
+        app: HostState,
         inspection: NativeFlowInspection030,
         effect: FlowEffect030,
         cancel: CancellationToken,
@@ -55,7 +54,7 @@ impl<R: tauri::Runtime> HostExecutor030<R> for CallExecutor030 {
             self.owner.clone(),
         );
         Box::pin(async move {
-            let host = app.state::<HostState>();
+            let host = app.clone();
             let authority = NativeCallAuthority030::capture(&host, &owner).await?;
             let broker = host.start_lease().await?.call_data030()?;
             let attempt = calls::reserve_call030(&pool, &authority, &effect).await?;
@@ -89,7 +88,7 @@ impl<R: tauri::Runtime> HostExecutor030<R> for CallExecutor030 {
             let clock_pool = pool.clone();
             claim
                 .handoff_host(&tasks, async move {
-                    let host = worker_app.state::<HostState>();
+                    let host = worker_app.clone();
                     let result = async {
                         wait_clock.await.map_err(|_| {
                             failure("INTERRUPTED", "clock", "Clock admission failed")

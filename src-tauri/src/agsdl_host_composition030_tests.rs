@@ -62,7 +62,7 @@ async fn run(document: Value, executor: Arc<Scripted>) -> FlowView030 {
             None,
             &f.host,
             &f.pool,
-            &f.config,
+            &f.config.engine_context(),
             &tasks,
             &f.owner,
             &executors,

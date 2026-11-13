@@ -235,7 +235,7 @@ async fn fixture() -> (
         retired: Default::default(),
         owners: Mutex::new(BTreeMap::from([("system".into(), owner)])),
     });
-    let host = Arc::new(HostState(
+    let host = Arc::new(HostState::from_parts(
         Mutex::new(Some(OwnedHost {
             incarnation: incarnation.clone(),
         })),

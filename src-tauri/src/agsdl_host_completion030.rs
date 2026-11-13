@@ -8,8 +8,8 @@ use crate::{
     agsdl_permissions::{
         evaluate_effective, ActionRequest, Effect, EffectivePolicy, ExecutionPurpose,
     },
+    agsdl_runtime_adapter::HostContext,
     ai::stream_tasks::StreamTasks,
-    config::ConfigManager,
     db::agsdl_execution::{failure, flow_work_protocol030, work_dto030::CheckRequest030, Result},
 };
 use serde_json::{json, Value};
@@ -130,7 +130,7 @@ fn grant_scoped(
 pub(crate) async fn execute(
     host: &HostState,
     pool: &SqlitePool,
-    config: &ConfigManager,
+    config: &HostContext,
     tasks: &StreamTasks,
     attempt: &FlowWorkAttempt030,
     project: &str,

@@ -8,8 +8,8 @@ use crate::{
         prepare_effective_agent_work030, AttestedWorkPolicy030, PolicyLeases030,
         PreparedEffectiveAgentWork030,
     },
+    agsdl_runtime_adapter::HostContext,
     ai::stream_tasks::{OwnedOperation030, StreamTasks},
-    config::ConfigManager,
     db::agsdl_execution::{
         dto::{EngineContext, EngineOwner},
         failure,
@@ -31,7 +31,6 @@ use std::{
         Arc, Mutex,
     },
 };
-use tauri::Manager;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
@@ -133,10 +132,10 @@ impl WorkEventSink030 {
     }
 }
 
-pub(crate) fn native_event_emitter030<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
+pub(crate) fn native_event_emitter030(
+    app: HostState,
     pool: SqlitePool,
-    config: ConfigManager,
+    config: HostContext,
     tasks: StreamTasks,
     project: String,
 ) -> EventEmitter030 {
@@ -157,7 +156,7 @@ pub(crate) fn native_event_emitter030<R: tauri::Runtime>(
                 project.clone(),
             );
             Box::pin(async move {
-                let host = app.state::<HostState>();
+                let host = app.clone();
                 emit_work_event030(
                     &host, &pool, &config, &tasks, &attempt, &project, &label, body, &cancel,
                 )
@@ -173,7 +172,7 @@ pub(crate) fn native_event_emitter030<R: tauri::Runtime>(
                 check_project.clone(),
             );
             Box::pin(async move {
-                let host = app.state::<HostState>();
+                let host = app.clone();
                 crate::agsdl_host_completion030::execute(
                     &host, &pool, &config, &tasks, &attempt, &project, &check, &cancel,
                 )
@@ -186,17 +185,14 @@ pub(crate) fn native_event_emitter030<R: tauri::Runtime>(
 /// Native binding for the port, alongside the existing work-event binding.
 /// Delivery must continue independently while the supervisor reads or ticks:
 /// its admission lock is released only after the consumer acknowledgment.
-fn native_steer_port030<R: tauri::Runtime>(
-    app: Option<tauri::AppHandle<R>>,
-    pool: SqlitePool,
-) -> SteerDeliveryPort030 {
+fn native_steer_port030(app: Option<HostState>, pool: SqlitePool) -> SteerDeliveryPort030 {
     Arc::new(move |effect, attempt, sender| {
         let (app, pool) = (app.clone(), pool.clone());
         let task = tokio::spawn(async move {
             let app = app.ok_or_else(|| {
                 failure("HOST_CAPABILITY", "delivery", "Host application is absent")
             })?;
-            let host = app.state::<HostState>();
+            let host = app.clone();
             let Some(claim) =
                 flow::claim_expected(host.flow030(), &host, &pool, &effect.identity, &effect.id)
                     .await?
@@ -239,7 +235,7 @@ impl StartedAgent030 {
 pub(crate) async fn start_agent_work030(
     host: &HostState,
     pool: &SqlitePool,
-    config: &ConfigManager,
+    config: &HostContext,
     tasks: &StreamTasks,
     owner: &EngineOwner,
     effect: &FlowEffect030,
@@ -499,10 +495,10 @@ pub(crate) async fn drain_effects030(
 
 /// Host extensions must start their work and return promptly. They own their
 /// physical completion and wake the registry when native state changes.
-pub(crate) trait HostExecutor030<R: tauri::Runtime = tauri::Wry>: Send + Sync {
+pub(crate) trait HostExecutor030: Send + Sync {
     fn start(
         &self,
-        app: tauri::AppHandle<R>,
+        app: HostState,
         inspection: NativeFlowInspection030,
         effect: FlowEffect030,
         cancel: CancellationToken,
@@ -515,10 +511,10 @@ pub(crate) trait RuntimeClock030: Send + Sync {
     fn tick(&self) -> BoxFuture<'_, Result<()>>;
     fn next_wake(&self) -> BoxFuture<'_, Result<Option<std::time::Duration>>>;
 }
-pub(crate) struct Executors030<R: tauri::Runtime = tauri::Wry> {
+pub(crate) struct Executors030 {
     pub agents: Arc<dyn AgentExecutor030>,
-    pub calls: Option<Arc<dyn HostExecutor030<R>>>,
-    pub humans: Option<Arc<dyn HostExecutor030<R>>>,
+    pub calls: Option<Arc<dyn HostExecutor030>>,
+    pub humans: Option<Arc<dyn HostExecutor030>>,
     pub clock: Option<Arc<dyn RuntimeClock030>>,
 }
 
@@ -648,15 +644,15 @@ struct LiveAgent030 {
     cancel: CancellationToken,
     stop: Option<(String, flow::ClaimedStopWork030)>,
 }
-struct NativeDriver030<'a, R: tauri::Runtime> {
-    app: Option<&'a tauri::AppHandle<R>>,
+struct NativeDriver030<'a> {
+    app: Option<&'a HostState>,
     emitter: Arc<dyn Fn(String) -> EventEmitter030 + Send + Sync>,
     host: &'a HostState,
     pool: &'a SqlitePool,
-    config: &'a ConfigManager,
+    config: &'a HostContext,
     tasks: &'a StreamTasks,
     owner: &'a EngineOwner,
-    executors: &'a Executors030<R>,
+    executors: &'a Executors030,
     active: BTreeMap<String, LiveAgent030>,
     joining: FuturesUnordered<BoxFuture<'a, (String, Result<JoinedOwnedAgent030>)>>,
     joined: BTreeMap<String, JoinedOwnedAgent030>,
@@ -677,7 +673,7 @@ struct NativeDriver030<'a, R: tauri::Runtime> {
     steering: FuturesUnordered<BoxFuture<'a, (String, Result<bool>)>>,
     in_flight: BTreeSet<String>,
 }
-impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
+impl EffectDriver030 for NativeDriver030<'_> {
     fn before_pass(&mut self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             let Some(clock) = &self.executors.clock else {
@@ -1035,15 +1031,15 @@ impl<R: tauri::Runtime> EffectDriver030 for NativeDriver030<'_, R> {
 
 /// Called by the start integration in lot 1.5. Registration precedes both the
 /// first revision read and the spawn, so concurrent validated events persist.
-pub(crate) fn spawn_supervisor030<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
+pub(crate) fn spawn_supervisor030(
+    app: HostState,
     pool: SqlitePool,
-    config: ConfigManager,
+    config: HostContext,
     tasks: StreamTasks,
     owner: EngineOwner,
-    executors: Executors030<R>,
+    executors: Executors030,
 ) -> Result<()> {
-    let host = app.state::<HostState>();
+    let host = app.clone();
     let mut handles = host.flow030().supervisors.0.lock().map_err(|_| {
         failure(
             "RUNTIME_UNAVAILABLE",
@@ -1070,7 +1066,7 @@ pub(crate) fn spawn_supervisor030<R: tauri::Runtime>(
     let (task_app, system, task_cancel) =
         (app.clone(), owner.system_start_id.clone(), cancel.clone());
     let task = tokio::spawn(async move {
-        let host = task_app.state::<HostState>();
+        let host = task_app.clone();
         let outcome = supervise030(
             &task_app,
             &host,
@@ -1103,14 +1099,14 @@ pub(crate) fn spawn_supervisor030<R: tauri::Runtime>(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn supervise030<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+async fn supervise030(
+    app: &HostState,
     host: &HostState,
     pool: &SqlitePool,
-    config: &ConfigManager,
+    config: &HostContext,
     tasks: &StreamTasks,
     owner: &EngineOwner,
-    executors: &Executors030<R>,
+    executors: &Executors030,
     wake: watch::Receiver<u64>,
     cancel: &CancellationToken,
 ) -> Result<()> {
@@ -1141,14 +1137,14 @@ async fn supervise030<R: tauri::Runtime>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
-    app: Option<&tauri::AppHandle<R>>,
+pub(crate) async fn supervise_with_emitter030(
+    app: Option<&HostState>,
     host: &HostState,
     pool: &SqlitePool,
-    config: &ConfigManager,
+    config: &HostContext,
     tasks: &StreamTasks,
     owner: &EngineOwner,
-    executors: &Executors030<R>,
+    executors: &Executors030,
     mut wake: watch::Receiver<u64>,
     cancel: &CancellationToken,
     emitter: Arc<dyn Fn(String) -> EventEmitter030 + Send + Sync>,
@@ -1332,7 +1328,7 @@ pub(crate) async fn supervise_with_emitter030<R: tauri::Runtime>(
 pub(crate) async fn emit_work_event030(
     host: &HostState,
     pool: &SqlitePool,
-    config: &ConfigManager,
+    config: &HostContext,
     tasks: &StreamTasks,
     attempt: &FlowWorkAttempt030,
     project_id: &str,

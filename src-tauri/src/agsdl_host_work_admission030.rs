@@ -7,7 +7,7 @@ use crate::{
     agsdl_host::HostStartLease,
     agsdl_host_flow030::{FlowWorkAttempt030, NativeFlowInspection030},
     agsdl_host_work::{captured_work_contract030, CapturedWorkPlan030},
-    config::{AgsdlHostPermissionsLease, ConfigManager, ExecutionToolsLease},
+    agsdl_runtime_adapter::{HostContext, HostPolicyLease, ProjectPolicyLease},
     db::agsdl_execution::{
         dto::{EngineContext, EngineOwner, EngineWork},
         failure,
@@ -678,15 +678,15 @@ impl CapturedAgentInputs030 {
 /// human interaction, provider IO, or recursive configuration acquisition.
 pub(crate) struct PolicyLeases030 {
     project_id: String,
-    ceiling: AgsdlHostPermissionsLease,
-    project: ExecutionToolsLease,
+    ceiling: HostPolicyLease,
+    project: ProjectPolicyLease,
 }
 
 impl PolicyLeases030 {
     /// The project identity must come from the authenticated source owner.
     /// Acquisition order is global ceiling, then project tools; the caller
     /// acquires the host lifecycle and admission locks only after this returns.
-    pub(crate) async fn acquire(manager: &ConfigManager, project_id: &str) -> Result<Self> {
+    pub(crate) async fn acquire(manager: &HostContext, project_id: &str) -> Result<Self> {
         if project_id.is_empty() || project_id.trim() != project_id {
             return Err(failure(
                 "CORRELATION",
@@ -904,7 +904,7 @@ fn agent_inputs(
 /// detects a configuration change during normalization. The result remains a
 /// candidate until the handoff transaction revalidates its native bindings.
 pub(crate) async fn prepare_effective_agent_work030(
-    manager: &ConfigManager,
+    manager: &HostContext,
     inspection: &NativeFlowInspection030,
     effect: &FlowEffect030,
 ) -> Result<PreparedEffectiveAgentWork030> {

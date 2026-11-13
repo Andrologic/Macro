@@ -1,4 +1,6 @@
 //! Codex 0.3 structured output and context transport.
+#[cfg(test)]
+use crate::config::ConfigManager;
 use crate::db::agsdl_execution::{validate_json, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -117,7 +119,7 @@ use crate::{
     agsdl_host_work_admission030::{
         codex_read_only030, AttestedWorkPolicy030, PreparedEffectiveAgentWork030,
     },
-    config::ConfigManager,
+    agsdl_runtime_adapter::HostContext,
     core::process::ContainedBackgroundProcess,
     db::agsdl_execution::{
         failure,
@@ -146,16 +148,16 @@ use tokio_util::sync::CancellationToken;
 /// joining all work and dropping the supervisor releases those references.
 #[derive(Clone)]
 pub(crate) struct CodexExecutor030 {
-    config: ConfigManager,
+    config: HostContext,
     threads: Arc<Mutex<BTreeMap<(String, String), String>>>,
     approvals: Option<Arc<dyn approvals::CommandApprovals030>>,
     #[cfg(test)]
     pub(crate) test_profile: Option<profile::Profile>,
 }
 impl CodexExecutor030 {
-    pub(crate) fn new(config: ConfigManager) -> Self {
+    pub(crate) fn new(config: impl Into<HostContext>) -> Self {
         Self {
-            config,
+            config: config.into(),
             threads: Default::default(),
             approvals: None,
             #[cfg(test)]
@@ -1876,7 +1878,7 @@ for line in sys.stdin:
         let config_root = std::env::var_os("MACRO_CODEX_TEST_CONFIG_ROOT")
             .expect("set MACRO_CODEX_TEST_CONFIG_ROOT");
         let config = ConfigManager::initialize(config_root.into()).await.unwrap();
-        let profile = profile::prepare(&config).unwrap();
+        let profile = profile::prepare(&config.engine_context()).unwrap();
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let mut process =
@@ -1963,7 +1965,7 @@ for line in sys.stdin:
         )
         .await
         .unwrap();
-        let profile = profile::prepare(&config).unwrap();
+        let profile = profile::prepare(&config.engine_context()).unwrap();
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let mut process =
@@ -2036,7 +2038,7 @@ for line in sys.stdin:
         let root = base.join("workspace");
         std::fs::create_dir(&root).unwrap();
         let outside = base.join("outside.txt");
-        let profile = profile::prepare(&config).unwrap();
+        let profile = profile::prepare(&config.engine_context()).unwrap();
         for read_only in [false, true] {
             let inside = root.join(if read_only { "review.txt" } else { "write.txt" });
             let mut process = ContainedBackgroundProcess::spawn(

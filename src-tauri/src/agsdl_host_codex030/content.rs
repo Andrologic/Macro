@@ -24,7 +24,7 @@ pub(crate) struct Sources030 {
     // Keep the actual bytes and provenance for this work's lifetime. D7 never
     // reconstructs these snapshots by replaying a read after interruption.
     pub receipts: Vec<ResolvedContentReceipt>,
-    config: Option<ConfigManager>,
+    config: Option<HostContext>,
     ceiling_digest: String,
 }
 
@@ -46,7 +46,7 @@ impl Sources030 {
         Ok(())
     }
     pub async fn new(
-        config: &ConfigManager,
+        config: &HostContext,
         capture: &crate::db::agsdl_execution::start030::StartCapture030,
         agent: &str,
         policy: &crate::agsdl_permissions::EffectivePolicy,

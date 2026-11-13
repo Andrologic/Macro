@@ -320,7 +320,7 @@ impl Fixture {
             retired: Default::default(),
             owners: Mutex::new(BTreeMap::from([("system".into(), owner.clone())])),
         });
-        let host = HostState(
+        let host = HostState::from_parts(
             Mutex::new(Some(OwnedHost {
                 incarnation: incarnation.clone(),
             })),
@@ -680,7 +680,7 @@ async fn native_timeline(
         .humans
         .broker(&host, &f.pool, &f.identity)
         .await?;
-    let executors: Executors030<tauri::test::MockRuntime> = Executors030 {
+    let executors: Executors030 = Executors030 {
         agents: Arc::new(Executor {
             plans: Default::default(),
             running: running.clone(),
@@ -688,7 +688,7 @@ async fn native_timeline(
         }),
         calls: Some(Arc::new(
             crate::agsdl_host_call_executor030::CallExecutor030 {
-                config: f.config.clone(),
+                config: f.config.engine_context(),
                 pool: f.pool.clone(),
                 tasks: tasks.clone(),
                 owner: f.owner.clone(),
@@ -706,7 +706,7 @@ async fn native_timeline(
         )),
         clock: Some(Arc::new(
             crate::agsdl_host_human_executor030::HumanClockRuntime030 {
-                app: f.app.handle().clone(),
+                app: f.app.state::<HostState>().inner().clone(),
                 pool: f.pool.clone(),
                 tasks: tasks.clone(),
                 identity: f.identity.clone(),
@@ -715,9 +715,9 @@ async fn native_timeline(
     };
     let emitter = {
         let (app, pool, config, tasks) = (
-            f.app.handle().clone(),
+            f.app.state::<HostState>().inner().clone(),
             f.pool.clone(),
-            f.config.clone(),
+            f.config.engine_context(),
             tasks.clone(),
         );
         Arc::new(move |project| {
@@ -732,11 +732,12 @@ async fn native_timeline(
     };
     let host = f.app.state::<HostState>();
     let cancel = CancellationToken::new();
+    let native_config = f.config.engine_context();
     let supervisor = supervise_with_emitter030(
-        Some(f.app.handle()),
+        Some(f.app.state::<crate::agsdl_host::HostState>().inner()),
         &host,
         &f.pool,
-        &f.config,
+        &native_config,
         &tasks,
         &f.owner,
         &executors,
@@ -1207,7 +1208,7 @@ async fn run_all_37(compare_ts: bool) {
                 crate::agsdl_host_example030::drive_scenario030(
                     f.app.handle(),
                     &f.pool,
-                    &f.config,
+                    &f.config.engine_context(),
                     &crate::ai::stream_tasks::StreamTasks::default(),
                     &f.owner,
                     scenario,

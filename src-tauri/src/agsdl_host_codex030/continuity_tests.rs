@@ -379,7 +379,7 @@ async fn run_with_clock(
             None,
             &f.host,
             &f.pool,
-            &f.config,
+            &f.config.engine_context(),
             &tasks,
             &f.owner,
             &executors,
@@ -457,11 +457,24 @@ async fn completion_check_stop_and_machine_deadline_join_the_actual_command() {
         .unwrap();
         let executor = executor_access(&f, &trace, None, false);
         let pidfile = f._temp.path().join("workspace/check-child");
+        // This case proves physical cancellation of an already running check.
+        // Advance the existing test clock only once that resource actually exists.
+        let deadline_clock = if timeout {
+            Some(f.host.flow030().humans.virtual_clock().await.unwrap())
+        } else {
+            None
+        };
         let stop = async {
-            if !timeout {
-                while !pidfile.exists() {
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                }
+            while !pidfile.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            if let Some(clock) = &deadline_clock {
+                clock.advance_to(1500).unwrap();
+                f.host
+                    .flow030()
+                    .supervisors
+                    .wake(&f.identity.system_start_id);
+            } else {
                 stop_fixture(&f, "stop-active-check").await;
             }
         };
@@ -482,7 +495,12 @@ async fn completion_check_stop_and_machine_deadline_join_the_actual_command() {
             Some(if timeout { "failed" } else { "cancelled" })
         );
         let pid: i32 = std::fs::read_to_string(pidfile)
-            .expect("the real check never started")
+            .unwrap_or_else(|error| {
+                panic!(
+                    "the real check never started; timeout={timeout}; error={error}; state={:?}",
+                    view.state
+                )
+            })
             .parse()
             .unwrap();
         assert_ne!(

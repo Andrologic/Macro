@@ -120,11 +120,12 @@ async fn exercise(
     };
     let (_wake, receiver) = watch::channel(0);
     let cancel = CancellationToken::new();
+    let native_config = f.config.engine_context();
     let supervisor = supervise_with_emitter030(
         None,
         &f.host,
         &f.pool,
-        &f.config,
+        &native_config,
         &tasks,
         &f.owner,
         &executors,

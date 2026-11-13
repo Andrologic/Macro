@@ -1315,7 +1315,7 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
                 let agents: Arc<dyn crate::agsdl_host_runtime030::AgentExecutor030> = Arc::new(
                     crate::agsdl_host_codex030::CodexExecutor030::new(config.clone())
                         .with_approvals(Arc::new(
-                            crate::agsdl_host_human_executor030::AgentActionHumans030 {
+                            crate::agsdl_host_action_approval030::AgentActionHumans030 {
                                 app: app.clone(),
                                 pool: pool.clone(),
                                 config: config.clone(),
@@ -1350,14 +1350,14 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
                     agents,
                     calls: Some(Arc::new(
                         crate::agsdl_host_call_executor030::CallExecutor030 {
-                            config: config.clone(),
+                            config: config.engine_context(),
                             pool: pool.clone(),
                             tasks: ai.stream_tasks.clone(),
                             transport: Arc::new(
                                 crate::agsdl_host_call_executor030::NativeCallTransport030 {
                                     humans: Some(Arc::new(
                                         crate::agsdl_host_human_executor030::CallHumans030 {
-                                            app: app.clone(),
+                                            app: (*host).clone(),
                                             pool: pool.clone(),
                                             identity: result.receipt.identity.clone(),
                                         },
@@ -1378,7 +1378,7 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
                     )),
                     clock: needs_clock.then(|| {
                         Arc::new(crate::agsdl_host_human_executor030::HumanClockRuntime030 {
-                            app: app.clone(),
+                            app: (*host).clone(),
                             pool: pool.clone(),
                             tasks: ai.stream_tasks.clone(),
                             identity: result.receipt.identity.clone(),
@@ -1387,9 +1387,9 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
                     }),
                 };
                 crate::agsdl_host_runtime030::spawn_supervisor030(
-                    app.clone(),
+                    (*host).clone(),
                     pool.clone(),
-                    config,
+                    config.engine_context(),
                     ai.stream_tasks.clone(),
                     EngineOwner {
                         system_start_id: result.receipt.identity.system_start_id.clone(),

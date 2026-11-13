@@ -13,7 +13,7 @@ const counts = (sources: Record<string, string>) => analyzeSources(sources).arge
 describe('Argentic boundaries', () => {
   it('covers mapped and future files without covering Macro-only adapters', () => {
     for (const path of [file, 'src-tauri/src/ai/stream_tasks.rs', 'src-tauri/src/core/process.rs', 'src-tauri/src/fs/operations.rs', 'src-tauri/src/commands/mcp/agsdl_raw.rs', 'src-tauri/src/db/exact_json.rs', 'src-tauri/src/agsdl_permissions/mod.rs', 'src-tauri/src/argentic_core/nested/new.rs', 'src-tauri/src/argentic_runtime/new.rs', 'crates/argentic-core/src/new.rs', 'crates/argentic-runtime/src/new.rs']) expect(isArgenticFile(path)).toBe(true);
-    for (const path of ['src-tauri/src/agsdl_host_capture.rs', 'src-tauri/src/agsdl_host_catalogue.rs', 'src-tauri/src/db/agsdl_execution/intents.rs', 'src-tauri/src/commands/agsdl_execution.rs', 'src-tauri/src/core/diagnostics.rs', 'src-tauri/src/agsdl_permissions/ipc.rs']) expect(isArgenticFile(path)).toBe(false);
+    for (const path of ['src-tauri/src/agsdl_host_capture.rs', 'src-tauri/src/agsdl_host_action_approval030.rs', 'src-tauri/src/agsdl_host_catalogue.rs', 'src-tauri/src/db/agsdl_execution/intents.rs', 'src-tauri/src/commands/agsdl_execution.rs', 'src-tauri/src/core/diagnostics.rs', 'src-tauri/src/agsdl_permissions/ipc.rs']) expect(isArgenticFile(path)).toBe(false);
   });
 
   it('guards the shared filesystem reader through the real CLI', () => {

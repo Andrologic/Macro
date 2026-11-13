@@ -1,3 +1,4 @@
+mod agsdl_host_action_approval030;
 mod agsdl_host_clock030;
 mod agsdl_host_human030;
 mod agsdl_host_human_executor030;
@@ -132,6 +133,7 @@ mod agsdl_host_work;
 mod agsdl_host_work_admission030;
 mod agsdl_intent_coordinator;
 pub(crate) mod agsdl_permissions;
+mod agsdl_runtime_adapter;
 mod app_quit_state;
 mod app_shutdown;
 mod app_updates;

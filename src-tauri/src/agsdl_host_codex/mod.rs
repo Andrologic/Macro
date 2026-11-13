@@ -23,12 +23,12 @@ pub(crate) async fn execution_codex_status(
 /// Diagnose the host and native-tool composition before requesting a login.
 /// This scope contains no user source and never creates a model thread.
 pub(crate) async fn profile_status(manager: &ConfigManager) -> CodexStatus {
-    let mut status = profile::status(manager).await;
+    let mut status = profile::status(&manager.engine_context()).await;
     if status.version.is_none() || status.code == "CODEX_PLATFORM_UNQUALIFIED" {
         return status;
     }
     let result: Result<()> = async {
-        let profile = profile::prepare(manager)?;
+        let profile = profile::prepare(&manager.engine_context())?;
         let root = manager.root().join("native-discovery").join("codex");
         std::fs::create_dir_all(&root)
             .map_err(|_| failure("STORAGE", "scope", "Cannot create native diagnostic scope"))?;
@@ -137,7 +137,7 @@ pub(crate) async fn observe_catalogue030(
     scope: &Value,
     read_only: bool,
 ) -> Result<Option<CodexObservation030>> {
-    let status = profile::status(manager).await;
+    let status = profile::status(&manager.engine_context()).await;
     if !status.available {
         return Ok(None);
     }
@@ -148,7 +148,7 @@ pub(crate) async fn observe_catalogue030(
             "Codex version is absent",
         )
     })?;
-    let profile = profile::prepare(manager)?;
+    let profile = profile::prepare(&manager.engine_context())?;
     let root = std::path::PathBuf::from(
         scope
             .get("root")
@@ -397,7 +397,7 @@ time.sleep(30)
         assert_eq!(status.version.as_deref(), Some(VERSION));
         assert_eq!(status.code, "CODEX_LOGIN_REQUIRED");
         assert!(!status.available);
-        let profile = profile::prepare(&manager).unwrap();
+        let profile = profile::prepare(&manager.engine_context()).unwrap();
         let mut command = profile.app_server_command(&workspace, false).unwrap();
         command.stderr(std::process::Stdio::inherit());
         let mut process = ContainedBackgroundProcess::spawn(command).unwrap();

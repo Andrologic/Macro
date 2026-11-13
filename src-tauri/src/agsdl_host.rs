@@ -71,34 +71,42 @@ impl Incarnation {
 struct OwnedHost {
     incarnation: Arc<Incarnation>,
 }
-pub(crate) struct HostState(
-    Mutex<Option<OwnedHost>>,
-    Arc<tokio::sync::Mutex<()>>,
-    Arc<crate::agsdl_host_flow030::FlowHost030>,
-);
-
+#[derive(Clone)]
+pub(crate) struct HostState {
+    inner: Arc<EngineInner>,
+}
+struct EngineInner {
+    incarnation: Mutex<Option<OwnedHost>>,
+    admission: Arc<tokio::sync::Mutex<()>>,
+    flow: Arc<crate::agsdl_host_flow030::FlowHost030>,
+}
+impl HostState {
+    pub(crate) fn new() -> Self {
+        Self::from_parts(
+            Mutex::new(Some(OwnedHost {
+                incarnation: new_incarnation(uuid::Uuid::new_v4().to_string(), true),
+            })),
+            Default::default(),
+            Default::default(),
+        )
+    }
+    fn from_parts(
+        incarnation: Mutex<Option<OwnedHost>>,
+        admission: Arc<tokio::sync::Mutex<()>>,
+        flow: Arc<crate::agsdl_host_flow030::FlowHost030>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(EngineInner {
+                incarnation,
+                admission,
+                flow,
+            }),
+        }
+    }
+}
 impl Default for HostState {
     fn default() -> Self {
-        type Engine = (
-            Arc<Incarnation>,
-            Arc<tokio::sync::Mutex<()>>,
-            Arc<crate::agsdl_host_flow030::FlowHost030>,
-        );
-        static ENGINE: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
-        let (incarnation, admission, flow) = ENGINE.get_or_init(|| {
-            (
-                new_incarnation(uuid::Uuid::new_v4().to_string(), true),
-                Default::default(),
-                Default::default(),
-            )
-        });
-        Self(
-            Mutex::new(Some(OwnedHost {
-                incarnation: incarnation.clone(),
-            })),
-            admission.clone(),
-            flow.clone(),
-        )
+        Self::new()
     }
 }
 
@@ -135,7 +143,7 @@ pub(crate) fn route_attestation_test_host030(owner: EngineOwner, generation: &st
         retired: Default::default(),
         owners: Mutex::new(owners),
     });
-    HostState(
+    HostState::from_parts(
         Mutex::new(Some(OwnedHost { incarnation })),
         Arc::new(tokio::sync::Mutex::new(())),
         Default::default(),
@@ -433,7 +441,8 @@ impl HostStartLease {
 
 impl HostState {
     fn native_incarnation(&self) -> Result<Arc<Incarnation>> {
-        self.0
+        self.inner
+            .incarnation
             .lock()
             .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host state unavailable"))?
             .as_ref()
@@ -540,7 +549,8 @@ impl HostState {
         tasks: &stream_tasks::StreamTasks,
     ) -> Result<()> {
         let host = self
-            .0
+            .inner
+            .incarnation
             .lock()
             .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host state unavailable"))?
             .as_ref()
@@ -563,18 +573,19 @@ impl HostState {
     }
 
     pub(crate) fn flow030(&self) -> &crate::agsdl_host_flow030::FlowHost030 {
-        &self.2
+        &self.inner.flow
     }
     pub(crate) fn admission_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
-        self.1.clone()
+        self.inner.admission.clone()
     }
 
     pub(crate) async fn admission_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.1.lock().await
+        self.inner.admission.lock().await
     }
     pub(crate) async fn start_lease(&self) -> Result<HostStartLease> {
         let host = self
-            .0
+            .inner
+            .incarnation
             .lock()
             .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host state unavailable"))?
             .as_ref()
@@ -598,7 +609,8 @@ impl HostState {
         registry_json: String,
     ) -> Result<crate::agsdl_host_compiler::CompileReceipt> {
         let host = self
-            .0
+            .inner
+            .incarnation
             .lock()
             .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host state unavailable"))?
             .as_ref()
@@ -638,7 +650,8 @@ impl HostState {
         cancelled: &tokio_util::sync::CancellationToken,
     ) -> Result<(crate::agsdl_host_work::HostWorkOutput030, Arc<Incarnation>)> {
         let host = self
-            .0
+            .inner
+            .incarnation
             .lock()
             .map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host state unavailable"))?
             .as_ref()
@@ -682,7 +695,8 @@ impl HostState {
     ) -> Result<crate::agsdl_host_work::HostWorkOutput030> {
         let owner = input.context.owner.clone();
         let expected = self
-            .0
+            .inner
+            .incarnation
             .lock()
             .map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host state unavailable"))?
             .as_ref()
@@ -697,7 +711,8 @@ impl HostState {
         }
         let (output, evaluated) = self.evaluate_work030(input, cancelled).await?;
         let current = self
-            .0
+            .inner
+            .incarnation
             .lock()
             .map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host state unavailable"))?
             .as_ref()
@@ -821,7 +836,28 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn process_engine_is_ready_without_a_webview_and_survives_state_reconstruction() {
+    async fn independent_engines_never_share_native_owner_or_incarnation() {
+        let first = HostState::new();
+        let cloned = first.clone();
+        let second = HostState::new();
+        let owner = EngineOwner {
+            system_start_id: "instance-owned-run".into(),
+            owner_epoch: "0".into(),
+        };
+        let lease = first.start_lease().await.unwrap();
+        lease.retain_committed_owner(owner.clone()).unwrap();
+        let cloned_lease = cloned.start_lease().await.unwrap();
+        assert_eq!(lease.generation(), cloned_lease.generation());
+        assert_eq!(cloned_lease.owner(&owner.system_start_id).unwrap(), owner);
+        let separate = second.start_lease().await.unwrap();
+        assert_ne!(lease.generation(), separate.generation());
+        assert!(separate.owner(&owner.system_start_id).is_err());
+        assert!(std::ptr::eq(first.flow030(), cloned.flow030()));
+        assert!(!std::ptr::eq(first.flow030(), second.flow030()));
+    }
+
+    #[tokio::test]
+    async fn engine_clones_share_the_same_ready_incarnation() {
         let first = HostState::default();
         let lease = first.start_lease().await.unwrap();
         let owner = EngineOwner {
@@ -829,11 +865,11 @@ mod tests {
             owner_epoch: "0".into(),
         };
         lease.retain_committed_owner(owner.clone()).unwrap();
-        let second = HostState::default();
+        let second = first.clone();
         let retained = second.start_lease().await.unwrap();
         assert!(Arc::ptr_eq(&lease.host, &retained.host));
-        assert!(Arc::ptr_eq(&first.1, &second.1));
-        assert!(Arc::ptr_eq(&first.2, &second.2));
+        assert!(Arc::ptr_eq(&first.inner.admission, &second.inner.admission));
+        assert!(Arc::ptr_eq(&first.inner.flow, &second.inner.flow));
         assert_eq!(retained.owner(&owner.system_start_id).unwrap(), owner);
         assert_eq!(lease.generation(), retained.generation());
         assert!(retained.host.live.load(Ordering::SeqCst));
@@ -908,7 +944,8 @@ mod tests {
             };
             let host_state = route_attestation_test_host030(owner, "generation");
             let host = host_state
-                .0
+                .inner
+                .incarnation
                 .lock()
                 .unwrap()
                 .as_ref()

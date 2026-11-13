@@ -17,9 +17,9 @@ async fn host_fixture_with_entry(
         .reserve(&f.owner.system_start_id)
         .unwrap();
     spawn_supervisor030(
-        f.app.handle().clone(),
+        f.app.state::<HostState>().inner().clone(),
         f.pool.clone(),
-        f.config.clone(),
+        f.config.engine_context(),
         tasks.clone(),
         f.owner.clone(),
         Executors030 {
@@ -30,7 +30,7 @@ async fn host_fixture_with_entry(
             }),
             calls: Some(Arc::new(
                 crate::agsdl_host_call_executor030::CallExecutor030 {
-                    config: f.config.clone(),
+                    config: f.config.engine_context(),
                     pool: f.pool.clone(),
                     tasks: tasks.clone(),
                     owner: f.owner.clone(),
@@ -38,7 +38,7 @@ async fn host_fixture_with_entry(
                         crate::agsdl_host_call_executor030::NativeCallTransport030 {
                             humans: Some(Arc::new(
                                 crate::agsdl_host_human_executor030::CallHumans030 {
-                                    app: f.app.handle().clone(),
+                                    app: f.app.state::<HostState>().inner().clone(),
                                     pool: f.pool.clone(),
                                     identity: f.identity.clone(),
                                 },
@@ -55,7 +55,7 @@ async fn host_fixture_with_entry(
             )),
             clock: Some(Arc::new(
                 crate::agsdl_host_human_executor030::HumanClockRuntime030 {
-                    app: f.app.handle().clone(),
+                    app: f.app.state::<HostState>().inner().clone(),
                     pool: f.pool.clone(),
                     tasks: tasks.clone(),
                     identity: f.identity.clone(),
