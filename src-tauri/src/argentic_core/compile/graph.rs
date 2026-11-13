@@ -71,7 +71,7 @@ fn number_json(decl: &Object, key: &str) -> Value {
 /// The document schema restricts names to ASCII letters/digits/_/-. Expanded
 /// addresses add '/'. These are the en collation primary ranks on that alphabet;
 /// case is a tertiary tie-breaker, lowercase first. Tested independently against
-/// localeCompare('en'); this is not a general Unicode collation implementation.
+/// JavaScript's English collation; this is not a general Unicode implementation.
 pub(crate) fn compare_addresses_en(left: &str, right: &str) -> std::cmp::Ordering {
     fn rank(c: u8) -> u8 {
         match c {
