@@ -142,6 +142,7 @@ mod argentic_clock_conformance030_tests;
 #[cfg(test)]
 mod argentic_compile_conformance030_tests;
 #[cfg_attr(not(test), allow(dead_code))]
+#[path = "../../crates/argentic-core/src/lib.rs"]
 mod argentic_core;
 #[cfg(test)]
 mod argentic_reader_conformance030_tests;

@@ -26,19 +26,19 @@ use std::sync::OnceLock;
 pub(crate) const PINNED_MODULES: [(&str, &str); 4] = [
     (
         "claude-code",
-        include_str!("../../../../src/vendor/agsdl/v0.3/harnesses/claude-code/module.json"),
+        include_str!("../../assets/harnesses/claude-code/module.json"),
     ),
     (
         "codex",
-        include_str!("../../../../src/vendor/agsdl/v0.3/harnesses/codex/module.json"),
+        include_str!("../../assets/harnesses/codex/module.json"),
     ),
     (
         "opencode",
-        include_str!("../../../../src/vendor/agsdl/v0.3/harnesses/opencode/module.json"),
+        include_str!("../../assets/harnesses/opencode/module.json"),
     ),
     (
         "pi",
-        include_str!("../../../../src/vendor/agsdl/v0.3/harnesses/pi/module.json"),
+        include_str!("../../assets/harnesses/pi/module.json"),
     ),
 ];
 

@@ -44,9 +44,9 @@ fn refuse<T>(message: impl Into<String>) -> Result<T, SchemaError> {
 }
 
 pub(crate) const DOCUMENT_SCHEMA_JSON: &str =
-    include_str!("../../../../src/vendor/agsdl/v0.3/schema/agsdl.schema.json");
+    include_str!("../../assets/schema/agsdl.schema.json");
 pub(crate) const MODULE_SCHEMA_JSON: &str =
-    include_str!("../../../../src/vendor/agsdl/v0.3/schema/harness-module.schema.json");
+    include_str!("../../assets/schema/harness-module.schema.json");
 
 /// JS truthiness of a JSON value. A `NumberToken` is an object, so truthy.
 pub(crate) fn truthy(value: &Value) -> bool {

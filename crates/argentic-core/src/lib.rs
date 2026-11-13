@@ -27,3 +27,5 @@ pub(crate) mod schema;
 pub(crate) mod validate;
 pub(crate) mod valueschema;
 pub(crate) mod work;
+
+extern crate self as argentic_core;

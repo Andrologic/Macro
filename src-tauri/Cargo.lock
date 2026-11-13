@@ -3,6 +3,25 @@
 version = 4
 
 [[package]]
+name = "argentic-core"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "url",
+]
+
+[[package]]
+name = "argentic-runtime"
+version = "0.1.0"
+dependencies = [
+ "argentic-core",
+ "serde_json",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

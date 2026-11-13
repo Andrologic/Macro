@@ -1,0 +1,11 @@
+[package]
+name = "argentic-runtime"
+version = "0.1.0"
+edition = "2021"
+workspace = "../../src-tauri"
+license = "AGPL-3.0-or-later"
+description = "Owned AgSDL execution with embedded SQLite"
+
+[dependencies]
+argentic-core = { path = "../argentic-core" }
+serde_json = { version = "1", features = ["raw_value", "arbitrary_precision"] }
