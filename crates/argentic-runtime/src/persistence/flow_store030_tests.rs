@@ -80,14 +80,14 @@ fn owner() -> Owner {
 async fn db() -> SqliteConnection {
     let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
     sqlx::raw_sql(SCHEMA).execute(&mut db).await.unwrap();
-    sqlx::raw_sql(include_str!("../migrations/030_execution_flow.sql"))
+    sqlx::raw_sql(include_str!("../../tests/fixtures/030_execution_flow.sql"))
         .execute(&mut db)
         .await
         .unwrap();
     db
 }
 async fn initialize(db: &mut SqliteConnection) {
-    let raw = include_str!("../../../tests/fixtures/agsdl030_compiled_plan.json");
+    let raw = include_str!("../../tests/fixtures/agsdl030_compiled_plan.json");
     let plan: FlowPlan030 = serde_json::from_str(raw).unwrap();
     initialize_tx(
         db,
@@ -302,7 +302,7 @@ async fn concurrent_claimers_cannot_both_receive_the_same_effect() {
         .busy_timeout(Duration::from_secs(5));
     let mut first = SqliteConnection::connect_with(&options).await.unwrap();
     sqlx::raw_sql(SCHEMA).execute(&mut first).await.unwrap();
-    sqlx::raw_sql(include_str!("../migrations/030_execution_flow.sql"))
+    sqlx::raw_sql(include_str!("../../tests/fixtures/030_execution_flow.sql"))
         .execute(&mut first)
         .await
         .unwrap();
@@ -358,7 +358,7 @@ async fn ambiguous_shared_stop_is_durable_without_transition_and_stop_is_availab
     let mut db = db().await;
     begin(&mut db).await;
     let raw =
-        include_str!("../../../tests/fixtures/agsdl030_shared_stop_pending_compiled_plan.json");
+        include_str!("../../tests/fixtures/agsdl030_shared_stop_pending_compiled_plan.json");
     let plan: FlowPlan030 = serde_json::from_str(raw).unwrap();
     initialize_tx(
         &mut db,
@@ -519,7 +519,7 @@ async fn equal_fanout_values_keep_distinct_durable_delivery_occurrences() {
     };
     let mut db = db().await;
     begin(&mut db).await;
-    let raw = include_str!("../../../tests/fixtures/agsdl030_wait_boundary_compiled_plan.json");
+    let raw = include_str!("../../tests/fixtures/agsdl030_wait_boundary_compiled_plan.json");
     let plan: FlowPlan030 = serde_json::from_str(raw).unwrap();
     initialize_tx(
         &mut db,

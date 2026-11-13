@@ -3151,3 +3151,6 @@ mod tests {
         .await;
     }
 }
+
+#[cfg(test)]
+mod argentic_schema_tests;

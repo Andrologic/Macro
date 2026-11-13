@@ -52,13 +52,22 @@ describe('Argentic boundaries', () => {
     expect(compareArgentic(empty(), counts({ [file]: 'use serde::Serialize;' }))).toEqual([]);
   });
 
+  it('allows only the selected SQLite driver in the runtime crate', () => {
+    expect(compareArgentic(empty(), counts({ 'crates/argentic-runtime/src/sqlite.rs': 'use sqlx::SqlitePool;' }))).toEqual([]);
+    for (const [path, source] of [
+      ['crates/argentic-core/src/store.rs', 'use sqlx::SqlitePool;'],
+      ['crates/argentic-runtime/src/adapter.rs', 'use tauri::AppHandle;'],
+      ['crates/argentic-runtime/src/store.rs', 'use rusqlite::Connection;'],
+    ]) expect(compareArgentic(empty(), counts({ [path]: source })).length).toBeGreaterThan(0);
+  });
+
   it('tightens a decrease without allowing later reintroduction or a new file', () => {
     const original = { ...empty(), counts: counts({ [file]: 'tauri::x(); tauri::y();' }) };
     const reduced = counts({ [file]: 'tauri::x();' });
     expect(compareArgentic(original, reduced)[0]).toMatchObject({ direction: 'decrease', count: 1, limit: 2 });
     const tightened = tightenArgentic(original, reduced);
     expect(compareArgentic(tightened, reduced)).toEqual([]);
-    expect(compareArgentic(tightened, counts({ [file]: 'tauri::x(); tauri::y();', 'crates/argentic-runtime/src/lib.rs': 'use sqlx::Pool;' })).map((v: { direction: string }) => v.direction)).toEqual(['increase', 'increase']);
+    expect(compareArgentic(tightened, counts({ [file]: 'tauri::x(); tauri::y();', 'crates/argentic-runtime/src/lib.rs': 'tauri::x();' })).map((v: { direction: string }) => v.direction)).toEqual(['increase', 'increase']);
   });
 
   it('guards runtime and type importers through the existing graph', () => {

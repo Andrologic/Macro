@@ -356,12 +356,6 @@
       "src-tauri/src/db/agsdl_execution/dto.rs": {
         "token:ts_rs": 7
       },
-      "src-tauri/src/db/agsdl_execution/flow_store030.rs": {
-        "token:sqlx": 21
-      },
-      "src-tauri/src/db/agsdl_execution/flow_store030_tests.rs": {
-        "token:sqlx": 13
-      },
       "src-tauri/src/db/agsdl_execution/flow_work_protocol030.rs": {
         "crate:ai": 3,
         "token:sqlx": 39

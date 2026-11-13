@@ -21,3 +21,6 @@ pub mod calculation {
 }
 
 pub mod permissions;
+
+pub mod sqlite;
+pub mod persistence;

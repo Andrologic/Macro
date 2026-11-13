@@ -126,6 +126,7 @@ export function argenticRustCounts(reader) {
     const counts = {};
     const add = (rule) => { counts[rule] = (counts[rule] ?? 0) + 1; };
     for (const token of TOKENS) {
+      if (token === 'sqlx' && file.startsWith('crates/argentic-runtime/')) continue;
       for (const unused of source.matchAll(new RegExp(`\\b${token}\\b`, 'g'))) add(`token:${token}`);
     }
     for (const match of source.matchAll(/\bcrate\s*::\s*(db|commands|config|git|workspace|ai|secrets|project_path|fs|core)\b/g)) add(`crate:${match[1]}`);
