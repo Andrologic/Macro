@@ -1193,6 +1193,14 @@ async fn agsdl030_conformance_all_37_scenarios() {
             };
             let observed = projection::project(&f, &view).await;
             let expected: Value = serde_json::from_str(fields["expect"].get()).unwrap();
+            if let Some(directory) = std::env::var_os("ARGENTIC_PROJECTION_DIR") {
+                std::fs::create_dir_all(&directory).unwrap();
+                std::fs::write(
+                    std::path::Path::new(&directory).join(format!("{name}.json")),
+                    observed.to_string(),
+                )
+                .unwrap();
+            }
             let errors = projection::compare(&expected, &observed);
             if !errors.is_empty() {
                 return Err(crate::db::agsdl_execution::failure(
