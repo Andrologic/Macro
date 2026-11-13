@@ -34,3 +34,5 @@ pub mod content_io;
 
 #[doc(hidden)]
 pub mod skill_text;
+
+pub mod content_network;

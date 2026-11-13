@@ -44,6 +44,7 @@ impl PolicySource for MacroPolicy {
 impl ConfigManager {
     pub(crate) fn engine_context(&self) -> HostContext {
         HostContext::new(self.root().to_owned(), Arc::new(MacroPolicy(self.clone())))
+            .with_network(Arc::new(MacroContentNetwork))
     }
 }
 impl From<ConfigManager> for HostContext {
@@ -53,3 +54,34 @@ impl From<ConfigManager> for HostContext {
 }
 
 pub(crate) use argentic_runtime::host::{HostContext, HostPolicyLease, ProjectPolicyLease};
+
+struct MacroContentNetwork;
+impl argentic_runtime::content_network::ContentNetwork for MacroContentNetwork {
+    fn fetch<'a>(
+        &'a self,
+        url: url::Url,
+        cancel: &'a tokio_util::sync::CancellationToken,
+        admit: &'a mut argentic_runtime::content_network::AdmitNetwork<'a>,
+    ) -> argentic_runtime::content_network::FetchFuture<
+        'a,
+        argentic_runtime::content_network::NetworkResource,
+    > {
+        Box::pin(async move {
+            let result = crate::commands::web_search::fetch_content_with_admission(
+                url,
+                cancel,
+                &mut |target, ip| {
+                    let pending = admit(target, ip);
+                    async move { pending.await.map_err(crate::commands::command_error) }
+                },
+            )
+            .await
+            .map_err(|e| e.message)?;
+            Ok(argentic_runtime::content_network::NetworkResource {
+                url: result.url,
+                content_type: result.content_type,
+                body_base64: result.body_base64,
+            })
+        })
+    }
+}

@@ -59,6 +59,7 @@ pub(crate) type ContentReadScope = Arc<dyn Fn(&std::path::Path) -> ContentResult
 /// Only the native host constructs this. Do not expose its constructor as IPC.
 /// The host supplies the import/read location, never a message's baseUri or cwd.
 pub(crate) struct ContentContext {
+    network: Arc<dyn argentic_runtime::content_network::ContentNetwork>,
     resource_owner: Option<ContentResourceOwner>,
     read_scope: Option<ContentReadScope>,
     capture_id: String,
@@ -114,6 +115,13 @@ pub(crate) enum ContentEffectPhase {
 }
 
 impl ContentContext {
+    pub(crate) fn with_network(
+        mut self,
+        network: Arc<dyn argentic_runtime::content_network::ContentNetwork>,
+    ) -> Self {
+        self.network = network;
+        self
+    }
     pub(crate) fn with_read_scope(mut self, scope: ContentReadScope) -> Self {
         self.read_scope = Some(scope);
         self
@@ -200,6 +208,7 @@ impl ContentContext {
             ));
         }
         Ok(Self {
+            network: Arc::new(argentic_runtime::content_network::UnavailableNetwork),
             resource_owner: None,
             read_scope: None,
             capture_id,

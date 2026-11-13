@@ -421,10 +421,9 @@ async fn read_uri(
         "http" | "https" => {
             let denial = Arc::new(Mutex::new(None));
             let admission_error = Arc::clone(&denial);
-            let result = crate::commands::web_search::fetch_content_with_admission(
-                uri.clone(),
-                &context.cancel,
-                &mut |target, ip| {
+            let result = context
+                .network
+                .fetch(uri.clone(), &context.cancel, &mut |target, ip| {
                     let admission_error = Arc::clone(&admission_error);
                     let mut effect = base_effect.clone();
                     effect.target_uri = target.to_string();
@@ -433,13 +432,11 @@ async fn read_uri(
                     } else {
                         ContentEffectPhase::NetworkDns
                     };
-                    async move {
+                    Box::pin(async move {
                         if root.is_some_and(|root| !within_root(&target, &root.uri)) {
                             *admission_error.lock().unwrap() =
                                 Some(error("PERMISSION", "Skill redirect leaves its root."));
-                            return Err(crate::commands::command_error(
-                                "Skill redirect leaves its root.",
-                            ));
+                            return Err("Skill redirect leaves its root.".to_owned());
                         }
                         let host = ip
                             .map(|v| v.to_string())
@@ -451,18 +448,17 @@ async fn read_uri(
                             .map(|_| ())
                             .map_err(|e| {
                                 *admission_error.lock().unwrap() = Some(e);
-                                crate::commands::command_error("Content network access denied.")
+                                "Content network access denied.".to_owned()
                             })
-                    }
-                },
-            )
-            .await;
+                    })
+                })
+                .await;
             let response = result.map_err(|e| {
                 denial
                     .lock()
                     .unwrap()
                     .take()
-                    .unwrap_or_else(|| error("CONTENT_UNAVAILABLE", e.message))
+                    .unwrap_or_else(|| error("CONTENT_UNAVAILABLE", e))
             })?;
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(response.body_base64)

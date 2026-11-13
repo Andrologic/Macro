@@ -98,9 +98,11 @@ impl Sources030 {
             attempt.start_effect_id()
         );
         let tasks = tasks.clone();
-        let context = context.with_resource_owner(Arc::new(move |cleanup| {
-            tasks.attach_cleanup030(&parent, cleanup)
-        }));
+        let context = context
+            .with_network(config.network())
+            .with_resource_owner(Arc::new(move |cleanup| {
+                tasks.attach_cleanup030(&parent, cleanup)
+            }));
         let mut sources = Self::from_context(
             context,
             serde_json::from_str(&capture.authored_source)?,

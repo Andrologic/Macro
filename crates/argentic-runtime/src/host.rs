@@ -65,10 +65,25 @@ pub trait PolicySource: Send + Sync {
 pub struct HostContext {
     root: PathBuf,
     policy: Arc<dyn PolicySource>,
+    network: Arc<dyn crate::content_network::ContentNetwork>,
 }
 impl HostContext {
     pub fn new(root: PathBuf, policy: Arc<dyn PolicySource>) -> Self {
-        Self { root, policy }
+        Self {
+            root,
+            policy,
+            network: Arc::new(crate::content_network::UnavailableNetwork),
+        }
+    }
+    pub fn with_network(
+        mut self,
+        network: Arc<dyn crate::content_network::ContentNetwork>,
+    ) -> Self {
+        self.network = network;
+        self
+    }
+    pub fn network(&self) -> Arc<dyn crate::content_network::ContentNetwork> {
+        self.network.clone()
     }
     pub fn root(&self) -> &Path {
         &self.root
