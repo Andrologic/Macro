@@ -25,11 +25,13 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2 0.10.9",
  "tempfile",
  "sqlx",
  "tokio",
  "tracing",
+ "unicode-normalization",
  "tokio-util",
  "windows-sys 0.61.2",
 ]

@@ -31,3 +31,6 @@ pub mod host;
 pub mod process;
 
 pub mod content_io;
+
+#[doc(hidden)]
+pub mod skill_text;
