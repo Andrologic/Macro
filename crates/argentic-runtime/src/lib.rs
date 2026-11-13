@@ -26,3 +26,6 @@ pub mod persistence;
 pub mod sqlite;
 
 pub mod host;
+
+/// Shared physical process lifecycle and containment.
+pub mod process;

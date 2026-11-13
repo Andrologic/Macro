@@ -137,6 +137,7 @@ tauri-remote-ui = { path = "vendor/tauri-remote-ui", optional = true }
 
 # Utils
 [dev-dependencies]
+argentic-runtime = { path = "../crates/argentic-runtime", features = ["dev-support"] }
 rmcp = { version = "=3.1.3", default-features = false, features = ["client", "server", "transport-async-rw"] }
 
 tauri = { version = "=2.12.5", features = ["test"] }

@@ -18,6 +18,8 @@ name = "argentic-runtime"
 version = "0.1.0"
 dependencies = [
  "argentic-core",
+ "libc",
+ "portable-pty",
  "schemars 0.8.22",
  "regex",
  "serde",
@@ -26,6 +28,8 @@ dependencies = [
  "tempfile",
  "sqlx",
  "tokio",
+ "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

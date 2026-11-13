@@ -6,16 +6,27 @@ workspace = "../../src-tauri"
 license = "AGPL-3.0-or-later"
 description = "Owned AgSDL execution with embedded SQLite"
 
+[features]
+dev-support = []
+
 [dependencies]
 argentic-core = { path = "../argentic-core" }
 serde_json = { version = "1", features = ["raw_value", "arbitrary_precision"] }
 schemars = "0.8"
 regex = "1"
+tracing = "0.1"
+portable-pty = "0.8"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 
 sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "chrono", "uuid"] }
 tokio = { version = "1", features = ["full"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming", "Wdk_System_SystemInformation"] }
 
 [dev-dependencies]
 tempfile = "3"
