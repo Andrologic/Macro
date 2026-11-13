@@ -53,7 +53,7 @@ keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
 tempfile = "3"
 tauri = { version = "=2.12.5", features = ["macos-private-api", "image-png"] }
 tauri-plugin-opener = "2"
-tauri-plugin-http = "2"
+tauri-plugin-http = { version = "=2.5.9", path = "vendor/tauri-plugin-http" }
 tauri-plugin-dialog = "=2.6.0"
 tauri-plugin-process = "=2.3.1"
 tauri-plugin-updater = { version = "=2.13.3", path = "vendor/tauri-plugin-updater" }
