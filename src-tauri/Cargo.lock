@@ -18,7 +18,12 @@ name = "argentic-runtime"
 version = "0.1.0"
 dependencies = [
  "argentic-core",
+ "schemars 0.8.22",
+ "regex",
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]

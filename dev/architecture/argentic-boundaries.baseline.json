@@ -326,12 +326,6 @@
         "crate:fs": 1,
         "token:sqlx": 7
       },
-      "src-tauri/src/agsdl_permissions/enforcement.rs": {
-        "token:ts_rs": 6
-      },
-      "src-tauri/src/agsdl_permissions/mod.rs": {
-        "token:ts_rs": 13
-      },
       "src-tauri/src/ai/stream_tasks.rs": {
         "crate:core": 3,
         "crate:db": 14

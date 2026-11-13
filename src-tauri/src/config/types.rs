@@ -607,6 +607,7 @@ pub struct ToolsDocument {
         with = "crate::agsdl_permissions::RequestedPermissions",
         default = "default_agsdl_host_permissions"
     )]
+    #[ts(as = "Option<crate::agsdl_permissions::ipc::RequestedPermissions>")]
     pub agsdl_host_permissions: Option<crate::agsdl_permissions::RequestedPermissions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub built_in: Option<BTreeMap<String, bool>>,

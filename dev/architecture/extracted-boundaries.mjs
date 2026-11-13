@@ -105,6 +105,7 @@ export function isArgenticFile(path) {
   if (/^crates\/argentic-(?:core|runtime)\//.test(path)) return true;
   if (!path.startsWith('src-tauri/src/')) return false;
   const name = path.slice('src-tauri/src/'.length);
+  if (name === 'agsdl_permissions/ipc.rs') return false; // Application wire mirrors only.
   if (/^argentic_(?:core|runtime)\//.test(name)) return true;
   if (ENGINE_SHARED.has(name)) return true;
   if (/^(?:agsdl_content|agsdl_permissions|agsdl_host_confinement|agsdl_host_codex|agsdl_host_codex030|agsdl_host_claude)\//.test(name)) return true;

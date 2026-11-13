@@ -4,20 +4,20 @@
 use super::*;
 use std::collections::BTreeSet;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EnforcementMechanism {
     Sandbox,
     Harness,
     Unavailable,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ShellMatching {
     CommandText,
     Prefix,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ObservedGuarantee {
     pub action: Action,
@@ -27,7 +27,7 @@ pub struct ObservedGuarantee {
     /// aliases. For sandbox ask, shell has no bypass while mediated tools ask.
     pub evidence: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnforcementObservation {
     pub policy_digest: String,
@@ -52,13 +52,13 @@ pub struct EnforcementObservation {
     /// Model may fall back to a person, never the reverse.
     pub model_fallback_to_person: bool,
 }
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnforcementRequirement {
     pub action: Action,
     pub effect: Effect,
 }
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnforcementPlan {
     pub policy_digest: String,

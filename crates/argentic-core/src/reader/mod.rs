@@ -36,10 +36,7 @@ pub(crate) const PINNED_MODULES: [(&str, &str); 4] = [
         "opencode",
         include_str!("../../assets/harnesses/opencode/module.json"),
     ),
-    (
-        "pi",
-        include_str!("../../assets/harnesses/pi/module.json"),
-    ),
+    ("pi", include_str!("../../assets/harnesses/pi/module.json")),
 ];
 
 /// `options.modules`: omitted (the pinned four) or an explicit map, which

@@ -43,8 +43,7 @@ fn refuse<T>(message: impl Into<String>) -> Result<T, SchemaError> {
     })
 }
 
-pub(crate) const DOCUMENT_SCHEMA_JSON: &str =
-    include_str!("../../assets/schema/agsdl.schema.json");
+pub(crate) const DOCUMENT_SCHEMA_JSON: &str = include_str!("../../assets/schema/agsdl.schema.json");
 pub(crate) const MODULE_SCHEMA_JSON: &str =
     include_str!("../../assets/schema/harness-module.schema.json");
 

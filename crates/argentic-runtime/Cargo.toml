@@ -9,3 +9,10 @@ description = "Owned AgSDL execution with embedded SQLite"
 [dependencies]
 argentic-core = { path = "../argentic-core" }
 serde_json = { version = "1", features = ["raw_value", "arbitrary_precision"] }
+schemars = "0.8"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
