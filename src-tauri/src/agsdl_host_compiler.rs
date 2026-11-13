@@ -1,14 +1,17 @@
-//! Native tickets bind the embedded compiler to captured source and registry bytes.
+//! Native calculations bind the compiler to captured source and registry bytes.
 //! They authenticate the component, not its semantics against a compromised host.
 use crate::db::agsdl_execution::{dto::EngineSourceRevision, failure, validate_json, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+#[cfg(test)]
 use std::collections::{BTreeMap, VecDeque};
+#[cfg(test)]
 use std::sync::Mutex;
+#[cfg(test)]
 use tokio::sync::{oneshot, Notify};
 
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostCompileJob {
     pub ticket: String,
@@ -21,11 +24,13 @@ pub(crate) struct CompileReceipt {
     pub generation: String,
     pub result_json: String,
 }
+#[cfg(test)]
 struct Pending {
     job: HostCompileJob,
     issued: bool,
     reply: oneshot::Sender<Result<CompileReceipt>>,
 }
+#[cfg(test)]
 #[derive(Default)]
 struct Queue {
     closed: bool,
@@ -37,14 +42,18 @@ struct Queue {
 }
 #[derive(Default)]
 pub(crate) struct CompileBroker {
+    #[cfg(test)]
     queue: Mutex<Queue>,
+    #[cfg(test)]
     available: Notify,
     pub(crate) native: crate::agsdl_host_evaluation030::Bounded<32>,
 }
+#[cfg(test)]
 struct TicketGuard<'a> {
     broker: &'a CompileBroker,
     ticket: String,
 }
+#[cfg(test)]
 impl Drop for TicketGuard<'_> {
     fn drop(&mut self) {
         let mut queue = self.broker.queue.lock().expect("compiler queue");
@@ -59,19 +68,23 @@ impl Drop for TicketGuard<'_> {
 impl CompileBroker {
     pub(crate) fn close(&self) {
         self.native.close();
-        let mut queue = self.queue.lock().expect("compiler queue");
-        queue.closed = true;
-        queue.ready.clear();
-        queue.expired.clear();
-        for (_, pending) in std::mem::take(&mut queue.pending) {
-            let _ = pending.reply.send(Err(failure(
-                "RUNTIME_UNAVAILABLE",
-                "",
-                "Compiler host was revoked",
-            )));
+        #[cfg(test)]
+        {
+            let mut queue = self.queue.lock().expect("compiler queue");
+            queue.closed = true;
+            queue.ready.clear();
+            queue.expired.clear();
+            for (_, pending) in std::mem::take(&mut queue.pending) {
+                let _ = pending.reply.send(Err(failure(
+                    "RUNTIME_UNAVAILABLE",
+                    "",
+                    "Compiler host was revoked",
+                )));
+            }
+            self.available.notify_waiters();
         }
-        self.available.notify_waiters();
     }
+    #[cfg(test)]
     pub(crate) async fn compile(
         &self,
         generation: &str,
@@ -135,6 +148,7 @@ impl CompileBroker {
         cancelled: &tokio_util::sync::CancellationToken,
     ) -> Result<CompileReceipt> {
         validate_input(&source, &authored_source, &registry_json)?;
+        #[cfg(test)]
         if self.queue.lock().expect("compiler queue").closed {
             return Err(failure(
                 "RUNTIME_UNAVAILABLE",
@@ -228,6 +242,7 @@ impl CompileBroker {
             result_json,
         })
     }
+    #[cfg(test)]
     pub(crate) async fn next(&self) -> Result<HostCompileJob> {
         loop {
             let wake = self.available.notified();
@@ -250,6 +265,7 @@ impl CompileBroker {
             wake.await;
         }
     }
+    #[cfg(test)]
     pub(crate) fn complete(
         &self,
         generation: &str,

@@ -471,7 +471,7 @@ pub async fn execution_submit_intent(
     // Isolated QA can interrupt the observer after admission, before its acknowledgement.
     // This never delays a release build or a non-QA profile.
     #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
-    if crate::agsdl_host::execution_qa_available(app.clone()) && result.is_ok() {
+    if app.config().identifier.starts_with("com.macro.desktop.qa.") && result.is_ok() {
         if let Some(delay) = std::env::var("MACRO_AGSDL_QA_DELAY_ADMISSION_ACK_MS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())

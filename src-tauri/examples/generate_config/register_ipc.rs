@@ -33,7 +33,6 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::execution::ResolvedCardTask>("execution")?;
     registry.add::<ipc_contracts::execution::EngineOwner>("execution")?;
     registry.add::<ipc_contracts::execution::EngineTerminalCommit>("execution")?;
-    registry.add::<ipc_contracts::execution::HostCompileJob>("execution")?;
     registry.add::<ipc_contracts::execution::RuntimeProjectionScope030>("execution")?;
     registry.add::<ipc_contracts::execution::RuntimeProjectionQuery030>("execution")?;
     registry.add::<ipc_contracts::execution::RuntimeProjectionContinuation030>("execution")?;
@@ -43,11 +42,6 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::execution::RunPage030>("execution")?;
     registry.add::<ipc_contracts::execution::PublicRunSummary030>("execution")?;
     registry.add::<ipc_contracts::execution::PhaseCount030>("execution")?;
-    registry.add::<ipc_contracts::execution::HostWorkJob030>("execution")?;
-    registry.add::<ipc_contracts::execution::HostWorkCompletion030>("execution")?;
-    registry.add::<ipc_contracts::execution::HostRouteJob030>("execution")?;
-    registry.add::<ipc_contracts::execution::HostRouteCompletion030>("execution")?;
-    registry.add::<ipc_contracts::execution::HostRouteOutput030>("execution")?;
     registry.add::<ipc_contracts::execution::ClaudeStatus>("execution")?;
     registry.add::<ipc_contracts::execution::CodexStatus>("execution")?;
     registry.add::<ipc_contracts::execution::NativeModelChoice>("execution")?;

@@ -2,12 +2,9 @@ import { evaluateHostHumanClock030 } from './hostHumanClock030';
 import { commandOutput030, mcpOutput030, prepareCall030, type PreparedCall030, type CommandReceipt030, type McpReceipt030 } from './calls030';
 import type { RouteSource030 } from './routes030';
 import type { ExactJsonText } from './contracts';
-import type { HostRouteJob030, HostRouteOutput030 } from '../../types/generated/ipc';
-import { executionHostCompleteRoute030, executionHostFailed, executionHostNextRoute030 } from '../ipc/agsdlExecution';
 import { capturedContent030, type CapturedContentReceipt030, type ContentCaptureIdentity030 } from './contentResolution030';
 import { ConformanceError } from './exact';
 import { prepareFlowRoute030, type PrepareFlowRouteInput030 } from './prepareFlowRoute030';
-import type { HostWorkPumpPort030 } from './hostWorkPump030';
 
 type NativeContentCache030 =
   | { readonly identity: ContentCaptureIdentity030; readonly receipts: readonly CapturedContentReceipt030[] }
@@ -57,10 +54,13 @@ export function evaluateCallData030(input: {
   }
 }
 
-/** The resident mailbox transports data only; native code revalidates and commits it. */
-export function createHostRoutePort030(generation: string): HostWorkPumpPort030<HostRouteJob030, HostRouteOutput030> {
+/** Captured native input used by the differential oracle, without IPC. */
+export interface HostRouteJob030 { ticket: string; generation: string; inputDigest: string; inputJson: string }
+export type HostRouteOutput030 = { kind: 'ready'; resultJson: string } | { kind: 'failed'; code: string; pointer: string };
+
+/** Pure reference evaluator; native code revalidates and commits its own results. */
+export function createHostRoutePort030(generation: string): { evaluate(job: HostRouteJob030): Promise<HostRouteOutput030> } {
   return {
-    next: executionHostNextRoute030,
     async evaluate(job) {
       if (job.generation !== generation) throw new Error('Route mailbox generation changed.');
       try {
@@ -83,12 +83,5 @@ export function createHostRoutePort030(generation: string): HostWorkPumpPort030<
           : { kind: 'failed', code: 'ROUTE_PREPARATION_FAILED', pointer: '' };
       }
     },
-    complete(job, output) {
-      return executionHostCompleteRoute030({ ticket: job.ticket, generation: job.generation, inputDigest: job.inputDigest, output });
-    },
-    isStaleCompletion(error) {
-      return typeof error === 'object' && error !== null && 'code' in error && error.code === 'STALE_TICKET';
-    },
-    async fail() { await executionHostFailed(); },
   };
 }

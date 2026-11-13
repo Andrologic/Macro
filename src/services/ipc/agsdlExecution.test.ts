@@ -4,7 +4,6 @@ import type { ExecutionIntentKey,ExecutionStageIntentRequest,PublicExecutionInte
 let response: PublicExecutionIntent | null = null;
 const invoke = mock(async (_command: string, _args: unknown) => response);
 mock.module('../tauriRuntimeBridge', () => ({ invoke }));
-const ipc = await import('./agsdlExecution');
 const intent = await import('./agsdlExecutionIntentVersioned');
 
 describe('durable execution intent IPC', () => {
@@ -25,13 +24,4 @@ describe('durable execution intent IPC', () => {
     response = null;
     expect(await intent.readExecutionIntentVersioned(key)).toBeNull();
   });
-});
-
-it('passes private work mailbox identity and exact JSON without rewriting them', async () => {
-  const completion = { ticket: 'ticket', generation: 'generation', inputDigest: 'digest',
-    output: { stateJson: '{"n":9007199254740993}', receiptJson: '{"n":1.0}' } };
-  await ipc.executionHostNextWork030();
-  expect(invoke).toHaveBeenLastCalledWith('execution_host_next_work030');
-  await ipc.executionHostCompleteWork030(completion);
-  expect(invoke).toHaveBeenLastCalledWith('execution_host_complete_work030', { completion });
 });

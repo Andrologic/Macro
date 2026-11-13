@@ -1,7 +1,7 @@
 import { expect, it } from 'bun:test';
 import { NumberToken, parse } from '../../vendor/agsdl/v0.3/json.mjs';
 import { validate } from '../../vendor/agsdl/v0.3/valueschema.mjs';
-import type { EngineContext } from '../../types/generated/ipc/EngineContext';
+import type { EngineContext } from './hostWorkTransition030';
 import type { ExactJsonText, SourceRevision } from './contracts';
 import type { CapturedRegistry030 } from './contracts030';
 import { sourceDigest } from './sourceDigest';

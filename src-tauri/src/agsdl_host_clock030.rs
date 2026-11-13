@@ -3,10 +3,14 @@ use crate::db::agsdl_execution::{
     dto::EngineOwner, failure, flow030::FlowIdentity030, validate_json, Result,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
+#[cfg(test)]
 use std::collections::{BTreeMap, VecDeque};
+#[cfg(test)]
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+#[cfg(test)]
 use tokio::sync::{oneshot, Notify};
 use tokio_util::sync::CancellationToken;
 
@@ -66,6 +70,7 @@ impl VirtualClock030 {
     }
 }
 
+#[cfg(test)]
 const MAX_JOBS: usize = 64;
 const MAX_BYTES: usize = 8_000_000;
 
@@ -81,6 +86,7 @@ pub struct HostClockInput030 {
     pub options_json: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostClockJob030 {
@@ -97,6 +103,7 @@ pub struct HostClockOutput030 {
     pub receipt_json: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostClockCompletion030 {
@@ -106,12 +113,14 @@ pub struct HostClockCompletion030 {
     pub output: HostClockOutput030,
 }
 
+#[cfg(test)]
 struct Pending {
     job: HostClockJob030,
     issued: bool,
     reply: oneshot::Sender<Result<HostClockOutput030>>,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct Queue {
     closed: bool,
@@ -122,20 +131,24 @@ struct Queue {
     retired_order: VecDeque<String>,
 }
 
-#[derive(Default)]
+#[cfg_attr(test, derive(Default))]
 pub(crate) struct ClockBroker030 {
     route: Option<(
         std::sync::Arc<crate::agsdl_host_route030::RouteBroker030>,
         String,
     )>,
+    #[cfg(test)]
     queue: Mutex<Queue>,
+    #[cfg(test)]
     available: Notify,
 }
 
+#[cfg(test)]
 struct TicketGuard<'a> {
     broker: &'a ClockBroker030,
     ticket: String,
 }
+#[cfg(test)]
 impl Drop for TicketGuard<'_> {
     fn drop(&mut self) {
         let mut queue = self.broker.queue.lock().expect("work mailbox");
@@ -164,9 +177,13 @@ impl ClockBroker030 {
     ) -> Self {
         Self {
             route: Some((route, generation)),
-            ..Self::default()
+            #[cfg(test)]
+            queue: Default::default(),
+            #[cfg(test)]
+            available: Default::default(),
         }
     }
+    #[cfg(test)]
     pub(crate) fn close(&self) {
         let mut queue = self.queue.lock().expect("work mailbox");
         queue.closed = true;
@@ -226,47 +243,59 @@ impl ClockBroker030 {
                 .await?;
             return Ok(serde_json::from_str(&raw)?);
         }
-        let ticket = uuid::Uuid::new_v4().to_string();
-        let job = HostClockJob030 {
-            ticket: ticket.clone(),
-            generation: generation.into(),
-            input_digest: format!("sha256:{:x}", Sha256::digest(bytes)),
-            input,
-        };
-        let (reply, receiver) = oneshot::channel();
+        #[cfg(not(test))]
         {
-            let mut queue = self.queue.lock().expect("work mailbox");
-            if queue.closed || cancelled.is_cancelled() || queue.pending.len() >= MAX_JOBS {
-                return Err(failure(
-                    "RUNTIME_UNAVAILABLE",
-                    "work",
-                    "Work protocol host is unavailable or busy",
-                ));
-            }
-            queue.pending.insert(
-                ticket.clone(),
-                Pending {
-                    job,
-                    issued: false,
-                    reply,
-                },
-            );
-            queue.ready.push_back(ticket.clone());
+            Err(failure(
+                "RUNTIME_UNAVAILABLE",
+                "clock",
+                "Native clock is unavailable",
+            ))
         }
-        let _guard = TicketGuard {
-            broker: self,
-            ticket,
-        };
-        self.available.notify_one();
-        // Work/host cancellation is authoritative. No transport timeout may
-        // silently expire a person's wait or reset the work's machine budget.
-        tokio::select! {
-            biased;
-            _ = cancelled.cancelled() => Err(failure("INTERRUPTED", "work", "Work transition was cancelled")),
-            result = receiver => result.map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Work transition receiver was lost"))?,
+        #[cfg(test)]
+        {
+            let ticket = uuid::Uuid::new_v4().to_string();
+            let job = HostClockJob030 {
+                ticket: ticket.clone(),
+                generation: generation.into(),
+                input_digest: format!("sha256:{:x}", Sha256::digest(bytes)),
+                input,
+            };
+            let (reply, receiver) = oneshot::channel();
+            {
+                let mut queue = self.queue.lock().expect("work mailbox");
+                if queue.closed || cancelled.is_cancelled() || queue.pending.len() >= MAX_JOBS {
+                    return Err(failure(
+                        "RUNTIME_UNAVAILABLE",
+                        "work",
+                        "Work protocol host is unavailable or busy",
+                    ));
+                }
+                queue.pending.insert(
+                    ticket.clone(),
+                    Pending {
+                        job,
+                        issued: false,
+                        reply,
+                    },
+                );
+                queue.ready.push_back(ticket.clone());
+            }
+            let _guard = TicketGuard {
+                broker: self,
+                ticket,
+            };
+            self.available.notify_one();
+            // Work/host cancellation is authoritative. No transport timeout may
+            // silently expire a person's wait or reset the work's machine budget.
+            tokio::select! {
+                biased;
+                _ = cancelled.cancelled() => Err(failure("INTERRUPTED", "work", "Work transition was cancelled")),
+                result = receiver => result.map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Work transition receiver was lost"))?,
+            }
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn next(&self) -> Result<HostClockJob030> {
         loop {
             let wake = self.available.notified();
@@ -290,6 +319,7 @@ impl ClockBroker030 {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn complete(
         &self,
         generation: &str,

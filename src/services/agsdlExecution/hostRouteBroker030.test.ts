@@ -1,13 +1,11 @@
-import { expect, it, mock } from 'bun:test';
-import type { HostRouteJob030 } from '../../types/generated/ipc';
+import { expect, it } from 'bun:test';
+import type { HostRouteJob030 } from './hostRouteBroker030';
 import type { ExactJsonText, SourceRevision } from './contracts';
 import { compilePlan030 } from './compiler030';
 import { sourceDigest } from './sourceDigest';
 import { decode, encode, record } from './exact';
 import type { CapturedRegistry030 } from './contracts030';
 
-const invoke = mock(async () => undefined);
-mock.module('../tauriRuntimeBridge', () => ({ invoke }));
 const { capturedContentForOccurrence030, createHostRoutePort030 } = await import('./hostRouteBroker030');
 
 it('keeps native content caches distinct for equal fan-out items and rejects duplicates', () => {
@@ -86,10 +84,6 @@ it('prepares the selected captured route and transports exact values without inv
   const prepared = JSON.parse(output.resultJson);
   expect(prepared.kind).toBe('ready');
   expect(prepared.batches[0].items[0].occurrence.nativeReceiptId).toBe('native-receipt');
-  await port.complete(job, output);
-  expect(invoke).toHaveBeenLastCalledWith('execution_host_complete_route030', { completion: {
-    ticket: job.ticket, generation: job.generation, inputDigest: job.inputDigest, output,
-  } });
   const wrong = { ...input, source: { ...source, terminalId: 'other' } };
   expect(await port.evaluate({ ...job, inputJson: JSON.stringify(wrong) })).toMatchObject({ kind: 'failed', code: 'CORRELATION' });
 });
@@ -111,7 +105,7 @@ it('normalizes native command tickets before routes and keeps normal failed dist
   await expect(port.evaluate({ ...job(input), generation: 'retired' })).rejects.toThrow('generation changed');
 });
 
-it('transports human clock jobs through the authenticated native route mailbox', async () => {
+it('evaluates captured human clock jobs without native transport', async () => {
   const owner = { systemStartId: 'system', ownerEpoch: 'epoch' };
   const input = { owner, eventId: 'admit', expectedRevision: '0', stateJson: '', optionsJson: '{"maxSliceMs":2147483647}',
     eventJson: JSON.stringify({ owner, eventId: 'admit', nowMs: '1700000000000', event: { kind: 'admit', workId: 'work', timeoutMs: '60000', answerTimeoutMs: '600000', startedAtMs: '1700000000000' } }) };
@@ -122,7 +116,5 @@ it('transports human clock jobs through the authenticated native route mailbox',
   const receipt = JSON.parse(JSON.parse(output.resultJson).receiptJson);
   expect(receipt.clocks).toHaveLength(1);
   expect(receipt.nextWakeMs).toBe(60000);
-  await port.complete(job, output);
-  expect(invoke).toHaveBeenLastCalledWith('execution_host_complete_route030', { completion: { ticket: job.ticket, generation: job.generation, inputDigest: job.inputDigest, output } });
   await expect(port.evaluate({ ...job, generation: 'retired' })).rejects.toThrow('generation changed');
 });

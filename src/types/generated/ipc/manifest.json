@@ -886,14 +886,6 @@
       "families": [
         "execution"
       ],
-      "name": "EngineContext",
-      "origin": "macro_lib::db::agsdl_execution::dto::EngineContext",
-      "path": "EngineContext.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
       "name": "EngineDelivery",
       "origin": "macro_lib::db::agsdl_execution::dto::EngineDelivery",
       "path": "EngineDelivery.ts"
@@ -1622,38 +1614,6 @@
     },
     {
       "families": [
-        "execution"
-      ],
-      "name": "HostCompileJob",
-      "origin": "macro_lib::agsdl_host_compiler::HostCompileJob",
-      "path": "HostCompileJob.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "HostRouteCompletion030",
-      "origin": "macro_lib::agsdl_host_route030::HostRouteCompletion030",
-      "path": "HostRouteCompletion030.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "HostRouteJob030",
-      "origin": "macro_lib::agsdl_host_route030::HostRouteJob030",
-      "path": "HostRouteJob030.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "HostRouteOutput030",
-      "origin": "macro_lib::agsdl_host_route030::HostRouteOutput030",
-      "path": "HostRouteOutput030.ts"
-    },
-    {
-      "families": [
         "host_telemetry"
       ],
       "name": "HostTelemetryAvailability",
@@ -1675,38 +1635,6 @@
       "name": "HostTelemetryReason",
       "origin": "macro_lib::host_telemetry::HostTelemetryReason",
       "path": "HostTelemetryReason.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "HostWorkCompletion030",
-      "origin": "macro_lib::agsdl_host_work::HostWorkCompletion030",
-      "path": "HostWorkCompletion030.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "HostWorkInput030",
-      "origin": "macro_lib::agsdl_host_work::HostWorkInput030",
-      "path": "HostWorkInput030.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "HostWorkJob030",
-      "origin": "macro_lib::agsdl_host_work::HostWorkJob030",
-      "path": "HostWorkJob030.ts"
-    },
-    {
-      "families": [
-        "execution"
-      ],
-      "name": "HostWorkOutput030",
-      "origin": "macro_lib::agsdl_host_work::HostWorkOutput030",
-      "path": "HostWorkOutput030.ts"
     },
     {
       "families": [

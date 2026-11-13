@@ -269,7 +269,7 @@ MCPRuntimeStatus,McpInteractionRequest,
 McpInteractionResponse
 } from "./contracts/serviceProvider";
 
-export { executionHostCompleteCompile,executionHostCompleteWork030,executionHostFailed,executionHostNextCompile,executionHostNextWork030,executionHostReady,executionModelChoices,preflightExecution,stopExecution } from './ipc/agsdlExecution';
+export { executionModelChoices,preflightExecution,stopExecution } from './ipc/agsdlExecution';
 export { httpReleaseWebviewResource } from "./ipc/httpResources";
 
 

@@ -624,7 +624,6 @@ pub fn run() {
         .manage(commands::terminal::TerminalSessionStore::default())
         .setup(move |app| {
             commands::pilot_secrets::setup(app.handle());
-            agsdl_host::install(app.handle())?;
             match app_updates::staged_update_requires_native_confirmation(app.handle()) {
                 Ok(true) => {
                     // Wait for RunEvent::Ready, after setup has finished its migrations.
@@ -944,16 +943,6 @@ pub fn run() {
             agsdl_host_codex::execution_codex_status,
             agsdl_host_claude::execution_claude_status,
             agsdl_host_claude::execution_claude_set_api_key,
-            agsdl_host::execution_host_ready,
-            agsdl_host::execution_qa_available,
-            agsdl_host::execution_qa_replace_host,
-            agsdl_host::execution_host_failed,
-            agsdl_host::execution_host_next_compile,
-            agsdl_host::execution_host_complete_compile,
-            agsdl_host::execution_host_next_work030,
-            agsdl_host::execution_host_complete_work030,
-            agsdl_host::execution_host_next_route030,
-            agsdl_host::execution_host_complete_route030,
             commands::agsdl_execution::execution_model_choices,
             commands::agsdl_execution::execution_preflight,
             commands::agsdl_execution::execution_list_runs030,

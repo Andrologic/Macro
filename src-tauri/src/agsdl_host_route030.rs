@@ -1,17 +1,20 @@
-//! Private mailbox for pure preparation of a route already selected by 06.
+//! Bounded native preparation of a route already selected by 06.
 //! A response is only data; the native flow owner authenticates and commits it.
 use crate::db::agsdl_execution::{failure, validate_json, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
 use std::collections::{BTreeMap, VecDeque};
+#[cfg(test)]
 use std::sync::Mutex;
+#[cfg(test)]
 use tokio::sync::{oneshot, Notify};
 use tokio_util::sync::CancellationToken;
 
 const MAX_JOBS: usize = 64;
 const MAX_BYTES: usize = 8_000_000;
 
-#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostRouteJob030 {
     pub ticket: String,
@@ -20,7 +23,8 @@ pub struct HostRouteJob030 {
     pub input_json: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
+#[cfg(test)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostRouteCompletion030 {
     pub ticket: String,
@@ -29,7 +33,7 @@ pub struct HostRouteCompletion030 {
     pub output: HostRouteOutput030,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -41,11 +45,13 @@ pub enum HostRouteOutput030 {
     Failed { code: String, pointer: String },
 }
 
+#[cfg(test)]
 struct Pending {
     job: HostRouteJob030,
     issued: bool,
     reply: oneshot::Sender<Result<String>>,
 }
+#[cfg(test)]
 #[derive(Default)]
 struct Queue {
     closed: bool,
@@ -54,14 +60,18 @@ struct Queue {
 }
 #[derive(Default)]
 pub(crate) struct RouteBroker030 {
+    #[cfg(test)]
     queue: Mutex<Queue>,
+    #[cfg(test)]
     available: Notify,
     pub(crate) native: crate::agsdl_host_evaluation030::Bounded<64>,
 }
+#[cfg(test)]
 struct TicketGuard<'a> {
     broker: &'a RouteBroker030,
     ticket: String,
 }
+#[cfg(test)]
 impl Drop for TicketGuard<'_> {
     fn drop(&mut self) {
         let mut queue = self.broker.queue.lock().expect("route mailbox");
@@ -72,21 +82,25 @@ impl Drop for TicketGuard<'_> {
 impl RouteBroker030 {
     pub(crate) fn close(&self) {
         self.native.close();
-        let mut queue = self.queue.lock().expect("route mailbox");
-        queue.closed = true;
-        queue.ready.clear();
-        for (_, pending) in std::mem::take(&mut queue.pending) {
-            let _ = pending.reply.send(Err(failure(
-                "RUNTIME_UNAVAILABLE",
-                "route",
-                "Route host was revoked",
-            )));
+        #[cfg(test)]
+        {
+            let mut queue = self.queue.lock().expect("route mailbox");
+            queue.closed = true;
+            queue.ready.clear();
+            for (_, pending) in std::mem::take(&mut queue.pending) {
+                let _ = pending.reply.send(Err(failure(
+                    "RUNTIME_UNAVAILABLE",
+                    "route",
+                    "Route host was revoked",
+                )));
+            }
+            self.available.notify_waiters();
         }
-        self.available.notify_waiters();
     }
 
     /// Only the native owner submits authenticated inputs. Cancellation never
     /// permits a late result to become a durable receipt or trigger an effect.
+    #[cfg(test)]
     pub(crate) async fn evaluate(
         &self,
         generation: &str,
@@ -148,6 +162,7 @@ impl RouteBroker030 {
                 "Route host generation differs",
             ));
         }
+        #[cfg(test)]
         if self.queue.lock().expect("route mailbox").closed {
             return Err(failure(
                 "RUNTIME_UNAVAILABLE",
@@ -193,6 +208,7 @@ impl RouteBroker030 {
         validate_output(&output)?;
         response(output)
     }
+    #[cfg(test)]
     pub(crate) async fn next(&self) -> Result<HostRouteJob030> {
         loop {
             let notified = self.available.notified();
@@ -216,6 +232,7 @@ impl RouteBroker030 {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn complete(&self, generation: &str, result: HostRouteCompletion030) -> Result<()> {
         validate_output(&result.output)?;
         let mut queue = self.queue.lock().expect("route mailbox");

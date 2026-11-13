@@ -1,7 +1,14 @@
-import type { EngineContext } from '../../types/generated/ipc/EngineContext';
+import type { EngineOwner } from '../../types/generated/ipc/EngineOwner';
+import type { EngineWork } from '../../types/generated/ipc/EngineWork';
 import { AgentWorkController030, type WorkControllerOptions030, type WorkEvent030 } from './agentWorkController030';
 import { copyContract030, type AgentWorkContract030, type ValueSchemaValidator030 } from './agentWorkContracts030';
 import { evaluateWorkJournal030 } from './hostWorkJournal030';
+
+/** Captured work context for the pure reference evaluator, not an IPC command. */
+export interface EngineContext {
+  owner: EngineOwner; work: EngineWork;
+  permissionsJson: string; scopeJson: string; registryVersion: string;
+}
 
 /** Evaluate only an authenticated native job. SQL owns its receipt, effects,
  * revision and Stop fencing; this function does not execute or route work. */

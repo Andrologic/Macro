@@ -318,16 +318,12 @@ impl Fixture {
             live: AtomicBool::new(true),
             ready: AtomicBool::new(true),
             retired: Default::default(),
-            loads: AtomicUsize::new(0),
             owners: Mutex::new(BTreeMap::from([("system".into(), owner.clone())])),
-            qa_request: Mutex::new(None),
         });
         let host = HostState(
             Mutex::new(Some(OwnedHost {
                 incarnation: incarnation.clone(),
-                resource: 0,
             })),
-            Default::default(),
             Default::default(),
             Default::default(),
         );

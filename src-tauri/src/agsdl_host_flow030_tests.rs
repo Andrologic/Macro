@@ -251,17 +251,13 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
         live: AtomicBool::new(true),
         ready: AtomicBool::new(true),
         retired: Default::default(),
-        loads: AtomicUsize::new(0),
         owners: Mutex::new(BTreeMap::new()),
-        qa_request: Mutex::new(None),
     });
     let host = HostState(
         Mutex::new(Some(OwnedHost {
             incarnation: incarnation.clone(),
-            resource: 0,
         })),
         Arc::new(tokio::sync::Mutex::new(())),
-        Default::default(),
         Default::default(),
     );
 
@@ -668,17 +664,13 @@ async fn exercise_handoff(mode: u8) {
         live: AtomicBool::new(true),
         ready: AtomicBool::new(true),
         retired: Default::default(),
-        loads: AtomicUsize::new(0),
         owners: Mutex::new(BTreeMap::from([("system".into(), owner.clone())])),
-        qa_request: Mutex::new(None),
     });
     let host = HostState(
         Mutex::new(Some(OwnedHost {
             incarnation: incarnation.clone(),
-            resource: 0,
         })),
         Arc::new(tokio::sync::Mutex::new(())),
-        Default::default(),
         Default::default(),
     );
     let runtime = host.flow030();

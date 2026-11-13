@@ -1,6 +1,6 @@
 import { evaluateHostHumanClock030 } from './hostHumanClock030';
 
-/** Separate flow-owned native mailbox job. There is deliberately no Agent
+/** Captured flow-owned clock job. There is deliberately no Agent
  * instance or product-supplied timestamp in the transport context. */
 export interface HostClockInput030 {
   readonly identity: { readonly systemStartId: string; readonly flowInvocationId: string; readonly snapshotId: string; readonly epoch: string };
@@ -17,7 +17,7 @@ export interface HostClockJob030 {
   readonly inputDigest: string;
   readonly input: HostClockInput030;
 }
-/** Runs only in the authenticated resident host pump. Rust authenticates ticket,
+/** Pure reference used by clock-oracle tests. Rust authenticates ticket,
  * generation, digest, journal revision and the appended event before commit. */
 export function evaluateHumanClockJob030(job: HostClockJob030): { readonly stateJson: string; readonly receiptJson: string } {
   const input = job.input;

@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import type { EngineContext } from '../../types/generated/ipc/EngineContext';
+import type { EngineContext } from './hostWorkTransition030';
 import type { ExactJsonText } from './contracts';
 import { createAgentWorkContract030 } from './agentWorkContracts030';
 import { EMPTY_WORK_JOURNAL030 } from './hostWorkJournal030';

@@ -1,4 +1,4 @@
-// Test-only calls to shipped pure exports and the resident route port.
+// Test-only calls to pure exports and captured route evaluator.
 import { prepareFlowRoute030 } from '../../src/services/agsdlExecution/prepareFlowRoute030';
 import { prepareCall030, commandOutput030, mcpOutput030 } from '../../src/services/agsdlExecution/calls030';
 import { capturedContent030 } from '../../src/services/agsdlExecution/contentResolution030';

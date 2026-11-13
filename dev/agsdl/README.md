@@ -8,10 +8,13 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked --jobs 2 \
 ```
 
 The Rust tests create temporary SQLite databases with the application migrations
-and use the real compiler, work controller and route evaluator through a Bun
-JSON-lines subprocess. They require neither a display nor a provider account.
-Missing Bun, a missing scenario, an unsupported timeline event, an unfinished
-run or a contract mismatch fails the test. Numeric tokens remain exact.
+and use the native Rust compiler, work controller, route, call-data and clock
+evaluators. The 37-scenario production test also runs with Bun removed from
+PATH. A separate differential test replays captured inputs against the retained
+pure TypeScript evaluators through a Bun JSON-lines subprocess. Neither path
+requires a display or a provider account. Missing Bun fails the differential;
+a missing scenario, an unsupported timeline event, an unfinished run or a
+contract mismatch fails conformance. Numeric tokens remain exact.
 
 `agsdl030_conformance_error_route` checks the initial integration separately.
 `agsdl030_conformance_all_37_scenarios` replays every pinned timeline and compares

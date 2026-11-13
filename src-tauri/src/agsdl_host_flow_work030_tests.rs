@@ -233,17 +233,13 @@ async fn fixture() -> (
         live: AtomicBool::new(true),
         ready: AtomicBool::new(true),
         retired: Default::default(),
-        loads: AtomicUsize::new(0),
         owners: Mutex::new(BTreeMap::from([("system".into(), owner)])),
-        qa_request: Mutex::new(None),
     });
     let host = Arc::new(HostState(
         Mutex::new(Some(OwnedHost {
             incarnation: incarnation.clone(),
-            resource: 0,
         })),
         Arc::new(tokio::sync::Mutex::new(())),
-        Default::default(),
         Default::default(),
     ));
     (tmp, pool, id, input, host, incarnation)

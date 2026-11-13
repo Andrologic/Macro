@@ -2,7 +2,9 @@
 //! The native normalizer receives only captured inputs and raw native receipts.
 //! These APIs are private, never model tools or IPC.
 use crate::agsdl_host_calls::Control;
-use crate::agsdl_host_route030::{HostRouteCompletion030, HostRouteJob030, RouteBroker030};
+use crate::agsdl_host_route030::RouteBroker030;
+#[cfg(test)]
+use crate::agsdl_host_route030::{HostRouteCompletion030, HostRouteJob030};
 use crate::db::agsdl_execution::{
     call_protocol030 as protocol,
     flow030::{FlowEffect030, FlowIdentity030, WorkRef030},
@@ -212,12 +214,15 @@ impl CallDataBroker030 {
             evaluation: CallDataEvaluation030::Native(generation),
         }
     }
+    #[cfg(test)]
     pub(crate) async fn next(&self) -> Result<HostRouteJob030> {
         self.route.next().await
     }
+    #[cfg(test)]
     pub(crate) fn complete(&self, generation: &str, result: HostRouteCompletion030) -> Result<()> {
         self.route.complete(generation, result)
     }
+    #[cfg(test)]
     pub(crate) fn close(&self) {
         self.route.close();
     }

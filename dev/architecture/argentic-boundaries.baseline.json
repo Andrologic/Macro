@@ -33,11 +33,9 @@
       },
       "src-tauri/src/agsdl_host.rs": {
         "crate:ai": 1,
-        "crate:core": 1,
         "crate:db": 2,
-        "token:AppHandle": 6,
         "token:sqlx": 1,
-        "token:tauri": 38
+        "token:tauri": 1
       },
       "src-tauri/src/agsdl_host_call_authority030.rs": {
         "crate:db": 3,
@@ -122,8 +120,7 @@
         "crate:db": 10
       },
       "src-tauri/src/agsdl_host_compiler.rs": {
-        "crate:db": 5,
-        "token:ts_rs": 1
+        "crate:db": 5
       },
       "src-tauri/src/agsdl_host_completion030.rs": {
         "crate:ai": 1,
@@ -261,8 +258,7 @@
         "token:ts_rs": 1
       },
       "src-tauri/src/agsdl_host_route030.rs": {
-        "crate:db": 1,
-        "token:ts_rs": 3
+        "crate:db": 1
       },
       "src-tauri/src/agsdl_host_route_attestations030.rs": {
         "crate:db": 5,
@@ -322,8 +318,7 @@
         "token:sqlx": 2
       },
       "src-tauri/src/agsdl_host_work.rs": {
-        "crate:db": 8,
-        "token:ts_rs": 4
+        "crate:db": 8
       },
       "src-tauri/src/agsdl_host_work_admission030.rs": {
         "crate:config": 1,
@@ -418,16 +413,6 @@
       }
     },
     "imports": {
-      "src/agsdlRuntimeHost.ts": {
-        "import:runtime:src/services/agsdlExecution/hostCompilation.ts": 1,
-        "import:runtime:src/services/agsdlExecution/hostRouteBroker030.ts": 1,
-        "import:runtime:src/services/agsdlExecution/hostWorkPort030.ts": 1,
-        "import:runtime:src/services/agsdlExecution/hostWorkPump030.ts": 1,
-        "import:runtime:src/services/agsdlExecution/metadata.ts": 1,
-        "import:runtime:src/services/agsdlExecution/valueSchemaPort030.ts": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/json.mjs": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/valueschema.mjs": 1
-      },
       "src/services/agsdl/designReview.ts": {
         "import:runtime:src/vendor/agsdl/shared/values.mjs": 1
       },
@@ -537,14 +522,12 @@
         "import:runtime:src/services/agsdlExecution/prepareFlowRoute030.ts": 1,
         "import:type:src/services/agsdlExecution/calls030.ts": 1,
         "import:type:src/services/agsdlExecution/contentResolution030.ts": 1,
-        "import:type:src/services/agsdlExecution/hostWorkPump030.ts": 1,
         "import:type:src/services/agsdlExecution/prepareFlowRoute030.ts": 1,
         "import:type:src/services/agsdlExecution/routes030.ts": 1
       },
       "src/services/agsdlExecution/hostWorkPort030.ts": {
         "import:runtime:src/services/agsdlExecution/hostWorkTransition030.ts": 1,
-        "import:type:src/services/agsdlExecution/agentWorkContracts030.ts": 1,
-        "import:type:src/services/agsdlExecution/hostWorkPump030.ts": 1
+        "import:type:src/services/agsdlExecution/agentWorkContracts030.ts": 1
       },
       "src/services/agsdlExecution/hostWorkTransition030.ts": {
         "import:runtime:src/services/agsdlExecution/agentWorkContracts030.ts": 1,

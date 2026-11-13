@@ -1,9 +1,12 @@
 # Exécution AgSDL 0.3
 
-Le profil `macro-agsdl-030-v1` utilise le compilateur pur `compiler030.ts`,
-les contrôleurs de travail et de routes TypeScript et le superviseur natif.
-Les ports existants séparent ces contrôleurs de Tauri, des fenêtres et de la
-base Macro. Le journal natif conserve les admissions, captures, identités,
+Le profil `macro-agsdl-030-v1` exécute la compilation, le protocole de travail,
+les routes, les données d’appel et l’horloge en Rust, dans le processus natif.
+L’incarnation est disponible dès l’initialisation native, sans fenêtre cachée,
+handshake ni pompe TypeScript. Les évaluateurs TypeScript sont conservés comme
+références différentielles de test, sans transport IPC. Le lecteur et la
+validation de l’éditeur restent côté TypeScript.
+Le journal natif conserve les admissions, captures, identités,
 effets, attentes humaines et preuves de fin physique. Les observations et la
 qualification des harnesses restent distinctes de la validité du document.
 

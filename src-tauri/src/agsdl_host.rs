@@ -1,17 +1,17 @@
-//! Process-owned execution engine and a separate transitional resident webview.
+//! Process-owned execution engine, independent of webview lifetimes.
 use crate::ai::stream_tasks;
-use crate::core::db_state::DbPool;
 use crate::db::agsdl_execution::{self as repository, dto::EngineOwner, failure, Result};
 use sqlx::{query, query_scalar, Row, SqlitePool};
 use std::collections::BTreeMap;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
-use tauri::{Manager, ResourceId, Webview, WebviewUrl, WebviewWindowBuilder};
+#[cfg(test)]
+use tauri::Manager;
 
-const LABEL: &str = "agsdl-runtime-host";
-const ENTRY: &str = "agsdl-runtime-host.html";
 struct Incarnation {
     generation: String,
     compiler: crate::agsdl_host_compiler::CompileBroker,
@@ -22,9 +22,7 @@ struct Incarnation {
     live: AtomicBool,
     ready: AtomicBool,
     retired: tokio_util::sync::CancellationToken,
-    loads: AtomicUsize,
     owners: Mutex<BTreeMap<String, EngineOwner>>,
-    qa_request: Mutex<Option<(String, String)>>,
 }
 impl Incarnation {
     // This gate covers only synchronous ownership transfer. Work admitted here
@@ -70,17 +68,13 @@ impl Incarnation {
             })
     }
 }
-struct HostResource(Arc<Incarnation>);
-impl tauri::Resource for HostResource {}
 struct OwnedHost {
     incarnation: Arc<Incarnation>,
-    resource: ResourceId,
 }
 pub(crate) struct HostState(
     Mutex<Option<OwnedHost>>,
     Arc<tokio::sync::Mutex<()>>,
     Arc<crate::agsdl_host_flow030::FlowHost030>,
-    Mutex<Option<OwnedHost>>,
 );
 
 impl Default for HostState {
@@ -101,11 +95,9 @@ impl Default for HostState {
         Self(
             Mutex::new(Some(OwnedHost {
                 incarnation: incarnation.clone(),
-                resource: 0,
             })),
             admission.clone(),
             flow.clone(),
-            Default::default(),
         )
     }
 }
@@ -121,9 +113,7 @@ fn new_incarnation(generation: String, ready: bool) -> Arc<Incarnation> {
         live: AtomicBool::new(true),
         ready: AtomicBool::new(ready),
         retired: Default::default(),
-        loads: AtomicUsize::new(0),
         owners: Mutex::new(BTreeMap::new()),
-        qa_request: Mutex::new(None),
     })
 }
 
@@ -143,17 +133,11 @@ pub(crate) fn route_attestation_test_host030(owner: EngineOwner, generation: &st
         live: AtomicBool::new(true),
         ready: AtomicBool::new(true),
         retired: Default::default(),
-        loads: AtomicUsize::new(0),
         owners: Mutex::new(owners),
-        qa_request: Mutex::new(None),
     });
     HostState(
-        Mutex::new(Some(OwnedHost {
-            incarnation,
-            resource: 0,
-        })),
+        Mutex::new(Some(OwnedHost { incarnation })),
         Arc::new(tokio::sync::Mutex::new(())),
-        Default::default(),
         Default::default(),
     )
 }
@@ -422,13 +406,7 @@ impl HostStartLease {
             .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?
             .get(system_id)
             .cloned()
-            .ok_or_else(|| {
-                failure(
-                    "RUNTIME_UNAVAILABLE",
-                    "owner",
-                    "System has no resident owner",
-                )
-            })
+            .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "owner", "System has no native owner"))
     }
     pub(crate) fn retain_committed_owner(&self, owner: EngineOwner) -> Result<()> {
         // Deliberately record even if retirement began during SQL commit. The
@@ -554,7 +532,7 @@ impl HostState {
         self.revoke_native(pool, tasks).await
     }
 
-    /// Explicit native retirement is independent of resident replacement.
+    /// Explicit retirement belongs to the native process incarnation.
     /// Retrying reconciles the same revoked incarnation; it never recreates it.
     pub(crate) async fn revoke_native(
         &self,
@@ -612,22 +590,6 @@ impl HostState {
         };
         lease.ensure_live()?;
         Ok(lease)
-    }
-    /// Caller holds the async admission gate through the durable claim and
-    /// this synchronous handoff. The work is owned before it can be polled.
-    pub(crate) fn admit_owned_stream<F>(
-        &self,
-        caller: &Webview,
-        owner: &EngineOwner,
-        tasks: &stream_tasks::StreamTasks,
-        request_id: String,
-        work: F,
-    ) -> Result<()>
-    where
-        F: std::future::Future<Output = ()> + Send + 'static,
-    {
-        self.authenticate(caller)?
-            .admit_owned(owner, tasks, request_id, work)
     }
     pub(crate) async fn compile(
         &self,
@@ -759,87 +721,6 @@ impl HostState {
         }
         Ok(output)
     }
-    /// Reserve before asking the pure controller, then commit through DB017's
-    /// epoch/stop/revision guard. A committed replay never invokes the mailbox.
-    /// This reserves checks only; physical execution requires a separate
-    /// native admission and one durable claim under the Stop gate.
-
-    /// Only the short SQL commit holds the lifecycle lease. Cancellation or
-    /// retirement can leave the commit outcome unknown; it never authorizes IO.
-
-    /// Called only by native capture after the durable start receipt. There is no
-    /// IPC that lets a caller claim an arbitrary system or choose its epoch.
-    pub(crate) fn attach_owner(&self, caller: &Webview, owner: EngineOwner) -> Result<()> {
-        let incarnation = self.authenticate(caller)?;
-        let mut owners = incarnation
-            .owners
-            .lock()
-            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?;
-        if !incarnation.live.load(Ordering::SeqCst) {
-            return Err(failure("PERMISSION", "", "Host was revoked during capture"));
-        }
-        if let Some(previous) = owners.get(&owner.system_start_id) {
-            if previous != &owner {
-                return Err(failure(
-                    "CORRELATION",
-                    "",
-                    "Host cannot replace an owned epoch",
-                ));
-            }
-        }
-        owners.insert(owner.system_start_id.clone(), owner);
-        Ok(())
-    }
-    pub(crate) fn authenticate_owner(
-        &self,
-        caller: &Webview,
-        owner: &EngineOwner,
-    ) -> Result<String> {
-        let host = self.authenticate(caller)?;
-        let owners = host
-            .owners
-            .lock()
-            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?;
-        if owners.get(&owner.system_start_id) != Some(owner) {
-            return Err(failure(
-                "PERMISSION",
-                "owner",
-                "Execution is not owned by this host incarnation",
-            ));
-        }
-        Ok(host.generation.clone())
-    }
-    fn authenticate(&self, caller: &Webview) -> Result<Arc<Incarnation>> {
-        let host = self
-            .3
-            .lock()
-            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host state unavailable"))?;
-        let host = host
-            .as_ref()
-            .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "", "Host not installed"))?;
-        // ResourceTable belongs to the physical caller, even if another window reuses a label.
-        let resource = caller
-            .resources_table()
-            .get::<HostResource>(host.resource)
-            .map_err(|_| {
-                failure(
-                    "PERMISSION",
-                    "",
-                    "Execution commands require the resident host",
-                )
-            })?;
-        if caller.label() != LABEL
-            || !Arc::ptr_eq(&resource.0, &host.incarnation)
-            || !host.incarnation.live.load(Ordering::SeqCst)
-        {
-            return Err(failure(
-                "PERMISSION",
-                "",
-                "Execution host incarnation is not current",
-            ));
-        }
-        Ok(host.incarnation.clone())
-    }
 }
 
 fn revoke_now(host: &Arc<Incarnation>) -> bool {
@@ -919,130 +800,6 @@ async fn stop_retired_flows(
     Ok(())
 }
 
-// Resident loss retires only its legacy transport. It cannot fence the native
-// process engine or replace any native ownership, budget or reservation.
-fn retire(host: &Arc<Incarnation>, _database: &DbPool, app: &tauri::AppHandle) {
-    if !revoke_now(host) {
-        return;
-    }
-    let app = app.clone();
-    let retired = host.clone();
-    tauri::async_runtime::spawn(async move {
-        for _ in 0..10 {
-            let app_for_main = app.clone();
-            let retired = retired.clone();
-            let (sender, receiver) = tokio::sync::oneshot::channel();
-            if app
-                .run_on_main_thread(move || {
-                    let current = app_for_main
-                        .state::<HostState>()
-                        .3
-                        .lock()
-                        .ok()
-                        .and_then(|owned| {
-                            owned
-                                .as_ref()
-                                .map(|owned| Arc::ptr_eq(&owned.incarnation, &retired))
-                        })
-                        .unwrap_or(false);
-                    if !current {
-                        let _ = sender.send(true);
-                        return;
-                    }
-                    if let Some(window) = app_for_main.get_webview_window(LABEL) {
-                        let _ = window.destroy();
-                    }
-                    let _ = sender.send(install(&app_for_main).is_ok());
-                })
-                .is_err()
-            {
-                return;
-            }
-            if receiver.await.unwrap_or(false) {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        tracing::warn!("Resident execution host replacement failed after bounded retries");
-    });
-}
-
-pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let incarnation = new_incarnation(uuid::Uuid::new_v4().to_string(), false);
-    let navigation_database = app.state::<DbPool>().inner().clone();
-    let load_database = navigation_database.clone();
-    let destroy_database = navigation_database.clone();
-    let navigation_app = app.clone();
-    let load_app = app.clone();
-    let destroy_app = app.clone();
-    let navigation = incarnation.clone();
-    let load = incarnation.clone();
-    let expected = if cfg!(dev) {
-        app.config()
-            .build
-            .dev_url
-            .as_ref()
-            .and_then(|url| url.join(ENTRY).ok())
-    } else {
-        None
-    };
-    let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(ENTRY.into()))
-        .visible(false)
-        .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
-        .on_navigation(move |url| {
-            let allowed = expected.as_ref().map_or_else(
-                || {
-                    matches!(url.scheme(), "tauri" | "http" | "https")
-                        && matches!(url.host_str(), Some("localhost" | "tauri.localhost"))
-                        && url.path() == format!("/{ENTRY}")
-                        && url.query().is_none()
-                        && url.fragment().is_none()
-                },
-                |expected| url == expected,
-            );
-            if !allowed {
-                retire(&navigation, &navigation_database, &navigation_app);
-            }
-            allowed && navigation.live.load(Ordering::SeqCst)
-        })
-        .on_page_load(move |_, payload| {
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
-                && load.loads.fetch_add(1, Ordering::SeqCst) > 0
-            {
-                retire(&load, &load_database, &load_app);
-            }
-        })
-        .build()?;
-    let resource = window
-        .as_ref()
-        .resources_table()
-        .add(HostResource(incarnation.clone()));
-    *app.state::<HostState>()
-        .3
-        .lock()
-        .expect("host installation") = Some(OwnedHost {
-        incarnation: incarnation.clone(),
-        resource,
-    });
-    window.on_window_event(move |event| {
-        if matches!(event, tauri::WindowEvent::Destroyed) {
-            retire(&incarnation, &destroy_database, &destroy_app);
-        }
-    });
-    Ok(())
-}
-
-#[tauri::command]
-pub(crate) fn execution_host_ready(
-    _app: tauri::AppHandle,
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-) -> Result<String> {
-    let host = state.authenticate(&webview)?;
-    host.ready.store(true, Ordering::SeqCst);
-    Ok(host.generation.clone())
-}
-
 #[cfg(test)]
 #[path = "agsdl_host_flow030_tests.rs"]
 mod flow030_tests;
@@ -1064,7 +821,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn process_engine_survives_state_reconstruction_and_resident_replacement() {
+    async fn process_engine_is_ready_without_a_webview_and_survives_state_reconstruction() {
         let first = HostState::default();
         let lease = first.start_lease().await.unwrap();
         let owner = EngineOwner {
@@ -1072,16 +829,6 @@ mod tests {
             owner_epoch: "0".into(),
         };
         lease.retain_committed_owner(owner.clone()).unwrap();
-        let resident = new_incarnation("resident-one".into(), false);
-        *first.3.lock().unwrap() = Some(OwnedHost {
-            incarnation: resident.clone(),
-            resource: 1,
-        });
-        assert!(revoke_now(&resident));
-        *first.3.lock().unwrap() = Some(OwnedHost {
-            incarnation: new_incarnation("resident-two".into(), true),
-            resource: 2,
-        });
         let second = HostState::default();
         let retained = second.start_lease().await.unwrap();
         assert!(Arc::ptr_eq(&lease.host, &retained.host));
@@ -1231,9 +978,7 @@ mod tests {
             live: AtomicBool::new(true),
             ready: AtomicBool::new(true),
             retired: Default::default(),
-            loads: AtomicUsize::new(0),
             owners: Mutex::new(BTreeMap::new()),
-            qa_request: Mutex::new(None),
         });
         let lease = HostStartLease {
             host: host.clone(),
@@ -1267,9 +1012,7 @@ mod tests {
             live: AtomicBool::new(true),
             ready: AtomicBool::new(true),
             retired: Default::default(),
-            loads: AtomicUsize::new(0),
             owners: Mutex::new(BTreeMap::new()),
-            qa_request: Mutex::new(None),
         });
         let owner = EngineOwner {
             system_start_id: "system".into(),
@@ -1332,9 +1075,7 @@ mod tests {
             live: AtomicBool::new(true),
             ready: AtomicBool::new(true),
             retired: Default::default(),
-            loads: AtomicUsize::new(0),
             owners: Mutex::new(BTreeMap::new()),
-            qa_request: Mutex::new(None),
         });
         let owner = EngineOwner {
             system_start_id: "system".into(),
@@ -1379,157 +1120,4 @@ mod tests {
             .is_err());
         assert!(!touched.load(Ordering::SeqCst));
     }
-
-    #[test]
-    fn physical_resource_cannot_be_replaced_by_a_matching_generation_string() {
-        let first = Arc::new(Incarnation {
-            generation: "same".into(),
-            compiler: Default::default(),
-            work_protocol: Default::default(),
-            route030: Default::default(),
-            lifecycle: Arc::new(tokio::sync::RwLock::new(())),
-            handoff: Mutex::new(()),
-            live: AtomicBool::new(true),
-            ready: AtomicBool::new(false),
-            retired: Default::default(),
-            loads: AtomicUsize::new(0),
-            owners: Mutex::new(BTreeMap::new()),
-            qa_request: Mutex::new(None),
-        });
-        let forged = Arc::new(Incarnation {
-            generation: "same".into(),
-            compiler: Default::default(),
-            work_protocol: Default::default(),
-            route030: Default::default(),
-            lifecycle: Arc::new(tokio::sync::RwLock::new(())),
-            handoff: Mutex::new(()),
-            live: AtomicBool::new(true),
-            ready: AtomicBool::new(false),
-            retired: Default::default(),
-            loads: AtomicUsize::new(0),
-            owners: Mutex::new(BTreeMap::new()),
-            qa_request: Mutex::new(None),
-        });
-        assert!(!Arc::ptr_eq(&first, &forged));
-        let mut table = tauri::ResourceTable::default();
-        let id = table.add(HostResource(first.clone()));
-        assert!(Arc::ptr_eq(
-            &table.get::<HostResource>(id).unwrap().0,
-            &first
-        ));
-        assert!(tauri::ResourceTable::default()
-            .get::<HostResource>(id)
-            .is_err());
-    }
-}
-
-#[tauri::command]
-pub(crate) async fn execution_host_next_compile(
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-) -> Result<crate::agsdl_host_compiler::HostCompileJob> {
-    let host = state.authenticate(&webview)?;
-    let job = host.compiler.next().await?;
-    state.authenticate(&webview)?;
-    Ok(job)
-}
-#[tauri::command]
-pub(crate) fn execution_host_complete_compile(
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-    ticket: String,
-    result_json: String,
-) -> Result<()> {
-    let host = state.authenticate(&webview)?;
-    host.compiler
-        .complete(&host.generation, &ticket, result_json)
-}
-
-#[tauri::command]
-pub(crate) async fn execution_host_next_work030(
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-) -> Result<crate::agsdl_host_work::HostWorkJob030> {
-    let host = state.authenticate(&webview)?;
-    let job = host.work_protocol.next().await?;
-    state.authenticate(&webview)?;
-    Ok(job)
-}
-
-#[tauri::command]
-pub(crate) fn execution_host_complete_work030(
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-    completion: crate::agsdl_host_work::HostWorkCompletion030,
-) -> Result<()> {
-    let host = state.authenticate(&webview)?;
-    host.work_protocol.complete(&host.generation, completion)
-}
-
-#[tauri::command]
-pub(crate) async fn execution_host_next_route030(
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-) -> Result<crate::agsdl_host_route030::HostRouteJob030> {
-    let host = state.authenticate(&webview)?;
-    let job = host.route030.next().await?;
-    state.authenticate(&webview)?;
-    Ok(job)
-}
-
-#[tauri::command]
-pub(crate) fn execution_host_complete_route030(
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-    completion: crate::agsdl_host_route030::HostRouteCompletion030,
-) -> Result<()> {
-    let host = state.authenticate(&webview)?;
-    host.route030.complete(&host.generation, completion)
-}
-
-#[tauri::command]
-pub(crate) fn execution_host_failed(
-    app: tauri::AppHandle,
-    webview: Webview,
-    state: tauri::State<'_, HostState>,
-    database: tauri::State<'_, DbPool>,
-) -> Result<()> {
-    let host = state.authenticate(&webview)?;
-    retire(&host, database.inner(), &app);
-    Ok(())
-}
-
-// One supervisor belongs to the physical incarnation. Transient failures are
-// retried at a bounded rate until retirement; an old Start receipt never dispatches work.
-
-// Manual qualification only. The native slot authorizes one existing delivery;
-// an event from another webview cannot manufacture an admission or owner.
-#[tauri::command]
-pub(crate) fn execution_qa_available(app: tauri::AppHandle) -> bool {
-    cfg!(all(debug_assertions, feature = "browser-runtime-debug"))
-        && app.config().identifier.starts_with("com.macro.desktop.qa.")
-}
-
-#[tauri::command]
-pub(crate) async fn execution_qa_replace_host(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, HostState>,
-    database: tauri::State<'_, DbPool>,
-) -> Result<()> {
-    if !execution_qa_available(app.clone()) {
-        return Err(failure(
-            "RUNTIME_UNAVAILABLE",
-            "",
-            "Manual qualification is disabled",
-        ));
-    }
-    let resident = state
-        .3
-        .lock()
-        .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Resident state unavailable"))?
-        .as_ref()
-        .map(|host| host.incarnation.clone())
-        .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "", "Resident not installed"))?;
-    retire(&resident, database.inner(), &app);
-    Ok(())
 }

@@ -1,10 +1,13 @@
-//! Authenticated transport for pure work transitions. SQL owns their commit;
-//! this mailbox neither authorizes effects nor chooses flow successors.
+//! Bounded native work transitions. SQL owns their commit;
+//! evaluation neither authorizes effects nor chooses flow successors.
 use crate::db::agsdl_execution::{dto::EngineContext, failure, validate_json, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
 use std::collections::{BTreeMap, VecDeque};
+#[cfg(test)]
 use std::sync::Mutex;
+#[cfg(test)]
 use tokio::sync::{oneshot, Notify};
 use tokio_util::sync::CancellationToken;
 
@@ -194,7 +197,7 @@ pub(crate) fn reserved_check030(
 const MAX_JOBS: usize = 64;
 const MAX_BYTES: usize = 8_000_000;
 
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostWorkInput030 {
     pub context: EngineContext,
@@ -206,7 +209,7 @@ pub struct HostWorkInput030 {
     pub options_json: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostWorkJob030 {
     pub ticket: String,
@@ -215,14 +218,14 @@ pub struct HostWorkJob030 {
     pub input: HostWorkInput030,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostWorkOutput030 {
     pub state_json: String,
     pub receipt_json: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostWorkCompletion030 {
     pub ticket: String,
@@ -231,12 +234,14 @@ pub struct HostWorkCompletion030 {
     pub output: HostWorkOutput030,
 }
 
+#[cfg(test)]
 struct Pending {
     job: HostWorkJob030,
     issued: bool,
     reply: oneshot::Sender<Result<HostWorkOutput030>>,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct Queue {
     closed: bool,
@@ -249,15 +254,19 @@ struct Queue {
 
 #[derive(Default)]
 pub(crate) struct WorkBroker030 {
+    #[cfg(test)]
     queue: Mutex<Queue>,
+    #[cfg(test)]
     available: Notify,
     pub(crate) native: crate::agsdl_host_evaluation030::Bounded<64>,
 }
 
+#[cfg(test)]
 struct TicketGuard<'a> {
     broker: &'a WorkBroker030,
     ticket: String,
 }
+#[cfg(test)]
 impl Drop for TicketGuard<'_> {
     fn drop(&mut self) {
         let mut queue = self.broker.queue.lock().expect("work mailbox");
@@ -282,23 +291,27 @@ impl Drop for TicketGuard<'_> {
 impl WorkBroker030 {
     pub(crate) fn close(&self) {
         self.native.close();
-        let mut queue = self.queue.lock().expect("work mailbox");
-        queue.closed = true;
-        queue.ready.clear();
-        queue.retired.clear();
-        queue.retired_order.clear();
-        for (_, pending) in std::mem::take(&mut queue.pending) {
-            let _ = pending.reply.send(Err(failure(
-                "RUNTIME_UNAVAILABLE",
-                "work",
-                "Work protocol host was revoked",
-            )));
+        #[cfg(test)]
+        {
+            let mut queue = self.queue.lock().expect("work mailbox");
+            queue.closed = true;
+            queue.ready.clear();
+            queue.retired.clear();
+            queue.retired_order.clear();
+            for (_, pending) in std::mem::take(&mut queue.pending) {
+                let _ = pending.reply.send(Err(failure(
+                    "RUNTIME_UNAVAILABLE",
+                    "work",
+                    "Work protocol host was revoked",
+                )));
+            }
+            self.available.notify_waiters();
         }
-        self.available.notify_waiters();
     }
 
     /// Only native code submits work after reserving its durable event. A returned
     /// decision still requires SQL CAS and native evidence validation before use.
+    #[cfg(test)]
     pub(crate) async fn evaluate(
         &self,
         generation: &str,
@@ -354,6 +367,7 @@ impl WorkBroker030 {
         cancelled: &CancellationToken,
     ) -> Result<HostWorkOutput030> {
         let bytes = validate_input(generation, &input)?;
+        #[cfg(test)]
         if self.queue.lock().expect("work mailbox").closed {
             return Err(failure(
                 "RUNTIME_UNAVAILABLE",
@@ -412,6 +426,7 @@ impl WorkBroker030 {
         validate_output(&completion)?;
         Ok(completion.output)
     }
+    #[cfg(test)]
     pub(crate) async fn next(&self) -> Result<HostWorkJob030> {
         loop {
             let wake = self.available.notified();
@@ -435,6 +450,7 @@ impl WorkBroker030 {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn complete(
         &self,
         generation: &str,
