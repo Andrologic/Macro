@@ -1,3 +1,4 @@
+mod agsdl_host_start_adapter030;
 mod agsdl_host_action_approval030;
 mod agsdl_host_clock030;
 mod agsdl_host_human030;

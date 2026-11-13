@@ -165,14 +165,9 @@
         "token:tauri": 2
       },
       "src-tauri/src/agsdl_host_flow030.rs": {
-        "crate:ai": 4,
-        "crate:config": 2,
+        "crate:ai": 3,
         "crate:db": 4,
-        "crate:git": 3,
-        "crate:workspace": 1,
-        "token:AppHandle": 1,
-        "token:sqlx": 63,
-        "token:tauri": 3
+        "token:sqlx": 62
       },
       "src-tauri/src/agsdl_host_flow030_tests.rs": {
         "crate:ai": 3,

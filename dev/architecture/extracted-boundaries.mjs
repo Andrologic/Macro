@@ -94,7 +94,7 @@ export function nativeBoundaryViolations(reader) {
 }
 
 // The future engine and mixed files identified by the D15 destination map.
-const MACRO_ONLY = new Set(['agsdl_host_capture.rs', 'agsdl_host_action_approval030.rs', 'agsdl_host_catalogue.rs', 'agsdl_host_tasks.rs', 'agsdl_host_tools.rs', 'agsdl_intent_coordinator.rs']);
+const MACRO_ONLY = new Set(['agsdl_host_capture.rs', 'agsdl_host_action_approval030.rs', 'agsdl_host_start_adapter030.rs', 'agsdl_host_catalogue.rs', 'agsdl_host_tasks.rs', 'agsdl_host_tools.rs', 'agsdl_intent_coordinator.rs']);
 const ENGINE_SHARED = new Set([
   'ai/stream_tasks.rs', 'core/process.rs', 'core/tool_policy.rs', 'commands/mcp/agsdl_raw.rs',
   'commands/mcp/agsdl_raw_tests.rs', 'db/exact_json.rs', 'fs/operations.rs',
