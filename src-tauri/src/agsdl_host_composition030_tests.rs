@@ -48,7 +48,6 @@ impl AgentExecutor030 for Scripted {
 }
 async fn run(document: Value, executor: Arc<Scripted>) -> FlowView030 {
     let f = Fixture::with_document(document).await;
-    let pumps = f.pumps();
     let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let executors: Executors030 = Executors030 {
         agents: executor,
@@ -73,10 +72,7 @@ async fn run(document: Value, executor: Arc<Scripted>) -> FlowView030 {
         ),
     )
     .await;
-    for pump in pumps {
-        pump.abort();
-        let _ = pump.await;
-    }
+
     result.expect("composition supervisor timed out").unwrap();
     let view = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
         .await

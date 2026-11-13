@@ -1,5 +1,5 @@
-//! Native dispatcher/admission with a distinct fake executor and the real TS
-//! controller/route evaluator. Captures and account observations are fixtures.
+//! Native dispatcher/admission with a distinct fake executor and the Rust
+//! controller/route adapters. Captures and account observations are fixtures.
 use super::*;
 use crate::agsdl_host_flow030 as flow;
 use crate::agsdl_host_runtime030::*;
@@ -10,10 +10,7 @@ use crate::db::agsdl_execution::{
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::{
-    io::AsyncWriteExt,
-    sync::{watch, Notify},
-};
+use tokio::sync::{watch, Notify};
 use tokio_util::sync::CancellationToken;
 
 #[cfg(unix)]
@@ -26,35 +23,6 @@ mod parallel;
 #[path = "agsdl_host_composition030_tests.rs"]
 mod composition;
 
-async fn bun(script: &str, value: &impl serde::Serialize) -> Value {
-    let mut child = crate::core::process::background_tokio_command("bun")
-        .args(["-e", script])
-        .current_dir(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap(),
-        )
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&serde_json::to_vec(value).unwrap())
-        .await
-        .unwrap();
-    let output = child.wait_with_output().await.unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
-}
-// Fake native observation; persistence and entry use the production Start transaction.
 struct FixtureStart030 {
     capture: StartCapture030,
 }
@@ -204,7 +172,17 @@ impl Fixture {
         )
         .unwrap();
         let registry = json!({"format":"macro-agsdl-registry/030","version":"fixture","modules":[{"harness":"codex","moduleJson":crate::agsdl_host_codex030::approvals::module030()}],"harnesses":[harness],"agents":agents,"hostCapabilities":[{"name":"approval","support":"native","evidenceJson":"{\"runtime\":\"synthetic-human-clock\"}"}]});
-        let compiled = bun("import {compileHost030} from './src/services/agsdlExecution/hostCompilation';const j=JSON.parse(await Bun.stdin.text());process.stdout.write(await compileHost030(j.authored,j.source,j.registry));", &json!({"authored":authored,"source":source,"registry":registry})).await;
+        let receipt = crate::agsdl_host_compiler::CompileBroker::default()
+            .compile_native(
+                "generation",
+                serde_json::from_value(source.clone()).unwrap(),
+                authored.clone(),
+                registry.to_string(),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let compiled: Value = serde_json::from_str(&receipt.result_json).unwrap();
         let plan = compiled["compiledPlanJson"]
             .as_str()
             .unwrap_or_else(|| panic!("compiler: {compiled}"))
@@ -255,6 +233,7 @@ impl Fixture {
                 incarnation: incarnation.clone(),
                 resource: 0,
             })),
+            Default::default(),
             Default::default(),
             Default::default(),
         ));
@@ -310,60 +289,17 @@ impl Fixture {
             }
         })
     }
-    fn pumps(&self) -> Vec<tokio::task::JoinHandle<()>> {
-        self.pumps_with_physical_hook(None)
-    }
-    fn pumps_with_physical_hook(
-        &self,
-        physical: Option<(Arc<Notify>, Arc<Notify>)>,
-    ) -> Vec<tokio::task::JoinHandle<()>> {
-        let work = self.incarnation.clone();
-        let route = self.incarnation.clone();
-        vec![
-            tokio::spawn(async move {
-                loop {
-                    let job = work.work_protocol.next().await.unwrap();
-                    if job.input.event_json.contains("physicalEnded") {
-                        if let Some((reached, release)) = &physical {
-                            reached.notify_one();
-                            release.notified().await;
-                        }
-                    }
-                    let output = bun("import {evaluateHostWork030} from './src/services/agsdlExecution/hostWorkTransition030';import {connectValueSchemaValidator030} from './src/services/agsdlExecution/valueSchemaPort030';import {NumberToken,parse} from './src/vendor/agsdl/v0.3/json.mjs';import {validate} from './src/vendor/agsdl/v0.3/valueschema.mjs';const {input:i}=JSON.parse(await Bun.stdin.text());process.stdout.write(JSON.stringify(evaluateHostWork030(i.context,i.eventId,i.expectedRevision,i.contractJson,i.stateJson,i.eventJson,i.optionsJson,connectValueSchemaValidator030({NumberToken,parse,validate}))));", &job).await;
-                    work.work_protocol
-                        .complete(
-                            &job.generation,
-                            crate::agsdl_host_work::HostWorkCompletion030 {
-                                ticket: job.ticket,
-                                input_digest: job.input_digest,
-                                generation: job.generation.clone(),
-                                output: serde_json::from_value(output).unwrap(),
-                            },
-                        )
-                        .unwrap();
+    fn pause_physical_evaluation(&self, reached: Arc<Notify>, release: Arc<Notify>) {
+        *self.incarnation.work_protocol.native.probe.lock().unwrap() =
+            Some(Arc::new(move |raw, _| {
+                if raw.contains("physicalEnded") {
+                    reached.notify_one();
+                    tokio::runtime::Handle::current().block_on(release.notified());
                 }
-            }),
-            tokio::spawn(async move {
-                loop {
-                    let job = route.route030.next().await.unwrap();
-                    let output = bun("import {createHostRoutePort030} from './src/services/agsdlExecution/hostRouteBroker030';const j=JSON.parse(await Bun.stdin.text());process.stdout.write(JSON.stringify(await createHostRoutePort030(j.generation).evaluate(j)));",&job).await;
-                    route
-                        .route030
-                        .complete(
-                            &job.generation,
-                            crate::agsdl_host_route030::HostRouteCompletion030 {
-                                ticket: job.ticket,
-                                generation: job.generation.clone(),
-                                input_digest: job.input_digest,
-                                output: serde_json::from_value(output).unwrap(),
-                            },
-                        )
-                        .unwrap();
-                }
-            }),
-        ]
+            }));
     }
 }
+
 struct FakeExecutor {
     starts: Arc<AtomicUsize>,
     started: Arc<Notify>,
@@ -434,7 +370,6 @@ impl AgentExecutor030 for FakeExecutor {
 #[tokio::test]
 async fn distinct_executor_chains_two_works_without_double_dispatch() {
     let f = Fixture::new(true).await;
-    let pumps = f.pumps();
     let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let starts = Arc::new(AtomicUsize::new(0));
     let executor = Arc::new(FakeExecutor {
@@ -469,9 +404,6 @@ async fn distinct_executor_chains_two_works_without_double_dispatch() {
         ),
     )
     .await;
-    for pump in pumps {
-        pump.abort();
-    }
     assert!(result.is_ok(), "supervisor timed out");
     result.unwrap().unwrap();
     assert_eq!(starts.load(Ordering::SeqCst), 2);
@@ -630,7 +562,6 @@ impl RuntimeClock030 for WakeRaceClock {
 #[tokio::test]
 async fn accepted_completion_and_stop_do_not_route_or_double_send() {
     let f = Fixture::new(true).await;
-    let pumps = f.pumps();
     let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let cleanup = Arc::new(Notify::new());
     let submitted = Arc::new(Notify::new());
@@ -692,9 +623,6 @@ async fn accepted_completion_and_stop_do_not_route_or_double_send() {
     })
     .await
     .unwrap();
-    for pump in pumps {
-        pump.abort();
-    }
     result.unwrap();
     assert_eq!(starts.load(Ordering::SeqCst), 1);
     let view = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
@@ -728,7 +656,7 @@ async fn stop_during_physical_controller_evaluation_retains_the_join() {
     let f = Fixture::new(true).await;
     let reached = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
-    let pumps = f.pumps_with_physical_hook(Some((reached.clone(), release.clone())));
+    f.pause_physical_evaluation(reached.clone(), release.clone());
     let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let starts = Arc::new(AtomicUsize::new(0));
     let executors: Executors030 = Executors030 {
@@ -770,9 +698,6 @@ async fn stop_during_physical_controller_evaluation_retains_the_join() {
     })
     .await
     .unwrap();
-    for pump in pumps {
-        pump.abort();
-    }
     result.unwrap();
     let view = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
         .await
@@ -923,7 +848,6 @@ async fn qualified_codex_registry_and_policy_run_the_write_review_demo() {
             "write":{"type":"agent","agent":"writer","maxVisits":3,"next":"review"},
             "review":{"type":"agent","agent":"reviewer","maxVisits":3,"next":{"approve":[],"revise":"write"}}}}});
     let f = Fixture::with_document(document).await;
-    let pumps = f.pumps();
     let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let starts = Arc::new(AtomicUsize::new(0));
     let executors: Executors030 = Executors030 {
@@ -964,9 +888,6 @@ async fn qualified_codex_registry_and_policy_run_the_write_review_demo() {
     )
     .await
     .unwrap();
-    for pump in pumps {
-        pump.abort();
-    }
     result.unwrap();
     let inspection = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
         .await
@@ -989,8 +910,6 @@ struct CommandFixture {
     fixture: Fixture,
     app: tauri::App<tauri::test::MockRuntime>,
     request: crate::db::agsdl_execution::dto::EngineStartRequest,
-    pumps: Vec<tokio::task::JoinHandle<()>>,
-    compiler: tokio::task::JoinHandle<()>,
 }
 impl CommandFixture {
     async fn new(executor: Arc<dyn AgentExecutor030>, with_ai: bool) -> Self {
@@ -1068,45 +987,6 @@ impl CommandFixture {
         fixture.pool = crate::db::create_pool(&root.join("production-start.db"))
             .await
             .unwrap();
-        let compiler = fixture.incarnation.clone();
-        let worker = tokio::spawn(async move {
-            let job = compiler.compiler.next().await.unwrap();
-            let script = "import {compileHost030} from './src/services/agsdlExecution/hostCompilation';const j=JSON.parse(await Bun.stdin.text());process.stdout.write(await compileHost030(j.authoredSource,j.source,JSON.parse(j.registryJson)));";
-            let mut child = crate::core::process::background_tokio_command("bun")
-                .args(["-e", script])
-                .current_dir(
-                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                        .parent()
-                        .unwrap(),
-                )
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .unwrap();
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(&serde_json::to_vec(&job).unwrap())
-                .await
-                .unwrap();
-            let output = child.wait_with_output().await.unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            compiler
-                .compiler
-                .complete(
-                    &job.generation,
-                    &job.ticket,
-                    String::from_utf8(output.stdout).unwrap(),
-                )
-                .unwrap();
-        });
-        let pumps = fixture.pumps();
         let host = Arc::try_unwrap(std::mem::take(&mut fixture.host))
             .ok()
             .unwrap();
@@ -1131,8 +1011,6 @@ impl CommandFixture {
             fixture,
             app,
             request,
-            pumps,
-            compiler: worker,
         }
     }
     async fn start(
@@ -1164,10 +1042,6 @@ impl CommandFixture {
         .unwrap()
     }
     async fn finish(self) {
-        self.compiler.await.unwrap();
-        for pump in self.pumps {
-            pump.abort();
-        }
         let workspace = self
             .fixture
             ._temp
@@ -1204,7 +1078,6 @@ async fn native_flow_choices_preserve_received_prompt_through_entry_and_route() 
             "second":{"type":"approval","next":{"continue":"work"}},
             "work":{"type":"agent","agent":"worker"}}}});
     let f = Fixture::with_document(document).await;
-    let pumps = f.pumps();
     let app = tauri::test::mock_builder()
         .manage(Arc::try_unwrap(f.host).ok().unwrap())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -1304,9 +1177,6 @@ async fn native_flow_choices_preserve_received_prompt_through_entry_and_route() 
         ),
     )
     .await;
-    for pump in pumps {
-        pump.abort();
-    }
     answers.abort();
     result.expect("flow choices stalled").unwrap();
     let view = flow::inspect_run(host.flow030(), &host, &f.pool, &f.owner)

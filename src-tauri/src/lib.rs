@@ -110,6 +110,7 @@ mod agsdl_host_compiler;
 pub(crate) mod agsdl_host_completion030;
 mod agsdl_host_confinement;
 mod agsdl_host_dispatch030;
+mod agsdl_host_evaluation030;
 #[cfg(test)]
 mod agsdl_host_example030;
 mod agsdl_host_flow030;

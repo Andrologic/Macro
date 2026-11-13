@@ -1,4 +1,5 @@
-//! Official run scenarios against native persistence, dispatch and TS ports.
+//! Official run scenarios against native persistence, dispatch and Rust adapters.
+//! TS oracle replay is a separate test; it never supplies a protocol result.
 use super::*;
 use crate::agsdl_host_flow030 as flow;
 use crate::agsdl_host_runtime030::*;
@@ -58,11 +59,12 @@ impl BunHost {
     async fn request(&mut self, request: Value) -> Value {
         self.request_raw(request).await.0
     }
-    async fn request_raw(&mut self, mut request: Value) -> (Value, String) {
+    async fn request_raw(&mut self, request: Value) -> (Value, String) {
+        self.request_text(&request.to_string()).await
+    }
+    async fn request_text(&mut self, request: &str) -> (Value, String) {
         self.sequence += 1;
-        request["id"] = self.sequence.into();
-        let mut bytes = serde_json::to_vec(&request).unwrap();
-        bytes.push(b'\n');
+        let bytes = format!("{{\"id\":{},{}\n", self.sequence, &request[1..]).into_bytes();
         self.input.write_all(&bytes).await.unwrap();
         let line =
             tokio::time::timeout(std::time::Duration::from_secs(15), self.output.next_line())
@@ -71,7 +73,7 @@ impl BunHost {
                 .unwrap()
                 .expect("Bun evaluator exited");
         let reply: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(reply["id"], request["id"]);
+        assert_eq!(reply["id"], self.sequence);
         assert!(reply.get("error").is_none(), "Bun evaluator: {reply}");
         #[derive(serde::Deserialize)]
         struct RawReply {
@@ -186,6 +188,7 @@ impl crate::db::agsdl_execution::start030::StartAuthority030 for FixtureStart030
 
 struct Fixture {
     work_captures: Arc<Mutex<Vec<work_capture::Capture>>>,
+    compile_captures: Arc<Mutex<Vec<(String, String)>>>,
     route_captures: Arc<Mutex<Vec<route_data_capture::Capture>>>,
     _temp: tempfile::TempDir,
     app: tauri::App<tauri::test::MockRuntime>,
@@ -197,7 +200,7 @@ struct Fixture {
     plan: FlowPlan030,
 }
 impl Fixture {
-    async fn new(raw: &str, bun: &mut BunHost) -> Self {
+    async fn new(raw: &str) -> Self {
         let fixture: Value = serde_json::from_str(raw).unwrap();
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
@@ -300,7 +303,50 @@ impl Fixture {
             "sha256:{:x}",
             Sha256::digest(registry.to_string().as_bytes())
         ));
-        let compiled = bun.request(json!({"kind":"compile","authoredSource":authored,"source":source,"registry":registry})).await;
+        let owner = EngineOwner {
+            system_start_id: "system".into(),
+            owner_epoch: "owner".into(),
+        };
+        let incarnation = Arc::new(Incarnation {
+            generation: "generation".into(),
+            compiler: Default::default(),
+            work_protocol: Default::default(),
+            route030: Default::default(),
+            lifecycle: Default::default(),
+            handoff: Mutex::new(()),
+            live: AtomicBool::new(true),
+            ready: AtomicBool::new(true),
+            retired: Default::default(),
+            loads: AtomicUsize::new(0),
+            owners: Mutex::new(BTreeMap::from([("system".into(), owner.clone())])),
+            qa_request: Mutex::new(None),
+        });
+        let host = HostState(
+            Mutex::new(Some(OwnedHost {
+                incarnation: incarnation.clone(),
+                resource: 0,
+            })),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        let compile_captures = Arc::new(Mutex::new(Vec::new()));
+        let captures = compile_captures.clone();
+        *incarnation.compiler.native.probe.lock().unwrap() = Some(Arc::new(move |job, output| {
+            captures
+                .lock()
+                .unwrap()
+                .push((job.to_owned(), output.clone()))
+        }));
+        let receipt = host
+            .compile(
+                serde_json::from_value(source.clone()).unwrap(),
+                authored.clone(),
+                registry.to_string(),
+            )
+            .await
+            .unwrap();
+        let compiled: Value = serde_json::from_str(&receipt.result_json).unwrap();
         let plan_json = compiled["compiledPlanJson"]
             .as_str()
             .unwrap_or_else(|| panic!("compiler: {compiled}"))
@@ -331,42 +377,37 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let owner = EngineOwner {
-            system_start_id: "system".into(),
-            owner_epoch: "owner".into(),
-        };
-        let incarnation = Arc::new(Incarnation {
-            generation: "generation".into(),
-            compiler: Default::default(),
-            work_protocol: Default::default(),
-            route030: Default::default(),
-            lifecycle: Default::default(),
-            handoff: Mutex::new(()),
-            live: AtomicBool::new(true),
-            ready: AtomicBool::new(true),
-            retired: Default::default(),
-            loads: AtomicUsize::new(0),
-            owners: Mutex::new(BTreeMap::from([("system".into(), owner.clone())])),
-            qa_request: Mutex::new(None),
-        });
-        let host = HostState(
-            Mutex::new(Some(OwnedHost {
-                incarnation: incarnation.clone(),
-                resource: 0,
-            })),
-            Default::default(),
-            Default::default(),
-        );
         host.flow030()
             .install_runtime_fixture_control(&host, owner.clone(), identity.clone());
         let app = tauri::test::mock_builder()
             .manage(host)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
+        let work_captures = Arc::new(Mutex::new(Vec::new()));
+        let captures = work_captures.clone();
+        *incarnation.work_protocol.native.probe.lock().unwrap() =
+            Some(Arc::new(move |job, output| {
+                captures.lock().unwrap().push(work_capture::Capture {
+                    raw_job: job.to_owned(),
+                    output: serde_json::from_str(output).unwrap(),
+                    difference: None,
+                })
+            }));
+        let route_captures = Arc::new(Mutex::new(Vec::new()));
+        let captures = route_captures.clone();
+        *incarnation.route030.native.probe.lock().unwrap() = Some(Arc::new(move |job, output| {
+            captures.lock().unwrap().push(route_data_capture::Capture {
+                raw_job: job.to_owned(),
+                raw_output: output.clone(),
+                operation: route_data_capture::operation(job),
+                difference: None,
+            })
+        }));
         assert!(fixture["timeline"].is_array());
         Self {
-            work_captures: Default::default(),
-            route_captures: Default::default(),
+            work_captures,
+            compile_captures,
+            route_captures,
             _temp: temp,
             app,
             pool,
@@ -376,53 +417,6 @@ impl Fixture {
             identity,
             plan,
         }
-    }
-    fn pump(
-        &self,
-        bun: Arc<tokio::sync::Mutex<BunHost>>,
-        wake: watch::Sender<u64>,
-    ) -> tokio::task::JoinHandle<()> {
-        let host = self.incarnation.clone();
-        let captures = self.work_captures.clone();
-        let route_captures = self.route_captures.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    job = host.compiler.next() => {
-                        let job = job.unwrap();
-                        let registry: Value = serde_json::from_str(&job.registry_json).unwrap();
-                        let output = bun.lock().await.request(json!({"kind":"compile","authoredSource":job.authored_source,"source":job.source,"registry":registry})).await;
-                        host.compiler.complete(&job.generation, &job.ticket, output.to_string()).unwrap();
-                    }
-                    job = host.work_protocol.next() => {
-                        let job = job.unwrap();
-                        let request = json!({"kind":"work","job":job});
-                        let raw_job = request["job"].to_string();
-                        let output = bun.lock().await.request(request).await;
-                        let difference = work_capture::compare(&raw_job, &output).err();
-                        if let Some(error) = &difference { eprintln!("ARGENTIC_WORK_CAPTURE_MISMATCH {error}"); }
-                        captures.lock().unwrap().push(work_capture::Capture { raw_job, output: output.clone(), difference });
-                        host.work_protocol.complete(&job.generation, crate::agsdl_host_work::HostWorkCompletion030 {
-                            ticket:job.ticket, generation:job.generation.clone(), input_digest:job.input_digest, output:serde_json::from_value(output).unwrap()
-                        }).unwrap();
-                    }
-                    job = host.route030.next() => {
-                        let job = job.unwrap();
-                        let request = json!({"kind":"route","job":job});
-                        let raw_job = request["job"].to_string();
-                        let (output, raw_output) = bun.lock().await.request_raw(request).await;
-                        let operation = route_data_capture::operation(&raw_job);
-                        let difference = route_data_capture::compare(&raw_job, &raw_output).err();
-                        if let Some(error) = &difference { eprintln!("ARGENTIC_ROUTE_DATA_CAPTURE_MISMATCH {error}"); }
-                        route_captures.lock().unwrap().push(route_data_capture::Capture { raw_job, raw_output, operation, difference });
-                        host.route030.complete(&job.generation, crate::agsdl_host_route030::HostRouteCompletion030 {
-                            ticket:job.ticket, generation:job.generation.clone(), input_digest:job.input_digest, output:serde_json::from_value(output).unwrap()
-                        }).unwrap();
-                    }
-                }
-                wake.send_modify(|n| *n += 1);
-            }
-        })
     }
 }
 
@@ -1036,16 +1030,13 @@ fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
 
 #[tokio::test]
 async fn agsdl030_conformance_error_route() {
-    let mut bun = BunHost::start();
     let raw = scenarios::SCENARIOS
         .iter()
         .find(|(n, _)| *n == "error-route")
         .unwrap()
         .1;
-    let f = Fixture::new(raw, &mut bun).await;
-    let bun = Arc::new(tokio::sync::Mutex::new(bun));
+    let f = Fixture::new(raw).await;
     let (wake, receiver) = watch::channel(0);
-    let pump = f.pump(bun.clone(), wake.clone());
     let fixture: Value = serde_json::from_str(raw).unwrap();
     let scenario = scenarios::PinnedScenario030::from_capture(
         &f.plan.document_json,
@@ -1058,29 +1049,18 @@ async fn agsdl030_conformance_error_route() {
         projection::compare(&fixture["expect"], &observed).is_empty(),
         "{observed}"
     );
-    pump.abort();
-    let _ = pump.await;
-    Arc::try_unwrap(bun)
-        .ok()
-        .unwrap()
-        .into_inner()
-        .close()
-        .await;
     f.pool.close().await;
 }
 
 #[tokio::test]
 async fn agsdl030_conformance_human_timeout() {
-    let mut bun = BunHost::start();
     let raw = scenarios::SCENARIOS
         .iter()
         .find(|(n, _)| *n == "timeout-pauses-for-person")
         .unwrap()
         .1;
-    let f = Fixture::new(raw, &mut bun).await;
-    let bun = Arc::new(tokio::sync::Mutex::new(bun));
+    let f = Fixture::new(raw).await;
     let (wake, receiver) = watch::channel(0);
-    let pump = f.pump(bun.clone(), wake.clone());
     let fixture: Value = serde_json::from_str(raw).unwrap();
     let scenario = scenarios::PinnedScenario030::from_capture(
         &f.plan.document_json,
@@ -1093,14 +1073,6 @@ async fn agsdl030_conformance_human_timeout() {
         projection::compare(&fixture["expect"], &observed).is_empty(),
         "{observed}"
     );
-    pump.abort();
-    let _ = pump.await;
-    Arc::try_unwrap(bun)
-        .ok()
-        .unwrap()
-        .into_inner()
-        .close()
-        .await;
     f.pool.close().await;
 }
 
@@ -1128,6 +1100,67 @@ fn product_gap(f: &Fixture) -> Option<String> {
 
 #[tokio::test]
 async fn agsdl030_conformance_all_37_scenarios() {
+    run_all_37(false).await;
+}
+
+#[cfg(unix)]
+#[test]
+fn agsdl030_conformance_runs_with_only_bun_removed_from_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut paths = Vec::new();
+    for (ordinal, source) in
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).enumerate()
+    {
+        let Ok(source) = source.canonicalize() else {
+            continue;
+        };
+        let Ok(entries) = std::fs::read_dir(&source) else {
+            continue;
+        };
+        let target = directory.path().join(ordinal.to_string());
+        std::fs::create_dir(&target).unwrap();
+        for entry in entries {
+            let entry = entry.unwrap();
+            if entry.file_name() != "bun" {
+                std::os::unix::fs::symlink(entry.path(), target.join(entry.file_name())).unwrap();
+            }
+        }
+        paths.push(target);
+    }
+    let path = std::env::join_paths(paths).unwrap();
+    let absent = std::process::Command::new("bun")
+        .arg("--version")
+        .env("PATH", &path)
+        .output()
+        .unwrap_err();
+    assert_eq!(absent.kind(), std::io::ErrorKind::NotFound);
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "agsdl_host::conformance030_tests::agsdl030_conformance_all_37_scenarios",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("CONFORMANCE TOTAL: N=33 M=4 K=0"));
+    eprintln!("NATIVE_WITHOUT_BUN: 37 complete base projections, N33/M4/K0; all other PATH entries retained");
+}
+
+#[tokio::test]
+async fn native_adapter_inputs_differential() {
+    run_all_37(true).await;
+}
+
+async fn run_all_37(compare_ts: bool) {
+    let mut bun = compare_ts.then(BunHost::start);
     let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../dev/agsdl/fixtures/v0.3/conformance/runs");
     let discovered = std::fs::read_dir(directory)
@@ -1145,15 +1178,13 @@ async fn agsdl030_conformance_all_37_scenarios() {
         pinned, discovered,
         "Every scenario must be explicitly covered"
     );
-    let bun = Arc::new(tokio::sync::Mutex::new(BunHost::start()));
     let (mut native, mut scripted, mut failures) = (0, 0, Vec::new());
     let mut capture_manifest = Vec::new();
     let mut route_capture_manifest = Vec::new();
     for (name, raw) in scenarios::SCENARIOS {
-        let prepared =
-            std::panic::AssertUnwindSafe(async { Fixture::new(raw, &mut *bun.lock().await).await })
-                .catch_unwind()
-                .await;
+        let prepared = std::panic::AssertUnwindSafe(async { Fixture::new(raw).await })
+            .catch_unwind()
+            .await;
         let f = match prepared {
             Ok(f) => f,
             Err(panic) => {
@@ -1174,8 +1205,6 @@ async fn agsdl030_conformance_all_37_scenarios() {
         let reason = scripted_reason(&f, &scenario);
         let gap = product_gap(&f);
         let (wake, receiver) = watch::channel(0);
-        let mut pump = f.pump(bun.clone(), wake.clone());
-        let mut pump_consumed = false;
         let run = async {
             let view = if reason.is_some() {
                 crate::agsdl_host_example030::drive_scenario030(
@@ -1201,6 +1230,13 @@ async fn agsdl030_conformance_all_37_scenarios() {
                 )
                 .unwrap();
             }
+            let reference: Value =
+                serde_json::from_str(include_str!("../tests/fixtures/agsdl030_projections.json"))
+                    .unwrap();
+            assert_eq!(
+                observed, reference["observations"][*name],
+                "complete TS base projection {name}"
+            );
             let errors = projection::compare(&expected, &observed);
             if !errors.is_empty() {
                 return Err(crate::db::agsdl_execution::failure(
@@ -1212,19 +1248,9 @@ async fn agsdl030_conformance_all_37_scenarios() {
             Ok(())
         }
         .boxed_local();
-        let guarded_run = async {
-            tokio::select! {
-                result = run => result,
-                result = &mut pump => {
-                    pump_consumed = true;
-                    panic!("Work conformance pump failed in {name}: {result:?}");
-                }
-            }
-        }
-        .boxed_local();
         let result = std::panic::AssertUnwindSafe(tokio::time::timeout(
             std::time::Duration::from_secs(40),
-            guarded_run,
+            run,
         ))
         .catch_unwind()
         .await;
@@ -1234,16 +1260,41 @@ async fn agsdl030_conformance_all_37_scenarios() {
             Ok(Err(_)) => Some("scenario exceeded 40 seconds".into()),
             Err(panic) => Some(panic_message(panic)),
         };
-        pump.abort();
-        if !pump_consumed {
-            if let Err(error) = pump.await {
-                assert!(error.is_cancelled(), "Mailbox pump panicked: {error}");
-            }
-        }
         if error.is_none() {
-            capture_manifest.push(work_capture::replay(&f, &mut *bun.lock().await, name).await);
-            route_capture_manifest
-                .push(route_data_capture::replay(&f, &mut *bun.lock().await, name).await);
+            if let Some(directory) = std::env::var_os("ARGENTIC_COMPILE_CAPTURE_DIR") {
+                std::fs::create_dir_all(&directory).unwrap();
+                let rows: String = f.compile_captures.lock().unwrap().iter().enumerate().map(|(ordinal, (job, output))| format!("{}\n", json!({"scenario": name, "ordinal": ordinal, "rawJob": job, "rawOutput": output}))).collect();
+                std::fs::write(
+                    std::path::Path::new(&directory).join(format!("{name}.jsonl")),
+                    rows,
+                )
+                .unwrap();
+            }
+            if let Some(bun) = bun.as_mut() {
+                let captures = f.compile_captures.lock().unwrap().clone();
+                assert!(!captures.is_empty());
+                for (raw_job, expected) in captures {
+                    #[derive(serde::Deserialize)]
+                    #[serde(rename_all = "camelCase")]
+                    struct CompileCapture {
+                        authored_source: String,
+                        source: Box<serde_json::value::RawValue>,
+                        registry_json: String,
+                    }
+                    let job: CompileCapture = serde_json::from_str(&raw_job).unwrap();
+                    let request = format!("{{\"kind\":\"compile\",\"authoredSource\":{},\"source\":{},\"registry\":{}}}", serde_json::to_string(&job.authored_source).unwrap(), job.source.get(), job.registry_json);
+                    for _ in 0..2 {
+                        assert_eq!(
+                            bun.request_text(&request).await.1,
+                            expected,
+                            "production compilation {name}"
+                        );
+                    }
+                }
+            }
+
+            capture_manifest.push(work_capture::replay(&f, bun.as_mut(), name).await);
+            route_capture_manifest.push(route_data_capture::replay(&f, bun.as_mut(), name).await);
         }
         match error {
             None if reason.is_none() && gap.is_none() => {
@@ -1269,12 +1320,9 @@ async fn agsdl030_conformance_all_37_scenarios() {
         }
         f.pool.close().await;
     }
-    Arc::try_unwrap(bun)
-        .ok()
-        .unwrap()
-        .into_inner()
-        .close()
-        .await;
+    if let Some(bun) = bun {
+        bun.close().await;
+    }
     eprintln!(
         "CONFORMANCE TOTAL: N={native} M={scripted} K={}",
         failures.len()
@@ -1285,7 +1333,7 @@ async fn agsdl030_conformance_all_37_scenarios() {
         37,
         "Every scenario needs a capture manifest, including zero-work cases"
     );
-    route_data_capture::finish(&route_capture_manifest, native, scripted);
+    route_data_capture::finish(&route_capture_manifest, native, scripted, compare_ts);
     let manifest =
         json!({"scenarios": capture_manifest, "N": native, "M": scripted, "K": failures.len()});
     eprintln!("ARGENTIC_WORK_CAPTURE_MANIFEST {manifest}");
@@ -1300,22 +1348,19 @@ async fn agsdl030_conformance_all_37_scenarios() {
 
 #[tokio::test]
 async fn invalid_timeline_cancels_and_joins_the_native_workers() {
-    let mut bun = BunHost::start();
     let raw = scenarios::SCENARIOS
         .iter()
         .find(|(n, _)| *n == "error-route")
         .unwrap()
         .1;
-    let f = Fixture::new(raw, &mut bun).await;
+    let f = Fixture::new(raw).await;
     let mut scenario =
         scenarios::PinnedScenario030::from_capture(&f.plan.document_json, r#"{"prompt":"Start."}"#)
             .unwrap();
     // The initial work is already running. This deliberately incorrect check
     // must fail without leaving the executor waiting for its scripted result.
     scenario.timeline = vec![TimelineEvent030::Running(vec![])];
-    let bun = Arc::new(tokio::sync::Mutex::new(bun));
     let (wake, receiver) = watch::channel(0);
-    let pump = f.pump(bun.clone(), wake.clone());
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         native_timeline(&f, scenario, wake, receiver),
@@ -1323,14 +1368,6 @@ async fn invalid_timeline_cancels_and_joins_the_native_workers() {
     .await
     .expect("Failed timeline left a live native executor");
     assert_eq!(result.unwrap_err().code, "CONFORMANCE");
-    pump.abort();
-    let _ = pump.await;
-    Arc::try_unwrap(bun)
-        .ok()
-        .unwrap()
-        .into_inner()
-        .close()
-        .await;
     f.pool.close().await;
 }
 
@@ -1339,16 +1376,13 @@ mod call_executor_tests;
 
 #[tokio::test]
 async fn approval_keeps_admission_through_revision_application() {
-    let mut bun = BunHost::start();
     let raw = scenarios::SCENARIOS
         .iter()
         .find(|(name, _)| *name == "approval")
         .unwrap()
         .1;
-    let f = Fixture::new(raw, &mut bun).await;
-    let bun = Arc::new(tokio::sync::Mutex::new(bun));
+    let f = Fixture::new(raw).await;
     let (wake, receiver) = watch::channel(0);
-    let pump = f.pump(bun.clone(), wake.clone());
     let host = f.app.state::<HostState>();
     let (probe, observed) = tokio::sync::oneshot::channel();
     *host.flow030().humans.approval_commit_probe.lock().unwrap() = Some(probe);
@@ -1374,29 +1408,18 @@ async fn approval_keeps_admission_through_revision_application() {
     .await
     .unwrap();
     assert_eq!(reserved, 0);
-    pump.abort();
-    let _ = pump.await;
-    Arc::try_unwrap(bun)
-        .ok()
-        .unwrap()
-        .into_inner()
-        .close()
-        .await;
     f.pool.close().await;
 }
 
 #[tokio::test]
 async fn handled_historical_failure_does_not_block_the_current_compose_failure() {
-    let mut bun = BunHost::start();
     let raw = scenarios::SCENARIOS
         .iter()
         .find(|(name, _)| *name == "compose-body-failure")
         .unwrap()
         .1;
-    let f = Fixture::new(raw, &mut bun).await;
-    let bun = Arc::new(tokio::sync::Mutex::new(bun));
+    let f = Fixture::new(raw).await;
     let (wake, receiver) = watch::channel(0);
-    let pump = f.pump(bun.clone(), wake.clone());
     let fixture: Value = serde_json::from_str(raw).unwrap();
     let scenario = scenarios::PinnedScenario030::from_capture(
         &f.plan.document_json,
@@ -1462,25 +1485,13 @@ async fn handled_historical_failure_does_not_block_the_current_compose_failure()
         );
     }
     drop(db);
-    pump.abort();
-    let _ = pump.await;
-    Arc::try_unwrap(bun)
-        .ok()
-        .unwrap()
-        .into_inner()
-        .close()
-        .await;
     f.pool.close().await;
 }
 
 #[tokio::test]
 async fn delivery030_validates_retained_capture_and_is_idempotent_without_legacy_tables() {
-    let mut bun = BunHost::start();
     let raw = json!({"document":{"contract":"agsdl-0.3.0","id":"graphless-messages","agents":{"worker":{"harness":"codex","permissions":"workspace"}}},"timeline":[]}).to_string();
-    let f = Fixture::new(&raw, &mut bun).await;
-    let bun = Arc::new(tokio::sync::Mutex::new(bun));
-    let (wake, _) = watch::channel(0);
-    let pump = f.pump(bun.clone(), wake);
+    let f = Fixture::new(&raw).await;
     let host = f.app.state::<HostState>();
     let request = flow::DeliveryRequest030 {
         scope: crate::agsdl_host_projection030::RuntimeProjectionScope030 {
@@ -1563,13 +1574,5 @@ async fn delivery030_validates_retained_capture_and_is_idempotent_without_legacy
         .await
         .unwrap()
     );
-    pump.abort();
-    let _ = pump.await;
-    Arc::try_unwrap(bun)
-        .ok()
-        .unwrap()
-        .into_inner()
-        .close()
-        .await;
     f.pool.close().await;
 }

@@ -251,6 +251,7 @@ struct Queue {
 pub(crate) struct WorkBroker030 {
     queue: Mutex<Queue>,
     available: Notify,
+    pub(crate) native: crate::agsdl_host_evaluation030::Bounded<64>,
 }
 
 struct TicketGuard<'a> {
@@ -280,6 +281,7 @@ impl Drop for TicketGuard<'_> {
 
 impl WorkBroker030 {
     pub(crate) fn close(&self) {
+        self.native.close();
         let mut queue = self.queue.lock().expect("work mailbox");
         queue.closed = true;
         queue.ready.clear();
@@ -303,35 +305,7 @@ impl WorkBroker030 {
         input: HostWorkInput030,
         cancelled: &CancellationToken,
     ) -> Result<HostWorkOutput030> {
-        let bytes = serde_json::to_vec(&input)?;
-        if bytes.len() > MAX_BYTES {
-            return Err(failure(
-                "INPUT_LIMIT",
-                "work",
-                "Work transition exceeds the host transport limit",
-            ));
-        }
-        for json in [
-            &input.contract_json,
-            &input.state_json,
-            &input.event_json,
-            &input.options_json,
-        ] {
-            validate_json(json)?;
-        }
-        if generation.is_empty()
-            || input.event_id.trim().is_empty()
-            || input.context.owner.system_start_id != input.context.work.system_start_id
-            || input.expected_revision.is_empty()
-            || !input.expected_revision.bytes().all(|c| c.is_ascii_digit())
-            || input.expected_revision.len() > 1 && input.expected_revision.starts_with('0')
-        {
-            return Err(failure(
-                "CORRELATION",
-                "work",
-                "Invalid work transition identity",
-            ));
-        }
+        let bytes = validate_input(generation, &input)?;
         let ticket = uuid::Uuid::new_v4().to_string();
         let job = HostWorkJob030 {
             ticket: ticket.clone(),
@@ -373,6 +347,71 @@ impl WorkBroker030 {
         }
     }
 
+    pub(crate) async fn evaluate_native(
+        &self,
+        generation: &str,
+        input: HostWorkInput030,
+        cancelled: &CancellationToken,
+    ) -> Result<HostWorkOutput030> {
+        let bytes = validate_input(generation, &input)?;
+        if self.queue.lock().expect("work mailbox").closed {
+            return Err(failure(
+                "RUNTIME_UNAVAILABLE",
+                "work",
+                "Native calculation could not produce a result",
+            ));
+        }
+        let job = HostWorkJob030 {
+            ticket: uuid::Uuid::new_v4().to_string(),
+            generation: generation.into(),
+            input_digest: format!("sha256:{:x}", Sha256::digest(&bytes)),
+            input,
+        };
+        let raw_job = serde_json::to_string(&job)?;
+        let raw_input = String::from_utf8(bytes).expect("serialized work input");
+        let raw = self
+            .native
+            .run(
+                failure(
+                    "RUNTIME_UNAVAILABLE",
+                    "work",
+                    "Work protocol host is unavailable or busy",
+                ),
+                failure("INTERRUPTED", "work", "Work transition was cancelled"),
+                cancelled,
+                raw_job,
+                move || {
+                    use crate::argentic_core::native::{JsonDecoder, Text};
+                    let decoder = crate::argentic_runtime::native_json::Decoder;
+                    let input = decoder.parse(&Text::from(raw_input)).map_err(|_| {
+                        failure(
+                            "RUNTIME_UNAVAILABLE",
+                            "work",
+                            "Native calculation could not produce a result",
+                        )
+                    })?;
+                    crate::argentic_core::work::evaluate_host(&input, &decoder)
+                        .map(|output| output.stringify())
+                        .map_err(|_| {
+                            failure(
+                                "RUNTIME_UNAVAILABLE",
+                                "work",
+                                "Native calculation could not produce a result",
+                            )
+                        })
+                },
+            )
+            .await?;
+        let output: HostWorkOutput030 = serde_json::from_str(&raw)?;
+        let completion = HostWorkCompletion030 {
+            ticket: job.ticket,
+            generation: job.generation,
+            input_digest: job.input_digest,
+            output,
+        };
+        validate_output(&completion)?;
+        Ok(completion.output)
+    }
     pub(crate) async fn next(&self) -> Result<HostWorkJob030> {
         loop {
             let wake = self.available.notified();
@@ -401,15 +440,7 @@ impl WorkBroker030 {
         generation: &str,
         completion: HostWorkCompletion030,
     ) -> Result<()> {
-        if serde_json::to_vec(&completion)?.len() > MAX_BYTES {
-            return Err(failure(
-                "INPUT_LIMIT",
-                "work",
-                "Work transition result exceeds the host transport limit",
-            ));
-        }
-        validate_json(&completion.output.state_json)?;
-        validate_json(&completion.output.receipt_json)?;
+        validate_output(&completion)?;
         let mut queue = self.queue.lock().expect("work mailbox");
         if !queue.closed
             && completion.generation == generation
@@ -452,6 +483,51 @@ impl WorkBroker030 {
         }
         Ok(())
     }
+}
+
+fn validate_input(generation: &str, input: &HostWorkInput030) -> Result<Vec<u8>> {
+    let bytes = serde_json::to_vec(&input)?;
+    if bytes.len() > MAX_BYTES {
+        return Err(failure(
+            "INPUT_LIMIT",
+            "work",
+            "Work transition exceeds the host transport limit",
+        ));
+    }
+    for json in [
+        &input.contract_json,
+        &input.state_json,
+        &input.event_json,
+        &input.options_json,
+    ] {
+        validate_json(json)?;
+    }
+    if generation.is_empty()
+        || input.event_id.trim().is_empty()
+        || input.context.owner.system_start_id != input.context.work.system_start_id
+        || input.expected_revision.is_empty()
+        || !input.expected_revision.bytes().all(|c| c.is_ascii_digit())
+        || input.expected_revision.len() > 1 && input.expected_revision.starts_with('0')
+    {
+        return Err(failure(
+            "CORRELATION",
+            "work",
+            "Invalid work transition identity",
+        ));
+    }
+    Ok(bytes)
+}
+fn validate_output(completion: &HostWorkCompletion030) -> Result<()> {
+    if serde_json::to_vec(&completion)?.len() > MAX_BYTES {
+        return Err(failure(
+            "INPUT_LIMIT",
+            "work",
+            "Work transition result exceeds the host transport limit",
+        ));
+    }
+    validate_json(&completion.output.state_json)?;
+    validate_json(&completion.output.receipt_json)?;
+    Ok(())
 }
 
 #[cfg(test)]

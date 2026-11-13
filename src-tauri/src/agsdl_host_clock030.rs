@@ -124,7 +124,10 @@ struct Queue {
 
 #[derive(Default)]
 pub(crate) struct ClockBroker030 {
-    route: Option<std::sync::Arc<crate::agsdl_host_route030::RouteBroker030>>,
+    route: Option<(
+        std::sync::Arc<crate::agsdl_host_route030::RouteBroker030>,
+        String,
+    )>,
     queue: Mutex<Queue>,
     available: Notify,
 }
@@ -157,9 +160,10 @@ impl Drop for TicketGuard<'_> {
 impl ClockBroker030 {
     pub(crate) fn from_route(
         route: std::sync::Arc<crate::agsdl_host_route030::RouteBroker030>,
+        generation: String,
     ) -> Self {
         Self {
-            route: Some(route),
+            route: Some((route, generation)),
             ..Self::default()
         }
     }
@@ -214,10 +218,12 @@ impl ClockBroker030 {
                 "Invalid work transition identity",
             ));
         }
-        if let Some(route) = &self.route {
+        if let Some((route, expected)) = &self.route {
             let input_json =
                 serde_json::json!({"operation":"humanClock", "input":input}).to_string();
-            let raw = route.evaluate(generation, input_json, cancelled).await?;
+            let raw = route
+                .evaluate_native(expected, generation, input_json, cancelled)
+                .await?;
             return Ok(serde_json::from_str(&raw)?);
         }
         let ticket = uuid::Uuid::new_v4().to_string();

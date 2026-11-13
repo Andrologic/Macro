@@ -1,6 +1,7 @@
-//! Native ownership of the resident execution webview. A label is not an identity.
+//! Process-owned execution engine and a separate transitional resident webview.
 use crate::core::db_state::DbPool;
 use crate::db::agsdl_execution::{self as repository, dto::EngineOwner, failure, Result};
+use sqlx::SqlitePool;
 use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -74,12 +75,56 @@ struct OwnedHost {
     incarnation: Arc<Incarnation>,
     resource: ResourceId,
 }
-#[derive(Default)]
 pub(crate) struct HostState(
     Mutex<Option<OwnedHost>>,
     Arc<tokio::sync::Mutex<()>>,
-    crate::agsdl_host_flow030::FlowHost030,
+    Arc<crate::agsdl_host_flow030::FlowHost030>,
+    Mutex<Option<OwnedHost>>,
 );
+
+impl Default for HostState {
+    fn default() -> Self {
+        type Engine = (
+            Arc<Incarnation>,
+            Arc<tokio::sync::Mutex<()>>,
+            Arc<crate::agsdl_host_flow030::FlowHost030>,
+        );
+        static ENGINE: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
+        let (incarnation, admission, flow) = ENGINE.get_or_init(|| {
+            (
+                new_incarnation(uuid::Uuid::new_v4().to_string(), true),
+                Default::default(),
+                Default::default(),
+            )
+        });
+        Self(
+            Mutex::new(Some(OwnedHost {
+                incarnation: incarnation.clone(),
+                resource: 0,
+            })),
+            admission.clone(),
+            flow.clone(),
+            Default::default(),
+        )
+    }
+}
+
+fn new_incarnation(generation: String, ready: bool) -> Arc<Incarnation> {
+    Arc::new(Incarnation {
+        generation,
+        compiler: Default::default(),
+        work_protocol: Default::default(),
+        route030: Default::default(),
+        lifecycle: Default::default(),
+        handoff: Mutex::new(()),
+        live: AtomicBool::new(true),
+        ready: AtomicBool::new(ready),
+        retired: Default::default(),
+        loads: AtomicUsize::new(0),
+        owners: Mutex::new(BTreeMap::new()),
+        qa_request: Mutex::new(None),
+    })
+}
 
 /// In-memory host fixture for native route-attestation tests. It creates no
 /// database authority and is never compiled into the application.
@@ -107,6 +152,7 @@ pub(crate) fn route_attestation_test_host030(owner: EngineOwner, generation: &st
             resource: 0,
         })),
         Arc::new(tokio::sync::Mutex::new(())),
+        Default::default(),
         Default::default(),
     )
 }
@@ -174,7 +220,12 @@ impl HostStartLease {
         let result = self
             .host
             .route030
-            .evaluate(&self.host.generation, input_json, cancel)
+            .evaluate_native(
+                &self.host.generation,
+                &self.host.generation,
+                input_json,
+                cancel,
+            )
             .await?;
         self.ensure_live()?;
         Ok(result)
@@ -182,6 +233,7 @@ impl HostStartLease {
     pub(crate) fn clock_jobs030(&self) -> Arc<crate::agsdl_host_clock030::ClockBroker030> {
         Arc::new(crate::agsdl_host_clock030::ClockBroker030::from_route(
             self.host.route030.clone(),
+            self.host.generation.clone(),
         ))
     }
     pub(crate) fn call_data030(&self) -> Result<crate::agsdl_host_calls030::CallDataBroker030> {
@@ -189,6 +241,7 @@ impl HostStartLease {
         Ok(
             crate::agsdl_host_calls030::CallDataBroker030::from_native_route(
                 self.host.route030.clone(),
+                self.host.generation.clone(),
             ),
         )
     }
@@ -400,6 +453,36 @@ impl HostStartLease {
 }
 
 impl HostState {
+    /// Explicit native retirement is independent of resident replacement.
+    /// Retrying reconciles the same revoked incarnation; it never recreates it.
+    pub(crate) async fn revoke_native(
+        &self,
+        pool: &SqlitePool,
+        tasks: &crate::ai::stream_tasks::StreamTasks,
+    ) -> Result<()> {
+        let host = self
+            .0
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host state unavailable"))?
+            .as_ref()
+            .map(|host| host.incarnation.clone())
+            .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "", "Host not installed"))?;
+        revoke_now(&host);
+        let lifecycle = host.lifecycle.clone().write_owned().await;
+        let owners = host
+            .owners
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let admission = self.admission_lock().lock_owned().await;
+        fence_generation(pool, &owners, &host.generation).await?;
+        drop(admission);
+        drop(lifecycle);
+        stop_retired_flows(self.flow030(), pool, tasks, &host.generation).await
+    }
+
     pub(crate) fn flow030(&self) -> &crate::agsdl_host_flow030::FlowHost030 {
         &self.2
     }
@@ -467,7 +550,13 @@ impl HostState {
         }
         let receipt = host
             .compiler
-            .compile(&host.generation, source, authored_source, registry_json)
+            .compile_native(
+                &host.generation,
+                source,
+                authored_source,
+                registry_json,
+                &host.retired,
+            )
             .await?;
         if !host.live.load(Ordering::SeqCst) || receipt.generation != host.generation {
             return Err(failure(
@@ -507,7 +596,7 @@ impl HostState {
         }
         let output = host
             .work_protocol
-            .evaluate(&host.generation, input, cancelled)
+            .evaluate_native(&host.generation, input, cancelled)
             .await?;
         if !host.live.load(Ordering::SeqCst) {
             return Err(failure(
@@ -520,7 +609,7 @@ impl HostState {
     }
 
     /// Evaluates a previously reserved Flow030 event without keeping a SQL or
-    /// admission guard across the mailbox wait. The caller must revalidate
+    /// admission guard across the native calculation. The caller must revalidate
     /// the flow and commit its decision in a fresh guarded transaction.
     pub(crate) async fn evaluate_flow_work030(
         &self,
@@ -621,7 +710,7 @@ impl HostState {
     }
     fn authenticate(&self, caller: &Webview) -> Result<Arc<Incarnation>> {
         let host = self
-            .0
+            .3
             .lock()
             .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host state unavailable"))?;
         let host = host
@@ -671,7 +760,7 @@ fn revoke_now(host: &Arc<Incarnation>) -> bool {
 }
 
 pub(crate) async fn fence_generation(
-    pool: &sqlx::SqlitePool,
+    pool: &SqlitePool,
     owners: &[EngineOwner],
     generation: &str,
 ) -> Result<()> {
@@ -684,7 +773,7 @@ pub(crate) async fn fence_generation(
 /// call descendants ended; those still require their physical receipts.
 async fn stop_retired_flows(
     runtime: &crate::agsdl_host_flow030::FlowHost030,
-    pool: &sqlx::SqlitePool,
+    pool: &SqlitePool,
     tasks: &crate::ai::stream_tasks::StreamTasks,
     generation: &str,
 ) -> Result<()> {
@@ -729,76 +818,24 @@ async fn stop_retired_flows(
     Ok(())
 }
 
-fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
-    let app = app.clone();
+// Resident loss retires only its legacy transport. It cannot fence the native
+// process engine or replace any native ownership, budget or reservation.
+fn retire(host: &Arc<Incarnation>, _database: &DbPool, app: &tauri::AppHandle) {
     if !revoke_now(host) {
         return;
     }
-    let database = database.clone();
-    let host = host.clone();
+    let app = app.clone();
+    let retired = host.clone();
     tauri::async_runtime::spawn(async move {
-        let _retirement_guard = host.lifecycle.clone().write_owned().await;
-        let owners = host
-            .owners
-            .lock()
-            .expect("host ownership")
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-
-        // Authority is already revoked in memory. Retain the retirement until the
-        // native journal acknowledges it; shutdown recovery handles process loss.
-        loop {
-            if let Ok(pool) = database.wait_until_ready().await {
-                let _gate = app.state::<HostState>().admission_lock().lock_owned().await;
-                if fence_generation(&pool, &owners, &host.generation)
-                    .await
-                    .is_ok()
-                {
-                    break;
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        }
-        drop(_retirement_guard);
-        // Native engines may own descendants outside Macro's process. Revoking
-        // their epoch also requests physical stop; reload never leaves them running.
-        if let Ok(pool) = database.wait_until_ready().await {
-            if let Err(error) = stop_retired_flows(
-                app.state::<HostState>().flow030(),
-                &pool,
-                &app.state::<crate::ai::AiState>().stream_tasks,
-                &host.generation,
-            )
-            .await
-            {
-                tracing::warn!(code = %error.code, "Native flow retirement remains pending");
-            }
-        }
-        // A native replacement follows durable fencing, never a Flow polling tick.
         for _ in 0..10 {
-            let current = app
-                .state::<HostState>()
-                .0
-                .lock()
-                .ok()
-                .and_then(|owned| {
-                    owned
-                        .as_ref()
-                        .map(|owned| Arc::ptr_eq(&owned.incarnation, &host))
-                })
-                .unwrap_or(false);
-            if !current {
-                return;
-            }
             let app_for_main = app.clone();
-            let retired = host.clone();
+            let retired = retired.clone();
             let (sender, receiver) = tokio::sync::oneshot::channel();
             if app
                 .run_on_main_thread(move || {
-                    let matches = app_for_main
+                    let current = app_for_main
                         .state::<HostState>()
-                        .0
+                        .3
                         .lock()
                         .ok()
                         .and_then(|owned| {
@@ -807,7 +844,7 @@ fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
                                 .map(|owned| Arc::ptr_eq(&owned.incarnation, &retired))
                         })
                         .unwrap_or(false);
-                    if !matches {
+                    if !current {
                         let _ = sender.send(true);
                         return;
                     }
@@ -830,20 +867,7 @@ fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
 }
 
 pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let incarnation = Arc::new(Incarnation {
-        generation: uuid::Uuid::new_v4().to_string(),
-        compiler: Default::default(),
-        work_protocol: Default::default(),
-        route030: Default::default(),
-        lifecycle: Arc::new(tokio::sync::RwLock::new(())),
-        handoff: Mutex::new(()),
-        live: AtomicBool::new(true),
-        ready: AtomicBool::new(false),
-        retired: Default::default(),
-        loads: AtomicUsize::new(0),
-        owners: Mutex::new(BTreeMap::new()),
-        qa_request: Mutex::new(None),
-    });
+    let incarnation = new_incarnation(uuid::Uuid::new_v4().to_string(), false);
     let navigation_database = app.state::<DbPool>().inner().clone();
     let load_database = navigation_database.clone();
     let destroy_database = navigation_database.clone();
@@ -893,7 +917,7 @@ pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
         .resources_table()
         .add(HostResource(incarnation.clone()));
     *app.state::<HostState>()
-        .0
+        .3
         .lock()
         .expect("host installation") = Some(OwnedHost {
         incarnation: incarnation.clone(),
@@ -937,6 +961,71 @@ mod conformance030_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn process_engine_survives_state_reconstruction_and_resident_replacement() {
+        let first = HostState::default();
+        let lease = first.start_lease().await.unwrap();
+        let owner = EngineOwner {
+            system_start_id: "process-incarnation-test".into(),
+            owner_epoch: "0".into(),
+        };
+        lease.retain_committed_owner(owner.clone()).unwrap();
+        let resident = new_incarnation("resident-one".into(), false);
+        *first.3.lock().unwrap() = Some(OwnedHost {
+            incarnation: resident.clone(),
+            resource: 1,
+        });
+        assert!(revoke_now(&resident));
+        *first.3.lock().unwrap() = Some(OwnedHost {
+            incarnation: new_incarnation("resident-two".into(), true),
+            resource: 2,
+        });
+        let second = HostState::default();
+        let retained = second.start_lease().await.unwrap();
+        assert!(Arc::ptr_eq(&lease.host, &retained.host));
+        assert!(Arc::ptr_eq(&first.1, &second.1));
+        assert!(Arc::ptr_eq(&first.2, &second.2));
+        assert_eq!(retained.owner(&owner.system_start_id).unwrap(), owner);
+        assert_eq!(lease.generation(), retained.generation());
+        assert!(retained.host.live.load(Ordering::SeqCst));
+        assert!(second.evaluate_flow_work030(crate::agsdl_host_work::HostWorkInput030 {
+            context: serde_json::from_value(serde_json::json!({"owner":owner,"work":{"systemStartId":"process-incarnation-test","flowInvocationId":"flow","activationId":"work","agentInstanceId":"agent"},"permissionsJson":"{}","scopeJson":"{}","registryVersion":"registry"})).unwrap(),
+            event_id:"event".into(), expected_revision:"0".into(), contract_json:"{}".into(), state_json:"{}".into(), event_json:"{}".into(), options_json:"{}".into()
+        }, "foreign-generation", &tokio_util::sync::CancellationToken::new()).await.is_err());
+        let calls = retained.call_data030().unwrap();
+        let clocks = retained.clock_jobs030();
+        let input = crate::agsdl_host_clock030::HostClockInput030 {
+            identity: repository::flow030::FlowIdentity030 {
+                system_start_id: owner.system_start_id.clone(), flow_invocation_id: "flow".into(), snapshot_id: "snapshot".into(), epoch: "capture".into(),
+            },
+            owner: owner.clone(), event_id: "tick".into(), expected_revision: "0".into(), state_json: String::new(),
+            event_json: serde_json::json!({"owner":owner,"eventId":"tick","nowMs":"0","event":{"kind":"tick"}}).to_string(),
+            options_json: "{\"maxSliceMs\":2147483647}".into(),
+        };
+        let foreign = clocks
+            .evaluate(
+                "foreign-generation",
+                input.clone(),
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(foreign.code, "CORRELATION");
+        let output = clocks
+            .evaluate(
+                retained.generation(),
+                input,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&output.state_json).unwrap()["owner"],
+            serde_json::to_value(owner).unwrap()
+        );
+        drop(calls);
+    }
 
     fn test_operation030() -> crate::ai::stream_tasks::OwnedOperation030 {
         crate::ai::stream_tasks::OwnedOperation030 {
@@ -1333,7 +1422,13 @@ pub(crate) async fn execution_qa_replace_host(
             "Manual qualification is disabled",
         ));
     }
-    let lease = state.start_lease().await?;
-    retire(&lease.host, database.inner(), &app);
+    let resident = state
+        .3
+        .lock()
+        .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Resident state unavailable"))?
+        .as_ref()
+        .map(|host| host.incarnation.clone())
+        .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "", "Resident not installed"))?;
+    retire(&resident, database.inner(), &app);
     Ok(())
 }

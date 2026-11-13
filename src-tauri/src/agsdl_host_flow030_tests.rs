@@ -15,7 +15,6 @@ async fn example_agent_capture(
     root: &std::path::Path,
     identity: &FlowIdentity030,
 ) -> (StartCapture030, crate::config::ConfigManager) {
-    use tokio::io::AsyncWriteExt;
     let workspace = root.join("agent-workspace");
     let metadata = root.join("agent-metadata");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -51,34 +50,17 @@ async fn example_agent_capture(
         Sha256::digest(serde_json::to_vec(&registry).unwrap())
     ));
     registry["hostCapabilities"] = serde_json::json!([]);
-    let ticket = serde_json::json!({"authoredSource":authored,"source":source,"registry":registry});
-    let script = r#"import {compileHost030} from './src/services/agsdlExecution/hostCompilation'; const j=JSON.parse(await Bun.stdin.text()); process.stdout.write(await compileHost030(j.authoredSource,j.source,j.registry));"#;
-    let mut child = crate::core::process::background_tokio_command("bun")
-        .args(["-e", script])
-        .current_dir(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap(),
+    let receipt = crate::agsdl_host_compiler::CompileBroker::default()
+        .compile_native(
+            "generation",
+            source.clone(),
+            authored.clone(),
+            registry.to_string(),
+            &tokio_util::sync::CancellationToken::new(),
         )
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&serde_json::to_vec(&ticket).unwrap())
         .await
         .unwrap();
-    let output = child.wait_with_output().await.unwrap();
-    assert!(
-        output.status.success(),
-        "compiler: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let compiled: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let compiled: serde_json::Value = serde_json::from_str(&receipt.result_json).unwrap();
     let plan = compiled["compiledPlanJson"]
         .as_str()
         .expect("real compiler plan")
@@ -165,7 +147,6 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
         },
     };
     use crate::workspace::metadata::{ProjectDto, WorkspaceState};
-    use tokio::io::AsyncWriteExt;
 
     let _secret_guard = crate::secrets::lock_test_store();
     let temp = tempfile::TempDir::new().unwrap();
@@ -281,46 +262,9 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
         })),
         Arc::new(tokio::sync::Mutex::new(())),
         Default::default(),
+        Default::default(),
     );
-    let compiler = incarnation.clone();
-    let worker = tokio::spawn(async move {
-        let job = compiler.compiler.next().await.unwrap();
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap();
-        let script = r#"import {compileHost030} from './src/services/agsdlExecution/hostCompilation';
-const job=JSON.parse(await Bun.stdin.text());
-process.stdout.write(await compileHost030(job.authoredSource,job.source,JSON.parse(job.registryJson)));"#;
-        let mut child = crate::core::process::background_tokio_command("bun")
-            .args(["-e", script])
-            .current_dir(root)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(&serde_json::to_vec(&job).unwrap())
-            .await
-            .unwrap();
-        let output = child.wait_with_output().await.unwrap();
-        assert!(
-            output.status.success(),
-            "compiler: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        compiler
-            .compiler
-            .complete(
-                &job.generation,
-                &job.ticket,
-                String::from_utf8(output.stdout).unwrap(),
-            )
-            .unwrap();
-    });
+
     let runtime = host.flow030();
     let git = crate::git::GitState::new();
     let retained = flow::start_linked::<tauri::Wry>(
@@ -336,7 +280,7 @@ process.stdout.write(await compileHost030(job.authoredSource,job.source,JSON.par
     )
     .await
     .unwrap();
-    worker.await.unwrap();
+
     let state_json: String = sqlx::query_scalar(
         "SELECT state_json FROM engine_flow030_runs WHERE system_id = ? AND invocation_id = ?",
     )
@@ -734,6 +678,7 @@ async fn exercise_handoff(mode: u8) {
             resource: 0,
         })),
         Arc::new(tokio::sync::Mutex::new(())),
+        Default::default(),
         Default::default(),
     );
     let runtime = host.flow030();
@@ -1174,56 +1119,13 @@ async fn exercise_handoff(mode: u8) {
             .execute(&pool)
             .await
             .unwrap();
-        let worker_host = incarnation.clone();
-        let worker = tokio::spawn(async move {
-            use tokio::io::AsyncWriteExt;
-            let job = worker_host.work_protocol.next().await.unwrap();
-            let script = r#"import {evaluateHostWork030} from './src/services/agsdlExecution/hostWorkTransition030'; import {connectValueSchemaValidator030} from './src/services/agsdlExecution/valueSchemaPort030'; import {NumberToken,parse} from './src/vendor/agsdl/v0.3/json.mjs'; import {validate} from './src/vendor/agsdl/v0.3/valueschema.mjs'; const j=JSON.parse(await Bun.stdin.text()); const i=j.input; const v=connectValueSchemaValidator030({NumberToken,parse,validate}); process.stdout.write(JSON.stringify(evaluateHostWork030(i.context,i.eventId,i.expectedRevision,i.contractJson,i.stateJson,i.eventJson,i.optionsJson,v)));"#;
-            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap();
-            let mut child = crate::core::process::background_tokio_command("bun")
-                .args(["-e", script])
-                .current_dir(root)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .unwrap();
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(&serde_json::to_vec(&job).unwrap())
-                .await
-                .unwrap();
-            let output = child.wait_with_output().await.unwrap();
-            assert!(
-                output.status.success(),
-                "controller: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let result: crate::agsdl_host_work::HostWorkOutput030 =
-                serde_json::from_slice(&output.stdout).unwrap();
-            worker_host
-                .work_protocol
-                .complete(
-                    &job.generation,
-                    crate::agsdl_host_work::HostWorkCompletion030 {
-                        ticket: job.ticket,
-                        generation: job.generation.clone(),
-                        input_digest: job.input_digest,
-                        output: result,
-                    },
-                )
-                .unwrap();
-        });
+
         let decision = crate::db::agsdl_execution::flow_work_protocol030::transition_agent(
             &host, &pool, &attempt, &input, &cancel,
         )
         .await
         .unwrap();
-        worker.await.unwrap();
+
         assert!(!decision.receipt_json.is_empty());
         let event_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM engine_flow030_work_events WHERE decision_json IS NOT NULL",
@@ -1236,51 +1138,7 @@ async fn exercise_handoff(mode: u8) {
             let joined = crate::agsdl_host_dispatch030::join_owned_agent030(&tasks, &attempt)
                 .await
                 .unwrap();
-            let worker_host = incarnation.clone();
-            let worker = tokio::spawn(async move {
-                use tokio::io::AsyncWriteExt;
-                let job = worker_host.work_protocol.next().await.unwrap();
-                let script = r#"import {evaluateHostWork030} from './src/services/agsdlExecution/hostWorkTransition030'; import {connectValueSchemaValidator030} from './src/services/agsdlExecution/valueSchemaPort030'; import {NumberToken,parse} from './src/vendor/agsdl/v0.3/json.mjs'; import {validate} from './src/vendor/agsdl/v0.3/valueschema.mjs'; const j=JSON.parse(await Bun.stdin.text()); const i=j.input; const v=connectValueSchemaValidator030({NumberToken,parse,validate}); process.stdout.write(JSON.stringify(evaluateHostWork030(i.context,i.eventId,i.expectedRevision,i.contractJson,i.stateJson,i.eventJson,i.optionsJson,v)));"#;
-                let mut child = crate::core::process::background_tokio_command("bun")
-                    .args(["-e", script])
-                    .current_dir(
-                        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                            .parent()
-                            .unwrap(),
-                    )
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .spawn()
-                    .unwrap();
-                child
-                    .stdin
-                    .take()
-                    .unwrap()
-                    .write_all(&serde_json::to_vec(&job).unwrap())
-                    .await
-                    .unwrap();
-                let output = child.wait_with_output().await.unwrap();
-                assert!(
-                    output.status.success(),
-                    "controller: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                let result: crate::agsdl_host_work::HostWorkOutput030 =
-                    serde_json::from_slice(&output.stdout).unwrap();
-                worker_host
-                    .work_protocol
-                    .complete(
-                        &job.generation,
-                        crate::agsdl_host_work::HostWorkCompletion030 {
-                            ticket: job.ticket,
-                            generation: job.generation.clone(),
-                            input_digest: job.input_digest,
-                            output: result,
-                        },
-                    )
-                    .unwrap();
-            });
+
             let before_state: String = sqlx::query_scalar(
                 "SELECT state_json FROM engine_flow030_runs WHERE system_id=? AND invocation_id=?",
             )
@@ -1300,7 +1158,7 @@ async fn exercise_handoff(mode: u8) {
                 )
                 .await
                 .unwrap();
-            worker.await.unwrap();
+
             let terminal_json: serde_json::Value =
                 serde_json::from_str(&terminal.receipt_json).unwrap();
             assert_eq!(terminal_json["decision"]["kind"], "finished");

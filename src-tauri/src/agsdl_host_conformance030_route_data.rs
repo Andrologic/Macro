@@ -1,5 +1,5 @@
-//! Actual shared-mailbox jobs, captured only by the conformance pump. The
-//! protocol always receives the original TS reply, including clock results.
+//! Actual native shared-adapter inputs and Rust results. Oracle replay is
+//! separate and never provides a result to the native protocol.
 use super::{BunHost, Fixture};
 use crate::argentic_core::{
     native::{JsonDecoder, Text},
@@ -77,7 +77,7 @@ pub(super) fn compare(raw_job: &str, raw_output: &str) -> Result<(), String> {
     }
     Ok(())
 }
-pub(super) async fn replay(f: &Fixture, bun: &mut BunHost, name: &str) -> Value {
+pub(super) async fn replay(f: &Fixture, mut bun: Option<&mut BunHost>, name: &str) -> Value {
     let captures = f.route_captures.lock().unwrap().clone();
     let mut rows = String::new();
     let mut cases = vec![];
@@ -92,8 +92,16 @@ pub(super) async fn replay(f: &Fixture, bun: &mut BunHost, name: &str) -> Value 
         let frozen = sha(&capture.raw_job);
         let output_frozen = sha(&capture.raw_output);
         for _ in 0..2 {
-            let job: Value = serde_json::from_str(&capture.raw_job).unwrap();
-            let (_, output) = bun.request_raw(json!({"kind":"route","job":job})).await;
+            let output = if let Some(bun) = bun.as_deref_mut() {
+                bun.request_text(&format!(
+                    "{{\"kind\":\"route\",\"job\":{}}}",
+                    capture.raw_job
+                ))
+                .await
+                .1
+            } else {
+                capture.raw_output.clone()
+            };
             assert_eq!(
                 output, capture.raw_output,
                 "TS frozen route replay {name}/{ordinal}"
@@ -112,11 +120,15 @@ pub(super) async fn replay(f: &Fixture, bun: &mut BunHost, name: &str) -> Value 
                 .entry(event["event"]["kind"].as_str().unwrap().into())
                 .or_default() += 1;
         }
-        let comparison = "strict-rust-ts";
+        let comparison = if bun.is_some() {
+            "strict-rust-ts"
+        } else {
+            "rust-production"
+        };
         let row = json!({"scenario":name,"ordinal":ordinal,"operation":capture.operation,"rawJob":capture.raw_job,"rawOutput":capture.raw_output,"comparison":comparison});
         rows.push_str(&row.to_string());
         rows.push('\n');
-        cases.push(json!({"ordinal":ordinal,"operation":capture.operation,"rawJobSha256":frozen,"outputSha256":output_frozen,"comparison":comparison,"tsReplays":2,"rustReplays":2}));
+        cases.push(json!({"ordinal":ordinal,"operation":capture.operation,"rawJobSha256":frozen,"outputSha256":output_frozen,"comparison":comparison,"tsReplays":if bun.is_some() {2} else {0},"rustReplays":2}));
     }
     if let Some(dir) = std::env::var_os("ARGENTIC_ROUTE_DATA_CAPTURE_DIR") {
         let dir = std::path::Path::new(&dir);
@@ -127,7 +139,7 @@ pub(super) async fn replay(f: &Fixture, bun: &mut BunHost, name: &str) -> Value 
     eprintln!("ARGENTIC_ROUTE_DATA_CAPTURE {manifest}");
     manifest
 }
-pub(super) fn finish(scenarios: &[Value], native: usize, scripted: usize) {
+pub(super) fn finish(scenarios: &[Value], native: usize, scripted: usize, compare_ts: bool) {
     assert_eq!(scenarios.len(), 37);
     let names = scenarios
         .iter()
@@ -157,7 +169,7 @@ pub(super) fn finish(scenarios: &[Value], native: usize, scripted: usize) {
             "Expected operation absent: {operation}"
         );
     }
-    let manifest = json!({"scenarios":scenarios,"operations":counts,"N":native,"M":scripted,"K":0,"humanClockRust":"strict-rust-ts","clockEvents":clock_events});
+    let manifest = json!({"scenarios":scenarios,"operations":counts,"N":native,"M":scripted,"K":0,"humanClockRust":if compare_ts {"strict-rust-ts"} else {"rust-production"},"clockEvents":clock_events});
     eprintln!("ARGENTIC_ROUTE_DATA_CAPTURE_MANIFEST {manifest}");
     if let Some(dir) = std::env::var_os("ARGENTIC_ROUTE_DATA_CAPTURE_DIR") {
         std::fs::write(

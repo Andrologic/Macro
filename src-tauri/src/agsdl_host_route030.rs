@@ -56,6 +56,7 @@ struct Queue {
 pub(crate) struct RouteBroker030 {
     queue: Mutex<Queue>,
     available: Notify,
+    pub(crate) native: crate::agsdl_host_evaluation030::Bounded<64>,
 }
 struct TicketGuard<'a> {
     broker: &'a RouteBroker030,
@@ -70,6 +71,7 @@ impl Drop for TicketGuard<'_> {
 }
 impl RouteBroker030 {
     pub(crate) fn close(&self) {
+        self.native.close();
         let mut queue = self.queue.lock().expect("route mailbox");
         queue.closed = true;
         queue.ready.clear();
@@ -91,14 +93,7 @@ impl RouteBroker030 {
         input_json: String,
         cancel: &CancellationToken,
     ) -> Result<String> {
-        if generation.is_empty() || input_json.len() > MAX_BYTES {
-            return Err(failure(
-                "INPUT_LIMIT",
-                "route",
-                "Route input is invalid or too large",
-            ));
-        }
-        validate_json(&input_json)?;
+        validate_input(generation, &input_json)?;
         let ticket = uuid::Uuid::new_v4().to_string();
         let job = HostRouteJob030 {
             ticket: ticket.clone(),
@@ -138,6 +133,66 @@ impl RouteBroker030 {
         }
     }
 
+    pub(crate) async fn evaluate_native(
+        &self,
+        expected_generation: &str,
+        generation: &str,
+        input_json: String,
+        cancel: &CancellationToken,
+    ) -> Result<String> {
+        validate_input(generation, &input_json)?;
+        if expected_generation != generation {
+            return Err(failure(
+                "CORRELATION",
+                "route",
+                "Route host generation differs",
+            ));
+        }
+        if self.queue.lock().expect("route mailbox").closed {
+            return Err(failure(
+                "RUNTIME_UNAVAILABLE",
+                "route",
+                "Native calculation could not produce a result",
+            ));
+        }
+        let job = HostRouteJob030 {
+            ticket: uuid::Uuid::new_v4().to_string(),
+            generation: generation.into(),
+            input_digest: format!("sha256:{:x}", Sha256::digest(input_json.as_bytes())),
+            input_json,
+        };
+        let raw_job = serde_json::to_string(&job)?;
+        let raw = self
+            .native
+            .run(
+                failure(
+                    "RUNTIME_UNAVAILABLE",
+                    "route",
+                    "Route host is unavailable or busy",
+                ),
+                failure("INTERRUPTED", "route", "Route preparation was cancelled"),
+                cancel,
+                raw_job,
+                move || {
+                    crate::argentic_core::route::data::evaluate(
+                        &crate::argentic_core::native::Text::from(job.input_json),
+                        &crate::argentic_runtime::native_json::Decoder,
+                    )
+                    .map(|output| output.stringify())
+                    .map_err(|_| {
+                        failure(
+                            "RUNTIME_UNAVAILABLE",
+                            "route",
+                            "Native calculation could not produce a result",
+                        )
+                    })
+                },
+            )
+            .await?;
+        let output: HostRouteOutput030 = serde_json::from_str(&raw)?;
+        validate_output(&output)?;
+        response(output)
+    }
     pub(crate) async fn next(&self) -> Result<HostRouteJob030> {
         loop {
             let notified = self.available.notified();
@@ -162,23 +217,7 @@ impl RouteBroker030 {
     }
 
     pub(crate) fn complete(&self, generation: &str, result: HostRouteCompletion030) -> Result<()> {
-        match &result.output {
-            HostRouteOutput030::Ready { result_json } => {
-                if result_json.len() > MAX_BYTES {
-                    return Err(failure("INPUT_LIMIT", "route", "Route output is too large"));
-                }
-                validate_json(result_json)?;
-            }
-            HostRouteOutput030::Failed { code, pointer } => {
-                if code.len() > 128 || pointer.len() > 4096 {
-                    return Err(failure(
-                        "INPUT_LIMIT",
-                        "route",
-                        "Route failure is too large",
-                    ));
-                }
-            }
-        }
+        validate_output(&result.output)?;
         let mut queue = self.queue.lock().expect("route mailbox");
         if queue.closed {
             return Err(failure(
@@ -206,23 +245,58 @@ impl RouteBroker030 {
             .pending
             .remove(&result.ticket)
             .expect("pending route ticket");
-        let response = match result.output {
-            HostRouteOutput030::Ready { result_json } => Ok(result_json),
-            HostRouteOutput030::Failed { code, pointer } => {
-                let code = if matches!(code.as_str(), "CONTENT_UNAVAILABLE" | "CORRELATION") {
-                    code
-                } else {
-                    "ROUTE_PREPARATION_FAILED".into()
-                };
-                Err(failure(
-                    &code,
-                    &pointer,
-                    "Captured route could not be prepared",
-                ))
-            }
-        };
+        let response = response(result.output);
         let _ = pending.reply.send(response);
         Ok(())
+    }
+}
+
+fn validate_input(generation: &str, input_json: &str) -> Result<()> {
+    if generation.is_empty() || input_json.len() > MAX_BYTES {
+        return Err(failure(
+            "INPUT_LIMIT",
+            "route",
+            "Route input is invalid or too large",
+        ));
+    }
+    validate_json(&input_json)?;
+    Ok(())
+}
+fn validate_output(output: &HostRouteOutput030) -> Result<()> {
+    match output {
+        HostRouteOutput030::Ready { result_json } => {
+            if result_json.len() > MAX_BYTES {
+                return Err(failure("INPUT_LIMIT", "route", "Route output is too large"));
+            }
+            validate_json(result_json)?;
+        }
+        HostRouteOutput030::Failed { code, pointer } => {
+            if code.len() > 128 || pointer.len() > 4096 {
+                return Err(failure(
+                    "INPUT_LIMIT",
+                    "route",
+                    "Route failure is too large",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+fn response(output: HostRouteOutput030) -> Result<String> {
+    match output {
+        HostRouteOutput030::Ready { result_json } => Ok(result_json),
+        HostRouteOutput030::Failed { code, pointer } => {
+            let code = if matches!(code.as_str(), "CONTENT_UNAVAILABLE" | "CORRELATION") {
+                code
+            } else {
+                "ROUTE_PREPARATION_FAILED".into()
+            };
+            Err(failure(
+                &code,
+                &pointer,
+                "Captured route could not be prepared",
+            ))
+        }
     }
 }
 

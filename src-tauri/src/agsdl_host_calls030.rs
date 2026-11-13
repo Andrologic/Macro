@@ -1,6 +1,6 @@
 //! Native ownership and normalization of 0.3 calls.
-//! The resident normalizer receives only tickets derived from native captures
-//! and raw native receipts. These APIs are private, never model tools or IPC.
+//! The native normalizer receives only captured inputs and raw native receipts.
+//! These APIs are private, never model tools or IPC.
 use crate::agsdl_host_calls::Control;
 use crate::agsdl_host_route030::{HostRouteCompletion030, HostRouteJob030, RouteBroker030};
 use crate::db::agsdl_execution::{
@@ -184,21 +184,19 @@ pub(crate) enum CallPreparation030 {
 }
 struct NormalizedData030(protocol::CallResult030);
 
-/// Uses the existing ticket/generation/digest/issued-once mailbox discipline.
-/// The integrator may connect next/complete to a trusted resident worker only.
-/// Worker algorithm:
-/// - prepare: prepareCall030(stepJson, source)
-/// - normalize command: commandOutput030(prepared, receipt)
-/// - normalize MCP: mcpOutput030(receipt)
-/// Return ready.resultJson as {kind:"prepared",prepared} or
-/// {kind:"completed",outputJson}; ConformanceError as {kind:"failed",code}.
-/// The outer RouteBroker failure channel is a transport failure, not a call
-/// failure. A lost worker never authorizes another physical launch.
-#[derive(Default)]
-pub(crate) struct CallDataBroker030(Arc<RouteBroker030>);
+/// Pure data adapter. Production always uses the shared Rust evaluator; the
+/// legacy mailbox constructor exists only for transport-validation fixtures.
+/// Neither a data result nor a transport completion authorizes physical IO.
+pub(crate) struct CallDataBroker030(Arc<RouteBroker030>, Option<String>);
+#[cfg(test)]
+impl Default for CallDataBroker030 {
+    fn default() -> Self {
+        Self(Default::default(), None)
+    }
+}
 impl CallDataBroker030 {
-    pub(crate) fn from_native_route(broker: Arc<RouteBroker030>) -> Self {
-        Self(broker)
+    pub(crate) fn from_native_route(broker: Arc<RouteBroker030>, generation: String) -> Self {
+        Self(broker, Some(generation))
     }
     pub(crate) async fn next(&self) -> Result<HostRouteJob030> {
         self.0.next().await
@@ -210,6 +208,29 @@ impl CallDataBroker030 {
         self.0.close();
     }
 
+    async fn evaluate(
+        &self,
+        generation: &str,
+        input: String,
+        cancel: &CancellationToken,
+    ) -> Result<String> {
+        if let Some(expected) = &self.1 {
+            return self
+                .0
+                .evaluate_native(expected, generation, input, cancel)
+                .await;
+        }
+        #[cfg(test)]
+        {
+            return self.0.evaluate(generation, input, cancel).await;
+        }
+        #[cfg(not(test))]
+        Err(failure(
+            "RUNTIME_UNAVAILABLE",
+            "route",
+            "Native calculation could not produce a result",
+        ))
+    }
     async fn prepare(
         &self,
         attempt: &CallAttempt030,
@@ -221,7 +242,7 @@ impl CallDataBroker030 {
         let input = serde_json::json!({"operation":"prepare","call":attempt,
             "stepJson":attempt.declaration_json(),"source":source})
         .to_string();
-        let raw = self.0.evaluate(attempt.generation(), input, cancel).await?;
+        let raw = self.evaluate(attempt.generation(), input, cancel).await?;
         #[derive(Deserialize)]
         #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
         enum Reply {
@@ -283,7 +304,7 @@ impl CallDataBroker030 {
         let input = serde_json::json!({"operation":"normalize","call":attempt,
             "prepared":prepared,"receipt":receipt})
         .to_string();
-        let raw = self.0.evaluate(attempt.generation(), input, cancel).await?;
+        let raw = self.evaluate(attempt.generation(), input, cancel).await?;
         #[derive(Deserialize)]
         #[serde(
             tag = "kind",

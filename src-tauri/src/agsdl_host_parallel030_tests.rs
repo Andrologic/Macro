@@ -111,7 +111,6 @@ async fn exercise(
         Some(&capture.compiled_plan_json)
     )
     .is_none());
-    let pumps = f.pumps();
     let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let executors: Executors030 = Executors030 {
         agents: executor,
@@ -138,10 +137,7 @@ async fn exercise(
         result
     })
     .await;
-    for pump in pumps {
-        pump.abort();
-        let _ = pump.await;
-    }
+
     result.expect("parallel supervisor timed out").unwrap();
     let view = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
         .await

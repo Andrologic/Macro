@@ -1,33 +1,15 @@
-//! Production call adapter, real confined children, native supervisor and TS ports.
+//! Production call adapter, real confined children, native supervisor and Rust adapters.
 use super::*;
 
-async fn host_fixture(
-    document: Value,
-) -> (
-    Fixture,
-    Arc<tokio::sync::Mutex<BunHost>>,
-    tokio::task::JoinHandle<()>,
-    crate::ai::stream_tasks::StreamTasks,
-) {
+async fn host_fixture(document: Value) -> (Fixture, crate::ai::stream_tasks::StreamTasks) {
     host_fixture_with_entry(document, json!({})).await
 }
 async fn host_fixture_with_entry(
     document: Value,
     entry: Value,
-) -> (
-    Fixture,
-    Arc<tokio::sync::Mutex<BunHost>>,
-    tokio::task::JoinHandle<()>,
-    crate::ai::stream_tasks::StreamTasks,
-) {
-    let bun = Arc::new(tokio::sync::Mutex::new(BunHost::start()));
-    let f = Fixture::new(
-        &json!({"document":document,"entry":entry,"timeline":[]}).to_string(),
-        &mut *bun.lock().await,
-    )
-    .await;
-    let (wake, _) = watch::channel(0);
-    let pump = f.pump(bun.clone(), wake);
+) -> (Fixture, crate::ai::stream_tasks::StreamTasks) {
+    let f =
+        Fixture::new(&json!({"document":document,"entry":entry,"timeline":[]}).to_string()).await;
     let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let host = f.app.state::<HostState>();
     host.flow030()
@@ -83,13 +65,9 @@ async fn host_fixture_with_entry(
     )
     .unwrap();
     drop(host);
-    (f, bun, pump, tasks)
+    (f, tasks)
 }
-async fn finish(
-    f: &Fixture,
-    bun: Arc<tokio::sync::Mutex<BunHost>>,
-    pump: tokio::task::JoinHandle<()>,
-) -> crate::db::agsdl_execution::flow_store030::FlowView030 {
+async fn finish(f: &Fixture) -> crate::db::agsdl_execution::flow_store030::FlowView030 {
     let host = f.app.state::<HostState>();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(25),
@@ -103,14 +81,6 @@ async fn finish(
         .flow030()
         .supervisors
         .wait(&f.owner.system_start_id)
-        .await;
-    pump.abort();
-    let _ = pump.await;
-    Arc::try_unwrap(bun)
-        .ok()
-        .unwrap()
-        .into_inner()
-        .close()
         .await;
     assert!(result.is_ok(), "Native call did not terminate");
     cleanup.unwrap();
@@ -175,9 +145,9 @@ async fn native_commands_normalize_and_route_without_git_or_agents() {
             json!({"outcome":"passed","data":{"exitCode":0,"output":"a\n\nb\r\n","value":["a","b"]}}),
         ),
     ] {
-        let (f, bun, pump, _) = host_fixture(document(step)).await;
+        let (f, _) = host_fixture(document(step)).await;
         assert!(!f._temp.path().join("workspace/.git").exists());
-        let view = finish(&f, bun, pump).await;
+        let view = finish(&f).await;
         assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
         let output: Value = serde_json::from_str(
             serde_json::to_value(&view.state.activations[0].result).unwrap()["outputJson"]
@@ -191,8 +161,8 @@ async fn native_commands_normalize_and_route_without_git_or_agents() {
         json!({"type":"call","command":"printf invalid; exit 3","parse":"json","onError":"recover"}),
     );
     doc["flow"]["steps"]["recover"] = json!({"type":"call","command":"printf recovered"});
-    let (f, bun, pump, _) = host_fixture(doc).await;
-    let view = finish(&f, bun, pump).await;
+    let (f, _) = host_fixture(doc).await;
+    let view = finish(&f).await;
     assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
     assert!(
         matches!(&view.state.activations[0].result, Some(WorkResultRecord030::Failed { error }) if error.code == "OUTPUT_INVALID")
@@ -202,8 +172,8 @@ async fn native_commands_normalize_and_route_without_git_or_agents() {
         json!({"type":"call","command":"printf '\\377'","parse":"json","onError":"recover"}),
     );
     doc["flow"]["steps"]["recover"] = json!({"type":"call","command":"true"});
-    let (f, bun, pump, _) = host_fixture(doc).await;
-    let view = finish(&f, bun, pump).await;
+    let (f, _) = host_fixture(doc).await;
+    let view = finish(&f).await;
     assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
     assert!(
         matches!(&view.state.activations[0].result, Some(WorkResultRecord030::Failed { error }) if error.code == "OUTPUT_INVALID")
@@ -233,7 +203,7 @@ async fn native_mcp_stop_joins_real_server_and_child() {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 async fn stop_and_assert(mut doc: Value) {
     doc["flow"]["steps"]["after"] = json!({"type":"call","command":"printf forbidden > successor"});
-    let (f, bun, pump, tasks) = host_fixture(doc).await;
+    let (f, tasks) = host_fixture(doc).await;
     let path = f._temp.path().join("workspace/pids");
     let observed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
@@ -265,7 +235,7 @@ async fn stop_and_assert(mut doc: Value) {
     .unwrap();
     drop(host);
     let pids = observed.expect("Confined command did not start");
-    let view = finish(&f, bun, pump).await;
+    let view = finish(&f).await;
     assert_eq!(view.state.verdict.as_deref(), Some("cancelled"));
     assert_eq!(view.state.activations.len(), 1);
     assert!(!f._temp.path().join("workspace/successor").exists());
@@ -289,8 +259,8 @@ async fn native_stdio_mcp_preserves_structured_error_result_and_operands() {
     );
     doc["mcpServers"] = json!({"local":{"command":["/bin/sh","-c",server]}});
     doc["flow"]["steps"]["after"] = json!({"type":"call","command":"printf after"});
-    let (f, bun, pump, _) = host_fixture(doc).await;
-    let view = finish(&f, bun, pump).await;
+    let (f, _) = host_fixture(doc).await;
+    let view = finish(&f).await;
     assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
     assert_eq!(view.state.activations.len(), 2);
     assert_eq!(
@@ -334,10 +304,10 @@ async fn native_mcp_operand_failure_routes_without_launching_server() {
     doc["mcpServers"] =
         json!({"local":{"command":["/bin/sh","-c","printf forbidden > server-started"]}});
     doc["flow"]["steps"]["recover"] = json!({"type":"call","command":"printf recovered"});
-    let (f, bun, pump, _) = host_fixture(doc).await;
+    let (f, _) = host_fixture(doc).await;
     let workspace = f._temp.path().join("workspace");
     let server_started = workspace.join("server-started");
-    let view = finish(&f, bun, pump).await;
+    let view = finish(&f).await;
     assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
     assert!(
         matches!(&view.state.activations[0].result, Some(WorkResultRecord030::Failed { error }) if error.code == "OPERAND")
@@ -354,7 +324,7 @@ async fn native_command_deadline_waits_for_the_real_child_before_routing_timeout
     );
     doc["flow"]["steps"]["recover"] =
         json!({"type":"call","command":"test ! -e timeout-forbidden; printf recovered"});
-    let (f, bun, pump, _) = host_fixture(doc).await;
+    let (f, _) = host_fixture(doc).await;
     let file = f._temp.path().join("workspace/timeout-child");
     let pid = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
@@ -368,7 +338,7 @@ async fn native_command_deadline_waits_for_the_real_child_before_routing_timeout
     })
     .await
     .unwrap();
-    let view = finish(&f, bun, pump).await;
+    let view = finish(&f).await;
     assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
     assert!(
         matches!(&view.state.activations[0].result,Some(WorkResultRecord030::Failed{error}) if error.code=="TIMEOUT")
@@ -392,7 +362,7 @@ async fn native_mcp_question_answers_and_expires_while_machine_time_is_paused() 
         }
         let mut doc = document(step);
         doc["mcpServers"] = json!({"local":{"command":["/bin/sh","-c",server]}});
-        let (f, bun, pump, _) = host_fixture(doc).await;
+        let (f, _) = host_fixture(doc).await;
         let scope = crate::db::agsdl_execution::public030::HumanScope030 {
             system_start_id: f.identity.system_start_id.clone(),
             source: serde_json::from_value(f.plan.source.clone()).unwrap(),
@@ -424,7 +394,7 @@ async fn native_mcp_question_answers_and_expires_while_machine_time_is_paused() 
             broker.submit(&host,crate::agsdl_host_human030::HumanSubmission030 {scope:scope.clone(),request_id:page.requests[0].id.clone(),expected_revision:"0".into(),answer:crate::agsdl_host_human030::HumanAnswer030::Question {answer_json:r#"{"action":"accept","content":{"text":"Écrit par une personne."}}"#.into()}},crate::agsdl_host_human030::HumanOrigin030::Person).await.unwrap();
             broker.pump(&host, &CancellationToken::new()).await.unwrap();
         }
-        let view = finish(&f, bun, pump).await;
+        let view = finish(&f).await;
         assert_eq!(
             view.state.verdict.as_deref(),
             Some("succeeded"),
@@ -446,8 +416,8 @@ async fn nested_composition_call_outputs_use_the_actual_joined_call_owner() {
         "second":{"type":"compose","composition":"outer","next":{"done":"after"}},
         "after":{"type":"call","command":"printf after"}
     }}});
-    let (f, bun, pump, _) = host_fixture(doc).await;
-    let view = finish(&f, bun, pump).await;
+    let (f, _) = host_fixture(doc).await;
+    let view = finish(&f).await;
     assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
     let calls = view
         .state
@@ -471,7 +441,7 @@ async fn nested_entry_approval_keeps_host_prompt_provenance_through_its_output()
         "outer":{"type":"compose","composition":"outer","next":{"done":"after"}},
         "after":{"type":"call","command":"printf after"}
     }}});
-    let (f, bun, pump, _) = host_fixture_with_entry(doc, json!({"prompt":"Synthetic entry"})).await;
+    let (f, _) = host_fixture_with_entry(doc, json!({"prompt":"Synthetic entry"})).await;
     let scope = crate::db::agsdl_execution::public030::HumanScope030 {
         system_start_id: f.identity.system_start_id.clone(),
         source: serde_json::from_value(f.plan.source.clone()).unwrap(),
@@ -517,7 +487,7 @@ async fn nested_entry_approval_keeps_host_prompt_provenance_through_its_output()
         broker.pump(&host, &CancellationToken::new()).await.unwrap();
     }
     drop(host);
-    let view = finish(&f, bun, pump).await;
+    let view = finish(&f).await;
     assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
     let approval = view
         .state

@@ -365,7 +365,6 @@ async fn run_with_clock(
         Some(&capture.compiled_plan_json),
     )
     .is_none());
-    let pumps = f.pumps();
     let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let executors: Executors030 = Executors030 {
         agents: executor,
@@ -390,10 +389,7 @@ async fn run_with_clock(
         ),
     )
     .await;
-    for pump in pumps {
-        pump.abort();
-        assert!(pump.await.unwrap_err().is_cancelled());
-    }
+
     result.expect("Codex supervisor timed out").unwrap();
     let view = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
         .await

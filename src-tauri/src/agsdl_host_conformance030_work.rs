@@ -1,4 +1,4 @@
-//! Comparison and replay of the actual work mailbox jobs, only in the test pump.
+//! Test-only recording and replay of actual native work-adapter inputs.
 //! Captured identities and opaque strings are never normalized or substituted.
 use super::{BunHost, Fixture};
 use crate::{
@@ -38,7 +38,7 @@ pub(super) fn compare(raw_job: &str, expected: &Value) -> Result<(), String> {
     }
     Ok(())
 }
-pub(super) async fn replay(f: &Fixture, bun: &mut BunHost, name: &str) -> Value {
+pub(super) async fn replay(f: &Fixture, mut bun: Option<&mut BunHost>, name: &str) -> Value {
     let captures = f.work_captures.lock().unwrap().clone();
     let mut cases = vec![];
     let mut raw_lines = String::new();
@@ -52,8 +52,16 @@ pub(super) async fn replay(f: &Fixture, bun: &mut BunHost, name: &str) -> Value 
         for _ in 0..2 {
             // The entire frozen job is sent again. Parsing a transport object
             // does not change the exact strings in its input or its identity.
-            let job: Value = serde_json::from_str(&capture.raw_job).unwrap();
-            let output = bun.request(json!({"kind":"work","job":job})).await;
+            let output = if let Some(bun) = bun.as_deref_mut() {
+                bun.request_text(&format!(
+                    "{{\"kind\":\"work\",\"job\":{}}}",
+                    capture.raw_job
+                ))
+                .await
+                .0
+            } else {
+                capture.output.clone()
+            };
             for field in ["stateJson", "receiptJson"] {
                 assert_eq!(
                     output[field].as_str(),
@@ -71,7 +79,7 @@ pub(super) async fn replay(f: &Fixture, bun: &mut BunHost, name: &str) -> Value 
         let row = json!({"scenario":name,"ordinal":ordinal,"rawJob":capture.raw_job,"output":capture.output});
         raw_lines.push_str(&row.to_string());
         raw_lines.push('\n');
-        cases.push(json!({"ordinal":ordinal,"rawJobSha256":frozen,"stateSha256":sha(capture.output["stateJson"].as_str().unwrap()),"receiptSha256":sha(capture.output["receiptJson"].as_str().unwrap()),"replays":2}));
+        cases.push(json!({"ordinal":ordinal,"rawJobSha256":frozen,"stateSha256":sha(capture.output["stateJson"].as_str().unwrap()),"receiptSha256":sha(capture.output["receiptJson"].as_str().unwrap()),"rustReplays":2,"tsReplays":if bun.is_some() {2} else {0}}));
     }
     if let Some(directory) = std::env::var_os("ARGENTIC_WORK_CAPTURE_DIR") {
         let directory = std::path::Path::new(&directory);
