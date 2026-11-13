@@ -1191,7 +1191,7 @@ async fn mcp_operand_failure_is_durable_before_handoff_and_selects_on_error() {
 #[test]
 fn joined_witness_struct_literal_is_rejected_by_the_rust_compiler() {
     // Compile the actual sealed module, not a copy of its field definitions.
-    // Production-only dependencies are absent in this small privacy harness;
+    // Dependencies unrelated to field privacy use small stand-ins below;
     // the QA-only join impl is cfg-disabled. A positive control prevents a
     // missing import/syntax error from making the negative case pass by chance.
     let source = include_str!("agsdl_host_calls030.rs");
@@ -1201,7 +1201,22 @@ fn joined_witness_struct_literal_is_rejected_by_the_rust_compiler() {
         .unwrap()
         + "pub(crate) use joined::JoinedCall030;".len();
     let actual = &source[start..end];
-    let prefix = "#![allow(dead_code)]\n#[derive(Debug)] struct CallAttempt030;\n#[derive(Debug)] struct CancellationToken; impl CancellationToken { async fn cancelled(&self){} }\nmod protocol { #[derive(Debug)] pub enum CallEnd030 { Stopped } }\nmod owner { use super::{CallAttempt030,protocol,CancellationToken};\n";
+    let prefix = r#"#![allow(dead_code)]
+extern crate self as uuid;
+struct Uuid;
+impl Uuid { fn new_v4() -> Self { Self } }
+impl std::fmt::Display for Uuid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("synthetic-receipt")
+    }
+}
+#[derive(Debug)] struct CallAttempt030;
+#[derive(Debug)] struct CancellationToken;
+impl CancellationToken { async fn cancelled(&self){} }
+struct Control { stop: CancellationToken, machine_timeout: CancellationToken }
+mod protocol { #[derive(Debug)] pub enum CallEnd030 { Stopped } }
+mod owner { use super::{CallAttempt030,protocol,CancellationToken,Control};
+"#;
     let control = "}\nfn inspect(w: &owner::JoinedCall030) { let _=(w.attempt(),w.end(),w.receipt_id()); }\nfn main(){}\n";
     let attack = "}\nfn main(){ let _=owner::JoinedCall030 { attempt:CallAttempt030,end:protocol::CallEnd030::Stopped,receipt_id:String::from(\"forged\"),stop:CancellationToken,timeout:CancellationToken }; }\n";
     let tmp = tempfile::TempDir::new().unwrap();
