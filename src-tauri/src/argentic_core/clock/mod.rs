@@ -156,6 +156,24 @@ fn owner(value: &Value) -> Result<Value> {
         ("ownerEpoch", id(value.get("ownerEpoch"))?),
     ]))
 }
+// Preserve the value of a non-callable JSON property in the native diagnostic.
+fn not_callable<T>(expression: &str, call: &str, value: &Value) -> Result<T> {
+    let mut message = Text::from(format!(
+        "{expression} is not a function. (In '{call}', '{expression}' is "
+    ));
+    match value {
+        Value::Array(_) => message.push(&Text::from("an instance of Array")),
+        Value::Object(_) => message.push(&Text::from("an instance of Object")),
+        Value::String(text) => {
+            message.push(&Text::from("\""));
+            message.push(text);
+            message.push(&Text::from("\""));
+        }
+        _ => message.push(&native_string(value)),
+    }
+    message.push(&Text::from(")"));
+    exception("TypeError", message)
+}
 /// Exact/visible MCP attribution, retaining the input work order and uniqueness.
 pub(crate) fn associate_mcp_request(
     server: &Value,
@@ -164,7 +182,11 @@ pub(crate) fn associate_mcp_request(
 ) -> Result<Value> {
     access(works, "works.filter")?;
     let Some(works) = works.array() else {
-        return exception("TypeError", "works.filter is not a function. (In 'works.filter((work) => callsObservable ? work.callsInProgress.includes(serverId) : work.servers.includes(serverId))', 'works.filter' is undefined)");
+        return not_callable(
+            "works.filter",
+            "works.filter((work) => callsObservable ? work.callsInProgress.includes(serverId) : work.servers.includes(serverId))",
+            works.get("filter"),
+        );
     };
     let mut result = vec![];
     for work in works {
@@ -186,7 +208,11 @@ pub(crate) fn associate_mcp_request(
                     .windows(needle.units().len())
                     .any(|w| w == needle.units())
         } else {
-            return exception("TypeError", format!("work.{field}.includes is not a function. (In 'work.{field}.includes(serverId)', 'work.{field}.includes' is undefined)"));
+            return not_callable(
+                &format!("work.{field}.includes"),
+                &format!("work.{field}.includes(serverId)"),
+                collection.get("includes"),
+            );
         };
         if included && !contains(&result, work.get("workId")) {
             result.push(work.get("workId").clone());

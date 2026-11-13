@@ -5,12 +5,14 @@ type Input = Record<string, unknown>;
 const owner = { systemStartId: 'run', ownerEpoch: 'epoch' };
 const options = { maxSliceMs: 1000 };
 export const CLOCK_SEED030 = 'clock-030-20261113-v1';
-export const CLOCK_MINIMUMS030 = { host: 130, journal: 200, validation: 360, clock: 60, registry: 85, association: 20, native: 35, generated: 128 };
+export const CLOCK_MINIMUMS030 = { host: 130, journal: 200, validation: 360, clock: 60, registry: 85, association: 20, native: 35, generated: 128, 'association-method': 88 };
 export function buildClockCorpus030() {
   const cases: { id: string; family: string; request: ClockRequest030 }[] = [];
   const seen = new Set<string>();
-  const add = (family: string, op: string, input: unknown) => {
-    const request = { op, json: JSON.stringify(input) };
+  const add = (family: string, op: string, input: unknown, raw?: readonly [string, string]) => {
+    let json = JSON.stringify(input);
+    if (raw) json = json.replaceAll(JSON.stringify(raw[0]), raw[1]);
+    const request = { op, json };
     const signature = JSON.stringify(request);
     if (seen.has(signature)) return;
     seen.add(signature); cases.push({ id: `clock-${cases.length}`, family, request });
@@ -130,5 +132,21 @@ export function buildClockCorpus030() {
     const end = String(BigInt(start) + BigInt(n + 1));
     clocks('generated', `${1 + random % 10000}e${n % 7}`, start, [{ op: 'advance', nowMs: end }, { op: 'wake', maxSliceMs: 1 + random % 2147483647 }]);
   }
+  // Non-callable own method values retain their category and raw UTF-16 text.
+  const methodValues: unknown[] = [null, false, true, 0, 1, -1, 1.5, '', 's', 'x', '\n\r\t\u0000\u0001\u001b\u007f"\\', '\ud800', '\udc00', '𝄞\u2028\u2029', [], [null], {}, { toString: 0 }, { constructor: { name: 'Different' } }];
+  const methodInput = (target: string, value: unknown) => ({ serverId: 's', callsObservable: target === 'callsInProgress', works: target === 'filter' ? { filter: value } : [{ workId: 'w', [target]: { includes: value } }] });
+  for (const target of ['filter', 'servers', 'callsInProgress']) {
+    for (const value of methodValues) add('association-method', 'associate', methodInput(target, value));
+    for (const token of ['-0', '1e400', '-1e400', '1e21', '1e-7', '1e-400', '9007199254740993']) add('association-method', 'associate', methodInput(target, '$nativeMethod'), ['$nativeMethod', token]);
+    add('association-method', 'associate', { serverId: { toString: 0 }, callsObservable: target === 'callsInProgress', works: target === 'filter' ? {} : [{ workId: 'w', [target]: {} }] });
+  }
+  for (const text of ['a'.repeat(250), 'x'.repeat(1000), 'quote"line\nend', '\u2028\u2029\ufeff']) add('association-method', 'associate', methodInput('servers', text));
+  for (const input of [
+    { serverId: 's', callsObservable: false, works: [] },
+    { serverId: 's', callsObservable: false, works: [{ workId: 'w', servers: ['s'] }, { workId: 'w', servers: ['s'] }] },
+    { serverId: 's', callsObservable: false, works: [{ workId: 'w', servers: 'server' }] },
+    { serverId: 's', callsObservable: true, works: [{ workId: 'w', callsInProgress: ['s'], servers: { includes: null } }] },
+    { serverId: 's', callsObservable: false, works: [{ workId: 'w', callsInProgress: { includes: null }, servers: ['s'] }] },
+  ]) add('association-method', 'associate', input);
   return { seed: CLOCK_SEED030, minimums: CLOCK_MINIMUMS030, cases };
 }
