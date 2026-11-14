@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 pub(crate) const ADAPTER: &str = "codex-app-server-v1";
 pub(crate) const VERSION: &str = "0.167.0";
 pub(crate) const PROVIDER: &str = "codex-native";
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CodexStatus {
     pub available: bool,

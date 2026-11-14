@@ -342,7 +342,7 @@
         "execution"
       ],
       "name": "CodexStatus",
-      "origin": "macro_lib::agsdl_host_codex::profile::CodexStatus",
+      "origin": "macro_lib::agsdl_host_codex_adapter::CodexStatus",
       "path": "CodexStatus.ts"
     },
     {

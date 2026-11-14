@@ -275,18 +275,9 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
     request: &EngineStartRequest,
     link: Option<&IntentAdmissionLink>,
 ) -> Result<RetainedStart030> {
-    let _start = runtime.start_admission.read().await;
+    let _start = runtime.start_admission_guard().await;
     let lease = host.start_lease().await?;
-    if runtime
-        .shutdown_started
-        .load(std::sync::atomic::Ordering::SeqCst)
-    {
-        return Err(failure(
-            "SHUTDOWN_PENDING",
-            "",
-            "Application shutdown has begun",
-        ));
-    }
+    runtime.ensure_accepting_starts()?;
     let authority = Start {
         runtime,
         host,
@@ -313,16 +304,14 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
                 } else {
                     Ok(())
                 };
-                runtime.supervisors.fail_reservation(&system, error.clone());
+                runtime.fail_start_reservation(&system, error.clone());
                 interruption?;
             }
             return Err(error);
         }
     };
     if lease.ensure_live().is_err() {
-        runtime
-            .supervisors
-            .fail_reservation(&result.receipt.identity.system_start_id, uncertain());
+        runtime.fail_start_reservation(&result.receipt.identity.system_start_id, uncertain());
         return Err(uncertain());
     }
     let created_here = authority
@@ -427,9 +416,10 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
             if let Err(error) = attachment {
                 let interruption =
                     interrupt_run030(pool, &result.receipt.identity.system_start_id).await;
-                runtime
-                    .supervisors
-                    .fail_reservation(&result.receipt.identity.system_start_id, error.clone());
+                runtime.fail_start_reservation(
+                    &result.receipt.identity.system_start_id,
+                    error.clone(),
+                );
                 interruption?;
                 return Err(error);
             }

@@ -7,7 +7,7 @@ pub mod execution {
         NativeModelCatalogue, NativeModelChoice, NativeModelEdition, UnavailableProvider,
     };
     pub use crate::agsdl_host_claude::ClaudeStatus;
-    pub use crate::agsdl_host_codex::CodexStatus;
+    pub use crate::agsdl_host_codex_adapter::CodexStatus;
     pub use crate::agsdl_host_flow030::{DeliveryReceipt030, DeliveryRequest030};
     pub use crate::agsdl_host_projection030::{
         RuntimeProjectionContinuation030, RuntimeProjectionItem030, RuntimeProjectionPage030,

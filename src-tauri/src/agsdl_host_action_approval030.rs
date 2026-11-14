@@ -30,7 +30,7 @@ impl<R: tauri::Runtime> crate::agsdl_host_codex030::approvals::CommandApprovals0
             let host = self.app.state::<HostState>();
             let broker = host
                 .flow030()
-                .humans
+                .human_runtime()
                 .broker(&host, &self.pool, attempt.identity())
                 .await?;
             payload["title"] = payload["nativeRequest"]["params"]["reason"].clone();
@@ -49,7 +49,7 @@ impl<R: tauri::Runtime> crate::agsdl_host_codex030::approvals::CommandApprovals0
                 (work, ticket)
             };
             host.flow030()
-                .supervisors
+                .supervisor_registry()
                 .wake(&attempt.identity().system_start_id);
             while !broker.resolution_ready(&ticket).await? {
                 tokio::select! {

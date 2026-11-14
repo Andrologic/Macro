@@ -67,13 +67,11 @@
       "src-tauri/src/agsdl_host_codex/mod.rs": {
         "crate:config": 1,
         "crate:core": 3,
-        "crate:db": 1,
-        "token:tauri": 2
+        "crate:db": 1
       },
       "src-tauri/src/agsdl_host_codex/profile.rs": {
         "crate:core": 1,
-        "crate:db": 2,
-        "token:ts_rs": 1
+        "crate:db": 2
       },
       "src-tauri/src/agsdl_host_codex/protocol.rs": {
         "crate:db": 1

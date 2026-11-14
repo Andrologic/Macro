@@ -80,7 +80,7 @@ pub(crate) async fn choices(
     pool: &SqlitePool,
 ) -> Result<NativeModelCatalogue> {
     let mut catalogue = capture(manager, pool).await?.catalogue;
-    let status = crate::agsdl_host_codex::profile_status(manager).await;
+    let status = crate::agsdl_host_codex::profile_status(&manager.engine_context()).await;
     if status.available {
         // Model discovery uses its own empty scope; execution requalifies the
         // actual captured workspace and account before admitting native work.
@@ -92,8 +92,12 @@ pub(crate) async fn choices(
                 "Cannot create native model discovery scope",
             )
         })?;
-        match crate::agsdl_host_codex::observe(manager, &serde_json::json!({"root":root}), true)
-            .await
+        match crate::agsdl_host_codex::observe(
+            &manager.engine_context(),
+            &serde_json::json!({"root":root}),
+            true,
+        )
+        .await
         {
             Ok(Some((_, models, _))) => {
                 for model in models {

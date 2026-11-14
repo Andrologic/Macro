@@ -112,7 +112,7 @@ pub async fn execution_stop<R: tauri::Runtime>(
             )
             .await?;
             host.flow030()
-                .supervisors
+                .supervisor_registry()
                 .wait(&request.system_start_id)
                 .await?;
             Ok(result)
@@ -166,9 +166,11 @@ pub async fn execution_ensure_stop<R: tauri::Runtime>(
                 &request.system_start_id,
             )
             .await?;
-            host.flow030().supervisors.wake(&request.system_start_id);
             host.flow030()
-                .supervisors
+                .supervisor_registry()
+                .wake(&request.system_start_id);
+            host.flow030()
+                .supervisor_registry()
                 .wait(&request.system_start_id)
                 .await?;
             return Ok(result);
@@ -536,7 +538,7 @@ pub async fn execution_submit_human030(
             crate::agsdl_host_flow030::inspect_run(host.flow030(), &host, &pool, &owner).await?;
         let broker = host
             .flow030()
-            .humans
+            .human_runtime()
             .broker(&host, &pool, &inspection.capture.identity)
             .await?;
         let _operation = broker.operation.lock().await;
@@ -550,7 +552,9 @@ pub async fn execution_submit_human030(
         broker
             .pump(&host, &tokio_util::sync::CancellationToken::new())
             .await?;
-        host.flow030().supervisors.wake(&owner.system_start_id);
+        host.flow030()
+            .supervisor_registry()
+            .wake(&owner.system_start_id);
         Ok(receipt)
     })
     .await

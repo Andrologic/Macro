@@ -1,3 +1,5 @@
+mod agsdl_host_qualification030;
+mod agsdl_host_codex_adapter;
 mod agsdl_host_start_adapter030;
 mod agsdl_host_action_approval030;
 mod agsdl_host_clock030;
@@ -944,7 +946,7 @@ pub fn run() {
             commands::db_update_conversation_ai_selection,
             commands::db_delete_conversation_by_id,
             commands::db_delete_conversations_by_ids,
-            agsdl_host_codex::execution_codex_status,
+            agsdl_host_codex_adapter::execution_codex_status,
             agsdl_host_claude::execution_claude_status,
             agsdl_host_claude::execution_claude_set_api_key,
             commands::agsdl_execution::execution_model_choices,

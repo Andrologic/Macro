@@ -102,7 +102,7 @@ impl CallAuthority030 for NativeCallAuthority030<'_> {
             }
             let step: serde_json::Value = serde_json::from_str(declaration)?;
             let document: serde_json::Value = serde_json::from_str(&capture.authored_source)?;
-            if crate::agsdl_host_capture::product_slice030(
+            if crate::agsdl_host_qualification030::product_slice030(
                 &capture.authored_source,
                 Some(&capture.compiled_plan_json),
             )

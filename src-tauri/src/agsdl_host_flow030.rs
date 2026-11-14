@@ -21,13 +21,13 @@ use crate::db::agsdl_execution::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::OwnedMutexGuard;
 use sqlx::{Connection, Row, SqliteConnection, SqlitePool};
 use std::{
     collections::BTreeMap,
     future::Future,
     sync::{Arc, Mutex},
 };
+use tokio::sync::OwnedMutexGuard;
 
 /// Process-local exclusion for a Start whose COMMIT has not been acknowledged.
 /// A missing response never authorizes a second physical effect.
@@ -976,6 +976,35 @@ mod no_admission_tests;
 mod steer_tests;
 
 impl FlowHost030 {
+    pub(crate) async fn start_admission_guard(&self) -> tokio::sync::RwLockReadGuard<'_, ()> {
+        self.start_admission.read().await
+    }
+    pub(crate) fn ensure_accepting_starts(&self) -> Result<()> {
+        if self
+            .shutdown_started
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(failure(
+                "SHUTDOWN_PENDING",
+                "",
+                "Application shutdown has begun",
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) fn fail_start_reservation(
+        &self,
+        system: &str,
+        error: repository::dto::EngineFailure,
+    ) {
+        self.supervisors.fail_reservation(system, error);
+    }
+    pub(crate) fn human_runtime(&self) -> &crate::agsdl_host_human030::HumanRuntime030 {
+        &self.humans
+    }
+    pub(crate) fn supervisor_registry(&self) -> &crate::agsdl_host_runtime030::RuntimeRegistry030 {
+        &self.supervisors
+    }
     pub(crate) fn require_start_clear(&self, request: &EngineStartRequest) -> Result<()> {
         if self
             .committing

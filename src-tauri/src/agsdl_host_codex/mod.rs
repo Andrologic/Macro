@@ -2,6 +2,8 @@
 //! private references, response validation, terminal transactions and physical end.
 pub(crate) mod profile;
 pub(crate) mod protocol;
+use crate::agsdl_runtime_adapter::HostContext;
+#[cfg(test)]
 use crate::config::ConfigManager;
 use crate::core::process::ContainedBackgroundProcess;
 use crate::db::agsdl_execution::{dto::*, failure, Result};
@@ -11,24 +13,16 @@ use profile::VERSION;
 pub(crate) use profile::{Profile, ADAPTER};
 use protocol::Client;
 use serde_json::{json, Value};
-use tauri::State;
-
-#[tauri::command]
-pub(crate) async fn execution_codex_status(
-    manager: State<'_, ConfigManager>,
-) -> Result<CodexStatus> {
-    Ok(profile_status(&manager).await)
-}
 
 /// Diagnose the host and native-tool composition before requesting a login.
 /// This scope contains no user source and never creates a model thread.
-pub(crate) async fn profile_status(manager: &ConfigManager) -> CodexStatus {
-    let mut status = profile::status(&manager.engine_context()).await;
+pub(crate) async fn profile_status(manager: &HostContext) -> CodexStatus {
+    let mut status = profile::status(manager).await;
     if status.version.is_none() || status.code == "CODEX_PLATFORM_UNQUALIFIED" {
         return status;
     }
     let result: Result<()> = async {
-        let profile = profile::prepare(&manager.engine_context())?;
+        let profile = profile::prepare(manager)?;
         let root = manager.root().join("native-discovery").join("codex");
         std::fs::create_dir_all(&root)
             .map_err(|_| failure("STORAGE", "scope", "Cannot create native diagnostic scope"))?;
@@ -113,7 +107,7 @@ pub(crate) struct CodexObservation030 {
 /// Preflight never reads credentials. Until a dedicated test login and native
 /// qualification exist, no Codex attestation or executable model is published.
 pub(crate) async fn observe(
-    manager: &ConfigManager,
+    manager: &HostContext,
     scope: &Value,
     read_only: bool,
 ) -> Result<Option<(Profile, Vec<String>, String)>> {
@@ -133,11 +127,11 @@ pub(crate) async fn observe(
 }
 
 pub(crate) async fn observe_catalogue030(
-    manager: &ConfigManager,
+    manager: &HostContext,
     scope: &Value,
     read_only: bool,
 ) -> Result<Option<CodexObservation030>> {
-    let status = profile::status(&manager.engine_context()).await;
+    let status = profile::status(manager).await;
     if !status.available {
         return Ok(None);
     }
@@ -148,7 +142,7 @@ pub(crate) async fn observe_catalogue030(
             "Codex version is absent",
         )
     })?;
-    let profile = profile::prepare(&manager.engine_context())?;
+    let profile = profile::prepare(manager)?;
     let root = std::path::PathBuf::from(
         scope
             .get("root")
