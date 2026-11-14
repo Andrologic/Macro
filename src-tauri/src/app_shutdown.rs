@@ -5,6 +5,13 @@ use tauri::{Manager, WebviewWindow};
 
 static PREPARE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ShutdownFailure {
+    code: String,
+    shutdown_started: bool,
+}
+
 pub(crate) struct Phase {
     name: &'static str,
     started: Instant,
@@ -83,8 +90,12 @@ pub(crate) async fn app_shutdown_active_runs(window: WebviewWindow) -> Result<Ve
 pub(crate) async fn app_shutdown_prepare(
     window: WebviewWindow,
     approved_runs: Vec<String>,
-) -> Result<(), String> {
-    require_main(&window)?;
+) -> Result<(), ShutdownFailure> {
+    let host = window.state::<HostState>();
+    require_main(&window).map_err(|code| ShutdownFailure {
+        code,
+        shutdown_started: host.shutdown_started(),
+    })?;
     let _prepare = PREPARE.lock().await;
     let phase = Phase::begin("native_execution_retirement");
     let result = async {
@@ -93,7 +104,6 @@ pub(crate) async fn app_shutdown_prepare(
             .wait_until_ready()
             .await
             .map_err(|_| "APP_SHUTDOWN_UNAVAILABLE".to_string())?;
-        let host = window.state::<HostState>();
         let ai = window.state::<AiState>();
         // The deadline bounds the caller only. Supervisors and physical owners
         // remain retained; an incomplete attempt can be retried through Quit.
@@ -107,5 +117,8 @@ pub(crate) async fn app_shutdown_prepare(
     }
     .await;
     phase.finish(result.is_ok());
-    result
+    result.map_err(|code| ShutdownFailure {
+        code,
+        shutdown_started: host.shutdown_started(),
+    })
 }

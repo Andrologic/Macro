@@ -146,7 +146,9 @@
     "closeAction": "Macro を閉じる",
     "keepWorking": "作業を続ける",
     "closeFailed": "Macro を閉じられませんでした",
-    "closeFailedDescription": "作業内容は保持されています。もう一度 Macro を終了してください。",
+    "closeFailedDescription": "Macro はまだ開いています。もう一度閉じてください。",
+    "retirementPending": "タスクの停止が始まりました。終了は完了していません。もう一度 Macro を終了してください。",
+    "retry": "再試行",
     "closing": "Macro を終了しています。"
   },
   "releaseNotes": {

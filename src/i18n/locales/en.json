@@ -146,7 +146,9 @@
     "closeAction": "Close Macro",
     "keepWorking": "Keep working",
     "closeFailed": "Macro could not close",
-    "closeFailedDescription": "Your work was kept. Try closing Macro again.",
+    "closeFailedDescription": "Macro is still open. Try closing it again.",
+    "retirementPending": "Task shutdown has begun. Closing is incomplete. Try closing Macro again.",
+    "retry": "Retry",
     "closing": "Macro is closing."
   },
   "releaseNotes": {

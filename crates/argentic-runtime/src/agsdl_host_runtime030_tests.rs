@@ -910,6 +910,7 @@ async fn shutdown_snapshot_reads_all_owned_call_only_runs_and_fails_closed() {
 #[tokio::test]
 async fn shutdown_failed_stop_does_not_commit_an_interruption_marker() {
     let f = Fixture::new(false).await;
+    assert!(!f.host.shutdown_started());
     let approved = f.host.shutdown_active_runs(&f.pool).await.unwrap();
     query("CREATE TRIGGER reject_shutdown_stop BEFORE INSERT ON engine_flow030_events WHEN NEW.event_id LIKE 'retire:%' BEGIN SELECT RAISE(ABORT, 'synthetic Stop persistence failure'); END")
         .execute(&f.pool).await.unwrap();
@@ -918,6 +919,11 @@ async fn shutdown_failed_stop_does_not_commit_an_interruption_marker() {
         .prepare_shutdown(&f.pool, &StreamTasks::default(), &approved)
         .await
         .is_err());
+    assert!(f.host.shutdown_started());
+    assert_eq!(
+        f.host.begin_start().await.err().unwrap().code,
+        "SHUTDOWN_PENDING"
+    );
     let interrupted: bool =
         query_scalar("SELECT EXISTS(SELECT 1 FROM engine_flow030_interruptions)")
             .fetch_one(&f.pool)

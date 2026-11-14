@@ -438,6 +438,12 @@ impl HostStartLease {
 }
 
 impl HostState {
+    /// Once retirement begins, new Starts remain closed. Cleanup and inspection
+    /// remain available; callers may retry shutdown, never resume this engine.
+    pub fn shutdown_started(&self) -> bool {
+        self.flow030().shutdown_started.load(Ordering::SeqCst)
+    }
+
     fn native_incarnation(&self) -> Result<Arc<Incarnation>> {
         self.inner
             .incarnation

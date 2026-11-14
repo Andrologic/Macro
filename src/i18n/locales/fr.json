@@ -146,7 +146,9 @@
     "closeAction": "Fermer Macro",
     "keepWorking": "Continuer à travailler",
     "closeFailed": "Macro n’a pas pu se fermer",
-    "closeFailedDescription": "Votre travail a été conservé. Essayez de fermer Macro à nouveau.",
+    "closeFailedDescription": "Macro est toujours ouvert. Essayez de le fermer à nouveau.",
+    "retirementPending": "L’arrêt des tâches est engagé. La fermeture n’est pas terminée. Réessayez de quitter Macro.",
+    "retry": "Réessayer",
     "closing": "Macro est en cours de fermeture."
   },
   "releaseNotes": {

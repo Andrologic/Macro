@@ -4,6 +4,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { RestartSafetySelectorInput } from '../services/restartSafety';
 
+const closeNotificationMock = mock((_title: string, _options: { description?: string; actions: { onClick: () => void | Promise<void> }[] }) => undefined);
 const startPilotMock = mock(async () => undefined);
 let activeSyntheticWork = false;
 let approveClose = false;
@@ -73,7 +74,10 @@ const registerWindowRestorationMocks = async () => {
     savePreference: (...args: unknown[]) => savePreferenceMock(...args),
   }));
 
+  mock.module('../components/ui/toastService', () => ({ notify: { actionRequired: closeNotificationMock } }));
+  closeNotificationMock.mockClear();
   mock.module('../services/tauriWindow', () => ({
+    windowClose: async () => { await closeRequestedListener?.(createCloseRequestedEvent()); },
     isTauriEnvironment: () => true,
     showMainWindow: (...args: unknown[]) => showMainWindowMock(...args),
     windowAvailableMonitorBounds: (...args: unknown[]) => windowAvailableMonitorBoundsMock(...args),
@@ -358,6 +362,27 @@ describe('ensureWindowRestoredOnce', () => {
       expect(appUpdateExitAfterCleanShutdownMock).toHaveBeenCalledTimes(1);
     } finally { await act(async () => root.unmount()); container.remove(); }
   });
+
+  for (const started of [false, true]) {
+    it(`reports native retirement ${started ? 'engaged' : 'not engaged'} and retries without a false resume`, async () => {
+      const { useWindowRestoration, ensureWindowRestoredOnce } = await loadWindowRestoration();
+      const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
+      await ensureWindowRestoredOnce();
+      try {
+        appShutdownPrepareMock.mockImplementationOnce(async () => {
+          throw { code: 'APP_SHUTDOWN_PENDING', shutdownStarted: started };
+        });
+        await act(async () => { await closeRequestedListener?.(createCloseRequestedEvent()); });
+        expect(startPilotMock).toHaveBeenCalledTimes(started ? 0 : 1);
+        expect(appUpdateExitAfterCleanShutdownMock).not.toHaveBeenCalled();
+        expect(pageShuttingDown).toBe(false);
+        const options = closeNotificationMock.mock.calls.at(-1)![1];
+        expect(options.description).toContain(started ? 'Task shutdown has begun' : 'Macro is still open');
+        await act(async () => { await options.actions[0].onClick(); });
+        expect(appUpdateExitAfterCleanShutdownMock).toHaveBeenCalledTimes(1);
+      } finally { await act(async () => root.unmount()); container.remove(); }
+    });
+  }
 
   it('asks again when a native run starts during consent and preserves a second refusal', async () => {
     appShutdownActiveRunsMock.mockImplementationOnce(async () => ['first']);
@@ -867,7 +892,7 @@ describe('ensureWindowRestoredOnce', () => {
     container.remove();
   });
   for (const manualInstaller of [false, true]) {
-    it(`resumes Pilot when ${manualInstaller ? 'installer' : 'regular'} exit rejects`, async () => {
+    it(`keeps Pilot stopped when ${manualInstaller ? 'installer' : 'regular'} exit rejects after retirement`, async () => {
       installerClosePending = manualInstaller;
       const { __resetWindowRestorationForTests, useWindowRestoration } = await loadWindowRestoration();
       const exit = manualInstaller ? appExitCleanlyMock : appUpdateExitAfterCleanShutdownMock;
@@ -876,11 +901,11 @@ describe('ensureWindowRestoredOnce', () => {
       const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
       await delay(80);
       await closeRequestedListener?.(createCloseRequestedEvent());
-      expect(startPilotMock).toHaveBeenCalledTimes(1);
+      expect(startPilotMock).not.toHaveBeenCalled();
       expect(pageShuttingDown).toBe(false);
       await closeRequestedListener?.(createCloseRequestedEvent());
       expect(exit).toHaveBeenCalledTimes(2);
-      expect(startPilotMock).toHaveBeenCalledTimes(1);
+      expect(startPilotMock).not.toHaveBeenCalled();
       expect(pageShuttingDown).toBe(true);
       await act(async () => { root.unmount(); });
       container.remove();

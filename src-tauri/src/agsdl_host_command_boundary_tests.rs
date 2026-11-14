@@ -219,6 +219,7 @@ async fn shutdown_rechecks_consent_and_retries_without_losing_physical_ownership
         "SHUTDOWN_ACTIVITY_CHANGED"
     );
     assert!(host.begin_start().await.is_ok());
+    assert!(!host.shutdown_started());
     assert!(!f.interrupted(&receipt.system_start_id).await);
     let approved = host.shutdown_active_runs(&f.fixture.pool).await.unwrap();
     assert_eq!(approved, [receipt.system_start_id.clone()]);
@@ -244,6 +245,7 @@ async fn shutdown_rechecks_consent_and_retries_without_losing_physical_ownership
         "cleanup leases must remain live"
     );
     assert_eq!(f.start().await.unwrap_err().code, "SHUTDOWN_PENDING");
+    assert!(host.shutdown_started());
     assert_eq!(
         host.shutdown_active_runs(&f.fixture.pool).await.unwrap(),
         approved

@@ -44,7 +44,7 @@ mock.module('./macroPilot/storage', () => ({
 }));
 mock.module('./macroMetadataCoordinator', () => ({ flushMacroMetadata: flush, flushPendingMacroMetadata: flush, recordMacroMetadataMutation: () => undefined }));
 const { macroPilotRuntime: runtime } = await import('../composition/macroPilotDesktop');
-const { runWithPotentialShutdown } = await import('./windowShutdown');
+const { runWithPotentialShutdown, shutdownStartedAfterFailure } = await import('./windowShutdown');
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
 describe('recoverable shutdown with the real Pilot runtime and kernel', () => {
@@ -84,6 +84,22 @@ describe('recoverable shutdown with the real Pilot runtime and kernel', () => {
     expect(runtime.isStarted()).toBe(false);
     expect(subscriptions).toBe(0);
     expect(polls).toBe(0);
+  });
+
+  it('keeps admissions and the producer stopped after retirement, including a failed exit', async () => {
+    await runtime.start(); await tick();
+    const failure = { code: 'APP_SHUTDOWN_PENDING', shutdownStarted: true };
+    await expect(runWithPotentialShutdown(async () => { throw failure; },
+      beginAppShutdownGate(), runtime, undefined, () => true)).rejects.toEqual(failure);
+    expect(isAppShutdownGateActive()).toBe(true);
+    expect(runtime.isStarted()).toBe(false);
+    expect(subscriptions).toBe(0);
+    expect(shutdownStartedAfterFailure(failure)).toBe(true);
+    expect(shutdownStartedAfterFailure(Error('lost reply'))).toBe(true);
+    expect(shutdownStartedAfterFailure({ code: 'SHUTDOWN_ACTIVITY_CHANGED', shutdownStarted: false })).toBe(false);
+    expect(await runWithPotentialShutdown(async () => true,
+      beginAppShutdownGate(), runtime, undefined, () => true)).toBe(true);
+    expect(runtime.isStarted()).toBe(false);
   });
 
   it('keeps Pilot stopped after a successful native operation', async () => {

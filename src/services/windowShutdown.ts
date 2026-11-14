@@ -79,12 +79,18 @@ export const prepareForPotentialShutdown = async (
 
 let shutdownAttemptActive = false;
 
-/** Keep the producer stopped only when the native close/install succeeds. */
+/** Unknown transport outcomes cannot promise that native retirement did not start. */
+export const shutdownStartedAfterFailure = (error: unknown): boolean =>
+  !(typeof error === 'object' && error !== null
+    && 'shutdownStarted' in error && error.shutdownStarted === false);
+
+/** Preserve the producer stop once native retirement has begun, including retries. */
 export const runWithPotentialShutdown = async (
   operation: () => Promise<boolean | void>,
   releaseShutdownGate: () => void,
   macroPilotRuntime: ShutdownPilotRuntime,
   workspacePaths?: string[],
+  retirementStarted: () => boolean = () => false,
 ): Promise<boolean> => {
   if (shutdownAttemptActive) {
     releaseShutdownGate();
@@ -99,7 +105,7 @@ export const runWithPotentialShutdown = async (
     succeeded = (await operation()) !== false;
     return succeeded;
   } finally {
-    if (!succeeded) {
+    if (!succeeded && !retirementStarted()) {
       // start() waits for stop(), including when a flush rejects before it settles.
       releaseShutdownGate();
       try { await resume?.(); }

@@ -25,6 +25,7 @@ import {
   windowOnMoved,
   windowOnCloseRequested,
   windowOnResized,
+  windowClose,
   windowOuterPosition,
   windowOuterSize,
   windowPrimaryMonitorWorkArea,
@@ -38,6 +39,7 @@ import {
   commitWindowShutdown,
   runWithPotentialShutdown,
   registerWindowStateFlushHandler,
+  shutdownStartedAfterFailure,
 } from "../services/windowShutdown";
 import { getPlatformChromeState } from "../utils/desktopPlatform";
 import { isPageShuttingDown } from "../utils/pageLifecycle";
@@ -449,6 +451,8 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
  */
 export function useWindowRestoration() {
   const closeInProgressRef = useRef(false);
+  const nativeShutdownStartedRef = useRef(false);
+  const shutdownGateRef = useRef<(() => void) | null>(null);
   // Save current window state with debounce
   const saveWindowState = useCallback(async () => {
     const api = await getWindowApi();
@@ -549,7 +553,12 @@ export function useWindowRestoration() {
           }
         }
 
-        releaseShutdownGate = beginAppShutdownGate();
+        shutdownGateRef.current ??= beginAppShutdownGate();
+        releaseShutdownGate = () => {
+          if (nativeShutdownStartedRef.current) return;
+          shutdownGateRef.current?.();
+          shutdownGateRef.current = null;
+        };
         const safetyAfterConsent = await getRestartSafetySnapshot();
         if (
           hasUnapprovedRestartSafetyActivity(approvedSafety, safetyAfterConsent)
@@ -567,7 +576,13 @@ export function useWindowRestoration() {
         const { macroPilotRuntime } = await import('../composition/macroPilotDesktop');
         await runWithPotentialShutdown(async () => {
           // Flush failures and declined consent leave native ownership intact.
-          await appShutdownPrepare((safetyAfterConsent.activeExecutions ?? []).map(activity => activity.id));
+          try {
+            await appShutdownPrepare((safetyAfterConsent.activeExecutions ?? []).map(activity => activity.id));
+            nativeShutdownStartedRef.current = true;
+          } catch (error) {
+            nativeShutdownStartedRef.current ||= shutdownStartedAfterFailure(error);
+            throw error;
+          }
           if (installerRequestedClose) {
             await appInstallerCloseRespond(true);
             await appExitCleanly();
@@ -575,14 +590,18 @@ export function useWindowRestoration() {
             await appUpdateExitAfterCleanShutdown();
           }
           commitWindowShutdown('window-close-requested');
-        }, releaseShutdownGate, macroPilotRuntime, getSelectedProjectGroupWorkspacePaths());
+        }, releaseShutdownGate, macroPilotRuntime, getSelectedProjectGroupWorkspacePaths(),
+        () => nativeShutdownStartedRef.current);
       } catch (error) {
         console.error('Failed to close window after flushing its state:', error);
-        notify.error(i18n.t('shutdown.closeFailed', 'Macro could not close'), {
+        notify.actionRequired(i18n.t('shutdown.closeFailed', 'Macro could not close'), {
           description: i18n.t(
-            'shutdown.closeFailedDescription',
-            'Your work was kept. Try closing Macro again.',
+            nativeShutdownStartedRef.current ? 'shutdown.retirementPending' : 'shutdown.closeFailedDescription',
+            nativeShutdownStartedRef.current
+              ? 'Task shutdown has begun. Closing is incomplete. Try closing Macro again.'
+              : 'Macro is still open. Try closing it again.',
           ),
+          actions: [{ label: i18n.t('shutdown.retry', 'Retry'), onClick: () => windowClose() }],
         });
         if (installerRequestedClose) {
           void appInstallerCloseRespond(false).catch(() => undefined);
