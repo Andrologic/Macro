@@ -357,8 +357,7 @@ async fn ambiguous_shared_stop_is_durable_without_transition_and_stop_is_availab
     };
     let mut db = db().await;
     begin(&mut db).await;
-    let raw =
-        include_str!("../../tests/fixtures/agsdl030_shared_stop_pending_compiled_plan.json");
+    let raw = include_str!("../../tests/fixtures/agsdl030_shared_stop_pending_compiled_plan.json");
     let plan: FlowPlan030 = serde_json::from_str(raw).unwrap();
     initialize_tx(
         &mut db,

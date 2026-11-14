@@ -14,9 +14,18 @@ mod qa_cases;
 ))]
 mod qa_runner_tests;
 
-#[cfg(all(target_os="macos",feature="agsdl-content-qa",debug_assertions))]
+#[cfg(all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions))]
 use std::sync::Arc;
-#[cfg(all(target_os="macos",feature="agsdl-content-qa",debug_assertions))]
-fn digest(bytes:&[u8])->String { use sha2::{Digest,Sha256}; format!("{:x}",Sha256::digest(bytes)) }
-#[cfg(all(target_os="macos",feature="agsdl-content-qa",debug_assertions))]
-fn error(code:&str,message:impl ToString)->ContentError { ContentError {code:code.into(),pointer:String::new(),message:message.to_string()} }
+#[cfg(all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions))]
+fn digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+#[cfg(all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions))]
+fn error(code: &str, message: impl ToString) -> ContentError {
+    ContentError {
+        code: code.into(),
+        pointer: String::new(),
+        message: message.to_string(),
+    }
+}

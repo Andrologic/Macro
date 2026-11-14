@@ -1,7 +1,7 @@
 //! Wire mirrors for generated TypeScript; engine types carry no generator dependency.
 use schemars::JsonSchema;
-use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 #[derive(
     Debug,
     Clone,
