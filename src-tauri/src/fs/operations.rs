@@ -47,113 +47,35 @@ use tokio::sync::Barrier;
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WorkspaceRootIdentity {
-    #[cfg(unix)]
-    device: u64,
-    #[cfg(unix)]
-    inode: u64,
-    #[cfg(windows)]
-    volume: Option<u32>,
-    #[cfg(windows)]
-    file_index: Option<u64>,
-}
-
-impl WorkspaceRootIdentity {
-    /// Lossless, opaque identity for comparing observations across IPC calls.
-    /// Strings preserve native 64-bit identifiers without JavaScript rounding.
-    pub fn observation_key(self) -> Option<String> {
-        #[cfg(unix)]
-        return Some(format!("unix:{:x}:{:x}", self.device, self.inode));
-        #[cfg(windows)]
-        return Some(format!("windows:{:x}:{:x}", self.volume?, self.file_index?));
-    }
-}
-
+pub use argentic_runtime::content_io::admitted::WorkspaceRootIdentity;
 #[cfg(unix)]
-fn workspace_root_identity_from_std(metadata: &std::fs::Metadata) -> WorkspaceRootIdentity {
-    use std::os::unix::fs::MetadataExt;
-    WorkspaceRootIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    }
+use argentic_runtime::content_io::admitted::{
+    workspace_root_identity_from_cap, workspace_root_identity_from_std,
+};
+#[cfg(windows)]
+fn workspace_root_identity_from_std(path: &Path) -> Result<WorkspaceRootIdentity, BackendError> {
+    argentic_runtime::content_io::admitted::workspace_root_identity_from_std(path)
+        .map_err(Into::into)
 }
-
 #[cfg(windows)]
 fn workspace_root_identity_from_handle(
     handle: std::os::windows::io::RawHandle,
-    workspace: &Path,
+    path: &Path,
 ) -> Result<WorkspaceRootIdentity, BackendError> {
-    use windows_sys::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-    };
-
-    let mut information = BY_HANDLE_FILE_INFORMATION::default();
-    let result = unsafe { GetFileInformationByHandle(handle as _, &mut information) };
-    if result == 0 {
-        return Err(io_error_to_backend_error(
-            std::io::Error::last_os_error(),
-            workspace,
-        ));
-    }
-
-    Ok(WorkspaceRootIdentity {
-        volume: Some(information.dwVolumeSerialNumber),
-        file_index: Some(
-            ((information.nFileIndexHigh as u64) << u32::BITS) | information.nFileIndexLow as u64,
-        ),
-    })
+    argentic_runtime::content_io::admitted::workspace_root_identity_from_handle(handle, path)
+        .map_err(Into::into)
 }
-
-#[cfg(windows)]
-fn workspace_root_identity_from_std(
-    workspace: &Path,
-) -> Result<WorkspaceRootIdentity, BackendError> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-
-    let file = std::fs::OpenOptions::new()
-        .access_mode(0)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(workspace)
-        .map_err(|error| io_error_to_backend_error(error, workspace))?;
-    workspace_root_identity_from_handle(file.as_raw_handle(), workspace)
-}
-
-#[cfg(unix)]
-fn workspace_root_identity_from_cap(metadata: &cap_std::fs::Metadata) -> WorkspaceRootIdentity {
-    use cap_std::fs::MetadataExt;
-    WorkspaceRootIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    }
-}
-
 #[cfg(windows)]
 fn workspace_root_identity_from_cap(
     directory: &CapabilityDir,
-    workspace: &Path,
+    path: &Path,
 ) -> Result<WorkspaceRootIdentity, BackendError> {
-    use std::os::windows::io::AsRawHandle;
-    workspace_root_identity_from_handle(directory.as_raw_handle(), workspace)
+    argentic_runtime::content_io::admitted::workspace_root_identity_from_cap(directory, path)
+        .map_err(Into::into)
 }
-
-pub fn workspace_root_identity(workspace: &Path) -> Result<WorkspaceRootIdentity, BackendError> {
-    #[cfg(windows)]
-    return workspace_root_identity_from_std(workspace);
-
-    #[cfg(unix)]
-    {
-        let metadata = std::fs::metadata(workspace)
-            .map_err(|error| io_error_to_backend_error(error, workspace))?;
-        Ok(workspace_root_identity_from_std(&metadata))
-    }
+pub fn workspace_root_identity(path: &Path) -> Result<WorkspaceRootIdentity, BackendError> {
+    argentic_runtime::content_io::admitted::workspace_root_identity(path).map_err(Into::into)
 }
-
 tokio::task_local! {
     static EXPECTED_WORKSPACE_ROOTS: Arc<BTreeMap<PathBuf, WorkspaceRootIdentity>>;
 }
@@ -331,54 +253,9 @@ static WRITE_AFTER_REVALIDATION_HOOKS: LazyLock<
     test,
     all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
 ))]
-static CONTENT_BEFORE_OPEN_HOOKS: LazyLock<Mutex<HashMap<PathBuf, (Arc<Barrier>, Arc<Barrier>)>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-#[cfg(any(
-    test,
-    all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
-))]
-pub(crate) fn install_content_before_open_hook(
-    path: PathBuf,
-    reached: Arc<Barrier>,
-    release: Arc<Barrier>,
-) {
-    CONTENT_BEFORE_OPEN_HOOKS
-        .lock()
-        .expect("content hook mutex")
-        .insert(path, (reached, release));
-}
-
-#[cfg(any(
-    test,
-    all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
-))]
-pub(crate) fn content_before_open_hook_pending(path: &Path, remove: bool) -> bool {
-    let mut hooks = CONTENT_BEFORE_OPEN_HOOKS
-        .lock()
-        .expect("content hook mutex");
-    if remove {
-        hooks.remove(path).is_some()
-    } else {
-        hooks.contains_key(path)
-    }
-}
-
-#[cfg(any(
-    test,
-    all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
-))]
-async fn pause_before_content_open(path: &Path) {
-    let hook = CONTENT_BEFORE_OPEN_HOOKS
-        .lock()
-        .expect("content hook mutex")
-        .remove(path);
-    if let Some((reached, release)) = hook {
-        reached.wait().await;
-        release.wait().await;
-    }
-}
-
+pub(crate) use argentic_runtime::content_io::admitted::{
+    content_before_open_hook_pending, install_content_before_open_hook,
+};
 #[cfg(test)]
 static WSL_WRITE_TEMP_CLEANUP_HOOK: LazyLock<Mutex<Option<std::sync::mpsc::Sender<String>>>> =
     LazyLock::new(|| Mutex::new(None));
@@ -544,58 +421,15 @@ fn capability_task_error(error: tokio::task::JoinError) -> BackendError {
 fn open_workspace_capability(
     workspace: &Path,
     validated_path: &Path,
-    expected_identity: Option<WorkspaceRootIdentity>,
+    identity: Option<WorkspaceRootIdentity>,
 ) -> Result<(Arc<CapabilityDir>, PathBuf), BackendError> {
-    let lexical_workspace = normalize_path(workspace);
-    let canonical_workspace = workspace
-        .canonicalize()
-        .map_err(|error| io_error_to_backend_error(error, workspace))?;
-    let relative_path = validated_path
-        .strip_prefix(&lexical_workspace)
-        .or_else(|_| validated_path.strip_prefix(&canonical_workspace))
-        .map(Path::to_path_buf)
-        .map_err(|_| BackendError::FilesystemInvalidPath {
-            message: format!(
-                "Path '{}' cannot be addressed relative to workspace '{}'",
-                validated_path.display(),
-                workspace.display()
-            ),
-        })?;
-    if relative_path.as_os_str().is_empty()
-        || relative_path
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(BackendError::FilesystemInvalidPath {
-            message: format!(
-                "Path '{}' is not a writable file target inside the workspace",
-                validated_path.display()
-            ),
-        });
-    }
-    let directory = CapabilityDir::open_ambient_dir(&canonical_workspace, ambient_authority())
-        .map_err(|error| io_error_to_backend_error(error, &canonical_workspace))?;
-    if let Some(expected_identity) = expected_identity {
-        #[cfg(unix)]
-        let actual_identity = workspace_root_identity_from_cap(
-            &directory
-                .dir_metadata()
-                .map_err(|error| io_error_to_backend_error(error, &canonical_workspace))?,
-        );
-        #[cfg(windows)]
-        let actual_identity = workspace_root_identity_from_cap(&directory, &canonical_workspace)?;
-        if actual_identity != expected_identity {
-            return Err(BackendError::FilesystemInvalidPath {
-                message: format!(
-                    "Workspace root '{}' changed after server validation",
-                    workspace.display()
-                ),
-            });
-        }
-    }
-    Ok((Arc::new(directory), relative_path))
+    argentic_runtime::content_io::admitted::open_workspace_capability(
+        workspace,
+        validated_path,
+        identity,
+    )
+    .map_err(Into::into)
 }
-
 #[derive(Clone)]
 pub(crate) struct WorkspaceCapabilityTarget {
     directory: Arc<CapabilityDir>,
@@ -1739,74 +1573,6 @@ fn read_open_file(
         return Err(too_large());
     }
     Ok((bytes, metadata_unix_mode(&metadata)))
-}
-
-/// Open and read a confined regular file only after native admission. The final
-/// component cannot become a symlink between policy evaluation and the read.
-/// This does not grant access: callers must evaluate the original and resolved
-/// paths in `admit`, including their captured and current policy ceilings.
-pub(crate) async fn read_file_bytes_with_admission<F, Fut>(
-    path: &Path,
-    cancel: &tokio_util::sync::CancellationToken,
-    owner: Option<crate::agsdl_content::ContentResourceOwner>,
-    admit: F,
-) -> Result<(Vec<u8>, PathBuf, WorkspaceRootIdentity), BackendError>
-where
-    F: FnOnce(PathBuf) -> Fut,
-    Fut: Future<Output = Result<(), BackendError>>,
-{
-    if !path.is_absolute() {
-        return Err(BackendError::FilesystemInvalidPath {
-            message: "An admitted read requires an absolute path.".into(),
-        });
-    }
-    let resolved = path
-        .canonicalize()
-        .map_err(|e| io_error_to_backend_error(e, path))?;
-    let parent = resolved
-        .parent()
-        .ok_or_else(|| BackendError::FilesystemInvalidPath {
-            message: "A regular file target is required.".into(),
-        })?;
-    let identity = workspace_root_identity(parent)?;
-    admit(resolved.clone()).await?;
-    if workspace_root_identity(parent)? != identity
-        || path.canonicalize().ok().as_ref() != Some(&resolved)
-    {
-        return Err(BackendError::FilesystemInvalidPath {
-            message: "File location changed during admitted read.".into(),
-        });
-    }
-    let metadata = std::fs::symlink_metadata(&resolved)
-        .map_err(|e| io_error_to_backend_error(e, &resolved))?;
-    if !metadata.is_file() {
-        return Err(BackendError::FilesystemIsDirectory {
-            message: format!("The path '{}' is not a regular file.", resolved.display()),
-        });
-    }
-    #[cfg(any(
-        test,
-        all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
-    ))]
-    pause_before_content_open(&resolved).await;
-    let (directory, relative) = open_workspace_capability(parent, &resolved, Some(identity))?;
-    let bytes =
-        crate::agsdl_content::file_helper::read_confined(&directory, &relative, cancel, owner)
-            .await
-            .map_err(|e| io_error_to_backend_error(e, &resolved))?;
-    if workspace_root_identity(parent)? != identity
-        || path.canonicalize().ok().as_ref() != Some(&resolved)
-    {
-        return Err(BackendError::FilesystemInvalidPath {
-            message: "File location changed before admitted read.".into(),
-        });
-    }
-    if cancel.is_cancelled() {
-        return Err(BackendError::Filesystem {
-            message: "Content read cancelled.".into(),
-        });
-    }
-    Ok((bytes, resolved, identity))
 }
 
 pub async fn read_file_internal(

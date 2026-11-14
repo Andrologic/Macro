@@ -15,10 +15,7 @@
         "crate:core": 1
       },
       "src-tauri/src/agsdl_content/resolve.rs": {
-        "crate:commands": 3,
-        "crate:core": 7,
-        "crate:db": 3,
-        "crate:fs": 5
+        "crate:db": 3
       },
       "src-tauri/src/agsdl_content/skills.rs": {
         "crate:commands": 1,

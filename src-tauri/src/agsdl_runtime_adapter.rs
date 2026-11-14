@@ -85,3 +85,22 @@ impl argentic_runtime::content_network::ContentNetwork for MacroContentNetwork {
         })
     }
 }
+
+impl From<argentic_runtime::content_io::admitted::ReadError> for crate::core::error::BackendError {
+    fn from(value: argentic_runtime::content_io::admitted::ReadError) -> Self {
+        use argentic_runtime::content_io::admitted::ReadError as R;
+        match value {
+            R::Io { message, source } => Self::Io { message, source },
+            R::Filesystem { message } => Self::Filesystem { message },
+            R::FilesystemNotFound { message } => Self::FilesystemNotFound { message },
+            R::FilesystemPermissionDenied { message } => {
+                Self::FilesystemPermissionDenied { message }
+            }
+            R::FilesystemAlreadyExists { message } => Self::FilesystemAlreadyExists { message },
+            R::FilesystemInvalidPath { message } => Self::FilesystemInvalidPath { message },
+            R::FilesystemDiskFull { message } => Self::FilesystemDiskFull { message },
+            R::FilesystemIsDirectory { message } => Self::FilesystemIsDirectory { message },
+            R::ResourcePressure { message } => Self::ResourcePressure { message },
+        }
+    }
+}

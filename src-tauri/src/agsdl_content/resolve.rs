@@ -96,8 +96,11 @@ fn payload(bytes: &[u8], media: &str) -> ContentResult<ContentPayload> {
     }
 }
 
-fn file_read_error(cancelled: bool, error_value: crate::core::error::BackendError) -> ContentError {
-    if matches!(&error_value, crate::core::error::BackendError::Io { source, .. } if source.kind() == std::io::ErrorKind::TimedOut)
+fn file_read_error(
+    cancelled: bool,
+    error_value: argentic_runtime::content_io::admitted::ReadError,
+) -> ContentError {
+    if matches!(&error_value, argentic_runtime::content_io::admitted::ReadError::Io { source, .. } if source.kind() == std::io::ErrorKind::TimedOut)
     {
         error("CONTENT_TERMINATION_UNCERTAIN", error_value)
     } else if cancelled {
@@ -113,7 +116,7 @@ mod termination_tests {
     #[test]
     fn cancellation_does_not_hide_uncertain_termination() {
         let source = std::io::Error::new(std::io::ErrorKind::TimedOut, "not reaped");
-        let error_value = crate::core::error::io_error_to_backend_error(
+        let error_value = argentic_runtime::content_io::admitted::io_error_to_backend_error(
             source,
             std::path::Path::new("/synthetic/data"),
         );
@@ -125,7 +128,7 @@ mod termination_tests {
 
     #[test]
     fn confirmed_cancellation_stays_distinct_from_read_failure() {
-        let failure = || crate::core::error::BackendError::Filesystem {
+        let failure = || argentic_runtime::content_io::admitted::ReadError::Filesystem {
             message: "synthetic failure".into(),
         };
         assert_eq!(file_read_error(true, failure()).code, "CANCELLED");
@@ -324,7 +327,7 @@ async fn read_uri(
                 .transpose()?;
             let root_identity = root_path
                 .as_deref()
-                .map(crate::fs::operations::workspace_root_identity)
+                .map(argentic_runtime::content_io::admitted::workspace_root_identity)
                 .transpose()
                 .map_err(|e| error("CONTENT_UNAVAILABLE", e))?;
             if let Some(root) = root {
@@ -344,21 +347,21 @@ async fn read_uri(
             let root_after_read = root_path.clone();
             let denial = Arc::new(Mutex::new(None));
             let admission_error = Arc::clone(&denial);
-            let read = crate::fs::operations::read_file_bytes_with_admission(
+            let read = argentic_runtime::content_io::admitted::read_file_bytes_with_admission(
                 &path,
                 &context.cancel,
                 context.resource_owner.clone(),
                 move |resolved| async move {
                     if let Some(root_path) = &root_path {
                         if !resolved.starts_with(root_path)
-                            || crate::fs::operations::workspace_root_identity(root_path).ok()
+                            || argentic_runtime::content_io::admitted::workspace_root_identity(root_path).ok()
                                 != root_identity
                         {
                             *admission_error.lock().unwrap() = Some(error(
                                 "PERMISSION",
                                 "Skill resource escapes or changes its root.",
                             ));
-                            return Err(crate::core::error::BackendError::FilesystemInvalidPath {
+                            return Err(argentic_runtime::content_io::admitted::ReadError::FilesystemInvalidPath {
                                 message: "Invalid skill resource root.".into(),
                             });
                         }
@@ -371,7 +374,7 @@ async fn read_uri(
                             if decision.resolved_path.as_deref() == resolved.to_str()
                                 && root_path
                                     .as_deref()
-                                    .map(crate::fs::operations::workspace_root_identity)
+                                    .map(argentic_runtime::content_io::admitted::workspace_root_identity)
                                     .transpose()
                                     .ok()
                                     .flatten()
@@ -384,13 +387,13 @@ async fn read_uri(
                                 "CORRELATION",
                                 "File target changed after policy resolution.",
                             ));
-                            Err(crate::core::error::BackendError::FilesystemInvalidPath {
+                            Err(argentic_runtime::content_io::admitted::ReadError::FilesystemInvalidPath {
                                 message: "Content target changed.".into(),
                             })
                         }
                         Err(e) => {
                             *admission_error.lock().unwrap() = Some(e);
-                            Err(crate::core::error::BackendError::FilesystemInvalidPath {
+                            Err(argentic_runtime::content_io::admitted::ReadError::FilesystemInvalidPath {
                                 message: "Content access denied.".into(),
                             })
                         }
@@ -406,7 +409,9 @@ async fn read_uri(
                     .unwrap_or_else(|| file_read_error(context.cancel.is_cancelled(), e))
             })?;
             if let Some(root) = root_after_read {
-                if crate::fs::operations::workspace_root_identity(&root).ok() != root_identity {
+                if argentic_runtime::content_io::admitted::workspace_root_identity(&root).ok()
+                    != root_identity
+                {
                     return Err(error(
                         "CORRELATION",
                         "Activated skill root changed during resource read.",

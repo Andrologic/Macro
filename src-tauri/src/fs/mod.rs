@@ -213,25 +213,7 @@ pub fn validate_path_for_write(path: &Path, workspace: &Path) -> Result<PathBuf>
 /// * `path` - The input path to convert
 /// # Returns
 /// * `PathBuf` - The OS-specific path
-pub fn normalize_path(path: &Path) -> PathBuf {
-    let mut result = PathBuf::new();
-
-    // Handle empty path
-    if path.components().next().is_none() {
-        return result;
-    }
-
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {} // Ignore `.` components
-            std::path::Component::ParentDir => {
-                result.pop();
-            } // Remove the last component for `..`
-            _ => result.push(component),
-        }
-    }
-    result
-}
+pub use argentic_runtime::content_io::admitted::normalize_path;
 
 /// Extract file extension and map to programming language
 /// Case-insensitive matching (e.g., `.RS`, `.rs`, `.Rs` all → "Rust")

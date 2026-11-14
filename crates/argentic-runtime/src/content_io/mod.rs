@@ -9,3 +9,6 @@ pub mod macos_launcher;
 use std::sync::Arc;
 pub type ContentResourceOwner =
     Arc<dyn Fn(tokio::task::JoinHandle<Result<(), String>>) -> Result<(), String> + Send + Sync>;
+
+#[doc(hidden)]
+pub mod admitted;
