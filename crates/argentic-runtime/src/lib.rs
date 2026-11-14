@@ -27,6 +27,12 @@ pub mod sqlite;
 
 pub mod host;
 
+/// Native capture preparation shared with desktop and standalone hosts.
+pub mod capture;
+
+/// Small, explicitly configured single-process host.
+pub mod standalone;
+
 /// Shared physical process lifecycle and containment.
 pub mod process;
 
@@ -75,7 +81,6 @@ mod tasks;
 /// One independently owned execution incarnation; clones share it.
 pub use agsdl_host::HostState as Engine;
 
-#[doc(hidden)]
 pub mod api;
 
 mod agsdl_host_action_approval030;

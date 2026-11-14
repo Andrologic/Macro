@@ -190,3 +190,35 @@ its form questions and deadlines. Remote MCP calls remain refused.
 The former 0.2 scheduler and adapter are removed. Opening a 0.2 document reports
 an unsupported edition. The shared Codex client, profile observations and 0.3
 qualification above remain; no old execution or document conversion is used.
+
+## Bounded requalification
+
+A supported `0.167.x` version string is only an admission prerequisite. For a new
+patch or changed executable, record the exact CLI version/digest, platform, host
+commit/tree, runtime schema revision and private profile diagnostic. Use an
+official isolated login in the profile belonging to that host. Keep credentials,
+login codes and account details out of the evidence. A login-required diagnostic
+leaves the real recipe open.
+
+Run the existing default Rust suites and 37 official scenarios in file and
+memory modes. Preserve their support classifications; synthetic peers do not
+qualify a provider. Then, in a disposable workspace with an existing regular
+`sentinel.txt`, exercise the write-review source in
+`crates/argentic-runtime/examples/fixtures/write-review.json` through both the UI
+and the standalone host documented in
+[HOST.md](../crates/argentic-runtime/HOST.md). Use an observed model; never invent
+a qualified registry or bypass a refused capability.
+
+Check the real native request before deciding: the exact command, cwd, thread,
+turn/item and single existing-file grant must match. Test success, refusal and
+Stop while waiting; verify actual file contents, validated result and reviewer
+output. Check physical drainage, an incomplete-close retry without resumed
+admissions, and interruption without replay after restart. A broader request,
+new file, linked file, model reviewer, unsupported version/platform or missing
+capability must remain refused. Only record checks actually performed.
+
+Restore the disposable file and product source through their normal owners after
+drainage. A failure remains a failure or a narrower support boundary; it does not
+justify widening permissions, faking physical receipts or silently promoting a
+patch, platform or harness. Real-provider and UI evidence belong to the parent
+qualification, separately from source extraction, unit tests and build evidence.

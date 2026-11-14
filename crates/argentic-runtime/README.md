@@ -65,3 +65,16 @@ feature does not qualify a provider or promote scenario support.
 for application boundary tests. It exposes no native work authority, human
 resolution, physical approval callback or new IPC command. Application
 configuration/command tests and TypeScript wire assertions live in Macro.
+
+## Operational host
+
+[HOST.md](HOST.md) documents the standalone JSON-lines executable, the small
+`standalone::Host` API, exact policy approval, real Codex write-review inputs,
+human answers, Stop/drain and restart behavior. Its fixtures contain no registry,
+authority or credentials. Codex execution is an explicit operator action.
+
+`sqlite::open_file` checks the existing standalone revision and complete DDL
+without initializing or migrating it. `standalone::Host` also owns the exclusive
+process lock and fences previous unfinished runs. Macro retains its own opening
+and migration path. The default standalone suites and executable are covered by
+the `argentic` CI profile and the native/full profiles.

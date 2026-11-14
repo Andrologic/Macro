@@ -252,3 +252,6 @@ jobs:
 
       - name: Run macOS migration, recovery, and updater smoke tests
         run: bun dev/ci/native-recovery-smoke.mjs
+
+      - name: Test standalone Argentic engine and host
+        run: bun dev/ci/run-checks.mjs --profile argentic

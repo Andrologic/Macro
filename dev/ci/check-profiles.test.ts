@@ -32,6 +32,12 @@ describe('local CI profiles', () => {
       'Build AI runtime sidecar',
       'Check generated config contracts',
       'Check generated ipc contracts',
+      'Run locked argentic-core tests for all targets',
+      'Run locked argentic-core doc tests',
+      'Run locked argentic-runtime tests for all targets',
+      'Run locked argentic-runtime doc tests',
+      'Build standalone Argentic host',
+      'Verify native approval boundary',
       'Run locked Rust tests for all targets',
       'Run locked Rust doc tests',
       'Verify headless HTTP transport',
@@ -155,5 +161,28 @@ test('native profiles reuse the headless HTTP smoke once after native compilatio
   }
   for (const profile of ['frontend', 'documentation', 'sidecar']) {
     expect(stepsForProfile(profile).some(entry => entry.args.includes('test:e2e:headless'))).toBe(false);
+  }
+});
+
+
+test('exhaustive native profiles test both standalone workspaces and build the real host', () => {
+  for (const profile of ['argentic', 'native', 'native-core', 'full']) {
+    const steps = stepsForProfile(profile);
+    for (const crate of ['argentic-core', 'argentic-runtime']) {
+      const own = steps.filter(entry => entry.args.includes(`crates/${crate}/Cargo.toml`));
+      expect(own.filter(entry => entry.args.includes('--all-targets') && entry.command === 'cargo')).toHaveLength(1);
+      expect(own.filter(entry => entry.args.includes('--doc'))).toHaveLength(1);
+      expect(own.every(entry => entry.args.includes('--locked'))).toBe(true);
+    }
+    expect(steps.filter(entry => entry.args.includes('argentic-host'))).toHaveLength(1);
+    expect(steps.filter(entry => entry.args.includes('approval_boundary'))).toHaveLength(1);
+  }
+  expect(stepsForProfile('argentic').every(entry => entry.command === 'cargo')).toBe(true);
+  for (const profile of ['windows', 'windows-core']) {
+    for (const crate of ['argentic-core', 'argentic-runtime']) {
+      expect(stepsForProfile(profile).filter(entry => entry.command === 'cargo'
+        && entry.args[0] === 'check' && entry.args.includes(`crates/${crate}/Cargo.toml`)
+        && entry.args.includes('--all-targets'))).toHaveLength(1);
+    }
   }
 });

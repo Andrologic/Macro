@@ -45,9 +45,32 @@ const generatedContractChecks = ['config', 'ipc'].map((domain) => step(
     '--example', 'generate_config', '--', '--domain', domain, '--check',
   ],
 ));
+// Independent workspaces are dependency consumers, not Macro test targets.
+const argenticChecks = ['argentic-core', 'argentic-runtime'].flatMap((crate) => [
+  step(`Run locked ${crate} tests for all targets`, 'cargo', [
+    'test', '--manifest-path', `crates/${crate}/Cargo.toml`, '--locked', '--all-targets', '--', '--test-threads=1',
+  ]),
+  step(`Run locked ${crate} doc tests`, 'cargo', [
+    'test', '--manifest-path', `crates/${crate}/Cargo.toml`, '--locked', '--doc',
+  ]),
+]);
+argenticChecks.push(
+  step('Build standalone Argentic host', 'cargo', [
+    'build', '--manifest-path', 'crates/argentic-runtime/Cargo.toml', '--locked', '--example', 'argentic-host',
+  ]),
+  step('Verify native approval boundary', 'cargo', [
+    'test', '--manifest-path', 'crates/argentic-runtime/Cargo.toml', '--locked', '--features', 'dev-support',
+    '--test', 'approval_boundary', '--', '--test-threads=1',
+  ]),
+);
+const argenticWindowsChecks = ['argentic-core', 'argentic-runtime'].map((crate) =>
+  step(`Check ${crate} Windows targets`, 'cargo', [
+    'check', '--manifest-path', `crates/${crate}/Cargo.toml`, '--locked', '--all-targets',
+  ]),
+);
 const processRecoveryCheck = step('Verify native process interruption recovery', 'bun', ['run', 'test:native:process-recovery']);
 const headlessHttpCheck = step('Verify headless HTTP transport', 'bun', ['run', 'test:e2e:headless']);
-const nativeChecks = [sidecarCheck, ...generatedContractChecks, rustTestCheck, rustDocTestCheck, headlessHttpCheck];
+const nativeChecks = [sidecarCheck, ...generatedContractChecks, ...argenticChecks, rustTestCheck, rustDocTestCheck, headlessHttpCheck];
 
 const windowsNativeCheck = step('Check all Windows native targets', 'cargo', [
   'check',
@@ -59,6 +82,7 @@ const windowsNativeCheck = step('Check all Windows native targets', 'cargo', [
 
 export const CHECK_PROFILES = Object.freeze([
   'documentation',
+  'argentic',
   'frontend',
   'native',
   'native-core',
@@ -74,6 +98,8 @@ export function stepsForProfile(profile, options = {}) {
   const processRecovery = (options.platform ?? process.platform) === 'linux' ? [processRecoveryCheck] : [];
 
   switch (profile) {
+    case 'argentic':
+      return [...argenticChecks];
     case 'documentation':
       return [...repositoryChecks];
     case 'frontend':
@@ -81,13 +107,13 @@ export function stepsForProfile(profile, options = {}) {
     case 'native':
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks, ...processRecovery];
     case 'native-core':
-      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, rustTestCheck, rustDocTestCheck, headlessHttpCheck, ...processRecovery];
+      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, ...argenticChecks, rustTestCheck, rustDocTestCheck, headlessHttpCheck, ...processRecovery];
     case 'sidecar':
       return [...install, copilotTypecheck, sidecarCheck];
     case 'windows':
-      return [...install, workflowStep, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, windowsNativeCheck, headlessHttpCheck];
+      return [...install, workflowStep, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, ...argenticWindowsChecks, windowsNativeCheck, headlessHttpCheck];
     case 'windows-core':
-      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, windowsNativeCheck, headlessHttpCheck];
+      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, ...argenticWindowsChecks, windowsNativeCheck, headlessHttpCheck];
     case 'full': {
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks, ...processRecovery];
     }

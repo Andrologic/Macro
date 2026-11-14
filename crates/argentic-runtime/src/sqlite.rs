@@ -1,7 +1,7 @@
 //! Embedded SQLite uses one schema and transaction implementation in both modes.
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
-    Connection, SqlitePool,
+    Connection, SqliteConnection, SqlitePool,
 };
 use std::{path::Path, time::Duration};
 
@@ -80,9 +80,102 @@ pub async fn create_file(path: &Path) -> Result<SqlitePool, sqlx::Error> {
     Ok(pool)
 }
 
+/// Open an existing standalone database without migrations or initialization.
+/// Both revision and complete DDL must match this runtime. Macro databases and
+/// unknown revisions are rejected through a read-only connection first.
+pub async fn open_file(path: &Path) -> Result<SqlitePool, sqlx::Error> {
+    let mut reader =
+        SqliteConnection::connect_with(&options().filename(path).read_only(true)).await?;
+    validate_existing(&mut reader).await?;
+    reader.close().await?;
+    let pool = connect(options().filename(path).create_if_missing(false)).await?;
+    // Recheck the connection actually used; a replacement cannot bypass validation.
+    let mut connection = pool.acquire().await?;
+    validate_existing(&mut connection).await?;
+    drop(connection);
+    Ok(pool)
+}
+
+async fn validate_existing(connection: &mut SqliteConnection) -> Result<(), sqlx::Error> {
+    let expected = memory().await?;
+    let query = "SELECT type,name,tbl_name,coalesce(sql,'') FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name";
+    let wanted = sqlx::query_as::<_, (String, String, String, String)>(query)
+        .fetch_all(&expected)
+        .await?;
+    expected.close().await;
+    let mut tx = connection.begin().await?;
+    let actual = sqlx::query_as::<_, (String, String, String, String)>(query)
+        .fetch_all(&mut *tx)
+        .await?;
+    if actual != wanted {
+        return Err(sqlx::Error::Protocol(
+            "Incompatible standalone engine schema".into(),
+        ));
+    }
+    let revisions: Vec<String> =
+        sqlx::query_scalar("SELECT revision FROM argentic_schema_revision ORDER BY revision")
+            .fetch_all(&mut *tx)
+            .await?;
+    if revisions != [SCHEMA_REVISION] {
+        return Err(sqlx::Error::Protocol(
+            "Incompatible standalone engine revision".into(),
+        ));
+    }
+    tx.commit().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn reopen_preserves_data_and_refuses_incompatible_storage_without_writes() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("engine.sqlite");
+        assert!(open_file(&path).await.is_err());
+        assert!(!path.exists());
+        let pool = create_file(&path).await.unwrap();
+        pool.close().await;
+        let reopened = open_file(&path).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT revision FROM argentic_schema_revision")
+                .fetch_one(&reopened)
+                .await
+                .unwrap(),
+            SCHEMA_REVISION
+        );
+        sqlx::query("UPDATE argentic_schema_revision SET revision='future'")
+            .execute(&reopened)
+            .await
+            .unwrap();
+        reopened.close().await;
+        let before = std::fs::read(&path).unwrap();
+        assert!(open_file(&path).await.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let pool = connect(options().filename(&path)).await.unwrap();
+        sqlx::query("UPDATE argentic_schema_revision SET revision='post-042'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE macro_application_data(value TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        let before = std::fs::read(&path).unwrap();
+        assert!(open_file(&path).await.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let pool = connect(options().filename(&path)).await.unwrap();
+        sqlx::query("DROP TABLE macro_application_data")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE engine_flow030_owners")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        assert!(open_file(&path).await.is_err());
+    }
     #[tokio::test]
     async fn memory_pool_shares_connections_and_isolates_instances() {
         let first = memory().await.unwrap();

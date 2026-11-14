@@ -1,0 +1,27 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "standalone-write-review",
+  "agents": {
+    "writer": {
+      "harness": "codex",
+      "permissions": {
+        "preset": "workspace",
+        "reviewer": "person",
+        "rules": [{ "action": "write", "effect": "ask" }]
+      },
+      "instructions": "Change only the existing regular workspace file sentinel.txt from before to after, followed by a newline. Use one shell command and request its exact one-file native write grant. Wait for the person's decision. Do not create files or claim a write that did not occur. Report the actual outcome."
+    },
+    "reviewer": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Read sentinel.txt and review the preceding writer's report. Report the actual file contents and whether the requested change happened. Do not edit files."
+    }
+  },
+  "flow": {
+    "entry": "write",
+    "steps": {
+      "write": { "type": "agent", "agent": "writer", "prompt": "Perform the bounded sentinel change.", "next": "review" },
+      "review": { "type": "agent", "agent": "reviewer", "prompt": "Independently verify sentinel.txt and report." }
+    }
+  }
+}

@@ -76,3 +76,9 @@ describe('GitHub CI routing', () => {
     }
   });
 });
+
+
+test('macOS exercises standalone native host paths independently of Tauri', () => {
+  expect(stepByName('macos', 'Test standalone Argentic engine and host').run)
+    .toBe('bun dev/ci/run-checks.mjs --profile argentic');
+});
