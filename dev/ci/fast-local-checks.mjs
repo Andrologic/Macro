@@ -57,6 +57,8 @@ const COPILOT_TYPECHECK_PATTERNS = [
 // DTO dependencies can live in any Rust module, including deleted/renamed files.
 // Keep this conservative without compiling Rust for unrelated frontend changes.
 const GENERATED_CONTRACT_PATTERNS = [
+  /^crates\/argentic-(?:core|runtime)\/.*\.rs$/,
+  /^crates\/argentic-(?:core|runtime)\/(?:Cargo\.toml|Cargo\.lock)$/,
   /^src-tauri\/.*\.rs$/,
   /^src-tauri\/(?:Cargo\.toml|Cargo\.lock|build\.rs)$/,
   /^src-tauri\/examples\/generate_config\//,
@@ -218,6 +220,18 @@ export function planFastLocalChecks(paths, options = {}) {
       command: 'cargo',
       args: ['fmt', '--manifest-path', 'src-tauri/Cargo.toml', '--', '--check'],
     });
+  }
+
+  for (const crate of ['argentic-core', 'argentic-runtime']) {
+    const root = `crates/${crate}/`;
+    if (normalized.some((path) => path.startsWith(root)
+      && (RUST_PATTERN.test(path) || path === `${root}Cargo.toml` || path === `${root}Cargo.lock`))) {
+      steps.push({
+        name: `Formatage Rust ${crate}`,
+        command: 'cargo',
+        args: ['fmt', '--manifest-path', `${root}Cargo.toml`, '--', '--check'],
+      });
+    }
   }
 
   if (normalized.some((path) => matchesAny(path, GENERATED_CONTRACT_PATTERNS))) {
