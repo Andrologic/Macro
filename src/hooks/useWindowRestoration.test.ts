@@ -369,6 +369,8 @@ describe('ensureWindowRestoredOnce', () => {
       const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
       await ensureWindowRestoredOnce();
       try {
+        appShutdownActiveRunsMock.mockImplementation(async () => ['running']);
+        approveClose = true;
         appShutdownPrepareMock.mockImplementationOnce(async () => {
           throw { code: 'APP_SHUTDOWN_PENDING', shutdownStarted: started };
         });
@@ -379,6 +381,7 @@ describe('ensureWindowRestoredOnce', () => {
         const options = closeNotificationMock.mock.calls.at(-1)![1];
         expect(options.description).toContain(started ? 'Task shutdown has begun' : 'Macro is still open');
         await act(async () => { await options.actions[0].onClick(); });
+        expect(confirmCloseMock.mock.calls.at(-1)?.[1]).toMatchObject({ cancelLabel: started ? 'Cancel' : 'Keep working' });
         expect(appUpdateExitAfterCleanShutdownMock).toHaveBeenCalledTimes(1);
       } finally { await act(async () => root.unmount()); container.remove(); }
     });
