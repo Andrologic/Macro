@@ -1,5 +1,6 @@
-//! A separate native profile owns authentication, config and session files.
-//! It never borrows a user's default CODEX_HOME or provider credentials.
+//! A separate profile owns execution config and session files. Authentication
+//! defaults to its private login; an explicit host opt-in can supply external
+//! ChatGPT auth in memory without loading the ordinary home's configuration.
 use crate::host::HostContext;
 use crate::persistence::{failure, Result};
 use crate::process::background_contained_tokio_command;
@@ -253,7 +254,7 @@ pub(crate) fn prepare(manager: &HostContext) -> Result<Profile> {
             "Cannot identify Codex executable",
         )
     })?;
-    let digest = format!(
+    let mut digest = format!(
         "sha256:{:x}",
         Sha256::digest(serde_json::to_vec(&(
             VERSION,
@@ -265,6 +266,16 @@ pub(crate) fn prepare(manager: &HostContext) -> Result<Profile> {
             "native-bootstrap-v1"
         ))?)
     );
+    if let Some(source) = manager.codex_auth_file() {
+        digest = format!(
+            "sha256:{:x}",
+            Sha256::digest(serde_json::to_vec(&(
+                &digest,
+                "external-file-auth-v1",
+                source
+            ))?)
+        );
+    }
     Ok(Profile {
         executable,
         directory,
@@ -421,13 +432,22 @@ pub(crate) async fn status(manager: &HostContext) -> CodexStatus {
         return result;
     }
     result.version = Some(version.into());
+    if manager.codex_auth_file().is_some() && version != VERSION {
+        result.code = "CODEX_AUTH_VERSION_UNQUALIFIED".into();
+        return result;
+    }
     if !qualified_platform() {
         result.code = "CODEX_PLATFORM_UNQUALIFIED".into();
         return result;
     }
-    // Existence is enough to offer the next diagnostic. Native account/read is
-    // the authentication authority; this host never parses auth.json itself.
-    if !profile.directory.join("codex/auth.json").is_file() {
+    // Eligibility for native diagnostics is not account or scope attestation.
+    // An external source is read only by the explicit native auth bootstrap.
+    if manager.codex_auth_file().is_some() {
+        if let Err(error) = super::auth::no_private_auth(&profile.directory) {
+            result.code = error.code;
+            return result;
+        }
+    } else if !profile.directory.join("codex/auth.json").is_file() {
         result.code = "CODEX_LOGIN_REQUIRED".into();
         return result;
     }

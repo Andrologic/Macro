@@ -34,7 +34,7 @@ pub fn codex_registry(
         ));
     }
     let adapter = crate::agsdl_host_codex::ADAPTER;
-    let evidence = json!({"adapterId":adapter,"version":observed.version,"profileDigest":observed.profile.digest,"kind":"native-codex"}).to_string();
+    let evidence = json!({"adapterId":adapter,"version":observed.version,"profileDigest":observed.profile.digest,"accountDigest":observed.account_digest,"kind":"native-codex"}).to_string();
     let capabilities = ["result-submission", "continuity", "permission-enforcement", "contained-stop", "response-attribution", "instructions", "resources", "model.name", "model.effort", "instance.new", "delivery.queue", "delivery.steer", "answer-timeout", "reviewer.person", "planFirst.auto", "completion-check", "skills"]
         .into_iter().filter(|name| (!matches!(*name,"completion-check"|"skills") || cfg!(all(target_os="macos",target_arch="aarch64"))) && (*name!="skills" || observed.version=="0.167.0" && crate::content_io::file_helper::qualified_platform())).map(|name| json!({"name":name,"support":if matches!(name, "resources" | "planFirst.auto") {"approximate"} else {"native"},"evidenceJson":evidence})).collect::<Vec<_>>();
     let default = observed

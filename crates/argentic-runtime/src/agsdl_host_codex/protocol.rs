@@ -1,16 +1,26 @@
 //! Bounded stdio client. Protocol JSON is metadata; authored JSON travels inside
 //! strings so Codex's ordinary JSON decoder cannot round AgSDL numbers.
-use super::profile::{self, Profile};
+use super::{
+    auth,
+    profile::{self, Profile},
+};
 use crate::persistence::{failure, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::{
+    collections::VecDeque,
+    path::{Path, PathBuf},
+};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, ChildStdout};
 
 /// A writer handle lets the owned session keep reading steer receipts while
 /// the human broker is waiting for admission to send its bounded response.
 #[derive(Clone)]
-pub(crate) struct ReplySender030(std::sync::Arc<tokio::sync::Mutex<ChildStdin>>);
+pub(crate) struct ReplySender030(
+    std::sync::Arc<tokio::sync::Mutex<ChildStdin>>,
+    Option<auth::Guard>,
+);
 impl ReplySender030 {
     async fn send(&self, message: &Value) -> Result<()> {
         let mut bytes = serde_json::to_vec(message)?;
@@ -39,6 +49,19 @@ impl ReplySender030 {
         })
     }
     pub(crate) async fn answer_request030(&self, id: Value, result: Value) -> Result<()> {
+        self.answer_request_checked030(id, || result).await
+    }
+    /// Re-evaluate cancellation and the grant after waiting for auth refresh.
+    /// The existing approval broker still owns admission through physical send.
+    pub(crate) async fn answer_request_checked030(
+        &self,
+        id: Value,
+        result: impl FnOnce() -> Value + Send,
+    ) -> Result<()> {
+        let _auth = match &self.1 {
+            Some(auth) => Some(auth.lock_current().await?),
+            None => None,
+        };
         if !id.is_string() && !id.is_u64() {
             return Err(failure(
                 "CORRELATION",
@@ -46,7 +69,7 @@ impl ReplySender030 {
                 "Invalid native request id",
             ));
         }
-        self.send(&json!({"id":id,"result":result})).await
+        self.send(&json!({"id":id,"result":result()})).await
     }
 }
 
@@ -57,27 +80,47 @@ pub(crate) struct Client {
     pending: Vec<Value>,
     pending_bytes: usize,
     frame: Vec<u8>,
-    pub(crate) last_request_error: Option<Value>,
+    auth_source: Option<PathBuf>,
+    expected_account: Option<String>,
+    external_auth: Option<auth::Guard>,
+    deferred: VecDeque<Value>,
 }
 impl Client {
     pub fn new(stdin: ChildStdin, stdout: ChildStdout) -> Self {
         Self {
-            stdin: ReplySender030(std::sync::Arc::new(tokio::sync::Mutex::new(stdin))),
+            stdin: ReplySender030(std::sync::Arc::new(tokio::sync::Mutex::new(stdin)), None),
             stdout: BufReader::new(stdout),
             next_id: 0,
             pending: Vec::new(),
             pending_bytes: 0,
             frame: Vec::new(),
-            last_request_error: None,
+            auth_source: None,
+            expected_account: None,
+            external_auth: None,
+            deferred: VecDeque::new(),
         }
     }
     async fn send(&mut self, message: &Value) -> Result<()> {
         self.stdin.send(message).await
     }
     pub(crate) fn reply_sender030(&self) -> ReplySender030 {
-        self.stdin.clone()
+        ReplySender030(self.stdin.0.clone(), self.external_auth.clone())
+    }
+    pub(crate) fn use_auth_source(
+        &mut self,
+        source: Option<PathBuf>,
+        expected_account: Option<String>,
+    ) {
+        self.auth_source = source;
+        self.expected_account = expected_account;
     }
     pub(crate) async fn next(&mut self) -> Result<Value> {
+        if let Some(value) = self.deferred.pop_front() {
+            return Ok(value);
+        }
+        self.wire_next().await
+    }
+    async fn wire_next(&mut self) -> Result<Value> {
         loop {
             let chunk =
                 self.stdout.fill_buf().await.map_err(|_| {
@@ -109,10 +152,15 @@ impl Client {
             }
         }
         let bytes = std::mem::take(&mut self.frame);
-        Ok(serde_json::from_slice(&bytes)?)
+        serde_json::from_slice(&bytes).map_err(|_| {
+            failure(
+                "NATIVE_UNCERTAIN",
+                "stdio",
+                "Malformed Codex protocol frame",
+            )
+        })
     }
     pub(crate) async fn begin_request(&mut self, method: &str, params: Value) -> Result<u64> {
-        self.last_request_error = None;
         self.next_id += 1;
         let id = self.next_id;
         self.send(&json!({"id":id,"method":method,"params":params}))
@@ -120,11 +168,10 @@ impl Client {
         Ok(id)
     }
     pub(crate) async fn answer_request030(&mut self, id: Value, result: Value) -> Result<()> {
-        self.stdin.answer_request030(id, result).await
+        self.reply_sender030().answer_request030(id, result).await
     }
     pub(crate) fn response_value030(&mut self, value: &Value) -> Result<Value> {
-        if let Some(error) = value.get("error") {
-            self.last_request_error = Some(error.clone());
+        if value.get("error").is_some() {
             return Err(failure(
                 "CODEX_REQUEST_FAILED",
                 "protocol",
@@ -140,7 +187,6 @@ impl Client {
         })
     }
     pub async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
-        self.last_request_error = None;
         let id = self.begin_request(method, params).await?;
         self.response(id).await
     }
@@ -158,6 +204,9 @@ impl Client {
     async fn response(&mut self, id: u64) -> Result<Value> {
         loop {
             let value = self.next().await?;
+            if self.handle_auth_request(&value).await? {
+                continue;
+            }
             if value.get("method").is_none() && value.get("id").and_then(Value::as_u64) == Some(id)
             {
                 return self.response_value030(&value);
@@ -212,7 +261,8 @@ impl Client {
                 "The native Codex tool sandbox could not start inside the isolated host profile",
             ));
         }
-        Ok(())
+        self.bootstrap_auth(profile, std::path::Path::new(cwd), read_only)
+            .await
     }
     pub async fn qualify(
         &mut self,
@@ -246,24 +296,207 @@ impl Client {
                 "Connect a test account in the private Codex profile",
             ));
         }
-        let routing = &account["workspaceRouting"];
-        if account["account"]["type"] != "chatgpt" {
-            return Err(failure(
-                "CODEX_ACCOUNT_UNQUALIFIED",
-                "engine",
-                "Codex account identity cannot be attested for this profile",
-            ));
+        let account_digest = account_digest(&account)?;
+        if let Some(auth) = &self.external_auth {
+            let state = auth.lock_current().await?;
+            if state.routing_digest.as_deref() != Some(&account_digest) {
+                return Err(auth::error("CODEX_AUTH_ACCOUNT_CHANGED"));
+            }
         }
-        let account_digest = format!(
-            "sha256:{:x}",
-            Sha256::digest(serde_json::to_vec(&(
-                required(routing, "chatgptAccountId")?,
-                required(routing, "backendOrigin")?,
-                required(routing, "accountRoutingOverride")?
-            ))?)
-        );
         let models = self.request("model/list", json!({"limit":100})).await?;
         Ok((model_observations030(&models)?, account_digest))
+    }
+}
+
+fn account_digest(account: &Value) -> Result<String> {
+    if account["account"]["type"] != "chatgpt" {
+        return Err(failure(
+            "CODEX_ACCOUNT_UNQUALIFIED",
+            "engine",
+            "Codex account identity cannot be attested for this profile",
+        ));
+    }
+    let routing = &account["workspaceRouting"];
+    Ok(format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_json::to_vec(&(
+            required(routing, "chatgptAccountId")?,
+            required(routing, "backendOrigin")?,
+            required(routing, "accountRoutingOverride")?
+        ))?)
+    ))
+}
+
+#[cfg(all(test, unix))]
+#[path = "auth_tests.rs"]
+mod auth_tests;
+
+impl Client {
+    pub(crate) async fn check_auth_current(&self) -> Result<()> {
+        if let Some(auth) = &self.external_auth {
+            drop(auth.lock_current().await?);
+        }
+        Ok(())
+    }
+    async fn bootstrap_auth(
+        &mut self,
+        profile: &Profile,
+        workspace: &Path,
+        read_only: bool,
+    ) -> Result<()> {
+        let Some(source) = self.auth_source.clone() else {
+            return Ok(());
+        };
+        if self.external_auth.is_some() {
+            return self.check_auth_current().await;
+        }
+        auth::source_scope(&source, &profile.directory, workspace)?;
+        let credential = auth::read(&source).await?;
+        let state = auth::Guard(std::sync::Arc::new(tokio::sync::Mutex::new(
+            auth::Session {
+                source,
+                profile: profile.clone(),
+                workspace: workspace.to_owned(),
+                read_only,
+                account_id: credential.account_id.clone(),
+                token_fingerprint: credential.fingerprint(),
+                routing_digest: None,
+                valid: false,
+            },
+        )));
+        self.external_auth = Some(state.clone());
+        let result = tokio::time::timeout(auth::TIMEOUT, async {
+            let response = self.request("account/login/start", json!({"type":"chatgptAuthTokens", "accessToken":credential.access_token, "chatgptAccountId":credential.account_id})).await
+                .map_err(|_| auth::error("CODEX_AUTH_FAILED"))?;
+            if response["type"] != "chatgptAuthTokens" { return Err(auth::error("CODEX_AUTH_FAILED")); }
+            let mut guard = state.0.lock().await;
+            let expected = self.expected_account.clone();
+            self.check_external_account(&mut guard, expected.as_deref()).await?;
+            guard.valid = true;
+            Ok(())
+        }).await.map_err(|_| auth::error("CODEX_AUTH_TIMEOUT"))?;
+        result
+    }
+
+    /// Consume only the auth callback before approval/steer classification. Call
+    /// outside cancellable notification selects; the run's outer Stop still
+    /// cancels this operation and owns the contained process through drainage.
+    pub(crate) async fn handle_auth_request(&mut self, event: &Value) -> Result<bool> {
+        if event["method"] != "account/chatgptAuthTokens/refresh" {
+            return Ok(false);
+        }
+        let state = self
+            .external_auth
+            .clone()
+            .ok_or_else(|| auth::error("CODEX_AUTH_FAILED"))?;
+        let mut guard = state.0.lock().await;
+        let was_valid = guard.valid;
+        guard.valid = false;
+        let id = &event["id"];
+        if !was_valid
+            || (!id.is_u64()
+                && !id
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty() && id.len() <= 256))
+            || event["params"]["reason"] != "unauthorized"
+            || event["params"]["previousAccountId"].as_str() != Some(&guard.account_id)
+        {
+            return Err(auth::error("CODEX_AUTH_ACCOUNT_CHANGED"));
+        }
+        let credential = auth::read(&guard.source).await?;
+        if credential.account_id != guard.account_id {
+            return Err(auth::error("CODEX_AUTH_ACCOUNT_CHANGED"));
+        }
+        if credential.fingerprint() == guard.token_fingerprint {
+            return Err(auth::error("CODEX_AUTH_REFRESH_REQUIRED"));
+        }
+        guard.token_fingerprint = credential.fingerprint();
+        let result = tokio::time::timeout(auth::TIMEOUT, async {
+            // No generic reply guard here: this operation owns it until the
+            // renewed credential's real account/routing is attested below.
+            self.send(&json!({"id":id,"result":{"accessToken":credential.access_token,"chatgptAccountId":credential.account_id}})).await?;
+            self.check_external_account(&mut guard, None).await
+        }).await.map_err(|_| auth::error("CODEX_AUTH_TIMEOUT"))?;
+        result?;
+        guard.valid = true;
+        Ok(true)
+    }
+
+    async fn check_external_account(
+        &mut self,
+        state: &mut auth::Session,
+        expected: Option<&str>,
+    ) -> Result<()> {
+        let account = self
+            .auth_response("account/read", json!({"refreshToken":false}))
+            .await?;
+        let digest = account_digest(&account).map_err(|_| auth::error("CODEX_AUTH_FAILED"))?;
+        if account["workspaceRouting"]["chatgptAccountId"].as_str() != Some(&state.account_id)
+            || expected.is_some_and(|expected| expected != digest)
+            || state
+                .routing_digest
+                .as_ref()
+                .is_some_and(|old| old != &digest)
+        {
+            return Err(auth::error("CODEX_AUTH_ACCOUNT_CHANGED"));
+        }
+        // Login/refresh may reload managed configuration. Re-attest the exact
+        // existing profile before the auth lock can release a physical reply.
+        let profile = &state.profile;
+        let config = self
+            .auth_response(
+                "config/read",
+                json!({"includeLayers":true,"cwd":profile.bootstrap}),
+            )
+            .await?;
+        profile::verify_layers(&config, profile, &state.workspace, state.read_only)?;
+        let skills = self
+            .auth_response(
+                "skills/list",
+                json!({"cwds":[profile.bootstrap],"forceReload":true}),
+            )
+            .await?;
+        verify_skills(&skills, &profile.bootstrap)?;
+        let command = self.auth_response("command/exec",json!({"command":["/usr/bin/true"],"cwd":state.workspace,"permissionProfile":"macro-agsdl","timeoutMs":5000,"outputBytesCap":4096})).await?;
+        if command["exitCode"].as_i64() != Some(0) {
+            return Err(failure(
+                "CODEX_SANDBOX_UNQUALIFIED",
+                "engine",
+                "The native Codex tool sandbox could not start inside the isolated host profile",
+            ));
+        }
+        auth::no_private_auth(&profile.directory)?;
+        if auth::read(&state.source).await?.account_id != state.account_id {
+            return Err(auth::error("CODEX_AUTH_ACCOUNT_CHANGED"));
+        }
+        state.routing_digest = Some(digest);
+        Ok(())
+    }
+
+    async fn auth_response(&mut self, method: &str, params: Value) -> Result<Value> {
+        let id = self.begin_request(method, params).await?;
+        let mut held = Vec::new();
+        let mut held_bytes = self.deferred.iter().try_fold(0usize, |size, value| {
+            serde_json::to_vec(value).map(|bytes| size + bytes.len())
+        })?;
+        loop {
+            let value = self.wire_next().await?;
+            if value.get("method").is_none() && value["id"].as_u64() == Some(id) {
+                let result = self
+                    .response_value030(&value)
+                    .map_err(|_| auth::error("CODEX_AUTH_FAILED"))?;
+                self.deferred.extend(held);
+                return Ok(result);
+            }
+            if value["method"] == "account/chatgptAuthTokens/refresh" {
+                return Err(auth::error("CODEX_AUTH_REFRESH_REQUIRED"));
+            }
+            held_bytes += serde_json::to_vec(&value)?.len();
+            if self.deferred.len() + held.len() >= 1000 || held_bytes > 4_000_000 {
+                return Err(auth::error("CODEX_AUTH_FAILED"));
+            }
+            held.push(value);
+        }
     }
 }
 fn conclusive_turn(value: &Value, turn: &str) -> Result<bool> {

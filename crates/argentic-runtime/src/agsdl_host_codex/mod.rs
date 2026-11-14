@@ -1,5 +1,6 @@
 //! Codex's native tools follow Codex's captured sandbox. Macro owns admission,
 //! private references, response validation, terminal transactions and physical end.
+pub(crate) mod auth;
 pub(crate) mod profile;
 pub(crate) mod protocol;
 use crate::host::HostContext;
@@ -16,7 +17,10 @@ use serde_json::{json, Value};
 /// This scope contains no user source and never creates a model thread.
 pub(crate) async fn profile_status(manager: &HostContext) -> CodexStatus {
     let mut status = profile::status(manager).await;
-    if status.version.is_none() || status.code == "CODEX_PLATFORM_UNQUALIFIED" {
+    if status.version.is_none()
+        || status.code == "CODEX_PLATFORM_UNQUALIFIED"
+        || manager.codex_auth_file().is_some() && !status.available
+    {
         return status;
     }
     let result: Result<()> = async {
@@ -24,6 +28,7 @@ pub(crate) async fn profile_status(manager: &HostContext) -> CodexStatus {
         let root = manager.root().join("native-discovery").join("codex");
         std::fs::create_dir_all(&root)
             .map_err(|_| failure("STORAGE", "scope", "Cannot create native diagnostic scope"))?;
+        let auth_source = manager.codex_auth_file().map(std::path::Path::to_path_buf);
         tokio::spawn(async move {
             let mut process =
                 ContainedBackgroundProcess::spawn(profile.app_server_command(&root, true)?)
@@ -51,6 +56,7 @@ pub(crate) async fn profile_status(manager: &HostContext) -> CodexStatus {
                         )
                     })?,
                 );
+                client.use_auth_source(auth_source, None);
                 client.initialize().await?;
                 client
                     .preflight(&profile, &root.to_string_lossy(), true)
@@ -102,8 +108,8 @@ pub(crate) struct CodexObservation030 {
     pub account_digest: String,
 }
 
-/// Preflight never reads credentials. Until a dedicated test login and native
-/// qualification exist, no Codex attestation or executable model is published.
+/// Native account and scope qualification must succeed before publishing a
+/// catalogue. External auth is available only through an explicit host opt-in.
 pub(crate) async fn observe(
     manager: &HostContext,
     scope: &Value,
@@ -147,6 +153,7 @@ pub(crate) async fn observe_catalogue030(
             .and_then(Value::as_str)
             .ok_or_else(|| failure("CORRELATION", "scope", "Native scope root is absent"))?,
     );
+    let auth_source = manager.codex_auth_file().map(std::path::Path::to_path_buf);
     tokio::spawn(async move {
         let mut process =
             ContainedBackgroundProcess::spawn(profile.app_server_command(&root, read_only)?)
@@ -174,6 +181,7 @@ pub(crate) async fn observe_catalogue030(
                     )
                 })?,
             );
+            client.use_auth_source(auth_source, None);
             client.initialize().await?;
             let (models, account) = client
                 .qualify_catalogue030(&profile, &root.to_string_lossy(), read_only)

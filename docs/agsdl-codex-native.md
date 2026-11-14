@@ -69,6 +69,58 @@ sessions. Signing into one does not authenticate this profile. Changing the
 profile's account after capture refuses continuation; a token refresh alone
 does not change the captured account identity.
 
+## Explicit existing-file authentication
+
+The private login above remains the default. A native host can explicitly opt
+into reading an existing ChatGPT **file** session without loading that session's
+configuration. This experimental path is limited to the official **0.167.0**
+executable and the existing platform gates. A working ordinary 0.169 session
+does not qualify 0.169 as an AgSDL execution engine. Product qualification of
+this new authentication path still requires the real UI and standalone recipes.
+
+For Macro, set `ARGENTIC_CODEX_AUTH_FILE` only in the process launching the QA
+application. For the standalone operator, use `--codex-auth-file FILE`; embedding
+hosts use `HostContext::with_codex_auth_file`. The source is native host
+configuration, never an AgSDL field or model-selected path. Select the qualified
+executable using that host process's `PATH`, without changing the ordinary CLI
+installation. For example:
+
+```sh
+env PATH="/absolute/qualified-codex-0.167.0:$PATH" \
+  ARGENTIC_CODEX_AUTH_FILE=/absolute/ordinary-codex-home/auth.json \
+  /absolute/qa-application
+```
+
+The selected source must be a canonical absolute, owned, private regular file
+outside the workspace and execution profile. Symlinks, hard links, group/other
+access and files over 128 KiB are refused. Only a ChatGPT record with a usable
+access token and selected account ID is supported. Keyring/encrypted stores,
+other credential modes and missing/expired tokens are refused. The private
+execution profile must have no stored `codex/auth.json`; use a distinct QA data
+root instead of moving or deleting an existing session.
+
+The native client uses the internal, unstable `chatgptAuthTokens` app-server API.
+It transmits credentials only in memory over the contained CLI's private stdin.
+It never copies an auth file, sends credentials to the frontend/model, or writes
+or renews the ordinary session. Hooks, MCP, skills, rules, executables and other
+ordinary configuration are not imported. The execution profile and per-action
+human grants stay in force. Each server verifies its actual `account/read`
+workspace routing against the captured identity before work can proceed.
+
+On a native 401 callback, the client can reread a token already renewed by the
+ordinary CLI for the same account. It rechecks native account/routing before
+releasing replies. It does not perform OAuth refresh. An unchanged rejected
+token, changed account/routing, invalid source or deadline stops the operation
+with a fixed diagnostic, never an automatic login, fallback or replay.
+
+| Diagnostic | Required follow-up |
+| --- | --- |
+| `CODEX_AUTH_SOURCE_UNAVAILABLE` / `CODEX_AUTH_SOURCE_UNSUPPORTED` | Check the host-selected file source and supported storage format privately. |
+| `CODEX_AUTH_EXPIRED` / `CODEX_AUTH_REFRESH_REQUIRED` | No usable renewed token is available. Keep the work stopped; this host cannot refresh it. |
+| `CODEX_AUTH_ACCOUNT_CHANGED` | Refuse continuation under the captured identity. |
+| `CODEX_AUTH_PROFILE_CONFLICT` / `CODEX_AUTH_VERSION_UNQUALIFIED` | Select a separate empty execution profile and the exact qualified executable. |
+| `CODEX_AUTH_FAILED` / `CODEX_AUTH_TIMEOUT` | Inspect the fixed diagnostic and physical Stop/drain state; no credential detail is retained in the error. |
+
 ## AgSDL 0.3 execution
 
 Architect exposes Start and Stop for the qualified Codex slice. It supports
@@ -196,7 +248,8 @@ qualification above remain; no old execution or document conversion is used.
 A supported `0.167.x` version string is only an admission prerequisite. For a new
 patch or changed executable, record the exact CLI version/digest, platform, host
 commit/tree, runtime schema revision and private profile diagnostic. Use an
-official isolated login in the profile belonging to that host. Keep credentials,
+official isolated login in the profile belonging to that host, or the explicit
+existing-file opt-in above when qualifying that exact authentication mode. Keep credentials,
 login codes and account details out of the evidence. A login-required diagnostic
 leaves the real recipe open.
 

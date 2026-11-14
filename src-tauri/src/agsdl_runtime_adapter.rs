@@ -43,8 +43,12 @@ impl PolicySource for MacroPolicy {
 }
 impl ConfigManager {
     pub(crate) fn engine_context(&self) -> HostContext {
-        HostContext::new(self.root().to_owned(), Arc::new(MacroPolicy(self.clone())))
-            .with_network(Arc::new(MacroContentNetwork))
+        let context = HostContext::new(self.root().to_owned(), Arc::new(MacroPolicy(self.clone())))
+            .with_network(Arc::new(MacroContentNetwork));
+        match std::env::var_os("ARGENTIC_CODEX_AUTH_FILE") {
+            Some(path) => context.with_codex_auth_file(path.into()),
+            None => context,
+        }
     }
 }
 impl From<ConfigManager> for HostContext {

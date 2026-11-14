@@ -106,7 +106,7 @@ async fn execute(host: &Host, command: Command, codex: bool) -> persistence::Res
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.is_empty() || args.iter().any(|a| a == "--help") {
-        println!("argentic-host --data DIR --workspace DIR --source FILE --policy FILE --approve-policy SHA256 --stop-on-exit [--codex]\nJSON-lines commands: preflight, start, runs, inspect, humans, answer, deliver, stop, shutdown, quit.\nNo provider is observed or started unless --codex and preflight/start are both explicit.\n--stop-on-exit consents to native Stop/drain of this process's runs on EOF or Ctrl-C.");
+        println!("argentic-host --data DIR --workspace DIR --source FILE --policy FILE --approve-policy SHA256 --stop-on-exit [--codex] [--codex-auth-file FILE]\nJSON-lines commands: preflight, start, runs, inspect, humans, answer, deliver, stop, shutdown, quit.\nNo provider is observed or started unless --codex and preflight/start are both explicit.\n--codex-auth-file opts into native, memory-only reuse of an existing ChatGPT file session, without its configuration or refresh writes.\n--stop-on-exit consents to native Stop/drain of this process's runs on EOF or Ctrl-C.");
         return Ok(());
     }
     let mut data = None;
@@ -116,12 +116,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut approved = None;
     let mut codex = false;
     let mut stop_on_exit = false;
+    let mut auth_file = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--codex" => codex = true,
             "--stop-on-exit" => stop_on_exit = true,
-            name @ ("--data" | "--workspace" | "--source" | "--policy" | "--approve-policy") => {
+            name @ ("--data" | "--workspace" | "--source" | "--policy" | "--approve-policy"
+            | "--codex-auth-file") => {
                 i += 1;
                 let value = args.get(i).ok_or("Missing option value")?.clone();
                 match name {
@@ -129,6 +131,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "--workspace" => workspace = Some(PathBuf::from(value)),
                     "--source" => source = Some(PathBuf::from(value)),
                     "--policy" => policy = Some(PathBuf::from(value)),
+                    "--codex-auth-file" => auth_file = Some(PathBuf::from(value)),
                     _ => approved = Some(value),
                 }
             }
@@ -148,6 +151,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await
     .map_err(|e| format!("{}: {}", e.code, e.message))?;
+    let host = match auth_file {
+        Some(path) => host.with_codex_auth_file(path),
+        None => host,
+    };
     let ready = output(
         json!({"ready":true,"source":host.source().await,"runs":host.runs().await.map_err(|e|e.code)?}),
     );

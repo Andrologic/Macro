@@ -547,6 +547,9 @@ impl CodexExecutor030 {
             Some(profile) => profile.clone(),
             None => profile::prepare(&self.config)?,
         };
+        if self.config.codex_auth_file().is_some() {
+            external_account_capture(frozen, &profile)?;
+        }
         let process = ContainedBackgroundProcess::spawn(
             profile.app_server_command(Path::new(&root), read_only)?,
         )
@@ -663,6 +666,13 @@ impl CodexExecutor030 {
         current_turn: &mut Option<String>,
         mut steer: Option<&mut SteerContext030>,
     ) -> HostResult<()> {
+        let auth_source = self.config.codex_auth_file().map(Path::to_path_buf);
+        let expected_account = if auth_source.is_some() {
+            Some(external_account_capture(frozen, profile)?)
+        } else {
+            None
+        };
+        client.use_auth_source(auth_source, expected_account);
         client.initialize().await?;
         client.preflight(profile, root, read_only).await?;
         let previous = self.threads.lock().await.get(key).cloned();
@@ -757,6 +767,17 @@ impl CodexExecutor030 {
                         continue;
                     }
                 };
+                if client.handle_auth_request(&event).await? {
+                    continue;
+                }
+                if event.get("id").is_some()
+                    || matches!(
+                        event["method"].as_str(),
+                        Some("item/completed" | "turn/completed")
+                    )
+                {
+                    client.check_auth_current().await?;
+                }
                 if pending_steer
                     .receive(client, &event, &thread, &turn, &mut steer)
                     .await?
@@ -815,8 +836,10 @@ impl CodexExecutor030 {
                             let reply = client.reply_sender030();
                             let answer = port.answer(&attempt, json!({"nativeRequest":event}), cancel,
                                 Box::new(move |accepted| Box::pin(async move {
-                                    let accepted = accepted && !cancel.is_cancelled() && approvals::bounded_file(&request, &native_thread, &native_turn, Path::new(&root), &policy).is_some();
-                                    reply.answer_request030(request["id"].clone(), json!({"decision":if accepted {"accept"} else {"decline"}})).await
+                                    reply.answer_request_checked030(request["id"].clone(), || {
+                                        let accepted = accepted && !cancel.is_cancelled() && approvals::bounded_file(&request, &native_thread, &native_turn, Path::new(&root), &policy).is_some();
+                                        json!({"decision":if accepted {"accept"} else {"decline"}})
+                                    }).await
                                 })));
                             tokio::pin!(answer);
                             loop {
@@ -825,6 +848,7 @@ impl CodexExecutor030 {
                                     result = &mut answer => { result?; break; }
                                     event = client.notification() => {
                                         let event = event?;
+                                        if client.handle_auth_request(&event).await? { continue; }
                                         if !pending_steer.receive(client, &event, &thread, &turn, &mut steer).await? {
                                             defer_native030(&mut deferred_native, &mut deferred_bytes, event)?;
                                         }
@@ -974,6 +998,32 @@ impl CodexExecutor030 {
     }
 }
 
+fn external_account_capture(frozen: &Value, profile: &profile::Profile) -> HostResult<String> {
+    let evidence: Value =
+        serde_json::from_str(&required(frozen, "evidenceJson")?).map_err(|_| {
+            failure(
+                "CORRELATION",
+                "authentication",
+                "Captured native account evidence is absent",
+            )
+        })?;
+    if evidence["version"] != profile::VERSION {
+        return Err(failure(
+            "CODEX_AUTH_VERSION_UNQUALIFIED",
+            "authentication",
+            "External authentication is bounded to the captured Codex 0.167.0 binary",
+        ));
+    }
+    if evidence["profileDigest"].as_str() != Some(&profile.digest) {
+        return Err(failure(
+            "CODEX_PROFILE_UNQUALIFIED",
+            "authentication",
+            "The native binary or isolated profile differs from the capture",
+        ));
+    }
+    required(&evidence, "accountDigest")
+}
+
 #[cfg(test)]
 pub(crate) mod protocol_tests {
     use super::*;
@@ -1115,10 +1165,20 @@ process.stdout.write(JSON.stringify({...result,check:null}));
     }
 
     pub(crate) const SERVER: &str = r#"
-import json,sys,subprocess,os
+import json,sys,subprocess,os,base64
 settings=json.loads(sys.argv[1]); bootstrap=sys.argv[2]; mode=sys.argv[3]
 count=0
 thread='thread'
+external_auth='-auth' in mode
+auth_refreshed=False
+def rotate_auth():
+ source=sys.argv[5]
+ record=json.load(open(source))
+ payload=base64.urlsafe_b64encode(json.dumps({'exp':18446744073709551615,'generation':'rotated'}).encode()).decode().rstrip('=')
+ record['tokens']['access_token']='e30.'+payload+'.synthetic'
+ with open(source+'.next','w') as f: json.dump(record,f)
+ os.chmod(source+'.next',0o600); os.replace(source+'.next',source)
+ print(json.dumps({'id':'refresh','method':'account/chatgptAuthTokens/refresh','params':{'reason':'unauthorized','previousAccountId':'foreign' if mode=='approval-auth-foreign' else 'synthetic-account'}}),flush=True)
 if mode=='continuity':
  trace=sys.argv[4]
  statefile=trace+'.threads'
@@ -1127,6 +1187,11 @@ if mode=='continuity':
 for line in sys.stdin:
  m=json.loads(line); method=m.get('method'); p=m.get('params',{}); i=m.get('id')
  if i is None: continue
+ if method is None and external_auth and i=='refresh':
+  credential=json.load(open(sys.argv[5]))['tokens']
+  assert m['result']=={'accessToken':credential['access_token'],'chatgptAccountId':credential['account_id']}
+  auth_refreshed=True
+  continue
  if method is None and mode.startswith('approval-'):
   assert i=='native-approval'
   if m['result']['decision']=='accept': open(sys.argv[4],'w').write('after')
@@ -1146,6 +1211,15 @@ for line in sys.stdin:
  elif method=='config/read': result={'layers':[{'name':{'type':'sessionFlags'},'config':settings}],'config':settings}
  elif method=='skills/list': result={'data':[{'cwd':bootstrap,'skills':[],'errors':[]}]}
  elif method=='command/exec': result={'exitCode':0}
+ elif method=='account/login/start' and external_auth:
+  credential=json.load(open(sys.argv[5]))['tokens']
+  assert p=={'type':'chatgptAuthTokens','accessToken':credential['access_token'],'chatgptAccountId':credential['account_id']}
+  result={'type':'chatgptAuthTokens'}
+ elif method=='account/read' and external_auth:
+  if auth_refreshed:
+   open(sys.argv[5]+'.attested','w').write('yes')
+   if mode=='cancel-auth': continue
+  result={'account':{'type':'chatgpt'},'workspaceRouting':{'chatgptAccountId':'synthetic-account','backendOrigin':'https://chatgpt.com','accountRoutingOverride':'NO_CONSTRAINT'}}
  elif method in ('thread/start','thread/resume'):
   assert p['cwd']==bootstrap
   assert p['runtimeWorkspaceRoots']==list(settings['permissions']['macro-agsdl']['workspace_roots'])
@@ -1197,7 +1271,7 @@ for line in sys.stdin:
   continue
  elif method=='turn/start':
   count+=1
-  if mode=='cancel':
+  if mode.startswith('cancel'):
    child=subprocess.Popen(['sleep','60'],start_new_session=True)
    open(sys.argv[4],'w').write(str(child.pid))
   if mode=='error':
@@ -1242,16 +1316,43 @@ for line in sys.stdin:
   f=sys.argv[4]
   params={'threadId':thread,'turnId':'turn1','kind':'command','environmentId':'local','itemId':'native-command','command':'synthetic command' if mode!='approval-missing' else None,'cwd':bootstrap,'additionalPermissions':{'network':None,'fileSystem':{'read':None,'write':[f],'entries':[{'path':{'type':'path','path':f},'access':'write'}]}}}
   print(json.dumps({'id':'native-approval','method':'item/commandExecution/requestApproval','params':params}),flush=True)
+  if external_auth: rotate_auth()
   continue
+ if method=='turn/start' and mode=='cancel-auth': rotate_auth()
  if method=='turn/start' and mode in ('steer','steer-uncertain'):
   print(json.dumps({'method':'item/completed','params':{'threadId':'thread','turnId':'turn1','item':{'id':'early','type':'agentMessage','phase':'commentary','text':'Starting'}}}),flush=True)
- if method=='turn/start' and mode not in ('cancel','steer','steer-uncertain'):
+ if method=='turn/start' and not mode.startswith('cancel') and mode not in ('steer','steer-uncertain'):
   choice='bad' if mode in ('correct','exhausted') and count==1 else 'approve'
   submission={'version':'macro-agsdl-agent-work/030','agentJson':'{}'} if mode=='internal_contract' and count==1 else {'results':{'summary':'Done'},'choice':choice}
   text='{}' if mode=='invalid_envelope' and count==1 else json.dumps({'text':'hello','submissionJson':json.dumps(submission)})
   print(json.dumps({'method':'item/completed','params':{'threadId':'thread','turnId':'turn'+str(count),'item':{'id':'item'+str(count),'type':'agentMessage','phase':'final_answer','text':text}}}),flush=True)
   print(json.dumps({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'turn'+str(count),'status':'completed'}}}),flush=True)
 "#;
+
+    fn auth_inputs(config: HostContext, root: &Path, enabled: bool) -> (HostContext, Value) {
+        if !enabled {
+            return (config, json!({}));
+        }
+        let source = root.join("ordinary.json");
+        crate::agsdl_host_codex::auth::fixture_file(
+            &source,
+            "synthetic-account",
+            u64::MAX,
+            "initial",
+        );
+        use sha2::{Digest, Sha256};
+        let digest = format!(
+            "sha256:{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&("synthetic-account", "https://chatgpt.com", "NO_CONSTRAINT"))
+                    .unwrap()
+            )
+        );
+        (
+            config.with_codex_auth_file(source),
+            json!({"evidenceJson":json!({"accountDigest":digest,"profileDigest":"fixture","version":"0.167.0"}).to_string()}),
+        )
+    }
 
     async fn fake_session(mode: &str, read_only: bool) -> (HostResult<()>, Vec<Value>) {
         let temp = tempfile::tempdir().unwrap();
@@ -1280,6 +1381,7 @@ for line in sys.stdin:
             .arg(&bootstrap)
             .arg(mode)
             .arg(workspace.join("sentinel"))
+            .arg(root.join("ordinary.json"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -1292,6 +1394,11 @@ for line in sys.stdin:
         )))
         .await
         .unwrap();
+        let (config, mut frozen) = auth_inputs(config, &root, mode.contains("-auth"));
+        if mode == "approval-auth-profile" {
+            frozen["evidenceJson"] =
+                json!(json!({"version":"0.167.0","profileDigest":"different-binary"}).to_string());
+        }
         let executor = CodexExecutor030::new(config);
         if mode == "inject_error" {
             executor
@@ -1381,12 +1488,16 @@ for line in sys.stdin:
                 document: json!({}),
                 approvals: Some(Arc::new(TestCommandApprovals {
                     accept: matches!(mode, "approval-yes" | "approval-steer")
-                        || mode.starts_with("approval-rpc-"),
+                        || mode.starts_with("approval-rpc-")
+                        || mode.starts_with("approval-auth"),
                     stop: mode == "approval-stop",
                     file: workspace.join("sentinel"),
                     calls: approval_calls.clone(),
                     steer: (mode == "approval-steer").then_some(sender),
                     consumed,
+                    wait_auth: mode
+                        .starts_with("approval-auth")
+                        .then(|| root.join("ordinary.json.attested")),
                 })),
                 policy: EffectivePolicy::new(p.clone(), p.clone(), p),
                 root: workspace.to_str().unwrap().into(),
@@ -1405,7 +1516,7 @@ for line in sys.stdin:
                     run_workspace.to_str().unwrap(),
                     read_only,
                     "fixture",
-                    &json!({}),
+                    &frozen,
                     &("run".into(), "instance".into()),
                     "instructions",
                     "mission",
@@ -1456,6 +1567,7 @@ for line in sys.stdin:
         calls: Arc<StdMutex<Vec<bool>>>,
         steer: Option<crate::agsdl_host_steer030::SteerSender030>,
         consumed: Option<Arc<tokio::sync::Notify>>,
+        wait_auth: Option<std::path::PathBuf>,
     }
     impl approvals::CommandApprovals030 for TestCommandApprovals {
         fn answer<'a>(
@@ -1466,6 +1578,15 @@ for line in sys.stdin:
             respond: approvals::Respond030<'a>,
         ) -> BoxFuture<'a, HostResult<()>> {
             Box::pin(async move {
+                if let Some(path) = &self.wait_auth {
+                    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                        while !path.exists() {
+                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                        }
+                    })
+                    .await
+                    .unwrap();
+                }
                 if let Some(sender) = &self.steer {
                     use crate::persistence::flow030::{
                         FlowEffect030, FlowEffectKind030, WorkRef030,
@@ -1518,6 +1639,35 @@ for line in sys.stdin:
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn external_auth_refresh_during_human_wait_preserves_the_real_approval() {
+        for mode in [
+            "approval-auth",
+            "approval-auth-foreign",
+            "approval-auth-profile",
+        ] {
+            let (result, events) = fake_session(mode, true).await;
+            if mode == "approval-auth" {
+                result.unwrap();
+                assert_eq!(events.last().unwrap()["file"], "after");
+                assert_eq!(events.last().unwrap()["nativeAnswers"], json!([true]));
+            } else {
+                assert_eq!(
+                    result.unwrap_err().code,
+                    if mode == "approval-auth-foreign" {
+                        "CODEX_AUTH_ACCOUNT_CHANGED"
+                    } else {
+                        "CODEX_PROFILE_UNQUALIFIED"
+                    }
+                );
+                assert_eq!(events.last().unwrap()["file"], "before");
+                assert_eq!(events.last().unwrap()["nativeAnswers"], json!([]));
+            }
+            let public = serde_json::to_string(&events).unwrap();
+            assert!(!public.contains("accessToken") && !public.contains("SYNTHETIC_REFRESH"));
+        }
+    }
     #[tokio::test]
     async fn native_command_callback_waits_for_the_person_and_never_approves_an_unknown_scope() {
         for mode in [
@@ -1673,6 +1823,11 @@ for line in sys.stdin:
     #[cfg(unix)]
     #[tokio::test]
     async fn cancellation_interrupts_then_joins_real_descendant() {
+        cancellation_session("cancel").await;
+        cancellation_session("cancel-auth").await;
+    }
+    #[cfg(unix)]
+    async fn cancellation_session(mode: &str) {
         use crate::agsdl_host_flow030::FlowWorkAttempt030;
         use crate::tasks::StreamTasks;
         let temp = tempfile::tempdir().unwrap();
@@ -1697,8 +1852,9 @@ for line in sys.stdin:
             .arg(SERVER)
             .arg(settings.to_string())
             .arg(&bootstrap)
-            .arg("cancel")
+            .arg(mode)
             .arg(&pidfile)
+            .arg(root.join("ordinary.json"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -1708,6 +1864,7 @@ for line in sys.stdin:
         )))
         .await
         .unwrap();
+        let (config, frozen) = auth_inputs(config, &root, mode.contains("-auth"));
         let executor = CodexExecutor030::new(config);
         let tasks = StreamTasks::default();
         let attempt = FlowWorkAttempt030::registry_fixture030("codex-test");
@@ -1732,7 +1889,7 @@ for line in sys.stdin:
                         workspace.to_str().unwrap(),
                         true,
                         "fixture",
-                        &json!({}),
+                        &frozen,
                         &("run".into(), "instance".into()),
                         "instructions",
                         "mission",
@@ -1758,6 +1915,15 @@ for line in sys.stdin:
         .await
         .unwrap();
         assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+        if mode == "cancel-auth" {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !root.join("ordinary.json.attested").exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         cancel.cancel();
         tokio::time::timeout(
@@ -2064,7 +2230,7 @@ for line in sys.stdin:
                 }
             }
             let refused = client.request("turn/steer", json!({"threadId":thread,"expectedTurnId":turn,"input":[{"type":"text","text":"AFTER_END","text_elements":[]}]})).await.unwrap_err();
-            println!("AFTER_END {} {:?}", refused.code, client.last_request_error);
+            println!("AFTER_END {}", refused.code);
             assert_eq!(refused.code, "CODEX_REQUEST_FAILED");
             Ok(())
         }.await;

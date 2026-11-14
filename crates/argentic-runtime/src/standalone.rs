@@ -232,6 +232,11 @@ pub struct Host {
     shutdown_complete: std::sync::atomic::AtomicBool,
 }
 impl Host {
+    /// Native host configuration, before preflight/Start. Never a document input.
+    pub fn with_codex_auth_file(mut self, path: PathBuf) -> Self {
+        self.context = self.context.with_codex_auth_file(path);
+        self
+    }
     /// Opens only this runtime's standalone schema. The data directory must be
     /// outside the workspace. One process owns it; a second open is refused.
     /// An existing run becomes interrupted, never adopted or restarted.

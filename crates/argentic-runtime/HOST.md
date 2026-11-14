@@ -50,6 +50,19 @@ substituting this data root. The embedding API never imports credentials from
 Macro or a default Codex home. `CODEX_LOGIN_REQUIRED` is an unmet prerequisite,
 not a passing recipe. A model catalogue comes only from the native observation.
 
+Alternatively, explicitly supply `--codex-auth-file /absolute/ordinary-home/auth.json`
+to the operator, or call `Host::with_codex_auth_file` before preflight/Start.
+Embedding hosts use `HostContext::with_codex_auth_file`. Construction still
+starts no provider and reads no credentials. This experimental opt-in uses the
+internal app-server external-auth API, limited to the exact official 0.167.0
+execution binary. It reads only a private, owned, regular ChatGPT file session,
+never its configuration or refresh mechanism. The default private login remains
+unchanged. Keep the file outside the workspace and execution profile, and use a
+private execution profile without stored auth. See [authentication limits and
+diagnostics](https://github.com/Andrologic/Macro/blob/develop/docs/agsdl-codex-native.md#explicit-existing-file-authentication).
+Do not expose credentials in operator input/output, logs or evidence. A status
+login or synthetic peer does not qualify this opt-in for product use.
+
 ## Commands
 
 One JSON object per stdin line; stdout contains one JSON object per response.
