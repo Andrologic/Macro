@@ -8,8 +8,8 @@ pub mod execution {
     };
     pub use crate::agsdl_host_claude::ClaudeStatus;
     pub use crate::agsdl_host_codex_adapter::CodexStatus;
-    pub use crate::agsdl_host_flow030::{DeliveryReceipt030, DeliveryRequest030};
-    pub use crate::agsdl_host_projection030::{
+    pub use crate::agsdl_host_flow030::delivery_ipc::{DeliveryReceipt030, DeliveryRequest030};
+    pub use crate::agsdl_host_projection030::ipc::{
         RuntimeProjectionContinuation030, RuntimeProjectionItem030, RuntimeProjectionPage030,
         RuntimeProjectionQuery030, RuntimeProjectionScope030,
     };
@@ -26,8 +26,8 @@ pub mod execution {
     };
     pub use crate::db::agsdl_execution::dto::ipc::*;
     pub use crate::db::agsdl_execution::intents::*;
-    pub use crate::db::agsdl_execution::public::*;
-    pub use crate::db::agsdl_execution::public030::{
+    pub use crate::db::agsdl_execution::public::ipc::*;
+    pub use crate::db::agsdl_execution::public030::ipc::{
         HumanAnswer030, HumanContent030, HumanContinuation030, HumanDecision030, HumanPage030,
         HumanScope030, PublicHumanRequest030,
     };

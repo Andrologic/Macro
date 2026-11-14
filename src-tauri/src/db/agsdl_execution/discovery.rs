@@ -30,6 +30,7 @@ pub struct PublicRunSummary {
     #[ts(as = "super::dto::ipc::EngineVersions")]
     pub versions: EngineVersions,
     pub cursor: String,
+    #[ts(as = "super::public::ipc::PublicStopState")]
     pub system_stop: PublicStopState,
     pub counts: PublicRunCounts,
 }

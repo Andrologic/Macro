@@ -1,6 +1,51 @@
 use super::*;
 use crate::argentic_core::{contract, exact::BigInteger, integers, native::a};
 use std::collections::HashMap;
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+    use crate::argentic_core::{native::JsonDecoder, native_json::Decoder};
+
+    // Snapshot assertions transferred from the Codex fixture. Runtime observes
+    // the journal protocol; the controller's private counters stay in core.
+    #[test]
+    fn invalid_internal_contract_then_valid_submission_counts_one_correction() {
+        let decoder = Decoder(|raw| Ok(raw.to_owned()));
+        let parse = |raw: &str| decoder.parse(&Text::from(raw)).unwrap();
+        let owner = parse(
+            r#"{"systemStartId":"test","activationId":"work","agentInstanceId":"instance","ownerEpoch":"epoch"}"#,
+        );
+        let contract = parse(
+            r#"{"version":"macro-agsdl-agent-work/030","agentJson":"{\"results\":{\"summary\":{\"required\":true,\"mediaType\":\"text/plain\"}},\"maxCorrections\":2}","choices":["approve","revise"],"instructionsByChoice":{},"defaultInstructions":"none","maxCorrections":"2","completionCheck":null,"timeoutMs":null,"answerTimeoutMs":null,"planFirst":null}"#,
+        );
+        let options = parse(
+            r#"{"checkTimeoutMs":"1000","maxCheckOutputBytes":4096,"enforcedPlanLock":false}"#,
+        );
+        let mut controller = Controller::new(&owner, &contract, &options).unwrap();
+        let invalid = o([
+            ("kind", s("submit")),
+            ("callId", s("invalid")),
+            ("argumentsJson", s(contract.stringify())),
+        ]);
+        let valid = parse(
+            r#"{"kind":"submit","callId":"valid","argumentsJson":"{\"results\":{\"summary\":\"Done\"},\"choice\":\"approve\"}"}"#,
+        );
+        for (id, event) in [invalid, valid].into_iter().enumerate() {
+            controller
+                .dispatch(&o([
+                    ("owner", owner.clone()),
+                    ("eventId", s(id.to_string())),
+                    ("event", event),
+                ]))
+                .unwrap();
+        }
+        let state = controller.snapshot();
+        assert!(state.get("submissionCorrections").eq_str("1"));
+        assert!(state.get("state").eq_str("accepted"));
+    }
+}
+
 struct Entry {
     signature: String,
     receipt: Value,

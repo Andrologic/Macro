@@ -95,3 +95,29 @@ impl HostContext {
         self.policy.lock_ceiling().await
     }
 }
+
+/// Current source/policy checks only. A policy result never replaces the
+/// runtime's reserved human decision or permits a physical response by itself.
+pub trait ActionPolicySource: Send + Sync {
+    fn lock_current<'a>(
+        &'a self,
+        capture: &'a crate::persistence::start030::StartCapture030,
+        payload: &'a Value,
+    ) -> PolicyFuture<'a, ActionPolicyLease>;
+}
+/// Owns the host's real guards through native delivery and acknowledgement.
+pub struct ActionPolicyLease {
+    allowed: bool,
+    _guard: Box<dyn Send + Sync>,
+}
+impl ActionPolicyLease {
+    pub fn new(allowed: bool, guard: impl Send + Sync + 'static) -> Self {
+        Self {
+            allowed,
+            _guard: Box::new(guard),
+        }
+    }
+    pub(crate) fn allows(&self) -> bool {
+        self.allowed
+    }
+}

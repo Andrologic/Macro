@@ -1,0 +1,114 @@
+{
+  "description": "A fan-out over an empty list starts nothing, and the join that closes it decides done at once with an empty branch.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "fanout-empty",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace",
+        "results": {
+          "files": {
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "worker": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "plan",
+      "steps": {
+        "plan": {
+          "type": "agent",
+          "agent": "lead",
+          "maxVisits": 3,
+          "next": {
+            "split": {
+              "step": "fix",
+              "each": [
+                "results",
+                "files"
+              ]
+            },
+            "none": []
+          }
+        },
+        "fix": {
+          "type": "agent",
+          "agent": "worker",
+          "instance": "new",
+          "next": "gather"
+        },
+        "gather": {
+          "type": "join",
+          "next": "summary"
+        },
+        "summary": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Summarize."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "plan",
+      "returns": {
+        "choice": "split",
+        "results": {
+          "files": []
+        }
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "summary"
+        }
+      ]
+    },
+    {
+      "work": "summary",
+      "returns": {
+        "text": "Nothing to fix."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "plan": 1,
+      "summary": 1
+    },
+    "joins": [
+      {
+        "join": "gather",
+        "outcome": "done",
+        "branches": {
+          "fix": []
+        }
+      }
+    ],
+    "messages": [
+      {
+        "to": "summary",
+        "resources": {
+          "fix": []
+        }
+      }
+    ],
+    "failures": []
+  }
+}

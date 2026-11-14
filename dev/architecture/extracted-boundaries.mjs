@@ -94,7 +94,7 @@ export function nativeBoundaryViolations(reader) {
 }
 
 // The future engine and mixed files identified by the D15 destination map.
-const MACRO_ONLY = new Set(['agsdl_host_capture.rs', 'agsdl_host_action_approval030.rs', 'agsdl_host_start_adapter030.rs', 'agsdl_host_codex_adapter.rs', 'agsdl_host_catalogue.rs', 'agsdl_host_tasks.rs', 'agsdl_host_tools.rs', 'agsdl_intent_coordinator.rs']);
+const MACRO_ONLY = new Set(['agsdl_host_capture.rs', 'agsdl_host_action_approval030.rs', 'agsdl_host_start_adapter030.rs', 'agsdl_host_codex_adapter.rs', 'agsdl_host_catalogue.rs', 'agsdl_host_tasks.rs', 'agsdl_host_tools.rs', 'agsdl_intent_coordinator.rs', 'agsdl_host_command_boundary_tests.rs']);
 const ENGINE_SHARED = new Set([
   'ai/stream_tasks.rs', 'core/process.rs', 'core/tool_policy.rs', 'commands/mcp/agsdl_raw.rs',
   'commands/mcp/agsdl_raw_tests.rs', 'db/exact_json.rs', 'fs/operations.rs',
@@ -105,7 +105,9 @@ export function isArgenticFile(path) {
   if (/^crates\/argentic-(?:core|runtime)\//.test(path)) return true;
   if (!path.startsWith('src-tauri/src/')) return false;
   const name = path.slice('src-tauri/src/'.length);
-  if (name === 'agsdl_permissions/ipc.rs') return false; // Application wire mirrors only.
+  // Exact application wire mirrors. Native crate trees are checked above,
+  // including every file with these basenames placed inside either crate.
+  if (new Set(['agsdl_permissions/ipc.rs', 'agsdl_host_delivery030_ipc.rs', 'agsdl_host_projection030_ipc.rs', 'db/agsdl_execution/v030/runtime_projection_ipc.rs']).has(name)) return false;
   if (/^argentic_(?:core|runtime)\//.test(name)) return true;
   if (ENGINE_SHARED.has(name)) return true;
   if (/^(?:agsdl_content|agsdl_permissions|agsdl_host_confinement|agsdl_host_codex|agsdl_host_codex030|agsdl_host_claude)\//.test(name)) return true;

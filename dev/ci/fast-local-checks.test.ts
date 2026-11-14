@@ -193,6 +193,9 @@ test('selects CI policy tests when JavaScript gate implementations change', () =
 
 test('runs native AgSDL conformance for evaluator, engine, fixture and CI changes', () => {
   for (const path of [
+    'crates/argentic-core/src/work/controller.rs',
+    'crates/argentic-runtime/src/agsdl_host_conformance030_tests.rs',
+    'crates/argentic-runtime/tests/fixtures/conformance/runs/approval.json',
     'src-tauri/src/agsdl_host_runtime030.rs',
     'src-tauri/src/agsdl_host_conformance030_tests.rs',
     'src-tauri/src/argentic_core/exact/scan.rs',
@@ -258,7 +261,7 @@ test('runs native AgSDL conformance for evaluator, engine, fixture and CI change
     const plan = planFastLocalChecks([path], { exists: () => false });
     expect(plan.steps.filter(step => step.args.includes('conformance030_tests'))).toEqual([
       expect.objectContaining({ command: 'cargo', needsDependencies: true,
-        args: ['test', '--manifest-path', 'src-tauri/Cargo.toml', '--locked', '--jobs', '2',
+        args: ['test', '--manifest-path', 'crates/argentic-runtime/Cargo.toml', '--locked', '--jobs', '2',
           '--lib', 'conformance030_tests', '--', '--test-threads=1'] }),
     ]);
   }

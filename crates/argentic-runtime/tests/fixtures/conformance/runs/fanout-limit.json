@@ -1,0 +1,123 @@
+{
+  "description": "A list longer than max fails before anything starts: the closing join fails with FANOUT_LIMIT and handles it like any step.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "fanout-limit",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace",
+        "results": {
+          "files": {
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "worker": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "plan",
+      "steps": {
+        "plan": {
+          "type": "agent",
+          "agent": "lead",
+          "maxVisits": 3,
+          "next": {
+            "split": {
+              "step": "fix",
+              "each": [
+                "results",
+                "files"
+              ],
+              "max": 2
+            },
+            "none": []
+          }
+        },
+        "fix": {
+          "type": "agent",
+          "agent": "worker",
+          "instance": "new",
+          "next": "gather"
+        },
+        "gather": {
+          "type": "join",
+          "next": "summary",
+          "onError": "triage"
+        },
+        "summary": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Summarize."
+        },
+        "triage": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Split the work differently."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "plan",
+      "returns": {
+        "choice": "split",
+        "results": {
+          "files": [
+            "a.ts",
+            "b.ts",
+            "c.ts"
+          ]
+        }
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "triage"
+        }
+      ]
+    },
+    {
+      "work": "triage",
+      "returns": {
+        "text": "Done."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "plan": 1,
+      "triage": 1
+    },
+    "messages": [
+      {
+        "to": "triage",
+        "resources": {
+          "error": {
+            "code": "FANOUT_LIMIT"
+          }
+        }
+      }
+    ],
+    "failures": [
+      {
+        "step": "gather",
+        "code": "FANOUT_LIMIT"
+      }
+    ]
+  }
+}

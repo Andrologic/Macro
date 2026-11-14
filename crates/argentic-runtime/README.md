@@ -39,3 +39,29 @@ initialization. It must preserve the weak link to LightweightCodeRequirements
 14.4; Macro does this in its build script. This is the same native bridge and
 qualification gate, not a second reader or a new qualification. Debug QA hooks
 remain behind the explicit `agsdl-content-qa` feature.
+
+## Host and test boundaries
+
+`Engine::new()` creates one owned incarnation; cloning an Engine shares that
+incarnation. `HostContext` takes explicit policy and network ports. Policy
+implementations retain their actual source/configuration guards in the leases.
+Native admissions, generation checks, approvals, physical replies and Stop joins
+remain engine-owned. Macro keeps capture, configuration approval, commands and
+its migration ledger. The read-only replay verifier is shared with Macro; its
+verdict explicitly lists evidence outside the replay guarantee.
+
+Each crate has its own workspace and lockfile. Runtime uses the sibling
+`argentic-core` crate; neither crate requires application source files.
+The default Rust suite uses native calculations and bundled fixtures. Its
+existing HTTP tests start synthetic local servers. Tests requiring a real
+provider or assigned QA profile remain explicitly ignored.
+
+The `editor-parity` development feature preserves the existing TypeScript oracle
+replay. It requires Bun and an explicit `ARGENTIC_EDITOR_ROOT` pointing to an
+editor checkout. It is separate from the autonomous default suite. Enabling the
+feature does not qualify a provider or promote scenario support.
+
+`dev-support` exposes the existing fixed synthetic model peer and bounded checks
+for application boundary tests. It exposes no native work authority, human
+resolution, physical approval callback or new IPC command. Application
+configuration/command tests and TypeScript wire assertions live in Macro.

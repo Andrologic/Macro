@@ -38,7 +38,6 @@ pub async fn execution_start<R: tauri::Runtime>(
         if request.profile == "macro-agsdl-030-v1" {
             let retained = crate::agsdl_host_flow030::start_linked(
                 Some(&app),
-                host.flow030(),
                 &host,
                 &manager,
                 &pool(&state).await?,
@@ -104,17 +103,7 @@ pub async fn execution_stop<R: tauri::Runtime>(
         return owned_stop(async move {
             let host = app.state::<crate::agsdl_host::HostState>();
             let ai = app.state::<crate::ai::AiState>();
-            let result = crate::agsdl_host_stop030::request(
-                host.flow030(),
-                &pool,
-                &ai.stream_tasks,
-                &request,
-            )
-            .await?;
-            host.flow030()
-                .supervisor_registry()
-                .wait(&request.system_start_id)
-                .await?;
+            let result = host.request_stop(&pool, &ai.stream_tasks, &request).await?;
             Ok(result)
         })
         .await;
@@ -159,19 +148,8 @@ pub async fn execution_ensure_stop<R: tauri::Runtime>(
                 ));
             }
             let ai = app.state::<crate::ai::AiState>();
-            let result = crate::agsdl_host_stop030::ensure(
-                host.flow030(),
-                &pool,
-                &ai.stream_tasks,
-                &request.system_start_id,
-            )
-            .await?;
-            host.flow030()
-                .supervisor_registry()
-                .wake(&request.system_start_id);
-            host.flow030()
-                .supervisor_registry()
-                .wait(&request.system_start_id)
+            let result = host
+                .ensure_stop(&pool, &ai.stream_tasks, &request.system_start_id)
                 .await?;
             return Ok(result);
         }
@@ -295,11 +273,13 @@ pub async fn execution_preflight(
 /// complete captured source and is invalidated when its requests change.
 #[tauri::command]
 pub async fn execution_read_humans030(
+    host: State<'_, crate::agsdl_host::HostState>,
     state: State<'_, DbPool>,
     scope: repository::public030::HumanScope030,
     continuation: Option<repository::public030::HumanContinuation030>,
 ) -> repository::Result<repository::public030::HumanPage030> {
-    crate::agsdl_host_human_projection030::read(&pool(&state).await?, scope, continuation).await
+    host.human_page(&pool(&state).await?, scope, continuation)
+        .await
 }
 
 fn intent_failure(failure: EngineFailure) -> ExecutionIntentError {
@@ -413,7 +393,6 @@ async fn submit_retained(
             if request.profile == "macro-agsdl-030-v1" {
                 crate::agsdl_host_flow030::start_linked(
                     Some(&app),
-                    host.flow030(),
                     &host,
                     &manager,
                     &pool,
@@ -524,38 +503,13 @@ mod intent_tests {
 #[tauri::command]
 pub async fn execution_submit_human030(
     app: tauri::AppHandle,
-    input: crate::agsdl_host_human030::HumanSubmission030,
+    input: argentic_runtime::api::HumanSubmission,
 ) -> repository::Result<String> {
     tokio::spawn(async move {
         let state = app.state::<DbPool>();
         let host = app.state::<crate::agsdl_host::HostState>();
         let pool = pool(&state).await?;
-        let owner = {
-            let lease = host.start_lease().await?;
-            lease.owner(&input.scope.system_start_id)?
-        };
-        let inspection =
-            crate::agsdl_host_flow030::inspect_run(host.flow030(), &host, &pool, &owner).await?;
-        let broker = host
-            .flow030()
-            .human_runtime()
-            .broker(&host, &pool, &inspection.capture.identity)
-            .await?;
-        let _operation = broker.operation.lock().await;
-        let receipt = broker
-            .submit(
-                &host,
-                input,
-                crate::agsdl_host_human030::HumanOrigin030::Person,
-            )
-            .await?;
-        broker
-            .pump(&host, &tokio_util::sync::CancellationToken::new())
-            .await?;
-        host.flow030()
-            .supervisor_registry()
-            .wake(&owner.system_start_id);
-        Ok(receipt)
+        host.submit_person(&pool, input).await
     })
     .await
     .map_err(|_| {
@@ -574,5 +528,5 @@ pub async fn execution_deliver030(
     database: tauri::State<'_, DbPool>,
     request: crate::agsdl_host_flow030::DeliveryRequest030,
 ) -> repository::Result<crate::agsdl_host_flow030::DeliveryReceipt030> {
-    crate::agsdl_host_flow030::deliver030(&host, &pool(&database).await?, request).await
+    host.deliver_message(&pool(&database).await?, request).await
 }

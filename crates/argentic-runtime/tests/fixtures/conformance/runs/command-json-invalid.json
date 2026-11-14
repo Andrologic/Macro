@@ -1,0 +1,75 @@
+{
+  "description": "A command with parse json whose standard output is not JSON fails with OUTPUT_INVALID, whatever its exit status.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "command-json-invalid",
+    "agents": {
+      "dev": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "tests",
+      "steps": {
+        "tests": {
+          "type": "call",
+          "command": "npm test -- --json",
+          "parse": "json",
+          "next": {
+            "passed": [],
+            "failed": "fix"
+          },
+          "onError": "fix"
+        },
+        "fix": {
+          "type": "agent",
+          "agent": "dev",
+          "prompt": "Fix the test run."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "tests",
+      "command": {
+        "exitCode": 1,
+        "stdout": "Error: cannot find module\n",
+        "stderr": ""
+      }
+    },
+    {
+      "work": "fix",
+      "returns": {
+        "text": "Fixed."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "tests": 1,
+      "fix": 1
+    },
+    "messages": [
+      {
+        "to": "fix",
+        "resources": {
+          "error": {
+            "code": "OUTPUT_INVALID"
+          }
+        }
+      }
+    ],
+    "failures": [
+      {
+        "step": "tests",
+        "code": "OUTPUT_INVALID"
+      }
+    ]
+  }
+}

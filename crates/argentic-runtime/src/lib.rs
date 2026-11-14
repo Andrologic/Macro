@@ -41,3 +41,62 @@ pub mod content;
 
 #[doc(hidden)]
 pub mod tool_policy;
+
+mod agsdl_host;
+mod agsdl_host_call_authority030;
+mod agsdl_host_call_executor030;
+mod agsdl_host_calls;
+mod agsdl_host_calls030;
+mod agsdl_host_clock030;
+mod agsdl_host_codex;
+mod agsdl_host_codex030;
+mod agsdl_host_compiler;
+mod agsdl_host_completion030;
+mod agsdl_host_confinement;
+mod agsdl_host_dispatch030;
+mod agsdl_host_evaluation030;
+mod agsdl_host_flow030;
+mod agsdl_host_harness030;
+mod agsdl_host_human030;
+mod agsdl_host_human_executor030;
+mod agsdl_host_human_projection030;
+mod agsdl_host_projection030;
+mod agsdl_host_qualification030;
+mod agsdl_host_route030;
+mod agsdl_host_route_attestations030;
+mod agsdl_host_route_verifier030;
+mod agsdl_host_runtime030;
+mod agsdl_host_steer030;
+mod agsdl_host_stop030;
+mod agsdl_host_work;
+mod agsdl_host_work_admission030;
+mod tasks;
+
+/// One independently owned execution incarnation; clones share it.
+pub use agsdl_host::HostState as Engine;
+
+#[doc(hidden)]
+pub mod api;
+
+mod agsdl_host_action_approval030;
+
+/// Runs the bounded synthetic native approval regressions. No caller-supplied
+/// authority, native request, decision or physical reply can cross this entry.
+#[cfg(feature = "dev-support")]
+#[doc(hidden)]
+pub async fn check_approval_boundary() {
+    agsdl_host_human030::HumanRuntime030::check_approval_boundary().await;
+}
+
+#[cfg(test)]
+mod agsdl_host_scenario030;
+
+#[cfg(test)]
+mod agsdl_host_example030;
+
+#[cfg(test)]
+mod test_context;
+
+#[cfg(any(test, feature = "dev-support"))]
+#[doc(hidden)]
+pub mod dev_fixture;

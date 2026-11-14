@@ -101,3 +101,26 @@ async fn standalone_post042_matches_migrated_macro_schema_and_constraints() {
     standalone_file.close().await;
     standalone_memory.close().await;
 }
+
+#[tokio::test]
+async fn macro_retains_call_clock_and_retirement_migration_ids() {
+    let temp = tempfile::tempdir().unwrap();
+    let pool = crate::db::create_pool(&temp.path().join("migrations.db"))
+        .await
+        .unwrap();
+    let migrations: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT version,name FROM schema_migrations WHERE version>=39 ORDER BY version",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        migrations,
+        vec![
+            (39, "039_execution_call_protocol030".into()),
+            (40, "040_execution_flow_human_clock030".into()),
+            (41, "041_execution_flow_interrupted030".into()),
+            (42, "042_retire_execution020".into())
+        ]
+    );
+}

@@ -10,39 +10,6 @@
       "src-tauri/src/agsdl_content/qa_runner_tests.rs": {
         "crate:core": 1
       },
-      "src-tauri/src/agsdl_host.rs": {
-        "crate:ai": 1,
-        "crate:db": 2,
-        "token:sqlx": 1,
-        "token:tauri": 1
-      },
-      "src-tauri/src/agsdl_host_call_authority030.rs": {
-        "crate:db": 3,
-        "token:sqlx": 2
-      },
-      "src-tauri/src/agsdl_host_call_executor030.rs": {
-        "crate:ai": 1,
-        "crate:core": 2,
-        "crate:db": 7,
-        "crate:fs": 1,
-        "token:sqlx": 2
-      },
-      "src-tauri/src/agsdl_host_call_executor030_tests.rs": {
-        "crate:ai": 3,
-        "crate:db": 4
-      },
-      "src-tauri/src/agsdl_host_calls.rs": {
-        "crate:core": 1
-      },
-      "src-tauri/src/agsdl_host_calls030.rs": {
-        "crate:db": 2,
-        "token:sqlx": 10
-      },
-      "src-tauri/src/agsdl_host_calls030_tests.rs": {
-        "crate:core": 3,
-        "crate:db": 11,
-        "token:sqlx": 34
-      },
       "src-tauri/src/agsdl_host_claude/mod.rs": {
         "crate:config": 1,
         "crate:core": 1,
@@ -60,77 +27,8 @@
         "crate:core": 1,
         "crate:db": 1
       },
-      "src-tauri/src/agsdl_host_clock030.rs": {
-        "crate:db": 3,
-        "token:sqlx": 4
-      },
       "src-tauri/src/agsdl_host_codex/mod.rs": {
-        "crate:config": 1,
-        "crate:core": 3,
         "crate:db": 1
-      },
-      "src-tauri/src/agsdl_host_codex/profile.rs": {
-        "crate:core": 1,
-        "crate:db": 2
-      },
-      "src-tauri/src/agsdl_host_codex/protocol.rs": {
-        "crate:db": 1
-      },
-      "src-tauri/src/agsdl_host_codex030/content.rs": {
-        "crate:ai": 1,
-        "crate:db": 2
-      },
-      "src-tauri/src/agsdl_host_codex030/continuity_tests.rs": {
-        "crate:ai": 1,
-        "crate:config": 2,
-        "crate:db": 4,
-        "token:sqlx": 5
-      },
-      "src-tauri/src/agsdl_host_codex030/mod.rs": {
-        "crate:ai": 5,
-        "crate:config": 1,
-        "crate:core": 6,
-        "crate:db": 10
-      },
-      "src-tauri/src/agsdl_host_compiler.rs": {
-        "crate:db": 5
-      },
-      "src-tauri/src/agsdl_host_completion030.rs": {
-        "crate:ai": 1,
-        "crate:core": 1,
-        "crate:db": 1,
-        "crate:fs": 1,
-        "token:sqlx": 1
-      },
-      "src-tauri/src/agsdl_host_composition030_tests.rs": {
-        "crate:ai": 1,
-        "crate:db": 4
-      },
-      "src-tauri/src/agsdl_host_confinement/mod.rs": {
-        "crate:core": 1
-      },
-      "src-tauri/src/agsdl_host_conformance030_projection.rs": {
-        "crate:db": 1,
-        "token:sqlx": 5
-      },
-      "src-tauri/src/agsdl_host_conformance030_tests.rs": {
-        "crate:ai": 2,
-        "crate:config": 7,
-        "crate:core": 1,
-        "crate:db": 35,
-        "crate:fs": 1,
-        "token:sqlx": 17,
-        "token:tauri": 6
-      },
-      "src-tauri/src/agsdl_host_delivery030.rs": {
-        "crate:db": 2,
-        "token:sqlx": 2,
-        "token:ts_rs": 2
-      },
-      "src-tauri/src/agsdl_host_dispatch030.rs": {
-        "crate:ai": 2,
-        "crate:db": 2,
-        "token:sqlx": 2
       },
       "src-tauri/src/agsdl_host_example030.rs": {
         "crate:ai": 1,
@@ -144,162 +42,20 @@
         "token:AppHandle": 1,
         "token:tauri": 2
       },
-      "src-tauri/src/agsdl_host_flow030.rs": {
-        "crate:ai": 3,
-        "crate:db": 4,
-        "token:sqlx": 62
-      },
-      "src-tauri/src/agsdl_host_flow030_tests.rs": {
-        "crate:ai": 3,
-        "crate:commands": 9,
-        "crate:config": 4,
-        "crate:db": 30,
-        "crate:fs": 1,
-        "crate:git": 1,
-        "crate:secrets": 2,
-        "crate:workspace": 4,
-        "token:sqlx": 35,
-        "token:tauri": 2
-      },
-      "src-tauri/src/agsdl_host_flow_work030_tests.rs": {
-        "crate:db": 2,
-        "token:sqlx": 1
-      },
-      "src-tauri/src/agsdl_host_harness030.rs": {
-        "crate:core": 1
-      },
-      "src-tauri/src/agsdl_host_human030.rs": {
-        "crate:ai": 1,
-        "crate:db": 1,
-        "token:sqlx": 48
-      },
-      "src-tauri/src/agsdl_host_human030_runtime.rs": {
-        "crate:ai": 1,
-        "crate:db": 1,
-        "token:sqlx": 3
-      },
-      "src-tauri/src/agsdl_host_human030_tests.rs": {
-        "crate:core": 1,
-        "crate:db": 2,
-        "token:sqlx": 46
-      },
-      "src-tauri/src/agsdl_host_human030_validation.rs": {
-        "token:sqlx": 3
-      },
-      "src-tauri/src/agsdl_host_human_executor030.rs": {
-        "crate:ai": 1,
-        "crate:db": 3,
-        "token:sqlx": 2
-      },
-      "src-tauri/src/agsdl_host_human_projection030.rs": {
-        "crate:db": 1,
-        "token:sqlx": 6
-      },
-      "src-tauri/src/agsdl_host_no_admission030_tests.rs": {
-        "crate:ai": 9,
-        "crate:db": 21,
-        "token:sqlx": 74
-      },
-      "src-tauri/src/agsdl_host_parallel030_tests.rs": {
-        "crate:ai": 1,
-        "crate:config": 5,
-        "crate:db": 4
-      },
-      "src-tauri/src/agsdl_host_path_failure030.rs": {
-        "crate:db": 3,
-        "token:sqlx": 4
-      },
-      "src-tauri/src/agsdl_host_path_failure030_tests.rs": {
-        "crate:db": 2,
-        "token:sqlx": 14
-      },
       "src-tauri/src/agsdl_host_projection030.rs": {
-        "crate:db": 4,
-        "token:sqlx": 2,
-        "token:ts_rs": 1
-      },
-      "src-tauri/src/agsdl_host_route030.rs": {
-        "crate:db": 1
-      },
-      "src-tauri/src/agsdl_host_route_attestations030.rs": {
-        "crate:db": 5,
-        "token:sqlx": 9
-      },
-      "src-tauri/src/agsdl_host_route_attestations030_tests.rs": {
-        "crate:db": 5,
-        "token:sqlx": 68
-      },
-      "src-tauri/src/agsdl_host_route_human030.rs": {
-        "crate:db": 3,
-        "token:sqlx": 5
-      },
-      "src-tauri/src/agsdl_host_route_verifier030.rs": {
-        "crate:db": 30,
-        "token:sqlx": 21
-      },
-      "src-tauri/src/agsdl_host_route_verifier030_tests.rs": {
-        "crate:db": 3,
-        "token:sqlx": 9
-      },
-      "src-tauri/src/agsdl_host_runtime030.rs": {
-        "crate:ai": 1,
-        "crate:db": 10,
-        "token:sqlx": 3
-      },
-      "src-tauri/src/agsdl_host_runtime030_tests.rs": {
-        "crate:ai": 1,
-        "crate:commands": 6,
-        "crate:config": 2,
-        "crate:db": 42,
-        "crate:fs": 1,
-        "crate:git": 2,
-        "crate:secrets": 1,
-        "crate:workspace": 3,
-        "token:sqlx": 7,
-        "token:tauri": 9
+        "crate:db": 1,
+        "token:sqlx": 1
       },
       "src-tauri/src/agsdl_host_scenario030.rs": {
         "crate:db": 4
       },
-      "src-tauri/src/agsdl_host_steer030.rs": {
-        "crate:ai": 1,
-        "crate:db": 4
-      },
-      "src-tauri/src/agsdl_host_steer030_tests.rs": {
-        "crate:ai": 1,
-        "crate:db": 3,
-        "token:sqlx": 13
-      },
-      "src-tauri/src/agsdl_host_stop030.rs": {
-        "crate:ai": 1,
-        "crate:db": 1,
-        "token:sqlx": 2
-      },
-      "src-tauri/src/agsdl_host_work.rs": {
-        "crate:db": 8
-      },
-      "src-tauri/src/agsdl_host_work_admission030.rs": {
-        "crate:db": 2,
-        "crate:fs": 1,
-        "token:sqlx": 7
-      },
       "src-tauri/src/ai/stream_tasks.rs": {
-        "crate:core": 3,
-        "crate:db": 14
-      },
-      "src-tauri/src/commands/mcp/agsdl_raw.rs": {
-        "crate:core": 1
+        "crate:core": 1,
+        "crate:db": 2
       },
       "src-tauri/src/core/tool_policy.rs": {
         "crate:fs": 3,
         "token:ts_rs": 2
-      },
-      "src-tauri/src/db/agsdl_execution/call_protocol030.rs": {
-        "crate:db": 8,
-        "token:sqlx": 35
-      },
-      "src-tauri/src/db/agsdl_execution/call_protocol030_tests.rs": {
-        "token:sqlx": 6
       },
       "src-tauri/src/db/agsdl_execution/discovery030.rs": {
         "token:sqlx": 4,
@@ -310,15 +66,8 @@
         "crate:db": 1,
         "token:sqlx": 16
       },
-      "src-tauri/src/db/agsdl_execution/flow_work_protocol030.rs": {
-        "crate:ai": 3,
-        "token:sqlx": 39
-      },
       "src-tauri/src/db/agsdl_execution/mod.rs": {
         "token:sqlx": 1
-      },
-      "src-tauri/src/db/agsdl_execution/public030.rs": {
-        "token:ts_rs": 7
       },
       "src-tauri/src/db/agsdl_execution/start030.rs": {
         "token:sqlx": 1
@@ -330,20 +79,8 @@
       "src-tauri/src/db/agsdl_execution/v030/replay_human030.rs": {
         "token:sqlx": 12
       },
-      "src-tauri/src/db/agsdl_execution/v030/replay_verify030.rs": {
-        "token:sqlx": 18
-      },
       "src-tauri/src/db/agsdl_execution/v030/replay_verify030_tests.rs": {
         "token:sqlx": 48
-      },
-      "src-tauri/src/db/agsdl_execution/v030/runtime_projection.rs": {
-        "token:ts_rs": 1
-      },
-      "src-tauri/src/db/agsdl_execution/v030/runtime_projection_tests.rs": {
-        "token:ts_rs": 2
-      },
-      "src-tauri/src/db/agsdl_execution/work_dto030.rs": {
-        "token:ts_rs": 1
       },
       "src-tauri/src/fs/operations.rs": {
         "crate:core": 4,

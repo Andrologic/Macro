@@ -1,0 +1,144 @@
+{
+  "description": "concurrency 1 starts elements in list order as paths end; once a quorum of one is reached, the remaining elements never start.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "fanout-one-at-a-time",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace",
+        "results": {
+          "files": {
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "worker": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "plan",
+      "steps": {
+        "plan": {
+          "type": "agent",
+          "agent": "lead",
+          "next": {
+            "step": "try",
+            "each": [
+              "results",
+              "files"
+            ],
+            "concurrency": 1
+          }
+        },
+        "try": {
+          "type": "agent",
+          "agent": "worker",
+          "instance": "new",
+          "next": {
+            "fixed": "first",
+            "failed": "first"
+          }
+        },
+        "first": {
+          "type": "join",
+          "quorum": {
+            "count": 1,
+            "accept": [
+              "fixed"
+            ]
+          },
+          "next": {
+            "reached": [],
+            "missed": "escalate"
+          }
+        },
+        "escalate": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "No approach worked."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "plan",
+      "returns": {
+        "results": {
+          "files": [
+            "a",
+            "b",
+            "c"
+          ]
+        }
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "try",
+          "item": 0
+        }
+      ]
+    },
+    {
+      "work": "try",
+      "item": 0,
+      "returns": {
+        "choice": "failed"
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "try",
+          "item": 1
+        }
+      ]
+    },
+    {
+      "work": "try",
+      "item": 1,
+      "returns": {
+        "choice": "fixed"
+      }
+    },
+    {
+      "running": []
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "plan": 1,
+      "try": 2
+    },
+    "joins": [
+      {
+        "join": "first",
+        "outcome": "reached",
+        "branches": {
+          "try": [
+            {
+              "item": "b",
+              "choice": "fixed"
+            }
+          ]
+        }
+      }
+    ],
+    "cancelled": [],
+    "failures": []
+  }
+}

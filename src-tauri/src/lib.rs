@@ -1,11 +1,7 @@
-mod agsdl_host_qualification030;
-mod agsdl_host_codex_adapter;
-mod agsdl_host_start_adapter030;
 mod agsdl_host_action_approval030;
-mod agsdl_host_clock030;
-mod agsdl_host_human030;
-mod agsdl_host_human_executor030;
-mod agsdl_host_human_projection030;
+mod agsdl_host_codex_adapter;
+mod agsdl_host_qualification030;
+mod agsdl_host_start_adapter030;
 #[cfg(any(test, all(debug_assertions, feature = "browser-runtime-debug")))]
 mod browser_runtime_port;
 // AppKit's standard Quit item and Dock Quit call terminate:, bypassing
@@ -103,36 +99,14 @@ mod native_quit_consent {
 
 pub(crate) mod agsdl_content;
 mod agsdl_host;
-mod agsdl_host_call_authority030;
-mod agsdl_host_call_executor030;
-mod agsdl_host_calls;
-mod agsdl_host_calls030;
 mod agsdl_host_capture;
 mod agsdl_host_catalogue;
 mod agsdl_host_claude;
 mod agsdl_host_codex;
-mod agsdl_host_codex030;
-mod agsdl_host_compiler;
-pub(crate) mod agsdl_host_completion030;
-mod agsdl_host_confinement;
-mod agsdl_host_dispatch030;
-mod agsdl_host_evaluation030;
-#[cfg(test)]
-mod agsdl_host_example030;
 mod agsdl_host_flow030;
-mod agsdl_host_harness030;
 mod agsdl_host_projection030;
-mod agsdl_host_route030;
-mod agsdl_host_route_attestations030;
-mod agsdl_host_route_verifier030;
-mod agsdl_host_runtime030;
-#[cfg(test)]
-mod agsdl_host_scenario030;
-mod agsdl_host_steer030;
-mod agsdl_host_stop030;
 mod agsdl_host_tasks;
 mod agsdl_host_tools;
-mod agsdl_host_work;
 mod agsdl_host_work_admission030;
 mod agsdl_intent_coordinator;
 pub(crate) mod agsdl_permissions;
@@ -1496,3 +1470,6 @@ mod ipc_artifact_generation {
         run(true);
     }
 }
+
+#[cfg(test)]
+mod agsdl_host_command_boundary_tests;

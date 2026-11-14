@@ -2,7 +2,6 @@
 name = "argentic-core"
 version = "0.1.0"
 edition = "2021"
-workspace = "../../src-tauri"
 license = "AGPL-3.0-or-later"
 description = "Pure AgSDL engine calculations"
 
@@ -12,3 +11,6 @@ serde_json = { version = "1", features = ["raw_value", "arbitrary_precision"] }
 sha2 = "0.10"
 regex = "1"
 url = "2"
+
+[workspace]
+resolver = "2"

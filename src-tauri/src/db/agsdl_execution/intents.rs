@@ -76,6 +76,7 @@ object!(ExecutionRunCorrelation030 {
 )]
 pub enum ExecutionIntentAdmission {
     Start {
+        #[ts(as = "super::public::ipc::PublicStartReceipt")]
         receipt: PublicStartReceipt,
     },
     Start030 {

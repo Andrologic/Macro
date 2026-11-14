@@ -1,0 +1,110 @@
+{
+  "description": "A queued message for a working instance waits for the current work to end, then starts its own work.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "delivery-queue",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "dev": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "start",
+      "steps": {
+        "start": {
+          "type": "agent",
+          "agent": "lead",
+          "next": [
+            "work",
+            "ping"
+          ]
+        },
+        "work": {
+          "type": "agent",
+          "agent": "dev",
+          "next": []
+        },
+        "ping": {
+          "type": "call",
+          "command": "./check-release-notes.sh",
+          "next": {
+            "step": "nudge",
+            "message": {
+              "prompt": "Also update the changelog."
+            }
+          }
+        },
+        "nudge": {
+          "type": "agent",
+          "agent": "dev",
+          "delivery": "queue",
+          "next": []
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "start",
+      "returns": {
+        "text": "Release 2.0."
+      }
+    },
+    {
+      "work": "ping",
+      "command": {
+        "exitCode": 0
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "work"
+        }
+      ]
+    },
+    {
+      "work": "work",
+      "returns": {
+        "text": "Released."
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "nudge"
+        }
+      ]
+    },
+    {
+      "work": "nudge",
+      "returns": {
+        "text": "Changelog updated."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "start": 1,
+      "work": 1,
+      "ping": 1,
+      "nudge": 1
+    },
+    "messages": [
+      {
+        "to": "nudge",
+        "prompt": "Also update the changelog."
+      }
+    ],
+    "failures": []
+  }
+}

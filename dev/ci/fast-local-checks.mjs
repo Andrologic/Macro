@@ -6,6 +6,7 @@ const TEST_PATTERN = /\.test\.(?:ts|tsx)$/;
 const RUST_PATTERN = /\.rs$/;
 
 const AGSDL_CONFORMANCE_PATTERNS = [
+  /^crates\/argentic-(?:core|runtime)\//,
   /^src-tauri\/src\/agsdl_/,
   /^src-tauri\/src\/(?:argentic_(?:core|runtime)\/|argentic_(?:values|reader|routes|compile|work|route_data|clock)_conformance030_tests(?:\.rs|\/))/,
   /^src-tauri\/src\/db\/(?:agsdl_execution\/|migrations\/)/,
@@ -242,7 +243,7 @@ export function planFastLocalChecks(paths, options = {}) {
     steps.push({
       name: 'Conformité AgSDL 0.3 en processus (37 scénarios)',
       command: 'cargo',
-      args: ['test', '--manifest-path', 'src-tauri/Cargo.toml', '--locked', '--jobs', '2',
+      args: ['test', '--manifest-path', 'crates/argentic-runtime/Cargo.toml', '--locked', '--jobs', '2',
         '--lib', 'conformance030_tests', '--', '--test-threads=1'],
       needsDependencies: true,
     });

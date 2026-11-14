@@ -1,0 +1,181 @@
+{
+  "description": "Approvals in a row each add the person's comment, when there is one, to the message's comments, in answer order and apart from its resources, so a result named comment stays as it is.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "approval-comments",
+    "agents": {
+      "writer": {
+        "harness": "example",
+        "permissions": "workspace",
+        "results": {
+          "comment": {
+            "mediaType": "text/plain"
+          }
+        }
+      }
+    },
+    "compositions": {
+      "sign-off": {
+        "entry": "check",
+        "outputs": [
+          "ok",
+          "revise"
+        ],
+        "steps": {
+          "check": {
+            "type": "approval",
+            "title": "Legal sign-off?",
+            "next": {
+              "ok": {
+                "output": "ok"
+              },
+              "revise": {
+                "output": "revise"
+              }
+            }
+          }
+        }
+      }
+    },
+    "flow": {
+      "entry": "write",
+      "steps": {
+        "write": {
+          "type": "agent",
+          "agent": "writer",
+          "next": "legal"
+        },
+        "legal": {
+          "type": "compose",
+          "composition": "sign-off",
+          "next": {
+            "ok": "editor",
+            "revise": "write"
+          }
+        },
+        "editor": {
+          "type": "approval",
+          "title": "Edited?",
+          "next": {
+            "ok": "release",
+            "revise": "write"
+          }
+        },
+        "release": {
+          "type": "approval",
+          "title": "Publish?",
+          "next": {
+            "publish": [],
+            "revise": "write"
+          }
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Write the release notes."
+  },
+  "timeline": [
+    {
+      "work": "write",
+      "returns": {
+        "text": "Draft 1",
+        "results": {
+          "comment": "Checked twice."
+        }
+      }
+    },
+    {
+      "work": "legal/check",
+      "returns": {
+        "choice": "ok",
+        "comment": "Cite the licence."
+      }
+    },
+    {
+      "work": "editor",
+      "returns": {
+        "choice": "ok",
+        "comment": ""
+      }
+    },
+    {
+      "work": "release",
+      "returns": {
+        "choice": "revise",
+        "comment": "Shorter."
+      }
+    },
+    {
+      "work": "write",
+      "returns": {
+        "text": "Draft 2"
+      }
+    },
+    {
+      "work": "legal/check",
+      "returns": {
+        "choice": "ok",
+        "comment": ""
+      }
+    },
+    {
+      "work": "editor",
+      "returns": {
+        "choice": "ok",
+        "comment": ""
+      }
+    },
+    {
+      "work": "release",
+      "returns": {
+        "choice": "publish",
+        "comment": ""
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "write": 2,
+      "legal": 2,
+      "legal/check": 2,
+      "editor": 2,
+      "release": 2
+    },
+    "messages": [
+      {
+        "to": "release",
+        "nth": 1,
+        "resources": {
+          "text": "Draft 1",
+          "comment": "Checked twice."
+        },
+        "comments": [
+          {
+            "step": "legal/check",
+            "comment": "Cite the licence."
+          }
+        ]
+      },
+      {
+        "to": "write",
+        "nth": 2,
+        "resources": {
+          "text": "Draft 1",
+          "comment": "Checked twice."
+        },
+        "comments": [
+          {
+            "step": "legal/check",
+            "comment": "Cite the licence."
+          },
+          {
+            "step": "release",
+            "comment": "Shorter."
+          }
+        ]
+      }
+    ]
+  }
+}

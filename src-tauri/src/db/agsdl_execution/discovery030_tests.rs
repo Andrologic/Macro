@@ -408,7 +408,11 @@ async fn failed_supervisor_marks_only_its_unfinished_run() {
     let scope = owner("project", "develop");
     seed(&pool, "failed", scope.clone(), "live", false).await;
     seed(&pool, "other", scope.clone(), "live", false).await;
-    crate::agsdl_host_flow030::interrupt_run030(&pool, "system-failed")
+    crate::agsdl_host::HostState::new()
+        .inspect_start_session()
+        .await
+        .unwrap()
+        .interrupt_run(&pool, "system-failed")
         .await
         .unwrap();
     let page = list_runs030(&pool, request(scope.clone(), None, 20))
@@ -428,7 +432,7 @@ async fn failed_supervisor_marks_only_its_unfinished_run() {
         .unwrap();
     assert!(other.interrupted_at.is_none());
     assert_eq!(other.owner_status, "live");
-    crate::agsdl_host_flow030::revoke_generation(&pool, "native-generation")
+    argentic_runtime::api::interrupt_previous_runs(&pool)
         .await
         .unwrap();
     let page = list_runs030(&pool, request(scope, None, 20)).await.unwrap();

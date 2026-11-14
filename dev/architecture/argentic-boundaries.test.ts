@@ -103,3 +103,20 @@ describe('Argentic boundaries', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe('delivered crate and application wire boundaries', () => {
+  it('allows the locked SQLite driver only in runtime and still rejects application/native-UI imports', () => {
+    const result = counts({
+      'crates/argentic-core/src/database.rs': 'use sqlx::SqlitePool;',
+      'crates/argentic-runtime/src/database.rs': 'use sqlx::SqlitePool; use tauri::AppHandle; crate::commands::execute();',
+    });
+    expect(result.rust['crates/argentic-core/src/database.rs']).toEqual({ 'token:sqlx': 1 });
+    expect(result.rust['crates/argentic-runtime/src/database.rs']).toEqual({ 'crate:commands': 1, 'token:AppHandle': 1, 'token:tauri': 1 });
+  });
+  it('places exact wire mirrors and command tests in Macro, while guarding native copies and other engine files', () => {
+    expect(isArgenticFile('src-tauri/src/agsdl_host_projection030_ipc.rs')).toBe(false);
+    expect(isArgenticFile('src-tauri/src/agsdl_host_command_boundary_tests.rs')).toBe(false);
+    expect(isArgenticFile('crates/argentic-runtime/src/agsdl_host_projection030_ipc.rs')).toBe(true);
+    expect(isArgenticFile('src-tauri/src/agsdl_host_projection030_new.rs')).toBe(true);
+  });
+});

@@ -1,0 +1,125 @@
+{
+  "description": "An all-mode join waits for every branch, then delivers one resource per branch.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "join-all",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "reviewer": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "analyze",
+      "steps": {
+        "analyze": {
+          "type": "agent",
+          "agent": "lead",
+          "next": [
+            "security",
+            "performance"
+          ]
+        },
+        "security": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "next": "merge"
+        },
+        "performance": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "next": "merge"
+        },
+        "merge": {
+          "type": "join",
+          "next": "report"
+        },
+        "report": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Write the report."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "analyze",
+      "returns": {
+        "text": "Review this."
+      }
+    },
+    {
+      "work": "performance",
+      "returns": {
+        "text": "Fast enough."
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "security"
+        }
+      ]
+    },
+    {
+      "work": "security",
+      "returns": {
+        "text": "No issue."
+      }
+    },
+    {
+      "work": "report",
+      "returns": {
+        "text": "Report."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "analyze": 1,
+      "security": 1,
+      "performance": 1,
+      "report": 1
+    },
+    "joins": [
+      {
+        "join": "merge",
+        "outcome": "done",
+        "branches": {
+          "security": {
+            "text": "No issue."
+          },
+          "performance": {
+            "text": "Fast enough."
+          }
+        }
+      }
+    ],
+    "messages": [
+      {
+        "to": "report",
+        "prompt": "Write the report.",
+        "resources": {
+          "security": {
+            "text": "No issue."
+          },
+          "performance": {
+            "text": "Fast enough."
+          }
+        }
+      }
+    ],
+    "failures": []
+  }
+}

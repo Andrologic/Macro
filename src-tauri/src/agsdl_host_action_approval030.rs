@@ -1,66 +1,19 @@
-//! Production human waits and the flow-owned monotone clock.
-use crate::{
-    agsdl_host::HostState,
-    agsdl_host_flow030 as flow,
-    db::agsdl_execution::{failure, Result},
-};
-use futures::future::BoxFuture;
-use sqlx::SqlitePool;
-use std::time::Duration;
+//! Current Macro source/policy verification; no native approval or response API.
+use crate::db::agsdl_execution::{failure, start030::StartCapture030, Result};
+use argentic_runtime::host::{ActionPolicyLease, ActionPolicySource, PolicyFuture};
 use tauri::Manager;
-use tokio_util::sync::CancellationToken;
-
-pub(crate) struct AgentActionHumans030<R: tauri::Runtime> {
+pub(crate) struct CurrentActionPolicy030<R: tauri::Runtime> {
     pub app: tauri::AppHandle<R>,
-    pub pool: SqlitePool,
     pub config: crate::config::ConfigManager,
 }
-impl<R: tauri::Runtime> crate::agsdl_host_codex030::approvals::CommandApprovals030
-    for AgentActionHumans030<R>
-{
-    fn answer<'a>(
+impl<R: tauri::Runtime> ActionPolicySource for CurrentActionPolicy030<R> {
+    fn lock_current<'a>(
         &'a self,
-        attempt: &'a crate::agsdl_host_flow030::FlowWorkAttempt030,
-        mut payload: serde_json::Value,
-        cancel: &'a CancellationToken,
-        respond: crate::agsdl_host_codex030::approvals::Respond030<'a>,
-    ) -> BoxFuture<'a, Result<()>> {
+        capture: &'a StartCapture030,
+        payload: &'a serde_json::Value,
+    ) -> PolicyFuture<'a, ActionPolicyLease> {
         Box::pin(async move {
             use crate::agsdl_permissions::*;
-            let host = self.app.state::<HostState>();
-            let broker = host
-                .flow030()
-                .human_runtime()
-                .broker(&host, &self.pool, attempt.identity())
-                .await?;
-            payload["title"] = payload["nativeRequest"]["params"]["reason"].clone();
-            let (work, ticket) = {
-                let _operation = broker.operation.lock().await;
-                let work = broker.admit_agent(&host, attempt).await?;
-                if !work.belongs_to(attempt) {
-                    return Err(failure(
-                        "CORRELATION",
-                        "approval",
-                        "Native action owner changed",
-                    ));
-                }
-                let ticket = broker.open(&host, &work, "ask", payload.clone()).await?;
-                broker.pump(&host, cancel).await?;
-                (work, ticket)
-            };
-            host.flow030()
-                .supervisor_registry()
-                .wake(&attempt.identity().system_start_id);
-            while !broker.resolution_ready(&ticket).await? {
-                tokio::select! {
-                    _ = cancel.cancelled() => return Err(failure("STOP_PENDING", "approval", "Native action was stopped")),
-                    _ = tokio::time::sleep(Duration::from_millis(25)) => {}
-                }
-            }
-            let _operation = broker.operation.lock().await;
-            let decision = broker.take_resolution(&host, &ticket).await?;
-            let view =
-                flow::inspect_run(host.flow030(), &host, &self.pool, attempt.owner()).await?;
             let workspace = self
                 .app
                 .state::<crate::WorkspaceMetadataRoot>()
@@ -72,7 +25,7 @@ impl<R: tauri::Runtime> crate::agsdl_host_codex030::approvals::CommandApprovals0
             let source = crate::workspace::architect::lock_execution_source_owner(
                 &workspace,
                 &metadata,
-                &view.capture.source.owner,
+                &capture.source.owner,
                 None,
             )
             .await?;
@@ -89,7 +42,7 @@ impl<R: tauri::Runtime> crate::agsdl_host_codex030::approvals::CommandApprovals0
                 })?;
             let project = self
                 .config
-                .lock_execution_tools(&view.capture.source.owner.project_id)
+                .lock_execution_tools(&capture.source.owner.project_id)
                 .await
                 .map_err(|_| {
                     failure(
@@ -98,8 +51,7 @@ impl<R: tauri::Runtime> crate::agsdl_host_codex030::approvals::CommandApprovals0
                         "Current project permissions are unavailable",
                     )
                 })?;
-            let private: serde_json::Value =
-                serde_json::from_str(&view.capture.private_capture_json)?;
+            let private: serde_json::Value = serde_json::from_str(&capture.private_capture_json)?;
             let scope: serde_json::Value =
                 serde_json::from_str(private["callScopeJson"].as_str().ok_or_else(|| {
                     failure("CORRELATION", "approval", "Native scope is absent")
@@ -151,13 +103,7 @@ impl<R: tauri::Runtime> crate::agsdl_host_codex030::approvals::CommandApprovals0
                     },
                 )
                 .is_ok_and(|e| e == Effect::Allow);
-            broker
-                .deliver_action(&host, &work, &decision, &payload, |yes| {
-                    respond(yes && allowed && !cancel.is_cancelled())
-                })
-                .await?;
-            broker.pump(&host, cancel).await?;
-            Ok(())
+            Ok(ActionPolicyLease::new(allowed, (source, ceiling, project)))
         })
     }
 }

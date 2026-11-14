@@ -87,3 +87,18 @@ pub async fn durable(db: &mut SqliteConnection) -> Result<Transaction<'_, Sqlite
         .await?;
     Ok(db.begin_with("BEGIN IMMEDIATE").await?)
 }
+
+pub mod call_protocol030;
+
+pub mod flow_work_protocol030;
+
+pub mod work_dto030;
+
+pub mod public;
+
+pub mod public030;
+#[path = "v030/runtime_projection.rs"]
+pub mod runtime_projection030;
+
+#[path = "v030/replay_verify030.rs"]
+pub mod replay_verify030;

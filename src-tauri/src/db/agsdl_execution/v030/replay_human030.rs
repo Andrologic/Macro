@@ -19,7 +19,7 @@ fn human_comment_is_empty030(comment: &str) -> bool {
 #[path = "human_answer030.rs"]
 mod answer;
 use answer::HumanAnswer030;
-#[path = "human_clock_verify030.rs"]
+#[path = "../../../../../crates/argentic-runtime/src/persistence/v030/human_clock_verify030.rs"]
 mod core;
 use core::*;
 #[derive(Debug, Clone, Default, Serialize)]

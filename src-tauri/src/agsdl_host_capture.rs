@@ -375,7 +375,7 @@ pub(crate) async fn observation(
                         .any(|agent| agent.get("harness").and_then(Value::as_str) == Some(name))
                 });
             if used {
-                if let Some(observation) = crate::agsdl_host_harness030::observe(name).await {
+                if let Some(observation) = argentic_runtime::api::observe_harness(name).await {
                     harnesses.push(observation);
                 }
             }
@@ -385,7 +385,7 @@ pub(crate) async fn observation(
         let mut registry = json!({
             "format":"macro-agsdl-registry/030",
             "modules":[
-                {"harness":"codex", "moduleJson":crate::agsdl_host_codex030::approvals::module030()},
+                {"harness":"codex", "moduleJson":argentic_runtime::api::codex_module()},
                 {"harness":"claude-code", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/claude-code/module.json")},
                 {"harness":"opencode", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/opencode/module.json")},
                 {"harness":"pi", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/pi/module.json")}
@@ -450,7 +450,7 @@ pub(crate) fn codex_registry030(
                 .is_some_and(|skills| !skills.is_empty())
         })
     }) {
-        crate::agsdl_host_codex030::content::qualify_skill_folders(
+        argentic_runtime::api::qualify_skill_folders(
             document,
             Path::new(scope["root"].as_str().ok_or_else(|| {
                 failure("CORRELATION", "skills", "Native project scope is absent")
@@ -559,7 +559,7 @@ pub(crate) async fn compile_input(
     drop(policy);
     drop(locked);
     let receipt = host
-        .compile(
+        .compile_document(
             source.clone(),
             authored_source.clone(),
             registry_json.clone(),
@@ -1244,15 +1244,10 @@ mod exact_capture_tests {
             plan_id: "source".into(),
             branch: "develop".into(),
         };
-        test_codex_observations030().lock().unwrap().insert(workspace.clone(),
-            crate::agsdl_host_codex::CodexObservation030 {
-                profile: crate::agsdl_host_codex::Profile {
-                    executable: temp.path().join("synthetic-codex"), directory: temp.path().join("profile"),
-                    home: temp.path().join("profile/home"), bootstrap: temp.path().join("bootstrap"), digest: "synthetic-profile".into(),
-                }, version: "0.167.0".into(),
-                models: vec![json!({"name":"fixture","efforts":["medium"],"defaultEffort":"medium","isDefault":true})],
-                account_digest: "synthetic-account".into(),
-            });
+        test_codex_observations030().lock().unwrap().insert(
+            workspace.clone(),
+            argentic_runtime::api::synthetic_codex_observation(),
+        );
         for data in [
             r#"{"$serde_json::private::Number":"not a number"}"#,
             r#"{"$serde_json::private::RawValue":"not JSON"}"#,

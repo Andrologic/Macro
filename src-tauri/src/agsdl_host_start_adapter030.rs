@@ -1,21 +1,12 @@
 //! Macro capture and intent adapters for the native Start transaction.
-use crate::agsdl_host::{HostStartLease, HostState};
+use crate::agsdl_host::HostState;
 use crate::agsdl_host_capture::{self as capture, CompilationCapture};
-use crate::agsdl_host_dispatch030::JoinedOwnedAgent030;
-use crate::agsdl_host_route_attestations030::{AttestedRouteSource030, RouteSourceCommitMarker030};
-use crate::agsdl_host_work_admission030::{self as work_admission, AttestedWorkPolicy030};
 use crate::config::ConfigManager;
 use crate::db::agsdl_execution::{
-    self as repository,
-    dto::{EngineOwner, EngineStartRequest, EngineStopRequest},
+    dto::EngineStartRequest,
     failure,
-    flow030::{
-        DeliveryOccurrence030, Failure030, FlowEffect030, FlowEffectKind030, FlowEvent030,
-        FlowEventKind030, FlowIdentity030, FlowReceipt030, FlowState030, PhysicalEvidence030,
-        PrepareRef030, PreparedBatch030, PreparedResult030, Producer030, WorkRef030,
-    },
-    flow_store030::{self, Apply030, Authority030, CheckFuture, FlowView030, StoreError030},
-    flow_work_protocol030::AcceptedWorkTerminal030,
+    flow030::{FlowEffect030, FlowIdentity030},
+    flow_store030::{Authority030, CheckFuture, StoreError030},
     intents::{ExecutionIntentScope, IntentAdmissionLink},
     start030::{self, RetainedStart030, StartAuthority030, StartCapture030, StartInspection030},
     Result,
@@ -23,29 +14,23 @@ use crate::db::agsdl_execution::{
 use crate::workspace::architect::{
     lock_execution_intent_scope, lock_execution_source_owner, LockedExecutionSource,
 };
-use serde::{Deserialize, Serialize};
+use argentic_runtime::api::StartSession;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use sqlx::{Connection, Row, SqliteConnection, SqlitePool};
+use sqlx::{SqliteConnection, SqlitePool};
 use std::{
-    collections::BTreeMap,
-    future::Future,
     path::Path,
     sync::{Arc, Mutex},
 };
 use tauri::Manager;
 use tokio::sync::OwnedMutexGuard;
-
-use crate::agsdl_host_flow030::*;
 struct StartGuard {
     _source: LockedExecutionSource,
     _policy: crate::config::ExecutionToolsLease,
     _admission: OwnedMutexGuard<()>,
 }
 struct Start<'a> {
-    runtime: &'a FlowHost030,
     host: &'a HostState,
-    lease: &'a HostStartLease,
+    session: &'a StartSession<'a>,
     manager: &'a ConfigManager,
     pool: &'a SqlitePool,
     workspace: &'a Path,
@@ -87,7 +72,9 @@ impl Authority030 for Start<'_> {
                 .map_err(|_| StoreError030::Authority)?
                 .as_ref()
                 .map(|(_, c)| c.clone());
-            check_owner(db, self.lease, id, creating.as_ref()).await?;
+            self.session
+                .check_owner_tx(db, id, creating.as_ref())
+                .await?;
             Ok(())
         })
     }
@@ -113,23 +100,18 @@ impl Authority030 for Start<'_> {
 impl StartAuthority030 for Start<'_> {
     type SourceGuard = StartGuard;
     fn require_clear(&self, request: &EngineStartRequest) -> Result<()> {
-        self.lease.ensure_live()?;
-        self.runtime.require_start_clear(request)
+        self.session.ensure_live()?;
+        self.session.require_clear(request)
     }
     fn begin_commit(&self, request: &EngineStartRequest, identity: &FlowIdentity030) -> Result<()> {
-        self.runtime.retain_start_before_commit(
-            self.host,
-            self.lease,
-            request,
-            identity,
-            self.reserve_supervisor,
-        )
+        self.session
+            .begin_commit(request, identity, self.reserve_supervisor)
     }
     fn commit_acknowledged(&self, request: &EngineStartRequest, identity: &FlowIdentity030) {
-        self.runtime.acknowledge(request, identity);
+        self.session.commit_acknowledged(request, identity);
     }
     async fn capture(&self, request: &EngineStartRequest) -> Result<StartCapture030> {
-        self.lease.ensure_live()?;
+        self.session.ensure_live()?;
         let source = self.source(request).await?;
         if let Some(diagnostic) = capture::product_slice030(&source.source, None) {
             return Err(failure(
@@ -169,7 +151,7 @@ impl StartAuthority030 for Start<'_> {
             }
         }
         let source = self.source(request).await?;
-        let material = compiled.start_material030(&source, request, self.lease.generation())?;
+        let material = compiled.start_material030(&source, request, self.session.generation())?;
         let capture = StartCapture030 {
             identity: FlowIdentity030 { system_start_id: uuid::Uuid::new_v4().to_string(), flow_invocation_id: uuid::Uuid::new_v4().to_string(), snapshot_id: uuid::Uuid::new_v4().to_string(), epoch: uuid::Uuid::new_v4().to_string() },
             source: material.source, versions: material.versions, authored_source: material.authored_source,
@@ -179,7 +161,7 @@ impl StartAuthority030 for Start<'_> {
                 "callScopeJson":material.call_scope_json, "displayCardsJson":material.display_cards_json,
                 "associations":request.associations, "entryUnassessed":material.entry_unassessed}).to_string(),
         };
-        self.lease.ensure_live()?;
+        self.session.ensure_live()?;
         *self.captured.lock().map_err(|_| unavailable())? = Some((compiled, capture.clone()));
         Ok(capture)
     }
@@ -192,7 +174,7 @@ impl StartAuthority030 for Start<'_> {
             .map_err(|_| unavailable())?
             .clone()
             .ok_or_else(refused)?;
-        compiled.start_material030(&source, request, self.lease.generation())?;
+        compiled.start_material030(&source, request, self.session.generation())?;
         let mut catalogue = crate::agsdl_host_catalogue::capture(self.manager, self.pool).await?;
         let policy = self
             .manager
@@ -230,9 +212,9 @@ impl StartAuthority030 for Start<'_> {
         }
         // Existing provider admissions also lock metadata before admission.
         // Never invert those locks, nor acquire a nested config read lease.
-        let admission = self.host.admission_lock().lock_owned().await;
+        let admission = self.session.lock_admission().await;
         self.require_clear(request)?;
-        self.lease.ensure_live()?;
+        self.session.ensure_live()?;
         Ok(StartGuard {
             _source: source,
             _policy: policy,
@@ -245,7 +227,7 @@ impl StartAuthority030 for Start<'_> {
         _request: &EngineStartRequest,
         capture: &StartCapture030,
     ) -> Result<()> {
-        self.lease.ensure_live()?;
+        self.session.ensure_live()?;
         let expected = self
             .captured
             .lock()
@@ -257,16 +239,13 @@ impl StartAuthority030 for Start<'_> {
         if expected != serde_json::to_string(capture)? {
             return Err(refused());
         }
-        sqlx::query("INSERT INTO engine_flow030_owners(system_id,invocation_id,snapshot_id,capture_epoch,owner_epoch,generation,status,capture_sha256) VALUES(?,?,?,?,'0',?,'live',?)")
-            .bind(&capture.identity.system_start_id).bind(&capture.identity.flow_invocation_id).bind(&capture.identity.snapshot_id).bind(&capture.identity.epoch)
-            .bind(self.lease.generation()).bind(digest(capture)?).execute(db).await?;
+        self.session.bind_capture_tx(db, capture).await?;
         Ok(())
     }
 }
 
 pub(crate) async fn start_linked<R: tauri::Runtime>(
     app: Option<&tauri::AppHandle<R>>,
-    runtime: &FlowHost030,
     host: &HostState,
     manager: &ConfigManager,
     pool: &SqlitePool,
@@ -275,13 +254,10 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
     request: &EngineStartRequest,
     link: Option<&IntentAdmissionLink>,
 ) -> Result<RetainedStart030> {
-    let _start = runtime.start_admission_guard().await;
-    let lease = host.start_lease().await?;
-    runtime.ensure_accepting_starts()?;
+    let session = host.begin_start().await?;
     let authority = Start {
-        runtime,
         host,
-        lease: &lease,
+        session: &session,
         manager,
         pool,
         workspace,
@@ -300,18 +276,18 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
             });
             if let Some(system) = system {
                 let interruption = if app.is_some() {
-                    interrupt_run030(pool, &system).await
+                    session.interrupt_run(pool, &system).await
                 } else {
                     Ok(())
                 };
-                runtime.fail_start_reservation(&system, error.clone());
+                session.fail_reservation(&system, error.clone());
                 interruption?;
             }
             return Err(error);
         }
     };
-    if lease.ensure_live().is_err() {
-        runtime.fail_start_reservation(&result.receipt.identity.system_start_id, uncertain());
+    if session.ensure_live().is_err() {
+        session.fail_reservation(&result.receipt.identity.system_start_id, uncertain());
         return Err(uncertain());
     }
     let created_here = authority
@@ -322,104 +298,40 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
         .is_some_and(|(_, capture)| capture.identity == result.receipt.identity);
     if created_here {
         if let Some(app) = app {
-            let attachment = (|| {
+            let attachment = async {
                 let ai = app
                     .try_state::<crate::ai::AiState>()
                     .ok_or_else(unavailable)?;
-                let config = manager.clone();
-                let agents: Arc<dyn crate::agsdl_host_runtime030::AgentExecutor030> = Arc::new(
-                    crate::agsdl_host_codex030::CodexExecutor030::new(config.clone())
-                        .with_approvals(Arc::new(
-                            crate::agsdl_host_action_approval030::AgentActionHumans030 {
+                let expected_capture = authority
+                    .captured
+                    .lock()
+                    .map_err(|_| unavailable())?
+                    .as_ref()
+                    .ok_or_else(unavailable)?
+                    .1
+                    .clone();
+                session
+                    .attach_committed_start(
+                        pool,
+                        manager.engine_context(),
+                        ai.stream_tasks.clone(),
+                        &result.receipt.identity,
+                        &expected_capture,
+                        Arc::new(
+                            crate::agsdl_host_action_approval030::CurrentActionPolicy030 {
                                 app: app.clone(),
-                                pool: pool.clone(),
-                                config: config.clone(),
+                                config: manager.clone(),
                             },
-                        )),
-                );
-                #[cfg(test)]
-                let agents = app
-                    .try_state::<crate::agsdl_host_runtime030::TestAgentExecutor030>()
-                    .map_or(agents, |executor| executor.0.clone());
-                let plan: repository::flow030::FlowPlan030 = serde_json::from_str(
-                    &authority
-                        .captured
-                        .lock()
-                        .map_err(|_| unavailable())?
-                        .as_ref()
-                        .ok_or_else(unavailable)?
-                        .1
-                        .compiled_plan_json,
-                )?;
-                let document: Value = serde_json::from_str(&plan.document_json)?;
-                let needs_clock = plan.steps.iter().any(|step| {
-                    step.r#type == "approval"
-                        || step.r#type == "call"
-                        || step.timeout_ms_json.is_some()
-                }) || document["agents"].as_object().is_some_and(|agents| {
-                    agents
-                        .values()
-                        .any(|agent| agent.get("answerTimeoutMs").is_some())
-                });
-                let executors = crate::agsdl_host_runtime030::Executors030 {
-                    agents,
-                    calls: Some(Arc::new(
-                        crate::agsdl_host_call_executor030::CallExecutor030 {
-                            config: config.engine_context(),
-                            pool: pool.clone(),
-                            tasks: ai.stream_tasks.clone(),
-                            transport: Arc::new(
-                                crate::agsdl_host_call_executor030::NativeCallTransport030 {
-                                    humans: Some(Arc::new(
-                                        crate::agsdl_host_human_executor030::CallHumans030 {
-                                            app: (*host).clone(),
-                                            pool: pool.clone(),
-                                            identity: result.receipt.identity.clone(),
-                                        },
-                                    )),
-                                },
-                            ),
-                            owner: EngineOwner {
-                                system_start_id: result.receipt.identity.system_start_id.clone(),
-                                owner_epoch: "0".into(),
-                            },
-                        },
-                    )),
-                    humans: Some(Arc::new(
-                        crate::agsdl_host_human_executor030::HumanExecutor030 {
-                            pool: pool.clone(),
-                            tasks: ai.stream_tasks.clone(),
-                        },
-                    )),
-                    clock: needs_clock.then(|| {
-                        Arc::new(crate::agsdl_host_human_executor030::HumanClockRuntime030 {
-                            app: (*host).clone(),
-                            pool: pool.clone(),
-                            tasks: ai.stream_tasks.clone(),
-                            identity: result.receipt.identity.clone(),
-                        })
-                            as Arc<dyn crate::agsdl_host_runtime030::RuntimeClock030>
-                    }),
-                };
-                crate::agsdl_host_runtime030::spawn_supervisor030(
-                    (*host).clone(),
-                    pool.clone(),
-                    config.engine_context(),
-                    ai.stream_tasks.clone(),
-                    EngineOwner {
-                        system_start_id: result.receipt.identity.system_start_id.clone(),
-                        owner_epoch: "0".into(),
-                    },
-                    executors,
-                )
-            })();
+                        ),
+                    )
+                    .await
+            }
+            .await;
             if let Err(error) = attachment {
-                let interruption =
-                    interrupt_run030(pool, &result.receipt.identity.system_start_id).await;
-                runtime.fail_start_reservation(
-                    &result.receipt.identity.system_start_id,
-                    error.clone(),
-                );
+                let interruption = session
+                    .interrupt_run(pool, &result.receipt.identity.system_start_id)
+                    .await;
+                session.fail_reservation(&result.receipt.identity.system_start_id, error.clone());
                 interruption?;
                 return Err(error);
             }
@@ -430,7 +342,6 @@ pub(crate) async fn start_linked<R: tauri::Runtime>(
 
 /// A committed result resolves a lost reply. Absence does not release a barrier.
 pub(crate) async fn inspect_start_linked(
-    runtime: &FlowHost030,
     host: &HostState,
     manager: &ConfigManager,
     pool: &SqlitePool,
@@ -439,11 +350,10 @@ pub(crate) async fn inspect_start_linked(
     request: &EngineStartRequest,
     link: Option<&IntentAdmissionLink>,
 ) -> Result<StartInspection030> {
-    let lease = host.start_lease().await?;
+    let session = host.inspect_start_session().await?;
     let authority = Start {
-        runtime,
         host,
-        lease: &lease,
+        session: &session,
         manager,
         pool,
         workspace,
@@ -454,8 +364,30 @@ pub(crate) async fn inspect_start_linked(
     };
     let result = start030::inspect_linked(pool, request, &authority, link).await?;
     if let StartInspection030::Committed(ref retained) = result {
-        runtime.acknowledge(request, &retained.receipt.identity);
+        session.commit_acknowledged(request, &retained.receipt.identity);
     }
-    lease.ensure_live()?;
+    session.ensure_live()?;
     Ok(result)
+}
+
+fn unavailable() -> crate::db::agsdl_execution::dto::EngineFailure {
+    failure(
+        "RUNTIME_UNAVAILABLE",
+        "",
+        "Native flow authority is unavailable",
+    )
+}
+fn uncertain() -> crate::db::agsdl_execution::dto::EngineFailure {
+    failure(
+        "UNCERTAIN",
+        "",
+        "Native commit or handoff must be reconciled without replay",
+    )
+}
+fn refused() -> crate::db::agsdl_execution::dto::EngineFailure {
+    failure(
+        "CORRELATION",
+        "",
+        "Native flow receipt does not match its capture",
+    )
 }

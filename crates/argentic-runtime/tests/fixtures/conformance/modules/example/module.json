@@ -1,0 +1,37 @@
+{
+  "name": "example",
+  "title": "Example harness",
+  "version": "1.0.0",
+  "contract": "agsdl-0.3.0",
+  "harnessVersions": ">=1.0.0",
+  "properties": {
+    "resources": { "support": "native" },
+    "model.name": { "support": "native", "suggestions": ["example/large", "example/small"] },
+    "model.effort": { "support": "native", "suggestions": ["low", "medium", "high"] },
+    "skills": { "support": "native" },
+    "mcpServers": { "support": "native" },
+    "plan": { "support": "native" },
+    "planFirst.auto": { "support": "native" },
+    "planFirst.ask": { "support": "native" },
+    "instance.new": { "support": "native" },
+    "delivery.steer": { "support": "native" },
+    "reviewer.person": { "support": "native" },
+    "reviewer.model": { "support": "native" },
+    "directories": { "support": "native" }
+  },
+  "permissions": {
+    "read": { "allow": "sandbox", "ask": "sandbox", "deny": "sandbox", "outside": "sandbox" },
+    "write": { "allow": "sandbox", "ask": "sandbox", "deny": "sandbox" },
+    "shell": { "allow": "harness", "ask": "harness", "deny": "harness" },
+    "network": { "allow": "sandbox", "ask": "sandbox", "deny": "sandbox" },
+    "mcp": { "allow": "harness", "ask": "harness", "deny": "harness" },
+    "delegate": { "allow": "harness", "ask": "harness", "deny": "harness" }
+  },
+  "settings": {
+    "type": "object",
+    "properties": {
+      "profile": { "type": "string", "description": "A named configuration profile." }
+    },
+    "additionalProperties": false
+  }
+}
