@@ -312,6 +312,83 @@ impl Fixture {
 }
 
 use crate::dev_fixture::ScriptedAgent as FakeExecutor;
+struct DiagnosticFailure(Arc<std::sync::Mutex<Option<Value>>>);
+impl AgentExecutor030 for DiagnosticFailure {
+    fn prepare(
+        &self,
+        work: PreparedEffectiveAgentWork030,
+    ) -> crate::persistence::Result<AttestedWorkPolicy030> {
+        AttestedWorkPolicy030::from_codex(work)
+    }
+    fn run(
+        &self,
+        work: AgentWork030,
+        _: WorkEventSink030,
+        _: CancellationToken,
+    ) -> futures::future::BoxFuture<'static, crate::persistence::Result<()>> {
+        let seen = self.0.clone();
+        Box::pin(async move {
+            let error = failure(
+                "CODEX_REQUEST_FAILED",
+                "SYNTHETIC_NATIVE_SECRET",
+                "SYNTHETIC_NATIVE_SECRET",
+            );
+            *seen.lock().unwrap() = Some(crate::agsdl_host_codex::diagnostics::entry(
+                &work.attempt,
+                &error,
+            ));
+            Err(error)
+        })
+    }
+}
+#[tokio::test]
+async fn diagnostic_executor_failure_preserves_the_protocol_and_omits_raw_fields() {
+    let f = Fixture::new(false).await;
+    let tasks = StreamTasks::default();
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let executors = Executors030 {
+        agents: Arc::new(DiagnosticFailure(seen.clone())),
+        calls: None,
+        humans: None,
+        clock: None,
+    };
+    let (_wake, receiver) = watch::channel(0);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        supervise_with_emitter030(
+            None,
+            &f.host,
+            &f.pool,
+            &f.config,
+            &tasks,
+            &f.owner,
+            &executors,
+            receiver,
+            &CancellationToken::new(),
+            f.emitter(&tasks),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let view = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
+        .await
+        .unwrap();
+    assert_eq!(view.flow.state.verdict.as_deref(), Some("failed"));
+    let events: Vec<String> = query_scalar("SELECT event_json FROM engine_flow030_events")
+        .fetch_all(&f.pool)
+        .await
+        .unwrap();
+    let events = events.join("\n");
+    assert!(events.contains("AGENT_FAILED"));
+    assert!(!events.contains("SYNTHETIC_NATIVE_SECRET"));
+    assert!(events.contains("descendants_joined"));
+    let diagnostic = seen.lock().unwrap().clone().unwrap();
+    assert_eq!(diagnostic["code"], "CODEX_REQUEST_FAILED");
+    assert_eq!(diagnostic["identity"], json!(f.identity));
+    assert!(!diagnostic["generation"].as_str().unwrap().is_empty());
+    assert!(!diagnostic.to_string().contains("SYNTHETIC_NATIVE_SECRET"));
+}
 #[tokio::test]
 async fn distinct_executor_chains_two_works_without_double_dispatch() {
     let f = Fixture::new(true).await;

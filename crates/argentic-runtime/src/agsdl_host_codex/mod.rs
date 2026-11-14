@@ -1,6 +1,7 @@
 //! Codex's native tools follow Codex's captured sandbox. Macro owns admission,
 //! private references, response validation, terminal transactions and physical end.
 pub(crate) mod auth;
+pub(crate) mod diagnostics;
 pub(crate) mod profile;
 pub(crate) mod protocol;
 use crate::host::HostContext;

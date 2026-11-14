@@ -15,6 +15,16 @@ native Agent are unsupported.
 
 ## Private login
 
+Install the **complete official CLI package from one release**, including the
+`codex`, `codex-code-mode-host` and `codex-exec-server` executables. The two
+helpers must be regular executable siblings of the resolved native `codex`.
+Use the matching platform archives and verify their published digests. A lone
+`codex` binary can authenticate and list models while later tool execution fails.
+The native precheck reports `CODEX_PACKAGE_INCOMPLETE` for missing, unreadable or
+non-executable helpers. Their observed digests join the captured profile identity,
+so replacing a helper invalidates that capture. Presence and hashes alone do not
+qualify provenance, a new CLI patch or the real write-review recipe.
+
 Open an Agent's Codex configuration once so Macro creates and validates its
 private directories. The diagnostic distinguishes an absent CLI, unsupported
 version/platform, an invalid profile, and a required login. Opening this panel
@@ -253,6 +263,10 @@ existing-file opt-in above when qualifying that exact authentication mode. Keep 
 login codes and account details out of the evidence. A login-required diagnostic
 leaves the real recipe open.
 
+Record the complete package's same-release helper digests as well as the main
+CLI digest. Preserve incomplete-package failures in the evidence; adding the
+official helpers is an installation repair, not a passing product qualification.
+
 Run the existing default Rust suites and 37 official scenarios in file and
 memory modes. Preserve their support classifications; synthetic peers do not
 qualify a provider. Then, in a disposable workspace with an existing regular
@@ -269,6 +283,20 @@ output. Check physical drainage, an incomplete-close retry without resumed
 admissions, and interruption without replay after restart. A broader request,
 new file, linked file, model reviewer, unsupported version/platform or missing
 capability must remain refused. Only record checks actually performed.
+
+The work journal retains its existing `AGENT_FAILED` terminal code. A separate
+JSON line on stderr, kind `argentic.nativeAgentFailure`, carries a fixed category
+and the actual native attempt identity/generation.
+`CODEX_RPC_SERVER_REQUEST_UNQUALIFIED` identifies an unavailable callback
+during an RPC wait. `CODEX_APPROVAL_METHOD_UNQUALIFIED` identifies an unsupported
+approval method; `CODEX_TURN_FAILED_AFTER_SCOPE_DECLINE` records a failed turn
+after an automatic scope refusal, without asserting causation. `CODEX_TURN_*`
+categories come only from correlated native error metadata, with
+`CODEX_TURN_FAILED` for unknown detail. Known auth/profile/request failures keep
+their fixed codes; other failures retain `AGENT_FAILED`. Native messages,
+additional details, credentials and callback bodies are never emitted as
+diagnostics. A fixed category is evidence for diagnosis, not authority or proof
+that the real approval path passed.
 
 Restore the disposable file and product source through their normal owners after
 drainage. A failure remains a failure or a narrower support boundary; it does not

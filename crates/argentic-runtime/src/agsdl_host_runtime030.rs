@@ -297,12 +297,12 @@ pub(crate) async fn start_agent_work030(
                     }
                     result = &mut running => result,
                 };
-                #[cfg(test)]
                 if let Err(error) = &result {
-                    eprintln!("SYNTHETIC EXECUTOR ORIGINAL ERROR {error:?}");
-                }
-                if result.is_err() {
                     if !work_cancel.is_cancelled() {
+                        // A fixed diagnostic is independent of the work protocol's
+                        // closed failure enum. No raw provider fields are emitted.
+                        use std::io::Write;
+                        let _ = writeln!(std::io::stderr().lock(), "{}", crate::agsdl_host_codex::diagnostics::entry(&events.attempt, error));
                         let failure = events
                             .emit(
                                 serde_json::json!({"kind":"stop","reason":"AGENT_FAILED"}),

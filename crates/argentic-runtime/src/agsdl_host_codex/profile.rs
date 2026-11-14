@@ -12,6 +12,44 @@ use std::path::{Path, PathBuf};
 pub(crate) const ADAPTER: &str = "codex-app-server-v1";
 pub(crate) const VERSION: &str = "0.167.0";
 pub(crate) const PROVIDER: &str = "codex-native";
+const HELPERS: &[&str] = &["codex-code-mode-host", "codex-exec-server"];
+
+/// Presence/executability and capture binding, not release qualification. The
+/// installer must supply the complete official package from the same release.
+fn package_helpers(executable: &Path) -> Result<Vec<(&'static str, String)>> {
+    use std::io::Read;
+    let unavailable = || {
+        failure("CODEX_PACKAGE_INCOMPLETE", "engine", "Install the complete official Codex package, including its same-release code-mode-host and exec-server siblings")
+    };
+    let directory = executable.parent().ok_or_else(unavailable)?;
+    let mut digests = Vec::new();
+    for &name in HELPERS {
+        let path = directory.join(name);
+        let meta = path.symlink_metadata().map_err(|_| unavailable())?;
+        if !meta.is_file() {
+            return Err(unavailable());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if meta.permissions().mode() & 0o111 == 0 {
+                return Err(unavailable());
+            }
+        }
+        let mut file = std::fs::File::open(&path).map_err(|_| unavailable())?;
+        let mut hash = Sha256::new();
+        let mut buffer = [0u8; 16384];
+        loop {
+            let count = file.read(&mut buffer).map_err(|_| unavailable())?;
+            if count == 0 {
+                break;
+            }
+            hash.update(&buffer[..count]);
+        }
+        digests.push((name, format!("{:x}", hash.finalize())));
+    }
+    Ok(digests)
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CodexStatus {
@@ -233,6 +271,7 @@ pub(crate) fn prepare(manager: &HostContext) -> Result<Profile> {
             "Codex CLI 0.167.x is required",
         )
     })?;
+    let helpers = package_helpers(&executable)?;
     let directory = manager.root().join("native-engines").join("codex-v1");
     let home = directory.join("home");
     for path in [
@@ -263,7 +302,8 @@ pub(crate) fn prepare(manager: &HostContext) -> Result<Profile> {
             format!("{:x}", Sha256::digest(bytes)),
             directory.to_string_lossy().as_ref(),
             bootstrap.to_string_lossy().as_ref(),
-            "native-bootstrap-v1"
+            "native-bootstrap-v1",
+            helpers
         ))?)
     );
     if let Some(source) = manager.codex_auth_file() {
@@ -548,6 +588,40 @@ pub(crate) fn verify_layers(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    #[test]
+    fn complete_official_package_is_required_and_helpers_are_capture_bound() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let cli = temp.path().join("codex");
+        std::fs::write(&cli, "synthetic CLI").unwrap();
+        assert_eq!(
+            package_helpers(&cli).unwrap_err().code,
+            "CODEX_PACKAGE_INCOMPLETE"
+        );
+        for &name in HELPERS {
+            let path = temp.path().join(name);
+            std::fs::write(&path, "synthetic helper, never executed").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let first = package_helpers(&cli).unwrap();
+        std::fs::write(temp.path().join(HELPERS[0]), "changed synthetic helper").unwrap();
+        assert_ne!(first, package_helpers(&cli).unwrap());
+        std::fs::set_permissions(
+            temp.path().join(HELPERS[1]),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        assert_eq!(
+            package_helpers(&cli).unwrap_err().code,
+            "CODEX_PACKAGE_INCOMPLETE"
+        );
+        std::fs::remove_file(temp.path().join(HELPERS[1])).unwrap();
+        std::os::unix::fs::symlink(&cli, temp.path().join(HELPERS[1])).unwrap();
+        assert_eq!(
+            package_helpers(&cli).unwrap_err().code,
+            "CODEX_PACKAGE_INCOMPLETE"
+        );
+    }
     #[test]
     fn only_qualified_codex_patch_versions_are_accepted() {
         for version in ["0.167.0", "0.167.12"] {

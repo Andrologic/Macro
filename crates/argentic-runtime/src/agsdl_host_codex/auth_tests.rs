@@ -47,6 +47,8 @@ for line in sys.stdin:
   if mode=='missing-routing': routing={}
   result={'account':{'type':'chatgpt'},'workspaceRouting':routing}
  elif method=='exercise':
+  if mode=='rpc-unsupported':
+   emit({'id':'unknown','method':'item/commandExecution/requestApproval','params':{'message':'SYNTHETIC_NATIVE_SECRET'}}); continue
   exercise=i
   if mode!='same-token':
    record=json.load(open(source))
@@ -208,6 +210,18 @@ async fn external_auth_errors_are_typed_and_never_retain_echoed_credentials() {
             .code,
         "CODEX_AUTH_FAILED"
     );
+    f.end().await;
+}
+
+#[tokio::test]
+async fn diagnostic_rpc_refusal_exposes_only_its_fixed_stage() {
+    let mut f = Fixture::new("rpc-unsupported");
+    f.bootstrap().await.unwrap();
+    let error = f.client.request("exercise", json!({})).await.unwrap_err();
+    assert_eq!(error.code, "CODEX_RPC_SERVER_REQUEST_UNQUALIFIED");
+    assert!(!serde_json::to_string(&error)
+        .unwrap()
+        .contains("SYNTHETIC_NATIVE_SECRET"));
     f.end().await;
 }
 

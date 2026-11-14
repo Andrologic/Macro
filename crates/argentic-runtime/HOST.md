@@ -49,6 +49,10 @@ Use the official login procedure in [Native Codex](https://github.com/Andrologic
 substituting this data root. The embedding API never imports credentials from
 Macro or a default Codex home. `CODEX_LOGIN_REQUIRED` is an unmet prerequisite,
 not a passing recipe. A model catalogue comes only from the native observation.
+Install the complete official same-release package, including the executable
+`codex-code-mode-host` and `codex-exec-server` siblings. Their presence and
+digests are checked and capture-bound; `CODEX_PACKAGE_INCOMPLETE` refuses an
+incomplete package before a model thread. This does not qualify a real tool run.
 
 Alternatively, explicitly supply `--codex-auth-file /absolute/ordinary-home/auth.json`
 to the operator, or call `Host::with_codex_auth_file` before preflight/Start.

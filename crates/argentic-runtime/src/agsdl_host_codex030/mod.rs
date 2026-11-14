@@ -732,6 +732,8 @@ impl CodexExecutor030 {
             let turn = required(&response["turn"], "id")?;
             *current_turn = Some(turn.clone());
             let mut final_item = None;
+            let mut native_failure = None;
+            let mut scope_declined = false;
             let mut pending_steer = PendingSteer030::default();
             let mut deferred_native = std::collections::VecDeque::new();
             let mut deferred_bytes = 0usize;
@@ -872,6 +874,7 @@ impl CodexExecutor030 {
                             Some("item/permissions/requestApproval") => json!({"permissions":{}}),
                             _ => return Err(missing("approvalMethod")),
                         };
+                        scope_declined = true;
                         client
                             .answer_request030(event["id"].clone(), result)
                             .await?;
@@ -891,6 +894,17 @@ impl CodexExecutor030 {
                 }
                 let method = event["method"].as_str().unwrap_or("");
                 let params = &event["params"];
+                if method == "error" {
+                    if params["threadId"] != thread || params["turnId"] != turn {
+                        return Err(missing("errorOwner"));
+                    }
+                    native_failure = Some(crate::agsdl_host_codex::diagnostics::turn_error(
+                        &params["error"],
+                    ));
+                    // Retry notifications are not a terminal result. Keep only
+                    // the fixed category until a correlated turn receipt ends.
+                    continue;
+                }
                 if auto_plan && !plan_presented && method == "turn/plan/updated" {
                     if required(params, "threadId")? != thread
                         || required(params, "turnId")? != turn
@@ -935,14 +949,25 @@ impl CodexExecutor030 {
                     }
                 }
                 if method == "turn/completed" {
-                    if required(&params["turn"], "id")? != turn
-                        || params["turn"]["status"] != "completed"
-                    {
-                        return Err(failure(
-                            "AGENT_FAILED",
-                            "turn",
-                            "Codex turn did not complete",
-                        ));
+                    if required(&params["turn"], "id")? != turn {
+                        return Err(missing("turn"));
+                    }
+                    if params["turn"]["status"] != "completed" {
+                        let direct = crate::agsdl_host_codex::diagnostics::turn_error(
+                            &params["turn"]["error"],
+                        );
+                        let code = if params["turn"]["status"] == "interrupted" {
+                            "CODEX_TURN_INTERRUPTED"
+                        } else if direct != "CODEX_TURN_FAILED" {
+                            direct
+                        } else {
+                            native_failure.unwrap_or(if scope_declined {
+                                "CODEX_TURN_FAILED_AFTER_SCOPE_DECLINE"
+                            } else {
+                                "CODEX_TURN_FAILED"
+                            })
+                        };
+                        return Err(failure(code, "turn", "Codex turn did not complete"));
                     }
                     if pending_steer.is_pending() {
                         return Err(failure(
@@ -1319,6 +1344,13 @@ for line in sys.stdin:
   if external_auth: rotate_auth()
   continue
  if method=='turn/start' and mode=='cancel-auth': rotate_auth()
+ if method=='turn/start' and mode.startswith('diagnostic-'):
+  info='sandboxError' if mode!='diagnostic-unknown' else 'SYNTHETIC_NATIVE_SECRET'
+  error={'message':'SYNTHETIC_NATIVE_SECRET','codexErrorInfo':info,'additionalDetails':'SYNTHETIC_NATIVE_SECRET'}
+  print(json.dumps({'method':'error','params':{'threadId':thread,'turnId':'foreign' if mode=='diagnostic-foreign' else 'turn1','willRetry':mode=='diagnostic-retry','error':error}}),flush=True)
+  if mode!='diagnostic-retry':
+   print(json.dumps({'method':'turn/completed','params':{'threadId':thread,'turn':{'id':'turn1','status':'failed','error':error}}}),flush=True)
+   continue
  if method=='turn/start' and mode in ('steer','steer-uncertain'):
   print(json.dumps({'method':'item/completed','params':{'threadId':'thread','turnId':'turn1','item':{'id':'early','type':'agentMessage','phase':'commentary','text':'Starting'}}}),flush=True)
  if method=='turn/start' and not mode.startswith('cancel') and mode not in ('steer','steer-uncertain'):
@@ -1766,6 +1798,24 @@ for line in sys.stdin:
                 assert_eq!(receipt["decision"]["output"]["choice"], "approve");
             }
         }
+    }
+    #[tokio::test]
+    async fn diagnostic_native_failure_keeps_only_a_correlated_fixed_category() {
+        for (mode, expected) in [
+            ("diagnostic-sandbox", "CODEX_TURN_SANDBOX_ERROR"),
+            ("diagnostic-unknown", "CODEX_TURN_FAILED"),
+            ("diagnostic-foreign", "CORRELATION"),
+        ] {
+            let (result, events) = fake_session(mode, true).await;
+            let error = result.unwrap_err();
+            assert_eq!(error.code, expected, "{mode}");
+            assert!(!serde_json::to_string(&error)
+                .unwrap()
+                .contains("SYNTHETIC_NATIVE_SECRET"));
+            assert!(events.is_empty());
+        }
+        let (result, _) = fake_session("diagnostic-retry", true).await;
+        result.unwrap();
     }
     #[tokio::test]
     async fn fresh_install_ceiling_reaches_the_app_server_policy() {

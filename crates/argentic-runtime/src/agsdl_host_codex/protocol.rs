@@ -216,7 +216,7 @@ impl Client {
             if value.get("id").is_some() {
                 self.send(&json!({"id":value["id"],"error":{"code":-32601,"message":"Client requests are unavailable in Macro's isolated native profile"}})).await?;
                 return Err(failure(
-                    "CODEX_PROFILE_UNQUALIFIED",
+                    "CODEX_RPC_SERVER_REQUEST_UNQUALIFIED",
                     "protocol",
                     "Codex requested an unavailable host capability",
                 ));
