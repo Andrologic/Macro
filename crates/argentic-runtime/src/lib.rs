@@ -38,3 +38,6 @@ pub mod skill_text;
 pub mod content_network;
 
 pub mod content;
+
+#[doc(hidden)]
+pub mod tool_policy;

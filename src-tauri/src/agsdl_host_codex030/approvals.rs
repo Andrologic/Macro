@@ -21,10 +21,9 @@ pub(crate) trait CommandApprovals030: Send + Sync {
 /// denies writes in the native sandbox until a bounded command overlay is granted.
 /// Document/admission gates still reject every other write-ask configuration.
 pub(crate) fn module030() -> String {
-    let mut module: Value = serde_json::from_str(include_str!(
-        "../../../src/vendor/agsdl/v0.3/harnesses/codex/module.json"
-    ))
-    .expect("bundled Codex module");
+    let mut module: Value =
+        serde_json::from_str(argentic_core::harness_module("codex").expect("bundled Codex module"))
+            .expect("bundled Codex module");
     module["permissions"]["write"]["ask"] = json!("sandbox");
     module["permissions"]["write"]["note"] = json!("Macro's qualified profile keeps workspace writes denied by the native sandbox. A person may grant one command access to one existing regular workspace file, after native request correlation and ceiling checks. Other write grants and rule shapes are refused by native preflight and admission.");
     module["properties"]["skills"]["note"]=json!("Macro admits selected single-file local skills through scoped native reads. The native agsdl_load_skill tool returns captured bytes only for the current work's selected names, without extra filesystem grants. Folders with resources, scripts or links remain unsupported.");

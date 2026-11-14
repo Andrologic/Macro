@@ -35,3 +35,11 @@ mod native_json;
 
 pub mod durable_json;
 pub mod flow;
+
+/// Exact bundled harness-module bytes. Descriptive support never grants an effect.
+pub fn harness_module(name: &str) -> Option<&'static str> {
+    reader::PINNED_MODULES
+        .iter()
+        .find(|(key, _)| *key == name)
+        .map(|(_, text)| *text)
+}
