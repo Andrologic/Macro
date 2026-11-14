@@ -52,7 +52,7 @@ pub(super) fn resolved_uri(context: &ContentContext, value: &str) -> ContentResu
 }
 
 fn raw_object(json: &str) -> ContentResult<BTreeMap<String, Box<RawValue>>> {
-    crate::db::exact_json::validate(json).map_err(|e| error("PARSE", e))?;
+    argentic_core::durable_json::validate(json).map_err(|e| error("PARSE", e))?;
     serde_json::from_str(json).map_err(|e| error("INVALID_SOURCE", e))
 }
 
@@ -84,7 +84,7 @@ fn is_text(media: &str) -> bool {
 fn payload(bytes: &[u8], media: &str) -> ContentResult<ContentPayload> {
     if is_json(media) {
         let json = std::str::from_utf8(bytes).map_err(|e| error("CONTENT_ENCODING", e))?;
-        crate::db::exact_json::validate(json).map_err(|e| error("CONTENT_JSON", e))?;
+        argentic_core::durable_json::validate(json).map_err(|e| error("CONTENT_JSON", e))?;
         Ok(ContentPayload::Json { json: json.into() })
     } else if is_text(media) {
         let text = std::str::from_utf8(bytes).map_err(|e| error("CONTENT_ENCODING", e))?;
@@ -98,9 +98,9 @@ fn payload(bytes: &[u8], media: &str) -> ContentResult<ContentPayload> {
 
 fn file_read_error(
     cancelled: bool,
-    error_value: argentic_runtime::content_io::admitted::ReadError,
+    error_value: crate::content_io::admitted::ReadError,
 ) -> ContentError {
-    if matches!(&error_value, argentic_runtime::content_io::admitted::ReadError::Io { source, .. } if source.kind() == std::io::ErrorKind::TimedOut)
+    if matches!(&error_value, crate::content_io::admitted::ReadError::Io { source, .. } if source.kind() == std::io::ErrorKind::TimedOut)
     {
         error("CONTENT_TERMINATION_UNCERTAIN", error_value)
     } else if cancelled {
@@ -116,7 +116,7 @@ mod termination_tests {
     #[test]
     fn cancellation_does_not_hide_uncertain_termination() {
         let source = std::io::Error::new(std::io::ErrorKind::TimedOut, "not reaped");
-        let error_value = argentic_runtime::content_io::admitted::io_error_to_backend_error(
+        let error_value = crate::content_io::admitted::io_error_to_backend_error(
             source,
             std::path::Path::new("/synthetic/data"),
         );
@@ -128,7 +128,7 @@ mod termination_tests {
 
     #[test]
     fn confirmed_cancellation_stays_distinct_from_read_failure() {
-        let failure = || argentic_runtime::content_io::admitted::ReadError::Filesystem {
+        let failure = || crate::content_io::admitted::ReadError::Filesystem {
             message: "synthetic failure".into(),
         };
         assert_eq!(file_read_error(true, failure()).code, "CANCELLED");
@@ -139,7 +139,7 @@ mod termination_tests {
     }
 }
 
-pub(crate) async fn resolve_content(
+pub async fn resolve_content(
     context: &ContentContext,
     usage: ContentUse,
 ) -> ContentResult<ResolvedContentReceipt> {
@@ -168,9 +168,10 @@ pub(super) async fn resolve_content_in_root(
         }
         let name = field_string(source.get("ref"))?
             .ok_or_else(|| error("INVALID_SOURCE", "Missing ref."))?;
-        let entry = crate::db::exact_json::at_path(&context.document_json, &["content", &name])
-            .map_err(|e| error("PARSE", e))?
-            .ok_or_else(|| error("INVALID_SOURCE", "Unknown content ref."))?;
+        let entry =
+            argentic_core::durable_json::at_path(&context.document_json, &["content", &name])
+                .map_err(|e| error("PARSE", e))?
+                .ok_or_else(|| error("INVALID_SOURCE", "Unknown content ref."))?;
         source = raw_object(entry.get())?;
         if source.contains_key("ref") {
             return Err(error(
@@ -327,7 +328,7 @@ async fn read_uri(
                 .transpose()?;
             let root_identity = root_path
                 .as_deref()
-                .map(argentic_runtime::content_io::admitted::workspace_root_identity)
+                .map(crate::content_io::admitted::workspace_root_identity)
                 .transpose()
                 .map_err(|e| error("CONTENT_UNAVAILABLE", e))?;
             if let Some(root) = root {
@@ -347,23 +348,25 @@ async fn read_uri(
             let root_after_read = root_path.clone();
             let denial = Arc::new(Mutex::new(None));
             let admission_error = Arc::clone(&denial);
-            let read = argentic_runtime::content_io::admitted::read_file_bytes_with_admission(
+            let read = crate::content_io::admitted::read_file_bytes_with_admission(
                 &path,
                 &context.cancel,
                 context.resource_owner.clone(),
                 move |resolved| async move {
                     if let Some(root_path) = &root_path {
                         if !resolved.starts_with(root_path)
-                            || argentic_runtime::content_io::admitted::workspace_root_identity(root_path).ok()
+                            || crate::content_io::admitted::workspace_root_identity(root_path).ok()
                                 != root_identity
                         {
                             *admission_error.lock().unwrap() = Some(error(
                                 "PERMISSION",
                                 "Skill resource escapes or changes its root.",
                             ));
-                            return Err(argentic_runtime::content_io::admitted::ReadError::FilesystemInvalidPath {
-                                message: "Invalid skill resource root.".into(),
-                            });
+                            return Err(
+                                crate::content_io::admitted::ReadError::FilesystemInvalidPath {
+                                    message: "Invalid skill resource root.".into(),
+                                },
+                            );
                         }
                     }
                     match context
@@ -374,7 +377,7 @@ async fn read_uri(
                             if decision.resolved_path.as_deref() == resolved.to_str()
                                 && root_path
                                     .as_deref()
-                                    .map(argentic_runtime::content_io::admitted::workspace_root_identity)
+                                    .map(crate::content_io::admitted::workspace_root_identity)
                                     .transpose()
                                     .ok()
                                     .flatten()
@@ -387,15 +390,19 @@ async fn read_uri(
                                 "CORRELATION",
                                 "File target changed after policy resolution.",
                             ));
-                            Err(argentic_runtime::content_io::admitted::ReadError::FilesystemInvalidPath {
-                                message: "Content target changed.".into(),
-                            })
+                            Err(
+                                crate::content_io::admitted::ReadError::FilesystemInvalidPath {
+                                    message: "Content target changed.".into(),
+                                },
+                            )
                         }
                         Err(e) => {
                             *admission_error.lock().unwrap() = Some(e);
-                            Err(argentic_runtime::content_io::admitted::ReadError::FilesystemInvalidPath {
-                                message: "Content access denied.".into(),
-                            })
+                            Err(
+                                crate::content_io::admitted::ReadError::FilesystemInvalidPath {
+                                    message: "Content access denied.".into(),
+                                },
+                            )
                         }
                     }
                 },
@@ -409,8 +416,7 @@ async fn read_uri(
                     .unwrap_or_else(|| file_read_error(context.cancel.is_cancelled(), e))
             })?;
             if let Some(root) = root_after_read {
-                if argentic_runtime::content_io::admitted::workspace_root_identity(&root).ok()
-                    != root_identity
+                if crate::content_io::admitted::workspace_root_identity(&root).ok() != root_identity
                 {
                     return Err(error(
                         "CORRELATION",
@@ -477,7 +483,7 @@ async fn read_uri(
     }
 }
 
-pub(crate) async fn capture_result_file(
+pub async fn capture_result_file(
     context: &ContentContext,
     result_name: &str,
     uri: &str,

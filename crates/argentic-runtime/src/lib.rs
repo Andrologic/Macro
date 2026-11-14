@@ -36,3 +36,5 @@ pub mod content_io;
 pub mod skill_text;
 
 pub mod content_network;
+
+pub mod content;

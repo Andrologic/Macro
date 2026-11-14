@@ -3,27 +3,12 @@
   "baseRef": "627ea641d8ab1439ca41e9cd68bb07454ea33c49",
   "counts": {
     "rust": {
-      "src-tauri/src/agsdl_content/mod.rs": {
-        "crate:db": 2,
-        "token:ts_rs": 5
-      },
       "src-tauri/src/agsdl_content/qa_cases.rs": {
         "crate:core": 1,
         "crate:fs": 10
       },
       "src-tauri/src/agsdl_content/qa_runner_tests.rs": {
         "crate:core": 1
-      },
-      "src-tauri/src/agsdl_content/resolve.rs": {
-        "crate:db": 3
-      },
-      "src-tauri/src/agsdl_content/skills.rs": {
-        "crate:commands": 1,
-        "crate:db": 2,
-        "crate:fs": 1
-      },
-      "src-tauri/src/agsdl_content/tests.rs": {
-        "crate:fs": 2
       },
       "src-tauri/src/agsdl_host.rs": {
         "crate:ai": 1,

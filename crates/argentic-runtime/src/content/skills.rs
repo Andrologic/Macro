@@ -4,7 +4,7 @@ use url::Url;
 
 /// Native-only handle, retained by the host and never deserialized from a tool.
 #[derive(Clone)]
-pub(crate) struct SkillHandle {
+pub struct SkillHandle {
     capture_id: String,
     agent: String,
     name: String,
@@ -14,7 +14,7 @@ pub(crate) struct SkillHandle {
 }
 
 #[derive(Clone)]
-pub(crate) struct SkillDescriptor {
+pub struct SkillDescriptor {
     pub key: String,
     pub name: String,
     pub description: String,
@@ -23,7 +23,7 @@ pub(crate) struct SkillDescriptor {
     pub handle: SkillHandle,
 }
 
-pub(crate) struct LoadedSkill {
+pub struct LoadedSkill {
     handle: SkillHandle,
     root: resolve::SkillRoot,
     pub instructions: String,
@@ -47,14 +47,12 @@ fn parse_skill(receipt: &ResolvedContentReceipt) -> ContentResult<(String, Strin
     if !url.path().ends_with("/SKILL.md") {
         return Err(error("INVALID_SKILL", "Skill URI must name SKILL.md."));
     }
-    crate::commands::skills::parse_admitted_skill_text(Path::new(url.path()), text)
-        .map_err(|e| error("INVALID_SKILL", e.message))
+    crate::skill_text::parse_admitted_skill_text(Path::new(url.path()), text)
+        .map_err(|e| error("INVALID_SKILL", e))
 }
 
-pub(crate) async fn discover_skills(
-    context: &ContentContext,
-) -> ContentResult<Vec<SkillDescriptor>> {
-    let selected = crate::db::exact_json::at_path(
+pub async fn discover_skills(context: &ContentContext) -> ContentResult<Vec<SkillDescriptor>> {
+    let selected = argentic_core::durable_json::at_path(
         &context.document_json,
         &["agents", &context.agent, "skills"],
     )
@@ -76,9 +74,10 @@ pub(crate) async fn discover_skills(
         if !seen.insert(key.clone()) {
             return Err(error("INVALID_SKILL", "Duplicate skill name."));
         }
-        let raw = crate::db::exact_json::at_path(&context.document_json, &["skills", &key, "uri"])
-            .map_err(|e| error("PARSE", e))?
-            .ok_or_else(|| error("INVALID_SKILL", "Unknown declared skill."))?;
+        let raw =
+            argentic_core::durable_json::at_path(&context.document_json, &["skills", &key, "uri"])
+                .map_err(|e| error("PARSE", e))?
+                .ok_or_else(|| error("INVALID_SKILL", "Unknown declared skill."))?;
         let declared_uri: String =
             serde_json::from_str(raw.get()).map_err(|e| error("INVALID_SKILL", e))?;
         let receipt = resolve_content(
@@ -132,7 +131,7 @@ pub(crate) async fn discover_skills(
     Ok(result)
 }
 
-pub(crate) async fn load_skill(
+pub async fn load_skill(
     context: &ContentContext,
     handle: &SkillHandle,
 ) -> ContentResult<LoadedSkill> {
@@ -170,7 +169,7 @@ pub(crate) async fn load_skill(
         let canonical = path
             .canonicalize()
             .map_err(|e| error("CONTENT_UNAVAILABLE", e))?;
-        let identity = crate::fs::operations::workspace_root_identity(&canonical)
+        let identity = crate::content_io::admitted::workspace_root_identity(&canonical)
             .map_err(|e| error("CONTENT_UNAVAILABLE", e))?
             .observation_key();
         if Url::from_directory_path(&canonical).ok().as_ref() != Some(&root)
@@ -194,7 +193,7 @@ pub(crate) async fn load_skill(
     })
 }
 
-pub(crate) async fn read_skill_resource(
+pub async fn read_skill_resource(
     context: &ContentContext,
     loaded: &LoadedSkill,
     relative_path: &str,

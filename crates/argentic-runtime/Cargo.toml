@@ -15,6 +15,7 @@ argentic-core = { path = "../argentic-core" }
 serde_json = { version = "1", features = ["raw_value", "arbitrary_precision"] }
 schemars = "0.8"
 regex = "1"
+base64 = "0.22"
 thiserror = "2"
 url = "2"
 serde_yaml = "0.9"

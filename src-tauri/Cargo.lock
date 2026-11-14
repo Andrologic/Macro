@@ -18,6 +18,7 @@ name = "argentic-runtime"
 version = "0.1.0"
 dependencies = [
  "argentic-core",
+ "base64 0.22.1",
  "cap-std",
  "libc",
  "portable-pty",

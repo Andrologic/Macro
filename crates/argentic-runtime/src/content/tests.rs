@@ -1,5 +1,5 @@
 use super::*;
-use crate::agsdl_permissions::{normalize_requested, PathContext, RequestedPermissions};
+use crate::permissions::{normalize_requested, PathContext, RequestedPermissions};
 use serde_json::json;
 use std::fs;
 use tempfile::TempDir;
@@ -198,14 +198,14 @@ async fn denied_file_does_not_reach_the_open_boundary() {
     let canonical = fs::canonicalize(&file).unwrap();
     let reached = Arc::new(tokio::sync::Barrier::new(2));
     let release = Arc::new(tokio::sync::Barrier::new(2));
-    crate::fs::operations::install_content_before_open_hook(canonical.clone(), reached, release);
+    crate::content_io::admitted::install_content_before_open_hook(canonical.clone(), reached, release);
     let result = resolve_content(
         &ctx,
         use_source(r#"{"uri":"secret.txt"}"#, ContentUsage::Resource),
     )
     .await;
     assert_eq!(result.unwrap_err().code, "PERMISSION");
-    assert!(crate::fs::operations::content_before_open_hook_pending(
+    assert!(crate::content_io::admitted::content_before_open_hook_pending(
         &canonical, true
     ));
 }
