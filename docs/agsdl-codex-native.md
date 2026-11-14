@@ -285,15 +285,33 @@ new file, linked file, model reviewer, unsupported version/platform or missing
 capability must remain refused. Only record checks actually performed.
 
 The work journal retains its existing `AGENT_FAILED` terminal code. A separate
-JSON line on stderr, kind `argentic.nativeAgentFailure`, carries a fixed category
-and the actual native attempt identity/generation.
+JSON lines on stderr, kind `argentic.nativeAgentFailure`, carry a fixed category,
+a fixed native `stage`, and the actual attempt identity/generation. A failure
+can produce several lines as it propagates; retain their order and correlate
+them by attempt. Successful boundaries emit nothing.
+
+| Stage | Failing native boundary |
+| --- | --- |
+| `session`, `ask` | Owned Codex session, or its command approval port |
+| `brokerAttach`, `brokerAdmit`, `brokerOwner`, `brokerOpen` | Human broker attachment, admission, owner check, request creation |
+| `brokerPump`, `brokerWait`, `brokerResolution` | Durable human-clock evaluation, resolution wait, reservation |
+| `brokerInspect`, `brokerPolicy`, `brokerDeliver`, `brokerReply` | Current capture, policy lease, guarded delivery, physical native reply |
+| `workEvent`, `workSubmit`, `workCheck` | Runtime work event, result submission, completion-check port |
+| `executor`, `executorStop` | Executor return, or its terminal failure event |
+
 `CODEX_RPC_SERVER_REQUEST_UNQUALIFIED` identifies an unavailable callback
 during an RPC wait. `CODEX_APPROVAL_METHOD_UNQUALIFIED` identifies an unsupported
 approval method; `CODEX_TURN_FAILED_AFTER_SCOPE_DECLINE` records a failed turn
 after an automatic scope refusal, without asserting causation. `CODEX_TURN_*`
 categories come only from correlated native error metadata, with
-`CODEX_TURN_FAILED` for unknown detail. Known auth/profile/request failures keep
-their fixed codes; other failures retain `AGENT_FAILED`. Native messages,
+`CODEX_TURN_FAILED` for unknown detail. Known auth/profile/request and content
+failures keep their fixed codes. Engine guard and conversion categories use
+fixed `ENGINE_*` codes, including `ENGINE_STORAGE`, `ENGINE_AUTHORITY`,
+`ENGINE_RUNTIME_UNAVAILABLE`, `ENGINE_PERMISSION` and `ENGINE_STOP_PENDING`;
+correlation remains `AGENT_CORRELATION`. An unrecognized category becomes
+`UNCLASSIFIED_FAILURE`, never a copy of its original code. SQL errors have
+already lost their raw details in the existing `EngineFailure` conversion.
+Native messages, pointers, work payloads,
 additional details, credentials and callback bodies are never emitted as
 diagnostics. A fixed category is evidence for diagnosis, not authority or proof
 that the real approval path passed.

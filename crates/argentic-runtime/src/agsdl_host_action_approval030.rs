@@ -1,6 +1,7 @@
 //! Existing native approval/resolution/delivery, owned entirely by runtime.
 use crate::{
     agsdl_host::HostState,
+    agsdl_host_codex::diagnostics::{self, Stage},
     agsdl_host_flow030 as flow,
     host::ActionPolicySource,
     persistence::{failure, Result},
@@ -24,48 +25,84 @@ impl crate::agsdl_host_codex030::approvals::CommandApprovals030 for AgentActionH
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let host = &self.host;
-            let broker = host
-                .flow030()
-                .human_runtime()
-                .broker(host, &self.pool, attempt.identity())
-                .await?;
+            let broker = diagnostics::at(
+                attempt,
+                Stage::BrokerAttach,
+                host.flow030()
+                    .human_runtime()
+                    .broker(host, &self.pool, attempt.identity())
+                    .await,
+            )?;
             payload["title"] = payload["nativeRequest"]["params"]["reason"].clone();
             let (work, ticket) = {
                 let _operation = broker.operation.lock().await;
-                let work = broker.admit_agent(host, attempt).await?;
+                let work = diagnostics::at(
+                    attempt,
+                    Stage::BrokerAdmit,
+                    broker.admit_agent(host, attempt).await,
+                )?;
                 if !work.belongs_to(attempt) {
-                    return Err(failure(
-                        "CORRELATION",
-                        "approval",
-                        "Native action owner changed",
-                    ));
+                    return diagnostics::at(
+                        attempt,
+                        Stage::BrokerOwner,
+                        Err(failure(
+                            "CORRELATION",
+                            "approval",
+                            "Native action owner changed",
+                        )),
+                    );
                 }
-                let ticket = broker.open(host, &work, "ask", payload.clone()).await?;
-                broker.pump(host, cancel).await?;
+                let ticket = diagnostics::at(
+                    attempt,
+                    Stage::BrokerOpen,
+                    broker.open(host, &work, "ask", payload.clone()).await,
+                )?;
+                diagnostics::at(attempt, Stage::BrokerPump, broker.pump(host, cancel).await)?;
                 (work, ticket)
             };
             host.flow030()
                 .supervisor_registry()
                 .wake(&attempt.identity().system_start_id);
-            while !broker.resolution_ready(&ticket).await? {
+            while !diagnostics::at(
+                attempt,
+                Stage::BrokerWait,
+                broker.resolution_ready(&ticket).await,
+            )? {
                 tokio::select! {
-                    _ = cancel.cancelled() => return Err(failure("STOP_PENDING", "approval", "Native action was stopped")),
+                    _ = cancel.cancelled() => return diagnostics::at(attempt, Stage::BrokerWait, Err(failure("STOP_PENDING", "approval", "Native action was stopped"))),
                     _ = tokio::time::sleep(Duration::from_millis(25)) => {}
                 }
             }
             let _operation = broker.operation.lock().await;
-            let decision = broker.take_resolution(host, &ticket).await?;
-            let view = flow::inspect_run(host.flow030(), host, &self.pool, attempt.owner()).await?;
+            let decision = diagnostics::at(
+                attempt,
+                Stage::BrokerResolution,
+                broker.take_resolution(host, &ticket).await,
+            )?;
+            let view = diagnostics::at(
+                attempt,
+                Stage::BrokerInspect,
+                flow::inspect_run(host.flow030(), host, &self.pool, attempt.owner()).await,
+            )?;
             // The host's real source/configuration guards remain owned until
             // native delivery and its correlated acknowledgement have returned.
-            let policy = self.policy.lock_current(&view.capture, &payload).await?;
+            let policy = diagnostics::at(
+                attempt,
+                Stage::BrokerPolicy,
+                self.policy.lock_current(&view.capture, &payload).await,
+            )?;
             let allowed = policy.allows();
-            broker
-                .deliver_action(host, &work, &decision, &payload, |yes| {
-                    respond(yes && allowed && !cancel.is_cancelled())
-                })
-                .await?;
-            broker.pump(host, cancel).await?;
+            diagnostics::at(
+                attempt,
+                Stage::BrokerDeliver,
+                broker
+                    .deliver_action(host, &work, &decision, &payload, |yes| {
+                        let response = respond(yes && allowed && !cancel.is_cancelled());
+                        async move { diagnostics::at(attempt, Stage::BrokerReply, response.await) }
+                    })
+                    .await,
+            )?;
+            diagnostics::at(attempt, Stage::BrokerPump, broker.pump(host, cancel).await)?;
             drop(policy);
             Ok(())
         })

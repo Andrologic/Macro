@@ -5,6 +5,90 @@ use crate::persistence::flow030::{Activation030, Instance030};
 use tokio::io::AsyncWriteExt;
 
 #[tokio::test]
+async fn diagnostic_action_broker_keeps_attach_admit_open_and_pump_failures_distinct() {
+    use crate::agsdl_host_codex030::approvals::CommandApprovals030;
+    struct UnusedPolicy;
+    impl crate::host::ActionPolicySource for UnusedPolicy {
+        fn lock_current<'a>(
+            &'a self,
+            _: &'a StartCapture030,
+            _: &'a Value,
+        ) -> crate::host::PolicyFuture<'a, crate::host::ActionPolicyLease> {
+            Box::pin(async { panic!("an early broker failure cannot reach delivery policy") })
+        }
+    }
+    for case in ["attach", "admit", "open", "pump"] {
+        let f = fixture("agent", Some(1000), Some(10)).await;
+        let humans = f.host.flow030().human_runtime();
+        if case != "attach" {
+            let broker = humans
+                .broker(&f.host, &f.broker.pool, f.attempt.identity())
+                .await
+                .unwrap();
+            if matches!(case, "open" | "pump") {
+                // The real dispatcher stabilizes admission before an adapter
+                // can open its first ask; preserve that prerequisite here.
+                broker.admit_agent(&f.host, &f.attempt).await.unwrap();
+                broker
+                    .pump(&f.host, &CancellationToken::new())
+                    .await
+                    .unwrap();
+            }
+        }
+        match case {
+            "attach" => f.broker.pool.close().await,
+            "admit" => {}
+            "open" => {
+                sqlx::raw_sql("CREATE TRIGGER diagnostic_open_failure BEFORE INSERT ON engine_flow030_human_requests BEGIN SELECT RAISE(ABORT, 'SYNTHETIC_PRIVATE'); END;").execute(&f.broker.pool).await.unwrap();
+            }
+            "pump" => {
+                sqlx::raw_sql("CREATE TRIGGER diagnostic_pump_failure BEFORE UPDATE OF output_json ON engine_flow030_clock_events BEGIN SELECT RAISE(ABORT, 'SYNTHETIC_PRIVATE'); END;").execute(&f.broker.pool).await.unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let actor = crate::agsdl_host_action_approval030::AgentActionHumans030 {
+            host: f.host.clone(),
+            pool: f.broker.pool.clone(),
+            policy: Arc::new(UnusedPolicy),
+        };
+        let attempt = if case == "admit" {
+            FlowWorkAttempt030::registry_fixture030("foreign-provider-attempt")
+        } else {
+            f.attempt.clone()
+        };
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            actor.answer(
+                &attempt,
+                json!({"nativeRequest":{"id":"request","params":{"reason":"Synthetic"}}}),
+                &CancellationToken::new(),
+                Box::new(|_| Box::pin(async { panic!("failed broker cannot send") })),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(
+            error.code,
+            match case {
+                "admit" => "CORRELATION",
+                _ => "STORAGE",
+            },
+            "{case}"
+        );
+        assert!(!error.message.contains("SYNTHETIC_PRIVATE"));
+        if case != "attach" {
+            let requests: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM engine_flow030_human_requests")
+                    .fetch_one(&f.broker.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(requests, i64::from(case == "pump"));
+        }
+    }
+}
+
+#[tokio::test]
 async fn native_action_delivery_requires_exact_payload_live_work_and_one_resolution() {
     for outcome in ["yes", "no", "expired", "stop", "retired", "payload"] {
         let f = fixture("agent", Some(1000), Some(10)).await;

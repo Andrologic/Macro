@@ -1,5 +1,6 @@
 //! Event-driven 0.3 dispatch. Provider futures and physical joins never run in
 //! the supervisor's dispatch pass. The existing controller owns result policy.
+use crate::agsdl_host_codex::diagnostics::{self, Stage};
 use crate::{
     agsdl_host::HostState,
     agsdl_host_dispatch030::{self as dispatch, JoinedOwnedAgent030, SourceOwnership030},
@@ -109,23 +110,39 @@ impl WorkEventSink030 {
         body: Value,
         cancel: &CancellationToken,
     ) -> Result<ProtocolDecision030> {
+        let stage = if body.get("kind").and_then(Value::as_str) == Some("submit") {
+            Stage::WorkSubmit
+        } else {
+            Stage::WorkEvent
+        };
         if body.get("kind").and_then(Value::as_str) == Some("physicalEnded") {
-            return Err(failure(
-                "AUTHORITY",
-                "work",
-                "Physical end requires a native join",
-            ));
+            return diagnostics::at(
+                &self.attempt,
+                stage,
+                Err(failure(
+                    "AUTHORITY",
+                    "work",
+                    "Physical end requires a native join",
+                )),
+            );
         }
         let decision = {
             let _serial = self.serial.lock().await;
             let label = format!("event-{}", self.sequence.fetch_add(1, Ordering::Relaxed));
-            (self.emitter.event)(self.attempt.clone(), label, body, cancel.clone()).await?
+            diagnostics::at(
+                &self.attempt,
+                stage,
+                (self.emitter.event)(self.attempt.clone(), label, body, cancel.clone()).await,
+            )?
         };
         if let Some(check) = &decision.check {
             // Effect IO must not hold the event serializer. Stop and machine
             // deadlines need to commit while the owned check is still running.
-            let completed =
-                (self.emitter.check)(self.attempt.clone(), check.clone(), cancel.clone()).await?;
+            let completed = diagnostics::at(
+                &self.attempt,
+                Stage::WorkCheck,
+                (self.emitter.check)(self.attempt.clone(), check.clone(), cancel.clone()).await,
+            )?;
             return Box::pin(self.emit(completed, cancel)).await;
         }
         Ok(decision)
@@ -309,7 +326,7 @@ pub(crate) async fn start_agent_work030(
                                 &CancellationToken::new(),
                             )
                             .await;
-                        if let Err(error) = failure {
+                        if let Err(error) = diagnostics::at(&events.attempt, Stage::ExecutorStop, failure) {
                             returned.send_replace(Some(Err(error)));
                             return;
                         }
@@ -1412,6 +1429,44 @@ pub(crate) async fn emit_work_event030(
 #[cfg(test)]
 mod attachment_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn diagnostic_work_event_submission_and_check_keep_their_original_errors() {
+        for kind in ["visibleText", "submit", "check"] {
+            let sink = WorkEventSink030 {
+                attempt: FlowWorkAttempt030::registry_fixture030("diagnostic-work"),
+                sequence: Default::default(),
+                serial: Default::default(),
+                emitter: EventEmitter030 {
+                    event: Arc::new(move |_, _, _, _| {
+                        Box::pin(async move {
+                            if kind == "check" {
+                                Ok(ProtocolDecision030 {
+                                    state_json: "{}".into(),
+                                    receipt_json: "{}".into(),
+                                    check: Some(crate::persistence::work_dto030::CheckRequest030 {
+                                        check_id: "check".into(),
+                                        invocation_json: "{}".into(),
+                                    }),
+                                })
+                            } else {
+                                Err(sqlx::Error::RowNotFound.into())
+                            }
+                        })
+                    }),
+                    check: Arc::new(|_, _, _| {
+                        Box::pin(async { Err(sqlx::Error::RowNotFound.into()) })
+                    }),
+                },
+            };
+            let error = sink
+                .emit(serde_json::json!({"kind":kind}), &CancellationToken::new())
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, "STORAGE");
+            assert_eq!(diagnostics::fixed_code(&error), "ENGINE_STORAGE");
+        }
+    }
 
     #[tokio::test]
     async fn stop_waits_for_a_reserved_supervisor_and_observes_attachment_failure() {

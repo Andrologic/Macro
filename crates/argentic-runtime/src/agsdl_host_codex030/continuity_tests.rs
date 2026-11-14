@@ -70,6 +70,7 @@ async fn automatic_plan_uses_the_native_event_for_each_admitted_work() {
 
 struct ActionAnswer {
     yes: bool,
+    fail: bool,
     calls: Arc<std::sync::atomic::AtomicUsize>,
     identity: crate::persistence::flow030::FlowIdentity030,
 }
@@ -84,6 +85,9 @@ impl approvals::CommandApprovals030 for ActionAnswer {
         Box::pin(async move {
             assert_eq!(attempt.identity(), &self.identity);
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.fail {
+                return Err(sqlx::Error::RowNotFound.into());
+            }
             respond(self.yes).await
         })
     }
@@ -91,7 +95,7 @@ impl approvals::CommandApprovals030 for ActionAnswer {
 
 #[tokio::test]
 async fn admitted_write_ask_reaches_native_response_without_bypassing_the_host_ceiling() {
-    for mode in ["yes", "no", "host-denied"] {
+    for mode in ["yes", "no", "host-denied", "ask-failure"] {
         let document = json!({"contract":"agsdl-0.3.0","id":"action-approval","agents":{"worker":{"harness":"codex","permissions":{"preset":"workspace","reviewer":"person","rules":[{"action":"write","effect":"ask"}]}}},"flow":{"entry":"work","steps":{"work":{"type":"agent","agent":"worker"}}}});
         let f = Fixture::with_document(document).await;
         if mode != "host-denied" {
@@ -112,11 +116,19 @@ async fn admitted_write_ask_reaches_native_response_without_bypassing_the_host_c
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let e = executor(&f, &trace, None).with_approvals(Arc::new(ActionAnswer {
             yes: mode == "yes",
+            fail: mode == "ask-failure",
             calls: calls.clone(),
             identity: f.identity.clone(),
         }));
         let view = run(&f, Arc::new(e)).await;
-        assert_eq!(view.state.verdict.as_deref(), Some("succeeded"));
+        assert_eq!(
+            view.state.verdict.as_deref(),
+            Some(if mode == "ask-failure" {
+                "failed"
+            } else {
+                "succeeded"
+            })
+        );
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
             if mode == "yes" { "after" } else { "before" }
@@ -125,12 +137,24 @@ async fn admitted_write_ask_reaches_native_response_without_bypassing_the_host_c
             calls.load(std::sync::atomic::Ordering::SeqCst),
             usize::from(mode != "host-denied")
         );
-        let response: Value = std::fs::read_to_string(&trace)
+        let response: Option<Value> = std::fs::read_to_string(&trace)
             .unwrap()
             .lines()
             .map(|l| serde_json::from_str::<Value>(l).unwrap())
-            .find(|v| v["id"] == "native-approval")
-            .unwrap();
+            .find(|v| v["id"] == "native-approval");
+        if mode == "ask-failure" {
+            assert!(
+                response.is_none(),
+                "failed ask must not send a fabricated answer"
+            );
+            assert!(view
+                .state
+                .activations
+                .iter()
+                .all(|activation| !activation.physical));
+            continue;
+        }
+        let response = response.unwrap();
         assert_eq!(
             response["result"]["decision"],
             if mode == "yes" { "accept" } else { "decline" }

@@ -137,6 +137,7 @@ type AdapterSink030 = Arc<
         + Send
         + Sync,
 >;
+use crate::agsdl_host_codex::diagnostics::{self, Stage};
 use std::{path::Path, sync::Arc};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -644,7 +645,10 @@ impl CodexExecutor030 {
         }
         drop(client);
         drop(owned); // StreamTasks owns and joins the physical cleanup.
-        result
+        match steer.as_ref() {
+            Some(context) => diagnostics::at(&context.attempt, Stage::Session, result),
+            None => result,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -847,7 +851,7 @@ impl CodexExecutor030 {
                             loop {
                                 tokio::select! {
                                     biased;
-                                    result = &mut answer => { result?; break; }
+                                    result = &mut answer => { diagnostics::at(&attempt, Stage::Ask, result)?; break; }
                                     event = client.notification() => {
                                         let event = event?;
                                         if client.handle_auth_request(&event).await? { continue; }
