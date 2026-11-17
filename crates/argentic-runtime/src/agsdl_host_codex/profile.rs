@@ -77,9 +77,28 @@ fn unavailable(code: &str) -> CodexStatus {
     }
 }
 fn executable() -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| dir.join(if cfg!(windows) { "codex.exe" } else { "codex" }))
-        .find(|path| path.is_file())
+    resolve_executable(
+        std::env::var_os("ARGENTIC_CODEX_EXECUTABLE").as_deref(),
+        std::env::var_os("PATH").as_deref(),
+    )
+}
+
+fn resolve_executable(
+    explicit: Option<&std::ffi::OsStr>,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    let executable = if let Some(explicit) = explicit {
+        let path = PathBuf::from(explicit);
+        if !path.is_absolute() || !path.is_file() {
+            return None;
+        }
+        path
+    } else {
+        std::env::split_paths(search_path?)
+            .map(|dir| dir.join(if cfg!(windows) { "codex.exe" } else { "codex" }))
+            .find(|path| path.is_file())?
+    };
+    Some(executable)
         .and_then(|path| path.canonicalize().ok())
         .and_then(|path| {
             if path.file_name().is_some_and(|name| name == "codex.js") {
@@ -588,6 +607,29 @@ pub(crate) fn verify_layers(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_codex_executable_takes_precedence_and_invalid_paths_fail_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let on_path = root.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let explicit = root.join("qualified-codex");
+        std::fs::write(&on_path, "").unwrap();
+        std::fs::write(&explicit, "").unwrap();
+        let search_path = Some(root.as_os_str());
+        assert_eq!(resolve_executable(None, search_path), Some(on_path));
+        assert_eq!(
+            resolve_executable(Some(explicit.as_os_str()), search_path),
+            Some(explicit)
+        );
+        for invalid in [
+            Path::new("relative-codex"),
+            root.as_path(),
+            &root.join("absent"),
+        ] {
+            assert!(resolve_executable(Some(invalid.as_os_str()), search_path).is_none());
+        }
+    }
+
     #[test]
     fn complete_official_package_is_required_and_helpers_are_capture_bound() {
         use std::os::unix::fs::PermissionsExt;

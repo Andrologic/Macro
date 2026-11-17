@@ -88,6 +88,8 @@ executable and the existing platform gates. A working ordinary 0.169 session
 does not qualify 0.169 as an AgSDL execution engine. Product qualification of
 this new authentication path still requires the real UI and standalone recipes.
 
+Set `ARGENTIC_CODEX_EXECUTABLE` to the absolute executable path when the qualified package is installed alongside another Codex version. The native adapter checks the version, sibling executables and profile.
+
 For Macro, set `ARGENTIC_CODEX_AUTH_FILE` only in the process launching the QA
 application. For the standalone operator, use `--codex-auth-file FILE`; embedding
 hosts use `HostContext::with_codex_auth_file`. The source is native host
@@ -96,7 +98,7 @@ executable using that host process's `PATH`, without changing the ordinary CLI
 installation. For example:
 
 ```sh
-env PATH="/absolute/qualified-codex-0.167.0:$PATH" \
+env ARGENTIC_CODEX_EXECUTABLE=/absolute/qualified-codex-0.167.0/codex \
   ARGENTIC_CODEX_AUTH_FILE=/absolute/ordinary-codex-home/auth.json \
   /absolute/qa-application
 ```
