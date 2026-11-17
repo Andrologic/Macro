@@ -52,6 +52,9 @@ impl crate::agsdl_host_codex030::approvals::CommandApprovals030 for AgentActionH
                         )),
                     );
                 }
+                // A first ask can admit its own work. Settle that clock
+                // event before open reserves the next one.
+                diagnostics::at(attempt, Stage::BrokerPump, broker.pump(host, cancel).await)?;
                 let ticket = diagnostics::at(
                     attempt,
                     Stage::BrokerOpen,

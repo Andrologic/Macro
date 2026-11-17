@@ -68,7 +68,11 @@ async fn ticket(f: &Fixture) -> String {
     .expect("native human request opened")
 }
 async fn actor_case(outcome: &str) {
-    let f = fixture("agent", Some(1000), Some(10)).await;
+    let f = if outcome == "expired" {
+        fixture("agent", Some(1000), Some(10)).await
+    } else {
+        fixture("agent", None, None).await
+    };
     let humans = f.host.flow030().human_runtime();
     *humans.clock.lock().unwrap() = f.clock.clone();
     humans.brokers.lock().await.insert(
@@ -78,10 +82,6 @@ async fn actor_case(outcome: &str) {
         ),
         f.broker.clone(),
     );
-    // Production dispatch admits and stabilizes the owned work before its
-    // adapter can receive a native command-approval request.
-    f.broker.admit_agent(&f.host, &f.attempt).await.unwrap();
-    native_pump(&f).await;
     let policy = Arc::new(Policy {
         allowed: outcome != "policy-deny",
         ..Default::default()
@@ -115,7 +115,7 @@ async fn actor_case(outcome: &str) {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let called = calls.clone();
     let witness = policy.clone();
-    let task = tokio::spawn(async move {
+    let mut task = tokio::spawn(async move {
         actor.answer(&attempt, json!({"nativeRequest":{"id":"request","params":{"reason":"Synthetic native action","threadId":"thread","turnId":"turn","itemId":"command"}}}), &cancelled,
             Box::new(move |yes| Box::pin(async move {
                 assert!(witness.live.load(Ordering::SeqCst));
@@ -127,7 +127,16 @@ async fn actor_case(outcome: &str) {
                 Ok(())
             }))).await
     });
-    let request = ticket(&f).await;
+    let request = tokio::select! {
+        result = &mut task => panic!("native actor finished before opening a request: {result:?}"),
+        request = ticket(&f) => request,
+    };
+    assert!(calls.lock().unwrap().is_empty());
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_flow030_human_requests")
+        .fetch_one(&f.broker.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
     {
         let _op = f.broker.operation.lock().await;
         if outcome == "stop" {

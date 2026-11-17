@@ -26,8 +26,7 @@ async fn diagnostic_action_broker_keeps_attach_admit_open_and_pump_failures_dist
                 .await
                 .unwrap();
             if matches!(case, "open" | "pump") {
-                // The real dispatcher stabilizes admission before an adapter
-                // can open its first ask; preserve that prerequisite here.
+                // Settle admission to inject the fault at the requested stage.
                 broker.admit_agent(&f.host, &f.attempt).await.unwrap();
                 broker
                     .pump(&f.host, &CancellationToken::new())
