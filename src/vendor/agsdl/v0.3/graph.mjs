@@ -395,7 +395,9 @@ export function join_origin(graph, join, idom, succ) {
 
 export function analyse_joins(graph) {
   const infos = new Map(), problems = [];
-  if (graph.root === null) return [infos, problems];
+  if (graph.root === null || ![...graph.nodes.values()].some(node => node.type === 'join')) {
+    return [infos, problems];
+  }
   const idom = graph.immediate_dominators(), succ = graph.successors(), pred = graph.predecessors();
   const reach = graph.reachable(graph.root), origins = new Map();
   for (const [addr, node] of graph.nodes) {
