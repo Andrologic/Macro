@@ -231,7 +231,8 @@ async function main() {
       writeFile(pair.pendingPath, JSON.stringify(pair.pending)),
       writeFile(pair.completedPath, JSON.stringify(pair.completed)),
     ]));
-    const canonicalAddedProjectRoot = await realpath(addedProjectRoot);
+    // Rust canonicalizes Windows paths to the verbatim namespace before hashing.
+    const canonicalAddedProjectRoot = path.toNamespacedPath(await realpath(addedProjectRoot));
     const crashedMutation = {
       mode: 'Implement',
       tool_id: 'write',
