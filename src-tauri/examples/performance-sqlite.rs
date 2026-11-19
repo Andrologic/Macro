@@ -147,11 +147,12 @@ async fn measure_case(
         sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
             .fetch_all(pool)
             .await?;
-    if migrations
-        != [
-            1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
-            26,
-        ]
+    // Migration 2 is accepted on existing databases and skipped on fresh ones.
+    let fresh_migrations = db::SUPPORTED_MIGRATION_VERSIONS
+        .iter()
+        .copied()
+        .filter(|&version| version != 2);
+    if !migrations.iter().copied().eq(fresh_migrations)
         || journal != "wal"
         || synchronous != 1
         || foreign_keys != 1
@@ -250,12 +251,7 @@ async fn measure_case(
             }
         }
     }
-    let final_count = size
-        + if diagnostics_mode {
-            0
-        } else {
-            WARMUP + SAMPLES
-        };
+    let final_count = size + WARMUP + SAMPLES;
     verify(pool, &conversation.id, final_count).await?;
     pool.close().await;
     let start = Instant::now();
@@ -308,8 +304,9 @@ async fn self_test() -> Result<()> {
         .prefix("macro-native-perf-failure-")
         .tempdir()?;
     let owned_path = directory.path().to_owned();
-    let pool = db::create_pool(&owned_path.join("fixture.db")).await?;
-    content_baseline::check_runtime(&pool, &owned_path.join("fixture.db")).await?;
+    let path = owned_path.join("fixture.db");
+    let pool = db::create_pool(&path).await?;
+    assert_path(&pool, &path).await?;
     let failure = finish_case(pool, directory, Err("Synthetic failure".into())).await;
     assert!(failure.is_err());
     assert!(!owned_path.exists());

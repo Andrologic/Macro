@@ -265,6 +265,9 @@ to nearest-rank percentile and failure-cleanup assertions. The Bun test checks
 that provenance hashes change for tracked/untracked sources and ignore Cargo
 build outputs.
 
+The general benchmark checks the current migration chain for a fresh database.
+The separate content baseline keeps its exact historical schema requirements.
+
 The report records HEAD, dirty state, a fingerprint of tracked and untracked
 nonignored `src-tauri` and `dev/performance` files, executable SHA-256, Rust/Cargo
 versions, OS/CPU/memory, profile and use of an explicit cache. It rejects source
