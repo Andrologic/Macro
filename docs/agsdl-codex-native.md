@@ -273,9 +273,9 @@ Run the existing default Rust suites and 37 official scenarios in file and
 memory modes. Preserve their support classifications; synthetic peers do not
 qualify a provider. Then, in a disposable workspace with an existing regular
 `sentinel.txt`, exercise the write-review source in
-[write-review fixture](https://github.com/Andrologic/argentic/blob/15d4b47609d760dc3cb31d9e6a44a9add061a971/crates/argentic-runtime/examples/fixtures/write-review.json) through both the UI
+[write-review fixture](https://github.com/Andrologic/argentic/blob/fe2495446d29ceaf2a3de7cb06d5117dc1fd3d44/crates/argentic-runtime/examples/fixtures/write-review.json) through both the UI
 and the standalone host documented in
-[HOST.md](https://github.com/Andrologic/argentic/blob/15d4b47609d760dc3cb31d9e6a44a9add061a971/crates/argentic-runtime/HOST.md). Use an observed model; never invent
+[HOST.md](https://github.com/Andrologic/argentic/blob/fe2495446d29ceaf2a3de7cb06d5117dc1fd3d44/crates/argentic-runtime/HOST.md). Use an observed model; never invent
 a qualified registry or bypass a refused capability.
 
 Check the real native request before deciding: the exact command, cwd, thread,
