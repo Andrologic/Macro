@@ -53,9 +53,9 @@ and exact JSON files. The shared filesystem file `fs/operations.rs`, including
 the confined reader and root identity, is checked in full until split, as are
 the other mixed files. Capture, catalogue, task targets, mode tools, UI
 intentions, product commands and the other UI-only database modules remain
-Macro-only and are excluded. The future
-`src-tauri/src/argentic_core/`, `argentic_runtime/`, `crates/argentic-core/`
-and `crates/argentic-runtime/` trees are included as soon as files appear.
+Macro-only and are excluded. Macro resolves the engine through Cargo from the
+Argentic repository. The guard still recognizes the former engine source paths
+so their removal or reintroduction triggers a check.
 
 Counts are per file and rule; missing entries allow zero. The guard reserves
 `tauri`, `AppHandle`, `ts_rs`, `sqlx`, `rusqlite`, and the `crate::` roots db,

@@ -169,19 +169,19 @@ test('exhaustive native profiles test both standalone workspaces and build the r
   for (const profile of ['argentic', 'native', 'native-core', 'full']) {
     const steps = stepsForProfile(profile);
     for (const crate of ['argentic-core', 'argentic-runtime']) {
-      const own = steps.filter(entry => entry.args.includes(`crates/${crate}/Cargo.toml`));
-      expect(own.filter(entry => entry.args.includes('--all-targets') && entry.command === 'cargo')).toHaveLength(1);
+      const own = steps.filter(entry => entry.args.includes(crate));
+      expect(own.filter(entry => entry.args.includes('--all-targets') && entry.args[0] === 'dev/ci/argentic.mjs')).toHaveLength(1);
       expect(own.filter(entry => entry.args.includes('--doc'))).toHaveLength(1);
       expect(own.every(entry => entry.args.includes('--locked'))).toBe(true);
     }
     expect(steps.filter(entry => entry.args.includes('argentic-host'))).toHaveLength(1);
     expect(steps.filter(entry => entry.args.includes('approval_boundary'))).toHaveLength(1);
   }
-  expect(stepsForProfile('argentic').every(entry => entry.command === 'cargo')).toBe(true);
+  expect(stepsForProfile('argentic').every(entry => entry.args[0] === 'dev/ci/argentic.mjs')).toBe(true);
   for (const profile of ['windows', 'windows-core']) {
     for (const crate of ['argentic-core', 'argentic-runtime']) {
-      expect(stepsForProfile(profile).filter(entry => entry.command === 'cargo'
-        && entry.args[0] === 'check' && entry.args.includes(`crates/${crate}/Cargo.toml`)
+      expect(stepsForProfile(profile).filter(entry => entry.args[0] === 'dev/ci/argentic.mjs'
+        && entry.args[2] === 'check' && entry.args.includes(crate)
         && entry.args.includes('--all-targets'))).toHaveLength(1);
     }
   }

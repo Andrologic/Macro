@@ -1,5 +1,0 @@
-(version 1)
-(allow default)
-(deny process-fork)
-(deny process-exec)
-(deny file-read-data (vnode-type FIFO CHARACTER-DEVICE BLOCK-DEVICE SOCKET))

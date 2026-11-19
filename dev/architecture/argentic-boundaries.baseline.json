@@ -76,9 +76,6 @@
         "crate:db": 4,
         "token:sqlx": 30
       },
-      "src-tauri/src/db/agsdl_execution/v030/replay_human030.rs": {
-        "token:sqlx": 12
-      },
       "src-tauri/src/db/agsdl_execution/v030/replay_verify030_tests.rs": {
         "token:sqlx": 48
       },

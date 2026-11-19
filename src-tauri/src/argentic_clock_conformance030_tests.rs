@@ -6,7 +6,7 @@ use crate::{
         route::data,
         work::{self, Error, Result},
     },
-    argentic_runtime::native_json::Decoder,
+    argentic_runtime::native_json::DECODER,
     argentic_values_conformance030_tests::Oracle,
     core::process::background_tokio_command,
 };
@@ -57,9 +57,9 @@ fn eval(op: &str, i: &Value) -> Result<Value> {
             i.get("stateJson"),
             i.get("eventJson"),
             i.get("options"),
-            &Decoder,
+            &DECODER,
         )?,
-        "job" => clock::evaluate_job(i, &Decoder)?,
+        "job" => clock::evaluate_job(i, &DECODER)?,
         "broker" => {
             let generation = if i.get("generation").is_nullish() {
                 s("generation")
@@ -69,7 +69,7 @@ fn eval(op: &str, i: &Value) -> Result<Value> {
             if !native::equal(&generation, i.get("job").get("generation")) {
                 return work::exception("Error", "Route mailbox generation changed.");
             }
-            data::evaluate(i.get("job").get("inputJson").text().unwrap(), &Decoder).map_err(
+            data::evaluate(i.get("job").get("inputJson").text().unwrap(), &DECODER).map_err(
                 |e| match e {
                     crate::argentic_core::calls_data::Error::Failure(e) => Error::Failure(e),
                     crate::argentic_core::calls_data::Error::Exception { name, message } => {
@@ -193,7 +193,7 @@ fn eval(op: &str, i: &Value) -> Result<Value> {
 }
 pub(crate) fn evaluate(op: &str, raw: &str) -> String {
     let result = (|| {
-        let i = Decoder.parse(&Text::from(raw))?;
+        let i = DECODER.parse(&Text::from(raw))?;
         eval(op, &i)
     })();
     result.map_or_else(failure, ok).stringify()

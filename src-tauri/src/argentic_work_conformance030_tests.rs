@@ -5,7 +5,7 @@ use crate::argentic_core::{
     native::{a, o, s, JsonDecoder, Text, Value},
     work,
 };
-use crate::argentic_runtime::native_json::Decoder;
+use crate::argentic_runtime::native_json::DECODER;
 use crate::argentic_values_conformance030_tests::Oracle;
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
@@ -67,7 +67,7 @@ fn assign_fields(target: &mut Value, fields: &Value) {
 }
 fn eval(op: &str, input: &Value) -> Result<Value, work::Error> {
     if op == "parse" {
-        return Ok(Decoder.parse(input.get("raw").text().unwrap())?);
+        return Ok(DECODER.parse(input.get("raw").text().unwrap())?);
     }
     if op == "visible" {
         let messages = input
@@ -86,7 +86,7 @@ fn eval(op: &str, input: &Value) -> Result<Value, work::Error> {
         return Ok(s(work::assemble_visible_text(&messages)));
     }
     if op == "host" {
-        return work::evaluate_host(input, &Decoder);
+        return work::evaluate_host(input, &DECODER);
     }
     let mut contract = contract_for(input)?;
     if op == "submission" {
@@ -103,7 +103,7 @@ fn eval(op: &str, input: &Value) -> Result<Value, work::Error> {
             input.get("owner"),
             &contract,
             input.get("options"),
-            &Decoder,
+            &DECODER,
         );
     }
     let mut options = input.get("options").clone();
@@ -152,7 +152,7 @@ fn eval(op: &str, input: &Value) -> Result<Value, work::Error> {
     ]))
 }
 pub(crate) fn evaluate(op: &str, raw: &str) -> String {
-    let result = match Decoder.parse(&Text::from(raw)) {
+    let result = match DECODER.parse(&Text::from(raw)) {
         Err(e) => error(e.into()),
         Ok(v) => match eval(op, &v) {
             Ok(v) => ok(v),

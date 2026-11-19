@@ -158,7 +158,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 
 [workspace]
 members = []
-exclude = ["../crates/argentic-core", "../crates/argentic-runtime", "vendor/tauri-plugin-http", "vendor/tauri-plugin-updater", "vendor/tauri-remote-ui"]
+exclude = ["vendor/tauri-plugin-http", "vendor/tauri-plugin-updater", "vendor/tauri-remote-ui"]
 resolver = "2"
 
 [profile.dev.package.sha2]

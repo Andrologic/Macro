@@ -1,6 +1,0 @@
-{
-  "owner": { "projectId": "standalone-project", "planId": "write-review", "branch": "standalone" },
-  "sourceRevision": "1",
-  "permissions": "workspace",
-  "readOnly": false
-}

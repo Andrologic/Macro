@@ -88,33 +88,12 @@ describe('fast local check selection', () => {
     ]);
   });
 
-  test('formats each independent Argentic workspace and compiles its Macro consumers', () => {
-    for (const crate of ['argentic-core', 'argentic-runtime']) {
-      const root = `crates/${crate}`;
-      for (const file of ['src/lib.rs', 'build.rs', 'Cargo.toml', 'Cargo.lock']) {
-        for (const exists of [true, false]) {
-          const plan = planFastLocalChecks([`${root}/${file}`], { exists: () => exists });
-          expect(plan.steps.filter((step) => step.args[0] === 'fmt')).toEqual([
-            expect.objectContaining({
-              command: 'cargo',
-              args: ['fmt', '--manifest-path', `${root}/Cargo.toml`, '--', '--check'],
-            }),
-          ]);
-          for (const domain of ['config', 'ipc']) {
-            expect(plan.steps.filter((step) => step.name === `Contrats générés ${domain}`)).toHaveLength(1);
-          }
-        }
-      }
-      expect(planFastLocalChecks([`${root}/README.md`]).steps.some((step) => step.args[0] === 'fmt')).toBe(false);
-    }
-  });
-
-  test('formats all three affected Rust workspaces once in a mixed change', () => {
+  test('formats Macro when the change also deletes old Argentic sources', () => {
     const paths = ['src-tauri/src/main.rs', 'crates/argentic-core/src/lib.rs',
       'crates/argentic-core/src/flow/mod.rs', 'crates/argentic-runtime/src/api.rs'];
     const plan = planFastLocalChecks(paths);
     expect(plan.steps.filter((step) => step.args[0] === 'fmt').map((step) => step.args[2])).toEqual([
-      'src-tauri/Cargo.toml', 'crates/argentic-core/Cargo.toml', 'crates/argentic-runtime/Cargo.toml',
+      'src-tauri/Cargo.toml',
     ]);
     for (const domain of ['config', 'ipc']) {
       expect(plan.steps.filter((step) => step.name === `Contrats générés ${domain}`)).toHaveLength(1);
@@ -293,8 +272,8 @@ test('runs native AgSDL conformance for evaluator, engine, fixture and CI change
   ]) {
     const plan = planFastLocalChecks([path], { exists: () => false });
     expect(plan.steps.filter(step => step.args.includes('conformance030_tests'))).toEqual([
-      expect.objectContaining({ command: 'cargo', needsDependencies: true,
-        args: ['test', '--manifest-path', 'crates/argentic-runtime/Cargo.toml', '--locked', '--jobs', '2',
+      expect.objectContaining({ command: process.execPath, needsDependencies: true,
+        args: ['dev/ci/argentic.mjs', 'argentic-runtime', 'test', '--locked', '--jobs', '2',
           '--lib', 'conformance030_tests', '--', '--test-threads=1'] }),
     ]);
   }

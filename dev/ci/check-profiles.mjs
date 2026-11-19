@@ -23,10 +23,9 @@ const frontendChecks = [
 ];
 
 const sidecarCheck = step('Build AI runtime sidecar', 'bun', ['run', 'build:ai-runtime']);
-const rustTestCheck = step('Run locked Rust tests for all targets', 'cargo', [
-  'test',
-  '--manifest-path',
-  'src-tauri/Cargo.toml',
+const argenticScript = 'dev/ci/argentic.mjs';
+const rustTestCheck = step('Run locked Rust tests for all targets', 'bun', [
+  argenticScript, 'macro', 'test',
   '--locked',
   '--all-targets',
   '--',
@@ -45,37 +44,35 @@ const generatedContractChecks = ['config', 'ipc'].map((domain) => step(
     '--example', 'generate_config', '--', '--domain', domain, '--check',
   ],
 ));
-// Independent workspaces are dependency consumers, not Macro test targets.
+// Check the same standalone workspaces that Cargo resolves for Macro.
 const argenticChecks = ['argentic-core', 'argentic-runtime'].flatMap((crate) => [
-  step(`Run locked ${crate} tests for all targets`, 'cargo', [
-    'test', '--manifest-path', `crates/${crate}/Cargo.toml`, '--locked', '--all-targets', '--', '--test-threads=1',
+  step(`Run locked ${crate} tests for all targets`, 'bun', [
+    argenticScript, crate, 'test', '--locked', '--all-targets', '--', '--test-threads=1',
   ]),
-  step(`Run locked ${crate} doc tests`, 'cargo', [
-    'test', '--manifest-path', `crates/${crate}/Cargo.toml`, '--locked', '--doc',
+  step(`Run locked ${crate} doc tests`, 'bun', [
+    argenticScript, crate, 'test', '--locked', '--doc',
   ]),
 ]);
 argenticChecks.push(
-  step('Build standalone Argentic host', 'cargo', [
-    'build', '--manifest-path', 'crates/argentic-runtime/Cargo.toml', '--locked', '--example', 'argentic-host',
+  step('Build standalone Argentic host', 'bun', [
+    argenticScript, 'argentic-runtime', 'build', '--locked', '--example', 'argentic-host',
   ]),
-  step('Verify native approval boundary', 'cargo', [
-    'test', '--manifest-path', 'crates/argentic-runtime/Cargo.toml', '--locked', '--features', 'dev-support',
+  step('Verify native approval boundary', 'bun', [
+    argenticScript, 'argentic-runtime', 'test', '--locked', '--features', 'dev-support',
     '--test', 'approval_boundary', '--', '--test-threads=1',
   ]),
 );
 const argenticWindowsChecks = ['argentic-core', 'argentic-runtime'].map((crate) =>
-  step(`Check ${crate} Windows targets`, 'cargo', [
-    'check', '--manifest-path', `crates/${crate}/Cargo.toml`, '--locked', '--all-targets',
+  step(`Check ${crate} Windows targets`, 'bun', [
+    argenticScript, crate, 'check', '--locked', '--all-targets',
   ]),
 );
 const processRecoveryCheck = step('Verify native process interruption recovery', 'bun', ['run', 'test:native:process-recovery']);
 const headlessHttpCheck = step('Verify headless HTTP transport', 'bun', ['run', 'test:e2e:headless']);
 const nativeChecks = [sidecarCheck, ...generatedContractChecks, ...argenticChecks, rustTestCheck, rustDocTestCheck, headlessHttpCheck];
 
-const windowsNativeCheck = step('Check all Windows native targets', 'cargo', [
-  'check',
-  '--manifest-path',
-  'src-tauri/Cargo.toml',
+const windowsNativeCheck = step('Check all Windows native targets', 'bun', [
+  argenticScript, 'macro', 'check',
   '--locked',
   '--all-targets',
 ]);

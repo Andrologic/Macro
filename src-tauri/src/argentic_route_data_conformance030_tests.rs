@@ -9,7 +9,7 @@ use crate::{
             preparation::{self, Content},
         },
     },
-    argentic_runtime::native_json::Decoder,
+    argentic_runtime::native_json::DECODER,
     argentic_values_conformance030_tests::Oracle,
 };
 use serde_json::{json, Value as Json};
@@ -72,7 +72,7 @@ fn eval(op: &str, i: &Value) -> c::Result<Value> {
             } else {
                 Content::None
             };
-            preparation::prepare_flow_route(i, &mut content, &Decoder)?
+            preparation::prepare_flow_route(i, &mut content, &DECODER)?
         }
         "broker" => {
             let generation = if i.get("generation").is_nullish() {
@@ -83,14 +83,14 @@ fn eval(op: &str, i: &Value) -> c::Result<Value> {
             if !native::equal(&generation, i.get("job").get("generation")) {
                 return c::exception("Error", "Route mailbox generation changed.");
             }
-            data::evaluate(c::text(i.get("job").get("inputJson"))?, &Decoder)?
+            data::evaluate(c::text(i.get("job").get("inputJson"))?, &DECODER)?
         }
         _ => panic!("unknown operation"),
     })
 }
 pub(crate) fn evaluate(op: &str, raw: &str) -> String {
     let result = (|| {
-        let i = Decoder.parse(&Text::from(raw))?;
+        let i = DECODER.parse(&Text::from(raw))?;
         eval(op, &i)
     })();
     match result {
@@ -172,7 +172,7 @@ fn clock_fields_are_evaluated_before_route_content() {
         r#"{"operation":"humanClock"}"#,
         r#"{"operation":"humanClock","input":null,"contentReceipts":false}"#,
     ] {
-        let result = data::evaluate(&Text::from(raw), &Decoder).unwrap();
+        let result = data::evaluate(&Text::from(raw), &DECODER).unwrap();
         assert_eq!(
             result.stringify(),
             r#"{"kind":"failed","code":"ROUTE_PREPARATION_FAILED","pointer":""}"#

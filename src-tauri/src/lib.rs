@@ -114,26 +114,24 @@ mod agsdl_runtime_adapter;
 mod app_quit_state;
 mod app_shutdown;
 mod app_updates;
-// Argentic core staged inside Macro (D15 2.c). The product path does not call
-// it before the 2.c.7 switch, which removes this dead-code allowance.
-#[cfg(test)]
+// The editor parity suite exercises Argentic internals at the Cargo-locked revision.
+#[cfg(all(test, argentic_editor_parity))]
 mod argentic_clock_conformance030_tests;
-#[cfg(test)]
+#[cfg(all(test, argentic_editor_parity))]
 mod argentic_compile_conformance030_tests;
-#[cfg(test)]
-#[path = "../../crates/argentic-core/src/lib.rs"]
-mod argentic_core;
-#[cfg(test)]
+#[cfg(all(test, argentic_editor_parity))]
+include!(concat!(env!("OUT_DIR"), "/argentic_editor_core.rs"));
+#[cfg(all(test, argentic_editor_parity))]
 mod argentic_reader_conformance030_tests;
-#[cfg(test)]
+#[cfg(all(test, argentic_editor_parity))]
 mod argentic_route_data_conformance030_tests;
-#[cfg(test)]
+#[cfg(all(test, argentic_editor_parity))]
 mod argentic_routes_conformance030_tests;
-#[cfg(test)]
+#[cfg(all(test, argentic_editor_parity))]
 mod argentic_runtime;
-#[cfg(test)]
+#[cfg(all(test, argentic_editor_parity))]
 mod argentic_values_conformance030_tests;
-#[cfg(test)]
+#[cfg(all(test, argentic_editor_parity))]
 mod argentic_work_conformance030_tests;
 pub mod commands;
 pub mod config;

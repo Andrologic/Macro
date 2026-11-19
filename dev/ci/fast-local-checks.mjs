@@ -17,7 +17,7 @@ const AGSDL_CONFORMANCE_PATTERNS = [
   /^src\/vendor\/agsdl\/shared\/(?:json|values)\.mjs$/,
   /^src\/vendor\/agsdl\/experimental\/readers\/javascript\/json\.mjs$/,
   /^dev\/agsdl\/(?:conformance-host030\.ts|(?:compile|work|route-data|clock)-corpus030\.ts|(?:values|reader|routes|compile|native-json|work|route-data|clock)-oracle030(?:\.test)?\.ts|fixtures\/v0\.3\/)/,
-  /^dev\/ci\/(?:fast-local-checks|check-profiles)\.mjs$/,
+  /^dev\/ci\/(?:argentic|fast-local-checks|check-profiles)\.mjs$/,
 ];
 
 const WORKFLOW_PATTERNS = [
@@ -222,18 +222,6 @@ export function planFastLocalChecks(paths, options = {}) {
     });
   }
 
-  for (const crate of ['argentic-core', 'argentic-runtime']) {
-    const root = `crates/${crate}/`;
-    if (normalized.some((path) => path.startsWith(root)
-      && (RUST_PATTERN.test(path) || path === `${root}Cargo.toml` || path === `${root}Cargo.lock`))) {
-      steps.push({
-        name: `Formatage Rust ${crate}`,
-        command: 'cargo',
-        args: ['fmt', '--manifest-path', `${root}Cargo.toml`, '--', '--check'],
-      });
-    }
-  }
-
   if (normalized.some((path) => matchesAny(path, GENERATED_CONTRACT_PATTERNS))) {
     steps.push({
       name: 'Préparer le sidecar pour les contrats natifs',
@@ -256,8 +244,8 @@ export function planFastLocalChecks(paths, options = {}) {
   if (normalized.some((path) => matchesAny(path, AGSDL_CONFORMANCE_PATTERNS))) {
     steps.push({
       name: 'Conformité AgSDL 0.3 en processus (37 scénarios)',
-      command: 'cargo',
-      args: ['test', '--manifest-path', 'crates/argentic-runtime/Cargo.toml', '--locked', '--jobs', '2',
+      command: process.execPath,
+      args: ['dev/ci/argentic.mjs', 'argentic-runtime', 'test', '--locked', '--jobs', '2',
         '--lib', 'conformance030_tests', '--', '--test-threads=1'],
       needsDependencies: true,
     });

@@ -218,6 +218,11 @@ bun run test
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+To include the Rust comparisons against the AgSDL editor, run
+`bun dev/ci/argentic.mjs macro test --locked --lib`. The script gets the
+Argentic source location from Cargo's locked dependency graph. The `argentic`
+CI profile uses the same graph to test the standalone engine and host.
+
 The pull request workflow runs the required exhaustive profiles before merge.
 When the risk justifies reproducing those profiles locally, the full local CI
 command also builds the frontend and checks bundle size:
