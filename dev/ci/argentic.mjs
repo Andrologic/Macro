@@ -7,8 +7,12 @@ if (!['macro', 'argentic-core', 'argentic-runtime'].includes(target) || !command
   throw new Error('Usage: bun dev/ci/argentic.mjs <macro|argentic-core|argentic-runtime> <cargo command> [args...]');
 }
 
+const separator = args.indexOf('--');
+const cargoArgs = separator === -1 ? args : args.slice(0, separator);
+const offline = cargoArgs.includes('--offline') || cargoArgs.includes('--frozen');
 const metadata = spawnSync('cargo', [
   'metadata', '--manifest-path', macroManifest, '--locked', '--format-version', '1',
+  ...(offline ? ['--offline'] : []),
 ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 20 * 1024 * 1024 });
 if (metadata.error) throw metadata.error;
 if (metadata.status !== 0) process.exit(metadata.status ?? 1);

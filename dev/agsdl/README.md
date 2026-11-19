@@ -3,18 +3,20 @@
 Run from the repository root, with Bun and the normal native build dependencies:
 
 ```sh
-cargo test --manifest-path src-tauri/Cargo.toml --locked --jobs 2 \
+bun dev/ci/argentic.mjs macro test --locked --jobs 2 \
+  --lib conformance030_tests -- --nocapture --test-threads=1
+bun dev/ci/argentic.mjs argentic-runtime test --locked --jobs 2 \
   --lib conformance030_tests -- --nocapture --test-threads=1
 ```
 
-The Rust tests create temporary SQLite databases with the application migrations
-and use the native Rust compiler, work controller, route, call-data and clock
-evaluators. The 37-scenario production test also runs with Bun removed from
-PATH. A separate differential test replays captured inputs against the retained
-pure TypeScript evaluators through a Bun JSON-lines subprocess. Neither path
-requires a display or a provider account. Missing Bun fails the differential;
-a missing scenario, an unsupported timeline event, an unfinished run or a
-contract mismatch fails conformance. Numeric tokens remain exact.
+The first command compares the locked Argentic compiler, work controller,
+routes, call-data and clock evaluators with the retained TypeScript evaluators
+through a Bun JSON-lines subprocess. The second command runs Argentic's native
+conformance tests using temporary SQLite databases. It includes the 37-scenario
+test and its variant with Bun removed from PATH. These checks run without a
+display or a provider account. Missing Bun fails the differential. A missing
+scenario, unsupported timeline event, unfinished run or contract mismatch fails
+conformance. Numeric tokens remain exact.
 
 `agsdl030_conformance_error_route` checks the initial integration separately.
 `agsdl030_conformance_all_37_scenarios` replays every pinned timeline and compares
@@ -41,10 +43,8 @@ The two compose expectations use the declared upstream erratum
 `f5551b8af9e099787a85e391b3ce458927f3ccd2`, recorded in
 [`fixtures/v0.3/provenance.json`](fixtures/v0.3/provenance.json).
 
-The default Rust library suite includes these tests, so `bun run ci` runs them
-without a QA feature. `ci:pre-push` selects them for changes to the engine,
-evaluators, fixtures, helper and CI routing. The in-process suite replaces the
-TypeScript observer and its standalone replay CLI.
+`bun run ci` runs both suites without a QA feature. `ci:pre-push` selects the
+runtime suite for relevant engine, fixture, helper and CI changes.
 
 The optional `agsdl-engine-qa` Cargo feature selects additional native executor
 regression tests. Scripted executors compile only under `cfg(test)`; this feature
