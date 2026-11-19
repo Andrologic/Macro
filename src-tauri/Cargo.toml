@@ -18,6 +18,11 @@ name = "agsdl-content-helper-qa"
 path = "src/bin/agsdl_content_helper_qa.rs"
 required-features = ["agsdl-content-qa"]
 
+[[example]]
+name = "performance-sqlite"
+path = "examples/performance-sqlite/main.rs"
+required-features = ["performance-sqlite"]
+
 [[test]]
 name = "lsp_core"
 path = "tests/lsp_core.rs"
@@ -40,6 +45,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 browser-runtime-debug = ["dep:tauri-remote-ui"]
 agsdl-content-qa = ["argentic-runtime/agsdl-content-qa"]
 agsdl-engine-qa = []
+performance-sqlite = []
 custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]

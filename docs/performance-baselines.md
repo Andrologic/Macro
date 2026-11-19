@@ -216,7 +216,7 @@ bun --no-install test dev/performance/native-sqlite.test.ts
 ```
 
 The command runs `cargo build --manifest-path src-tauri/Cargo.toml --example
-performance-sqlite --locked --offline -j 1`, with explicit overrides
+performance-sqlite --features performance-sqlite --locked --offline -j 1`, with explicit overrides
 `profile.dev.package.macro.debug=0`, `profile.test.package.macro.debug=0`,
 `profile.dev.incremental=false` and `profile.test.incremental=false`, plus
 `TAURI_CONFIG='{"bundle":{"externalBin":[]}}'`. Dependencies must already be
@@ -234,13 +234,10 @@ caching. The replacement race is reproduced by a focused staging test. No source
 the cache owner is changed. A cache hit does not mean a release build or an
 idle machine.
 
-The repository's database module is private. The dedicated example compiles its
-actual source files with `#[path]`, including the real migration/pool code,
-models and repository, rather than adding public production APIs. Its AI/secrets
-module dependencies are compiled from their source but never initialized or
-called for provider access. The existing public config module is linked without
-installing a manager. Default provider rows inserted by migrations stay within
-the fixture database; no credentials or provider connections are used.
+The dedicated example calls a feature-gated entry point in the library. The
+benchmark uses the private repository and migration code directly. Its temporary
+database gets the default provider rows from migrations. The benchmark opens no
+provider connection and loads no credentials.
 
 ### Isolation and validation
 

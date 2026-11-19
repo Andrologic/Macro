@@ -137,6 +137,10 @@ pub mod commands;
 pub mod config;
 pub mod core;
 mod db;
+#[cfg(feature = "performance-sqlite")]
+#[doc(hidden)]
+#[path = "../examples/performance-sqlite.rs"]
+pub mod performance_sqlite;
 /// Native file DTOs exposed for the checked IPC generator.
 pub mod pilot_file_contracts {
     pub use crate::db::pilot_files::{

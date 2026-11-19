@@ -317,7 +317,7 @@ fn mutate(rng: &mut Rng, tree: &Value) -> Option<String> {
     let edit = match kind_at(tree, target) {
         "number" => Edit::Replace(rng.pick(NUMBERS).to_string()),
         "string" => match rng.below(3) {
-            0 => Edit::Replace(quote(rng.pick(STRINGS))),
+            0 => Edit::Replace(quote(rng.pick::<&str>(STRINGS))),
             1 => Edit::RenameKey(rng.pick(&["\n", "😀", "_x", ""]).to_string()),
             _ => Edit::Delete,
         },
@@ -426,12 +426,15 @@ fn generate(rng: &mut Rng) -> String {
                 };
                 members.push(format!(r#""agent":{}"#, q(&agent)));
                 if rng.chance(20) {
-                    members.push(format!(r#""instance":{}"#, q(rng.pick(&["new", "second"]))));
+                    members.push(format!(
+                        r#""instance":{}"#,
+                        q(rng.pick::<&str>(&["new", "second"]))
+                    ));
                 }
                 if rng.chance(15) {
                     members.push(format!(
                         r#""delivery":{}"#,
-                        q(rng.pick(&["queue", "steer"]))
+                        q(rng.pick::<&str>(&["queue", "steer"]))
                     ));
                 }
                 if rng.chance(25) {
@@ -461,7 +464,10 @@ fn generate(rng: &mut Rng) -> String {
                 if rng.chance(50) {
                     members.push(r#""command":"make test""#.to_owned());
                     if rng.chance(50) {
-                        members.push(format!(r#""parse":{}"#, q(rng.pick(&["lines", "json"]))));
+                        members.push(format!(
+                            r#""parse":{}"#,
+                            q(rng.pick::<&str>(&["lines", "json"]))
+                        ));
                     }
                 } else {
                     members.push(r#""mcp":{"server":"m","tool":"t"}"#.to_owned());
@@ -495,7 +501,7 @@ fn generate(rng: &mut Rng) -> String {
                     if rng.chance(40) {
                         members.push(format!(
                             r#""remaining":{}"#,
-                            q(rng.pick(&["finish", "stop", "wait"]))
+                            q(rng.pick::<&str>(&["finish", "stop", "wait"]))
                         ));
                     }
                     if rng.chance(70) {
@@ -507,10 +513,13 @@ fn generate(rng: &mut Rng) -> String {
                 members.push(r#""type":"compose""#.to_owned());
                 members.push(format!(
                     r#""composition":{}"#,
-                    q(rng.pick(&["c0", "c1", "cx"]))
+                    q(rng.pick::<&str>(&["c0", "c1", "cx"]))
                 ));
                 if rng.chance(70) {
-                    members.push(format!(r#""agents":{{"p":{}}}"#, q(rng.pick(&agents))));
+                    members.push(format!(
+                        r#""agents":{{"p":{}}}"#,
+                        q(rng.pick::<&str>(&agents))
+                    ));
                 }
                 members.push(format!(r#""next":{}"#, next(rng, &["done"])));
             }
@@ -531,7 +540,7 @@ fn generate(rng: &mut Rng) -> String {
         let mut members = vec![
             format!(
                 r#""harness":{}"#,
-                q(rng.pick(&["example", "limited", "codex", "claude-code", "unknown"]))
+                q(rng.pick::<&str>(&["example", "limited", "codex", "claude-code", "unknown"]))
             ),
             format!(r#""permissions":{}"#, rng.pick(&permissions)),
         ];
@@ -541,7 +550,7 @@ fn generate(rng: &mut Rng) -> String {
         if rng.chance(30) {
             members.push(format!(
                 r#""model":{{"effort":{}}}"#,
-                q(rng.pick(&["low", "high", "extreme"]))
+                q(rng.pick::<&str>(&["low", "high", "extreme"]))
             ));
         }
         if rng.chance(50) {
@@ -550,7 +559,7 @@ fn generate(rng: &mut Rng) -> String {
         if rng.chance(20) {
             members.push(format!(
                 r#""completionCheck":{{"command":{},"choices":["done"]}}"#,
-                q(rng.pick(&["make test", "git push origin", "rm -rf /"]))
+                q(rng.pick::<&str>(&["make test", "git push origin", "rm -rf /"]))
             ));
         }
         if rng.chance(15) {

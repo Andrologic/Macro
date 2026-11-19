@@ -150,7 +150,7 @@ async function run() {
   if (content && !pilot && dirty) throw new Error('Content reference requires clean committed sources');
   const identity = { sourceSha256: fingerprint, buildNonce: randomUUID() };
   const build = Bun.spawn(['cargo', 'build', '--manifest-path', 'src-tauri/Cargo.toml',
-    '--example', 'performance-sqlite', '--locked', '--offline', '-j', '1',
+    '--example', 'performance-sqlite', '--features', 'performance-sqlite', '--locked', '--offline', '-j', '1',
     '--config', 'profile.dev.package.macro.debug=0',
     '--config', 'profile.test.package.macro.debug=0',
     '--config', 'profile.dev.incremental=false',

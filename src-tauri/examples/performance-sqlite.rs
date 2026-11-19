@@ -1,26 +1,5 @@
-//! Development-only benchmark compiling the actual private database modules.
-//! No Tauri app, global config manager, secrets initialization or provider calls.
-#![allow(dead_code, unused_imports)]
-// The library runs the shared DB unit tests. This executable is checked through
-// its --self-test mode, without compiling those tests a second time here.
-#![cfg(not(test))]
-#[path = "../src/db/mod.rs"]
-mod db;
-// The source owner uses the actual pool-generation gate. Keep the companion's
-// direct DB compilation connected to these native types, without app startup.
-#[path = "performance-sqlite/native_context.rs"]
-mod core;
-#[path = "../src/ai/macro_ai.rs"]
-pub mod macro_ai;
-mod ai {
-    pub use crate::macro_ai;
-}
-#[path = "../src/secrets/mod.rs"]
-mod secrets;
-pub use macro_lib::config;
-mod agsdl_host_capture {
-    pub use macro_lib::ipc_contracts::execution::ExecutionExternalDelivery;
-}
+//! Development-only SQLite benchmark using the application's repository.
+use crate::db;
 
 #[path = "performance-sqlite/contracts.rs"]
 mod contracts;
@@ -340,7 +319,7 @@ async fn self_test() -> Result<()> {
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn main() -> Result<()> {
+pub async fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--build-identity"] {
         println!(

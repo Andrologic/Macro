@@ -27,6 +27,7 @@ const argenticScript = 'dev/ci/argentic.mjs';
 const rustTestCheck = step('Run locked Rust tests for all targets', 'bun', [
   argenticScript, 'macro', 'test',
   '--locked',
+  '--features', 'performance-sqlite',
   '--all-targets',
   '--',
   '--test-threads=1',
@@ -74,6 +75,7 @@ const nativeChecks = [sidecarCheck, ...generatedContractChecks, ...argenticCheck
 const windowsNativeCheck = step('Check all Windows native targets', 'bun', [
   argenticScript, 'macro', 'check',
   '--locked',
+  '--features', 'performance-sqlite',
   '--all-targets',
 ]);
 
