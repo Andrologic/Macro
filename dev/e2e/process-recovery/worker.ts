@@ -63,7 +63,8 @@ const readFixture = () => JSON.parse(readFileSync(fixturePath, 'utf8')) as { con
 
 async function chatFixture() {
   if (phase !== 'crash') return readFixture();
-  const conversation = await ipc.createConversation({ title: 'Process recovery fixture' });
+  // Exercise the conversation journal used by scoped Chat.
+  const conversation = await ipc.createConversation({ title: 'Process recovery fixture', groupId: 'recovery-group' });
   const message = await ipc.createMessage(conversation.id, 'assistant', '', { id: 'assistant-recovery', turnId: 'turn-recovery' });
   const fixture = { conversationId: conversation.id, messageId: message.id };
   writeFileSync(fixturePath, JSON.stringify(fixture));
@@ -75,7 +76,7 @@ async function fileScenario() {
   const { createChatToolDispatch } = await import('../../../src/services/chatToolDispatch');
   const { chatToolInvocationJournal } = await import('../../../src/services/chatToolInvocationJournal');
   const operation = { conversationId: fixture.conversationId, turnId: 'turn-recovery', assistantMessageId: fixture.messageId,
-    signal: new AbortController().signal, allowedToolIds: ['write'] };
+    signal: new AbortController().signal, allowedToolIds: ['write'], providerAdmission: { kind: 'conversation' } };
   let executions = 0;
   const dispatch = createChatToolDispatch(operation as unknown as Parameters<typeof createChatToolDispatch>[0], {
     journal: chatToolInvocationJournal,
@@ -90,7 +91,7 @@ async function fileScenario() {
   }, () => true, () => {});
   armed = true;
   const result = await dispatch('write', { path: 'effect.txt', content: 'effect\n' }, 'call-recovery');
-  assert.notEqual(phase, 'crash', 'File boundary was not reached');
+  assert.notEqual(phase, 'crash', `File boundary was not reached: ${JSON.stringify(result)}`);
   assert.equal(executions, 0, 'Recovery replayed the file effect');
   assert.match(String((result as { result: string }).result), /already recorded/);
   const unresolved = await rawInvoke<Array<{ status: string; receipt_id: string | null }>>('db_list_unresolved_tool_invocations', { conversationId: fixture.conversationId });

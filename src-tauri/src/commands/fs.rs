@@ -36,10 +36,10 @@ pub async fn fs_read_file(
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub async fn fs_write_file(
+pub async fn fs_write_file<R: tauri::Runtime>(
     admission_runtime: tauri::State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
     ai_state: tauri::State<'_, crate::ai::AiState>,
-    window: tauri::WebviewWindow,
+    window: tauri::WebviewWindow<R>,
     chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     workspace_root: tauri::State<'_, WorkspaceRoot>,
     git_state: tauri::State<'_, GitState>,
@@ -202,10 +202,10 @@ pub async fn fs_exists(
 }
 
 #[tauri::command]
-pub async fn fs_delete(
+pub async fn fs_delete<R: tauri::Runtime>(
     admission_runtime: tauri::State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
     ai_state: tauri::State<'_, crate::ai::AiState>,
-    window: tauri::WebviewWindow,
+    window: tauri::WebviewWindow<R>,
     chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     workspace_root: tauri::State<'_, WorkspaceRoot>,
     git_state: tauri::State<'_, GitState>,

@@ -26,10 +26,10 @@ async fn admitted_parent(
 }
 
 #[tauri::command]
-pub async fn db_record_tool_invocation(
+pub async fn db_record_tool_invocation<R: tauri::Runtime>(
     pool: State<'_, DbPool>,
     admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow,
+    window: WebviewWindow<R>,
     context: Option<ChatAdmissionContext>,
     input: RecordToolInvocationInput,
 ) -> CommandResult<RecordToolInvocationResult> {
@@ -51,10 +51,10 @@ pub async fn db_record_tool_invocation(
 }
 
 #[tauri::command]
-pub async fn db_complete_tool_invocation(
+pub async fn db_complete_tool_invocation<R: tauri::Runtime>(
     pool: State<'_, DbPool>,
     admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow,
+    window: WebviewWindow<R>,
     context: Option<ChatAdmissionContext>,
     input: CompleteToolInvocationInput,
 ) -> CommandResult<ToolInvocation> {
@@ -79,10 +79,10 @@ pub async fn db_complete_tool_invocation(
 }
 
 #[tauri::command]
-pub async fn db_mark_tool_invocation_unknown(
+pub async fn db_mark_tool_invocation_unknown<R: tauri::Runtime>(
     pool: State<'_, DbPool>,
     admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow,
+    window: WebviewWindow<R>,
     context: Option<ChatAdmissionContext>,
     identity: ToolInvocationIdentity,
 ) -> CommandResult<ToolInvocation> {

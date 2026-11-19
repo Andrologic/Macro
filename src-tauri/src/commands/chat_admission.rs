@@ -4,10 +4,10 @@ use crate::db::chat_admission::runtime::{ChatAdmissionContext, ChatAdmissionRunt
 use tauri::{Manager, State, WebviewWindow};
 
 #[tauri::command]
-pub(crate) async fn chat_admission_open_browser(
+pub(crate) async fn chat_admission_open_browser<R: tauri::Runtime>(
     pool: State<'_, DbPool>,
     admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow,
+    window: WebviewWindow<R>,
     runtime: String,
 ) -> CommandResult<()> {
     admission_runtime
@@ -57,12 +57,12 @@ pub(crate) fn retire_browser_from_native(app: &tauri::AppHandle, caller: &str) {
 }
 
 #[tauri::command]
-pub(crate) async fn chat_admission_begin(
+pub(crate) async fn chat_admission_begin<R: tauri::Runtime>(
     pool: State<'_, DbPool>,
     admission_runtime: State<'_, ChatAdmissionRuntime>,
     ai_state: State<'_, crate::ai::AiState>,
     http: State<'_, crate::ai::admitted_http::AdmittedHttp>,
-    window: WebviewWindow,
+    window: WebviewWindow<R>,
     runtime: String,
     conversation_id: String,
     turn_id: String,
@@ -108,10 +108,10 @@ pub(crate) async fn chat_admission_begin(
 }
 
 #[tauri::command]
-pub(crate) async fn chat_admission_close_preparation(
+pub(crate) async fn chat_admission_close_preparation<R: tauri::Runtime>(
     pool: State<'_, DbPool>,
     admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow,
+    window: WebviewWindow<R>,
     context: ChatAdmissionContext,
     conversation_id: String,
 ) -> CommandResult<()> {
@@ -299,10 +299,10 @@ pub(crate) async fn chat_admission_http_finish(
 }
 
 #[tauri::command]
-pub(crate) async fn chat_admission_finish_response(
+pub(crate) async fn chat_admission_finish_response<R: tauri::Runtime>(
     pool: State<'_, DbPool>,
     admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow,
+    window: WebviewWindow<R>,
     context: ChatAdmissionContext,
     conversation_id: String,
     mut params: super::DbUpdateMessageParams,
@@ -433,10 +433,10 @@ pub(crate) enum IntentAdmission {
 }
 
 #[tauri::command]
-pub(crate) async fn chat_admission_begin_intent(
+pub(crate) async fn chat_admission_begin_intent<R: tauri::Runtime>(
     pool: State<'_, DbPool>,
     admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow,
+    window: WebviewWindow<R>,
     runtime: String,
     identity: crate::db::chat_admission::intents::IntentIdentity,
     mutation: crate::db::chat_admission::intents::IntentMutation,
@@ -470,10 +470,10 @@ pub(crate) async fn chat_admission_begin_intent(
 }
 
 #[tauri::command]
-pub(crate) async fn chat_admission_finish_intent(
+pub(crate) async fn chat_admission_finish_intent<R: tauri::Runtime>(
     pool: State<'_, DbPool>,
     admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow,
+    window: WebviewWindow<R>,
     receipt: crate::db::chat_admission::intents::IntentReceipt,
 ) -> CommandResult<()> {
     admission_runtime
@@ -548,9 +548,9 @@ pub(crate) async fn chat_admission_complete_question_handoff(
 }
 
 #[tauri::command]
-pub(crate) async fn chat_admission_reserve_response(
+pub(crate) async fn chat_admission_reserve_response<R: tauri::Runtime>(
     admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow,
+    window: WebviewWindow<R>,
     context: ChatAdmissionContext,
     conversation_id: String,
     message_id: String,
@@ -564,10 +564,10 @@ pub(crate) async fn chat_admission_reserve_response(
 }
 
 #[tauri::command]
-pub(crate) async fn chat_admission_prepare_response_recovery(
+pub(crate) async fn chat_admission_prepare_response_recovery<R: tauri::Runtime>(
     pool: State<'_, DbPool>,
     admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow,
+    window: WebviewWindow<R>,
     runtime: String,
     conversation_id: String,
     message_id: String,
@@ -605,9 +605,9 @@ pub(crate) async fn chat_admission_prepare_response_recovery(
 }
 
 #[tauri::command]
-pub(crate) async fn chat_admission_recover_response(
+pub(crate) async fn chat_admission_recover_response<R: tauri::Runtime>(
     pool: State<'_, DbPool>,
-    window: WebviewWindow,
+    window: WebviewWindow<R>,
     receipt: crate::db::chat_admission::intents::IntentReceipt,
     mut params: super::DbUpdateMessageParams,
 ) -> CommandResult<()> {
@@ -622,10 +622,10 @@ pub(crate) async fn chat_admission_recover_response(
 }
 
 #[tauri::command]
-pub(crate) async fn chat_admission_begin_reconciliation(
+pub(crate) async fn chat_admission_begin_reconciliation<R: tauri::Runtime>(
     pool: State<'_, DbPool>,
     admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow,
+    window: WebviewWindow<R>,
     runtime: String,
     conversation_id: String,
 ) -> CommandResult<String> {
@@ -636,10 +636,10 @@ pub(crate) async fn chat_admission_begin_reconciliation(
 }
 
 #[tauri::command]
-pub(crate) async fn chat_admission_complete_reconciliation(
+pub(crate) async fn chat_admission_complete_reconciliation<R: tauri::Runtime>(
     pool: State<'_, DbPool>,
     admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow,
+    window: WebviewWindow<R>,
     runtime: String,
     handle: String,
     observed: crate::db::chat_admission::reconciliation::BrowserInspection,

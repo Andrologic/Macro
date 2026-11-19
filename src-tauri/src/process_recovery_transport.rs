@@ -20,10 +20,24 @@ fn native_transport() {
         .block_on(db::create_pool(&root.join("macro.db")))
         .unwrap();
     runtime
-        .block_on(db::tool_invocations::reconcile_pending_after_restart(&pool))
+        .block_on(db::reconcile_runtime_after_restart(&pool))
+        .unwrap();
+    // Install the fault before validating the database opening. Changing the
+    // schema afterward would invalidate the native admission's schema cookie.
+    runtime
+        .block_on(async {
+            sqlx::query("CREATE TABLE IF NOT EXISTS recovery_message_write_failure (enabled INTEGER NOT NULL)")
+                .execute(&pool)
+                .await?;
+            sqlx::query("CREATE TRIGGER IF NOT EXISTS recovery_fail_message BEFORE UPDATE ON messages WHEN EXISTS (SELECT 1 FROM recovery_message_write_failure WHERE enabled = 1) BEGIN SELECT RAISE(ABORT, 'recovery injected message write failure'); END")
+                .execute(&pool)
+                .await
+        })
         .unwrap();
     let managed_pool = commands::DbPool::default();
-    managed_pool.set_ready(pool.clone()).await.unwrap();
+    runtime
+        .block_on(managed_pool.set_ready(pool.clone()))
+        .unwrap();
     let workspace: WorkspaceRoot = Arc::new(RwLock::new(root.clone()));
     let config_manager = runtime
         .block_on(crate::config::ConfigManager::initialize(
@@ -39,6 +53,9 @@ fn native_transport() {
         .manage(WorkspaceMetadataRoot(Arc::new(RwLock::new(root.clone()))))
         .manage(GitState::new())
         .manage(managed_pool)
+        .manage(crate::ai::AiState::default())
+        .manage(crate::ai::admitted_http::AdmittedHttp::default())
+        .manage(db::chat_admission::runtime::ChatAdmissionRuntime::default())
         .invoke_handler(tauri::generate_handler![
             crate::config::config_get_snapshot,
             crate::config::config_get_document,
@@ -49,6 +66,19 @@ fn native_transport() {
             commands::tool_get_mode_policy,
             commands::repository_instructions::repository_instructions_load,
             commands::db_get_chat_bootstrap_snapshot,
+            commands::conversation_management::db_conversation_metadata,
+            commands::conversation_management::db_conversation_import_archives,
+            commands::chat_admission::chat_admission_open_browser,
+            commands::chat_admission::chat_admission_begin,
+            commands::chat_admission::chat_admission_close_preparation,
+            commands::chat_admission::chat_admission_finish_response,
+            commands::chat_admission::chat_admission_reserve_response,
+            commands::chat_admission::chat_admission_prepare_response_recovery,
+            commands::chat_admission::chat_admission_recover_response,
+            commands::chat_admission::chat_admission_finish_intent,
+            commands::chat_admission::chat_admission_begin_intent,
+            commands::chat_admission::chat_admission_begin_reconciliation,
+            commands::chat_admission::chat_admission_complete_reconciliation,
             commands::db_update_conversation_ai_selection,
             commands::db_update_conversation_details,
             commands::db_list_conversation_citations,
@@ -63,6 +93,7 @@ fn native_transport() {
             commands::db_create_message,
             commands::db_update_message,
             commands::db_list_messages,
+            commands::pilot_files::db_pilot_message_images,
             commands::tool_invocations::db_record_tool_invocation,
             commands::tool_invocations::db_complete_tool_invocation,
             commands::tool_invocations::db_mark_tool_invocation_unknown,
@@ -106,13 +137,19 @@ fn native_transport() {
         let command = request["command"].as_str().unwrap();
         let result = if command == "test_message_write_failure" {
             // Fault injection at the actual SQLite write, without replacing persistence.
-            let sql = if request["args"]["enabled"] == true {
-                "CREATE TRIGGER recovery_fail_message BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT, 'recovery injected message write failure'); END"
-            } else {
-                "DROP TRIGGER IF EXISTS recovery_fail_message"
-            };
+            let enabled = request["args"]["enabled"] == true;
             runtime
-                .block_on(sqlx::query(sql).execute(&pool))
+                .block_on(async {
+                    if enabled {
+                        sqlx::query("INSERT INTO recovery_message_write_failure VALUES (1)")
+                            .execute(&pool)
+                            .await
+                    } else {
+                        sqlx::query("DELETE FROM recovery_message_write_failure")
+                            .execute(&pool)
+                            .await
+                    }
+                })
                 .map(|_| Value::Null)
                 .map_err(|error| json!(error.to_string()))
         } else {
