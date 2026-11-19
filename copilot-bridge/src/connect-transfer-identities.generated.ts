@@ -394,7 +394,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/vendor/agsdl/v0.3/graph.mjs",
-    "sha256": "b08b5b2825dc7e8eb0cb4dc10a66a3210ec570d8fa6c75ffa4b0b2f650f4a81e"
+    "sha256": "b849d3b318bace275cd08c7ba59da5e8cdf6dbe0330db764bb271bbb48a2d634"
   },
   {
     "path": "src/vendor/agsdl/v0.3/harnesses/claude-code/module.json",
@@ -452,5 +452,5 @@ export const TRANSFER_RESOURCES = [
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "e9c65cb8e2e7c0f42b23bb816176cba1facbed0554161ec9345087e53ae2f7ed"
+  "preparation_set_sha256": "1c0156d2926f0bb6896628b444c22ade47c3932e1d0c4fac9a15250c4e545d4a"
 } as const;

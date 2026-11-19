@@ -13,6 +13,7 @@ const copilotTypecheck = step('Typecheck Copilot bridge', 'bun', ['run', 'typech
 
 const frontendChecks = [
   architectureCheck,
+  step('Check embedded Connect identities', 'bun', ['dev/generate-connect-transfer-identities.mjs', '--check']),
   step('Typecheck frontend', 'bun', ['run', 'typecheck']),
   copilotTypecheck,
   step('Lint frontend', 'bun', ['run', 'lint']),
