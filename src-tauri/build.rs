@@ -21,8 +21,21 @@ fn main() {
         .expect("write editor parity codec modules");
         println!("cargo:rustc-cfg=argentic_editor_parity");
     }
-    tauri_build::build();
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS");
+    if target_os.as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        // Tauri's resource only supplies its manifest to binary targets. Use
+        // the linker for the same Common Controls dependency in test binaries.
+        let windows = tauri_build::WindowsAttributes::new_without_app_manifest();
+        tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
+            .expect("build Tauri Windows resources");
+        println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg=/MANIFESTDEPENDENCY:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"");
+    } else {
+        tauri_build::build();
+    }
+    if target_os.as_deref() == Ok("macos") {
         // Runtime owns and archives the Swift bridge. Preserve deployment on
         // systems preceding LightweightCodeRequirements (macOS 14.4).
         println!("cargo:rustc-link-arg=-Wl,-weak_framework,LightweightCodeRequirements");
