@@ -49,7 +49,12 @@ describe('GitHub CI routing', () => {
     expect(stepByName('linux', 'Build changed AI runtime sidecar').run)
       .toContain('--profile sidecar --skip-install');
     expect(stepByName('linux', 'Run conservative validation profile').run)
-      .toContain('--profile native --skip-install');
+      .toContain('--profile native-macro --skip-install');
+    expect(workflow.jobs['linux-frontend-argentic'].if).toContain("outputs.configuration == 'true'");
+    expect(stepByName('linux-frontend-argentic', 'Run shared frontend validation profile').run)
+      .toContain('--profile frontend --skip-install');
+    expect(stepByName('linux-frontend-argentic', 'Test standalone Argentic engine and host').run)
+      .toContain('--profile argentic');
 
     expect(stepByName('windows', 'Run focused Windows native profile').run)
       .toContain('--profile windows-core');
@@ -65,7 +70,7 @@ describe('GitHub CI routing', () => {
         .flatMap((job) => job.steps || [])
         .filter((step) => step.name === 'Restore frontend dependency cache')
     ));
-    expect(caches).toHaveLength(6);
+    expect(caches).toHaveLength(7);
 
     for (const cache of caches) {
       expect(cache.with?.path).toBe('node_modules');

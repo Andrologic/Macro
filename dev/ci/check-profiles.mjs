@@ -85,6 +85,7 @@ export const CHECK_PROFILES = Object.freeze([
   'frontend',
   'native',
   'native-core',
+  'native-macro',
   'sidecar',
   'windows',
   'windows-core',
@@ -106,7 +107,8 @@ export function stepsForProfile(profile, options = {}) {
     case 'native':
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks, ...processRecovery];
     case 'native-core':
-      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, ...argenticChecks, rustTestCheck, rustDocTestCheck, headlessHttpCheck, ...processRecovery];
+    case 'native-macro':
+      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, ...(profile === 'native-core' ? argenticChecks : []), rustTestCheck, rustDocTestCheck, headlessHttpCheck, ...processRecovery];
     case 'sidecar':
       return [...install, copilotTypecheck, sidecarCheck];
     case 'windows':

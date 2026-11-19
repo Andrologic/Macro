@@ -21,6 +21,11 @@ describe('local CI profiles', () => {
     expect(checks).not.toContain('Check all Windows native targets');
   });
 
+  test('parallel Linux profiles preserve every check in conservative validation', () => {
+    expect(new Set([...names('frontend'), ...names('argentic'), ...names('native-macro')]))
+      .toEqual(new Set(names('native')));
+  });
+
   test('native core builds the required sidecar before Rust tests on a clean checkout', () => {
     expect(names('native-core')).toEqual([
       'Install locked frontend dependencies',
