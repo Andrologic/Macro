@@ -14,7 +14,7 @@ Macro submits the file write directly to `tauri::async_runtime::spawn_blocking`
 and uses `std::fs::write` there. Both the write and its completion notification
 can finish while the async workers remain occupied. Cookie snapshots, persistent
 versus session cookie selection, file format, path, best-effort supersession,
-HTTP commands, scopes and default features remain upstream behavior. There is
+HTTP scopes and default features remain upstream behavior. There is
 no shutdown timeout, forced exit or global disabling of persistence.
 
 The tests reproduce occupied async workers without starting an application or
@@ -25,3 +25,10 @@ both paths release and join their synthetic waiters even on assertion failure.
 
 When updating the dependency, preserve these tests and the independent blocking
 save, or use an upstream implementation that provides the same exit behavior.
+
+## HTTP body cancellation
+
+Closing a response resource signals pending and queued reads. The read command
+selects between cancellation and the next chunk, including time spent waiting
+for its response lock. Keep this behavior when updating the dependency so the
+frontend can await the read receipt before releasing the request owner.

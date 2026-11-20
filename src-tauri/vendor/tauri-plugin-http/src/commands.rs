@@ -13,7 +13,10 @@ use tauri::{
     ipc::{CommandScope, GlobalScope},
     Manager, ResourceId, ResourceTable, Runtime, State, Webview,
 };
-use tokio::sync::oneshot::{channel, Receiver, Sender};
+use tokio::sync::{
+    oneshot::{channel, Receiver, Sender},
+    watch,
+};
 
 use crate::{
     scope::{Entry, Scope},
@@ -22,8 +25,36 @@ use crate::{
 
 const HTTP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"),);
 
-struct ReqwestResponse(reqwest::Response);
-impl tauri::Resource for ReqwestResponse {}
+struct ReqwestResponse {
+    response: Mutex<reqwest::Response>,
+    canceled: watch::Sender<bool>,
+}
+
+impl ReqwestResponse {
+    fn new(response: reqwest::Response) -> Self {
+        Self {
+            response: Mutex::new(response),
+            canceled: watch::channel(false).0,
+        }
+    }
+
+    async fn read_chunk(&self) -> Result<Option<Vec<u8>>> {
+        let mut canceled = self.canceled.subscribe();
+        tokio::select! {
+            biased;
+            _ = canceled.wait_for(|canceled| *canceled) => Err(Error::RequestCanceled),
+            chunk = async { self.response.lock().await.chunk().await } => {
+                Ok(chunk?.map(|chunk| chunk.to_vec()))
+            }
+        }
+    }
+}
+
+impl tauri::Resource for ReqwestResponse {
+    fn close(self: Arc<Self>) {
+        self.canceled.send_replace(true);
+    }
+}
 
 type CancelableResponseResult = Result<reqwest::Response>;
 type CancelableResponseFuture =
@@ -403,7 +434,7 @@ pub async fn fetch_send<R: Runtime>(
     }
 
     let mut resources_table = webview.resources_table();
-    let rid = resources_table.add(ReqwestResponse(res));
+    let rid = resources_table.add(ReqwestResponse::new(res));
 
     Ok(FetchResponse {
         status: status.as_u16(),
@@ -424,15 +455,7 @@ pub async fn fetch_read_body<R: Runtime>(
         resources_table.get::<ReqwestResponse>(rid)?
     };
 
-    // SAFETY: we can access the inner value mutably
-    // because we are the only ones with a reference to it
-    // and we don't want to use `Arc::into_inner` because we want to keep the value in the table
-    // for potential future calls to `fetch_cancel_body`
-    let res_ptr = Arc::as_ptr(&res) as *mut ReqwestResponse;
-    let res = unsafe { &mut *res_ptr };
-    let res = &mut res.0;
-
-    let Some(chunk) = res.chunk().await? else {
+    let Some(mut chunk) = res.read_chunk().await? else {
         let mut resources_table = webview.resources_table();
         resources_table.close(rid)?;
 
@@ -440,7 +463,6 @@ pub async fn fetch_read_body<R: Runtime>(
         return Ok(tauri::ipc::Response::new(vec![1]));
     };
 
-    let mut chunk = chunk.to_vec();
     // append a 0 byte to indicate that the body is not empty
     chunk.push(0);
 
@@ -455,6 +477,75 @@ pub async fn fetch_cancel_body<R: Runtime>(
     let mut resources_table = webview.resources_table();
     resources_table.close(rid)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        future::poll_fn,
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        task::Poll,
+    };
+
+    #[test]
+    fn closing_body_cancels_pending_and_queued_reads() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let (body_tx, body_rx) = channel::<()>();
+            let server = tokio::task::spawn_blocking(move || {
+                let (mut connection, _) = listener.accept().unwrap();
+                connection
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = BufReader::new(&mut connection);
+                let mut line = String::new();
+                while request.read_line(&mut line).unwrap() != 0 && line != "\r\n" {
+                    line.clear();
+                }
+                connection
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n")
+                    .unwrap();
+                let _ = body_rx.blocking_recv();
+            });
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap();
+            let response = client.get(url).send().await.unwrap();
+            let mut resources = ResourceTable::default();
+            let rid = resources.add(ReqwestResponse::new(response));
+            let body = resources.get::<ReqwestResponse>(rid).unwrap();
+            let mut read = std::pin::pin!(body.read_chunk());
+            let mut queued = std::pin::pin!(body.read_chunk());
+            poll_fn(|cx| {
+                assert!(read.as_mut().poll(cx).is_pending());
+                assert!(queued.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+
+            resources.close(rid).unwrap();
+            let outcomes = tokio::time::timeout(Duration::from_secs(2), async {
+                (read.await, queued.await, body.read_chunk().await)
+            })
+            .await;
+            drop(body_tx);
+            server.await.unwrap();
+
+            let (read, queued, late) = outcomes.unwrap();
+            for outcome in [read, queued, late] {
+                assert!(matches!(outcome, Err(Error::RequestCanceled)));
+            }
+        });
+    }
 }
 
 // forbidden headers per fetch spec https://fetch.spec.whatwg.org/#terminology-headers
