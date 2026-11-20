@@ -31,6 +31,13 @@ For provider keys during local Tauri development, copy the example file and keep
 cp dev/ai-keys.local.example.json dev/ai-keys.local.json
 ```
 
+## Branches and pull requests
+
+Macro uses GitHub Flow. Create a short-lived branch from current `origin/main`
+for each change and open a pull request targeting `main`. Merge after review
+and passing checks, then delete the topic branch. Stable versions are published
+from version tags on `main`.
+
 ## Required Checks
 
 Use Bun 1.3.14 and the Rust toolchain pinned in `rust-toolchain.toml`. Install
@@ -45,8 +52,8 @@ bun run ci:pre-push
 See [docs/test-strategy.md](docs/test-strategy.md) for test scope, coverage
 interpretation, maintenance rules, and the current refactoring sequence.
 
-The gate compares the complete pull request range against `origin/develop` for
-feature branches and against `origin/main` for release and hotfix branches. It
+The gate compares the complete pull request range against `origin/main` for each
+topic branch. It
 always checks pushed whitespace, versions, and tracked binaries. It then runs
 ESLint for changed scripts and related tests for changed TypeScript,
 `cargo fmt --check` for changed Rust, and the relevant dependency-lock,

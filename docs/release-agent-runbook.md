@@ -11,7 +11,7 @@ automation instead of shipping a version, also read
 
 ## Operating rules
 
-- Keep the repository root on `develop`. Prepare the version on a release
+- Keep the repository root on `main`. Prepare the version on a release
   branch in its own worktree and publish from a clean checkout of `main`.
 - Treat the release tag as immutable. A defect found after a tag exists requires
   a higher patch version unless the failure is proven to be transient and the
@@ -36,8 +36,8 @@ Release preparation starts only when all of these conditions hold:
 
 - The user has fixed the intended version and release scope.
 - Every included task has reached its required review state and has been merged
-  into `develop`.
-- `develop` is clean, fetched, and aligned with `origin/develop`.
+  into `main`.
+- `main` is clean, fetched, and aligned with `origin/main`.
 - No active task is editing the same version manifests, release notes, workflow,
   installer, or updater files.
 
@@ -46,8 +46,8 @@ If one condition is false, resolve it before changing the version.
 ## Prepare the release branch
 
 1. Create `release/<version>` in a dedicated worktree from the current
-   `develop`. Confirm the worktree is clean and its base is the expected
-   `origin/develop` commit.
+   `main`. Confirm the worktree is clean and its base is the expected
+   `origin/main` commit.
 2. Run `bun run version:bump <version>`. Review every changed manifest rather
    than editing secondary version files independently.
 3. Add `dev/release/notes/<version>.md` and update `CHANGELOG.md`. Write only
@@ -61,12 +61,9 @@ If one condition is false, resolve it before changing the version.
    the branch.
 6. Merge only when the worktree is clean, the pull request is current, and all
    required GitHub checks pass. Record the resulting `main` merge SHA.
-7. Reintegrate the release changes into `develop` without rewriting either
-   branch. Run the differential pre-push gate and push `develop`.
 
-This phase is complete when `origin/main` contains the prepared version,
-`origin/develop` contains the same release changes, and both remote branches
-have successful required checks.
+This phase is complete when the pull request checks have passed and
+`origin/main` contains the prepared version.
 
 ## Validate and create the tag
 
@@ -163,8 +160,8 @@ trigger `Publish update channel` automatically.
    build cache if the repository has adopted that convention.
 6. Archive completed Codex release tasks when requested. Leave unrelated tasks
    and prior release artifacts untouched.
-7. Confirm the repository root is clean on `develop` and aligned with
-   `origin/develop`.
+7. Confirm the repository root is clean on `main` and aligned with
+   `origin/main`.
 
 The release is complete only when the public release and all five Stable
 manifests agree on the version, Git cleanup is scoped and complete, and the
@@ -198,7 +195,7 @@ An agent that stops before completion must leave these exact facts:
 
 - intended version and tag;
 - release branch, worktree, and current commit;
-- `main` and `develop` integration state;
+- `main` integration state;
 - commands already passed on the current SHA;
 - Release and Stable-channel workflow run IDs;
 - pending approval or failed step;

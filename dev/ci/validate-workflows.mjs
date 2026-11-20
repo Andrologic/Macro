@@ -98,30 +98,20 @@ export function validateWorkflowDocument(document, filePath) {
   }
 
   if (filePath.endsWith('ci.yml')) {
-    if (document.permissions?.actions !== 'read') {
-      fail('ordinary CI must keep actions: read permission to verify reusable results.');
-    }
     if (document.permissions?.contents !== 'read') {
       fail('ordinary CI must keep contents: read permissions.');
+    }
+    for (const event of ['pull_request', 'push']) {
+      const branches = document.on?.[event]?.branches;
+      if (!Array.isArray(branches) || branches.length !== 1 || branches[0] !== 'main') {
+        fail(`ordinary CI must run for ${event} on main only.`);
+      }
     }
     if (document.on?.push?.tags) {
       fail('ordinary CI must not run for tags.');
     }
-    const classificationSteps = document.jobs.classify?.steps || [];
-    const reuseStep = classificationSteps.find((step) => step?.name === 'Find successful validation already run on main');
-    const reuseScript = typeof reuseStep?.run === 'string' ? reuseStep.run : '';
-    if (
-      !reuseScript.includes('dev/ci/find-reusable-ci.mjs')
-      || !reuseScript.includes('--branch main')
-      || !reuseScript.includes('--sha "$GITHUB_SHA"')
-    ) {
-      fail('develop synchronization deduplication must verify an exact successful main CI run.');
-    }
     for (const jobName of ['linux', 'windows', 'macos']) {
       const job = document.jobs[jobName];
-      if (!String(job?.if ?? '').includes("reusable_validation != 'true'")) {
-        fail(`job "${jobName}" must run unless an exact main CI result is reusable.`);
-      }
       const rustToolchainIndex = (job?.steps || []).findIndex((step) => (
         typeof step?.uses === 'string' && step.uses.startsWith('dtolnay/rust-toolchain@')
       ));
@@ -295,10 +285,10 @@ export function validateWorkflowDocument(document, filePath) {
     }
     const validationSteps = document.jobs.validate?.steps || [];
     const reuseIndex = validationSteps.findIndex((step) => (
-      step?.name === 'Find successful validation already run on develop'
+      step?.name === 'Find successful validation already run on main'
       && typeof step?.run === 'string'
       && step.run.includes('dev/ci/find-reusable-ci.mjs')
-      && step.run.includes('--branch develop')
+      && step.run.includes('--branch main')
       && step.run.includes('--sha "$SOURCE_SHA"')
       && step.run.includes('--required-job "Linux validation"')
       && step.run.includes('--required-step "Run conservative validation profile"')
@@ -310,7 +300,7 @@ export function validateWorkflowDocument(document, filePath) {
       && step.run.includes('run-checks.mjs --profile native')
     ));
     if (reuseIndex === -1 || fallbackIndex <= reuseIndex) {
-      fail('preview validation must run the full native fallback unless the exact develop CI result is reusable.');
+      fail('preview validation must run the full native fallback unless the exact main CI result is reusable.');
     }
     const publishScript = (document.jobs.publish?.steps || [])
       .map((step) => typeof step?.run === 'string' ? step.run : '')

@@ -18,7 +18,7 @@ minisign-compatible signature, and Macro verifies that signature before activati
 on every platform. An updater signature must never be described as Authenticode,
 Apple code signing, Linux repository signing, or notarization.
 
-Scheduled previews are nightly builds from `develop`. A manually dispatched
+Scheduled previews are nightly builds from `main`. A manually dispatched
 preview may instead use an `x.y.z-rc.n` release-candidate version. Stable releases
 come only from annotated `vX.Y.Z` tags on `main` and are created as drafts for
 manual review before publication.

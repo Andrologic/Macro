@@ -252,7 +252,7 @@ staged update is activated on the next launch. A refusal leaves the package
 staged for a later manual installation attempt.
 
 Scheduled previews start only after the public stable `v0.1.1` release exists.
-They build `develop` once per night when its commit changed. Use the manual
+They build `main` once per night when its commit changed. Use the manual
 Preview workflow with an `x.y.z-rc.n` version for a release candidate. Configure
 the `preview` GitHub environment with the same Tauri updater and Apple signing
 secrets as the `release` environment. No second repository or personal access

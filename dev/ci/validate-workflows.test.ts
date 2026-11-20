@@ -54,19 +54,19 @@ describe('GitHub workflow validation', () => {
     expect(errors.some((error) => error.includes('approved Node.js 24 revision'))).toBe(true);
   });
 
-  test('requires exact-SHA reuse checks and safe CI fallbacks', () => {
+  test('requires main as the sole CI branch and Rust for native checks', () => {
     const errors = validateWorkflowDocument({
       name: 'CI',
       on: {
         pull_request: { branches: ['develop', 'main'] },
-        push: { branches: ['develop', 'main'] },
+        push: { branches: ['develop'] },
       },
       permissions: { actions: 'read', contents: 'read' },
       jobs: {
         classify: {
           'runs-on': 'ubuntu-latest',
           'timeout-minutes': 5,
-          steps: [{ name: 'Reuse some result', run: 'echo reusable=true' }],
+          steps: [],
         },
         linux: {
           if: "needs.classify.outputs.linux == 'true'",
@@ -83,9 +83,8 @@ describe('GitHub workflow validation', () => {
       },
     }, '.github/workflows/ci.yml');
 
-    expect(errors.some((error) => error.includes('exact successful main CI run'))).toBe(true);
-    expect(errors.some((error) => error.includes('job "linux" must run unless'))).toBe(true);
-    expect(errors.some((error) => error.includes('job "windows" must run unless'))).toBe(true);
+    expect(errors.some((error) => error.includes('pull_request on main only'))).toBe(true);
+    expect(errors.some((error) => error.includes('push on main only'))).toBe(true);
     expect(errors.some((error) => error.includes('job "linux" must install Rust'))).toBe(true);
     expect(errors.some((error) => error.includes('job "windows" must install Rust'))).toBe(true);
   });

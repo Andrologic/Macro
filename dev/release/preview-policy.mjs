@@ -74,7 +74,7 @@ export function sourceShaFromReleaseBody(body) {
 }
 
 export function previewVersionFromReleaseBody(body) {
-  const match = String(body ?? '').match(/(?:^|\n)Macro ([^\s]+) is a validated (?:nightly|rc) build from develop\./);
+  const match = String(body ?? '').match(/(?:^|\n)Macro ([^\s]+) is a validated (?:nightly|rc) build from (?:main|develop)\./);
   if (!match) throw new Error('Preview release notes do not contain a valid preview version.');
   return requireVersion(match[1], 'Published Preview notes version');
 }
