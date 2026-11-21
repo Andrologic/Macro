@@ -263,7 +263,7 @@
   },
   "header": {
     "architect": "Architect",
-    "implement": "Implement",
+    "implement": "Operate",
     "chat": "Chat",
     "debug": "Debug",
     "selectProject": "Select Project",
@@ -281,7 +281,7 @@
     "sections": {
       "basics": "Basics",
       "architect": "Architect",
-      "implement": "Implement",
+      "implement": "Operate",
       "chat": "Chat",
       "system": "System"
     },
@@ -298,10 +298,10 @@
       },
       "modes": {
         "title": "Mode selector",
-        "body": "These three buttons change the whole workspace. Architect is for scoping, Implement is for executing, and Chat is for free-form discussion with context.",
+        "body": "These three buttons change the whole workspace. Architect is for scoping, Operate is for executing, and Chat is for free-form discussion with context.",
         "points": [
           "Architect: conversations, plans, and strategy.",
-          "Implement: tasks, terminal, and change validation.",
+          "Operate shows running systems, agent conversations and requests for human input.",
           "Chat: conversations, sources, and general tools."
         ]
       },
@@ -339,8 +339,8 @@
         "body": "Validation freezes the plan enough to provision branches and feed Implement. Started or completed tasks are protected from destructive regenerations."
       },
       "implement-mode": {
-        "title": "Implement mode",
-        "body": "Implement is for picking up a task, discussing execution, opening a terminal, and validating modified files before commit."
+        "title": "Operate mode",
+        "body": "Operate shows running systems, agent conversations and requests for human input."
       },
       "implement-tasks": {
         "title": "Task queue",
@@ -3098,8 +3098,8 @@
         "description": "Switch active mode to Architect"
       },
       "switchImplement": {
-        "label": "Switch to Implement mode",
-        "description": "Switch active mode to Implement"
+        "label": "Switch to Operate mode",
+        "description": "Switch active mode to Operate"
       },
       "switchChat": {
         "label": "Switch to Chat mode",

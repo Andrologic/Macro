@@ -1030,6 +1030,7 @@
     "noContent": "No content recorded",
     "refresh": "Refresh observations",
     "readFailed": "Read failed. Previous observations may be out of date.",
+    "selectRun": "Select an agent instance to inspect its run.",
     "selectionPending": "Initial selection awaits complete history and human-wait evidence. You can choose a run.",
     "summary": "Run status",
     "stopLabel": "System stop",

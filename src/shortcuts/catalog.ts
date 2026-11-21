@@ -74,8 +74,8 @@ export const shortcutDefinitions: ShortcutDefinition[] = [
     labelKey: 'shortcuts.items.switchImplement.label',
     descriptionKey: 'shortcuts.items.switchImplement.description',
     category: 'mode',
-    label: 'Switch to Implement mode',
-    description: 'Switch active mode to Implement',
+    label: 'Switch to Operate mode',
+    description: 'Switch active mode to Operate',
     defaultBinding: 'Mod+2',
   },
   {

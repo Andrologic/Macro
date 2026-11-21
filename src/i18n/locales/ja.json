@@ -263,7 +263,7 @@
   },
   "header": {
     "architect": "Architect",
-    "implement": "Implement",
+    "implement": "Operate",
     "chat": "Chat",
     "debug": "Debug",
     "selectProject": "プロジェクトの選択",
@@ -281,7 +281,7 @@
     "sections": {
       "basics": "基本",
       "architect": "Architect",
-      "implement": "Implement",
+      "implement": "Operate",
       "chat": "Chat",
       "system": "システム"
     },
@@ -298,10 +298,10 @@
       },
       "modes": {
         "title": "モードセレクター",
-        "body": "この3つのボタンで作業画面全体が切り替わります。Architect は設計、Implement は実行、Chat はコンテキスト付きの自由な相談に使います。",
+        "body": "この3つのボタンで作業画面全体が切り替わります。Architect は設計、Operate は実行、Chat はコンテキスト付きの自由な相談に使います。",
         "points": [
           "Architect: 会話、計画、戦略。",
-          "Implement: タスク、ターミナル、変更の検証。",
+          "Operate では実行中のシステム、エージェントの会話、回答が必要なリクエストを確認できます。",
           "Chat: 会話、ソース、汎用ツール。"
         ]
       },
@@ -339,8 +339,8 @@
         "body": "検証により、ブランチを準備して Implement に渡せる程度まで計画を固定します。開始済みまたは完了済みのタスクは破壊的な再生成から保護されます。"
       },
       "implement-mode": {
-        "title": "Implement モード",
-        "body": "Implement はタスクを引き受け、実行について相談し、ターミナルを開き、コミット前に変更ファイルを検証するためのモードです。"
+        "title": "Operate モード",
+        "body": "Operate では実行中のシステム、エージェントの会話、回答が必要なリクエストを確認できます。"
       },
       "implement-tasks": {
         "title": "タスクキュー",
@@ -3098,8 +3098,8 @@
         "description": "アクティブモードを Architect に切り替え"
       },
       "switchImplement": {
-        "label": "Implement モードに切り替え",
-        "description": "アクティブモードを Implement に切り替え"
+        "label": "Operate モードに切り替え",
+        "description": "アクティブモードを Operate に切り替え"
       },
       "switchChat": {
         "label": "チャットモードに切り替える",
