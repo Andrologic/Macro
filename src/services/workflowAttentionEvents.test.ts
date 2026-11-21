@@ -6,6 +6,11 @@ import type {
 } from '../types';
 import type { CatalogedImplementTask } from './implementTaskCatalog';
 import {
+  detectNewConversationAttentionEvents,
+  getActiveChatAttentionKeys,
+  type ConversationAttentionContext,
+} from './conversationAttention';
+import {
   detectNewChatAttentionEvents,
   detectNewReviewAttentionEvents,
   type WorkflowAttentionContext,
@@ -99,10 +104,19 @@ describe('workflow attention events', () => {
       messages: [makeQuestionnaireMessage(conversation.id)],
       pendingToolApprovalByConversationId: { [conversation.id]: makeApproval(conversation.id) },
     });
-    const context = { ...backgroundContext, selectedConversationId: conversation.id, appForeground: false };
-    expect(detectNewChatAttentionEvents(previous, next, context).map((event) => event.kind)).toEqual(['questionnaire', 'approval']);
-    expect(detectNewChatAttentionEvents(next, next, context)).toEqual([]);
-    expect(detectNewChatAttentionEvents(previous, next, { ...context, appForeground: true })).toEqual([]);
+    const context: ConversationAttentionContext = {
+      appForeground: false,
+      mode: 'Chat',
+      selectedConversationId: conversation.id,
+      selectedGroupId: null,
+      selectedProjectId: null,
+      scopedProjectIds: [],
+    };
+    const events = detectNewConversationAttentionEvents(previous, next, context);
+    expect(events.map((event) => event.kind)).toEqual(['questionnaire', 'approval']);
+    expect(events.map((event) => event.key)).toEqual([...getActiveChatAttentionKeys(next)]);
+    expect(detectNewConversationAttentionEvents(next, next, context)).toEqual([]);
+    expect(detectNewConversationAttentionEvents(previous, next, { ...context, appForeground: true })).toEqual([]);
   });
 
   it('notifies for a selected review only while the window is inactive', () => {

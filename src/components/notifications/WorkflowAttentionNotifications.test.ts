@@ -962,19 +962,44 @@ it('opens the exact 0.3 run and request from an attention action without convers
   const { emitRunAttentionNotification030, subscribeRunAttention030 } = await import('./WorkflowAttentionNotifications');
   const { workflowRunTargetSnapshot030, openWorkflowRun030 } = await import('../../services/workflowAgentTasks');
   const { inspectionFixture030, humanFixture030, monitorFixture030, ready } = await import('../../services/agsdl/runInspection030.testSupport');
-  const run = {...inspectionFixture030()}; const request = humanFixture030(run);
-  run.state = {...run.state,humans:ready([request])};
-  const access = monitorFixture030(run);
-  const stop = subscribeRunAttention030([{scope:{owner:run.capture.source.owner},access}],t);
-  const emitted = notifyActionRequired.mock.calls.length;
-  access.publish(access.snapshot);
-  expect(notifyActionRequired.mock.calls.length).toBe(emitted);
-  emitRunAttentionNotification030(request,t);
-  const options = notifyActionRequired.mock.calls.at(-1)![1];
-  expect(options.actions).toHaveLength(1);
-  await options.actions[0].onClick();
-  expect(workflowRunTargetSnapshot030()).toEqual({scope:request.scope,requestId:request.id});
-  expect(navigationCalls).toEqual([]);
-  expect(access.reads).toEqual([]);
-  stop(); openWorkflowRun030(null);
+  const run = inspectionFixture030('attention-run');
+  const otherRun = inspectionFixture030('other-attention-run');
+  const request = humanFixture030(run);
+  const otherRequest = humanFixture030(otherRun);
+  const wrongRevision = {
+    ...request,
+    scope: { ...request.scope, source: { ...request.scope.source, revision: '1' } },
+  };
+  const access = monitorFixture030({ ...run, state: { ...run.state, humans: ready([wrongRevision, request]) } });
+  const conversationId = 'design-conversation';
+  const stop = subscribeRunAttention030([{ scope: { owner: run.capture.source.owner, conversationId }, access }], t);
+  try {
+    expect(notifyActionRequired).toHaveBeenCalledTimes(1);
+
+    // The same request remains claimed across refreshes and both entry points.
+    const refreshed = { ...run, state: { ...run.state, humans: ready([{ ...request, revision: '2' }]) } };
+    access.publish(monitorFixture030(refreshed).snapshot);
+    emitRunAttentionNotification030(request, t);
+    expect(notifyActionRequired).toHaveBeenCalledTimes(1);
+
+    // The same request ID in another execution has its own action.
+    const secondRun = { ...otherRun, state: { ...otherRun.state, humans: ready([otherRequest]) } };
+    access.publish(monitorFixture030(refreshed, secondRun).snapshot);
+    expect(notifyActionRequired).toHaveBeenCalledTimes(2);
+    for (const [index, expected] of [request, otherRequest].entries()) {
+      const options = notifyActionRequired.mock.calls[index]![1];
+      expect(options.actions).toHaveLength(1);
+      await options.actions[0]!.onClick();
+      expect(workflowRunTargetSnapshot030()).toEqual({
+        scope: expected.scope,
+        requestId: expected.id,
+        conversationId,
+      });
+    }
+    expect(navigationCalls).toEqual([]);
+    expect(access.reads).toEqual([]);
+  } finally {
+    stop();
+    openWorkflowRun030(null);
+  }
 });
