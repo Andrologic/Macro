@@ -34,7 +34,7 @@ pub(super) struct Open {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Cursor {
+pub(crate) struct Cursor {
     pub field: i64,
     pub offset: i64,
 }
@@ -45,7 +45,7 @@ pub(super) struct Copy {
     pub expected_revision: i64,
 }
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-pub(super) struct Receipt {
+pub(crate) struct Receipt {
     pub capture_id: String,
     pub phase: i64,
     pub revision: i64,
@@ -62,12 +62,12 @@ pub(super) struct Ack {
     pub revision: i64,
 }
 #[derive(Clone, Debug, Serialize)]
-pub(super) struct Copied {
+pub(crate) struct Copied {
     pub receipt: Receipt,
     pub ack: Option<Ack>,
 }
 #[derive(Clone, Debug, Serialize)]
-pub(super) struct FieldInfo {
+pub(crate) struct FieldInfo {
     pub ordinal: i64,
     pub row: i64,
     pub family: i64,
@@ -77,14 +77,14 @@ pub(super) struct FieldInfo {
     pub sha256: Option<Vec<u8>>,
 }
 #[derive(Clone, Debug, Serialize)]
-pub(super) struct Stored {
+pub(crate) struct Stored {
     pub field: FieldInfo,
     pub offset: i64,
     pub sha256: Vec<u8>,
     pub data: Vec<u8>,
 }
 #[derive(Clone, Debug, Serialize)]
-pub(super) struct Readback {
+pub(crate) struct Readback {
     pub receipt: Receipt,
     pub binding: Binding,
     pub manifest: Option<Vec<u8>>,
@@ -93,7 +93,7 @@ pub(super) struct Readback {
     pub limits: &'static [&'static str],
 }
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-pub(super) struct StoredRelation {
+pub(crate) struct StoredRelation {
     pub from: i64,
     pub kind: i64,
     pub position: i64,
@@ -101,7 +101,7 @@ pub(super) struct StoredRelation {
     pub status: i64,
 }
 #[derive(Clone, Debug, Serialize)]
-pub(super) struct RawNativeCapture {
+pub(crate) struct RawNativeCapture {
     pub receipt: Receipt,
     pub binding: Binding,
     pub manifest: Vec<u8>,

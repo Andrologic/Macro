@@ -55,7 +55,7 @@
     },
     {
       "path": "copilot-bridge/src/connect-codec-operations.ts",
-      "sha256": "c2173e52caf6193a6abb6787987ff1690192f0edf857ae258a96a934bdc102a3"
+      "sha256": "3a418629a5e1b9a12777b02e5acb9956e615e32e412b5e44f804eaafaba85c33"
     },
     {
       "path": "copilot-bridge/src/connect-codec-values.ts",

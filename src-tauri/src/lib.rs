@@ -593,6 +593,7 @@ pub fn run() {
         })
         .manage(AppQuitState::default())
         .manage(DbPool::default())
+        .manage(db::connect_transfer::reader_runtime::ArchiveReaderRuntime::default())
         .manage(diagnostics::DiagnosticReportStore::default())
         .manage(AiState::default())
         .manage(agsdl_host::HostState::default())
@@ -963,6 +964,14 @@ pub fn run() {
             commands::db_list_messages,
             commands::pilot_files::pilot_files_inspect_attachments,
             commands::pilot_files::db_pilot_message_images,
+            commands::pilot_secrets::connect_transfer_send,
+            commands::pilot_secrets::connect_transfer_receive,
+            commands::pilot_secrets::connect_transfer_interrupt_idle,
+            commands::pilot_secrets::connect_transfer_reconcile,
+            commands::connect_archive::connect_archive_open,
+            commands::connect_archive::connect_archive_page,
+            commands::connect_archive::connect_archive_materialize,
+            commands::connect_archive::connect_archive_release,
             commands::pilot_files::pilot_files_authorize,
             commands::pilot_files::pilot_files_begin,
             commands::pilot_files::pilot_files_chunk,
@@ -1024,6 +1033,8 @@ pub fn run() {
             commands::ai::ai_disconnect_provider_auth,
             commands::ai::ai_sync_provider_models,
             commands::chat_admission::chat_admission_open_browser,
+            commands::chat_admission::chat_admission_mode,
+            commands::chat_admission::chat_admission_copy_restored,
             commands::chat_admission::chat_admission_begin_reconciliation,
             commands::chat_admission::chat_admission_complete_reconciliation,
             commands::chat_admission::chat_admission_begin_intent,

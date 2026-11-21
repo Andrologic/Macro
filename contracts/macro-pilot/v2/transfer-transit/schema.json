@@ -118,7 +118,9 @@
         "transit_contract",
         "type",
         "request_id",
-        "session"
+        "session",
+        "provider_id",
+        "model_id"
       ],
       "properties": {
         "transit_contract": {
@@ -132,6 +134,23 @@
         },
         "session": {
           "$ref": "#/$defs/session"
+        },
+        "provider_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "reasoning_effort": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
         }
       }
     },
@@ -740,6 +759,38 @@
               "$ref": "#/$defs/chunk"
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "message"
+          ],
+          "properties": {
+            "kind": {
+              "const": "transit.invitation"
+            },
+            "message": {
+              "$ref": "#/$defs/invitation"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "message"
+          ],
+          "properties": {
+            "kind": {
+              "const": "transit.prepared"
+            },
+            "message": {
+              "$ref": "#/$defs/prepared"
+            }
+          }
         }
       ]
     },
@@ -835,8 +886,101 @@
         },
         {
           "$ref": "#/$defs/delivery"
+        },
+        {
+          "$ref": "#/$defs/invitation"
+        },
+        {
+          "$ref": "#/$defs/prepared"
         }
       ]
+    },
+    "invitation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "session",
+        "binding",
+        "frozen",
+        "manifest",
+        "provider_id",
+        "model_id"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "transit.invitation"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "session": {
+          "$ref": "#/$defs/session"
+        },
+        "binding": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/binding"
+        },
+        "frozen": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/frozen"
+        },
+        "manifest": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/manifest"
+        },
+        "provider_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "reasoning_effort": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        }
+      }
+    },
+    "prepared": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "transfer_id",
+        "transit_id",
+        "prepared"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "transit.prepared"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "transfer_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "transit_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "prepared": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/prepared"
+        }
+      }
     }
   }
 }

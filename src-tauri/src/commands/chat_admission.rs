@@ -37,6 +37,11 @@ pub(crate) fn retire_browser_from_native(app: &tauri::AppHandle, caller: &str) {
         return;
     };
     let page = runtime.invalidate_page(caller);
+    if let Some(reader) =
+        app.try_state::<crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime>()
+    {
+        reader.retire_caller(caller);
+    }
     let app = app.clone();
     let caller = caller.to_owned();
     tauri::async_runtime::spawn(async move {
@@ -648,4 +653,33 @@ pub(crate) async fn chat_admission_complete_reconciliation<R: tauri::Runtime>(
         .complete_reconciliation(&pool, window.label(), &runtime, &handle, &observed)
         .await
         .map_err(Into::into)
+}
+
+#[tauri::command]
+pub(crate) async fn chat_admission_mode(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<Option<String>> {
+    crate::db::chat_admission::restored_copy::admission_mode(
+        &get_pool(&pool).await?,
+        &conversation_id,
+    )
+    .await
+    .map_err(Into::into)
+}
+
+/// Explicit user action: a held conversation's history becomes a new Chat.
+#[tauri::command]
+pub(crate) async fn chat_admission_copy_restored(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+    title: String,
+) -> CommandResult<crate::db::chat_admission::restored_copy::RestoredCopy> {
+    crate::db::chat_admission::restored_copy::copy_restored(
+        &get_pool(&pool).await?,
+        &conversation_id,
+        &title,
+    )
+    .await
+    .map_err(Into::into)
 }

@@ -1557,7 +1557,9 @@ export const buildSourceHashes = (
 export function portableArchiveBinding(messages: ChatMessage[]): ChatMessage['portable_history'] | null {
   let binding: ChatMessage['portable_history'] | null = null;
   for (const message of messages) if (message.portable_history) {
-    const value = message.portable_history;
+    // Per-message ordinals/display dates are not the archive binding.
+    const { version, importKey, manifest } = message.portable_history;
+    const value = { version, importKey, manifest };
     if (value.version !== 1 || !value.importKey || !/^[a-f0-9]{64}$/.test(value.manifest) || (binding && JSON.stringify(binding) !== JSON.stringify(value))) throw new Error('portable_provenance_missing');
     binding = value;
   }

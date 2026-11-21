@@ -26,6 +26,16 @@ const MAX_SSE_BUFFER_BYTES: usize = 1_048_576;
 const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
 const MAX_ERROR_MESSAGE_CHARS: usize = 2_048;
 
+/// Pure construction using the same builder as the provider transport. The
+/// caller supplies a native configuration snapshot and owns memory admission.
+/// The returned body does not grant permission to send or publish a transfer.
+pub(crate) fn build_transfer_request(
+    request: &AiChatRequest,
+    provider: &ProviderConfig,
+) -> Result<Value, String> {
+    build_chat_completions_request(request, provider)
+}
+
 #[cfg(test)]
 pub(crate) fn portable_history_proof_request(request: &AiChatRequest) -> Result<Value, String> {
     let provider = ProviderConfig {

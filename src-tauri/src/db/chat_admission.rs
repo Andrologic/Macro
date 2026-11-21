@@ -7,37 +7,30 @@ const MIGRATION: &str = include_str!("migrations/017_chat_admission.sql");
 const OBJECTS: &str = "(name GLOB 'chat_admission_*' OR tbl_name GLOB 'chat_admission_*') AND name NOT GLOB 'connect_*'";
 pub(crate) mod intents;
 pub(crate) mod reconciliation;
+pub(crate) mod restored_copy;
 pub(crate) mod retirement;
 pub(crate) mod runtime;
 
 static EXPECTED: OnceCell<Vec<(String, Option<String>)>> = OnceCell::const_new();
+static EXPECTED_LEGACY: OnceCell<Vec<(String, Option<String>)>> = OnceCell::const_new();
 
 fn invalid(code: &str) -> DbError {
     DbError::Validation(code.into())
 }
 
-async fn expected_schema() -> DbResult<&'static Vec<(String, Option<String>)>> {
-    EXPECTED.get_or_try_init(|| async {
-        let mut db = SqliteConnection::connect("sqlite::memory:").await?;
-        // Trigger DDL is compared verbatim. These empty tables provide only the
-        // namespaces needed to install it; they never serve as admission data.
-        for table in ["conversations", "messages", "conversation_management",
-            "conversation_response_versions", "conversation_citations",
-            "conversation_toolbox_state", "conversation_compactions",
-            "conversation_compaction_events", "conversation_action_receipts",
-            "tool_invocations", "pilot_message_attachments", "pilot_file_sends", "app_settings",
-            "agent_runs", "agent_run_transitions", "conversation_goals", "conversation_goal_audits", "conversation_goal_audit_runs"] {
-            sqlx::query(sqlx::AssertSqlSafe(format!(
-                "CREATE TABLE {table}(id TEXT,conversation_id TEXT,scope_mode TEXT,project_id TEXT,group_id TEXT,task_id TEXT)"
-            ))).execute(&mut db).await?;
-        }
-        sqlx::raw_sql(MIGRATION).execute(&mut db).await?;
+async fn expected_schema(reader: bool) -> DbResult<&'static Vec<(String, Option<String>)>> {
+    let cell = if reader { &EXPECTED } else { &EXPECTED_LEGACY };
+    cell.get_or_try_init(|| async {
+        let mut db = super::connect_transfer::reference(reader).await?;
         let result = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT name,sql FROM sqlite_master WHERE {OBJECTS} ORDER BY name"
-        ))).fetch_all(&mut db).await?;
+        )))
+        .fetch_all(&mut db)
+        .await?;
         db.close().await?;
         Ok(result)
-    }).await
+    })
+    .await
 }
 
 pub(crate) async fn validate_schema(db: &mut SqliteConnection) -> DbResult<()> {
@@ -50,7 +43,9 @@ pub(crate) async fn validate_schema(db: &mut SqliteConnection) -> DbResult<()> {
     if trusted != 1 {
         return Err(invalid("chat_admission_schema_configuration"));
     }
-    let expected = expected_schema().await?;
+    let reader: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=43 AND name='043_connect_archive_lifecycle')")
+        .fetch_one(&mut *db).await?;
+    let expected = expected_schema(reader != 0).await?;
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         "SELECT (SELECT COUNT(*) FROM sqlite_master WHERE {OBJECTS})="
     ));
@@ -98,7 +93,7 @@ pub(crate) async fn remove_reference_schema_in(db: &mut SqliteConnection) -> DbR
             .await?;
     if has_f != 0 {
         super::connect_transfer::remove_reference_schema_in(db).await?;
-        sqlx::query("DELETE FROM schema_migrations WHERE version BETWEEN 18 AND 19")
+        sqlx::query("DELETE FROM schema_migrations WHERE version IN (18,19,43,44,45)")
             .execute(&mut *db)
             .await?;
     }

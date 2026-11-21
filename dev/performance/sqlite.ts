@@ -15,12 +15,32 @@ export function productSql(functionName: string) {
   if (!match) throw new Error(`Missing literal SQL in ${functionName}`);
   return match[1];
 }
+
+const migrationSql = (name: string) =>
+  readFileSync(new URL(`../../src-tauri/src/db/migrations/${name}.sql`, import.meta.url), 'utf8');
+
+function statement(schema: string, prefix: string) {
+  const start = schema.indexOf(prefix);
+  const end = schema.indexOf(';', start);
+  if (start < 0 || end < 0) throw new Error(`Missing schema statement ${prefix}`);
+  return schema.slice(start, end + 1);
+}
+
 export function sqliteBaseline(count: number) {
   // The statement benchmark needs the message schema used by the current queries,
   // without pretending to exercise the full native migration workflow.
-  const schema = ['001_initial.sql', '006_generation_attempts.sql']
-    .map((name) => readFileSync(new URL(`../../src-tauri/src/db/migrations/${name}`, import.meta.url), 'utf8'))
-    .join('\n');
+  const publication = migrationSql('019_connect_publication');
+  const archive = migrationSql('020_connect_archive_lifecycle');
+  const schema = [
+    migrationSql('001_initial'),
+    migrationSql('006_generation_attempts'),
+    ...['connect_preparations', 'connect_projection_messages', 'conversation_portable_archives',
+      'connect_activation_receipts'].map(table => statement(publication, `CREATE TABLE ${table} (`)),
+    ...['connect_projection_display', 'connect_local_deletions'].map(table =>
+      statement(archive, `CREATE TABLE ${table} (`)),
+    statement(archive, 'CREATE VIEW connect_message_origins '),
+    statement(archive, 'CREATE INDEX connect_message_reader '),
+  ].join('\n');
   const readSql = productSql('list_messages');
   const writeSql = productSql('create_message');
   const db = new Database(':memory:');

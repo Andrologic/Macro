@@ -165,7 +165,7 @@ pub(super) async fn complete(
     Ok(())
 }
 
-async fn require_quiescent(
+pub(in crate::db) async fn require_quiescent(
     db: &mut SqliteConnection,
     conversation: &str,
     incarnation: &str,

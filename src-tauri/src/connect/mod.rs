@@ -3,4 +3,5 @@
 pub(crate) mod codec;
 pub(crate) mod http;
 pub(crate) mod runtime;
+pub(super) mod transfer_worker;
 pub(crate) use runtime::TransferRuntime;

@@ -91,7 +91,7 @@ export async function prepareReference(ports: TransferPorts, projection: Portabl
         hasStoredApiKey: false, isEnabled: true, isLocal: true },
       turnCapabilities: { allowedToolIds: [], riskLevel: root.risk, scopedTurnConfiguration: null, showToolTraces: false, internalAgentProfile: null,
         mcpTools: [], mcpServers: [], skillToolIds: [], runnableSkillToolIds: [], enableWebSearch: false, enableWebFetch: false,
-        webSearchOptions: {}, guidedToolRetry: undefined, maxTurns: integer(root.max_turns) } }, requestPorts);
+        webSearchOptions: {}, guidedToolRetry: undefined, maxTurns: integer(root.max_turns) || null } }, requestPorts);
     await ports.policy();
     const sink = ports.client.start.handles.draft;
     const { messagesForRequest: diagnosticMessages, citations: diagnosticCitations, ...diagnosticSeed } = launch.contextDiagnosticsBaselineSeed;

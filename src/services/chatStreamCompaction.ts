@@ -1,4 +1,4 @@
-import type { AssistantStreamLaunch, StreamContextDiagnosticsBaseline } from "./chatStreamContracts";
+import type { AssistantStreamLaunch, StreamContextDiagnosticsBaseline, ChatRequestResources } from "./chatStreamContracts";
 import type { ConversationCompactionState } from "../types";
 import type { StreamMessage } from "./streamingChat";
 import type { ContextLimitFootprintFields } from "./modelContextLimits";
@@ -62,7 +62,7 @@ export interface ChatStreamCompactionPorts {
     getCompactionStatus: () => ConversationCompactionStatus | null;
     prepareMessagesForRequest: () => Promise<Pick<CompactionInput,
       "systemMessage" | "preparedMessages" | "orderedMessages" | "citations"
-    >>;
+    > & { resources?: ChatRequestResources }>;
   };
   projection: Pick<ChatCompactionRuntime,
     "markConversationCompactionStarted" |
@@ -386,6 +386,7 @@ export const createChatStreamCompaction = (
       return;
     }
     const preparedRequest = await ports.read.prepareMessagesForRequest();
+    try {
     if (!acceptsConsolidation()) {
       return;
     }
@@ -511,6 +512,7 @@ export const createChatStreamCompaction = (
     ports.projection.info(
       `Tool-boundary compaction consolidation ${consolidation.outcome} conversation=${params.conversationId} reason=${consolidation.reason}`,
     );
+    } finally { preparedRequest.resources?.release(); }
   };
 
 

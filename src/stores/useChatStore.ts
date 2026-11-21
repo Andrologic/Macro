@@ -12,6 +12,11 @@ import { assertLegacyTaskOwnership } from '../services/workflowTaskOwnership';
 import { hasMultipleAgsdlContexts, persistableContextRefs, rebindAgsdlContextRefs, submissionHiddenContext } from "../services/chat/composerSubmission";
 import { agsdlContextForModel } from "../services/agsdl/chatContextPayload";
 import { prepareChatMessages, isStandaloneImplementTask, sanitizeAssistantContentForModel, isFileContextRef, getFileRefPath, getImageContextMetadata, type ChatMessagePreparationPorts } from "../services/chatMessagePreparation";
+import { activateArchiveReaders, retireArchiveReaders, withArchiveReadersPaused } from '../services/conversationPortableArchive';
+import { copyRestoredImages } from '../services/restoredConversationCopy';
+import { isBrowserRuntimeBridgeEnabled } from '../services/tauriRuntimeBridge';
+import { loadArchiveMessageImages, releaseArchiveImages, archiveImageConversation, isArchiveImage, prepareArchiveImages, ownArchiveRequestResources } from '../services/archiveImages';
+import { prepareArchiveContext } from '../services/archiveContext';
 import { buildMessageUpdateParams } from '../services/ipc/conversations';
 import { responseOptions } from '../services/chatResponsePayload';
 import { readQueuedSubmissions } from './chat/chatQueuedSubmissions';
@@ -20,7 +25,7 @@ import { ensureChatBrowser, beginChatAdmission, closeChatPreparation, finishChat
 import { buildProviderInputItemsFromContent } from '../services/ai/responsesCodec';
 import { acknowledgeDisplayedConversation } from '../services/conversationManagementService';
 import { getConflictAssistantContext, clearConflictAssistantContext, isConflictAssistantContextAllowed, revalidateConflictAssistantContext, scopeConflictAssistantExecutionContext } from '../services/conflictAssistantContext';
-import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
+import { type LifecycleContext, createLifecycleScope, isLifecycleStopped } from '../services/lifecycleScope';
 import type { PendingToolApprovalResolution } from "../services/chatToolExecutionContracts";
 import { createChatToolExecution } from "../services/chatToolExecution";
 import { chatToolInvocationJournal } from "../services/chatToolInvocationJournal";
@@ -34,7 +39,7 @@ import { cloneProviderInputItems, cloneStreamMessage, normalizeMessagesForProvid
 import { createChatTurnRuntime, ChatTurnSupersededError } from "../services/chatTurnRuntime";
 import { createAssistantStreamRuntime } from "../services/chatAssistantStreamRuntime";
 import { MCP_DISCOVERY_DEFINITIONS, shouldDiscoverMcpTools } from '../services/mcp/toolDiscovery';
-import type { AssistantStreamLaunch, PrepareAssistantStreamParams, FrozenToolCallContext, StreamContextDiagnosticsBaseline } from "../services/chatStreamContracts";
+import type { AssistantStreamLaunch, PrepareAssistantStreamParams, FrozenToolCallContext, StreamContextDiagnosticsBaseline, ChatRequestResources } from "../services/chatStreamContracts";
 import { create } from "zustand";
 import { persistToolApprovalRecovery, restoreToolApprovalRecovery, loadToolApprovalRecoveryMarkers, drainToolApprovalRecoveryWrites } from "../services/toolApprovalRecovery";
 import {
@@ -828,6 +833,8 @@ interface ChatStore {
     options?: { selectConversation?: boolean },
   ) => Promise<Conversation>;
   ensurePilotTaskConversation: (taskId: string, pilotActionToken: symbol) => Promise<Conversation>;
+  /** Copies a restored, read-only conversation into a new Chat and opens it. */
+  copyRestoredConversation: (conversationId: string) => Promise<Conversation>;
   beginArchitectPlanSwitch: (params?: { requestId?: number }) => void;
   invalidateConversationResolution: () => void;
   captureArchitectPlanRecovery: (planId: string, targetBranch: string) => (isCurrentActivation: () => boolean) => Promise<void>;
@@ -1022,6 +1029,7 @@ interface ChatStore {
   drainSubscriptions: () => Promise<void>;
   initialize: (lifecycle?: LifecycleContext) => Promise<void>;
   reconcileConversationAdmission: (conversationId: string) => Promise<{ runtime: string; handle: string }>;
+  withArchiveReadersPaused: <T>(operation: () => Promise<T>) => Promise<T>;
   initializeCritical: (lifecycle?: LifecycleContext) => Promise<void>;
   resumeAfterInitialize: (lifecycle?: LifecycleContext) => Promise<void>;
 }
@@ -1292,6 +1300,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const nativeImageCacheEntries = new Map<string, { bytes: number; count: number; images: MessageImageAttachment[] }>();
   const hydratedImageMessageIds = new Set<string>();
   const nativeImageLoadPromises = new Map<string, Promise<void>>();
+  let nativeImageScope = createLifecycleScope();
   const nativeImageCacheBytes = 64 * 1024 * 1024;
   const nativeImageCacheCount = 512;
   // Native IPC bounds one message to 8 MiB raw and at most ten images. Reserve
@@ -1316,6 +1325,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       delete next[id];
       return { messageImagesByMessageId: next };
     });
+    if (entry) releaseArchiveImages(entry.images);
   };
   const makeNativeImageRoom = (bytes: number, count: number, protectedIds: ReadonlySet<string>) => {
     for (const [id, entry] of nativeImageCacheEntries) {
@@ -1323,6 +1333,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         nativeImageCacheEntries.delete(id);
         nativeImageMessageIds.delete(id);
         hydratedImageMessageIds.delete(id);
+        releaseArchiveImages(entry.images);
       }
     }
     let total = Array.from(nativeImageCacheEntries.values()).reduce((sum, entry) =>
@@ -1341,17 +1352,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
     victims.forEach(evictNativeImages);
     return true;
   };
-  const cacheNativeImages = (id: string, images: MessageImageAttachment[]) => {
+  const cacheNativeImages = (id: string, images: MessageImageAttachment[], archive = false) => {
     const bytes = images.reduce((total, image) => total + 2 * image.dataUrl.length, 0);
     let previous = nativeImageCacheEntries.get(id);
     if (previous && get().messageImagesByMessageId[id] !== previous.images) {
       nativeImageCacheEntries.delete(id);
       nativeImageMessageIds.delete(id);
       hydratedImageMessageIds.delete(id);
+      releaseArchiveImages(previous.images);
       previous = undefined;
     }
     // Check the complete result before replacing any existing entry.
-    if (images.length > nativeImageReadCount || bytes > nativeImageReadBytes ||
+    if ((!archive && (images.length > nativeImageReadCount || bytes > nativeImageReadBytes)) ||
         (get().messageImagesByMessageId[id]?.length && !nativeImageMessageIds.has(id))) return false;
     if (!makeNativeImageRoom(Math.max(0, bytes - (previous?.bytes ?? 0)),
       Math.max(0, images.length - (previous?.count ?? 0)), new Set([id]))) return false;
@@ -1360,15 +1372,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
     nativeImageCacheEntries.set(id, { bytes, count: images.length, images });
     hydratedImageMessageIds.add(id);
     set(state => ({ messageImagesByMessageId: { ...state.messageImagesByMessageId, [id]: images } }));
+    if (previous && previous.images !== images) releaseArchiveImages(previous.images);
     return true;
   };
-  const resetNativeImageHydration = () => {
+  const resetNativeImageHydration = (archiveOnly = false) => {
+    const retired = nativeImageScope;
+    retired.stop();
+    nativeImageScope = createLifecycleScope();
     nativeImageLoadGeneration++;
-    for (const id of nativeImageCacheEntries.keys()) evictNativeImages(id);
-    nativeImageMessageIds.clear();
-    hydratedImageMessageIds.clear();
+    for (const [id, entry] of nativeImageCacheEntries) {
+      if (!archiveOnly || entry.images.some(isArchiveImage)) evictNativeImages(id);
+    }
+    if (!archiveOnly) {
+      nativeImageMessageIds.clear();
+      hydratedImageMessageIds.clear();
+    }
     nativeImageLoadPromises.clear();
     // Retired IPC reads keep their reservations until their results settle.
+    return retired.drain();
   };
   const messageLoadPromisesByConversationId = new Map<string, Promise<void>>();
   const checkpointMutationQueuesByConversationId = new Map<string, Promise<void>>();
@@ -1557,6 +1578,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     catch (error) { console.warn("Assistant stream failed while preparing conversation deletion:", error); }
     await forceRollbackPendingAgentCodeReplay(conversationId);
     clearPendingAgentCodeReplay(conversationId);
+    for (const [id, entry] of nativeImageCacheEntries) {
+      if (entry.images.some(image => archiveImageConversation(image) === conversationId)) evictNativeImages(id);
+    }
+    await retireArchiveReaders(conversationId);
   };
 
   const markPendingAgentCodeReplayLaunched = async (
@@ -2781,7 +2806,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     for (const message of [...messages].reverse()) {
       lifecycle?.assertActive();
       if (generation !== nativeImageLoadGeneration || deletedConversationIds.has(message.conversation_id)) return;
-      if (message.role !== 'user') continue;
+      if (message.role !== 'user' && !message.portable_history) continue;
       if (hydratedImageMessageIds.has(message.id)) {
         const entry = nativeImageCacheEntries.get(message.id);
         if (entry) {
@@ -2793,10 +2818,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       let pending = nativeImageLoadPromises.get(message.id);
       if (!pending) {
+        if (message.portable_history) {
+          const owner = nativeImageScope;
+          pending = owner.track((async () => {
+            const images = await loadArchiveMessageImages(message, owner);
+            try {
+              lifecycle?.assertActive(); owner.assertActive();
+              if (generation !== nativeImageLoadGeneration || deletedConversationIds.has(message.conversation_id) ||
+                  !get().messages.some(current => current.id === message.id && current.conversation_id === message.conversation_id)) {
+                releaseArchiveImages(images); return;
+              }
+              if (!images.length) hydratedImageMessageIds.add(message.id);
+              else if (!cacheNativeImages(message.id, images, true)) throw new Error('archive_image_cache_capacity');
+            } catch (error) { releaseArchiveImages(images); throw error; }
+          })());
+          nativeImageLoadPromises.set(message.id, pending);
+        } else {
         if (!makeNativeImageRoom(nativeImageReadBytes, nativeImageReadCount, visibleIds)) continue;
         nativeImageReservedBytes += nativeImageReadBytes;
         nativeImageReservedCount += nativeImageReadCount;
-        pending = (async () => {
+        pending = nativeImageScope.track((async () => {
           let reserved = true;
           try {
             const images = await tauriIpc.dbPilotMessageImages(message.id);
@@ -2818,11 +2859,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
               nativeImageReservedCount -= nativeImageReadCount;
             }
           }
-        })();
+        })());
         nativeImageLoadPromises.set(message.id, pending);
+        }
       }
-      try { await pending; } catch {
+      try { await pending; } catch (error) {
         // A failed native read preserves legacy images and can be retried.
+        if (message.portable_history && !isLifecycleStopped(error) &&
+            generation === nativeImageLoadGeneration && !deletedConversationIds.has(message.conversation_id)) {
+          set({ lastError: `${i18n.t('chat.archive.resources')}: ${toServiceError(error).message}` });
+        }
       } finally {
         if (nativeImageLoadPromises.get(message.id) === pending) nativeImageLoadPromises.delete(message.id);
       }
@@ -3567,7 +3613,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const stopSubscriptions = () => {
     const retired = subscriptionScope;
-    if (!retired) return;
+    set({ liveStreamContextEstimatesByConversationId: {} });
+    const imageRetirement = resetNativeImageHydration();
+    const archiveRetirement = retireArchiveReaders();
+    if (!retired) {
+      subscriptionRetirement = Promise.all([subscriptionRetirement, imageRetirement, archiveRetirement]).then(() => undefined);
+      return;
+    }
     subscriptionScope = null;
     providerSelectionUnsubscribe = null;
     contextSelectionUnsubscribe = null;
@@ -3587,7 +3639,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         queueRuntimeEpoch += 1;
         queueRuntime = undefined;
         queueRuntimeLoading = undefined;
-        subscriptionRetirement = Promise.all([subscriptionRetirement, retired.drain(), queueRetirement, questionnaireRetirement, composerRetirement.then(() => retireChatBrowser())]).then(() => undefined);
+        subscriptionRetirement = Promise.all([subscriptionRetirement, imageRetirement, archiveRetirement, retired.drain(), queueRetirement, questionnaireRetirement, composerRetirement])
+          .then(() => retireChatBrowser());
       }
     }
   };
@@ -4706,6 +4759,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       get().conversationCompactionStatusById[params.conversationId] ?? null;
     let providerAdmission: ProviderAdmission | undefined;
     let compactionFailure: unknown;
+    let requestResources: ChatRequestResources | undefined;
     try {
       const compactionId = crypto.randomUUID();
       providerAdmission = await beginChatAdmission(params.conversationId, compactionId, compactionId, 'compaction');
@@ -4737,6 +4791,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         allowedToolIds,
         internalAgentProfile,
       );
+      requestResources = preparedRequest.resources;
       const { footprintFields } = getSelectedModelContext(
         params.nextProviderId,
         params.nextModelId,
@@ -4878,6 +4933,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       setConversationCompactionStatus(params.conversationId, previousStatus);
       set({ lastError: normalized.message });
     } finally {
+      requestResources?.release();
       if (providerAdmission?.kind === 'globalChat') {
         try {
           await tauriIpc.chatAdmissionFinishCompaction(providerAdmission.context, params.conversationId,
@@ -5886,6 +5942,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return ref.agsdl ? { id: ref.id, kind: ref.kind, title: ref.title, data: ref.agsdl } : null;
     }
     if (ref.kind === "conversation") {
+      if (ref.archive) return { id: ref.id, kind: 'conversation', title: ref.title,
+        subtitle: ref.subtitle, data: { conversationId: ref.archive.conversationId, archive: structuredClone(ref.archive) } };
       if (!ref.conversationId || ref.conversationId !== ref.id) return null;
       const source = get().conversations.find((candidate) => candidate.id === ref.conversationId);
       const target = get().conversations.find((candidate) => candidate.id === conversationId);
@@ -6345,14 +6403,41 @@ export const useChatStore = create<ChatStore>((set, get) => {
     riskLevelOverride?: ToolRiskLevel,
     architectPlanOverride?: ArchitectPlanRecord | null,
   ) => {
-    return prepareChatMessages({
-      conversationId, allowedToolIds, internalAgentProfile, modeAtSend, agentTypeAtSend,
-      messageWithImagesId, skillPermissionSnapshot, executionContextOverride,
-      riskLevelOverride, architectPlanOverride,
-    }, { ...messagePreparationPorts, orderedMessages: id => {
-      const excluded = queueRuntime?.excludedDirectionMessageIds(id, messageWithImagesId);
-      return getOrderedConversationMessages(id).filter(message => !excluded?.has(message.id));
-    } });
+    // Admission precedes the shared preparer's image/codec copies. Its callers
+    // transfer this owner to the stream or release it after physical completion.
+    const available = get().messageImagesByMessageId;
+    const history = getOrderedConversationMessages(conversationId);
+    const messageIds = new Set(history.map(message => message.id));
+    const admitted = await prepareArchiveImages(Object.fromEntries(
+      Object.entries(available).filter(([id]) => messageIds.has(id)),
+    ), undefined, history);
+    let context: Awaited<ReturnType<typeof prepareArchiveContext>>;
+    try { context = await prepareArchiveContext(history); }
+    catch (error) { admitted.release(); throw error; }
+    const hasArchiveResources = context.text.size > 0 ||
+      Object.values(admitted.images).some(attachments => attachments.some(isArchiveImage));
+    const resources = hasArchiveResources
+      ? ownArchiveRequestResources(() => { context.release(); admitted.release(); })
+      : undefined;
+    try {
+      const prepared = await prepareChatMessages({
+        conversationId, allowedToolIds, internalAgentProfile, modeAtSend, agentTypeAtSend,
+        messageWithImagesId, skillPermissionSnapshot, executionContextOverride,
+        riskLevelOverride, architectPlanOverride,
+      }, {
+        ...messagePreparationPorts,
+        messageImages: () => admitted.images,
+        archiveContext: id => context.text.get(id) ?? [],
+        orderedMessages: id => {
+          const excluded = queueRuntime?.excludedDirectionMessageIds(id, messageWithImagesId);
+          return getOrderedConversationMessages(id).filter(message => !excluded?.has(message.id));
+        },
+      });
+      return { ...prepared, resources };
+    } catch (error) {
+      resources?.release();
+      throw error;
+    }
   };
 
   const buildLiveStreamDiagnosticsPayload = (
@@ -6529,7 +6614,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const isLiveStreamEstimateCurrent = (
     conversationId: string,
-    liveEstimate: LiveStreamContextEstimate,
+    liveEstimate: Pick<LiveStreamContextEstimate, 'sessionId' | 'assistantMessageId' | 'version'>,
   ): boolean => {
     const runtime = getConversationRuntimeSnapshot(
       get().conversationRuntimeById,
@@ -6584,7 +6669,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const buildLiveStreamContextDiagnostics = async (
     conversationId: string,
   ): Promise<{
-    liveEstimate: LiveStreamContextEstimate;
+    liveEstimate: Pick<LiveStreamContextEstimate, 'sessionId' | 'assistantMessageId' | 'version'>;
     diagnostics: ConversationContextDiagnostics;
   } | null> => {
     const liveContext = resolveActiveLiveStreamDiagnosticsPayload(conversationId);
@@ -6592,7 +6677,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return null;
     }
     const { liveEstimate, payload, runtime } = liveContext;
-
+    const resources = payload.baseline.resources?.retain();
+    try {
     const budgetPolicy = await loadContextBudgetPolicy();
     if (!isLiveStreamEstimateCurrent(conversationId, liveEstimate)) {
       return null;
@@ -6647,7 +6733,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             : "idle";
 
     return {
-      liveEstimate,
+      liveEstimate: { sessionId: liveEstimate.sessionId, assistantMessageId: liveEstimate.assistantMessageId, version: liveEstimate.version },
       diagnostics: buildContextDiagnosticsFromFootprint({
         conversationId,
         providerId: payload.baseline.providerId,
@@ -6668,6 +6754,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         repositoryInstructionIssues: payload.baseline.repositoryInstructionIssues,
       }),
     };
+    } finally { resources?.release(); }
   };
 
   const recalcConversation = (
@@ -8677,6 +8764,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         selectedReasoningEffort: params.reasoningEffort ?? null, isLoading: false, providerConfigs: [] },
     }), ownerSessionId: params.sessionId, ownerTurnId: params.turnId });
     let assistantMessageId: string | null = null;
+    let preparedResources: AssistantStreamLaunch["resources"];
+    let resourcesTransferred = false;
     const agentTypeAtSend = params.agentTypeAtSend;
     const cleanupCancelledAssistantPlaceholder = async (
       placeholderMessageId: string,
@@ -8736,6 +8825,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerSupportsNativeToolCalling:
           params.providerSupportsNativeToolCalling,
       });
+      preparedResources = streamLaunch.resources;
       if (!isCurrentPreparation()) {
         return false;
       }
@@ -8782,7 +8872,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         await params.replayRecovery.onLaunched();
       }
 
-      await startAssistantStream({
+      const started = startAssistantStream({
+        resources: streamLaunch.resources,
         providerAdmission: params.providerAdmission,
         sessionId: params.sessionId,
         assistantMessage,
@@ -8828,6 +8919,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
           : undefined,
       });
+      resourcesTransferred = true;
+      await started;
       return true;
     } catch (error) {
       if (error instanceof ChatTurnSupersededError && !isCurrentPreparation()) return false;
@@ -8843,6 +8936,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         error,
       );
       throw error;
+    } finally {
+      if (!resourcesTransferred) preparedResources?.release();
     }
   };
 
@@ -8917,6 +9012,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     let providerAdmission: ProviderAdmission | undefined;
     let compactionFailure: unknown;
+    let requestResources: ChatRequestResources | undefined;
     let outcome: ManualCompactionResult | undefined;
     try {
       const compactionId = crypto.randomUUID();
@@ -8973,6 +9069,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         allowedToolIds,
         internalAgentProfile,
       );
+      requestResources = preparedRequest.resources;
       const result = await compactConversationMessages({
         providerAdmission,
         conversationId,
@@ -9017,6 +9114,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       set({ lastError: normalized.message });
     } finally {
+      requestResources?.release();
       if (
         get().conversationCompactionStatusById[conversationId]
         === admissionCompactionStatus
@@ -9068,6 +9166,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const isStale = () =>
       contextDiagnosticsRequestIds.get(conversationId) !== requestId;
 
+    let requestResources: ChatRequestResources | undefined;
     try {
       if (mode === "live_stream") {
         const liveDiagnostics =
@@ -9116,6 +9215,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         allowedToolIds,
         internalAgentProfile,
       );
+      requestResources = preparedRequest.resources;
       const toolDefinitions = getToolDefinitionsForIds(allowedToolIds);
       const currentCompactionState = await getConversationCompactionState(
         conversationId,
@@ -9251,7 +9351,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         error: normalized.message,
       });
       publishConversationContextDiagnostics(conversationId, diagnostics);
-    }
+    } finally { requestResources?.release(); }
   };
 
   const runScheduledLiveContextDiagnosticsRefresh = (conversationId: string) => {
@@ -9334,12 +9434,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       const version = params.snapshot.version;
       // The runtime owns the isolated baseline. Reuse it only within this generation.
-      const baseline = params.baseline ?? (
-        previous?.sessionId === params.sessionId &&
-        previous.assistantMessageId === params.assistantMessageId
+      const baseline = params.baseline
+        ? { ...params.baseline, resources: params.baseline.resources?.retain() }
+        : previous?.sessionId === params.sessionId &&
+            previous.assistantMessageId === params.assistantMessageId
           ? previous.baseline
-          : undefined
-      );
+          : undefined;
       didRecord = true;
       return {
         liveStreamContextEstimatesByConversationId: {
@@ -12278,6 +12378,44 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
     },
 
+    copyRestoredConversation: async (conversationId) => {
+      const source = get().conversations.find(conversation => conversation.id === conversationId);
+      if (!source) throw new Error('Conversation not found');
+      const conversationById = new Map(get().conversations.map(conversation => [conversation.id, conversation]));
+      const messages = (await tauriIpc.listMessages(conversationId))
+        .map(message => mapDbMessageToChatMessage(message, conversationById));
+      const copy = await tauriIpc.chatAdmissionCopyRestored(conversationId,
+        i18n.t('chat.restoredCopy.title', '{{title}} (copy)', { title: source.title }));
+      try {
+        const images = await copyRestoredImages(messages, copy.messages, {
+          cached: id => get().messageImagesByMessageId[id],
+          pilot: async id => {
+            // The browser runtime reads no native Pilot images, here as in hydration.
+            if (isBrowserRuntimeBridgeEnabled()) return [];
+            const message = messages.find(item => item.id === id)!;
+            return (await tauriIpc.dbPilotMessageImages(id)).map(image => ({ id: image.attachmentId,
+              mimeType: image.mimeType, dataUrl: image.readyDataURL, createdAt: message.timestamp }));
+          },
+          archive: message => loadArchiveMessageImages(message),
+          release: releaseArchiveImages,
+        });
+        if (Object.keys(images).length) {
+          const next = { ...get().messageImagesByMessageId, ...images };
+          if (!persistMessageImageCache(next)) throw new Error('restored_copy_images_not_saved');
+          set({ messageImagesByMessageId: next });
+        }
+      } catch (error) {
+        // Never leave a copy without the images its history showed.
+        await tauriIpc.deleteConversation(copy.conversation.id).catch(() => undefined);
+        throw error;
+      }
+      const conversation = mapDbConversationToConversation(copy.conversation);
+      set(state => ({ conversations: [conversation, ...state.conversations] }));
+      conversationResolutionGeneration += 1;
+      await get().selectConversation(conversation.id);
+      return conversation;
+    },
+
     ensurePilotTaskConversation: async (taskId, pilotActionToken) => {
       assertPilotTaskActionAllowed(taskId, pilotActionToken);
       const existing = getLatestConversationForTask(taskId);
@@ -14033,6 +14171,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           timeline: (phase, context) => devLogger.info("Provider stream timeline", { phase, ...context }),
         },
         stream: {
+          releasePrepared: (launch: Awaited<ReturnType<typeof prepareAssistantStreamLaunch>>) => launch.resources?.release(),
           prepare: async (request) => {
             const current = turnRuntime.read(request.conversationId);
             if (!(pilotTarget && payload.persistedUserMessage)) continuationIntents.set(request.conversationId, { ...captureQueuedSubmission(
@@ -14130,6 +14269,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const assistantMessage = findChatMessageInState(get(), messageId);
       if (
         !assistantMessage ||
+        assistantMessage.portable_history ||
         assistantMessage.role !== "assistant" ||
         assistantMessage.persistence_state !== "failed"
       ) {
@@ -14393,6 +14533,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const message = "The message to edit is no longer available.";
         set({ lastError: message, sendState: "error" });
         throw buildSendError(message);
+      }
+      if (target.portable_history) {
+        throw buildSendError("Imported history is read-only. Start a new message to continue.");
       }
       assertPilotConversationActionAllowed(target.conversation_id);
       if (!options?.skipAgentCodeReplayCheck) {
@@ -14839,7 +14982,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     reconcileConversationAdmission,
+    withArchiveReadersPaused: async operation => {
+      const scope = subscriptionScope;
+      try {
+        return await withArchiveReadersPaused(() => resetNativeImageHydration(true), operation);
+      } finally {
+        if (scope?.isActive() && subscriptionScope === scope) {
+          const { messages, selectedConversationId } = get();
+          const visibleArchive = messages.filter(message =>
+            message.conversation_id === selectedConversationId && message.portable_history,
+          );
+          if (visibleArchive.length) void hydrateNativeMessageImages(visibleArchive, scope).catch(() => undefined);
+        }
+      }
+    },
     initializeCritical: async (lifecycle) => {
+      lifecycle?.assertActive();
+      await activateArchiveReaders();
       lifecycle?.assertActive();
       // Retire waiters, then drain in-flight writes before reading recovery data.
       const retiredConversationIds = Object.keys(get().conversationRuntimeById);
@@ -14984,4 +15143,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       lifecycle?.assertActive();
     },
   };
+});
+
+// Store replacement is the last owner of diagnostic copies, including all
+// clear/restore/profile paths. In-flight diagnostics and streams retain theirs.
+useChatStore.subscribe((state, previous) => {
+  if (state.liveStreamContextEstimatesByConversationId === previous.liveStreamContextEstimatesByConversationId) return;
+  for (const [id, estimate] of Object.entries(previous.liveStreamContextEstimatesByConversationId)) {
+    if (estimate?.baseline?.resources !== state.liveStreamContextEstimatesByConversationId[id]?.baseline?.resources) {
+      estimate?.baseline?.resources?.release();
+    }
+  }
 });

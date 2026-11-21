@@ -32,6 +32,28 @@ const fixture = () => {
 };
 
 describe("shared chat message preparation", () => {
+  it("rebuilds historical images when a restored copy has no provider items", async () => {
+    const f = fixture();
+    f.messages.push({ ...f.user, id: "follow-up", content: "What was in the image?" });
+    const dataUrl = "data:image/png;base64,AQID";
+    f.ports.messageImages = () => ({
+      user: [{ id: "restored-image", dataUrl, mimeType: "image/png", createdAt: f.user.timestamp }],
+    });
+
+    const result = await f.run();
+
+    expect(result.preparedMessages[0]?.content).toEqual([
+      { type: "text", text: f.user.content },
+      { type: "image_url", image_url: { url: dataUrl } },
+    ]);
+    expect(result.preparedMessages[0]?.provider_input_items).toEqual([
+      { type: "message", role: "user", content: [
+        { type: "input_text", text: f.user.content },
+        { type: "input_image", image_url: dataUrl },
+      ] },
+    ]);
+  });
+
   it("bundles the real core and secret forms for Bun without desktop, UI, IPC or transport imports", async () => {
     const build = await Bun.build({
       entrypoints: [import.meta.dir + "/chatMessagePreparation.ts", import.meta.dir + "/macroPilot/secretForms.ts"],

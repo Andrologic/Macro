@@ -7,7 +7,7 @@ import { TaskCompletionHost, TASK_COMPLETION_OPERATIONS, type TaskCompletionSour
 import { ConversationCaptures, ConversationCaptureError, type ConversationRef } from './conversationCaptures';
 import { type TextPolicy, utf8Bytes } from './conversationText';
 import { createReviewCaptureService, type ReviewCaptureInfo, type ReviewCaptureRequest, type ReviewCaptureSource } from './reviewCapture';
-import { CONVERSATION_READ_OPERATIONS, validateContentIntegrity, validateContentMessage, validateContentResponse, type ContentHostTelemetry, type ContentCapture, type ContentDelivery, type ContentDeliveryResult, type ContentError, type ContentEvent, type ContentRequest, type ContentReviewRef } from './contentProtocol';
+import { CONVERSATION_READ_OPERATIONS, validateContentIntegrity, validateContentMessage, validateContentResponse, type ContentModelCatalog, type ContentHostTelemetry, type ContentCapture, type ContentDelivery, type ContentDeliveryResult, type ContentError, type ContentEvent, type ContentRequest, type ContentReviewRef } from './contentProtocol';
 import type { KernelStorage } from './kernel';
 import { PilotError, stableJson } from './protocol';
 
@@ -36,6 +36,7 @@ export interface ContentHostDependencies {
   conversationManagement?: ConversationManager;
   interactions?: { source: InteractionSource; storage: KernelStorage };
   taskCompletion?: { source: TaskCompletionSource; storage: KernelStorage };
+  models?(policy: TextPolicy): ContentModelCatalog['models'];
   machines?: MachineResourceSource;
   files?: AttachmentFileSource;
   reflections?: ReflectionSource;
@@ -47,7 +48,7 @@ class ContentHostError extends Error { constructor(readonly code: ContentError['
 async function hash(value: unknown): Promise<string> {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(stableJson(value)))), b => b.toString(16).padStart(2, '0')).join('');
 }
-const operations = new Set(['projects.list', 'conversations.list', 'conversation.read', 'review.get', 'diff.files', 'diff.read', 'review.verdict']);
+const operations = new Set(['instance.models', 'projects.list', 'conversations.list', 'conversation.read', 'review.get', 'diff.files', 'diff.read', 'review.verdict']);
 
 /** One lifecycle owner. Native capture handles and paths never enter the journal or wire response. */
 export class ContentHost {
@@ -336,7 +337,12 @@ export class ContentHost {
         const readingPolicy = this.policyKey;
         let result: unknown;
         let machineContext: string | undefined;
-        if (request.operation === REFLECTION_OPERATION) {
+        if (request.operation === 'instance.models') {
+          if (!this.deps.models || !delivery.capabilities?.includes('instance-models-1')) failure('content_unavailable');
+          await authorizeNow();
+          result = { instance_id: this.deps.instanceId, observed_at: new Date(this.now()).toISOString(),
+            expires_at: new Date(Math.min(this.now() + 30000, Date.parse(delivery.expires_at))).toISOString(), models: this.deps.models!(await this.policy()) };
+        } else if (request.operation === REFLECTION_OPERATION) {
           if (!this.reflections) failure('content_unavailable');
           await authorizeNow();
           result = await this.reflections!.handle(delivery,await this.policy(),async () => {
@@ -452,7 +458,7 @@ export class ContentHost {
         if (FILE_OPERATIONS.has(request.operation)) this.fileEmissions.set(response as object, readingPolicy);
         if (MACHINE_OPERATIONS.has(request.operation)) this.machineEmissions.set(response as object, { policy: readingPolicy, context: machineContext,
           telemetry: request.operation === 'instance.telemetry' ? result as ContentHostTelemetry : undefined });
-        if (request.operation !== REFLECTION_OPERATION && !FILE_OPERATIONS.has(request.operation) && !MACHINE_OPERATIONS.has(request.operation) && request.operation !== 'review.verdict' && !CONVERSATION_OPERATIONS.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !INTERACTION_OPERATIONS.has(request.operation) && !(request.operation === 'projects.list' && request.body.known_revision !== undefined)) {
+        if (request.operation !== 'instance.models' && request.operation !== REFLECTION_OPERATION && !FILE_OPERATIONS.has(request.operation) && !MACHINE_OPERATIONS.has(request.operation) && request.operation !== 'review.verdict' && !CONVERSATION_OPERATIONS.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !INTERACTION_OPERATIONS.has(request.operation) && !(request.operation === 'projects.list' && request.body.known_revision !== undefined)) {
           this.replies.set(replyKey, { digest: requestDigest, expires: Math.min(Date.parse(delivery.expires_at), this.now() + 300_000), response });
           if (this.memoryBytes() + utf8Bytes(this.persisted ?? '') * 2 > CONTENT_BUDGET.host) { this.replies.delete(replyKey); failure('resource_limit'); }
         }
@@ -489,6 +495,11 @@ export class ContentHost {
   private async validateConversationResult(delivery: ContentDelivery, result: unknown): Promise<void> {
     const request = delivery.request;
     if (!CONVERSATION_READ_OPERATIONS.has(request.operation)) return;
+    if (request.operation === 'instance.models') {
+      const catalog = result as { expires_at: string; models: ContentModelCatalog['models'] };
+      if (Date.parse(catalog.expires_at) <= this.now() || !this.deps.models || stableJson(catalog.models) !== stableJson(this.deps.models(await this.policy()))) failure('stale_revision');
+      return;
+    }
     if (CONVERSATION_OPERATIONS.has(request.operation)) {
       if (!this.deps.conversationManagement) failure('content_unavailable');
       await this.deps.conversationManagement!.validateEmission(delivery, result, await this.policy());
