@@ -63,7 +63,6 @@ mock.module('../../services/projectOpeners', () => ({
     selectedAppIdsByAction: { editor: null, terminal: null, files: null },
   })),
   openProjectInExternalApp: mock(async () => undefined),
-  PROJECT_OPEN_ACTIONS: ['editor', 'terminal', 'files'],
   shouldRenderProjectOpenAction: (...args: unknown[]) =>
     (shouldRenderProjectOpenActionMock as (...callArgs: unknown[]) => unknown)(...args),
 }));
@@ -209,7 +208,7 @@ describe('ProjectNavigator', () => {
 
   it('closes only the settings dialog and returns focus to the project menu trigger', async () => {
     const { ProjectNavigator } = await import('./ProjectNavigator');
-    const { ProjectGitFlowModal } = await import('./ProjectGitFlowModal');
+    const { ProjectAccessModal } = await import('./ProjectAccessModal');
     const project = { ...makeProject('project-api', 'API'), gitSetupState: 'ready' as const };
     const originalActions = { getProjectById: useAppStore.getState().getProjectById, openProjectGitFlowModal: useAppStore.getState().openProjectGitFlowModal, closeProjectGitFlowModal: useAppStore.getState().closeProjectGitFlowModal };
     const closeSettings = mock(() => useAppStore.setState({ projectGitFlowModalProjectId: null }));
@@ -219,7 +218,7 @@ describe('ProjectNavigator', () => {
       openProjectGitFlowModal: id => useAppStore.setState({ projectGitFlowModalProjectId: id }),
       closeProjectGitFlowModal: closeSettings,
     });
-    await act(async () => root?.render(<><ProjectNavigator isOpen onClose={closeMock} /><ProjectGitFlowModal /></>));
+    await act(async () => root?.render(<><ProjectNavigator isOpen onClose={closeMock} /><ProjectAccessModal /></>));
     await openProjectMenu(project.id);
     const trigger = document.body.querySelector(`[data-project-id="${project.id}"] [data-project-nav-menu="true"]`)!;
     await act(async () => findButton('Project settings').click());
@@ -308,7 +307,7 @@ describe('ProjectNavigator', () => {
     expect(standaloneProject!.className).toContain('bg-primary/10');
   });
 
-  it('shows quick project actions only on row hover, not focus', async () => {
+  it('offers only the file explorer quick action and shows it on row hover', async () => {
     shouldRenderProjectOpenActionMock = mock(() => true);
 
     await renderNavigator();
@@ -319,6 +318,8 @@ describe('ProjectNavigator', () => {
       candidate.className.includes('group-hover:opacity-100')
     );
     expect(actions).toBeDefined();
+    expect(Array.from(actions!.querySelectorAll('button')).map(button => button.title))
+      .toEqual(['Open in file explorer']);
     expect(actions!.className).toContain('pointer-events-none');
     expect(actions!.className).toContain('group-hover:pointer-events-auto');
     expect(actions!.className).toContain('group-hover:opacity-100');

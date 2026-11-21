@@ -1405,7 +1405,7 @@ Macro doit exposer un contrôle utilisateur sur au moins les dimensions suivante
 - disponibilité des outils par mode
 - activation, confiance et scripts des skills
 - niveau d'automatisation de l'implémentation
-- configuration du workflow Git
+- mode d’accès des projets et préparation de leur stockage dans Git
 - préférences d'apparence et d'interaction
 - raccourcis
 - prompts et cadrage du comportement système

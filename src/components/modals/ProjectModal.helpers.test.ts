@@ -5,29 +5,19 @@ import type {
   ProjectGroup,
 } from '../../types';
 import {
-  getProjectSetupDevelopExplanation,
-  getProjectSetupMainlineExplanation,
-  getProjectSetupPromptDescription,
-  getProjectSetupPromptTitle,
-  type ProjectSetupPromptDetails,
-} from './projectGitSetup';
-import {
   advanceProjectSetupPrompt,
-  buildDeclinedProjectSetupPayload,
-  buildPendingGitFlowConfirmation,
   buildPendingProjectCreation,
   buildPendingProjectSetupPrompt,
   buildProjectWithGitSetupPayload,
   findProjectByPath,
   getProjectCreationErrorMessage,
   getAcceptedActionsAfterConfirmingPrompt,
-  getAcceptedActionsAfterDecliningPrompt,
+  getDetectedProjectBranchSettings,
   hasDuplicateSubProjectName,
   inferProjectNameFromPath,
   isValidProjectFolderName,
   joinProjectPath,
   normalizeProjectPath,
-  shouldConfirmDetectedGitFlow,
   slugifyProjectFolderName,
   type PendingProjectCreation,
 } from './ProjectModal.helpers';
@@ -48,16 +38,6 @@ const buildProject = (overrides: Partial<Project>): Project => ({
   },
   ...overrides,
 });
-
-const testTranslate = (
-  _key: string,
-  fallback: string,
-  options?: Record<string, string>
-): string =>
-  Object.entries(options ?? {}).reduce(
-    (text, [key, value]) => text.replaceAll(`{{${key}}}`, value),
-    fallback
-  );
 
 const buildProjectGroup = (overrides: Partial<ProjectGroup>): ProjectGroup => ({
   id: 'group-id',
@@ -183,7 +163,7 @@ describe('ProjectModal helpers', () => {
     });
   });
 
-  it('prepares branch confirmation state from detected Git workflow metadata', () => {
+  it('uses detected branch roles for an unconventional repository', () => {
     const detection = buildDetection({
       repoDetected: true,
       branches: ['release/v1'],
@@ -194,11 +174,7 @@ describe('ProjectModal helpers', () => {
       setupState: 'needs_branch_confirmation',
     });
 
-    expect(shouldConfirmDetectedGitFlow(detection)).toBe(true);
-    expect(buildPendingGitFlowConfirmation(createPayload, detection)).toEqual({
-      createPayload,
-      branches: ['release/v1', 'integration', 'production'],
-      currentBranch: 'integration',
+    expect(getDetectedProjectBranchSettings(detection)).toMatchObject({
       mainBranch: 'production',
       baseBranch: 'integration',
     });
@@ -242,40 +218,14 @@ describe('ProjectModal helpers', () => {
     });
   });
 
-  it('keeps mainline settings and accepted actions when declining develop creation', () => {
+  it('skips a development-branch recommendation for an existing repository', () => {
     const detection = buildDetection({
       repoDetected: true,
       setupState: 'single_main_only',
       recommendedActionSequence: ['create_develop'],
       currentBranch: 'main',
     });
-    const promptState = buildPendingProjectSetupPrompt(createPayload, 'C:/work/app', detection)!;
-    const prompt = promptState.prompts[0];
 
-    expect(buildDeclinedProjectSetupPayload(createPayload, prompt).gitFlowSettings).toMatchObject({
-      mainBranch: 'main',
-      baseBranch: 'main',
-    });
-    expect(getAcceptedActionsAfterDecliningPrompt(promptState, prompt)).toEqual([]);
-  });
-
-  it('centralizes Git setup prompt wording around generic Git workflows', () => {
-    const prompt: ProjectSetupPromptDetails = {
-      kind: 'create_develop',
-      projectPath: 'C:/work/app',
-      mainBranch: 'trunk',
-      resolvedRepoRootPath: 'C:/work/app',
-      repoResolution: 'selected_folder',
-      initialCommitPreviewPaths: [],
-      initialCommitPreviewCount: 0,
-      initialCommitRiskFlags: [],
-    };
-
-    expect(getProjectSetupPromptTitle(testTranslate, prompt)).toBe('Create develop?');
-    expect(getProjectSetupPromptDescription(testTranslate, prompt, 'project_creation')).toContain(
-      'separate integration branch'
-    );
-    expect(getProjectSetupMainlineExplanation(testTranslate, prompt)).toContain('trunk');
-    expect(getProjectSetupDevelopExplanation(testTranslate, prompt)).not.toMatch(/Git[- ]Flow/i);
+    expect(buildPendingProjectSetupPrompt(createPayload, 'C:/work/app', detection)).toBeNull();
   });
 });

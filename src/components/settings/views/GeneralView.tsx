@@ -4,13 +4,9 @@ import { useTranslation } from 'react-i18next';
 import { changeLanguage, resolveSupportedLanguage } from '../../../i18n';
 import { SUPPORTED_LANGUAGE_METADATA } from '../../../i18n/languages';
 import {
-    getEmptyProjectOpenSelection,
     loadProjectOpenSettings,
     saveProjectOpenAppPreference,
-    type ProjectOpenAction,
-    type ProjectOpenAppCatalog,
     type ProjectOpenAppOption,
-    type ProjectOpenAppSelection,
 } from '../../../services/projectOpeners';
 import {
     CHAT_MAX_TURNS_DEFAULT,
@@ -32,14 +28,8 @@ import { UpdateChannelSettings } from './UpdateChannelSettings';
 export const GeneralView: React.FC = () => {
     const { t, i18n } = useTranslation();
     const selectedLanguage = resolveSupportedLanguage(i18n.resolvedLanguage || i18n.language);
-    const [projectOpenApps, setProjectOpenApps] = useState<ProjectOpenAppCatalog>({
-        editor: [],
-        terminal: [],
-        files: [],
-    });
-    const [selectedProjectOpenApps, setSelectedProjectOpenApps] = useState<ProjectOpenAppSelection>({
-        ...getEmptyProjectOpenSelection(),
-    });
+    const [fileExplorerApps, setFileExplorerApps] = useState<ProjectOpenAppOption[]>([]);
+    const [fileExplorerApp, setFileExplorerApp] = useState('none');
     const [isLoadingProjectOpenApps, setIsLoadingProjectOpenApps] = useState(true);
     const [chatMaxTurns, setChatMaxTurns] = useState(CHAT_MAX_TURNS_DEFAULT);
     const [chatMaxTurnsDraft, setChatMaxTurnsDraft] = useState(
@@ -47,11 +37,7 @@ export const GeneralView: React.FC = () => {
     );
     const chatMaxTurnsTouchedRef = useRef(false);
     const chatMaxTurnsSaveRevisionRef = useRef(0);
-    const projectOpenSaveRevisionsRef = useRef<Record<ProjectOpenAction, number>>({
-        editor: 0,
-        terminal: 0,
-        files: 0,
-    });
+    const fileExplorerSaveRevisionRef = useRef(0);
     const [isChatMaxTurnsEnabled, setIsChatMaxTurnsEnabled] = useState(true);
 
     const reportSaveFailure = (error: unknown) => {
@@ -77,21 +63,15 @@ export const GeneralView: React.FC = () => {
         }
     };
 
-    const persistProjectOpenApp = async (
-        action: ProjectOpenAction,
-        nextValue: string,
-        previousValue: string
-    ) => {
-        const revision = projectOpenSaveRevisionsRef.current[action] + 1;
-        projectOpenSaveRevisionsRef.current[action] = revision;
+    const changeFileExplorerApp = async (nextValue: string) => {
+        const previousValue = fileExplorerApp;
+        const revision = ++fileExplorerSaveRevisionRef.current;
+        setFileExplorerApp(nextValue);
         try {
-            await saveProjectOpenAppPreference(action, nextValue);
+            await saveProjectOpenAppPreference('files', nextValue);
         } catch (error) {
-            if (projectOpenSaveRevisionsRef.current[action] === revision) {
-                setSelectedProjectOpenApps((current) => ({
-                    ...current,
-                    [action]: previousValue,
-                }));
+            if (fileExplorerSaveRevisionRef.current === revision) {
+                setFileExplorerApp(previousValue);
             }
             reportSaveFailure(error);
         }
@@ -107,8 +87,8 @@ export const GeneralView: React.FC = () => {
                     return;
                 }
 
-                setProjectOpenApps(settings.appsByAction);
-                setSelectedProjectOpenApps(settings.selectedAppIdsByAction);
+                setFileExplorerApps(settings.appsByAction.files);
+                setFileExplorerApp(settings.selectedAppIdsByAction.files);
             } finally {
                 if (!cancelled) {
                     setIsLoadingProjectOpenApps(false);
@@ -250,32 +230,6 @@ export const GeneralView: React.FC = () => {
         );
     };
 
-    const renderProjectOpenSelect = (
-        action: ProjectOpenAction,
-        label: string,
-        description: string
-    ) => (
-        <div className="space-y-1.5">
-            <label className="text-xs font-medium text-foreground">{label}</label>
-            <Select
-                value={selectedProjectOpenApps[action]}
-                disabled={isLoadingProjectOpenApps}
-                onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
-                    const nextValue = event.target.value;
-                    const previousValue = selectedProjectOpenApps[action];
-                    setSelectedProjectOpenApps((current) => ({
-                        ...current,
-                        [action]: nextValue,
-                    }));
-                    void persistProjectOpenApp(action, nextValue, previousValue);
-                }}
-            >
-                {renderProjectOpenOptions(projectOpenApps[action])}
-            </Select>
-            <p className="text-[11px] text-muted-foreground">{description}</p>
-        </div>
-    );
-
     return (
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <section className="space-y-4">
@@ -369,44 +323,21 @@ export const GeneralView: React.FC = () => {
                             </div>
                         </div>
                     </div>
-                    <div className="space-y-4">
-                        <div className="space-y-1">
-                            <label className="text-sm font-medium text-foreground">
-                                {t('settings.openSubprojectsWith', 'Open projects with')}
-                            </label>
-                            <p className="text-xs text-muted-foreground">
-                                {t(
-                                    'settings.openSubprojectsWithDesc',
-                                    'Choose which detected app each quick action should use in the project modal.'
-                                )}
-                            </p>
-                        </div>
-                        <div className="grid grid-cols-1 gap-4">
-                            {renderProjectOpenSelect(
-                                'editor',
-                                t('settings.codeEditorApp', 'Code editor'),
-                                t(
-                                    'settings.codeEditorAppDesc',
-                                    'Used when clicking the code editor quick action for a project.'
-                                )
-                            )}
-                            {renderProjectOpenSelect(
-                                'terminal',
-                                t('settings.terminalApp', 'Terminal'),
-                                t(
-                                    'settings.terminalAppDesc',
-                                    'Used when clicking the terminal quick action for a project.'
-                                )
-                            )}
-                            {renderProjectOpenSelect(
-                                'files',
-                                t('settings.fileExplorerApp', 'File explorer'),
-                                t(
-                                    'settings.fileExplorerAppDesc',
-                                    'Used when clicking the file explorer quick action for a project.'
-                                )
-                            )}
-                        </div>
+                    <div className="space-y-1.5">
+                        <label htmlFor="file-explorer-app" className="text-xs font-medium text-foreground">
+                            {t('settings.fileExplorerApp', 'File explorer')}
+                        </label>
+                        <Select
+                            id="file-explorer-app"
+                            value={fileExplorerApp}
+                            disabled={isLoadingProjectOpenApps}
+                            onChange={(event) => void changeFileExplorerApp(event.target.value)}
+                        >
+                            {renderProjectOpenOptions(fileExplorerApps)}
+                        </Select>
+                        <p className="text-[11px] text-muted-foreground">
+                            {t('settings.fileExplorerAppDesc', 'Used when clicking the file explorer quick action for a project.')}
+                        </p>
                     </div>
                 </div>
             </section>

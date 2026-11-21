@@ -93,11 +93,6 @@ const loadGeneralView = async () => {
   }));
 
   mock.module('../../../services/projectOpeners', () => ({
-    getEmptyProjectOpenSelection: () => ({
-      editor: 'none',
-      terminal: 'none',
-      files: 'none',
-    }),
     loadProjectOpenSettings: () => loadProjectOpenSettingsMock(),
     saveProjectOpenAppPreference: (action: string, value: string) =>
       saveProjectOpenAppPreferenceMock(action, value),
@@ -118,16 +113,7 @@ const loadGeneralView = async () => {
   }));
 
   mock.module('../../ui/Select', () => ({
-    Select: ({
-      children,
-      value,
-      onChange,
-      disabled,
-    }: React.SelectHTMLAttributes<HTMLSelectElement>) => (
-      <select value={value} onChange={onChange} disabled={disabled}>
-        {children}
-      </select>
-    ),
+    Select: (props: React.SelectHTMLAttributes<HTMLSelectElement>) => <select {...props} />,
   }));
 
   mock.module('../../ui/Input', () => ({
@@ -478,7 +464,7 @@ describe('GeneralView', () => {
     expect(notifyErrorMock).toHaveBeenCalledTimes(1);
   });
 
-  it('restores a project opener selection when saving fails', async () => {
+  it('keeps only the file explorer setting and restores it when saving fails', async () => {
     loadProjectOpenSettingsMock.mockImplementationOnce(async () => ({
       appsByAction: {
         editor: [
@@ -486,7 +472,10 @@ describe('GeneralView', () => {
           { id: 'vscode', label: 'VS Code', kind: 'detected' as const },
         ],
         terminal: [{ id: 'none', label: 'Do nothing', kind: 'none' as const }],
-        files: [{ id: 'none', label: 'Do nothing', kind: 'none' as const }],
+        files: [
+          { id: 'none', label: 'Do nothing', kind: 'none' as const },
+          { id: 'finder', label: 'Finder', kind: 'detected' as const },
+        ],
       },
       selectedAppIdsByAction: { editor: 'none', terminal: 'none', files: 'none' },
     }));
@@ -501,18 +490,18 @@ describe('GeneralView', () => {
       await Promise.resolve();
     });
 
-    const editorSelect = Array.from(container?.querySelectorAll('select') ?? []).find(
-      (select) => Array.from(select.options).some((option) => option.value === 'vscode')
-    );
+    expect(container?.textContent).not.toContain('Code editor');
+    expect(container?.textContent).not.toContain('Terminal');
+    const fileExplorerSelect = container!.querySelector<HTMLSelectElement>('#file-explorer-app')!;
     await act(async () => {
-      if (!editorSelect) return;
-      editorSelect.value = 'vscode';
-      editorSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+      fileExplorerSelect.value = 'finder';
+      fileExplorerSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    expect(editorSelect?.value).toBe('none');
+    expect(saveProjectOpenAppPreferenceMock).toHaveBeenCalledWith('files', 'finder');
+    expect(fileExplorerSelect.value).toBe('none');
     expect(notifyErrorMock).toHaveBeenCalledTimes(1);
   });
 

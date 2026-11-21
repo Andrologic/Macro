@@ -31,9 +31,7 @@ import {
   getEmptyProjectOpenSelection,
   loadProjectOpenSettings,
   openProjectInExternalApp,
-  PROJECT_OPEN_ACTIONS,
   shouldRenderProjectOpenAction,
-  type ProjectOpenAction,
   type ProjectOpenAppSelection,
 } from '../../services/projectOpeners';
 
@@ -47,9 +45,9 @@ interface ProjectItemProps {
   groupId: string | null;
   onSelect: () => void;
   onMenuOpen: (e: React.MouseEvent<HTMLButtonElement>) => void;
-  onOpenExternal: (action: ProjectOpenAction) => void;
-  busyAction: ProjectOpenAction | null;
-  visibleActions: ProjectOpenAction[];
+  onOpenFiles: () => void;
+  isOpeningFiles: boolean;
+  canOpenFiles: boolean;
   isSelected?: boolean;
   dragDisabled?: boolean;
 }
@@ -152,9 +150,9 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
   groupId,
   onSelect,
   onMenuOpen,
-  onOpenExternal,
-  busyAction,
-  visibleActions,
+  onOpenFiles,
+  isOpeningFiles,
+  canOpenFiles,
   isSelected = false,
   dragDisabled = false,
 }) => {
@@ -182,38 +180,6 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
       groupId,
     } satisfies ProjectDropData,
   });
-
-  const renderQuickAction = (
-    action: ProjectOpenAction,
-    iconName: 'code' | 'terminal' | 'folder-open',
-    title: string
-  ) => {
-    const isBusy = busyAction === action;
-    return (
-      <button
-        type="button"
-        onPointerDown={(event) => event.stopPropagation()}
-        onClick={(event) => {
-          event.stopPropagation();
-          if (!isBusy) {
-            onOpenExternal(action);
-          }
-        }}
-        title={title}
-        aria-label={title}
-        className={cn(
-          'p-1 rounded hover:bg-accent transition-colors',
-          isBusy && 'cursor-wait opacity-60'
-        )}
-      >
-        {isBusy ? (
-          <SpinnerIcon size={14} className="text-muted-foreground" />
-        ) : (
-          <Icon name={iconName} size={14} className="text-muted-foreground" />
-        )}
-      </button>
-    );
-  };
 
   return (
     <div
@@ -267,26 +233,30 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
       </div>
 
       <div className="flex items-center gap-2">
-        {visibleActions.length > 0 && (
+        {canOpenFiles && (
           <div className="pointer-events-none flex items-center gap-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
-            {visibleActions.includes('editor') &&
-              renderQuickAction(
-                'editor',
-                'code',
-                t('projects.openInEditor', 'Open in code editor')
+            <button
+              type="button"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (!isOpeningFiles) {
+                  onOpenFiles();
+                }
+              }}
+              title={t('projects.openInFiles', 'Open in file explorer')}
+              aria-label={t('projects.openInFiles', 'Open in file explorer')}
+              className={cn(
+                'p-1 rounded hover:bg-accent transition-colors',
+                isOpeningFiles && 'cursor-wait opacity-60'
               )}
-            {visibleActions.includes('terminal') &&
-              renderQuickAction(
-                'terminal',
-                'terminal',
-                t('projects.openInTerminal', 'Open in terminal')
+            >
+              {isOpeningFiles ? (
+                <SpinnerIcon size={14} className="text-muted-foreground" />
+              ) : (
+                <Icon name="folder-open" size={14} className="text-muted-foreground" />
               )}
-            {visibleActions.includes('files') &&
-              renderQuickAction(
-                'files',
-                'folder-open',
-                t('projects.openInFiles', 'Open in file explorer')
-              )}
+            </button>
           </div>
         )}
         <button
@@ -553,9 +523,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
   } | null>(null);
   const [debugResetTarget, setDebugResetTarget] = useState<Project | null>(null);
   const [isSubmittingConfirm, setIsSubmittingConfirm] = useState(false);
-  const [busyOpenActionByProjectId, setBusyOpenActionByProjectId] = useState<
-    Record<string, ProjectOpenAction | null>
-  >({});
+  const [openingFilesByProjectId, setOpeningFilesByProjectId] = useState<Record<string, boolean>>({});
   const [projectOpenSelection, setProjectOpenSelection] = useState<ProjectOpenAppSelection>({
     ...getEmptyProjectOpenSelection(),
   });
@@ -969,35 +937,24 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     }
   };
 
-  const handleOpenExternal = async (
-    project: Project,
-    action: ProjectOpenAction
-  ): Promise<void> => {
-    setBusyOpenActionByProjectId((current) => ({ ...current, [project.id]: action }));
+  const handleOpenFiles = async (project: Project): Promise<void> => {
+    setOpeningFilesByProjectId((current) => ({ ...current, [project.id]: true }));
     try {
       await openProjectInExternalApp({
         targetPath: project.path,
-        action,
-        appId: projectOpenSelection[action],
+        action: 'files',
+        appId: projectOpenSelection.files,
       });
     } catch (error) {
-      const fallbackTitle =
-        action === 'editor'
-          ? t('projects.openInEditorFailed', 'Unable to open this project in the configured editor.')
-          : action === 'terminal'
-            ? t('projects.openInTerminalFailed', 'Unable to open this project in the configured terminal.')
-            : t('projects.openInFilesFailed', 'Unable to open this project in the configured file explorer.');
-      notify.error(fallbackTitle, {
+      notify.error(t('projects.openInFilesFailed', 'Unable to open this project in the configured file explorer.'), {
         description: toServiceError(error).message,
       });
     } finally {
-      setBusyOpenActionByProjectId((current) => ({ ...current, [project.id]: null }));
+      setOpeningFilesByProjectId((current) => ({ ...current, [project.id]: false }));
     }
   };
 
-  const visibleQuickActions = PROJECT_OPEN_ACTIONS.filter(
-    (action) => shouldRenderProjectOpenAction(projectOpenSelection, action)
-  );
+  const canOpenFiles = shouldRenderProjectOpenAction(projectOpenSelection, 'files');
 
   const handleRemoveProject = async (project: Project) => {
     try {
@@ -1183,7 +1140,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                   title={projectManagementDisabled ? projectManagementDisabledTitle : undefined}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
                 >
-                  <Icon name="git-branch" size={12} />
+                  <Icon name="settings" size={12} />
                   {t('projects.projectSettings', 'Project settings')}
                 </button>
                 <button
@@ -1442,11 +1399,9 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                             groupId={null}
                             isSelected={!selectedGroupId && selectedProjectId === project.id}
                             onSelect={() => handleSelectProject(project.id)}
-                            onOpenExternal={(action) => {
-                              void handleOpenExternal(project, action);
-                            }}
-                            busyAction={busyOpenActionByProjectId[project.id] ?? null}
-                            visibleActions={visibleQuickActions}
+                            onOpenFiles={() => void handleOpenFiles(project)}
+                            isOpeningFiles={Boolean(openingFilesByProjectId[project.id])}
+                            canOpenFiles={canOpenFiles}
                             dragDisabled={showArchived}
                             onMenuOpen={(e) => {
                               e.stopPropagation();
@@ -1548,11 +1503,9 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                                 dragDisabled={showArchived}
                                 onSelect={() => handleSelectGroup(group.id)}
                                 isSelected={false}
-                                onOpenExternal={(action) => {
-                                  void handleOpenExternal(project, action);
-                                }}
-                                busyAction={busyOpenActionByProjectId[project.id] ?? null}
-                                visibleActions={visibleQuickActions}
+                                onOpenFiles={() => void handleOpenFiles(project)}
+                                isOpeningFiles={Boolean(openingFilesByProjectId[project.id])}
+                                canOpenFiles={canOpenFiles}
                                 onMenuOpen={(e) => {
                                   e.stopPropagation();
                                   const trigger = e.currentTarget;
