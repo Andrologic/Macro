@@ -11,9 +11,17 @@ export interface ChatMessageStateShape {
 export const sortMessagesChronologically = (
   messages: ChatMessage[],
 ): ChatMessage[] =>
-  [...messages].sort(
-    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-  );
+  [...messages].sort((a, b) => {
+    if (a.conversation_id === b.conversation_id) {
+      if (Boolean(a.portable_history) !== Boolean(b.portable_history)) return a.portable_history ? -1 : 1;
+      const left = a.portable_history?.ordinal;
+      const right = b.portable_history?.ordinal;
+      if (left !== undefined && right !== undefined && /^\d{1,19}$/.test(left) && /^\d{1,19}$/.test(right)) {
+        return left.length - right.length || (left < right ? -1 : left > right ? 1 : 0);
+      }
+    }
+    return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+  });
 
 export const indexMessagesByConversation = (
   messages: ChatMessage[],

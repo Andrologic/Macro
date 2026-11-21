@@ -172,6 +172,31 @@ sur le compte d'origine. La déconnexion ou une nouvelle connexion ne lève pas
 cette barrière. Un relais inaccessible laisse les conversations concernées
 en lecture seule ; un `not_found` sous une nouvelle instance n'est pas une preuve.
 
+Le scénario natif restaure, par l'export et la restauration officiels, une
+source sauvegardée avant sa cession, puis la reconnecte. La conversation est en
+`restore_hold` avant toute admission, et une écriture de message est refusée.
+Son historique reste lisible par les lectures ordinaires du produit. La
+réconciliation au démarrage ne rouvre rien ; sans filiation, elle n'a même
+rien à régler et ne contacte pas le relais. Un envoi vers un relais
+injoignable échoue sans réservation. Un nouvel envoi est refusé par
+le relais (`conflict`) : la source restaurée a perdu sa filiation, en tire une
+nouvelle, et le relais connaît déjà cette source sous sa filiation d'origine.
+Aucun transfert n'est créé. Aucun chemin ne lève encore cette barrière : la
+réconciliation sous une nouvelle association reste à concevoir. Une
+conversation jamais transférée restera aussi en lecture seule ; l'utilisateur
+la reprend par une copie explicite. Le scénario se reconnecte avec l'instance
+d'origine, car le relais de test ne crée pas de nouvelle association.
+
+L'interface affiche l'état d'une conversation `restore_hold`, `frozen` ou
+`ceded` et désactive sa saisie. Pour `restore_hold`, elle propose « Copier dans
+une nouvelle conversation ». La copie crée une conversation `Chat` ouverte, avec
+de nouveaux identifiants : les messages dans l'ordre de l'historique, les
+citations et les images, sans tour, élément fournisseur, trace d'outil,
+objectif, run, file ni envoi Pilot. L'originale reste en `restore_hold`. Comme
+rien ne quitte la machine, la copie est locale et directe ; elle ne passe pas par
+la normalisation portable du transfert. Une image qui ne peut pas être recopiée
+fait échouer la copie, qui est alors supprimée.
+
 Si une archive ancienne ne permet pas de reconstruire une filiation vérifiable,
 la reprise de l'ancienne conversation est refusée. L'utilisateur peut créer
 explicitement une nouvelle conversation à partir du contexte portable autorisé,
@@ -180,6 +205,76 @@ Cette copie est présentée comme une nouvelle branche de travail et ne prétend
 pas reprendre la propriété de l'ancienne source. Elle n'est jamais automatique.
 Le lot doit tester ce chemin et la conservation des secrets détachés ; il ne
 prétend pas empêcher un clonage volontaire exécuté hors protocole.
+
+Au démarrage, la cible réconcilie aussi ses tentatives non résolues, à partir
+de l'invitation enregistrée et de sa préparation épinglée. Elle lit le statut
+du relais sous l'autorité du couple, donc pendant que la source est en ligne.
+Un abandon libère l'import et la projection. Une validation publie la
+préparation déjà épinglée, sans appel fournisseur, puis enregistre l'activation
+sous la génération courante du producteur cible, qui change à chaque
+redémarrage. Une tentative encore en cours reste en attente : le relais
+l'abandonne quand le producteur cible change, et la réconciliation suivante la
+libère.
+
+La cible marque une activation comme enregistrée une fois que le relais a
+renvoyé son reçu d'activation (migration 022). Au démarrage, une cible publiée
+sans cette marque relit le statut du relais. Si le relais détient déjà
+l'activation, la cible pose seulement la marque. Sinon, elle renvoie
+`activation.record` sans republier la conversation. Une conversation supprimée
+localement, ou en cours de suppression, n'est pas reprise. Les cibles publiées
+avant la migration 022 n'ont pas de marque : chacune est vérifiée une fois
+auprès du relais, au premier démarrage où sa source est en ligne.
+
+Une confirmation et une annulation concurrentes visent la même révision du
+relais : une seule devient le terminal. Si l'annulation gagne, la confirmation
+échoue, la source enregistre le terminal `aborted` puis rouvre la conversation,
+et la cible libère sa tentative. Si la confirmation gagne, l'annulation reçoit
+le terminal `committed` et le transfert se termine normalement.
+
+La révocation des sessions du compte abandonne au relais les transferts non
+terminaux. Révoquée avant la confirmation, la source ne peut ni confirmer ni
+lire ce terminal : elle reste gelée, sans cession ni dégel implicite, et sa
+réconciliation ne change rien. La cible ne publie rien. La reprise après une
+nouvelle association, qui doit lire le terminal `aborted` et rouvrir la source,
+n'est pas encore testée : le relais de test ne simule pas une réassociation.
+
+Un second envoi de la même conversation pendant un transfert en cours est
+refusé par la commande (`transfer_busy`) : le runtime n'admet qu'un transfert à
+la fois, et l'application ne tourne qu'en une instance. Ce verrou est
+nécessaire, car un envoi commence par régler toute tentative source encore
+gelée et abandonnerait sinon la tentative en cours. Au relais, une seconde
+réservation du même registre source est refusée (`conflict`) ; la cible ne
+reçoit donc qu'une invitation et ne crée qu'un import.
+
+Une cible qui échoue avant sa préparation ne publie rien et reste inactive, que
+son processus s'arrête en plein staging ou que son disque se remplisse pendant
+l'import. La cible ne peut pas annuler elle-même : la source abandonne quand
+elle ne reçoit plus rien, ou quand la préparation n'arrive pas dans le délai
+prévu. La réconciliation suivante de la cible libère alors les blocs reçus et
+l'import partiel. Cet import n'est pas encore rattaché au transfert ; la
+libération le retrouve par l'identité que le stockage dérive de la
+réservation. L'archive reçue n'est importée qu'après vérification de son
+empreinte, de son nombre d'enregistrements et de son manifeste : une archive
+tronquée est refusée avant toute écriture.
+
+Une ressource requise absente de la source fait échouer la capture : rien n'est
+envoyé sans elle. Pour un premier transfert, la filiation est créée au relais
+avant la capture. Sans cela, le relais ne pourrait pas clore la réservation
+par `abort_missing`, et la source resterait gelée. Elle rouvre au contraire
+avec une tentative `aborted`. Si la création de la filiation elle-même
+n'atteint jamais le relais, la source reste gelée : ce cas n'est pas encore
+traité.
+
+Un message en retard ne fait rien progresser. Un ancien ACK est refusé
+(`conflict`). Un ancien bloc et un commit répétés avec leur identifiant de
+requête reçoivent exactement la réponse d'origine. Une réservation ou un
+`ready` arrivés après le commit reçoivent leur propre reçu d'étape et le reçu
+terminal `committed`, sans changement de révision. La cible refuse aussi un
+bloc antérieur au dernier bloc reçu. Une décision liée à une génération de
+producteur remplacée est refusée par le relais (`producer_changed`), qui
+abandonne alors un transfert non confirmé. Le scénario natif ne remplace pas
+de producteur en cours de transfert : seuls les tests du relais couvrent ce
+dernier cas.
 
 Une cible qui a perdu ses données après confirmation reste en erreur de
 récupération. Elle ne provoque pas un dégel implicite de la source. Une remise
@@ -204,6 +299,23 @@ la preuve du contexte fonctionnel normalisé, sans reprise de session identique.
 Les garde-fous v2 existants ne sont pas augmentés par défaut. L'import valide au
 fil de l'eau, refuse les traversées de chemin et remappe les identifiants sans
 transformer des traces historiques en outils actifs ou en instructions fiables.
+
+La cible publie le titre de la source : la normalisation le conserve comme
+texte d'origine dans l'archive, jamais dans les métadonnées du relais.
+
+Le premier transfert ne reprend pas le checkpoint de compaction de la source.
+La cible publie les messages originaux sans état de compaction ni
+`provider_input_items` enregistrés ; les résumés restent consultables dans
+l'archive comme données historiques. Le message suivant passe par le chemin
+d'envoi ordinaire, qui reconstruit les éléments fournisseur depuis le contenu.
+Si l'historique tient dans la fenêtre du modèle cible, il part en entier ;
+sinon, la cible compacte de nouveau avant le tour utilisateur, au prix d'un
+appel modèle et d'un résumé différent de celui de la source. Le scénario natif
+synthétique vérifie que ce prochain corps est identique à celui que la source
+aurait envoyé, pour Macro AI, Codex, une conversation compactée et des
+ressources. La restauration du checkpoint sera réexaminée avec la règle de choix
+du modèle cible : un checkpoint calculé pour le modèle source n'est pas
+forcément valide pour la cible.
 
 ## Preuves nécessaires avant activation
 

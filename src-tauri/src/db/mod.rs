@@ -116,7 +116,7 @@ const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
 pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
-    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42,
+    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
 ];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
@@ -618,6 +618,21 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             42,
             "042_retire_execution020",
             include_str!("migrations/042_retire_execution020.sql"),
+        ),
+        (
+            43,
+            "043_connect_archive_lifecycle",
+            include_str!("migrations/020_connect_archive_lifecycle.sql"),
+        ),
+        (
+            44,
+            "044_connect_target_abort",
+            include_str!("migrations/021_connect_target_abort.sql"),
+        ),
+        (
+            45,
+            "045_connect_target_activation",
+            include_str!("migrations/022_connect_target_activation.sql"),
         ),
     ] {
         if !list_applied_migrations(connection)

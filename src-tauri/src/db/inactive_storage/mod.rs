@@ -32,6 +32,14 @@ pub(crate) struct InactiveStorage {
     pool: SqlitePool,
     authority: Option<Arc<RwLock<Authority>>>,
     clock: Clock,
+    // The tuple retains the authenticated native scope and DbReady lifetime.
+    // The two JSON values are expectations only, rechecked against that scope.
+    native: Option<(
+        Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,
+        serde_json::Value,
+        serde_json::Value,
+        crate::core::db_state::ChatWorkLifetime,
+    )>,
     #[cfg(test)]
     lease_cleanup_started: Option<std::sync::mpsc::Sender<()>>,
 }
@@ -41,11 +49,135 @@ impl InactiveStorage {
             pool,
             authority: None,
             clock: Arc::new(|| 0),
+            native: None,
             #[cfg(test)]
             lease_cleanup_started: None,
         }
     }
+    pub(crate) async fn for_transfer(
+        owner: &crate::core::db_state::DbPool,
+        transport: Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,
+        sent: serde_json::Value,
+        manifest: serde_json::Value,
+    ) -> Result<Self> {
+        transport
+            .check_target_transfer(&sent, &manifest)
+            .await
+            .map_err(str::to_owned)?;
+        let (session_id, device_id) = transport.session_binding().map_err(str::to_owned)?;
+        let binding = &sent["binding"];
+        let source = &binding["provenance"]["source"];
+        let text = |v: &serde_json::Value| {
+            v.as_str()
+                .map(str::to_owned)
+                .ok_or("binding_conflict".to_string())
+        };
+        let identity = Identity {
+            origin: text(&source["relay_origin"])?,
+            account_incarnation: text(&source["account_id"])?,
+            source_instance: text(&source["source_instance_id"])?,
+            source_conversation: text(&source["source_conversation_id"])?,
+            transfer: text(&binding["transfer_id"])?,
+            source_epoch: text(&binding["epoch"])?,
+        };
+        let bindings = Bindings {
+            target_instance: text(&binding["target_instance_id"])?,
+            source_generation: text(&binding["source_producer_generation"])?,
+            target_generation: text(&binding["target_producer_generation"])?,
+            actor: device_id.to_owned(),
+            initial_session: session_id.to_owned(),
+            policy_revision: uuid::Uuid::new_v4().to_string(),
+        };
+        let secrets = transport
+            .detection_values()
+            .await
+            .map_err(str::to_owned)?
+            .into_iter()
+            .map(String::into_bytes)
+            .collect();
+        let guard = owner
+            .source_ready(None)
+            .await
+            .map_err(|_| "database_unavailable")?;
+        let lifetime = guard.ready.retain_chat_work();
+        let pool = guard.ready.pool.clone();
+        drop(guard);
+        Ok(Self {
+            pool,
+            authority: Some(Arc::new(RwLock::new(Authority {
+                enabled: true,
+                identity,
+                bindings,
+                policy: Policy {
+                    budget: super::inactive_budget::NATIVE_BUDGET,
+                    max_receipts: super::inactive_budget::NATIVE_MAX_RECEIPTS,
+                    absolute_ms: 300_000,
+                    idle_ms: 30_000,
+                    secrets,
+                },
+            }))),
+            clock: Arc::new(|| chrono::Utc::now().timestamp_millis()),
+            native: Some((transport, sent, manifest, lifetime)),
+            #[cfg(test)]
+            lease_cleanup_started: None,
+        })
+    }
+    pub(crate) async fn begin_portable(
+        &self,
+        descriptor: &serde_json::Value,
+        headers: &[RecordHeader],
+    ) -> Result<Receipt> {
+        let authority = self.authorize().await?;
+        if let Some((_, _, manifest, _)) = &self.native {
+            if descriptor["manifest_sha256"] != manifest["manifest_sha256"]
+                || descriptor["content_contract_sha256"] != manifest["content_contract_sha256"]
+            {
+                return Err("binding_conflict".into());
+            }
+        }
+        let mut begin = Begin {
+            version: 1,
+            identity: authority.identity.clone(),
+            bindings: authority.bindings.clone(),
+            profile: Profile::PortableChatHistoryV1,
+            records: descriptor["records"].as_u64().ok_or("invalid_frame")?,
+            bytes: descriptor["bytes"].as_u64().ok_or("invalid_frame")?,
+            manifest_sha256: String::new(),
+        };
+        if headers.len() as u64 != begin.records || begin.bytes > 8 * 1024 * 1024 {
+            return Err("resource_limit".into());
+        }
+        let mut manifest = Manifest::new(&begin)?;
+        for header in headers {
+            manifest.record(header)?;
+        }
+        begin.manifest_sha256 = manifest.finish();
+        drop(authority);
+        self.begin(json(&begin)?.as_bytes()).await
+    }
+    pub(crate) async fn portable_root(&self, key: &str) -> Result<serde_json::Value> {
+        let receipt = self.status(key).await?;
+        if receipt.phase != Phase::SealedStorage {
+            return Err("not_sealed".into());
+        }
+        let (_, _, manifest, _) = self.native.as_ref().ok_or("inactive_storage_disabled")?;
+        Ok(
+            serde_json::json!({"kind":"archive","profile":"portable_chat_history_v1",
+            "binding":{"version":1,"importKey":key,"manifest":manifest["manifest_sha256"]},"records":receipt.records.to_string(),
+            "storage_revision":receipt.revision.to_string(),"mapping_sha256":receipt.mapping_sha256.ok_or("integrity_failed")?}),
+        )
+    }
+    pub(crate) async fn check_native(&self) -> Result<()> {
+        drop(self.authorize().await?);
+        Ok(())
+    }
     async fn authorize(&self) -> Result<OwnedRwLockReadGuard<Authority>> {
+        if let Some((transport, sent, manifest, _)) = &self.native {
+            transport
+                .check_target_transfer(sent, manifest)
+                .await
+                .map_err(str::to_owned)?;
+        }
         let authority = self
             .authority
             .as_ref()
@@ -77,6 +209,9 @@ impl InactiveStorage {
         }
         let row=sqlx::query("SELECT * FROM e_inactive_imports WHERE identity_key=? AND length(CAST(begin_json AS BLOB))<=4096")
             .bind(key).fetch_optional(&mut **tx).await.map_err(db)?.ok_or("not_found")?;
+        crate::db::connect_transfer::deletion::require_import(&mut **tx, row.get("id"))
+            .await
+            .map_err(|_| "connect_content_removed")?;
         let begin_json: String = row.get("begin_json");
         let begin: Begin = parse(begin_json.as_bytes())?;
         if begin.identity != authority.identity || begin.bindings != authority.bindings {
@@ -197,6 +332,14 @@ impl InactiveStorage {
             || input.record.ordinal >= journal.begin.records
         {
             return Err("invalid_offset".into());
+        }
+        // The disk fills once the first record is stored: SQLITE_FULL rolls
+        // the append back with this error (see sqlite_full_rolls_back_*).
+        #[cfg(test)]
+        if input.record.ordinal >= 1
+            && std::env::var("MACRO_CONNECT_TEST_INTERRUPT").as_deref() == Ok("target_import_full")
+        {
+            return Err("database_unavailable".into());
         }
         let (offset, old_utf8, old_scan) = match &record {
             Some(row) => (
@@ -584,6 +727,23 @@ fn validate_begin(input: &Begin) -> Result<()> {
     }
     Ok(())
 }
+/// Shared stored-header validation for the local published archive reader.
+/// This parses data only and never constructs inactive-storage authority.
+pub(in crate::db) fn published_record(
+    begin: &Begin,
+    bytes: &[u8],
+    kind: i64,
+    links: (Option<i64>, Option<i64>, Option<i64>, Option<i64>),
+) -> Result<RecordHeader> {
+    let record: RecordHeader = parse(bytes)?;
+    validate_record(&record)?;
+    validate_profile_record(begin, &record)?;
+    if record.entry.tag() != kind || record.entry.links() != links {
+        return Err("integrity_failed".into());
+    }
+    Ok(record)
+}
+
 fn validate_record(input: &RecordHeader) -> Result<()> {
     if input.ordinal > i64::MAX as u64
         || input.bytes > i64::MAX as u64

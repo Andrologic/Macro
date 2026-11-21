@@ -60,6 +60,13 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::execution::EngineFailure>("execution")?;
     registry.add::<ipc_contracts::chat::WebviewResourceRelease>("chat")?;
 
+    registry.add::<ipc_contracts::archive::ArchiveOpenInput>("archive")?;
+    registry.add::<ipc_contracts::archive::ArchiveReadHandle>("archive")?;
+    registry.add::<ipc_contracts::archive::ArchivePageInput>("archive")?;
+    registry.add::<ipc_contracts::archive::ArchivePage>("archive")?;
+    registry.add::<ipc_contracts::archive::ArchiveMaterializeInput>("archive")?;
+    registry.add::<ipc_contracts::archive::ArchiveBacking>("archive")?;
+    registry.add::<ipc_contracts::archive::ArchiveReleaseInput>("archive")?;
     registry.add::<macro_lib::pilot_file_contracts::PilotInspectAttachmentsInput>("pilot_files")?;
     registry.add::<macro_lib::pilot_file_contracts::PilotAttachmentMetadata>("pilot_files")?;
     registry.add::<macro_lib::host_telemetry::HostTelemetryDto>("host_telemetry")?;
@@ -105,6 +112,7 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::db::CancelAgentRunInput>("db")?;
     registry.add::<ipc_contracts::db::TimeOutAgentRunInput>("db")?;
     registry.add::<ipc_contracts::db::Conversation>("db")?;
+    registry.add::<ipc_contracts::db::RestoredCopy>("db")?;
     registry.add::<ipc_contracts::db::ConversationCatalogToken>("db")?;
     registry.add::<ipc_contracts::db::ConversationCatalogVersionInput>("db")?;
     registry.add::<ipc_contracts::db::ConversationCatalogPageInput>("db")?;

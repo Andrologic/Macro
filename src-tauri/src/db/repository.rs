@@ -488,7 +488,7 @@ fn truncate_last_message(content: &str) -> String {
     truncated
 }
 
-async fn refresh_conversation_metadata_with_connection(
+pub(super) async fn refresh_conversation_metadata_with_connection(
     connection: &mut SqliteConnection,
     conversation_id: String,
     updated_at_override: Option<String>,
@@ -500,10 +500,12 @@ async fn refresh_conversation_metadata_with_connection(
 
     let latest_row = sqlx::query(
         r#"
-        SELECT content, created_at
-        FROM messages
-        WHERE conversation_id = ?
-        ORDER BY created_at DESC, id DESC
+        SELECT m.content, m.created_at
+        FROM messages m LEFT JOIN connect_message_origins o ON o.message_id=m.id
+        WHERE m.conversation_id = ?
+        ORDER BY (o.message_id IS NULL) DESC,
+                 CASE WHEN o.message_id IS NOT NULL THEN length(o.portable_ordinal) END DESC,
+                 o.portable_ordinal DESC, m.created_at DESC, m.id DESC
         LIMIT 1
         "#,
     )
@@ -515,8 +517,14 @@ async fn refresh_conversation_metadata_with_connection(
         .as_ref()
         .map(|row| truncate_last_message(&row.get::<String, _>("content")));
     let fallback_updated_at = chrono::Utc::now().to_rfc3339();
+    // Imported timestamps are stable order keys, not conversation recency.
+    // Once an ordinary local message exists, normal activity owns recency again.
+    let initial_publication: Option<String> = sqlx::query_scalar(
+        "SELECT pt.published_at FROM connect_publication_times pt JOIN connect_preparations p USING(transfer_id) WHERE p.target_conversation_id=? AND NOT EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=p.target_conversation_id AND NOT EXISTS(SELECT 1 FROM connect_projection_messages pm WHERE pm.transfer_id=p.transfer_id AND pm.id=m.id))",
+    ).bind(&conversation_id).fetch_optional(&mut *connection).await?;
     let updated_at = updated_at_override
         .clone()
+        .or(initial_publication)
         .or_else(|| {
             latest_row
                 .as_ref()
@@ -640,11 +648,77 @@ pub async fn delete_conversation(pool: &SqlitePool, id: &str) -> DbResult<()> {
 }
 
 pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult<()> {
+    let mut lease = super::connect_transfer::deletion_lease(pool).await?;
+    use sqlx::Connection;
+    let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
+    delete_conversations_in(&mut tx, ids, None, None).await?;
+    tx.commit().await?;
+    lease.committed = true;
+    Ok(())
+}
+
+pub(crate) async fn delete_conversations_admitted(
+    owner: &crate::core::db_state::DbPool,
+    ids: &[String],
+) -> DbResult<()> {
+    delete_conversations_ready(owner, ids, None).await
+}
+
+pub(crate) async fn delete_conversations_with_readers(
+    owner: &crate::core::db_state::DbPool,
+    ids: &[String],
+    reader: &super::connect_transfer::reader_runtime::ArchiveReaderRuntime,
+) -> DbResult<()> {
+    delete_conversations_ready(owner, ids, Some(reader)).await
+}
+
+async fn delete_conversations_ready(
+    owner: &crate::core::db_state::DbPool,
+    ids: &[String],
+    reader: Option<&super::connect_transfer::reader_runtime::ArchiveReaderRuntime>,
+) -> DbResult<()> {
+    let ready = owner
+        .source_ready(None)
+        .await
+        .map_err(|_| DbError::Validation("stale_revision".into()))?;
+    let mut lease = super::connect_transfer::deletion_lease(&ready.ready.pool).await?;
+    use sqlx::Connection;
+    let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
+    ready.ready.check_source_schema(&mut tx).await?;
+    delete_conversations_in(&mut tx, ids, Some(&ready.ready.catalog_generation), reader).await?;
+    #[cfg(test)]
+    local_deletion_checkpoint("before_commit", ids);
+    tx.commit().await?;
+    lease.committed = true;
+    #[cfg(test)]
+    local_deletion_checkpoint("after_commit", ids);
+    Ok(())
+}
+
+#[cfg(test)]
+fn local_deletion_checkpoint(phase: &str, ids: &[String]) {
+    if std::env::var("MACRO_LOCAL_DELETION_CRASH_PHASE")
+        .ok()
+        .as_deref()
+        == Some(phase)
+        && std::env::var("MACRO_LOCAL_DELETION_CRASH_CONVERSATION")
+            .ok()
+            .is_some_and(|conversation| ids.contains(&conversation))
+    {
+        std::process::exit(92);
+    }
+}
+
+async fn delete_conversations_in(
+    db: &mut SqliteConnection,
+    ids: &[String],
+    generation: Option<&str>,
+    reader: Option<&super::connect_transfer::reader_runtime::ArchiveReaderRuntime>,
+) -> DbResult<()> {
     if ids.is_empty() {
         return Ok(());
     }
 
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let original_placeholders = vec!["?"; ids.len()].join(", ");
     let child_query = format!(
         "SELECT child_conversation_id FROM agent_runs WHERE agent_profile = 'goal_auditor' AND child_conversation_id IS NOT NULL AND parent_conversation_id IN ({})",
@@ -655,9 +729,14 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
         children = children.bind(id);
     }
     let mut owned_ids = ids.to_vec();
-    owned_ids.extend(children.fetch_all(&mut *tx).await?);
+    owned_ids.extend(children.fetch_all(&mut *db).await?);
     owned_ids.sort();
     owned_ids.dedup();
+    // Covers auditor-owned child conversations too, under the same writer.
+    // Existing application backings must retire before payload deletion.
+    let _readers = reader
+        .map(|reader| reader.deleting(&owned_ids))
+        .transpose()?;
     let ids = &owned_ids;
     let placeholders = vec!["?"; ids.len()].join(", ");
     let query = format!("DELETE FROM conversations WHERE id IN ({})", placeholders);
@@ -666,6 +745,7 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
     // can replay them. They have no foreign key, therefore delete them in the
     // same transaction as their owning conversations.
     for id in ids {
+        super::connect_transfer::deletion::begin_in(db, id, generation).await?;
         for key in [
             format!("agentCodeCheckpoints:{}", id),
             format!("agentCodeReplayRecovery:{}", id),
@@ -673,7 +753,7 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
         ] {
             sqlx::query("DELETE FROM app_settings WHERE key = ?")
                 .bind(key)
-                .execute(&mut *tx)
+                .execute(&mut *db)
                 .await?;
         }
     }
@@ -682,8 +762,10 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
     for id in ids {
         statement = statement.bind(id);
     }
-    statement.execute(&mut *tx).await?;
-    tx.commit().await?;
+    statement.execute(&mut *db).await?;
+    for id in ids {
+        super::connect_transfer::deletion::finish_in(db, id).await?;
+    }
 
     Ok(())
 }
@@ -911,7 +993,7 @@ pub async fn get_message(pool: &SqlitePool, id: &str) -> DbResult<Option<Message
     if size.is_some_and(|n| n > 4 * 1024 * 1024) {
         return Err(DbError::Validation("resource_limit".into()));
     }
-    let row = sqlx::query("SELECT * FROM messages WHERE id = ?")
+    let row = sqlx::query("SELECT messages.*, o.* FROM messages LEFT JOIN connect_message_origins o ON o.message_id=messages.id WHERE id = ?")
         .bind(id)
         .fetch_optional(&mut *transaction)
         .await?;
@@ -937,8 +1019,8 @@ async fn list_messages_with_connection(
 ) -> DbResult<Vec<Message>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason, generation_attempts_json
-        FROM messages
+        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason, generation_attempts_json, o.*
+        FROM messages LEFT JOIN connect_message_origins o ON o.message_id=messages.id
         WHERE conversation_id = ?
         ORDER BY created_at ASC, id ASC
         "#,
@@ -959,6 +1041,7 @@ async fn list_messages_with_connection(
 // Do not use this mapper for SELECT * or a differently ordered projection.
 pub(crate) fn map_list_message_row(row: &sqlx::sqlite::SqliteRow) -> Message {
     Message {
+        portable_history: portable_origin(row),
         id: row.get(0),
         conversation_id: row.get(1),
         turn_id: row.get(2),
@@ -989,7 +1072,7 @@ pub async fn list_messages_bounded(
         return Err(DbError::Validation("resource_limit".into()));
     }
     let rows = sqlx::query(
-        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC",
+        "SELECT messages.*, o.* FROM messages LEFT JOIN connect_message_origins o ON o.message_id=messages.id WHERE conversation_id = ? ORDER BY created_at ASC, id ASC",
     )
     .bind(conversation_id)
     .fetch_all(&mut *tx)
@@ -1027,8 +1110,8 @@ pub async fn get_conversation_source_snapshot(
 pub async fn list_all_messages(pool: &SqlitePool) -> DbResult<Vec<Message>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason, generation_attempts_json
-        FROM messages
+        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason, generation_attempts_json, o.*
+        FROM messages LEFT JOIN connect_message_origins o ON o.message_id=messages.id
         ORDER BY created_at ASC, id ASC
         "#,
     )
@@ -1038,6 +1121,7 @@ pub async fn list_all_messages(pool: &SqlitePool) -> DbResult<Vec<Message>> {
     let messages = rows
         .into_iter()
         .map(|row| Message {
+            portable_history: portable_origin(&row),
             id: row.get("id"),
             conversation_id: row.get("conversation_id"),
             turn_id: row.get("turn_id"),
@@ -1125,8 +1209,8 @@ pub async fn get_chat_bootstrap_snapshot(
         let placeholders = vec!["?"; unique_preload_ids.len()].join(", ");
         let query = format!(
             r#"
-            SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason, generation_attempts_json
-            FROM messages
+            SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason, generation_attempts_json, o.*
+            FROM messages LEFT JOIN connect_message_origins o ON o.message_id=messages.id
             WHERE conversation_id IN ({})
             ORDER BY conversation_id ASC, created_at ASC, id ASC
             "#,
@@ -1140,6 +1224,7 @@ pub async fn get_chat_bootstrap_snapshot(
         let rows = statement.fetch_all(&mut *transaction).await?;
         for row in rows {
             let message = Message {
+                portable_history: portable_origin(&row),
                 id: row.get("id"),
                 conversation_id: row.get("conversation_id"),
                 turn_id: row.get("turn_id"),
@@ -1227,6 +1312,7 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
     transaction.commit().await?;
 
     Ok(Message {
+        portable_history: None,
         id,
         conversation_id: input.conversation_id,
         turn_id: input.turn_id,
@@ -1291,6 +1377,7 @@ pub async fn import_messages(
 
         last_created_at = Some(message.created_at.clone());
         inserted.push(Message {
+            portable_history: None,
             id: message.id,
             conversation_id: conversation_id.to_string(),
             turn_id: message.turn_id,
@@ -1347,10 +1434,46 @@ pub async fn update_message_content(
     Ok(())
 }
 
+// Native provenance is authoritative for local mutation policy. The optional
+// marker returned to the renderer is data and cannot authorize an edit/replay.
+async fn require_ordinary_message(
+    connection: &mut sqlx::SqliteConnection,
+    id: &str,
+) -> DbResult<()> {
+    let imported: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM connect_message_origins WHERE message_id=?)",
+    )
+    .bind(id)
+    .fetch_one(connection)
+    .await?;
+    if imported != 0 {
+        return Err(DbError::Validation("portable_history_read_only".into()));
+    }
+    Ok(())
+}
+
+async fn require_ordinary_replay(
+    connection: &mut sqlx::SqliteConnection,
+    conversation: &str,
+    anchor: &str,
+) -> DbResult<()> {
+    require_ordinary_message(&mut *connection, anchor).await?;
+    // A hostile/legacy local date must not make an ordinary replay trim any
+    // portion of the imported prefix. Compaction uses its own storage path.
+    let imported_tail: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM messages m JOIN connect_message_origins o ON o.message_id=m.id JOIN messages a ON a.id=? AND a.conversation_id=? WHERE m.conversation_id=a.conversation_id AND (m.created_at>a.created_at OR (m.created_at=a.created_at AND m.id>a.id)))",
+    ).bind(anchor).bind(conversation).fetch_one(connection).await?;
+    if imported_tail != 0 {
+        return Err(DbError::Validation("portable_history_read_only".into()));
+    }
+    Ok(())
+}
+
 pub(crate) async fn update_message_content_with_connection(
     connection: &mut sqlx::SqliteConnection,
     input: UpdateMessageContentInput<'_>,
 ) -> DbResult<()> {
+    require_ordinary_message(&mut *connection, input.id).await?;
     let UpdateMessageContentInput {
         id,
         turn_id,
@@ -1406,6 +1529,7 @@ pub async fn delete_messages_after(
     after_message_id: &str,
 ) -> DbResult<()> {
     let mut transaction = pool.begin().await?;
+    require_ordinary_replay(&mut transaction, conversation_id, after_message_id).await?;
     let row = sqlx::query("SELECT created_at FROM messages WHERE id = ? AND conversation_id = ?")
         .bind(after_message_id)
         .bind(conversation_id)
@@ -1444,6 +1568,11 @@ pub async fn delete_conversation_turn(
     turn_id: &str,
 ) -> DbResult<()> {
     let mut transaction = pool.begin().await?;
+    let imported: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM messages m JOIN connect_message_origins o ON o.message_id=m.id WHERE m.conversation_id=? AND m.turn_id=?)")
+        .bind(conversation_id).bind(turn_id).fetch_one(&mut *transaction).await?;
+    if imported != 0 {
+        return Err(DbError::Validation("portable_history_read_only".into()));
+    }
 
     sqlx::query(
         r#"
@@ -1485,6 +1614,7 @@ pub async fn trim_conversation_replay(
     delete_context_compaction_state: bool,
 ) -> DbResult<()> {
     let mut transaction = pool.begin().await?;
+    require_ordinary_replay(&mut transaction, conversation_id, after_message_id).await?;
     let row = sqlx::query("SELECT created_at FROM messages WHERE id = ? AND conversation_id = ?")
         .bind(after_message_id)
         .bind(conversation_id)
@@ -1566,6 +1696,7 @@ pub async fn trim_conversation_replay(
 
 fn map_message_row(row: &sqlx::sqlite::SqliteRow) -> Message {
     Message {
+        portable_history: portable_origin(row),
         id: row.get("id"),
         conversation_id: row.get("conversation_id"),
         turn_id: row.get("turn_id"),
@@ -1581,6 +1712,19 @@ fn map_message_row(row: &sqlx::sqlite::SqliteRow) -> Message {
         completion_reason: row.get("completion_reason"),
         generation_attempts_json: row.get("generation_attempts_json"),
     }
+}
+
+fn portable_origin(row: &sqlx::sqlite::SqliteRow) -> Option<super::models::PortableMessageOrigin> {
+    let import_key: Option<String> = row.try_get("portable_import_key").unwrap_or(None);
+    import_key.map(|import_key| super::models::PortableMessageOrigin {
+        version: 1,
+        import_key,
+        manifest: row.get("portable_manifest"),
+        ordinal: row.get("portable_ordinal"),
+        source_ordinal: row.get("portable_source_ordinal"),
+        display_date: row.get("portable_display_date"),
+        inherited_from: row.get("portable_inherited_from"),
+    })
 }
 
 fn map_compaction_state_row(row: &sqlx::sqlite::SqliteRow) -> ConversationCompactionStateRecord {
@@ -1678,6 +1822,7 @@ pub async fn prepare_conversation_replay(
     input: PrepareConversationReplayInput<'_>,
 ) -> DbResult<()> {
     let mut transaction = pool.begin().await?;
+    require_ordinary_replay(&mut transaction, input.conversation_id, input.message_id).await?;
     let row = sqlx::query(
         "SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason, generation_attempts_json FROM messages WHERE id = ? AND conversation_id = ?",
     ).bind(input.message_id).bind(input.conversation_id).fetch_one(&mut *transaction).await?;
@@ -1786,6 +1931,10 @@ pub async fn restore_conversation_replay(
         return Err(DbError::Validation(
             "Replay recovery transcript revision is invalid".to_string(),
         ));
+    }
+    require_ordinary_replay(&mut transaction, conversation_id, &snapshot.message_id).await?;
+    for message in &snapshot.tail_messages {
+        require_ordinary_message(&mut transaction, &message.id).await?;
     }
 
     // A recovery can only undo its own trim. A later turn, an edited anchor,

@@ -81,6 +81,7 @@ export type MockMessage = {
   generation_attempts?: import('../../types').ChatMessage['generation_attempts'];
   persistence_state?: 'failed' | 'retrying';
   persistence_error?: string;
+  portable_history?: import('../../types').ChatMessage['portable_history'];
 };
 
 export type MockChatState = {
@@ -1377,6 +1378,40 @@ describe('ChatZone', () => {
     expect(message?.textContent).not.toContain('Internal diagnostic');
     expect(message?.textContent).not.toContain('/definitions/0');
     expect(message?.querySelector('button')).toBeNull();
+  });
+
+  it('renders imported user and assistant text as inert history despite stale action flags', async () => {
+    const historical = { version: 1 as const, importKey: 'historical-import', manifest: 'a'.repeat(64), ordinal: '0', displayDate: null };
+    chatState = { ...chatState, messages: [
+      buildMessage({ id: 'historical-user', role: 'user', content: '<old user action> [quick_replies]', portable_history: historical }),
+      buildMessage({ id: 'historical-assistant', role: 'assistant', content: '<old assistant trace> [quick_replies]', portable_history: { ...historical, ordinal: '1', displayDate: '2025-05-04T12:30:00Z' }, persistence_state: 'failed', completion_reason: 'interrupted' }),
+      buildMessage({ id: 'ordinary-user', role: 'user', content: 'New instruction' }),
+      buildMessage({ id: 'ordinary-assistant', role: 'assistant', content: 'Ordinary answer' }),
+    ] };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    const rows = requireContainer().querySelectorAll('[data-chat-historical-message="true"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.textContent).toBe('<old user action> [quick_replies]');
+    expect(rows[1]?.textContent).toBe('<old assistant trace> [quick_replies]');
+    expect(rows[0]?.querySelector('old')).toBeNull();
+    expect(requireContainer().querySelector('#chat-message-historical-user')?.textContent).toContain('chat.historyUnknownDate');
+    const date = requireContainer().querySelector('#chat-message-historical-assistant time');
+    expect(date?.getAttribute('datetime')).toBe('2025-05-04T12:30:00Z');
+    expect(date?.textContent).toContain('2025');
+    expect(date?.textContent).not.toContain('2025-05-04T');
+    expect(requireContainer().querySelector('[data-chat-unsaved-assistant-response]')).toBeNull();
+    expect(markdownRendererContentMock.mock.calls.some(call => call[0] === 'Ordinary answer')).toBe(true);
+    expect(markdownRendererContentMock.mock.calls.some(call => String(call[0]).includes('old assistant'))).toBe(false);
+    for (const id of ['historical-user', 'historical-assistant']) {
+      const row = requireContainer().querySelector(`#chat-message-${id}`);
+      expect(row?.querySelector('button[title="common.copy"]')).not.toBeNull();
+      expect(row?.querySelector('button[title="common.edit"]')).toBeNull();
+      expect(row?.querySelector('button[title="common.regenerate"]')).toBeNull();
+    }
+    const ordinary = requireContainer().querySelector('#chat-message-ordinary-user');
+    expect(ordinary?.querySelector('button[title="common.copy"]')).not.toBeNull();
+    expect(ordinary?.querySelector('button[title="common.edit"]')).not.toBeNull();
+    expect(ordinary?.querySelector('button[title="common.regenerate"]')).not.toBeNull();
   });
 
   it('reveals the selected queue on queue-only publication and removes it reactively', async () => {

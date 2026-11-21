@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { TransferConversationDialog } from '../src/components/connect/TransferConversationDialog';
 import { createRoot } from 'react-dom/client';
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
@@ -12,6 +13,11 @@ import '../src/index.css';
 if (!import.meta.env.DEV || !['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname)) throw new Error('Synthetic Connect QA requires DEV and loopback.');
 await i18n.use(initReactI18next).init({ lng: 'en', fallbackLng: 'en', resources: { en: { translation: en }, fr: { translation: fr } }, interpolation: { escapeValue: false }, showSupportNotice: false });
 const fixture = createConnectConsumerFixture({ authorityLifetimeMs: 30000 });
+fixture.directoryRead(request => {
+  const page = fixture.directory(request);
+  if (request.item_type === 'instance_access') for (const access of page.items) if ('permissions' in access) access.permissions = ['supervise', 'respond'];
+  return page;
+});
 let delayed = false, denied = false;
 const releases = new Set<() => void>();
 fixture.read(async (id, dispatch, signal) => {
@@ -22,6 +28,11 @@ fixture.read(async (id, dispatch, signal) => {
     const cleanup = () => { releases.delete(release); signal.removeEventListener('abort', abort); };
     releases.add(release); signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort();
   });
+  if (dispatch.kind === 'submit' && dispatch.request.operation === 'instance.models') {
+    const macro = id === 'instance:alpha';
+    return { contract_version: '2.0', type: 'response', operation: dispatch.request.operation, request_id: dispatch.request.request_id, account_id: fixture.ports.context().accountId,
+      result: { instance_id: id, observed_at: new Date().toISOString(), expires_at: new Date(Date.now() + 30000).toISOString(), models: [{ provider_id: macro ? 'macro-ai' : 'chatgpt', provider_name: macro ? 'Macro AI' : 'Codex', model_id: macro ? 'synthetic-macro' : 'synthetic-codex', model_name: macro ? 'Synthetic Macro model' : 'Synthetic Codex model', reasoning_efforts: ['low', 'high'] }] } };
+  }
   return fixture.terminal(id, dispatch);
 });
 function toggleOffline() {
@@ -40,10 +51,15 @@ const shortcut = (event: KeyboardEvent) => {
 };
 document.addEventListener('keydown', shortcut);
 function Qa() {
+  const [transfer, setTransfer] = useState(false), [simulated, setSimulated] = useState(false);
   return <main className="mx-auto max-w-4xl space-y-4 p-6 text-foreground"><h1 className="text-sm font-semibold">Macro Connect · Synthetic QA</h1>
     <p className="text-xs text-muted-foreground">DEV only. No account, vault, provider, native IPC or external requests. Local producer composition is not imported.</p>
     <div className="flex flex-wrap gap-3 text-xs"><button onClick={() => void i18n.changeLanguage(i18n.language === 'en' ? 'fr' : 'en')}>EN / FR</button><button onClick={() => fixture.changeAccount()}>Change synthetic account</button><button onClick={() => { if (fixture.waiting.has('instance:alpha')) fixture.emit('instance:alpha', [], true); }}>Reset Alpha stream</button><button onClick={releaseContinuity}>Release continuity · Alt+Shift+C</button><button onClick={() => { delayed = true; }}>Delay next Alpha reads</button><button onClick={() => { delayed = false; for (const release of [...releases]) release(); }}>Release Alpha reads</button><button onClick={() => { denied = !denied; }}>Toggle Alpha refusal · next read</button><button onClick={toggleOffline}>Toggle synthetic offline · Alt+Shift+O</button></div>
     <ConnectConsumerLauncher enabled createPorts={() => fixture.ports} />
+    <button onClick={() => { setTransfer(true); setSimulated(false); }}>Preview conversation transfer</button>
+    {simulated && <p role="status">Simulation only. No native transfer was executed.</p>}
+    {transfer && <TransferConversationDialog ports={fixture.ports} source={{ id: 'synthetic-chat', title: 'Synthetic Global Chat', providerId: 'macro-ai', modelId: 'synthetic-macro' }} send={async () => 'synthetic-target-chat'} onClose={() => setTransfer(false)} onTransferred={() => { setTransfer(false); setSimulated(true); }} />}
+
   </main>;
 }
 const root = createRoot(document.getElementById('root')!);

@@ -37,6 +37,7 @@ function harness(overrides: Partial<ConsumerLimits> = {}, policy = retry) {
     items: ['instance:a', 'instance:b'].map(id => request.item_type === 'instance' ? { contract_version: '1.0', type: 'instance', ref: { type: 'instance', instance_id: id }, label: 'Synthetic PC', connection_state: 'reachable', supported_contract_versions: ['1.0', '2.0'], revision: 0 } : access(id)) });
   const terminal = (id: string, dispatch: ConsumerDispatch) => {
     const request = dispatch.request as { operation: ConsumerOperation; request_id: string };
+    if (request.operation === 'instance.models') return { contract_version: '2.0', type: 'response', operation: request.operation, request_id: request.request_id, account_id: identity.accountId, result: { instance_id: id, observed_at: new Date(time).toISOString(), expires_at: new Date(time + 30000).toISOString(), models: [] } };
     const source = { 'conversation.read': conversation, 'conversations.list': conversations, 'conversations.catalog': catalog, 'conversation.window': windowPage, 'projects.list': projects }[request.operation];
     const result = JSON.parse(JSON.stringify(source).replaceAll('instance-demo', id));
     result.account_id = identity.accountId; result.request_id = request.request_id;

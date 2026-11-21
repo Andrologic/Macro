@@ -129,7 +129,7 @@ export function validateTarget(value: Facts): void {
   nullable(value.footprint.inputLimitTokens, count); nullable(value.footprint.outputLimitTokens, count);
   oneOf(value.footprint.contextLimitSource, ['model_metadata', 'provider_metadata', 'user_override', 'models_dev', 'provider_overflow_error', 'macro_fallback']);
   oneOf(value.footprint.contextLimitConfidence, ['verified', 'configured', 'catalog', 'learned', 'fallback']); ensure(typeof value.footprint.isContextLimitAuthoritative === 'boolean');
-  oneOf(value.risk, ['strict', 'balanced', 'yolo']); ensure(integer(value.max_turns) > 0);
+  oneOf(value.risk, ['strict', 'balanced', 'yolo']); integer(value.max_turns); // Zero disables the turn limit, as in Macro's configuration.
   keys(value.budget_policy, ['auto', 'prune', 'reservedTokens', 'preserveRecentTokens', 'hardStopRatio']);
   for (const name of ['auto', 'prune']) ensure(typeof value.budget_policy[name] === 'boolean');
   for (const name of ['reservedTokens', 'preserveRecentTokens']) nullable(value.budget_policy[name], count);

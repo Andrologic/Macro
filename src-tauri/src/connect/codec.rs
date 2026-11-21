@@ -269,15 +269,22 @@ pub(crate) struct Output {
     pub bytes: Bytes,
 }
 #[derive(Clone, Copy)]
-struct Header {
-    kind: u8,
-    job: u64,
-    lease: u64,
-    length: usize,
-    sequence: u32,
+pub(super) struct Header {
+    pub(super) kind: u8,
+    pub(super) job: u64,
+    pub(super) lease: u64,
+    pub(super) length: usize,
+    pub(super) sequence: u32,
 }
 impl Header {
-    fn exact(self, kind: u8, length: usize, job: u64, lease: u64, sequence: u32) -> bool {
+    pub(super) fn exact(
+        self,
+        kind: u8,
+        length: usize,
+        job: u64,
+        lease: u64,
+        sequence: u32,
+    ) -> bool {
         self.kind == kind
             && self.length == length
             && self.job == job
@@ -292,43 +299,20 @@ pub(super) struct ScopeProbe {
     pub reached: tokio::sync::oneshot::Sender<()>,
     pub resume: tokio::sync::oneshot::Receiver<()>,
 }
-pub(crate) struct Codec {
+// Shared physical IO only. Each protocol owner supplies its own state/credit checks
+// and retains all charges until retirement has joined the Child and every pipe.
+pub(super) struct ChildIo {
     child: Child,
-    #[cfg(test)]
-    pub(super) scope_probe: Option<ScopeProbe>,
     input: Option<ChildStdin>,
     output: Option<ChildStdout>,
     stderr: Option<JoinHandle<std::io::Result<()>>>,
     retirement_complete: bool,
     retirement_failed: bool,
-    scratch: Box<[u8; PAGE]>,
-    budget: TransitInstance,
-    raw: Option<TransitCharge>,
-    raw_turn: Option<tokio::sync::OwnedSemaphorePermit>,
-    bank: Option<Arc<JobBank>>,
-    pub(crate) bank_owner: BankOwner,
-    _startup: TransitCharge,
-    _a1_module: Option<TransitCharge>,
-    profile: Profile,
-    _database: ChatWorkLifetime,
-    job: u64,
-    lease: u64,
+    pub(super) scratch: Box<[u8; PAGE]>,
 }
-impl Codec {
-    pub(crate) fn spawn(
-        mut command: Command,
-        budget: TransitInstance,
-        lifetime: ChatWorkLifetime,
-        profile: Profile,
-    ) -> Result<Self> {
-        // Persistent generated A1 module reservation, held until Child retirement.
-        // This is a logical module charge, not a bound on JSC code/VM or RSS.
-        let a1_module = if profile == Profile::Bootstrap {
-            Some(budget.reserve(1_835_008).map_err(|_| "transit_limit")?)
-        } else {
-            None
-        };
-        let startup = budget.reserve(STARTUP).map_err(|_| "transit_limit")?;
+impl ChildIo {
+    // The caller must reserve its startup/scratch charge before this call.
+    pub(super) fn spawn(mut command: Command) -> Result<Self> {
         command
             .env_clear()
             .stdin(Stdio::piped())
@@ -355,14 +339,169 @@ impl Codec {
         });
         Ok(Self {
             child,
-            #[cfg(test)]
-            scope_probe: None,
             input,
             output,
             stderr: Some(stderr),
             retirement_complete: false,
             retirement_failed: false,
             scratch: Box::new([0; PAGE]),
+        })
+    }
+    pub(super) async fn send(
+        &mut self,
+        kind: u8,
+        job: u64,
+        lease: u64,
+        sequence: u32,
+        data: &[u8],
+    ) -> Result<()> {
+        let mut h = [0u8; 32];
+        h[..4].copy_from_slice(b"MCF1");
+        h[4..6].copy_from_slice(&1u16.to_be_bytes());
+        h[6] = kind;
+        h[8..16].copy_from_slice(&job.to_be_bytes());
+        h[16..24].copy_from_slice(&lease.to_be_bytes());
+        h[24..28].copy_from_slice(&(data.len() as u32).to_be_bytes());
+        h[28..32].copy_from_slice(&sequence.to_be_bytes());
+        let input = self.input.as_mut().ok_or("codec_closed")?;
+        input.write_all(&h).await.map_err(|_| "codec_write")?;
+        input.write_all(data).await.map_err(|_| "codec_write")
+    }
+    pub(super) async fn next(
+        &mut self,
+        limit: impl FnOnce(Header) -> usize,
+        valid: impl FnOnce(Header) -> bool,
+    ) -> Result<Header> {
+        let mut h = [0u8; 32];
+        let output = self.output.as_mut().ok_or("codec_closed")?;
+        output.read_exact(&mut h).await.map_err(|_| "codec_eof")?;
+        if &h[..4] != b"MCF1" || h[4..6] != [0, 1] || h[7] != 0 {
+            return Err("codec_framing");
+        }
+        let header = Header {
+            kind: h[6],
+            job: u64::from_be_bytes(h[8..16].try_into().unwrap()),
+            lease: u64::from_be_bytes(h[16..24].try_into().unwrap()),
+            length: u32::from_be_bytes(h[24..28].try_into().unwrap()) as usize,
+            sequence: u32::from_be_bytes(h[28..32].try_into().unwrap()),
+        };
+        let limit = limit(header).min(PAGE);
+        if header.length > limit || !valid(header) {
+            return Err("codec_framing");
+        }
+        // Header/state/credit validation precedes every payload read. Never drain
+        // an unadmitted body after a framing failure.
+        output
+            .read_exact(&mut self.scratch[..header.length])
+            .await
+            .map_err(|_| "codec_eof")?;
+        Ok(header)
+    }
+    pub(super) fn retirement_complete(&self) -> bool {
+        self.retirement_complete
+    }
+    pub(super) async fn retire_until(&mut self, deadline: tokio::time::Instant) -> bool {
+        if self.retirement_complete {
+            return true;
+        }
+        if self.retirement_failed {
+            return false;
+        }
+        // This private bundled codec does not spawn external children. The
+        // Unix group is containment; only wait proves reap of the owned Child.
+        #[cfg(unix)]
+        if let Some(pid) = self.child.id() {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
+        let _ = self.child.start_kill();
+        if !matches!(
+            tokio::time::timeout_at(deadline, self.child.wait()).await,
+            Ok(Ok(_))
+        ) {
+            return false;
+        }
+        // Retain every pipe across timeout. On Windows flush joins Tokio's
+        // pending Blocking write; shutdown alone would return immediately.
+        if let Some(input) = self.input.as_mut() {
+            match tokio::time::timeout_at(deadline, input.flush()).await {
+                Ok(Ok(())) => (),
+                // This error ends the flushed write only, not the other pipes.
+                // The Child was reaped; stdout EOF and stderr join still follow.
+                Ok(Err(error)) if error.kind() == std::io::ErrorKind::BrokenPipe => (),
+                _ => return false,
+            }
+        }
+        self.input.take();
+        // No drain after a framing refusal while the Child is alive. After
+        // reap, finish any owned read and consume pipe residue in fixed scratch.
+        // This also joins Tokio's internal Windows read before dropping stdout.
+        if let Some(output) = self.output.as_mut() {
+            loop {
+                match tokio::time::timeout_at(deadline, output.read(&mut self.scratch[..])).await {
+                    Ok(Ok(0)) => break,
+                    Ok(Ok(_)) => self.scratch.fill(0),
+                    _ => return false,
+                }
+            }
+        }
+        self.output.take();
+        if let Some(task) = self.stderr.as_mut() {
+            let result = match tokio::time::timeout_at(deadline, task).await {
+                Ok(result) => result,
+                Err(_) => return false,
+            };
+            // A completed JoinHandle can now be dropped. Never abort a drain
+            // whose nested Blocking read might still own a handle and buffer.
+            self.stderr.take();
+            if !matches!(result, Ok(Ok(()))) {
+                self.retirement_failed = true;
+                return false;
+            }
+        }
+        self.scratch.fill(0);
+        self.retirement_complete = true;
+        true
+    }
+}
+
+pub(crate) struct Codec {
+    io: ChildIo,
+    #[cfg(test)]
+    pub(super) scope_probe: Option<ScopeProbe>,
+    budget: TransitInstance,
+    raw: Option<TransitCharge>,
+    raw_turn: Option<tokio::sync::OwnedSemaphorePermit>,
+    bank: Option<Arc<JobBank>>,
+    pub(crate) bank_owner: BankOwner,
+    _startup: TransitCharge,
+    _a1_module: Option<TransitCharge>,
+    profile: Profile,
+    _database: ChatWorkLifetime,
+    job: u64,
+    lease: u64,
+}
+impl Codec {
+    pub(crate) fn spawn(
+        command: Command,
+        budget: TransitInstance,
+        lifetime: ChatWorkLifetime,
+        profile: Profile,
+    ) -> Result<Self> {
+        // Persistent generated A1 module reservation, held until Child retirement.
+        // This is a logical module charge, not a bound on JSC code/VM or RSS.
+        let a1_module = if profile == Profile::Bootstrap {
+            Some(budget.reserve(1_835_008).map_err(|_| "transit_limit")?)
+        } else {
+            None
+        };
+        let startup = budget.reserve(STARTUP).map_err(|_| "transit_limit")?;
+        let io = ChildIo::spawn(command)?;
+        Ok(Self {
+            io,
+            #[cfg(test)]
+            scope_probe: None,
             bank_owner: BankOwner {
                 budget: budget.clone(),
                 gate: Arc::new(tokio::sync::Semaphore::new(1)),
@@ -388,47 +527,16 @@ impl Codec {
         sequence: u32,
         data: &[u8],
     ) -> Result<()> {
-        let mut h = [0u8; 32];
-        h[..4].copy_from_slice(b"MCF1");
-        h[4..6].copy_from_slice(&1u16.to_be_bytes());
-        h[6] = kind;
-        h[8..16].copy_from_slice(&job.to_be_bytes());
-        h[16..24].copy_from_slice(&lease.to_be_bytes());
-        h[24..28].copy_from_slice(&(data.len() as u32).to_be_bytes());
-        h[28..32].copy_from_slice(&sequence.to_be_bytes());
-        let input = self.input.as_mut().ok_or("codec_closed")?;
-        input.write_all(&h).await.map_err(|_| "codec_write")?;
-        input.write_all(data).await.map_err(|_| "codec_write")
+        self.io.send(kind, job, lease, sequence, data).await
     }
     async fn next(&mut self, valid: impl FnOnce(Header) -> bool) -> Result<Header> {
-        let mut h = [0u8; 32];
-        let output = self.output.as_mut().ok_or("codec_closed")?;
-        output.read_exact(&mut h).await.map_err(|_| "codec_eof")?;
-        if &h[..4] != b"MCF1" || h[4..6] != [0, 1] || h[7] != 0 {
-            return Err("codec_framing");
-        }
-        let header = Header {
-            kind: h[6],
-            job: u64::from_be_bytes(h[8..16].try_into().unwrap()),
-            lease: u64::from_be_bytes(h[16..24].try_into().unwrap()),
-            length: u32::from_be_bytes(h[24..28].try_into().unwrap()) as usize,
-            sequence: u32::from_be_bytes(h[28..32].try_into().unwrap()),
-        };
-        let limit = if header.kind == 7 { PAGE } else { 4096 };
-        if header.length > limit || !valid(header) {
-            return Err("codec_framing");
-        }
-        // Header/state/credit validation precedes every payload read. Never drain
-        // an unadmitted body after a framing failure.
-        output
-            .read_exact(&mut self.scratch[..header.length])
+        self.io
+            .next(|h| if h.kind == 7 { PAGE } else { 4096 }, valid)
             .await
-            .map_err(|_| "codec_eof")?;
-        Ok(header)
     }
     #[cfg(test)]
     pub(crate) fn pid(&self) -> u32 {
-        self.child.id().expect("live Child")
+        self.io.child.id().expect("live Child")
     }
     pub(crate) async fn hello(&mut self) -> Result<()> {
         #[derive(Deserialize)]
@@ -448,7 +556,7 @@ impl Codec {
             .next(|h| h.exact(1, h.length, 0, 0, 0) && h.length > 0)
             .await?;
         let hello: Hello =
-            serde_json::from_slice(&self.scratch[..h.length]).map_err(|_| "codec_identity")?;
+            serde_json::from_slice(&self.io.scratch[..h.length]).map_err(|_| "codec_identity")?;
         let transit: serde_json::Value = serde_json::from_str(include_str!(
             "../../../contracts/macro-pilot/v2/transfer-transit/transfer-transit-contract.json"
         ))
@@ -487,7 +595,7 @@ impl Codec {
         {
             return Err("codec_identity");
         }
-        self.scratch.fill(0);
+        self.io.scratch.fill(0);
         Ok(())
     }
     async fn grant(&mut self, units: u64, class: u32, limit: usize) -> Result<u64> {
@@ -553,10 +661,10 @@ impl Codec {
         #[cfg(test)]
         self.probe_scope(phase, false).await?;
         self.next(|h| h.exact(6, 4, job, raw, 0)).await?;
-        if u32::from_be_bytes(self.scratch[..4].try_into().unwrap()) != u32::from(phase) {
+        if u32::from_be_bytes(self.io.scratch[..4].try_into().unwrap()) != u32::from(phase) {
             return Err("codec_scope");
         }
-        self.scratch.fill(0);
+        self.io.scratch.fill(0);
         // All parent writes completed and the trusted codec closed its raw scope.
         self.raw.take();
         self.raw_turn.take();
@@ -612,95 +720,37 @@ impl Codec {
                 })
                 .await?;
             if h.kind == 9 {
-                let status = u32::from_be_bytes(self.scratch[..4].try_into().unwrap());
+                let status = u32::from_be_bytes(self.io.scratch[..4].try_into().unwrap());
                 if status > 3 {
                     return Err("codec_status");
                 }
-                self.scratch.fill(0);
+                self.io.scratch.fill(0);
                 self.bank.take();
                 return Ok(Output {
                     status,
                     bytes: result,
                 });
             }
-            result.data.extend_from_slice(&self.scratch[..h.length]);
-            self.scratch.fill(0);
+            result.data.extend_from_slice(&self.io.scratch[..h.length]);
+            self.io.scratch.fill(0);
             self.send(8, job, control, sequence, &[]).await?;
             sequence = sequence.checked_add(1).ok_or("codec_limit")?;
         }
     }
     pub(crate) fn retirement_complete(&self) -> bool {
-        self.retirement_complete
+        self.io.retirement_complete
     }
     pub(crate) async fn retire(&mut self) -> bool {
         self.retire_until(tokio::time::Instant::now() + std::time::Duration::from_secs(10))
             .await
     }
     async fn retire_until(&mut self, deadline: tokio::time::Instant) -> bool {
-        if self.retirement_complete {
-            return true;
-        }
-        if self.retirement_failed {
+        if !self.io.retire_until(deadline).await {
             return false;
         }
-        // This private bundled codec does not spawn external children. The
-        // Unix group is containment; only wait proves reap of the owned Child.
-        #[cfg(unix)]
-        if let Some(pid) = self.child.id() {
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-        }
-        let _ = self.child.start_kill();
-        if !matches!(
-            tokio::time::timeout_at(deadline, self.child.wait()).await,
-            Ok(Ok(_))
-        ) {
-            return false;
-        }
-        // Retain every pipe across timeout. On Windows flush joins Tokio's
-        // pending Blocking write; shutdown alone would return immediately.
-        if let Some(input) = self.input.as_mut() {
-            match tokio::time::timeout_at(deadline, input.flush()).await {
-                Ok(Ok(())) => (),
-                // This error ends the flushed write only, not the other pipes.
-                // The Child was reaped; stdout EOF and stderr join still follow.
-                Ok(Err(error)) if error.kind() == std::io::ErrorKind::BrokenPipe => (),
-                _ => return false,
-            }
-        }
-        self.input.take();
-        // No drain after a framing refusal while the Child is alive. After
-        // reap, finish any owned read and consume pipe residue in fixed scratch.
-        // This also joins Tokio's internal Windows read before dropping stdout.
-        if let Some(output) = self.output.as_mut() {
-            loop {
-                match tokio::time::timeout_at(deadline, output.read(&mut self.scratch[..])).await {
-                    Ok(Ok(0)) => break,
-                    Ok(Ok(_)) => self.scratch.fill(0),
-                    _ => return false,
-                }
-            }
-        }
-        self.output.take();
-        if let Some(task) = self.stderr.as_mut() {
-            let result = match tokio::time::timeout_at(deadline, task).await {
-                Ok(result) => result,
-                Err(_) => return false,
-            };
-            // A completed JoinHandle can now be dropped. Never abort a drain
-            // whose nested Blocking read might still own a handle and buffer.
-            self.stderr.take();
-            if !matches!(result, Ok(Ok(()))) {
-                self.retirement_failed = true;
-                return false;
-            }
-        }
-        self.scratch.fill(0);
         self.raw.take();
         self.raw_turn.take();
         self.bank.take();
-        self.retirement_complete = true;
         true
     }
 }
@@ -855,6 +905,7 @@ mod retirement_tests {
                 let write = async {
                     loop {
                         codec
+                            .io
                             .input
                             .as_mut()
                             .unwrap()
@@ -871,15 +922,17 @@ mod retirement_tests {
                 );
             } else {
                 let mut header = [0; 32];
-                let read = codec.output.as_mut().unwrap().read_exact(&mut header);
+                let read = codec.io.output.as_mut().unwrap().read_exact(&mut header);
                 tokio::pin!(read);
                 assert!(futures::poll!(&mut read).is_pending());
             }
             assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_err());
             assert!(db.set_ready(pool.clone()).await.is_err());
             assert!(codec.retire().await);
-            assert!(codec.retirement_complete());
-            assert!(codec.input.is_none() && codec.output.is_none() && codec.stderr.is_none());
+            assert!(codec.io.retirement_complete());
+            assert!(
+                codec.io.input.is_none() && codec.io.output.is_none() && codec.io.stderr.is_none()
+            );
             #[cfg(unix)]
             assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
             // STARTUP remains owned by Codec until that last owner disappears.
@@ -912,11 +965,11 @@ mod retirement_tests {
             Profile::Persistent,
         )
         .unwrap();
-        let drain = codec.stderr.take().unwrap();
+        let drain = codec.io.stderr.take().unwrap();
         let (release, held) = tokio::sync::oneshot::channel();
         // Hold publication of the real drain's completion. This is not an
         // emulation of Windows Blocking or an induced OS wait failure.
-        codec.stderr = Some(tokio::spawn(async move {
+        codec.io.stderr = Some(tokio::spawn(async move {
             let _ = held.await;
             drain.await.map_err(std::io::Error::other)?
         }));
@@ -925,8 +978,9 @@ mod retirement_tests {
                 .retire_until(tokio::time::Instant::now() + std::time::Duration::from_millis(200))
                 .await
         );
-        assert!(!codec.retirement_complete());
+        assert!(!codec.io.retirement_complete());
         assert!(codec
+            .io
             .stderr
             .as_ref()
             .is_some_and(|task| !task.is_finished()));
@@ -934,7 +988,7 @@ mod retirement_tests {
         assert!(db.set_ready(pool.clone()).await.is_err());
         release.send(()).unwrap();
         assert!(codec.retire().await);
-        assert!(codec.stderr.is_none());
+        assert!(codec.io.stderr.is_none());
         drop(codec);
         drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
         db.set_ready(pool).await.unwrap();

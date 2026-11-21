@@ -305,6 +305,19 @@ export type AgsdlSelectionReference = AgsdlDocumentReference | AgsdlRuntimeRefer
 
 export interface ConversationContextSource {
   conversationId: string;
+  archive?: ArchiveContextSelection;
+}
+
+/** Persisted data selector. Native storage revalidates every subsequent read. */
+export interface ArchiveContextSelection {
+  conversationId: string;
+  selector: import('./generated/ipc').ArchiveSelector;
+  resourceUuid: string;
+  ordinal: string;
+  manifest: string;
+  sha256: string;
+  start: string;
+  end: string;
 }
 
 export interface ContextReference {
@@ -333,6 +346,7 @@ export interface PersistedContextReference {
   sourceLabel?: string;
   url?: string;
   conversationId?: string;
+  archive?: ArchiveContextSelection;
   sourceUpdatedAt?: string;
 }
 
@@ -1305,7 +1319,11 @@ export interface RecordConversationGoalAuditInput {
 
 export interface ChatMessage {
   /** Internal inactive-archive provenance. Lowers authority; never F admission. */
-  portable_history?: { version: 1; importKey: string; manifest: string };
+  portable_history?: {
+    version: 1; importKey: string; manifest: string;
+    ordinal?: string; sourceOrdinal?: string | null;
+    displayDate?: string | null; inheritedFrom?: string | null;
+  };
   id: string;
   turn_id?: string | null;
   task_id: string;

@@ -325,7 +325,7 @@ async fn check_database(path: &Path) -> Result<()> {
     let has_ledger: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='migration_identity_history')").fetch_one(&mut db).await.map_err(|e|e.to_string())?;
     if !has_ledger {
         let unified: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version>=20)")
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version>=20 AND (version,name) NOT IN ((20,'020_connect_archive_lifecycle'),(21,'021_connect_target_abort'),(22,'022_connect_target_activation')))")
                 .fetch_one(&mut db)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -346,6 +346,27 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if !versions.contains(&45) {
+        crate::db::connect_transfer::remove_target_activation_reference_in(
+            &mut *reference.acquire().await.map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    if !versions.contains(&44) {
+        crate::db::connect_transfer::remove_target_abort_reference_in(
+            &mut *reference.acquire().await.map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    if !versions.contains(&43) {
+        crate::db::connect_transfer::remove_reader_reference_in(
+            &mut *reference.acquire().await.map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    }
     if !versions.contains(&19) {
         crate::db::connect_transfer::remove_publication_reference_in(
             &mut *reference.acquire().await.map_err(|e| e.to_string())?,
@@ -3953,6 +3974,42 @@ mod catalog_backup_tests {
     }
 
     #[tokio::test]
+    async fn connect_backup_accepts_original_migration_stamps_without_an_agsdl_ledger() {
+        let (_temp, data, _config) = tests::profile().await;
+        let path = data.join("macro.db");
+        let mut db = connection(&path).await.unwrap();
+        crate::db::migration_tests::drop_agsdl(&mut db).await;
+        sqlx::raw_sql(
+            "DROP TABLE migration_identity_history;
+             UPDATE schema_migrations SET version=20, name='020_connect_archive_lifecycle' WHERE version=43;
+             UPDATE schema_migrations SET version=21, name='021_connect_target_abort' WHERE version=44;
+             UPDATE schema_migrations SET version=22, name='022_connect_target_activation' WHERE version=45;",
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+        db.close().await.unwrap();
+
+        check_database(&path).await.unwrap();
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        let stamps: Vec<(i64, String)> =
+            sqlx::query_as("SELECT version,name FROM migration_identity_history ORDER BY version")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            stamps,
+            [
+                (20, "020_connect_archive_lifecycle".into()),
+                (21, "021_connect_target_abort".into()),
+                (22, "022_connect_target_activation".into()),
+            ]
+        );
+        pool.close().await;
+        check_database(&path).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn connect_publication_backup_accepts_exact_pre019_and_rejects_missing019_guard() {
         let (_temp, data, _config) = tests::profile().await;
         let path = data.join("macro.db");
@@ -3960,7 +4017,7 @@ mod catalog_backup_tests {
         crate::db::connect_transfer::remove_publication_reference_in(&mut connection)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM schema_migrations WHERE version=19")
+        sqlx::query("DELETE FROM schema_migrations WHERE version IN (19,43,44,45)")
             .execute(&mut connection)
             .await
             .unwrap();

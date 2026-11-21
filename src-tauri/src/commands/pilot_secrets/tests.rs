@@ -1373,6 +1373,7 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
                 account_id: Some(text(&seed, "account_id")),
                 device_id: Some(text(credentials, "device_id")),
                 scope,
+                capabilities: vec![],
             },
         )
     };
@@ -1390,6 +1391,40 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     .await
     .unwrap();
     verified.check().await.unwrap();
+    // The first native decision uses canonical authenticated HTTP, not a SQL
+    // receipt or a test-produced terminal. A new source is explicitly absent.
+    let source_path = format!(
+        "/pilot/v2/transfers/sources/{}/synthetic-chat/decisions",
+        text(&seed["a"], "instance")
+    );
+    let status_request = serde_json::json!({
+        "transit_contract":"transfer-transit-1", "type":"decision.request",
+        "request_id":uuid::Uuid::new_v4(), "request":{
+            "decision_contract":"transfer-decision-1", "type":"decision_request",
+            "operation":"reconcile", "operation_id":uuid::Uuid::new_v4(),
+            "expected_revision":"0", "body":{"action":"source_status", "provenance":{
+                "source":{"relay_origin":seed["origin"], "account_id":seed["account_id"],
+                    "source_instance_id":seed["a"]["instance"], "source_conversation_id":"synthetic-chat"},
+                "lineage_id":uuid::Uuid::new_v4(), "installation_id":uuid::Uuid::new_v4(),
+                "birth_generation":uuid::Uuid::new_v4()
+            }}
+        }
+    });
+    let decision_output = verified
+        .decision(
+            manager.clone(),
+            &ready,
+            &source_path,
+            status_request.clone(),
+            serde_json::Value::Null,
+        )
+        .await
+        .unwrap();
+    let status: serde_json::Value =
+        serde_json::from_slice(decision_output.bytes.as_slice()).unwrap();
+    assert_eq!(status["result"]["kind"], "source_status");
+    assert_eq!(status["result"]["status"]["status"], "not_found");
+    drop(decision_output);
     let events = runtime.profile_events();
     use crate::connect::codec::Profile;
     assert_eq!(events.len(), 3);
@@ -1401,6 +1436,26 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     assert_eq!(fake.resumes.load(Ordering::SeqCst), 0);
     manager.policy_fixture().0.change(|| ()).unwrap();
     assert_eq!(verified.check().await.err(), Some("policy_revoked"));
+    assert_eq!(
+        verified
+            .refresh_authority(manager.clone(), &ready)
+            .await
+            .err(),
+        Some("policy_revoked")
+    );
+    assert_eq!(
+        verified
+            .decision(
+                manager.clone(),
+                &ready,
+                &source_path,
+                status_request,
+                serde_json::Value::Null
+            )
+            .await
+            .err(),
+        Some("policy_revoked")
+    );
     verified.close().await.unwrap();
     // A real second process rotates the same persistent policy epoch without
     // changing the first owner's local revision. A retained bootstrap must fail.
@@ -1518,6 +1573,13 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     short.check().await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(3100)).await;
     assert_eq!(short.check().await.err(), Some("authority_expired"));
+    assert_eq!(
+        short
+            .refresh_authority(short_manager.clone(), &ready)
+            .await
+            .err(),
+        Some("authority_expired")
+    );
     short.close().await.unwrap();
     input
         .write_all(b"{\"restoreSession\":true}\n")
@@ -1575,4 +1637,2663 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
             .unwrap()
             .success()
     );
+}
+
+async fn transfer_target_event(
+    lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+) -> Result<serde_json::Value, &'static str> {
+    while let Some(line) = lines.next_line().await.map_err(|_| "target_event_io")? {
+        if line.len() > 4096 {
+            return Err("target_event_limit");
+        }
+        if let Some(start) = line.find("SLICE_TARGET_EVENT:") {
+            return serde_json::from_str(&line[start + 19..]).map_err(|_| "target_event_json");
+        }
+    }
+    Err("target_event_eof")
+}
+
+// The synthetic subprocess pipe still carries test control until P5. Keep
+// the real selected producer alive during that wait without passing any facts
+// through a second transport. Only empty polls are expected in these phases.
+pub(super) async fn transfer_wait_with_idle_poll<B: Vault + 'static, F: std::future::Future>(
+    transport: &transport::VerifiedTransport,
+    manager: Arc<Manager<B>>,
+    ready: &crate::core::db_state::DbReady,
+    renew_before_poll: bool,
+    work: F,
+) -> F::Output {
+    let stop = tokio_util::sync::CancellationToken::new();
+    let polling = async {
+        loop {
+            if stop.is_cancelled() {
+                return Ok::<_, &'static str>(());
+            }
+            if renew_before_poll {
+                transport.refresh_authority(manager.clone(), ready).await?;
+            }
+            let output = match transport
+                .delivery_until(manager.clone(), ready, &stop)
+                .await
+            {
+                Err("http_cancelled") if stop.is_cancelled() => return Ok(()),
+                result => result?,
+            };
+            let value: serde_json::Value =
+                serde_json::from_slice(output.bytes.as_slice()).map_err(|_| "invalid_delivery")?;
+            if value["branch"] != "empty" {
+                return Err("unexpected_idle_delivery");
+            }
+        }
+    };
+    tokio::pin!(work);
+    tokio::pin!(polling);
+    tokio::select! {
+        result=&mut work=>{stop.cancel();polling.await.unwrap();result},
+        result=&mut polling=>panic!("idle poll ended before its phase: {result:?}"),
+    }
+}
+
+/// One evolving local product scenario. It stays red until source, real relay,
+/// inactive target, native preparation and ACK are connected together.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_macro_ai_local_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::Flow).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_codex_local_transfer() {
+    global_chat_local_transfer("codex", false, false, false, Route::Flow).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_compacted_local_transfer() {
+    global_chat_local_transfer("codex", true, false, false, Route::Flow).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_resources_local_transfer() {
+    global_chat_local_transfer("codex", true, true, false, Route::Flow).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_macro_ai_compacted_local_transfer() {
+    global_chat_local_transfer("macro-ai", true, false, false, Route::Flow).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_macro_ai_resources_local_transfer() {
+    global_chat_local_transfer("macro-ai", true, true, false, Route::Flow).await;
+}
+
+/// Both desktops run the real Pilot runtime; the transfer goes through the
+/// Tauri command bodies, with the relay's default same-account rights.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_runtime_transfer() {
+    global_chat_local_transfer("codex", true, true, false, Route::Runtime).await;
+}
+
+/// Through the runtime, a refused transfer reaches the dialog as `aborted`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_runtime_refused_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, true, Route::Runtime).await;
+}
+
+/// An interrupt between delivery and protection ends the target's receive; the
+/// relay delivers the same invitation to its next receive, and the transfer
+/// completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_interrupted_receive_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::InterruptedReceive).await;
+}
+
+/// The target session is restricted on the source instance: the transfer is
+/// abandoned and the source reopens.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_restricted_target_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::RestrictedTarget).await;
+}
+
+/// The reserve's reply is lost: the source reconciles, aborts the reservation
+/// and reopens.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_lost_reserve_reply_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::LostReserveReply).await;
+}
+
+/// The reserve never reaches the relay: the source closes it with
+/// `abort_missing` before reopening, so a late reserve can only meet an abort.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_lost_reserve_request_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::LostReserveRequest).await;
+}
+
+/// The source stops right after the reserve; a later reconciliation with a
+/// fresh transport aborts the attempt and reopens the source.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_interrupted_source_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::InterruptedSource).await;
+}
+
+/// The source abandons after the target prepared: the target resolves the
+/// attempt and releases its staged import and projection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_abandoned_after_preparation_transfer() {
+    global_chat_local_transfer(
+        "macro-ai",
+        false,
+        false,
+        false,
+        Route::AbandonedAfterPreparation,
+    )
+    .await;
+}
+
+/// The target stops after `ready`: the source abandons, and the target's
+/// reconciliation releases the attempt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_target_stopped_before_commit_transfer() {
+    global_chat_local_transfer(
+        "macro-ai",
+        false,
+        false,
+        false,
+        Route::TargetStoppedBeforeCommit,
+    )
+    .await;
+}
+
+/// The target stops after `committed`: its reconciliation publishes the
+/// conversation and records the activation the source waits for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_target_stopped_after_commit_transfer() {
+    global_chat_local_transfer(
+        "codex",
+        false,
+        false,
+        false,
+        Route::TargetStoppedAfterCommit,
+    )
+    .await;
+}
+
+/// The target stops after publishing, before `activation.record`: its
+/// reconciliation records the activation without publishing again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_target_stopped_after_publication_transfer() {
+    global_chat_local_transfer(
+        "macro-ai",
+        false,
+        false,
+        false,
+        Route::TargetStoppedAfterPublication,
+    )
+    .await;
+}
+
+/// An abort wins the race against the commit: the commit loses, the source
+/// applies the aborted terminal and reopens, the target releases.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_abort_before_commit_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::AbortBeforeCommit).await;
+}
+
+/// An abort on the commit's revision loses: the relay returns the committed
+/// terminal and the transfer completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_abort_after_commit_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::AbortAfterCommit).await;
+}
+
+/// The source session is revoked once the target is ready: the commit fails,
+/// nothing is ceded, and a fresh transport's reconciliation reopens the source
+/// without ever committing the attempt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_revoked_before_commit_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::RevokedBeforeCommit).await;
+}
+
+/// A second client sends the same conversation while the first transfer waits
+/// to commit: it is refused without a second record, and the first completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_second_send_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::SecondSend).await;
+}
+
+/// The source profile is restored from a backup taken before its cession,
+/// without lineage, then reconnects: the restored chat stays held but
+/// readable, neither reconciliation nor a new send reactivates it, with the
+/// relay reachable or not, and no new transfer starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_restored_before_cession_transfer() {
+    global_chat_local_transfer(
+        "macro-ai",
+        false,
+        false,
+        false,
+        Route::RestoredBeforeCession,
+    )
+    .await;
+}
+
+/// Delayed duplicates of an old ACK, an old chunk, the reserve and `ready`
+/// reach the relay after newer messages, and the commit is retried exactly:
+/// each is refused or answered as before, and the transfer completes once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_stale_replays_transfer() {
+    global_chat_local_transfer("macro-ai", true, false, false, Route::StaleReplays).await;
+}
+
+/// The target process stops with half of the archive staged: the source
+/// abandons, and the target's next reconciliation releases the staged chunks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_target_stopped_during_staging_transfer() {
+    global_chat_local_transfer(
+        "macro-ai",
+        true,
+        false,
+        false,
+        Route::TargetStoppedDuringStaging,
+    )
+    .await;
+}
+
+/// The target's disk fills after its first imported record: nothing is
+/// prepared, the source abandons, and the target's next reconciliation
+/// releases the partial import.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_target_import_full_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::TargetImportFull).await;
+}
+
+/// A required attachment is missing from the source: the send is refused
+/// without a transfer reaching the target, and the source stays open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_missing_asset_transfer() {
+    global_chat_local_transfer("macro-ai", false, true, false, Route::MissingAsset).await;
+}
+
+/// The target lacks the selected model: the source records `aborted` and reopens.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_refused_local_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, true, Route::Flow).await;
+}
+
+/// How the scenario reaches the transfer.
+#[derive(Clone, Copy, PartialEq)]
+enum Route {
+    /// The scenario calls the native flow directly.
+    Flow,
+    /// Both desktops run the real Pilot runtime (`dev/connect-transfer-runtime.ts`)
+    /// and the Tauri command bodies.
+    Runtime,
+    /// The target's idle receive is interrupted between delivery and protection.
+    InterruptedReceive,
+    /// The relay keeps a restriction of the target session on the source instance.
+    RestrictedTarget,
+    /// The reserve reaches the relay but its reply is lost.
+    LostReserveReply,
+    /// The reserve request never reaches the relay.
+    LostReserveRequest,
+    /// The source process stops right after the reserve, then reconciles with a
+    /// fresh transport as after a restart.
+    InterruptedSource,
+    /// The source abandons once the target has prepared.
+    AbandonedAfterPreparation,
+    /// The target process stops after `ready`; the source abandons and the
+    /// target's next reconciliation releases its staged content.
+    TargetStoppedBeforeCommit,
+    /// The target process stops after `committed`; its next reconciliation
+    /// publishes the pinned preparation and records the activation.
+    TargetStoppedAfterCommit,
+    /// The target process stops after publishing, before recording the
+    /// activation; its next reconciliation records it.
+    TargetStoppedAfterPublication,
+    /// The source records `aborted` just before its commit, which then loses.
+    AbortBeforeCommit,
+    /// The source sends an abort on the commit's revision after committing.
+    AbortAfterCommit,
+    /// The relay revokes the source session after `ready`, before the commit.
+    RevokedBeforeCommit,
+    /// A second send of the same conversation arrives before the commit.
+    SecondSend,
+    /// The target process stops after staging part of the archive.
+    TargetStoppedDuringStaging,
+    /// The target's storage is full once its first record is imported.
+    TargetImportFull,
+    /// A required attachment of the source conversation is missing.
+    MissingAsset,
+    /// The relay receives delayed duplicates of older messages.
+    StaleReplays,
+    /// The source restores a backup taken before the cession.
+    RestoredBeforeCession,
+}
+
+async fn global_chat_local_transfer(
+    provider: &str,
+    compacted: bool,
+    with_resources: bool,
+    refused: bool,
+    route: Route,
+) {
+    let via_runtime = route == Route::Runtime;
+    let restricted = route == Route::RestrictedTarget;
+    let abandoned = route == Route::AbandonedAfterPreparation;
+    // The source sees an abandoned attempt and the target releases it.
+    let released = abandoned
+        || matches!(
+            route,
+            Route::TargetStoppedBeforeCommit
+                | Route::AbortBeforeCommit
+                | Route::TargetStoppedDuringStaging
+                | Route::TargetImportFull
+        );
+    // The target fails before preparing: the source gives up waiting.
+    let unprepared = matches!(
+        route,
+        Route::TargetStoppedDuringStaging | Route::TargetImportFull
+    );
+    let missing_asset = route == Route::MissingAsset;
+    // Revoking the account's sessions aborts the transfer at the relay, but
+    // neither desktop can read that terminal before a new association.
+    let revoked = route == Route::RevokedBeforeCommit;
+    // The source flow's injection point for this route.
+    let interruption = match route {
+        Route::InterruptedSource => Some("after_reserve"),
+        Route::AbandonedAfterPreparation => Some("after_prepared"),
+        Route::AbortBeforeCommit => Some("abort_before_commit"),
+        Route::AbortAfterCommit => Some("abort_after_commit"),
+        Route::RevokedBeforeCommit | Route::SecondSend => Some("hold_before_commit"),
+        _ => None,
+    };
+    let lost = matches!(
+        route,
+        Route::LostReserveReply | Route::LostReserveRequest | Route::InterruptedSource
+    ) || missing_asset;
+    use base64::Engine;
+
+    use sha2::{Digest, Sha256};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio_util::sync::CancellationToken;
+    use transport::{Intent, Scope};
+    let executable = |name: &str| {
+        std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|p| p.join(name))
+            .find(|p| p.is_file())
+            .unwrap()
+    };
+    let mut relay = tokio::process::Command::new(executable("node"))
+        .args([
+            "--import",
+            &std::env::var("MACRO_CONNECT_RELAY_LOADER").unwrap(),
+            "--conditions=react-server",
+            &std::env::var("MACRO_CONNECT_RELAY_HARNESS").unwrap(),
+        ])
+        .env(
+            "MACRO_CONNECT_TEST_RESTRICT",
+            if restricted { "target-on-source" } else { "" },
+        )
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut relay_input = relay.stdin.take().unwrap();
+    let mut lines = BufReader::new(relay.stdout.take().unwrap()).lines();
+    let seed: serde_json::Value =
+        serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    let address = format!("127.0.0.1:{}", seed["port"].as_u64().unwrap())
+        .parse()
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    // The source database sits in a profile, as the local backup expects.
+    let profile = directory.path().join("data");
+    std::fs::create_dir_all(&profile).unwrap();
+    let source = crate::core::db_state::DbPool::default();
+    let source_pool = crate::db::create_pool(&profile.join("macro.db"))
+        .await
+        .unwrap();
+    source.set_ready(source_pool.clone()).await.unwrap();
+    let target = crate::core::db_state::DbPool::default();
+    let target_pool = crate::db::create_pool(&directory.path().join("target.db"))
+        .await
+        .unwrap();
+    target.set_ready(target_pool.clone()).await.unwrap();
+    let content = "A short answer available on the other computer.";
+    let provenance=tokio::process::Command::new(executable("bun")).args(["-e",r#"
+        import {assistantProvenance} from './src/services/macroPilot/assistantProvenance';
+        import {buildAssistantChatCompletionProviderItem} from './src/services/ai/chatCompletionsCodec';
+        import {buildAssistantProviderInputItemsFromTurn,buildProviderInputItemsFromContent} from './src/services/ai/responsesCodec';
+        const stored=new Map();
+        const text='A short answer available on the other computer.';
+        const items=process.env.MACRO_SYNTHETIC_PROVIDER==='codex'?buildAssistantProviderInputItemsFromTurn(text,[]):[buildAssistantChatCompletionProviderItem({visibleContent:text,apiContent:text,reasoningContent:'',reasoningDetails:[],toolCalls:[]})];
+        await assistantProvenance({load:async k=>stored.get(k)??null,compareAndSwap:async(k,o,v)=>{stored.set(k,v);return true;}})
+          .recordFinal('assistant',text,items);
+        const userItems=process.env.MACRO_SYNTHETIC_RESOURCES==='1'?buildProviderInputItemsFromContent('user',[{type:'text',text:'Can I continue on another computer?'},{type:'image_url',image_url:{url:'data:image/png;base64,'+process.env.MACRO_SYNTHETIC_PNG}}]):null;
+        console.log(JSON.stringify({receipts:[...stored],items,userItems}));
+    "#]).env("MACRO_SYNTHETIC_PROVIDER",provider).env("MACRO_SYNTHETIC_RESOURCES",if with_resources{"1"}else{"0"}).env("MACRO_SYNTHETIC_PNG",base64::engine::general_purpose::STANDARD.encode(include_bytes!("../../../icons/32x32.png"))).current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()).output().await.unwrap();
+    assert!(
+        provenance.status.success(),
+        "{}",
+        String::from_utf8_lossy(&provenance.stderr)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&provenance.stdout).unwrap();
+    let receipts: Vec<(String, String)> =
+        serde_json::from_value(response["receipts"].clone()).unwrap();
+    sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,provider_id,model_id,reasoning_effort,created_at,updated_at) VALUES('chat','Local transfer','Chat','macro-ai','synthetic-model','high','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'); INSERT INTO messages(id,conversation_id,role,content,created_at,context_refs_json) VALUES('user','chat','user','Can I continue on another computer?','2026-01-01T00:00:00Z','[]');")
+        .execute(&source_pool).await.unwrap();
+    sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,context_refs_json,completion_reason,provider_input_items_json) VALUES('assistant','chat','assistant',?,'2026-01-01T00:00:01Z','[]','final',?)")
+        .bind(content).bind(response["items"].to_string()).execute(&source_pool).await.unwrap();
+    if provider == "codex" {
+        sqlx::query(
+            "UPDATE conversations SET provider_id='chatgpt',model_id='gpt-6.1-sol' WHERE id='chat'",
+        )
+        .execute(&source_pool)
+        .await
+        .unwrap();
+    }
+    for (key, value) in receipts {
+        crate::db::repository::set_app_setting(&source_pool, &key, &value)
+            .await
+            .unwrap();
+    }
+    if with_resources {
+        sqlx::query("UPDATE messages SET turn_id='turn',provider_input_items_json=?,context_refs_json='[{\"kind\":\"source\",\"id\":\"evidence\",\"title\":\"Evidence\"}]' WHERE id='user'")
+            // Chat Completions keeps no user provider items: its images come
+            // from the message's attachments.
+            .bind((provider == "codex").then(|| response["userItems"].to_string())).execute(&source_pool).await.unwrap();
+        sqlx::raw_sql("INSERT INTO conversation_citations(id,conversation_id,message_id,type,scope,source,title,content,kind,created_at,updated_at) VALUES('evidence','chat','user','source_passage','source','synthetic','Evidence','ESSENTIAL_CITATION_FACT','used','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'); INSERT INTO conversation_citations(id,conversation_id,message_id,type,scope,source,title,content,path,created_at,updated_at) VALUES('text-asset','chat','user','file','context','pilot_attachment','sample.txt','ASSET_TEXT_FACT','attachment://text-asset','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');").execute(&source_pool).await.unwrap();
+        for (id, name, mime, bytes) in [
+            (
+                "text-asset",
+                "sample.txt",
+                "text/plain",
+                b"ASSET_TEXT_FACT".as_slice(),
+            ),
+            (
+                "image-asset",
+                "sample.png",
+                "image/png",
+                include_bytes!("../../../icons/32x32.png").as_slice(),
+            ),
+        ] {
+            sqlx::query("INSERT INTO pilot_message_attachments VALUES(?,'owner','instance','ref','user',?,?,?,?,?)")
+                .bind(id).bind(name).bind(mime).bind(bytes.len() as i64).bind(format!("{:x}",Sha256::digest(bytes))).bind(bytes).execute(&source_pool).await.unwrap();
+        }
+        sqlx::raw_sql("INSERT INTO pilot_file_sends(owner_key,ref_key,send_intent_id,scope_key,digest,message_id,turn_id,state,attachment_ids_json,assistant_message_id,context_state,intent_expires_at) VALUES('owner','ref','intent','scope','digest','user','turn','confirmed','[\"text-asset\",\"image-asset\"]','assistant','ready',1);").execute(&source_pool).await.unwrap();
+        if missing_asset {
+            // The message still lists the image its turn was sent with.
+            sqlx::query("DELETE FROM pilot_message_attachments WHERE id='image-asset'")
+                .execute(&source_pool)
+                .await
+                .unwrap();
+        }
+    }
+    if compacted {
+        for n in 0..20 {
+            sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,context_refs_json) VALUES(?,'chat','user',?,?,'[]')")
+                .bind(format!("older-{n:02}")).bind(format!("RECOVERABLE_HISTORY_{n:02} {}","ordinary source fact ".repeat(200)))
+                .bind(format!("2026-01-01T00:00:{:02}Z",n+1)).execute(&source_pool).await.unwrap();
+        }
+        sqlx::query("UPDATE messages SET created_at='2026-01-01T00:01:00Z' WHERE id='assistant'")
+            .execute(&source_pool)
+            .await
+            .unwrap();
+        let original = crate::db::repository::list_messages(&source_pool, "chat")
+            .await
+            .unwrap();
+        let mut citations =
+            crate::db::repository::list_conversation_citations(&source_pool, "chat")
+                .await
+                .unwrap();
+        for citation in &mut citations {
+            citation.content = crate::db::repository::get_conversation_citation_content(
+                &source_pool,
+                &citation.id,
+            )
+            .await
+            .unwrap();
+        }
+        let mut process=tokio::process::Command::new(executable("bun")).args(["-e",r#"
+            import {mapDbMessageToChatMessage} from './src/services/chatDbMappers';
+            import {buildCompactedMessagesForRequest} from './src/services/contextCompaction';
+            import {CHECKPOINT_COLUMNS} from './src/test-utils/portableNormalizationRecipe';
+            const payload=JSON.parse(await Bun.stdin.text());const messages=payload.messages.map(row=>mapDbMessageToChatMessage(row,new Map()));
+            const citations=payload.citations.map(c=>({id:c.id,type:c.type,scope:c.scope,source:c.source,title:c.title,content:c.content??undefined,snippet:c.snippet??undefined,messageId:c.message_id,conversationId:c.conversation_id,timestamp:c.updated_at||c.created_at,kind:c.kind??undefined,path:c.path??undefined}));
+            const result=await buildCompactedMessagesForRequest({systemMessage:'Trusted local instructions',preparedMessages:messages.map(m=>({role:m.role,content:m.content})),orderedMessages:messages,citations,toolDefinitions:[],modelContextWindowTokens:8000,mode:'manual',forceCompaction:true,generateSummary:async()=> 'SOURCE_CHECKPOINT_HISTORY: all original messages remain recoverable.'});
+            const state=result.compactionState;if(!state)throw Error('fixture_checkpoint_not_created');
+            const camel=s=>s.replace(/_([a-z])/g,(_,c)=>c.toUpperCase());
+            const record=Object.fromEntries(CHECKPOINT_COLUMNS.map(column=>{
+                const direct=state[camel(column)];const encoded=column.endsWith('_json')?state[camel(column.slice(0,-5))]:undefined;
+                return [column,direct??(encoded===undefined?null:JSON.stringify(encoded))];
+            }));console.log(JSON.stringify(record));
+        "#]).current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        process
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(
+                &serde_json::to_vec(
+                    &serde_json::json!({"messages":original,"citations":citations}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let state = process.wait_with_output().await.unwrap();
+        assert!(
+            state.status.success(),
+            "{}",
+            String::from_utf8_lossy(&state.stderr)
+        );
+        let input: crate::db::models::UpsertConversationCompactionStateInput =
+            serde_json::from_slice(&state.stdout).unwrap();
+        crate::db::repository::upsert_conversation_compaction_state(&source_pool, input)
+            .await
+            .unwrap();
+    }
+    let manager = Arc::new(Manager::new(Arc::new(Fake::default())));
+    let a = &seed["a"];
+    let text = |v: &serde_json::Value| v.as_str().unwrap().to_string();
+    let context = PilotVaultContext {
+        configuration_id: "config:local-transfer".into(),
+        relay_origin: text(&seed["origin"]),
+        owner_id: text(&a["session_id"]),
+    };
+    let generation = manager.activate(context.clone(), None).unwrap().generation;
+    for (kind, id, value) in [
+        (
+            PilotSecretKind::SessionToken,
+            context.owner_id.clone(),
+            text(&a["token"]),
+        ),
+        (
+            PilotSecretKind::InstanceKey,
+            text(&a["creation"]),
+            text(&a["key"]),
+        ),
+    ] {
+        manager
+            .write(
+                &PilotSecretScope {
+                    configuration_id: context.configuration_id.clone(),
+                    relay_origin: context.relay_origin.clone(),
+                    kind,
+                    resource_id: id,
+                },
+                &generation,
+                &value,
+            )
+            .unwrap();
+    }
+    let runtime = crate::connect::TransferRuntime::default();
+    let launcher = runtime
+        .source_launcher(
+            &executable("bun"),
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../copilot-bridge/src/entry.ts"),
+            &source,
+        )
+        .unwrap();
+    let ready = source.wait_until_ready_context().await.unwrap();
+    let connection = serde_json::json!({
+        "context": {"configuration_id": context.configuration_id, "relay_origin": context.relay_origin,
+            "owner_id": context.owner_id},
+        "generation": generation, "instanceCreationId": text(&a["creation"]),
+        "accountId": text(&seed["account_id"]), "deviceId": text(&a["device_id"]),
+        "instanceId": text(&a["instance"]),
+    });
+    let admission = crate::db::chat_admission::runtime::ChatAdmissionRuntime::default();
+    // Without the runtime, the scenario opens the transport and reconciles
+    // admission itself, as the command and the chat store otherwise do.
+    let mut direct = if via_runtime {
+        None
+    } else {
+        let mut verified = transport::bootstrap_owned(
+            manager.clone(),
+            Intent {
+                context,
+                generation,
+                instance_creation_id: text(&a["creation"]),
+                account_id: Some(text(&seed["account_id"])),
+                device_id: Some(text(&a["device_id"])),
+                scope: Scope::Producer {
+                    instance_id: text(&a["instance"]),
+                },
+                capabilities: serde_json::from_value(seed["capabilities"].clone()).unwrap(),
+            },
+            &runtime,
+            &launcher,
+            &ready,
+            address,
+            true,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        verified
+            .controller_for(
+                manager.clone(),
+                &ready,
+                seed["b"]["instance"].as_str().unwrap(),
+            )
+            .await
+            .unwrap();
+        admission
+            .open_browser(source.clone(), "source-window", "source-browser")
+            .await
+            .unwrap();
+        let inspection = admission
+            .begin_reconciliation(&source, "source-window", "source-browser", "chat")
+            .await
+            .unwrap();
+        admission
+            .complete_reconciliation(
+                &source,
+                "source-window",
+                "source-browser",
+                &inspection,
+                &crate::db::chat_admission::reconciliation::BrowserInspection {
+                    queue: vec![],
+                    unsaved: vec![],
+                    approvals: vec![],
+                    questions: vec![],
+                    drafts: vec![],
+                    steers: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        Some((Arc::new(verified), inspection))
+    };
+    let config = crate::config::ConfigManager::initialize(directory.path().join("config"))
+        .await
+        .unwrap();
+    // Oracle for P7: the requests the source itself would send next.
+    let source_model = if provider == "codex" {
+        ("chatgpt", "chatgpt", "gpt-6.1-sol")
+    } else {
+        ("macro-ai", "openai", "synthetic-model")
+    };
+    let source_within = ordinary_next_request(
+        &source,
+        &source_pool,
+        &config,
+        "chat",
+        source_model,
+        1_000_000,
+        NEXT_PROMPT,
+    )
+    .await;
+    let source_beyond = if compacted {
+        Some(
+            ordinary_next_request(
+                &source,
+                &source_pool,
+                &config,
+                "chat",
+                source_model,
+                4_000,
+                NEXT_PROMPT,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+    if let Some(beyond) = &source_beyond {
+        // The fixture checkpoint does not fit this window either: the source
+        // compacts again too, so the transfer changes nothing here.
+        assert!(next_request_messages(beyond)[0]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("Compact older conversation history"));
+    }
+    if route == Route::InterruptedReceive {
+        // The interrupted target listens again before preparing.
+        std::env::set_var("MACRO_CONNECT_TEST_TARGET_QUIET_MS", "30000");
+    }
+    // A second computer: MACRO_CONNECT_REMOTE_TARGET=<ssh host>:<test binary>
+    // runs the target there, reaching this relay through a reverse tunnel.
+    let remote = std::env::var("MACRO_CONNECT_REMOTE_TARGET")
+        .ok()
+        .map(|value| {
+            let (host, binary) = value.split_once(':').expect("host:binary");
+            let directory = format!("/tmp/macro-connect-remote-{}", uuid::Uuid::new_v4());
+            (host.to_owned(), binary.to_owned(), directory)
+        });
+    let target_args = [
+        "--exact",
+        "commands::pilot_secrets::tests::global_chat_transfer_target",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1",
+    ];
+    let pause = if route == Route::InterruptedReceive {
+        "1500"
+    } else {
+        ""
+    };
+    let mut command = match &remote {
+        Some((host, binary, remote_directory)) => {
+            let port = seed["port"].as_u64().unwrap();
+            let mut command = tokio::process::Command::new("ssh");
+            command.args([
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-R",
+                &format!("{port}:127.0.0.1:{port}"),
+                host,
+                &format!(
+                    "mkdir -p {remote_directory} && MACRO_CONNECT_TEST_INVITATION_PAUSE_MS={pause} exec {binary} {}",
+                    target_args.join(" ")
+                ),
+            ]);
+            command
+        }
+        None => {
+            let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(target_args)
+                .env("MACRO_CONNECT_TEST_INVITATION_PAUSE_MS", pause);
+            command
+        }
+    };
+    let target_database = match &remote {
+        Some((_, _, remote_directory)) => format!("{remote_directory}/target.db"),
+        None => directory.path().join("target.db").display().to_string(),
+    };
+    let mut child = command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut initialization=serde_json::to_vec(&serde_json::json!({"seed":seed,
+        "database":target_database,"provider":provider,"compacted":compacted,"resources":with_resources,"refused":refused,"runtime":via_runtime,
+        "interrupted":route == Route::InterruptedReceive,"restricted":restricted,"idle":lost,"abandoned":released,"revoked":revoked,
+        "stop":match route {
+            Route::TargetStoppedBeforeCommit => "target_after_ready",
+            Route::TargetStoppedAfterCommit => "target_after_commit",
+            Route::TargetStoppedAfterPublication => "target_after_publication",
+            Route::TargetStoppedDuringStaging => "target_during_staging",
+            Route::TargetImportFull => "target_import_full",
+            _ => "",
+        },"prepared":!unprepared})).unwrap();
+    initialization.push(b'\n');
+    input.write_all(&initialization).await.unwrap();
+    let mut target_events = BufReader::new(child.stdout.take().unwrap()).lines();
+    let selected: (String, String) =
+        sqlx::query_as("SELECT provider_id,model_id FROM conversations WHERE id='chat'")
+            .fetch_one(&source_pool)
+            .await
+            .unwrap();
+    if matches!(
+        route,
+        Route::LostReserveReply | Route::LostReserveRequest | Route::StaleReplays
+    ) {
+        let mode = match route {
+            Route::LostReserveReply => "lose-reserve-reply",
+            Route::LostReserveRequest => "lose-reserve-request",
+            _ => "replay",
+        };
+        relay_input
+            .write_all(format!("{}\n", serde_json::json!({"mode": mode})).as_bytes())
+            .await
+            .unwrap();
+        lines.next_line().await.unwrap().unwrap();
+    }
+    // The official startup export, taken while the chat is still open.
+    let backup = |operation: &str| {
+        let request = serde_json::json!({"operation": operation,
+            "path": directory.path().join("backup.json"), "browser": {}});
+        let dir = profile.join("local-backup");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("request.json"), request.to_string()).unwrap();
+        let (data, config) = (profile.clone(), directory.path().join("config"));
+        async move { crate::local_backup::process_startup(&data, &config).await }
+    };
+    if route == Route::RestoredBeforeCession {
+        backup("export").await.unwrap();
+    }
+    if let Some(interruption) = interruption {
+        std::env::set_var("MACRO_CONNECT_TEST_INTERRUPT", interruption);
+    }
+    if unprepared {
+        std::env::set_var("MACRO_CONNECT_TEST_TARGET_QUIET_MS", "10000");
+        std::env::set_var("MACRO_CONNECT_TEST_TARGET_PREPARATION_MS", "10000");
+    }
+    let transferred: Result<String, String> = if let Some((verified, inspection)) = &direct {
+        // As the send command does, the attempt holds the transfer job.
+        let job = runtime.begin_transfer().unwrap();
+        let send = super::flow::send(
+            manager.clone(),
+            &source,
+            &admission,
+            &config,
+            &launcher,
+            verified,
+            &ready,
+            "source-window",
+            "source-browser",
+            inspection,
+            "chat",
+            &selected.0,
+            &selected.1,
+        );
+        // Once the target is ready, the relay revokes the source sessions, or
+        // a second client sends the same conversation.
+        let revoke = async {
+            if !matches!(route, Route::RevokedBeforeCommit | Route::SecondSend) {
+                return;
+            }
+            while !super::flow::BEFORE_COMMIT.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            if route == Route::RevokedBeforeCommit {
+                relay_input.write_all(b"{\"revoke\":true}\n").await.unwrap();
+                lines.next_line().await.unwrap().unwrap();
+            } else {
+                // A second client goes through the command, as the phone or
+                // the desktop would; the first attempt holds the transfer job.
+                let second = super::send_transfer(
+                    manager.clone(),
+                    Some(address),
+                    &source,
+                    &config,
+                    &runtime,
+                    &launcher,
+                    &admission,
+                    "source-window",
+                    serde_json::from_value(serde_json::json!({
+                        "connection": {
+                            "capabilities": seed["capabilities"], "context": connection["context"],
+                            "generation": connection["generation"],
+                            "instanceCreationId": connection["instanceCreationId"],
+                            "accountId": connection["accountId"], "deviceId": connection["deviceId"],
+                            "instanceId": connection["instanceId"]},
+                        "targetInstanceId": seed["b"]["instance"], "conversationId": "chat",
+                        "runtime": "source-browser", "inspectionHandle": inspection,
+                        "providerId": selected.0, "modelId": selected.1}))
+                    .unwrap(),
+                )
+                .await;
+                assert_eq!(
+                    second.err().map(|e| e.message),
+                    Some("transfer_busy".into())
+                );
+                assert_eq!(
+                    sqlx::query_scalar::<_, i64>(
+                        "SELECT COUNT(*) FROM connect_transfers WHERE local_role='source'"
+                    )
+                    .fetch_one(&source_pool)
+                    .await
+                    .unwrap(),
+                    1
+                );
+            }
+            super::flow::COMMIT_RELEASED.store(true, std::sync::atomic::Ordering::SeqCst);
+        };
+        let (sent, ()) = tokio::join!(send, revoke);
+        drop(job);
+        sent.map_err(str::to_owned)
+    } else {
+        // The source listens as soon as its producer is confirmed; the send
+        // must first interrupt that idle receive.
+        let host = DesktopHost {
+            manager: manager.clone(),
+            relay: address,
+            owner: &source,
+            pool: &source_pool,
+            config: &config,
+            runtime: &runtime,
+            admission: &admission,
+            window: "source-window",
+        };
+        let (mut started, mut listening, mut asked) = (false, false, false);
+        let events = host
+            .run(
+                serde_json::json!({"role": "source", "connection": connection,
+                    "relay": {"url": format!("http://{address}"), "token": a["token"], "key": a["key"]},
+                    "send": {
+                    "conversationId": "chat", "targetInstanceId": seed["b"]["instance"],
+                    "providerId": selected.0, "modelId": selected.1}}),
+                |seen| {
+                    match seen {
+                        DesktopObserved::Call("connect_transfer_receive") => listening = true,
+                        DesktopObserved::Event(event) if event["event"] == "started" => started = true,
+                        DesktopObserved::Event(event)
+                            if event["event"] == "sent" || event["event"] == "failed" =>
+                        {
+                            return vec!["stop"]
+                        }
+                        _ => {}
+                    }
+                    if started && listening && !asked {
+                        asked = true;
+                        return vec!["send"];
+                    }
+                    vec![]
+                },
+            )
+            .await;
+        let stopped = events.iter().find(|e| e["event"] == "stopped").unwrap();
+        assert_eq!(stopped["unexpected"], serde_json::json!([]));
+        let outcome = events
+            .iter()
+            .find(|e| e["event"] == "sent" || e["event"] == "failed")
+            .unwrap();
+        match outcome["target"].as_str() {
+            Some(target) => Ok(target.to_owned()),
+            None => Err(match outcome["error"]["outcome"].as_str() {
+                Some(outcome) => format!("outcome:{outcome}"),
+                None => outcome["error"].to_string(),
+            }),
+        }
+    };
+    if interruption.is_some() {
+        std::env::remove_var("MACRO_CONNECT_TEST_INTERRUPT");
+    }
+    if unprepared {
+        std::env::remove_var("MACRO_CONNECT_TEST_TARGET_QUIET_MS");
+        std::env::remove_var("MACRO_CONNECT_TEST_TARGET_PREPARATION_MS");
+    }
+    if route == Route::InterruptedSource {
+        assert_eq!(
+            transferred.as_ref().map_err(String::as_str),
+            Err("test_interrupted")
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'"
+            )
+            .fetch_one(&source_pool)
+            .await
+            .unwrap(),
+            "frozen"
+        );
+        // As after a restart: the interrupted transport is gone, and a new
+        // one reconciles the frozen attempt.
+        if let Some((verified, _)) = direct.take() {
+            Arc::try_unwrap(verified)
+                .ok()
+                .unwrap()
+                .close()
+                .await
+                .unwrap();
+        }
+        let reopened = super::reconcile_transfers(
+            manager.clone(),
+            Some(address),
+            &source,
+            &config,
+            &runtime,
+            &runtime
+                .source_launcher(
+                    &executable("bun"),
+                    &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../copilot-bridge/src/entry.ts"),
+                    &source,
+                )
+                .unwrap(),
+            serde_json::from_value(serde_json::json!({"connection": {
+                "capabilities": seed["capabilities"], "context": connection["context"],
+                "generation": connection["generation"], "instanceCreationId": connection["instanceCreationId"],
+                "accountId": connection["accountId"], "deviceId": connection["deviceId"],
+                "instanceId": connection["instanceId"]}}))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reopened, vec!["chat".to_owned()]);
+    }
+    if revoked {
+        // The revoked session neither commits nor aborts: nothing is ceded and
+        // the source stays frozen, even after a reconciliation with a fresh
+        // transport, which cannot authenticate the aborted terminal.
+        assert!(transferred.is_err());
+        let state = || async {
+            sqlx::query_as::<_, (String, Option<String>)>("SELECT o.mode,t.resolution FROM chat_admission_owners o JOIN connect_transfers t ON t.source_conversation_id=o.conversation_id WHERE o.conversation_id='chat' AND t.local_role='source'")
+                .fetch_one(&source_pool)
+                .await
+                .unwrap()
+        };
+        assert_eq!(state().await, ("frozen".to_owned(), None));
+        let reopened = super::reconcile_transfers(
+            manager.clone(),
+            Some(address),
+            &source,
+            &config,
+            &runtime,
+            &runtime
+                .source_launcher(
+                    &executable("bun"),
+                    &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../copilot-bridge/src/entry.ts"),
+                    &source,
+                )
+                .unwrap(),
+            serde_json::from_value(serde_json::json!({"connection": {
+                "capabilities": seed["capabilities"], "context": connection["context"],
+                "generation": connection["generation"], "instanceCreationId": connection["instanceCreationId"],
+                "accountId": connection["accountId"], "deviceId": connection["deviceId"],
+                "instanceId": connection["instanceId"]}}))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(reopened.is_empty());
+        assert_eq!(state().await, ("frozen".to_owned(), None));
+        assert_eq!(
+            transfer_target_event(&mut target_events).await.unwrap(),
+            serde_json::json!({"type":"refused"})
+        );
+        input.write_all(b"{\"stop\":true}\n").await.unwrap();
+    } else if refused || restricted || lost || released {
+        if missing_asset {
+            // The capture refuses the conversation rather than send it
+            // without its image.
+            assert_eq!(
+                transferred.as_ref().map_err(String::as_str),
+                Err("source_capture")
+            );
+        } else if lost {
+            // The reserve's own failure is returned once the source reopened.
+            assert!(transferred.is_err());
+        } else {
+            // Through the runtime, the dialog receives the relay-recorded outcome.
+            assert_eq!(
+                transferred.as_ref().map_err(String::as_str),
+                Err(if via_runtime {
+                    "outcome:aborted"
+                } else {
+                    "transfer_aborted"
+                })
+            );
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'"
+            )
+            .fetch_one(&source_pool)
+            .await
+            .unwrap(),
+            "open"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT resolution FROM connect_transfers WHERE local_role='source'"
+            )
+            .fetch_one(&source_pool)
+            .await
+            .unwrap()
+            .as_deref(),
+            Some("aborted")
+        );
+        assert_eq!(
+            transfer_target_event(&mut target_events).await.unwrap(),
+            serde_json::json!({"type":"refused"})
+        );
+        input.write_all(b"{\"stop\":true}\n").await.unwrap();
+    } else if transferred.is_ok() {
+        assert!(!transferred.as_ref().unwrap().is_empty());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'"
+            )
+            .fetch_one(&source_pool)
+            .await
+            .unwrap(),
+            "ceded"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id='chat'"
+            )
+            .fetch_one(&source_pool)
+            .await
+            .unwrap(),
+            if compacted { 22 } else { 2 }
+        );
+        assert_eq!(
+            transfer_target_event(&mut target_events).await.unwrap(),
+            serde_json::json!({"type":"complete"})
+        );
+        if route == Route::StaleReplays {
+            relay_input.write_all(b"{}\n").await.unwrap();
+            let report: serde_json::Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            let replays = report["replays"].as_array().unwrap();
+            let replay = |kind: &str| replays.iter().find(|r| r["kind"] == kind).unwrap();
+            assert_eq!(replays.len(), 5, "{replays:?}");
+            // The old ACK is refused; the old chunk and the commit, retried
+            // with their request IDs, receive exactly the reply they had.
+            assert_eq!(
+                (&replay("ack")["status"], &replay("ack")["code"]),
+                (&serde_json::json!(409), &serde_json::json!("conflict"))
+            );
+            for kind in ["chunk", "commit"] {
+                assert_eq!(replay(kind)["status"], 200, "{kind}");
+                assert_eq!(replay(kind)["same"], true, "{kind}");
+            }
+            // The reserve and `ready`, arriving after the commit, receive
+            // their own step receipt and the committed terminal: nothing moves.
+            for kind in ["reserve", "ready"] {
+                assert_eq!(replay(kind)["status"], 200, "{kind}");
+                assert_eq!(replay(kind)["receipt_same"], true, "{kind}");
+                assert_eq!(replay(kind)["phase"], "committed", "{kind}");
+                assert_eq!(
+                    replay(kind)["revision"],
+                    replay("commit")["revision"],
+                    "{kind}"
+                );
+            }
+        }
+        // The target's next request equals the source's, except that a
+        // compacted source still sends its checkpoint, which is not transferred.
+        let next_request = match &remote {
+            Some((host, _, remote_directory)) => {
+                tokio::process::Command::new("ssh")
+                    .args([
+                        "-o",
+                        "BatchMode=yes",
+                        host,
+                        &format!("cat {remote_directory}/next-request.json"),
+                    ])
+                    .output()
+                    .await
+                    .unwrap()
+                    .stdout
+            }
+            None => tokio::fs::read(directory.path().join("next-request.json"))
+                .await
+                .unwrap(),
+        };
+        let target: serde_json::Value = serde_json::from_slice(&next_request).unwrap();
+        let target_body = serde_json::to_string(&provider_body(&target["request"]))
+            .unwrap()
+            .replace(target["conversation"].as_str().unwrap(), "chat");
+        let target_body: serde_json::Value = serde_json::from_str(&target_body).unwrap();
+        let source_body = provider_body(&source_within);
+        if provider == "codex" {
+            assert_same_body(&target_body, &source_body);
+        } else {
+            // Two intended differences in Chat Completions: the source resends
+            // only the current message's images and trims its own rows, while a
+            // transferred history keeps its recognized media and its original
+            // text (docs/macro-connect-transfer-design.md).
+            let (target_body, images) = as_source_history(&target_body);
+            assert_eq!(images, usize::from(with_resources));
+            assert_same_body(&target_body, &source_body);
+        }
+        input.write_all(b"{\"stop\":true}\n").await.unwrap();
+    }
+    drop(input);
+    if transferred.is_err() && !refused && !restricted && !lost && !released && !revoked {
+        child.kill().await.unwrap();
+    }
+    let child = child.wait_with_output().await.unwrap();
+    if let Some((verified, _)) = direct {
+        Arc::try_unwrap(verified)
+            .ok()
+            .unwrap()
+            .close()
+            .await
+            .unwrap();
+    }
+    assert!(runtime.shutdown().await);
+    if route == Route::RestoredBeforeCession {
+        // With every source runtime stopped, the user restores the backup.
+        source_pool.close().await;
+        std::fs::copy(
+            directory.path().join("backup.json"),
+            profile.join("local-backup/incoming.json"),
+        )
+        .unwrap();
+        backup("restore").await.unwrap();
+        let pool = crate::db::create_pool(&profile.join("macro.db"))
+            .await
+            .unwrap();
+        let restored = crate::core::db_state::DbPool::default();
+        restored.set_ready(pool.clone()).await.unwrap();
+        let mode = || async {
+            sqlx::query_scalar::<_, String>(
+                "SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+        // The barrier holds the chat before any admission; the backup
+        // predates the transfer, so it holds no record of it.
+        assert_eq!(mode().await, "restore_hold");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM connect_transfers")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        // Its history stays readable through the ordinary product reads.
+        assert!(crate::db::repository::get_conversation(&pool, "chat")
+            .await
+            .unwrap()
+            .is_some());
+        assert!(crate::db::repository::list_messages(&pool, "chat")
+            .await
+            .unwrap()
+            .iter()
+            .any(|m| m.content.contains("Can I continue on another computer?")));
+        assert!(sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES('after-restore','chat','user','resumed','2026-01-02T00:00:00Z')")
+            .execute(&pool)
+            .await
+            .is_err());
+        // Reconnected, neither the startup reconciliation nor a new send
+        // reactivates the chat or starts a transfer.
+        let runtime = crate::connect::TransferRuntime::default();
+        let admission = crate::db::chat_admission::runtime::ChatAdmissionRuntime::default();
+        let launcher = runtime
+            .source_launcher(
+                &executable("bun"),
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../copilot-bridge/src/entry.ts"),
+                &restored,
+            )
+            .unwrap();
+        let connection_input = serde_json::json!({
+            "capabilities": seed["capabilities"], "context": connection["context"],
+            "generation": connection["generation"],
+            "instanceCreationId": connection["instanceCreationId"],
+            "accountId": connection["accountId"], "deviceId": connection["deviceId"],
+            "instanceId": connection["instanceId"]});
+        // An unreachable relay changes nothing: with no lineage, nothing is
+        // left to settle, and a send fails before any reservation (below).
+        let unreachable = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let send = |relay| {
+            super::send_transfer(
+                manager.clone(),
+                Some(relay),
+                &restored,
+                &config,
+                &runtime,
+                &launcher,
+                &admission,
+                "source-window",
+                serde_json::from_value(serde_json::json!({
+                    "connection": connection_input,
+                    "targetInstanceId": seed["b"]["instance"], "conversationId": "chat",
+                    "runtime": "source-browser", "inspectionHandle": "restored-inspection",
+                    "providerId": selected.0, "modelId": selected.1}))
+                .unwrap(),
+            )
+        };
+        assert!(super::reconcile_transfers(
+            manager.clone(),
+            Some(unreachable),
+            &restored,
+            &config,
+            &runtime,
+            &launcher,
+            serde_json::from_value(serde_json::json!({"connection": connection_input})).unwrap(),
+        )
+        .await
+        .unwrap()
+        .is_empty());
+        let reopened = super::reconcile_transfers(
+            manager.clone(),
+            Some(address),
+            &restored,
+            &config,
+            &runtime,
+            &launcher,
+            serde_json::from_value(serde_json::json!({"connection": connection_input})).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(reopened.is_empty());
+        let resent = send(address).await;
+        // The restored chat lost its lineage and draws a new one: the relay,
+        // which knows this source under its original lineage, refuses it.
+        assert_eq!(resent.err().map(|e| e.message), Some("conflict".into()));
+        assert!(send(unreachable).await.is_err());
+        assert_eq!(mode().await, "restore_hold");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM connect_transfers")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(runtime.shutdown().await);
+        pool.close().await;
+    }
+    relay_input.write_all(b"{\"stop\":true}\n").await.unwrap();
+    drop(relay_input);
+    assert!(relay.wait().await.unwrap().success());
+    if !refused && !restricted && !lost && !released && !revoked {
+        transferred.unwrap();
+    }
+    if let Some((host, _, remote_directory)) = &remote {
+        let _ = tokio::process::Command::new("ssh")
+            .args([
+                "-o",
+                "BatchMode=yes",
+                host,
+                &format!("rm -rf {remote_directory}"),
+            ])
+            .status()
+            .await;
+    }
+    assert!(child.status.success());
+}
+
+#[tokio::test]
+#[ignore = "target process of the local Global Chat scenario"]
+async fn global_chat_transfer_target() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use transport::{Intent, Scope};
+    let mut input = BufReader::new(tokio::io::stdin()).lines();
+    let data: serde_json::Value =
+        serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
+    let seed = &data["seed"];
+    let b = &seed["b"];
+    let text = |v: &serde_json::Value| v.as_str().unwrap().to_owned();
+    let codex = data["provider"] == "codex";
+    let compacted = data["compacted"] == true;
+    let with_resources = data["resources"] == true;
+    let refused = data["refused"] == true;
+    let via_runtime = data["runtime"] == true;
+    let interrupted = data["interrupted"] == true;
+    let restricted = data["restricted"] == true;
+    let (provider_id, provider_type, model_id) = if codex {
+        ("chatgpt", "chatgpt", "gpt-6.1-sol")
+    } else {
+        ("macro-ai", "openai", "synthetic-model")
+    };
+    let owner = crate::core::db_state::DbPool::default();
+    let pool = crate::db::create_pool(std::path::Path::new(data["database"].as_str().unwrap()))
+        .await
+        .unwrap();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let manager = Arc::new(Manager::new(Arc::new(Fake::default())));
+    let context = PilotVaultContext {
+        configuration_id: "config:local-target".into(),
+        relay_origin: text(&seed["origin"]),
+        owner_id: text(&b["session_id"]),
+    };
+    let generation = manager.activate(context.clone(), None).unwrap().generation;
+    for (kind, id, value) in [
+        (
+            PilotSecretKind::SessionToken,
+            context.owner_id.clone(),
+            text(&b["token"]),
+        ),
+        (
+            PilotSecretKind::InstanceKey,
+            text(&b["creation"]),
+            text(&b["key"]),
+        ),
+    ] {
+        manager
+            .write(
+                &PilotSecretScope {
+                    configuration_id: context.configuration_id.clone(),
+                    relay_origin: context.relay_origin.clone(),
+                    kind,
+                    resource_id: id,
+                },
+                &generation,
+                &value,
+            )
+            .unwrap();
+    }
+    let bun = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|p| p.join("bun"))
+        .find(|p| p.is_file())
+        .unwrap();
+    let runtime = crate::connect::TransferRuntime::default();
+    let launcher = runtime
+        .source_launcher(
+            &bun,
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../copilot-bridge/src/entry.ts"),
+            &owner,
+        )
+        .unwrap();
+    let ready = owner.wait_until_ready_context().await.unwrap();
+    let relay: std::net::SocketAddr = format!("127.0.0.1:{}", seed["port"].as_u64().unwrap())
+        .parse()
+        .unwrap();
+    let connection = serde_json::json!({
+        "context": {"configuration_id": context.configuration_id, "relay_origin": context.relay_origin,
+            "owner_id": context.owner_id},
+        "generation": generation, "instanceCreationId": text(&b["creation"]),
+        "accountId": text(&seed["account_id"]), "deviceId": text(&b["device_id"]),
+        "instanceId": text(&b["instance"]),
+    });
+    let intent = || Intent {
+        context: context.clone(),
+        generation: generation.clone(),
+        instance_creation_id: text(&b["creation"]),
+        account_id: Some(text(&seed["account_id"])),
+        device_id: Some(text(&b["device_id"])),
+        scope: Scope::Producer {
+            instance_id: text(&b["instance"]),
+        },
+        capabilities: serde_json::from_value(seed["capabilities"].clone()).unwrap(),
+    };
+    let verified = if via_runtime {
+        None
+    } else {
+        Some(
+            transport::bootstrap_owned(
+                manager.clone(),
+                intent(),
+                &runtime,
+                &launcher,
+                &ready,
+                relay,
+                true,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap(),
+        )
+    };
+    let config_directory = tempfile::tempdir().unwrap();
+    let config = crate::config::ConfigManager::initialize(config_directory.path().to_path_buf())
+        .await
+        .unwrap();
+    crate::db::repository::upsert_provider_config_by_id(
+        &pool,
+        provider_id,
+        "Synthetic provider",
+        provider_type,
+        "https://provider.example.invalid/v1",
+        true,
+    )
+    .await
+    .unwrap();
+    crate::db::repository::update_provider_config(
+        &pool,
+        crate::db::models::UpdateProviderConfigInput {
+            id: provider_id.into(),
+            name: None,
+            provider_type: None,
+            base_url: None,
+            api_key: None,
+            is_local: None,
+            is_enabled: Some(true),
+        },
+    )
+    .await
+    .unwrap();
+    let model:crate::db::models::ProviderModelInput=serde_json::from_value(serde_json::json!({"model_id":model_id,"name":"Synthetic model",
+        "context_window_tokens":200000,"input_limit_tokens":200000,"output_limit_tokens":16384,"context_window_source":"provider_metadata",
+        "reasoning_efforts":if codex{serde_json::json!(["low","medium","high"])}else{serde_json::Value::Null}})).unwrap();
+    if !refused {
+        crate::db::repository::upsert_provider_models(&pool, provider_id, &[model])
+            .await
+            .unwrap();
+    }
+    if data["idle"] == true {
+        // No invitation is sent: the source's reserve was lost.
+        drop(verified);
+        println!(
+            "SLICE_TARGET_EVENT:{}",
+            serde_json::json!({"type":"refused"})
+        );
+        let stop: serde_json::Value =
+            serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(stop["stop"], true);
+        assert!(runtime.shutdown().await);
+        return;
+    }
+    let stop = data["stop"].as_str().unwrap_or_default();
+    if !stop.is_empty() {
+        std::env::set_var("MACRO_CONNECT_TEST_INTERRUPT", stop);
+    }
+    let received = if let Some(verified) = verified {
+        let job = runtime.begin_receive().unwrap();
+        let receive = super::flow::receive(
+            manager.clone(),
+            &owner,
+            &config,
+            &launcher,
+            verified,
+            &ready,
+            &job,
+        );
+        let received = if interrupted {
+            // An idle interrupt lands after delivery, before protection...
+            let interrupt = async {
+                while !transport::INVITATION_RECEIVED.load(std::sync::atomic::Ordering::SeqCst) {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                runtime.interrupt_idle()
+            };
+            let (first, interrupt) = tokio::join!(receive, interrupt);
+            assert_eq!(interrupt, Ok(()));
+            assert_eq!(first.err(), Some("codec_retired"));
+            drop(job);
+            runtime.revoke();
+            // ...and the relay delivers the same invitation to the next receive.
+            let launcher = runtime
+                .source_launcher(
+                    &bun,
+                    &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../copilot-bridge/src/entry.ts"),
+                    &owner,
+                )
+                .unwrap();
+            let verified = transport::bootstrap_owned(
+                manager.clone(),
+                intent(),
+                &runtime,
+                &launcher,
+                &ready,
+                relay,
+                true,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            let job = runtime.begin_receive().unwrap();
+            super::flow::receive(
+                manager.clone(),
+                &owner,
+                &config,
+                &launcher,
+                verified,
+                &ready,
+                &job,
+            )
+            .await
+            .map(|(conversation, prepared)| (conversation, Some(prepared)))
+        } else if !stop.is_empty() {
+            assert_eq!(
+                receive.await.err(),
+                Some(if stop == "target_import_full" {
+                    "transfer_storage_append"
+                } else {
+                    "test_interrupted"
+                })
+            );
+            std::env::remove_var("MACRO_CONNECT_TEST_INTERRUPT");
+            drop(job);
+            runtime.revoke();
+            // As after a restart: a new transport reconciles the unresolved
+            // attempt once the relay has decided it.
+            let launcher = runtime
+                .source_launcher(
+                    &bun,
+                    &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../copilot-bridge/src/entry.ts"),
+                    &owner,
+                )
+                .unwrap();
+            let input = serde_json::json!({"connection": {
+                    "capabilities": seed["capabilities"], "context": connection["context"],
+                    "generation": connection["generation"],
+                    "instanceCreationId": connection["instanceCreationId"],
+                    "accountId": connection["accountId"], "deviceId": connection["deviceId"],
+                    "instanceId": connection["instanceId"]}});
+            let mut published = Vec::new();
+            for _ in 0..60 {
+                published = super::reconcile_transfers(
+                    manager.clone(),
+                    Some(relay),
+                    &owner,
+                    &config,
+                    &runtime,
+                    &launcher,
+                    serde_json::from_value(input.clone()).unwrap(),
+                )
+                .await
+                .unwrap();
+                // Neither unresolved nor published without a recorded activation.
+                let pending: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM connect_transfers t WHERE local_role='target' AND (resolution IS NULL OR (resolution='committed' AND NOT EXISTS(SELECT 1 FROM connect_recorded_activations a WHERE a.transfer_id=t.transfer_id)))",
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                if pending == 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            match published.as_slice() {
+                [conversation] => Ok((conversation.clone(), None)),
+                [] => Err("transfer_aborted"),
+                _ => panic!("several publications"),
+            }
+        } else {
+            receive
+                .await
+                .map(|(conversation, prepared)| (conversation, Some(prepared)))
+        };
+        if received.is_ok() {
+            // The published target holds the relay's activation.
+            let recorded: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM connect_recorded_activations")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(recorded, 1);
+            // A single transfer reached this target, hence a single import.
+            let transfers: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM connect_transfers WHERE local_role='target'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(transfers, 1);
+        }
+        received.map_err(serde_json::Value::from)
+    } else {
+        // The runtime listens on its own once its producer is confirmed, then
+        // refreshes the conversation list when the transfer is published.
+        let admission = crate::db::chat_admission::runtime::ChatAdmissionRuntime::default();
+        let host = DesktopHost {
+            manager: manager.clone(),
+            relay,
+            owner: &owner,
+            pool: &pool,
+            config: &config,
+            runtime: &runtime,
+            admission: &admission,
+            window: "target-window",
+        };
+        let mut received = None;
+        let events = host
+            .run(
+                serde_json::json!({"role": "target", "connection": connection,
+                    "relay": {"url": format!("http://{relay}"), "token": b["token"], "key": b["key"]}}),
+                |seen| match seen {
+                    DesktopObserved::Reply("connect_transfer_receive", result) => {
+                        received = Some(result.clone());
+                        if result.is_err() {
+                            vec!["stop"]
+                        } else {
+                            vec![]
+                        }
+                    }
+                    // Stop once the chat store lists the published conversation.
+                    DesktopObserved::Event(event)
+                        if event["event"] == "conversations"
+                            && received.as_ref().is_some_and(|r| {
+                                r.as_ref().is_ok_and(|id| {
+                                    event["ids"].as_array().unwrap().contains(id)
+                                })
+                            }) =>
+                    {
+                        vec!["stop"]
+                    }
+                    _ => vec![],
+                },
+            )
+            .await;
+        let stopped = events.iter().find(|e| e["event"] == "stopped").unwrap();
+        assert_eq!(stopped["unexpected"], serde_json::json!([]));
+        let received = received.unwrap();
+        if let Ok(conversation) = &received {
+            // The chat store lists the published conversation.
+            assert!(stopped["conversations"]
+                .as_array()
+                .unwrap()
+                .contains(conversation));
+        }
+        received.map(|conversation| (conversation.as_str().unwrap().to_owned(), None))
+    };
+    if data["abandoned"] == true {
+        // The target resolved the abandoned attempt and released its content,
+        // keeping the transfer, preparation and import rows as tombstones.
+        assert_eq!(
+            received.as_ref().err(),
+            Some(&serde_json::Value::from("transfer_aborted"))
+        );
+        let count = |sql: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(sql)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(count("SELECT COUNT(*) FROM connect_transfers WHERE local_role='target' AND resolution='aborted'").await, 1);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM connect_preparations").await,
+            i64::from(data["prepared"] == true)
+        );
+        for table in [
+            "connect_raw_chunks",
+            "connect_projection_messages",
+            "connect_projection_fields",
+            "connect_projection_fragments",
+            "e_inactive_records",
+            "e_inactive_fragments",
+            "e_inactive_mapping",
+            "conversations",
+        ] {
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
+                    "SELECT COUNT(*) FROM {table}"
+                )))
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                0,
+                "{table}"
+            );
+        }
+    }
+    if data["revoked"] == true {
+        // The revoked target never publishes: its attempt stays unresolved
+        // until a new association reads the relay's aborted terminal.
+        assert!(received.is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM connect_transfers WHERE local_role='target' AND resolution IS NULL")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM connect_activation_receipts")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+    if refused || restricted || data["abandoned"] == true || data["revoked"] == true {
+        assert!(received.is_err());
+        println!(
+            "SLICE_TARGET_EVENT:{}",
+            serde_json::json!({"type":"refused"})
+        );
+        let stop: serde_json::Value =
+            serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(stop["stop"], true);
+        assert!(runtime.shutdown().await);
+        return;
+    }
+    let (conversation, prepared) = received.unwrap();
+    // The target publishes the source's title, retained by normalization.
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT title FROM conversations WHERE id=?")
+            .bind(&conversation)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "Local transfer"
+    );
+    // The source's reasoning effort when the target model offers it (Codex),
+    // otherwise the model's default (Macro AI offers none).
+    assert_eq!(
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT reasoning_effort FROM conversations WHERE id=?"
+        )
+        .bind(&conversation)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .as_deref(),
+        codex.then_some("high")
+    );
+    let messages: Vec<String> = sqlx::query_scalar(
+        "SELECT content FROM messages WHERE conversation_id=? ORDER BY created_at,id",
+    )
+    .bind(&conversation)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(messages.len() >= if compacted { 22 } else { 2 });
+    assert!(messages
+        .iter()
+        .any(|s| s.contains("Can I continue on another computer?")));
+    assert!(messages
+        .iter()
+        .any(|s| s.contains("A short answer available on the other computer.")));
+    let mut preview_resources = Vec::<serde_json::Value>::new();
+    if compacted {
+        assert_eq!(messages.len(), 22);
+        for n in 0..20 {
+            assert!(messages
+                .iter()
+                .any(|s| s.contains(&format!("RECOVERABLE_HISTORY_{n:02}"))));
+        }
+        assert!(!messages
+            .iter()
+            .any(|s| s.starts_with("[Historical archive")));
+        use crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime;
+        use crate::db::connect_transfer::reader_types::*;
+        let (ordinal,uuid):(i64,String)=sqlx::query_as("SELECT r.ordinal,m.target_uuid FROM conversation_portable_archives a JOIN e_inactive_records r ON r.import_id=a.import_id JOIN e_inactive_mapping m ON m.import_id=r.import_id AND m.ordinal=r.ordinal JOIN e_inactive_fragments f ON f.import_id=r.import_id AND f.ordinal=r.ordinal WHERE a.conversation_id=? AND instr(CAST(f.data AS TEXT),'SOURCE_CHECKPOINT_HISTORY')>0 LIMIT 1")
+                .bind(&conversation).fetch_one(&pool).await.unwrap();
+        let reader = ArchiveReaderRuntime::default();
+        let selected = reader
+            .open(
+                &owner,
+                &config,
+                "synthetic-reader",
+                "page",
+                ArchiveOpenInput {
+                    conversation_id: conversation.clone(),
+                    selector: ArchiveSelector::Records {
+                        ordinal: Some(ordinal.to_string()),
+                        uuid: None,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        let backing = reader
+            .materialize(
+                "synthetic-reader",
+                "page",
+                ArchiveMaterializeInput {
+                    read_id: selected.read_id.clone(),
+                    resource_uuid: uuid,
+                    r#use: ArchiveUse::RenderText,
+                    range: None,
+                },
+            )
+            .await
+            .unwrap();
+        let data = serde_json::to_value(&backing).unwrap();
+        assert!(data["text"]
+            .as_str()
+            .unwrap()
+            .contains("SOURCE_CHECKPOINT_HISTORY"));
+        preview_resources
+            .push(serde_json::json!({"title":"Historique compacté","text":data["text"]}));
+        drop(backing);
+        reader
+            .release(
+                "synthetic-reader",
+                "page",
+                ArchiveReleaseInput {
+                    id: data["backingId"].as_str().unwrap().into(),
+                },
+            )
+            .unwrap();
+        reader
+            .release(
+                "synthetic-reader",
+                "page",
+                ArchiveReleaseInput {
+                    id: selected.read_id,
+                },
+            )
+            .unwrap();
+        reader.retire_caller("synthetic-reader");
+    } else {
+        assert!(messages
+            .iter()
+            .all(|s| s == "Can I continue on another computer?"
+                || s == "A short answer available on the other computer."));
+    }
+    if with_resources {
+        use crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime;
+        use crate::db::connect_transfer::reader_types::*;
+        let citations:Vec<String>=sqlx::query_scalar("SELECT content FROM conversation_citations WHERE conversation_id=? AND content IS NOT NULL").bind(&conversation).fetch_all(&pool).await.unwrap();
+        assert!(citations
+            .iter()
+            .any(|text| text.contains("ESSENTIAL_CITATION_FACT")));
+        assert!(citations
+            .iter()
+            .any(|text| text.contains("ASSET_TEXT_FACT")));
+        for text in &citations {
+            preview_resources.push(serde_json::json!({"title":"Référence conservée","text":text}));
+        }
+        let assets:Vec<(String,String)>=sqlx::query_as("SELECT id,mime_type FROM connect_published_assets WHERE conversation_id=? ORDER BY position").bind(&conversation).fetch_all(&pool).await.unwrap();
+        assert_eq!(assets.len(), 2);
+        let reader = ArchiveReaderRuntime::default();
+        for (id, mime) in assets {
+            let selected = reader
+                .open(
+                    &owner,
+                    &config,
+                    "synthetic-resources",
+                    "page",
+                    ArchiveOpenInput {
+                        conversation_id: conversation.clone(),
+                        selector: ArchiveSelector::Asset {
+                            asset_id: id.clone(),
+                        },
+                    },
+                )
+                .await
+                .unwrap();
+            let backing = reader
+                .materialize(
+                    "synthetic-resources",
+                    "page",
+                    ArchiveMaterializeInput {
+                        read_id: selected.read_id.clone(),
+                        resource_uuid: id,
+                        r#use: if mime == "text/plain" {
+                            ArchiveUse::RenderText
+                        } else {
+                            ArchiveUse::Image
+                        },
+                        range: None,
+                    },
+                )
+                .await
+                .unwrap();
+            let data = serde_json::to_value(&backing).unwrap();
+            if mime == "text/plain" {
+                assert_eq!(data["text"], "ASSET_TEXT_FACT");
+            } else {
+                assert_eq!(data["width"], 32);
+                assert_eq!(data["height"], 32);
+                assert!(data["readyDataUrl"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("data:image/png;base64,"));
+            }
+            preview_resources.push(serde_json::json!({"title":if mime=="text/plain"{"sample.txt"}else{"sample.png"},"text":data["text"],"readyDataUrl":data["readyDataUrl"],"width":data["width"],"height":data["height"]}));
+            drop(backing);
+            reader
+                .release(
+                    "synthetic-resources",
+                    "page",
+                    ArchiveReleaseInput {
+                        id: data["backingId"].as_str().unwrap().into(),
+                    },
+                )
+                .unwrap();
+            reader
+                .release(
+                    "synthetic-resources",
+                    "page",
+                    ArchiveReleaseInput {
+                        id: selected.read_id,
+                    },
+                )
+                .unwrap();
+        }
+        reader.retire_caller("synthetic-resources");
+    }
+    // Exercise the same historical-message renderer used by ChatZone with
+    // the ordinary published rows, rather than displaying archive JSON.
+    let mut renderer=tokio::process::Command::new(std::env::split_paths(&std::env::var_os("PATH").unwrap()).map(|p|p.join("bun")).find(|p|p.is_file()).unwrap())
+            .args(["-e",r#"
+                import React from 'react';import {renderToStaticMarkup} from 'react-dom/server';
+                import {createInstance} from 'i18next';import {I18nextProvider} from 'react-i18next';
+                import {HistoricalMessageContent} from './src/components/chat/HistoricalMessageContent';
+                const i18n=createInstance();await i18n.init({lng:'en',resources:{en:{translation:{}}},initImmediate:false,showSupportNotice:false});
+                const messages=JSON.parse(await Bun.stdin.text());
+                console.log(renderToStaticMarkup(React.createElement(I18nextProvider,{i18n},messages.map((content,i)=>React.createElement(HistoricalMessageContent,{key:i,content,date:'2026-01-01T00:00:00Z'})))));
+            "#]).current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    renderer
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(&messages).unwrap())
+        .await
+        .unwrap();
+    let rendered = renderer.wait_with_output().await.unwrap();
+    assert!(
+        rendered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rendered.stderr)
+    );
+    let html = String::from_utf8(rendered.stdout).unwrap();
+    assert!(html.starts_with('<'));
+    assert!(html.contains("data-chat-historical-message"));
+    for message in &messages {
+        assert!(html.contains(message));
+    }
+    assert!(!html.contains(&conversation));
+    assert!(!html.contains("portable_archive"));
+    // P7: the first message after publication goes through the ordinary chat
+    // store, on the rows read back from SQLite. The compaction checkpoint is not
+    // transferred (docs/functional-spec.md): within the budget the full history
+    // is sent; beyond it, the target compacts again before the user turn.
+    let within = ordinary_next_request(
+        &owner,
+        &pool,
+        &config,
+        &conversation,
+        (provider_id, provider_type, model_id),
+        1_000_000,
+        NEXT_PROMPT,
+    )
+    .await;
+    assert_eq!(within["purpose"], "turn");
+    let sent = next_request_messages(&within);
+    assert!(sent.last().unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .ends_with(NEXT_PROMPT));
+    let serialized = request_text(&serde_json::Value::Array(sent.clone()));
+    for message in &messages {
+        assert!(
+            serialized.contains(message.trim()),
+            "missing original text: {}",
+            message.chars().take(70).collect::<String>()
+        );
+    }
+    assert!(!serialized.contains("SOURCE_CHECKPOINT_HISTORY"));
+    if with_resources {
+        assert!(serialized.contains("data:image/png;base64,"));
+    }
+    if compacted {
+        let beyond = ordinary_next_request(
+            &owner,
+            &pool,
+            &config,
+            &conversation,
+            (provider_id, provider_type, model_id),
+            4_000,
+            NEXT_PROMPT,
+        )
+        .await;
+        let compaction = next_request_messages(&beyond);
+        assert!(compaction[0]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("Compact older conversation history"));
+        assert!(compaction
+            .iter()
+            .all(|message| message["content"] != NEXT_PROMPT));
+    }
+    tokio::fs::write(
+        std::path::Path::new(data["database"].as_str().unwrap())
+            .with_file_name("next-request.json"),
+        serde_json::to_vec(&serde_json::json!({"conversation": conversation, "request": within}))
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    if let Some(path) = std::env::var_os("MACRO_CONNECT_SLICE_PREVIEW") {
+        tokio::fs::write(path,serde_json::to_vec(&serde_json::json!({"messagesHtml":html,"messageCount":messages.len(),"resources":preview_resources})).unwrap()).await.unwrap();
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM conversations")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT phase FROM e_inactive_imports")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        2
+    );
+    println!(
+        "SLICE_TARGET_EVENT:{}",
+        serde_json::json!({"type":"complete"})
+    );
+    let stop: serde_json::Value =
+        serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(stop["stop"], true);
+    assert!(runtime.shutdown().await);
+    // The E draft is only reachable when the scenario calls the flow itself.
+    let Some(prepared) = prepared else { return };
+    let (_, request, body, _) = prepared.native_prepared().unwrap();
+    assert_eq!(request.provider_id, provider_id);
+    if codex {
+        assert_eq!(body["store"], false);
+        assert!(body.get("previous_response_id").is_none());
+    } else {
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], true);
+    }
+    let serialized = body.to_string();
+    assert!(serialized.contains("Can I continue on another computer?"));
+    assert!(serialized.contains("A short answer available on the other computer."));
+}
+
+/// Sends the first message after publication through the ordinary chat store
+/// (`dev/connect-transfer-next-request.ts`). Reads of the conversation
+/// are answered here from its database and archive reader; the first
+/// model request is captured and returned without calling a model.
+async fn ordinary_next_request(
+    owner: &crate::core::db_state::DbPool,
+    pool: &sqlx::SqlitePool,
+    config: &crate::config::ConfigManager,
+    conversation: &str,
+    provider: (&str, &str, &str),
+    context_window_tokens: u64,
+    prompt: &str,
+) -> serde_json::Value {
+    use crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let bun = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|p| p.join("bun"))
+        .find(|p| p.is_file())
+        .unwrap();
+    let mut driver = tokio::process::Command::new(bun)
+        .arg("dev/connect-transfer-next-request.ts")
+        .current_dir(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap(),
+        )
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut input = driver.stdin.take().unwrap();
+    let mut output = BufReader::new(driver.stdout.take().unwrap()).lines();
+    let mut row = crate::db::repository::get_conversation(pool, conversation)
+        .await
+        .unwrap()
+        .unwrap();
+    // The app keeps this count current; source fixture rows are inserted
+    // directly, and changing the source row would invalidate its reservation.
+    row.message_count = crate::db::repository::list_messages(pool, conversation)
+        .await
+        .unwrap()
+        .len() as i32;
+    let setup = serde_json::json!({
+        "conversation": row,
+        "provider": {"id": provider.0, "type": provider.1, "modelId": provider.2,
+            "contextWindowTokens": context_window_tokens},
+        "prompt": prompt,
+    });
+    input
+        .write_all(format!("{setup}\n").as_bytes())
+        .await
+        .unwrap();
+    let reader = ArchiveReaderRuntime::default();
+    let (caller, page) = ("next-request", "page");
+    let mut outcome = serde_json::Value::Null;
+    while let Some(line) = output.next_line().await.unwrap() {
+        let Some(message) = line.strip_prefix("NEXT_REQUEST:") else {
+            continue;
+        };
+        let message: serde_json::Value = serde_json::from_str(message).unwrap();
+        if message["done"] == true {
+            assert_eq!(message["unexpected"], serde_json::json!([]));
+            break;
+        }
+        let Some(command) = message["command"].as_str() else {
+            outcome = message;
+            continue;
+        };
+        let args = &message["args"];
+        let text = |key: &str| args[key].as_str().unwrap().to_owned();
+        fn arg<T: serde::de::DeserializeOwned>(args: &serde_json::Value) -> Result<T, String> {
+            serde_json::from_value(args["input"].clone()).map_err(|e| e.to_string())
+        }
+        let reply: Result<serde_json::Value, String> = match command {
+            "db_list_messages" => {
+                crate::db::repository::list_messages(pool, &text("conversationId"))
+                    .await
+                    .map(|v| serde_json::to_value(v).unwrap())
+                    .map_err(|e| format!("{e:?}"))
+            }
+            "db_list_provider_models" => {
+                // Native list; the driver imposes the scenario's context window.
+                crate::commands::configured_provider_models(config, pool, &text("providerId"))
+                    .await
+                    .map(|v| serde_json::to_value(v).unwrap())
+                    .map_err(|e| format!("{e:?}"))
+            }
+            "db_get_app_setting" => crate::db::repository::get_app_setting(pool, &text("key"))
+                .await
+                .map(|v| serde_json::to_value(v).unwrap())
+                .map_err(|e| format!("{e:?}")),
+            "db_list_conversation_citations" => {
+                crate::db::repository::list_conversation_citations(pool, &text("conversationId"))
+                    .await
+                    .map(|v| serde_json::to_value(v).unwrap())
+                    .map_err(|e| format!("{e:?}"))
+            }
+            "db_get_conversation_compaction_state" => {
+                crate::db::repository::get_conversation_compaction_state(
+                    pool,
+                    &text("conversationId"),
+                )
+                .await
+                .map(|v| serde_json::to_value(v).unwrap())
+                .map_err(|e| format!("{e:?}"))
+            }
+            "db_pilot_message_images" => {
+                crate::db::pilot_files::message_images(pool, &text("messageId"))
+                    .await
+                    .map(|v| serde_json::to_value(v).unwrap())
+                    .map_err(|e| format!("{e:?}"))
+            }
+            "connect_archive_open" => match arg(args) {
+                Ok(input) => reader
+                    .open(owner, config, caller, page, input)
+                    .await
+                    .map(|v| serde_json::to_value(v).unwrap())
+                    .map_err(|e| format!("{e:?}")),
+                Err(e) => Err(e),
+            },
+            "connect_archive_page" => match arg(args) {
+                Ok(input) => reader
+                    .page(caller, page, input)
+                    .await
+                    .map(|v| serde_json::to_value(v).unwrap())
+                    .map_err(|e| format!("{e:?}")),
+                Err(e) => Err(e),
+            },
+            "connect_archive_materialize" => match arg(args) {
+                Ok(input) => reader
+                    .materialize(caller, page, input)
+                    .await
+                    .map(|v| serde_json::to_value(v).unwrap())
+                    .map_err(|e| format!("{e:?}")),
+                Err(e) => Err(e),
+            },
+            "connect_archive_release" => match arg(args) {
+                Ok(input) => reader
+                    .release(caller, page, input)
+                    .map(|_| serde_json::Value::Null)
+                    .map_err(|e| format!("{e:?}")),
+                Err(e) => Err(e),
+            },
+            other => Err(format!("unhandled native command {other}")),
+        };
+        let reply = match reply {
+            Ok(ok) => serde_json::json!({"id": message["id"], "ok": ok}),
+            Err(error) => serde_json::json!({"id": message["id"], "error": error}),
+        };
+        input
+            .write_all(format!("{reply}\n").as_bytes())
+            .await
+            .unwrap();
+    }
+    reader.retire_caller(caller);
+    assert!(driver.wait().await.unwrap().success());
+    outcome
+}
+
+const NEXT_PROMPT: &str = "Continue from this history.";
+
+/// Model messages of a captured request, native (`ai_stream_chat`) or HTTP.
+fn next_request_messages(captured: &serde_json::Value) -> Vec<serde_json::Value> {
+    captured["request"]["body"]["messages"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no model request: {captured}"))
+        .clone()
+}
+
+/// Every string in a request, so texts are compared unescaped.
+fn request_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => format!("{text}\n"),
+        serde_json::Value::Array(items) => items.iter().map(request_text).collect(),
+        serde_json::Value::Object(fields) => fields.values().map(request_text).collect(),
+        _ => String::new(),
+    }
+}
+
+/// What the provider would receive: the HTTP body, or the native request after
+/// the ordinary Responses builder.
+fn provider_body(captured: &serde_json::Value) -> serde_json::Value {
+    let request = &captured["request"];
+    if request["kind"] == "http" {
+        return request["body"].clone();
+    }
+    let request: crate::ai::types::AiChatRequest =
+        serde_json::from_value(request["body"].clone()).unwrap();
+    serde_json::to_value(crate::ai::chatgpt::build_transfer_request(&request).unwrap()).unwrap()
+}
+
+/// Native side of one desktop for `dev/connect-transfer-runtime.ts`: Tauri
+/// commands of the real Pilot runtime are answered by the command bodies, with
+/// the scenario's vault and loopback relay instead of the keychain and DNS.
+struct DesktopHost<'a> {
+    manager: Arc<Manager<Arc<Fake>>>,
+    relay: std::net::SocketAddr,
+    owner: &'a crate::core::db_state::DbPool,
+    pool: &'a sqlx::SqlitePool,
+    config: &'a crate::config::ConfigManager,
+    runtime: &'a crate::connect::TransferRuntime,
+    admission: &'a crate::db::chat_admission::runtime::ChatAdmissionRuntime,
+    window: &'a str,
+}
+
+enum DesktopObserved<'v> {
+    Call(&'v str),
+    Reply(&'v str, &'v Result<serde_json::Value, serde_json::Value>),
+    Event(&'v serde_json::Value),
+}
+
+impl DesktopHost<'_> {
+    /// A launcher per command, as `codec_launcher` in the app: a revoked runtime
+    /// retires the launchers of its previous generation.
+    fn launcher(&self) -> crate::connect::runtime::CodecLauncher {
+        let bun = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|p| p.join("bun"))
+            .find(|p| p.is_file())
+            .unwrap();
+        self.runtime
+            .source_launcher(
+                &bun,
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../copilot-bridge/src/entry.ts"),
+                self.owner,
+            )
+            .unwrap()
+    }
+
+    async fn call(
+        &self,
+        command: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        use crate::core::command_error::CommandError;
+        fn fail(error: impl Into<CommandError>) -> serde_json::Value {
+            serde_json::to_value(error.into()).unwrap()
+        }
+        fn ok<T: serde::Serialize>(value: T) -> serde_json::Value {
+            serde_json::to_value(value).unwrap()
+        }
+        let text = |key: &str| args[key].as_str().unwrap_or_default().to_owned();
+        match command {
+            "connect_transfer_send" => {
+                let input = serde_json::from_value(args["input"].clone())
+                    .map_err(|e| fail(crate::core::command_error::command_error(e.to_string())))?;
+                super::send_transfer(
+                    self.manager.clone(),
+                    Some(self.relay),
+                    self.owner,
+                    self.config,
+                    self.runtime,
+                    &self.launcher(),
+                    self.admission,
+                    self.window,
+                    input,
+                )
+                .await
+                .map(ok)
+                .map_err(fail)
+            }
+            "connect_transfer_receive" => {
+                let input = serde_json::from_value(args["input"].clone())
+                    .map_err(|e| fail(crate::core::command_error::command_error(e.to_string())))?;
+                super::receive_transfer(
+                    self.manager.clone(),
+                    Some(self.relay),
+                    self.owner,
+                    self.config,
+                    self.runtime,
+                    &self.launcher(),
+                    input,
+                )
+                .await
+                .map(ok)
+                .map_err(fail)
+            }
+            "connect_transfer_reconcile" => {
+                let input = serde_json::from_value(args["input"].clone())
+                    .map_err(|e| fail(crate::core::command_error::command_error(e.to_string())))?;
+                super::reconcile_transfers(
+                    self.manager.clone(),
+                    Some(self.relay),
+                    self.owner,
+                    self.config,
+                    self.runtime,
+                    &self.launcher(),
+                    input,
+                )
+                .await
+                .map(ok)
+                .map_err(fail)
+            }
+            "connect_transfer_interrupt_idle" => self
+                .runtime
+                .interrupt_idle()
+                .map(ok)
+                .map_err(|e| fail(crate::core::command_error::command_error(e))),
+            "chat_admission_open_browser" => self
+                .admission
+                .open_browser(self.owner.clone(), self.window, &text("runtime"))
+                .await
+                .map(ok)
+                .map_err(fail),
+            "chat_admission_begin_reconciliation" => self
+                .admission
+                .begin_reconciliation(
+                    self.owner,
+                    self.window,
+                    &text("runtime"),
+                    &text("conversationId"),
+                )
+                .await
+                .map(ok)
+                .map_err(fail),
+            "chat_admission_complete_reconciliation" => {
+                let observed = serde_json::from_value(args["observed"].clone())
+                    .map_err(|e| fail(crate::core::command_error::command_error(e.to_string())))?;
+                self.admission
+                    .complete_reconciliation(
+                        self.owner,
+                        self.window,
+                        &text("runtime"),
+                        &text("handle"),
+                        &observed,
+                    )
+                    .await
+                    .map(ok)
+                    .map_err(fail)
+            }
+            "db_list_conversations" => crate::db::repository::list_user_conversations(self.pool)
+                .await
+                .map(ok)
+                .map_err(fail),
+            "db_conversation_metadata" => crate::db::conversation_management::metadata(self.pool)
+                .await
+                .map(ok)
+                .map_err(|e| fail(crate::core::command_error::command_error(e))),
+            "db_list_messages" => {
+                crate::db::repository::list_messages(self.pool, &text("conversationId"))
+                    .await
+                    .map(ok)
+                    .map_err(fail)
+            }
+            "db_get_app_setting" => crate::db::repository::get_app_setting(self.pool, &text("key"))
+                .await
+                .map(ok)
+                .map_err(fail),
+            other => Err(fail(crate::core::command_error::command_error(format!(
+                "unhandled native command {other}"
+            )))),
+        }
+    }
+
+    /// Runs the desktop's Pilot runtime until it stops. `observe` sees every
+    /// native call, reply and runtime event, and returns controls to send
+    /// (`send`, `stop`). Returns the runtime events.
+    async fn run(
+        &self,
+        setup: serde_json::Value,
+        mut observe: impl FnMut(DesktopObserved<'_>) -> Vec<&'static str>,
+    ) -> Vec<serde_json::Value> {
+        use futures::StreamExt;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let bun = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|p| p.join("bun"))
+            .find(|p| p.is_file())
+            .unwrap();
+        let mut driver = tokio::process::Command::new(bun)
+            .arg("dev/connect-transfer-runtime.ts")
+            .current_dir(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .unwrap(),
+            )
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut input = driver.stdin.take().unwrap();
+        let mut output = BufReader::new(driver.stdout.take().unwrap()).lines();
+        input
+            .write_all(format!("{setup}\n").as_bytes())
+            .await
+            .unwrap();
+        let mut pending = futures::stream::FuturesUnordered::new();
+        let mut events = Vec::new();
+        loop {
+            let controls = tokio::select! {
+                line = output.next_line() => {
+                    let Some(line) = line.unwrap() else { break };
+                    let Some(message) = line.strip_prefix("TRANSFER_RUNTIME:") else { continue };
+                    let message: serde_json::Value = serde_json::from_str(message).unwrap();
+                    if let Some(command) = message["command"].as_str() {
+                        let command = command.to_owned();
+                        let controls = observe(DesktopObserved::Call(&command));
+                        let (id, args) = (message["id"].clone(), message["args"].clone());
+                        pending.push(async move {
+                            let result = self.call(&command, args).await;
+                            (id, command, result)
+                        });
+                        controls
+                    } else {
+                        let controls = observe(DesktopObserved::Event(&message));
+                        events.push(message);
+                        controls
+                    }
+                }
+                Some((id, command, result)) = pending.next(), if !pending.is_empty() => {
+                    let reply = match &result {
+                        Ok(ok) => serde_json::json!({"id": id, "ok": ok}),
+                        Err(error) => {
+                            eprintln!("{} command {command} failed: {error}", self.window);
+                            serde_json::json!({"id": id, "error": error})
+                        }
+                    };
+                    // A stopped driver no longer reads replies.
+                    let _ = input.write_all(format!("{reply}\n").as_bytes()).await;
+                    observe(DesktopObserved::Reply(&command, &result))
+                }
+            };
+            for control in controls {
+                let _ = input
+                    .write_all(format!("{}\n", serde_json::json!({"control": control})).as_bytes())
+                    .await;
+            }
+        }
+        drop(pending);
+        let status = driver.wait().await.unwrap();
+        assert!(status.success(), "{status}: {events:?}");
+        events
+    }
+}
+
+/// Equal provider bodies, reporting the first differing message on failure.
+fn assert_same_body(target: &serde_json::Value, source: &serde_json::Value) {
+    if target == source {
+        return;
+    }
+    let field = if target.get("input").is_some() {
+        "input"
+    } else {
+        "messages"
+    };
+    let (t, s) = (
+        target[field].as_array().cloned().unwrap_or_default(),
+        source[field].as_array().cloned().unwrap_or_default(),
+    );
+    let index = (0..t.len().max(s.len())).find(|&i| t.get(i) != s.get(i));
+    // Around the first differing character of the two serialized messages.
+    let at = index.map(|i| {
+        let (a, b) = (
+            t.get(i).map(|v| v.to_string()).unwrap_or_default(),
+            s.get(i).map(|v| v.to_string()).unwrap_or_default(),
+        );
+        a.chars()
+            .zip(b.chars())
+            .position(|(x, y)| x != y)
+            .unwrap_or(a.len().min(b.len()))
+    });
+    let shown = |v: Option<&serde_json::Value>| {
+        v.map(|v| {
+            let text = v.to_string();
+            let start = at.unwrap_or(0).saturating_sub(200);
+            text.chars().skip(start).take(600).collect::<String>()
+        })
+    };
+    panic!(
+        "bodies differ ({field}: {} vs {} items) at {index:?}\ntarget: {:?}\nsource: {:?}\nother fields equal: {}",
+        t.len(),
+        s.len(),
+        index.and_then(|i| shown(t.get(i))),
+        index.and_then(|i| shown(s.get(i))),
+        {
+            let (mut a, mut b) = (target.clone(), source.clone());
+            a.as_object_mut().map(|o| o.remove(field));
+            b.as_object_mut().map(|o| o.remove(field));
+            a == b
+        }
+    );
+}
+
+/// A transferred Chat Completions body as the source presents its own rows:
+/// history text trimmed, image parts removed (with their number).
+fn as_source_history(body: &serde_json::Value) -> (serde_json::Value, usize) {
+    let mut body = body.clone();
+    let mut removed = 0;
+    let messages = body["messages"].as_array_mut().unwrap();
+    let last = messages.len().saturating_sub(1);
+    for message in &mut messages[..last] {
+        if let Some(text) = message["content"].as_str() {
+            message["content"] = serde_json::Value::from(text.trim());
+            continue;
+        }
+        let Some(parts) = message["content"].as_array() else {
+            continue;
+        };
+        let text: Vec<&str> = parts
+            .iter()
+            .filter(|part| part["type"] == "text")
+            .filter_map(|part| part["text"].as_str())
+            .collect();
+        removed += parts.len() - text.len();
+        if text.len() == 1 {
+            message["content"] = serde_json::Value::from(text[0].trim());
+        }
+    }
+    (body, removed)
 }
