@@ -24,6 +24,8 @@ contribue au code de Macro commence également par [AGENTS.md](../AGENTS.md).
 
 Ces documents gardent leur rôle et leur emplacement :
 
+- [Systèmes agentiques](agentic-systems.md), pour le recentrage du produit sur
+  AgSDL et les décisions qui priment sur la spécification en attendant sa réécriture.
 - [Installation](../INSTALL.md) et [support](../SUPPORT.md).
 - [Spécification fonctionnelle](functional-spec.md), pour le comportement cible.
 - [Architecture technique](technical-architecture.md), pour les responsabilités
