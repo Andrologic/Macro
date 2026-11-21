@@ -78,10 +78,10 @@ const loadModal = async () => {
       error: mock(() => undefined),
     },
   }));
-  return import(`./ProjectGitFlowModal.tsx?test=${importCounter}`);
+  return import(`./ProjectAccessModal.tsx?test=${importCounter}`);
 };
 
-describe('ProjectGitFlowModal', () => {
+describe('ProjectAccessModal', () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -92,7 +92,6 @@ describe('ProjectGitFlowModal', () => {
     useAppStore.setState({
       projectGitFlowModalProjectId: project.id,
       getProjectById: (projectId: string) => projectId === project.id ? project : undefined,
-      updateProjectGitFlow: mock(async () => undefined),
       updateProjectGitFlowWithSetup: updateProjectGitFlowWithSetupMock,
       updateProjectAccess: mock(async () => undefined),
       closeProjectGitFlowModal: mock(() => undefined),
@@ -108,38 +107,20 @@ describe('ProjectGitFlowModal', () => {
     mock.restore();
   });
 
-  it('names every Git setting and blocks invalid branches before saving', async () => {
-    const { ProjectGitFlowModal } = await loadModal();
-    await act(async () => root.render(<ProjectGitFlowModal />));
+  it('shows project access without branch settings', async () => {
+    const { ProjectAccessModal } = await loadModal();
+    await act(async () => root.render(<ProjectAccessModal />));
     const dialog = document.body.querySelector('[role="dialog"]')!;
-    const labels = Array.from(dialog.querySelectorAll('label'));
-    expect(labels.length).toBeGreaterThan(2);
-    for (const label of labels) {
-      expect(label.htmlFor).not.toBe('');
-      expect(document.getElementById(label.htmlFor)).not.toBeNull();
-    }
-    const targetLabel = labels.find(label => label.textContent?.includes('Development'))!;
-    const target = document.getElementById(targetLabel.htmlFor) as HTMLInputElement;
-    for (const value of ['branch invalid', 'topic..bad', 'topic.lock', 'topic@{1}', '/topic', '-topic', '']) {
-      const propsKey = Object.keys(target).find(key => key.startsWith('__reactProps$'))!;
-      const props = (target as unknown as Record<string, { onChange: (event: unknown) => void }>)[propsKey];
-      await act(async () => props.onChange({ target: { value } }));
-      expect(target.getAttribute('aria-invalid')).toBe('true');
-      expect(document.getElementById(target.getAttribute('aria-describedby')!)?.textContent).toBe('Enter a valid Git branch name.');
-      const save = Array.from(document.body.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Validate')!;
-      expect(save.disabled).toBe(true);
-      await act(async () => save.click());
-    }
-    expect(useAppStore.getState().updateProjectGitFlow).not.toHaveBeenCalled();
-    expect(useAppStore.getState().closeProjectGitFlowModal).not.toHaveBeenCalled();
+    expect(dialog.textContent).toContain('Access');
+    expect(dialog.querySelector('input, select')).toBeNull();
   });
 
   it('contains focus, closes on Escape and restores the opener', async () => {
     const opener = document.createElement('button');
     document.body.appendChild(opener);
     opener.focus();
-    const { ProjectGitFlowModal } = await loadModal();
-    await act(async () => root.render(<ProjectGitFlowModal />));
+    const { ProjectAccessModal } = await loadModal();
+    await act(async () => root.render(<ProjectAccessModal />));
     const dialog = document.body.querySelector('[role="dialog"]')!;
     expect(dialog.contains(document.activeElement)).toBe(true);
     const buttons = dialog.querySelectorAll<HTMLButtonElement>('button:not([disabled])');
@@ -159,8 +140,8 @@ describe('ProjectGitFlowModal', () => {
   it('restores the access trigger after a deferred preview is cancelled and can reopen it', async () => {
     const editableProject: Project = { ...project, gitSetupState: 'ready', isReadOnly: false, userReadOnly: false };
     useAppStore.setState({ getProjectById: () => editableProject });
-    const { ProjectGitFlowModal } = await loadModal();
-    await act(async () => root.render(<ProjectGitFlowModal />));
+    const { ProjectAccessModal } = await loadModal();
+    await act(async () => root.render(<ProjectAccessModal />));
     const parent = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
     const trigger = Array.from(parent.querySelectorAll<HTMLButtonElement>('button'))
       .find(button => button.textContent?.trim() === 'Make read-only')!;
@@ -216,8 +197,8 @@ describe('ProjectGitFlowModal', () => {
   });
 
   it('persists a ready Git detection even when no setup prompt is required', async () => {
-    const { ProjectGitFlowModal } = await loadModal();
-    await act(async () => root.render(<ProjectGitFlowModal />));
+    const { ProjectAccessModal } = await loadModal();
+    await act(async () => root.render(<ProjectAccessModal />));
     const button = Array.from(document.body.querySelectorAll('button')).find(
       (candidate) => candidate.textContent?.trim() === 'Check Git status',
     );

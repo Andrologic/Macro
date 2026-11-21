@@ -11,16 +11,8 @@ import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { Dialog } from '../ui/Dialog';
 import { toServiceError } from '../../services/contracts/errors';
 import { isWslProjectPath } from '../../services/wslPaths';
-import {
-  resolveProjectGitFlowSettings,
-  validateProjectGitFlowSettings,
-} from '../../services/architectGitNaming';
 import { cn } from '../../utils/cn';
-import { ProjectGitFlowConfirmationModal } from './ProjectGitFlowConfirmationModal';
 import {
-  getProjectSetupDevelopExplanation,
-  getProjectSetupMainlineExplanation,
-  getProjectSetupPromptCancelLabel,
   getProjectSetupPromptConfirmLabel,
   getProjectSetupPromptDescription,
   getProjectSetupPromptTitle,
@@ -29,23 +21,19 @@ import {
 import {
   validateExistingProjectDirectory,
   advanceProjectSetupPrompt,
-  buildDeclinedProjectSetupPayload,
-  buildPendingGitFlowConfirmation,
   buildPendingProjectCreation,
   buildPendingProjectSetupPrompt,
   buildProjectWithGitSetupPayload,
   findProjectByPath,
   getProjectCreationErrorMessage,
   getAcceptedActionsAfterConfirmingPrompt,
-  getAcceptedActionsAfterDecliningPrompt,
   getActiveProjectSetupPrompt,
+  getDetectedProjectBranchSettings,
   hasDuplicateSubProjectName,
   inferProjectNameFromPath,
   isValidProjectFolderName,
   joinProjectPath,
-  shouldConfirmDetectedGitFlow,
   slugifyProjectFolderName,
-  type PendingGitFlowConfirmation,
   type PendingProjectCreation,
   type PendingProjectSetupPrompt,
   type ProjectDestinationMode,
@@ -53,7 +41,6 @@ import {
 } from './ProjectModal.helpers';
 import type {
   Project,
-  ProjectGitFlowDetection,
   ProjectGitSetupRiskFlag,
 } from '../../types';
 
@@ -87,8 +74,6 @@ export const ProjectModal: React.FC = () => {
   const [error, setError] = useState('');
   const [errorField, setErrorField] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [pendingGitFlowConfirmation, setPendingGitFlowConfirmation] =
-    useState<PendingGitFlowConfirmation | null>(null);
   const [pendingProjectSetupPrompt, setPendingProjectSetupPrompt] =
     useState<PendingProjectSetupPrompt | null>(null);
   const activeRequestIdRef = useRef<string | null>(null);
@@ -122,7 +107,6 @@ export const ProjectModal: React.FC = () => {
     setError('');
     setPathError('');
     setIsSubmitting(false);
-    setPendingGitFlowConfirmation(null);
     setPendingProjectSetupPrompt(null);
     activeRequestIdRef.current = null;
   }, [preselectedGroup, projectModalOpen]);
@@ -155,19 +139,6 @@ export const ProjectModal: React.FC = () => {
       : isCreatingNewRepo
         ? t('project.createNewRepo', 'Create repository')
         : t('project.addExistingRepo', 'Add existing repository');
-  const destinationSummary = isAttachingToExistingGroup
-    ? targetGroup?.name || t('project.chooseGlobalProject', 'Choose a group')
-    : isCreatingNewGroup
-      ? newGroupName.trim() || t('project.newGlobalProject', 'New group')
-    : t('project.noGroup', 'No group');
-  const pendingGitFlowValidationError = pendingGitFlowConfirmation
-    ? validateProjectGitFlowSettings(
-        resolveProjectGitFlowSettings({
-          mainBranch: pendingGitFlowConfirmation.mainBranch,
-          baseBranch: pendingGitFlowConfirmation.baseBranch,
-        })
-      )[0] ?? null
-    : null;
   const activeProjectSetupPrompt =
     getActiveProjectSetupPrompt(pendingProjectSetupPrompt);
   const setSourceModeAndClearError = (value: string) => {
@@ -265,37 +236,6 @@ export const ProjectModal: React.FC = () => {
     return t('project.gitSetupRiskBuildOutput', 'Build artifacts detected (dist, build, coverage)');
   };
 
-  const continueProjectCreation = async (
-    payload: PendingProjectCreation,
-    projectPath?: string,
-    detectionOverride?: ProjectGitFlowDetection
-  ) => {
-    if (!projectPath?.trim()) {
-      await persistProject(payload);
-      return;
-    }
-
-    const detection =
-      detectionOverride ||
-      await services.previewProjectGitSetup({
-        path: projectPath,
-        requestId: ensureProjectAddRequestId(),
-      });
-
-    if (shouldConfirmDetectedGitFlow(detection)) {
-      setPendingGitFlowConfirmation(buildPendingGitFlowConfirmation(payload, detection));
-      return;
-    }
-
-    const projectSetupPrompt = buildPendingProjectSetupPrompt(payload, projectPath, detection);
-    if (projectSetupPrompt) {
-      setPendingProjectSetupPrompt(projectSetupPrompt);
-      return;
-    }
-
-    await persistProject(payload);
-  };
-
   const handleBrowsePath = async () => {
     const selectedPath = await open({
       directory: true,
@@ -315,33 +255,6 @@ export const ProjectModal: React.FC = () => {
     }
     setError('');
     setPathError('');
-  };
-
-  const handleConfirmRareGitFlow = async () => {
-    if (
-      !pendingGitFlowConfirmation ||
-      isSubmitting ||
-      pendingGitFlowValidationError
-    ) {
-      return;
-    }
-
-    setError('');
-    setPathError('');
-    setIsSubmitting(true);
-    try {
-      await persistProject({
-        ...pendingGitFlowConfirmation.createPayload,
-        gitFlowSettings: resolveProjectGitFlowSettings({
-          mainBranch: pendingGitFlowConfirmation.mainBranch,
-          baseBranch: pendingGitFlowConfirmation.baseBranch,
-        }),
-      });
-    } catch (submitError: unknown) {
-      setError(getProjectCreationErrorMessage(submitError, t));
-    } finally {
-      setIsSubmitting(false);
-    }
   };
 
   const handleConfirmProjectSetupPrompt = async () => {
@@ -373,11 +286,6 @@ export const ProjectModal: React.FC = () => {
       const detection = pendingProjectSetupPrompt.detection;
       setPendingProjectSetupPrompt(null);
 
-      if (!finalPath.trim()) {
-        await persistProject(finalPayload);
-        return;
-      }
-
       const requestId = ensureProjectAddRequestId();
       const result = await createProjectWithGitSetup({
         ...buildProjectWithGitSetupPayload(
@@ -407,37 +315,8 @@ export const ProjectModal: React.FC = () => {
     setPathError('');
     setIsSubmitting(true);
     try {
-      const payload = buildDeclinedProjectSetupPayload(
-        pendingProjectSetupPrompt.createPayload,
-        activeProjectSetupPrompt
-      );
-      const acceptedActions = getAcceptedActionsAfterDecliningPrompt(
-        pendingProjectSetupPrompt,
-        activeProjectSetupPrompt
-      );
-      const finalPath = activeProjectSetupPrompt.projectPath;
-      const detection = pendingProjectSetupPrompt.detection;
+      const payload = pendingProjectSetupPrompt.createPayload;
       setPendingProjectSetupPrompt(null);
-
-      if (
-        activeProjectSetupPrompt.kind === 'create_develop'
-        && finalPath.trim()
-      ) {
-        const requestId = ensureProjectAddRequestId();
-        const result = await createProjectWithGitSetup({
-          ...buildProjectWithGitSetupPayload(
-            payload,
-            finalPath,
-            detection,
-            acceptedActions
-          ),
-          requestId,
-        });
-        await createSelectedGroupForProject(result.project);
-        closeProjectModal();
-        clearProjectAddRequestId(requestId);
-        return;
-      }
 
       await persistProject(payload);
     } catch (submitError: unknown) {
@@ -461,10 +340,7 @@ export const ProjectModal: React.FC = () => {
     setPathError('');
     setIsSubmitting(true);
     try {
-      const payload = buildDeclinedProjectSetupPayload(
-        pendingProjectSetupPrompt.createPayload,
-        activeProjectSetupPrompt
-      );
+      const payload = pendingProjectSetupPrompt.createPayload;
       setPendingProjectSetupPrompt(null);
       await persistProject({ ...payload, directEdit: true });
     } catch (submitError: unknown) {
@@ -586,7 +462,19 @@ export const ProjectModal: React.FC = () => {
             : t('project.folderCheckFailed', 'Unable to read this folder. Check the path and access permissions.'));
         return;
       }
-      await continueProjectCreation(createPayload, trimmedSubProjectPath || undefined);
+      const detection = await services.previewProjectGitSetup({
+        path: trimmedSubProjectPath,
+        requestId: ensureProjectAddRequestId(),
+      });
+      const gitFlowSettings = getDetectedProjectBranchSettings(detection);
+      const payload = gitFlowSettings ? { ...createPayload, gitFlowSettings } : createPayload;
+      const setupPrompt = buildPendingProjectSetupPrompt(payload, trimmedSubProjectPath, detection);
+      if (setupPrompt) {
+        setPendingProjectSetupPrompt(setupPrompt);
+        return;
+      }
+
+      await persistProject(payload);
     } catch (submitError: unknown) {
       setError(getProjectCreationErrorMessage(submitError, t));
     } finally {
@@ -958,47 +846,13 @@ export const ProjectModal: React.FC = () => {
         </footer>
       </div>
 
-      {pendingGitFlowConfirmation && (
-        <ProjectGitFlowConfirmationModal
-          projectName={derivedProjectName || destinationSummary}
-          branches={pendingGitFlowConfirmation.branches}
-          currentBranch={pendingGitFlowConfirmation.currentBranch}
-          mainBranch={pendingGitFlowConfirmation.mainBranch}
-          baseBranch={pendingGitFlowConfirmation.baseBranch}
-          isSubmitting={isSubmitting}
-          validationMessage={pendingGitFlowValidationError}
-          errorMessage={pendingGitFlowValidationError ? null : error}
-          onChangeMainBranch={(mainBranch) => {
-            setError('');
-            setPathError('');
-            setPendingGitFlowConfirmation((prev) =>
-              prev ? { ...prev, mainBranch } : prev
-            );
-          }}
-          onChangeBaseBranch={(baseBranch) => {
-            setError('');
-            setPathError('');
-            setPendingGitFlowConfirmation((prev) =>
-              prev ? { ...prev, baseBranch } : prev
-            );
-          }}
-          onClose={() => {
-            if (isSubmitting) {
-              return;
-            }
-            setPendingGitFlowConfirmation(null);
-          }}
-          onConfirm={() => void handleConfirmRareGitFlow()}
-        />
-      )}
-
       {activeProjectSetupPrompt && (
         <ConfirmPromptModal
           isOpen
           title={getProjectSetupPromptTitle(t, activeProjectSetupPrompt)}
-          description={getProjectSetupPromptDescription(t, activeProjectSetupPrompt, 'project_creation')}
+          description={getProjectSetupPromptDescription(t, activeProjectSetupPrompt)}
           confirmLabel={getProjectSetupPromptConfirmLabel(t, activeProjectSetupPrompt)}
-          cancelLabel={getProjectSetupPromptCancelLabel(t, activeProjectSetupPrompt)}
+          cancelLabel={t('project.keepReadOnly', 'Keep read-only')}
           secondaryLabel={activeProjectSetupPrompt.kind === 'init_git'
             ? t('project.editDirectly', 'Edit directly')
             : undefined}
@@ -1014,25 +868,6 @@ export const ProjectModal: React.FC = () => {
           }}
         >
           <div className="space-y-3">
-            {activeProjectSetupPrompt.kind === 'create_develop' && (
-              <div className="space-y-2 text-xs">
-                <div className="rounded-lg border border-sky-500/25 bg-sky-500/10 px-3 py-2 text-sky-200">
-                  <span className="font-semibold">
-                    {t('projects.gitWorkflowMainlineBadge', 'Mainline')}
-                  </span>
-                  {' - '}
-                  {getProjectSetupMainlineExplanation(t, activeProjectSetupPrompt)}
-                </div>
-                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-muted-foreground">
-                  <span className="font-semibold text-foreground">
-                    {t('project.developModeLabel', 'Separate develop')}
-                  </span>
-                  {' - '}
-                  {getProjectSetupDevelopExplanation(t, activeProjectSetupPrompt)}
-                </div>
-              </div>
-            )}
-
             {activeProjectSetupPrompt.resolvedRepoRootPath && (
               <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground">

@@ -87,12 +87,6 @@ settingsRegistry.register({
   load: () => import('../../components/settings/views/PromptsView').then((module) => ({ default: module.PromptsView })),
 });
 settingsRegistry.register({
-  id: 'architect', owner: 'shell.settings', order: 9, icon: 'git-branch',
-  labelKey: 'settings.architect', label: 'Git workflow',
-  descriptionKey: 'settings.desc.architect',
-  load: () => import('../../components/settings/views/ArchitectGitFlowView').then((module) => ({ default: module.ArchitectGitFlowView })),
-});
-settingsRegistry.register({
   id: 'shortcuts', owner: 'shell.settings', order: 10, icon: 'zap',
   labelKey: 'settings.shortcuts', label: 'Shortcuts',
   descriptionKey: 'settings.desc.shortcuts',

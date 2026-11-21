@@ -553,7 +553,7 @@ describe('ProjectModal', () => {
     expect(createNewProjectRepoMock).not.toHaveBeenCalled();
   });
 
-  it('opens rare Git workflow confirmation and persists confirmed branch roles', async () => {
+  it('attaches an unconventional repository using the detected branch roles', async () => {
     previewProjectGitSetupMock = mock(async (_data: { path: string }) =>
       buildDetection({
         repoDetected: true,
@@ -575,12 +575,8 @@ describe('ProjectModal', () => {
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).toContain('Confirm branch roles');
-
-    await act(async () => {
-      findButton('Confirm and save').click();
-      await Promise.resolve();
-    });
+    expect(document.body.textContent).not.toContain('Confirm branch roles');
+    expect(closeProjectModalMock).toHaveBeenCalled();
 
     expect(createProjectMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -593,7 +589,7 @@ describe('ProjectModal', () => {
     );
   });
 
-  it('keeps the new group destination through Git workflow confirmation', async () => {
+  it('keeps the new group destination for an unconventional repository', async () => {
     useAppStore.setState({
       standaloneProjects: [
         buildProject({ id: 'project-api', name: 'API', path: 'C:/work/api' }),
@@ -625,11 +621,6 @@ describe('ProjectModal', () => {
       findButton('Create group and add repository').click();
       await Promise.resolve();
     });
-    await act(async () => {
-      findButton('Confirm and save').click();
-      await Promise.resolve();
-    });
-
     expect(createProjectMock).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'app',
@@ -649,7 +640,7 @@ describe('ProjectModal', () => {
         setupState: 'not_git',
         repoResolution: 'new_local_repo',
         resolvedRepoRootPath: 'C:/work/app',
-        recommendedActionSequence: ['initialize_repo'],
+        recommendedActionSequence: ['initialize_repo', 'create_initial_commit', 'create_develop'],
       })
     );
     await renderModal();
@@ -669,19 +660,29 @@ describe('ProjectModal', () => {
       await Promise.resolve();
     });
 
+    expect(document.body.textContent).toContain('Create the initial commit?');
+    await act(async () => {
+      findButton('Create initial commit').click();
+      await Promise.resolve();
+    });
+    expect(document.body.textContent).not.toContain('Create develop');
+
     expect(createProjectWithGitSetupMock).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'app',
         path: 'C:/work/app',
-        gitSetupActions: ['initialize_repo'],
+        gitSetupActions: ['initialize_repo', 'create_initial_commit'],
         expectedRepoRootPath: 'C:/work/app',
         expectedSetupState: 'not_git',
-        expectedRecommendedActionSequence: ['initialize_repo'],
+        expectedRecommendedActionSequence: ['initialize_repo', 'create_initial_commit', 'create_develop'],
       })
     );
   });
 
-  it('declines Git setup prompts and persists the read-only project', async () => {
+  it.each([
+    ['Keep read-only', {}],
+    ['Edit directly', { directEdit: true }],
+  ] as const)('attaches a plain folder through "%s"', async (action, accessSettings) => {
     previewProjectGitSetupMock = mock(async (_data: { path: string }) =>
       buildDetection({
         repoDetected: false,
@@ -701,7 +702,7 @@ describe('ProjectModal', () => {
     });
 
     await act(async () => {
-      findButton('Keep read-only').click();
+      findButton(action).click();
       await Promise.resolve();
     });
 
@@ -712,6 +713,7 @@ describe('ProjectModal', () => {
       groupName: null,
       path: 'C:/work/app',
       requestId: expect.any(String),
+      ...accessSettings,
     });
     expect(createProjectWithGitSetupMock).not.toHaveBeenCalled();
   });

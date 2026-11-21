@@ -45,8 +45,8 @@ const ProjectNavigator = lazy(() =>
     default: module.ProjectNavigator,
   })),
 );
-const ProjectGitFlowModal = lazy(
-  () => import("./components/modals/ProjectGitFlowModal"),
+const ProjectAccessModal = lazy(
+  () => import("./components/modals/ProjectAccessModal"),
 );
 const CodeFileViewerModal = lazy(
   () => import("./components/modals/CodeFileViewerModal"),
@@ -649,7 +649,7 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
         {projectNavigatorOpen ? (
           <ProjectNavigator isOpen onClose={closeProjectNavigator} />
         ) : null}
-        <ProjectGitFlowModal />
+        <ProjectAccessModal />
         <CodeFileViewerModal />
         <AppUpdateController enabled={initStatus.ready} />
         <ReleaseNotesModal enabled={initStatus.ready} />

@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { services } from '../../services';
@@ -7,19 +7,10 @@ import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
 import { ProjectIcon } from '../project/ProjectIcon';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
-import {
-  getDefaultProjectGitFlowSettings,
-  isMainlineGitWorkflow,
-  renderGitFlowBranchName,
-  renderStandaloneFeatureBranchName,
-  resolveProjectGitFlowSettings,
-  validateProjectGitFlowSettings,
-  validateProjectGitFlowBranches,
-} from '../../services/architectGitNaming';
+import { resolveProjectGitFlowSettings } from '../../services/architectGitNaming';
 import type {
   ProjectAccessChangePreview,
   ProjectGitFlowDetection,
-  ProjectGitFlowSettings,
   ProjectGitSetupAction,
   ProjectGitSetupRiskFlag,
 } from '../../types';
@@ -28,10 +19,7 @@ import { devLogger } from '../../utils/devLogger';
 import { notify } from '../ui/toastService';
 import {
   buildProjectSetupPrompts,
-  getProjectSetupDevelopExplanation,
   getProjectSetupAction,
-  getProjectSetupMainlineExplanation,
-  getProjectSetupPromptCancelLabel,
   getProjectSetupPromptConfirmLabel,
   getProjectSetupPromptDescription,
   getProjectSetupPromptTitle,
@@ -46,54 +34,15 @@ interface ProjectSetupFlowState {
   acceptedActions: ProjectGitSetupAction[];
 }
 
-const buildTemplatePreview = (settings: ProjectGitFlowSettings) => ({
-  mainBranch: settings.mainBranch,
-  baseBranch: settings.baseBranch,
-  planBranch: renderGitFlowBranchName({
-    branchType: 'plan',
-    planSlug: '20260401-checkout-rework',
-    settings,
-  }),
-  featureBranch: renderGitFlowBranchName({
-    branchType: 'feature',
-    planSlug: '20260401-checkout-rework',
-    branchSlug: 'invoice-retry',
-    settings,
-  }),
-  standaloneFeatureBranch: renderStandaloneFeatureBranchName({
-    featureSlug: 'quick-export',
-    settings,
-  }),
-  releaseBranch: renderGitFlowBranchName({
-    branchType: 'release',
-    branchSlug: '1.5.0',
-    settings,
-  }),
-  hotfixBranch: renderGitFlowBranchName({
-    branchType: 'hotfix',
-    branchSlug: 'auth-timeout',
-    settings,
-  }),
-  bugfixBranch: renderGitFlowBranchName({
-    branchType: 'bugfix',
-    branchSlug: 'checkout-tax-rounding',
-    settings,
-  }),
-});
-
-export const ProjectGitFlowModal: React.FC = () => {
+export const ProjectAccessModal: React.FC = () => {
   const { t } = useTranslation();
-  const formId = useId();
   const accessToggleRef = useRef<HTMLButtonElement>(null);
   const projectId = useAppStore((state) => state.projectGitFlowModalProjectId);
   const getProjectById = useAppStore((state) => state.getProjectById);
-  const updateProjectGitFlow = useAppStore((state) => state.updateProjectGitFlow);
   const updateProjectGitFlowWithSetup = useAppStore((state) => state.updateProjectGitFlowWithSetup);
   const updateProjectAccess = useAppStore((state) => state.updateProjectAccess);
   const closeProjectGitFlowModal = useAppStore((state) => state.closeProjectGitFlowModal);
   const project = projectId ? getProjectById(projectId) : null;
-  const [settings, setSettings] = useState<ProjectGitFlowSettings>(() => getDefaultProjectGitFlowSettings());
-  const [isSaving, setIsSaving] = useState(false);
   const [isAccessSaving, setIsAccessSaving] = useState(false);
   const [accessPreview, setAccessPreview] = useState<ProjectAccessChangePreview | null>(null);
   const [projectSetupFlow, setProjectSetupFlow] = useState<ProjectSetupFlowState | null>(null);
@@ -102,19 +51,11 @@ export const ProjectGitFlowModal: React.FC = () => {
     if (!project) {
       return;
     }
-    setSettings(resolveProjectGitFlowSettings(project.gitFlowSettings));
-    setIsSaving(false);
     setIsAccessSaving(false);
     setAccessPreview(null);
     setProjectSetupFlow(null);
   }, [project]);
 
-  const appDefaults = useMemo(() => getDefaultProjectGitFlowSettings(), []);
-  const validationErrors = useMemo(() => validateProjectGitFlowSettings(settings), [settings]);
-  const branchErrors = validateProjectGitFlowBranches(settings);
-  const templateErrors = validationErrors.filter(error => !Object.values(branchErrors).includes(error));
-  const previews = useMemo(() => buildTemplatePreview(settings), [settings]);
-  const isMainlineWorkflow = useMemo(() => isMainlineGitWorkflow(settings), [settings]);
   const resolvedProjectPath = project?.path ?? '';
   const projectSetupPrompt = projectSetupFlow?.prompts[projectSetupFlow.promptIndex] ?? null;
 
@@ -233,11 +174,11 @@ export const ProjectGitFlowModal: React.FC = () => {
             )
           : t(
               'projects.accessEditableHelp',
-              'Editable projects can create worktrees, branches, terminal sessions, and implementation tasks.'
+              'Macro can write to this project’s storage.'
             );
 
   const handleClose = () => {
-    if (!isSaving && !isAccessSaving) {
+    if (!isAccessSaving) {
       closeProjectGitFlowModal();
     }
   };
@@ -296,7 +237,7 @@ export const ProjectGitFlowModal: React.FC = () => {
       );
     } catch (error) {
       const normalized = toServiceError(error);
-      console.error('[ProjectGitFlowModal] read-only toggle failed', normalized);
+      console.error('[ProjectAccessModal] read-only toggle failed', normalized);
       logProjectAccessEvent('toggle_failed', {
         error: normalized.message,
         code: normalized.code,
@@ -352,7 +293,7 @@ export const ProjectGitFlowModal: React.FC = () => {
   };
 
   const handlePrepareProjectGit = async () => {
-    if (!projectId || isAccessSaving || validationErrors.length > 0) {
+    if (!projectId || isAccessSaving) {
       return;
     }
 
@@ -364,7 +305,7 @@ export const ProjectGitFlowModal: React.FC = () => {
         setProjectSetupFlow(null);
         const result = await updateProjectGitFlowWithSetup(
           projectId,
-          resolveProjectGitFlowSettings(settings),
+          resolveProjectGitFlowSettings(project.gitFlowSettings),
           [],
           detection.resolvedRepoRootPath ?? null,
           detection.setupState,
@@ -423,7 +364,7 @@ export const ProjectGitFlowModal: React.FC = () => {
       );
     } catch (error) {
       const normalized = toServiceError(error);
-      console.error('[ProjectGitFlowModal] confirmed read-only toggle failed', normalized);
+      console.error('[ProjectAccessModal] confirmed read-only toggle failed', normalized);
       logProjectAccessEvent('confirmation_apply_failed', {
         error: normalized.message,
         code: normalized.code,
@@ -461,20 +402,11 @@ export const ProjectGitFlowModal: React.FC = () => {
         return;
       }
 
-      const updatedSettings =
-        projectSetupPrompt.kind === 'create_develop'
-          ? resolveProjectGitFlowSettings({
-              ...settings,
-              mainBranch: projectSetupPrompt.mainBranch || settings.mainBranch || 'main',
-              baseBranch: 'develop',
-            })
-          : resolveProjectGitFlowSettings(settings);
-      setSettings(updatedSettings);
       setProjectSetupFlow(null);
 
       const result = await updateProjectGitFlowWithSetup(
         projectId,
-        updatedSettings,
+        resolveProjectGitFlowSettings(project.gitFlowSettings),
         nextAcceptedActions,
         projectSetupFlow.detection.resolvedRepoRootPath ?? null,
         projectSetupFlow.detection.setupState,
@@ -496,120 +428,6 @@ export const ProjectGitFlowModal: React.FC = () => {
     }
   };
 
-  const handleDeclineProjectSetupPrompt = async () => {
-    if (!projectId || !projectSetupPrompt || !projectSetupFlow || isAccessSaving) {
-      return;
-    }
-
-    setIsAccessSaving(true);
-    try {
-      if (projectSetupPrompt.kind === 'create_develop') {
-        const fallbackBranch = projectSetupPrompt.mainBranch || settings.mainBranch || 'main';
-        const updatedSettings = resolveProjectGitFlowSettings({
-          ...settings,
-          mainBranch: fallbackBranch,
-          baseBranch: fallbackBranch,
-        });
-        setSettings(updatedSettings);
-        setProjectSetupFlow(null);
-        await updateProjectGitFlowWithSetup(
-          projectId,
-          updatedSettings,
-          projectSetupFlow.acceptedActions,
-          projectSetupFlow.detection.resolvedRepoRootPath ?? null,
-          projectSetupFlow.detection.setupState,
-          projectSetupFlow.detection.recommendedActionSequence
-        );
-      } else {
-        setProjectSetupFlow(null);
-      }
-    } catch (error) {
-      const message = toServiceError(error).message || t('common.error', 'An error occurred');
-      notify.error(message);
-    } finally {
-      setIsAccessSaving(false);
-    }
-  };
-
-  const handleSave = async () => {
-    if (validationErrors.length > 0 || !projectId) {
-      return;
-    }
-    setIsSaving(true);
-    try {
-      await updateProjectGitFlow(projectId, resolveProjectGitFlowSettings(settings));
-      notify.success(
-        t('projects.gitFlowSaved', 'Git workflow settings updated for {{projectName}}.', {
-          projectName: project.name,
-        })
-      );
-      closeProjectGitFlowModal();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
-      notify.error(message);
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const renderInput = (
-    label: string,
-    value: string,
-    key: keyof ProjectGitFlowSettings,
-    placeholder: string
-  ) => (
-    <div className="space-y-2">
-      <label htmlFor={`${formId}-${key}`} className="text-sm font-medium text-foreground">{label}</label>
-      <input
-        id={`${formId}-${key}`}
-        aria-invalid={Boolean(key === 'baseBranch' || key === 'mainBranch' ? branchErrors[key] : false)}
-        aria-describedby={(key === 'baseBranch' || key === 'mainBranch') && branchErrors[key] ? `${formId}-${key}-error` : undefined}
-        value={value}
-        onChange={(event) => setSettings((prev) => ({ ...prev, [key]: event.target.value }))}
-        className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-        placeholder={placeholder}
-      />
-      {(key === 'baseBranch' || key === 'mainBranch') && branchErrors[key] && (
-        <p id={`${formId}-${key}-error`} role="alert" className="text-xs text-red-500">
-          {t('projects.gitFlowInvalidBranch', 'Enter a valid Git branch name.')}
-        </p>
-      )}
-    </div>
-  );
-
-  const renderCompletionMergePolicySelect = () => (
-    <div className="space-y-2 md:col-span-2">
-      <label htmlFor={`${formId}-completionMergePolicy`} className="text-sm font-medium text-foreground">
-        {t('projects.gitFlowCompletionMergePolicy', 'Task completion merge policy')}
-      </label>
-      <select
-        id={`${formId}-completionMergePolicy`}
-        value={settings.completionMergePolicy}
-        onChange={(event) =>
-          setSettings((prev) => ({
-            ...prev,
-            completionMergePolicy:
-              event.target.value === 'fast_forward' ? 'fast_forward' : 'merge_commit',
-          }))
-        }
-        className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-      >
-        <option value="merge_commit">
-          {t('projects.gitFlowCompletionMergePolicyMergeCommit', 'Merge commit')}
-        </option>
-        <option value="fast_forward">
-          {t('projects.gitFlowCompletionMergePolicyFastForward', 'Fast-forward when possible')}
-        </option>
-      </select>
-      <p className="text-xs text-muted-foreground">
-        {t(
-          'projects.gitFlowCompletionMergePolicyHelp',
-          'Merge commit keeps completed tasks visible in history. Fast-forward advances directly when Git can do so cleanly.'
-        )}
-      </p>
-    </div>
-  );
-
   return (
     <Dialog
       title={t('projects.projectSettingsTitle', 'Project settings')}
@@ -625,10 +443,6 @@ export const ProjectGitFlowModal: React.FC = () => {
               {t('projects.projectSettingsTitle', 'Project settings')}
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              {t(
-                'projects.projectSettingsSubtitle',
-                'Manage access mode and override the branch naming used by this project.'
-              )}{' '}
               <span className="inline-flex items-center gap-1.5 text-foreground">
                 <ProjectIcon project={project} size={12} className="text-muted-foreground" />
                 {project.name}
@@ -663,11 +477,6 @@ export const ProjectGitFlowModal: React.FC = () => {
                   >
                     {accessBadgeLabel}
                   </span>
-                  {isMainlineWorkflow && (
-                    <span className="rounded-full bg-sky-500/15 px-2.5 py-1 text-[11px] font-semibold text-sky-300">
-                      {t('projects.gitWorkflowMainlineBadge', 'Mainline')}
-                    </span>
-                  )}
                   <span className="text-xs text-muted-foreground">
                     {project.gitSetupState === 'ready'
                       ? t('projects.projectAccessGitReady', 'Git ready')
@@ -755,124 +564,6 @@ export const ProjectGitFlowModal: React.FC = () => {
             </div>
           </section>
 
-          <div className="grid gap-4 md:grid-cols-2">
-            {renderInput(
-              t('projects.gitFlowMainBranch', 'Main branch'),
-              settings.mainBranch,
-              'mainBranch',
-              'main'
-            )}
-            {renderInput(
-              t('projects.gitFlowBaseBranch', 'Development/target branch'),
-              settings.baseBranch,
-              'baseBranch',
-              'main'
-            )}
-            {renderCompletionMergePolicySelect()}
-            {renderInput(
-              t('projects.gitFlowPlanTemplate', 'Plan branch template'),
-              settings.planBranchTemplate,
-              'planBranchTemplate',
-              'plan/{planSlug}'
-            )}
-            {renderInput(
-              t('projects.gitFlowFeatureTemplate', 'Feature branch template'),
-              settings.featureBranchTemplate,
-              'featureBranchTemplate',
-              'feature/{planSlug}/{featureSlug}'
-            )}
-            {renderInput(
-              t('projects.gitFlowStandaloneFeatureTemplate', 'Independent feature branch template'),
-              settings.standaloneFeatureBranchTemplate,
-              'standaloneFeatureBranchTemplate',
-              'feature/{featureSlug}'
-            )}
-            {renderInput(
-              t('projects.gitFlowReleaseTemplate', 'Release branch template'),
-              settings.releaseBranchTemplate,
-              'releaseBranchTemplate',
-              'release/v{releaseSlug}'
-            )}
-            {renderInput(
-              t('projects.gitFlowHotfixTemplate', 'Hotfix branch template'),
-              settings.hotfixBranchTemplate,
-              'hotfixBranchTemplate',
-              'hotfix/{hotfixSlug}'
-            )}
-            {renderInput(
-              t('projects.gitFlowBugfixTemplate', 'Bugfix branch template'),
-              settings.bugfixBranchTemplate,
-              'bugfixBranchTemplate',
-              'bugfix/{bugfixSlug}'
-            )}
-          </div>
-
-          <section className="rounded-xl border border-border/50 bg-muted/20 p-3">
-            <div className="text-xs font-semibold uppercase tracking-wide text-foreground">
-              {t('projects.gitFlowPreviewTitle', 'Preview')}
-            </div>
-            <div className="mt-2 space-y-1 font-mono text-xs text-muted-foreground">
-              <div className="truncate" title={previews.mainBranch}>{t('projects.gitFlowPreviewMain', 'Main')}: {previews.mainBranch}</div>
-              <div className="truncate" title={previews.baseBranch}>{t('projects.gitFlowPreviewTarget', 'Development target')}: {previews.baseBranch}</div>
-              <div className="truncate" title={previews.planBranch}>{t('projects.gitFlowPreviewPlan', 'Plan')}: {previews.planBranch}</div>
-              <div className="truncate" title={previews.featureBranch}>{t('projects.gitFlowPreviewFeature', 'Feature')}: {previews.featureBranch}</div>
-              <div className="truncate" title={previews.standaloneFeatureBranch}>
-                {t('projects.gitFlowPreviewStandaloneFeature', 'Independent feature')}:
-                {' '}
-                {previews.standaloneFeatureBranch}
-              </div>
-              <div className="truncate" title={previews.releaseBranch}>{t('projects.gitFlowPreviewRelease', 'Release')}: {previews.releaseBranch}</div>
-              <div className="truncate" title={previews.hotfixBranch}>{t('projects.gitFlowPreviewHotfix', 'Hotfix')}: {previews.hotfixBranch}</div>
-              <div className="truncate" title={previews.bugfixBranch}>{t('projects.gitFlowPreviewBugfix', 'Bugfix')}: {previews.bugfixBranch}</div>
-            </div>
-          </section>
-
-          {templateErrors.length > 0 && (
-            <section className="space-y-1 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2">
-              {templateErrors.map((error) => (
-                <p key={error} className="text-xs text-red-500">{error}</p>
-              ))}
-            </section>
-          )}
-
-          <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
-            <button
-              type="button"
-              onClick={() => {
-                setSettings(appDefaults);
-              }}
-              className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-            >
-              {t('projects.gitFlowResetToDefaults', 'Reset to app defaults')}
-            </button>
-
-            <div className="flex shrink-0 items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={handleClose}
-                className="rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-              >
-                {t('common.cancel', 'Cancel')}
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleSave()}
-                disabled={isSaving || validationErrors.length > 0}
-                className={cn(
-                  'inline-flex items-center gap-1.5 rounded-md px-4 py-1.5 text-xs font-medium transition-colors',
-                  'bg-primary text-primary-foreground hover:bg-primary/90',
-                  (isSaving || validationErrors.length > 0) && 'cursor-not-allowed opacity-50'
-                )}
-              >
-                <Icon
-                  name={isSaving ? 'loader' : 'check'}
-                  size={12}
-                  className={isSaving ? 'animate-spin' : ''}
-                />
-                {isSaving ? t('common.saving', 'Saving...') : t('common.validate', 'Validate')}
-              </button>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -934,37 +625,20 @@ export const ProjectGitFlowModal: React.FC = () => {
         <ConfirmPromptModal
           isOpen
           title={getProjectSetupPromptTitle(t, projectSetupPrompt)}
-          description={getProjectSetupPromptDescription(t, projectSetupPrompt, 'project_settings')}
+          description={getProjectSetupPromptDescription(t, projectSetupPrompt)}
           confirmLabel={getProjectSetupPromptConfirmLabel(t, projectSetupPrompt)}
-          cancelLabel={getProjectSetupPromptCancelLabel(t, projectSetupPrompt)}
+          cancelLabel={t('project.keepReadOnly', 'Keep read-only')}
           isSubmitting={isAccessSaving}
           onCancel={() => {
-            void handleDeclineProjectSetupPrompt();
+            if (!isAccessSaving) {
+              setProjectSetupFlow(null);
+            }
           }}
           onConfirm={() => {
             void handleConfirmProjectSetupPrompt();
           }}
         >
           <div className="space-y-3">
-            {projectSetupPrompt.kind === 'create_develop' && (
-              <div className="space-y-2 text-xs">
-                <div className="rounded-lg border border-sky-500/25 bg-sky-500/10 px-3 py-2 text-sky-200">
-                  <span className="font-semibold">
-                    {t('projects.gitWorkflowMainlineBadge', 'Mainline')}
-                  </span>
-                  {' - '}
-                  {getProjectSetupMainlineExplanation(t, projectSetupPrompt)}
-                </div>
-                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-muted-foreground">
-                  <span className="font-semibold text-foreground">
-                    {t('project.developModeLabel', 'Separate develop')}
-                  </span>
-                  {' - '}
-                  {getProjectSetupDevelopExplanation(t, projectSetupPrompt)}
-                </div>
-              </div>
-            )}
-
             {projectSetupPrompt.resolvedRepoRootPath && (
               <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground">
@@ -1032,4 +706,4 @@ export const ProjectGitFlowModal: React.FC = () => {
   );
 };
 
-export default ProjectGitFlowModal;
+export default ProjectAccessModal;

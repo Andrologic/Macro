@@ -152,7 +152,7 @@ const registerAppMocks = () => {
       isOpen ? <div data-testid="mock-project-navigator" /> : null,
   }));
 
-  mock.module('./components/modals/ProjectGitFlowModal', () => ({
+  mock.module('./components/modals/ProjectAccessModal', () => ({
     default: () => null,
   }));
 
