@@ -91,6 +91,7 @@ import {
   retargetPlanForExecution,
 } from "../services/projectIdentityReconciliation";
 import { consolidateScopedBlankPlans } from "../services/architectAutoPlan";
+import { isExactArchitectAgsdlActivation } from "../services/architectPlanSelection";
 import {
   buildArchitectPlanCatalogScopeKey,
   loadMacroProjectMetadataForSelection as loadMacroProjectMetadataCatalog,
@@ -999,11 +1000,14 @@ type ArchitectPlanActivationResult =
 const activateArchitectPlanInStore = async (input: {
   lifecycle?: LifecycleContext;
   planId: string;
+  requireAgsdl?: boolean;
   options?: ActivateArchitectPlanOptions;
 }): Promise<ArchitectPlanActivationResult> => {
   const lifecycle = input.lifecycle;
   lifecycle?.assertActive();
   const appStore = useAppStore.getState();
+  const expectedConversationId = input.options?.expectedAgsdlConversationId;
+  const verifyConversation = expectedConversationId !== undefined;
   const targetBranch = resolveTargetBranch(
     input.options?.targetBranch ||
       appStore.activePlanContext?.targetBranch ||
@@ -1015,12 +1019,17 @@ const activateArchitectPlanInStore = async (input: {
     (appStore.activeArchitectPlanId !== input.planId ||
       resolveTargetBranch(appStore.activePlanContext?.targetBranch) !==
         targetBranch);
-  const requestId = switchingArchitectPlan
-    ? ++architectPlanSwitchRequestId
-    : appStore.architectPlanSwitch.requestId;
   const activationOwner = {};
-  architectPlanActivationOwner = activationOwner;
-  const activationGeneration = architectPlanSwitchRequestId;
+  const previousOwner = architectPlanActivationOwner;
+  let activationGeneration = architectPlanSwitchRequestId;
+  let requestId = appStore.architectPlanSwitch.requestId;
+  const claimActivation = () => {
+    if (switchingArchitectPlan) requestId = ++architectPlanSwitchRequestId;
+    architectPlanActivationOwner = activationOwner;
+    activationGeneration = architectPlanSwitchRequestId;
+  };
+  // A stale notification must not supersede a selection that is already resolving.
+  if (!verifyConversation) claimActivation();
   const getActivationScopeKey = () => {
     const state = useAppStore.getState();
     return buildArchitectPlanCatalogScopeKey({
@@ -1035,26 +1044,32 @@ const activateArchitectPlanInStore = async (input: {
   };
   let activationScopeKey = getActivationScopeKey();
   let activationNavigationId = projectSwitchRequestId;
-  if (switchingArchitectPlan) {
+  let switchStarted = false;
+  const beginSwitch = () => {
+    switchStarted = true;
     beginArchitectPlanSwitchInStore({
       requestId,
       planId: input.planId,
       targetBranch,
       summaryHint: input.options?.planSummaryHint ?? null,
     });
+  };
+  if (switchingArchitectPlan && !input.requireAgsdl && !verifyConversation) {
+    beginSwitch();
   }
-  const ownsActivation = () =>
-    architectPlanActivationOwner === activationOwner &&
+  const ownsActivation = (owner: object | null = activationOwner) =>
+    architectPlanActivationOwner === owner &&
     architectPlanSwitchRequestId === activationGeneration &&
     projectSwitchRequestId === activationNavigationId &&
     useAppStore.getState().mode === appStore.mode;
   const isCurrentActivation = () =>
     ownsActivation() && getActivationScopeKey() === activationScopeKey &&
-    (!switchingArchitectPlan || isCurrentArchitectPlanSwitchRequest({
+    (!switchStarted || isCurrentArchitectPlanSwitchRequest({
       requestId, planId: input.planId, targetBranch,
     }));
 
-  if (input.options?.persistActiveSelection !== false) {
+  const persistActiveSelection = () => {
+    if (input.options?.persistActiveSelection === false) return;
     void enqueueActiveArchitectPlanPersistence(targetBranch, input.planId).catch((error) => {
       if (isCurrentActivation()) {
         useAppStore.setState((state) => ({
@@ -1066,7 +1081,8 @@ const activateArchitectPlanInStore = async (input: {
         }));
       }
     });
-  }
+  };
+  if (!verifyConversation) persistActiveSelection();
 
   const currentScopedProjectIds =
     input.options?.scopedProjectIdsHint ??
@@ -1098,8 +1114,9 @@ const activateArchitectPlanInStore = async (input: {
     lifecycle?.assertActive();
   } catch (error) {
     lifecycle?.assertActive();
+    if (verifyConversation) return { status: 'unavailable' };
     if (
-      switchingArchitectPlan && isCurrentActivation()
+      switchStarted && isCurrentActivation()
     ) {
       useAppStore.setState((state) => ({
         pendingArchitectPlanActivationPayload: null,
@@ -1112,13 +1129,27 @@ const activateArchitectPlanInStore = async (input: {
     }
     return { status: isCurrentActivation() ? 'unavailable' : 'cancelled' };
   }
+  if (verifyConversation) {
+    const latest = useAppStore.getState();
+    if (!ownsActivation(previousOwner) || getActivationScopeKey() !== activationScopeKey ||
+        latest.activeArchitectPlanId !== appStore.activeArchitectPlanId ||
+        latest.activePlanContext?.targetBranch !== appStore.activePlanContext?.targetBranch) {
+      return { status: 'cancelled' };
+    }
+    if (activationPayload?.plan.targetBranch !== targetBranch ||
+        !isExactArchitectAgsdlActivation(activationPayload, input.planId, targetBranch, expectedConversationId)) {
+      return { status: 'unavailable' };
+    }
+    claimActivation();
+  }
   if (!isCurrentActivation()) {
     return { status: 'cancelled' };
   }
   const plan = activationPayload?.plan ?? null;
-  if (!plan || plan.status === "deleted") {
+  if (!plan || plan.status === "deleted" ||
+      (input.requireAgsdl && (!plan.agsdl || plan.status === "archived"))) {
     if (
-      switchingArchitectPlan &&
+      switchStarted &&
       isCurrentArchitectPlanSwitchRequest({
         requestId,
         planId: input.planId,
@@ -1138,6 +1169,9 @@ const activateArchitectPlanInStore = async (input: {
     }
     return { status: 'unavailable' };
   }
+
+  if (switchingArchitectPlan && !switchStarted) beginSwitch();
+  if (verifyConversation) persistActiveSelection();
 
   if (input.options?.allowScopeSwitch !== false) {
     const latestAppState = useAppStore.getState();
@@ -1210,7 +1244,8 @@ const activateArchitectPlanInStore = async (input: {
   lifecycle?.assertActive();
   if (!isCurrentActivation()) return { status: 'cancelled' };
   const latestAppState = useAppStore.getState();
-  if (input.options?.consolidateBlankPlans !== false) {
+  // Architect creates independent AgSDL drafts outside the legacy blank-plan lifecycle.
+  if (appStore.mode !== "Architect" && input.options?.consolidateBlankPlans !== false) {
     scheduleScopedBlankPlanConsolidation({
       branchName: targetBranch,
       scopedProjectIds: getScopedProjectIds(
@@ -1719,6 +1754,7 @@ interface SwitchProjectContextOptions {
 
 interface ActivateArchitectPlanOptions {
   targetBranch?: string | null;
+  expectedAgsdlConversationId?: string;
   persistActiveSelection?: boolean;
   allowScopeSwitch?: boolean;
   consolidateBlankPlans?: boolean;
@@ -2316,7 +2352,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   activateArchitectPlan: async (planId, options) => {
     const state = get();
     const targetBranch = resolveTargetBranch(options?.targetBranch || state.activePlanContext?.targetBranch || getGitFlowBaseBranch());
-    const recover = options?.persistActiveSelection !== false && state.mode === 'Architect' &&
+    const recover = options?.expectedAgsdlConversationId === undefined &&
+      options?.persistActiveSelection !== false && state.mode === 'Architect' &&
       state.activeArchitectPlanId === planId && state.activePlanContext?.targetBranch === targetBranch
       ? useChatStore.getState().captureArchitectPlanRecovery(planId, targetBranch) : null;
     const activation = activateArchitectPlanInStore({ planId, options });
@@ -2429,6 +2466,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           scopedProjectIds,
           activePlanContext: state.activePlanContext,
         }),
+        agsdlOnlyForSelection: state.mode === "Architect",
         includeArchivedInVisible: options.includeArchivedInVisible === true,
       });
       lifecycle?.assertActive();
@@ -2455,6 +2493,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           const activation = activateArchitectPlanInStore({
             lifecycle,
             planId: result.selectedPlan.id,
+            requireAgsdl: state.mode === "Architect",
             options: {
               targetBranch: result.selectedBranchName,
               persistActiveSelection: false,

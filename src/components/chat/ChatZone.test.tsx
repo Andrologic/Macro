@@ -616,10 +616,6 @@ const loadChatZoneModule = async (
     ImagePreviewModal: () => null,
   }));
 
-  mock.module('../architect/PlanSelector', () => ({
-    PlanSelector: () => null,
-  }));
-
   const RichComposer = useRichComposer
     ? (await import(`./composer/LazyComposerEditor.tsx?rich-chat-zone-test=${importCounter}`)).default
     : null;

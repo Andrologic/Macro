@@ -1,10 +1,7 @@
 import { createLifecycleScope } from '../services/lifecycleScope';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import {
-  computePlanSelectorRefreshState,
-  getPlanSelectorNullLoadDisposition,
-} from '../components/architect/planSelectorState';
 import type {
+  ArchitectPlanRecord,
   ArchitectPlanReplica,
   ArchitectPlanSummary,
   ArchitectPlanStatus,
@@ -48,6 +45,7 @@ type PlanRecord = {
   replicas?: ArchitectPlanReplica[];
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
+  agsdl?: ArchitectPlanRecord['agsdl'];
   nodes: unknown[];
   predictedBranches: unknown[];
   createdAt: string;
@@ -157,6 +155,7 @@ const buildPlan = (overrides: Partial<PlanRecord> = {}): PlanRecord => ({
   availableProjectIds: overrides.availableProjectIds,
   replicas: overrides.replicas,
   targetBranch: overrides.targetBranch ?? 'develop',
+  agsdl: { revision: 1, source: '', annexes: {} },
   targetBranchesByProjectId:
     overrides.targetBranchesByProjectId ??
     Object.fromEntries(
@@ -234,6 +233,7 @@ const toPlanSummary = (plan: PlanRecord) => ({
   createdAt: plan.createdAt,
   updatedAt: plan.updatedAt,
   nodeCount: plan.nodes.length,
+  hasAgsdl: Boolean(plan.agsdl),
 });
 
 const buildProjectContext = (
@@ -689,20 +689,6 @@ const loadIsolatedUseAppStore = async () => {
 };
 
 describe('useAppStore architect plan resolution', () => {
-  it('preserves selector state when a null load represents a catalog error or stale scope', () => {
-    expect(getPlanSelectorNullLoadDisposition({
-      catalogStatus: 'error',
-      isCatalogForCurrentScope: true,
-    })).toBe('preserve');
-    expect(getPlanSelectorNullLoadDisposition({
-      catalogStatus: 'ready',
-      isCatalogForCurrentScope: false,
-    })).toBe('preserve');
-    expect(getPlanSelectorNullLoadDisposition({
-      catalogStatus: 'ready',
-      isCatalogForCurrentScope: true,
-    })).toBe('clear');
-  });
   beforeEach(async () => {
     preferenceValues = { ...DEFAULT_UI_PREFS };
     projectSwitchPolicy = 'resume_per_project';
@@ -1486,17 +1472,124 @@ describe('useAppStore architect plan resolution', () => {
         .getState()
         .visibleArchitectPlans.map((plan: { id: string }) => plan.id)
     ).toEqual(['plan-newest', 'plan-older']);
+  });
 
-    const selectorState = computePlanSelectorRefreshState({
-      plans: Array.from(planById.values()).map(toPlanSummary),
-      scopedProjectIds: ['project-1', 'project-2'],
-      showArchived: false,
-      preferredActivePlanId: useAppStore.getState().activeArchitectPlanId,
-      currentActivePlanId: useAppStore.getState().activeArchitectPlanId,
+  for (const hasSystem of [true, false]) {
+    it(`ignores the remembered historical plan on Architect boot (AgSDL available: ${hasSystem})`, async () => {
+      const historicalPlan = {
+        ...buildPlan({ id: 'historical', updatedAt: '2026-04-17T12:00:00.000Z' }),
+        agsdl: undefined,
+      };
+      const system = buildPlan({ id: 'system' });
+      planById.set(historicalPlan.id, historicalPlan);
+      if (hasSystem) planById.set(system.id, system);
+      listArchitectPlansMock.mockImplementation(async () => ({
+        activePlanId: historicalPlan.id,
+        plans: Array.from(planById.values()).map(toPlanSummary),
+      }));
+      projectContexts.set('group-1', buildProjectContext({ lastPlanId: historicalPlan.id }));
+      preferenceValues.lastActiveMode = 'Architect';
+
+      const { useAppStore } = await loadIsolatedUseAppStore();
+      await useAppStore.getState().initialize();
+
+      expect(useAppStore.getState().activeArchitectPlanId).toBe(hasSystem ? system.id : null);
+      expect(useAppStore.getState().visibleArchitectPlans.map((plan: ArchitectPlanSummary) => plan.id))
+        .toContain(historicalPlan.id);
+      expect(getArchitectPlanActivationPayloadMock).not.toHaveBeenCalledWith(
+        historicalPlan.targetBranch, historicalPlan.id, expect.anything(),
+      );
+      expect(persistActiveArchitectPlanMock).not.toHaveBeenCalled();
+
+      if (hasSystem) {
+        expect(await useAppStore.getState().activateArchitectPlan(system.id)).toBe(true);
+        await flushAsyncWork();
+        expect(useAppStore.getState().pendingArchitectPlanActivationPayload?.plan.agsdl).toEqual(system.agsdl);
+        expect(projectContexts.get('group-1')?.lastPlanId).toBe(system.id);
+      } else {
+        expect(projectContexts.get('group-1')?.lastPlanId).toBe(historicalPlan.id);
+      }
+      expect(consolidateScopedBlankPlansMock).not.toHaveBeenCalled();
     });
-    expect(selectorState.nextActivePlanId).toBe(
-      useAppStore.getState().activeArchitectPlanId
-    );
+  }
+
+  for (const kind of ['historical', 'archived'] as const) {
+    it(`does not hydrate a ${kind} record advertised as active AgSDL by a stale catalog`, async () => {
+      const summary = buildPlan({ id: 'stale-system' });
+      const plan = kind === 'historical'
+        ? { ...summary, agsdl: undefined }
+        : { ...summary, status: 'archived' as const };
+      planById.set(plan.id, plan);
+      listArchitectPlansMock.mockImplementation(async () => ({
+        activePlanId: plan.id,
+        plans: [toPlanSummary(summary)],
+      }));
+      projectContexts.set('group-1', buildProjectContext({ lastPlanId: plan.id }));
+      preferenceValues.lastActiveMode = 'Architect';
+
+      const { useAppStore } = await loadIsolatedUseAppStore();
+      await useAppStore.getState().initialize();
+
+      expect(getArchitectPlanActivationPayloadMock).toHaveBeenCalledWith(
+        plan.targetBranch, plan.id, expect.anything(),
+      );
+      expect(useAppStore.getState().activeArchitectPlanId).toBeNull();
+      expect(useAppStore.getState().pendingArchitectPlanActivationPayload).toBeNull();
+      expect(chatStoreState.beginArchitectPlanSwitch).not.toHaveBeenCalled();
+      expect(readPlanRuntimeMock).not.toHaveBeenCalled();
+    });
+  }
+
+  it('opens an exact AgSDL notification target and preserves selection when its payload differs', async () => {
+    const current = buildPlan({ id: 'current-system', conversationId: 'current-conversation' });
+    const target = buildPlan({ id: 'target-system', conversationId: 'target-conversation' });
+    const payload: ActivationPayloadRecord = {
+      plan: target, chatMessages: [], conversationId: target.conversationId ?? null,
+      sharedConversation: false, targetBranch: target.targetBranch, resolutionMode: 'full',
+    };
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Architect', projectGroups: bootstrapProjectGroups,
+      selectedGroupId: 'group-1', selectedProjectId: 'project-1',
+      activeArchitectPlanId: current.id,
+      activePlanContext: { id: current.id, title: current.title, status: current.status, targetBranch: current.targetBranch },
+    });
+    const before = useAppStore.getState();
+    const openTarget = () => useAppStore.getState().activateArchitectPlan(target.id, {
+      targetBranch: target.targetBranch,
+      expectedAgsdlConversationId: target.conversationId,
+      persistActiveSelection: false,
+      allowScopeSwitch: false,
+    });
+
+    for (const refused of [
+      null,
+      { ...payload, plan: { ...target, id: 'other-system' } },
+      { ...payload, plan: { ...target, targetBranch: 'main' } },
+      { ...payload, targetBranch: 'main' },
+      { ...payload, plan: { ...target, conversationId: 'other-conversation' } },
+      { ...payload, conversationId: 'other-conversation' },
+      { ...payload, plan: { ...target, agsdl: undefined } },
+      { ...payload, plan: { ...target, status: 'archived' as const } },
+      { ...payload, plan: { ...target, status: 'deleted' as const } },
+      { ...payload, sharedConversation: true },
+    ]) {
+      getArchitectPlanActivationPayloadMock.mockImplementationOnce(async () => refused);
+      expect(await openTarget()).toBe(false);
+      expect(useAppStore.getState()).toBe(before);
+    }
+    expect(chatStoreState.beginArchitectPlanSwitch).not.toHaveBeenCalled();
+    expect(readPlanRuntimeMock).not.toHaveBeenCalled();
+
+    getArchitectPlanActivationPayloadMock.mockImplementationOnce(async () => payload);
+    expect(await openTarget()).toBe(true);
+    expect(useAppStore.getState().activeArchitectPlanId).toBe(target.id);
+    expect(useAppStore.getState().pendingArchitectPlanActivationPayload?.conversationId)
+      .toBe(target.conversationId);
+    expect(chatStoreState.beginArchitectPlanSwitch).toHaveBeenCalledTimes(1);
+    expect(persistActiveArchitectPlanMock).not.toHaveBeenCalled();
+    expect(upsertLocalProjectContextStateMock).not.toHaveBeenCalled();
+    expect(consolidateScopedBlankPlansMock).not.toHaveBeenCalled();
   });
 
   it('does not recover metadata automatically when the initial bootstrap fails', async () => {
