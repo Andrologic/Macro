@@ -975,6 +975,10 @@
     }
   },
   "run030": {
+    "instanceActivity": "Activité de l’instance",
+    "instance": "Instance d’agent",
+    "openRunInspector": "Ouvrir l’inspecteur de l’exécution",
+    "instanceRequestLinksUnavailable": "Le lien avec une activation est indisponible pour certaines demandes. Elles restent accessibles dans l’inspecteur de l’exécution.",
     "staleShort": "Périmé",
     "mappingUnavailable": "Association à l’occurrence non disponible",
     "monitor": "Exécutions",
@@ -1030,6 +1034,7 @@
     "noContent": "Aucun contenu enregistré",
     "refresh": "Actualiser les observations",
     "readFailed": "Échec de lecture. Les observations précédentes peuvent être périmées.",
+    "selectRun": "Sélectionnez une instance d’agent pour consulter son exécution.",
     "selectionPending": "La sélection initiale attend l’historique complet et les attentes humaines attestées. Vous pouvez choisir une exécution.",
     "summary": "État de l’exécution",
     "stopLabel": "Arrêt du système",
@@ -1182,6 +1187,10 @@
     "close": "Fermer"
   },
   "messages030": {
+    "instanceTrace": "Échanges de l’instance",
+    "traceLimit": "Le moteur fournit les traces de livraison et le texte final des travaux. Le fil complet est indisponible.",
+    "traceUnavailable": "Le moteur ne fournit aucun échange pour cette instance.",
+    "workText": "Texte final du travail",
     "title": "Messages",
     "agent": "Agent",
     "delivery": "Livraison",

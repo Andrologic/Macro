@@ -975,6 +975,10 @@
     }
   },
   "run030": {
+    "instanceActivity": "Actividad de la instancia",
+    "instance": "Instancia del agente",
+    "openRunInspector": "Abrir el inspector de la ejecución",
+    "instanceRequestLinksUnavailable": "Algunas solicitudes no se pueden vincular aquí a una activación. Están disponibles en el inspector de la ejecución.",
     "staleShort": "Desactualizado",
     "mappingUnavailable": "Asociación de ocurrencia no disponible",
     "monitor": "Ejecuciones",
@@ -1030,6 +1034,7 @@
     "noContent": "No hay contenido registrado",
     "refresh": "Actualizar observaciones",
     "readFailed": "Error de lectura. Las observaciones anteriores pueden estar desactualizadas.",
+    "selectRun": "Selecciona una instancia de agente para consultar su ejecución.",
     "selectionPending": "La selección inicial espera el historial completo y las esperas humanas verificadas. Puede elegir una ejecución.",
     "summary": "Estado de ejecución",
     "stopLabel": "Parada del sistema",
@@ -1182,6 +1187,10 @@
     "close": "Cerrar"
   },
   "messages030": {
+    "instanceTrace": "Intercambios de la instancia",
+    "traceLimit": "El motor proporciona trazas de entrega y el texto final de los trabajos. La conversación completa no está disponible.",
+    "traceUnavailable": "El motor no proporciona intercambios para esta instancia.",
+    "workText": "Texto final del trabajo",
     "title": "Mensajes",
     "agent": "Agente",
     "delivery": "Entrega",

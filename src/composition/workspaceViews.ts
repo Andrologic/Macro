@@ -1,3 +1,4 @@
+import { demoWorkflowJourney as demoJourney } from '../services/operateWorkspace';
 import type { LifecycleContext } from '../types/lifecycle';
 import type { AppMode } from '../types';
 import type { IconName } from '../types/icon';
@@ -6,7 +7,6 @@ import { workspaceDefinitions, type WorkspaceId, type WorkspaceViewId, type Work
 import { createModePanelLoader, type ModePanelLoader, type ModePanelSlot, type ModePanelPreloadResult } from '../components/layout/panelLoader';
 
 const DEFAULT_PRELOAD_TIMEOUT_MS = 450;
-const demoJourney = import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1';
 const strategyGraphLoader = createModePanelLoader({
   id: 'architect:right:strategy-graph',
   label: 'Strategy graph',
@@ -24,28 +24,20 @@ const architectProjectNavigatorLoader = createModePanelLoader({
     demoJourney ? (await import('../demo/DemoArchitectNavigator')).default : (await import('../components/architect/ArchitectProjectNavigator')).default,
 });
 
-const taskQueueLoader = createModePanelLoader({
-  id: 'implement:left:task-queue',
-  label: 'Task queue',
+const operateNavigatorLoader = createModePanelLoader({
+  id: 'operate:left:instances',
+  label: 'Agent instances',
   mode: 'Implement',
   panel: 'left',
-  importComponent: async () => demoJourney ? (await import('../demo/DemoTaskQueue')).default : (await import('../components/tasks/TaskQueue')).default,
+  importComponent: async () => demoJourney ? (await import('../demo/DemoTaskQueue')).default : (await import('../components/operate/OperateNavigator')).default,
 });
 
-const fileChangesPanelLoader = createModePanelLoader({
-  id: 'implement:right:file-changes',
-  label: 'File changes',
-  mode: 'Implement',
-  panel: 'right',
-  importComponent: async () => (await import('../components/implement/FileChangesPanel')).default,
-});
-
-const implementCenterLoader = createModePanelLoader({
-  id: 'implement:center:workspace',
-  label: 'Implement workspace',
+const operateCenterLoader = createModePanelLoader({
+  id: 'operate:center:workspace',
+  label: 'Operate',
   mode: 'Implement',
   panel: 'center',
-  importComponent: async () => (await import('../components/implement/ImplementCenter')).default,
+  importComponent: async () => demoJourney ? (await import('../components/chat/ChatZone')).default : (await import('../components/operate/OperateCenter')).default,
 });
 
 const conversationArchiveLoader = createModePanelLoader({
@@ -81,9 +73,8 @@ const builtinPanels: Record<AppMode, ModePanelConfiguration> = {
     right: strategyGraphLoader,
   },
   Implement: {
-    left: taskQueueLoader,
-    center: implementCenterLoader,
-    right: fileChangesPanelLoader,
+    left: operateNavigatorLoader,
+    center: operateCenterLoader,
   },
   Chat: {
     left: conversationArchiveLoader,
@@ -108,13 +99,13 @@ export const workspaceViews = new ContributionRegistry<WorkspaceViewContribution
 
 const presentation: Record<AppMode, { icon: IconName; labelKey: string }> = {
   Architect: { icon: demoJourney ? 'pencil-ruler' : 'compass', labelKey: 'header.architect' },
-  Implement: { icon: demoJourney ? 'workflow' : 'code', labelKey: demoJourney ? 'header.operate' : 'header.implement' },
+  Implement: { icon: 'workflow', labelKey: 'header.operate' },
   Chat: { icon: 'message-circle', labelKey: 'header.chat' },
 };
 Object.values(workspaceDefinitions).forEach((definition, order) => {
   workspaceViews.register({
     id: definition.defaultViewId, owner: 'macro.shell', order,
-    workspaceId: definition.id, label: definition.semanticMode,
+    workspaceId: definition.id, label: definition.semanticMode === 'Implement' ? 'Operate' : definition.semanticMode,
     ...presentation[definition.semanticMode],
     panels: builtinPanels[definition.semanticMode], stateScope: 'domain',
     ...(definition.semanticMode === 'Architect' ? { leftWidthPreference: 'architect' as const } : {}),

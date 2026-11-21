@@ -861,6 +861,23 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
     list.mockRestore();
   });
 
+  it('resumes an Implement profile without activating its former development task', async () => {
+    const legacy = buildTask({ id: 'retired-task' });
+    const list = spyOn(services, 'listTasks').mockResolvedValue({
+      tasks: [legacy], plans: [], hasStandaloneTasks: false, source: 'architect',
+    });
+    appStoreState.selectedTaskId = legacy.id;
+    appStoreState.setSelectedTask.mockImplementation(id => { appStoreState.selectedTaskId = id; });
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      const activate = spyOn(useTaskStore.getState(), 'activateTask');
+      await useTaskStore.getState().resumeAfterInitialize();
+      expect(list).toHaveBeenCalledWith({ persistedOnly: true });
+      expect(appStoreState.selectedTaskId).toBeNull();
+      expect(activate).not.toHaveBeenCalled();
+    } finally { list.mockRestore(); }
+  });
+
   it('keeps the newest refresh and selection when an older context resolves last', async () => {
     const originalListTasks = services.listTasks;
     const resolvers: Array<(catalog: Awaited<ReturnType<typeof services.listTasks>>) => void> = [];

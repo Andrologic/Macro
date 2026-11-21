@@ -263,7 +263,7 @@
   },
   "header": {
     "architect": "Architect",
-    "implement": "Implement",
+    "implement": "Operate",
     "chat": "Chat",
     "debug": "Debug",
     "selectProject": "Sélectionnez un projet",
@@ -281,7 +281,7 @@
     "sections": {
       "basics": "Bases",
       "architect": "Architect",
-      "implement": "Implement",
+      "implement": "Operate",
       "chat": "Chat",
       "system": "Système"
     },
@@ -289,7 +289,7 @@
     "steps": {
       "welcome": {
         "title": "Bienvenue dans Macro",
-        "body": "Macro organise le travail par modes : cadrer avec Architect, exécuter avec Implement, puis échanger librement avec Chat quand le contexte doit rester ouvert.",
+        "body": "Macro organise le travail par modes : cadrer avec Architect, exécuter avec Operate, puis échanger librement avec Chat quand le contexte doit rester ouvert.",
         "points": [
           "Le guide change de mode automatiquement.",
           "Les panneaux gauche et droit sont rouverts quand une étape en a besoin.",
@@ -298,10 +298,10 @@
       },
       "modes": {
         "title": "Le sélecteur de mode",
-        "body": "Ces trois boutons changent complètement la surface de travail. Architect sert à cadrer, Implement à exécuter, Chat à discuter avec contexte libre.",
+        "body": "Ces trois boutons changent complètement la surface de travail. Architect sert à cadrer, Operate à exécuter, Chat à discuter avec contexte libre.",
         "points": [
           "Architect : conversations, plans et stratégie.",
-          "Implement : tâches, terminal et validation des changements.",
+          "Operate affiche les systèmes en cours d’exécution, les conversations des agents et les demandes qui nécessitent votre réponse.",
           "Chat : conversations, sources et outils généraux."
         ]
       },
@@ -339,8 +339,8 @@
         "body": "La validation fige le plan suffisamment pour provisionner les branches et alimenter Implement. Les tâches démarrées ou terminées sont protégées contre les régénérations destructrices."
       },
       "implement-mode": {
-        "title": "Mode Implement",
-        "body": "Implement sert à prendre une tâche, discuter son exécution, ouvrir un terminal et valider les fichiers modifiés avant commit."
+        "title": "Mode Operate",
+        "body": "Operate affiche les systèmes en cours d’exécution, les conversations des agents et les demandes qui nécessitent votre réponse."
       },
       "implement-tasks": {
         "title": "File de tâches",
@@ -3098,8 +3098,8 @@
         "description": "Basculer le mode actif sur Architect"
       },
       "switchImplement": {
-        "label": "Passer en mode Implement",
-        "description": "Basculer le mode actif sur Implement"
+        "label": "Passer en mode Operate",
+        "description": "Basculer le mode actif sur Operate"
       },
       "switchChat": {
         "label": "Passer en mode Chat",

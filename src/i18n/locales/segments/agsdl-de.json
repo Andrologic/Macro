@@ -975,6 +975,10 @@
     }
   },
   "run030": {
+    "instanceActivity": "Aktivität der Instanz",
+    "instance": "Agenteninstanz",
+    "openRunInspector": "Laufinspektor öffnen",
+    "instanceRequestLinksUnavailable": "Einige Anfragen lassen sich hier keiner Aktivierung zuordnen. Sie sind im Laufinspektor verfügbar.",
     "staleShort": "Veraltet",
     "mappingUnavailable": "Zuordnung zum Vorkommen nicht verfügbar",
     "monitor": "Ausführungen",
@@ -1030,6 +1034,7 @@
     "noContent": "Kein Inhalt erfasst",
     "refresh": "Beobachtungen aktualisieren",
     "readFailed": "Lesen fehlgeschlagen. Bisherige Beobachtungen können veraltet sein.",
+    "selectRun": "Wählen Sie eine Agenteninstanz aus, um ihren Lauf zu prüfen.",
     "selectionPending": "Die erste Auswahl wartet auf den vollständigen Verlauf und belegte menschliche Wartezeiten. Sie können eine Ausführung wählen.",
     "summary": "Ausführungsstatus",
     "stopLabel": "Systemstopp",
@@ -1182,6 +1187,10 @@
     "close": "Schließen"
   },
   "messages030": {
+    "instanceTrace": "Nachrichten der Instanz",
+    "traceLimit": "Die Laufzeit liefert Zustellspuren und abschließende Arbeitstexte. Der vollständige Verlauf ist nicht verfügbar.",
+    "traceUnavailable": "Die Laufzeit stellt für diese Instanz keine Nachrichten bereit.",
+    "workText": "Abschließender Arbeitstext",
     "title": "Nachrichten",
     "agent": "Agent",
     "delivery": "Zustellung",

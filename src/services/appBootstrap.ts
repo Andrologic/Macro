@@ -9,7 +9,6 @@ import { useProviderStore } from '../stores/useProviderStore';
 import { useShortcutsStore } from '../stores/useShortcutsStore';
 import { useSkillsStore } from '../stores/useSkillsStore';
 import { useTaskStore } from '../stores/useTaskStore';
-import { useTerminalStore } from '../stores/useTerminalStore';
 import { useToolsStore } from '../stores/useToolsStore';
 import { devLogger } from '../utils/devLogger';
 import {
@@ -48,7 +47,6 @@ export interface AppBootstrapDependencies {
   initializeChatCritical: AppBootstrapInit;
   initializeTasksCritical: AppBootstrapInit;
   resumeTasksAfterInitialize: AppBootstrapInit;
-  initializeTerminal: AppBootstrapInit;
   initializeTools: AppBootstrapInit;
   initializeSkills: AppBootstrapInit;
   initializeProviders: AppBootstrapInit;
@@ -283,10 +281,7 @@ export const createAppBootstrapController = (
         }
       });
 
-      const normalPriorityInit = Promise.all([
-        initWithTracking('Shortcuts', dependencies.initializeShortcuts, 'normal'),
-        initWithTracking('Terminal Store', dependencies.initializeTerminal, 'normal'),
-      ]).then(() => {
+      const normalPriorityInit = initWithTracking('Shortcuts', dependencies.initializeShortcuts, 'normal').then(() => {
         if (isActive()) {
           updateSnapshotForRun(activeRunId, (current) => ({ ...current, normal: true }));
         }
@@ -451,7 +446,6 @@ export const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
   initializeChatCritical: useChatStore.getState().initializeCritical,
   initializeTasksCritical: useTaskStore.getState().initializeCritical,
   resumeTasksAfterInitialize: useTaskStore.getState().resumeAfterInitialize,
-  initializeTerminal: useTerminalStore.getState().initialize,
   initializeTools: useToolsStore.getState().loadSettings,
   initializeSkills: useSkillsStore.getState().loadSettings,
   initializeProviders: useProviderStore.getState().initialize,

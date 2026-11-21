@@ -33,3 +33,17 @@ it('preserves native consumption and fallback facts in the monitor', () => {
   expect(runMessages030(updated)[0].message).toEqual(message);
   expect(runMessages030(updated)[0].workText).toBe('Pris en compte');
 });
+
+it('sends a named instance reply only to its retained selector', async () => {
+  const run = graphless();
+  const instance = { ...run.state.instances[0], selectorKind: 'named', selectorName: 'review', discarded: false };
+  const named = { ...run, state: { ...run.state, instances: [instance] } };
+  await sendRunMessage030(named, 'worker', 'queue', 'Reply', instance.id);
+  expect(requests.at(-1)).toMatchObject({ scope: run.state.scope, instance: 'review', agentName: 'worker' });
+  const count = requests.length;
+  await expect(sendRunMessage030(named, 'worker', 'queue', 'Reply', 'absent')).rejects.toThrow();
+  await expect(sendRunMessage030(run, 'worker', 'queue', 'Reply', instance.id)).rejects.toThrow();
+  const flow = inspectionFixture030();
+  await expect(sendRunMessage030({ ...named, capture: flow.capture }, 'worker', 'queue', 'Reply', instance.id)).rejects.toThrow();
+  expect(requests).toHaveLength(count);
+});

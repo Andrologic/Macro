@@ -16,12 +16,14 @@ export interface ExecutionMonitorProps030 {
   readonly projectPicker?: ReactNode;
   readonly access: RunInspectionAccess030;
   readonly initialRunId?: string;
+  readonly initialInstanceId?: string;
   readonly onSelection?: (id: string | undefined, active: boolean, viewingRun: boolean) => void;
   readonly currentSource?: string;
   readonly renderGraph?: (bridge: RunGraphBridge030) => ReactNode;
   /** Observation only, never a scheduler. Zero disables periodic readback. */
   readonly refreshIntervalMs?: number;
-  readonly renderHumans?: (inspection: RunInspection030, pendingOnly?: boolean, openOccurrence?: (activation: Extract<RunHumanOccurrence030['activation'], { kind: 'available' }>) => void) => ReactNode;
+  readonly renderHumans?: (inspection: RunInspection030, pendingOnly?: boolean, openOccurrence?: (activation: Extract<RunHumanOccurrence030['activation'], { kind: 'available' }>) => void, instanceActivationIds?: ReadonlySet<string>) => ReactNode;
+  readonly openRun?: () => void;
 }
 function retainedInspection(read: ReturnType<RunInspectionAccess030['getSnapshot']>['runs'][string]) { return retainedRunValue030(read); }
 
@@ -29,7 +31,7 @@ function retainedInspection(read: ReturnType<RunInspectionAccess030['getSnapshot
 export function ExecutionMonitor030(props: ExecutionMonitorProps030) {
   return <ScopedMonitor030 key={props.access.scopeKey} {...props} />;
 }
-function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, access, initialRunId, onSelection, currentSource, renderGraph, refreshIntervalMs = 5000, renderHumans }: ExecutionMonitorProps030) {
+function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, access, initialRunId, initialInstanceId, onSelection, currentSource, renderGraph, refreshIntervalMs = 5000, renderHumans, openRun }: ExecutionMonitorProps030) {
   const { t } = useAgsdlTranslation();
   const tr = (key: string) => t(`agsdl.run030.${key}`);
   const subscribe = useCallback((listener: () => void) => access.subscribe(listener), [access]);
@@ -40,7 +42,7 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
   const [explicit, setExplicit] = useState(initialRunId);
   const [automatic, setAutomatic] = useState<string>();
   const preferred = explicit ?? automatic;
-  const selected = snapshot.history.kind === 'ready' ? initialRunSelection030(snapshot, preferred)
+  const selected = initialInstanceId ? initialRunId : snapshot.history.kind === 'ready' ? initialRunSelection030(snapshot, preferred)
     : preferred ?? initialRunSelection030(snapshot);
   useEffect(() => { if (initialRunId) { setExplicit(initialRunId); setDesign(false); } }, [initialRunId]);
   const [comparison, setComparison] = useState<string>();
@@ -78,7 +80,8 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
   const readState = selected ? snapshot.runs[selected] : undefined;
   const inspection = readState ? retainedInspection(readState) : null;
   const identity = inspection ? runCaptureKey030(inspection.state.scope) : '';
-  const selection = selections[identity] ?? {};
+  const initialInstance = selected === initialRunId && inspection?.state.instances.find(item => item.id === initialInstanceId);
+  const selection = selections[identity] ?? { runtime: initialInstance ? { kind: 'instance' as const, id: initialInstance.id } : undefined };
   const choose = (value: Partial<typeof selection>) => setSelections(previous => ({ ...previous, [identity]: { ...previous[identity], ...value } }));
   const left = history.find(run => run.scope.systemStartId === selected);
   const right = history.find(run => run.scope.systemStartId === comparison);
@@ -87,10 +90,20 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
   const active = !!state && (state.verdict === null || state.physicalPending !== '0');
   useEffect(() => { onSelection?.(selected, active, !design); }, [onSelection, selected, active, design]);
   const occurrences = state ? retainedRunValue030(state.occurrences) : null;
+  const instanceOccurrences = initialInstance && state?.occurrences.kind === 'ready' && state.occurrences.revision === state.revision
+    ? state.occurrences.value.filter(item => item.activation.instanceId === initialInstance.id && runCaptureKey030(item.scope) === identity)
+    : undefined;
+  const [instanceDetailsOpen, setInstanceDetailsOpen] = useState(true);
   const openOccurrence = (activation: Extract<RunHumanOccurrence030['activation'], { kind: 'available' }>) => {
     if (!inspection || runCaptureKey030(activation.scope) !== identity) return;
-    const occurrence = occurrences?.find(item => item.activation.id === activation.activationId && runCaptureKey030(item.scope) === identity);
+    const candidates = initialInstanceId ? instanceOccurrences : occurrences;
+    const occurrence = candidates?.find(item => item.activation.id === activation.activationId && runCaptureKey030(item.scope) === identity);
     if (!occurrence) return;
+    if (initialInstanceId) {
+      choose({ runtime: { kind: 'activation', id: occurrence.activation.id } });
+      setInstanceDetailsOpen(true);
+      return;
+    }
     choose({ occurrence: runOccurrenceKey030(occurrence), step: undefined });
     setDesign(false);
     setDrawerOpen(true);
@@ -101,6 +114,33 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
   const inspectorProps = inspection ? { inspection, stale, refreshing: readState?.kind === 'loading', selectedStepId: selection.step, selectedOccurrenceKey: selection.occurrence,
     selectStep: (step: string | undefined) => { choose({ step, occurrence: undefined }); }, selectOccurrence: (occurrence: string) => choose({ occurrence }) } : undefined;
   const canvasMode = canvas !== undefined;
+  if (initialInstanceId) return <section aria-label={tr('instance')} className="min-h-0 min-w-0 flex-1 space-y-3 overflow-auto p-3 text-xs text-foreground">
+    <header className="flex flex-wrap items-start justify-between gap-2">
+      <div className="min-w-0">
+        <h2 className="break-words font-medium">{initialInstance?.agent ?? tr('instance')}</h2>
+        {initialInstance && <p className="break-all text-muted-foreground">{initialInstance.selectorName ?? initialInstance.id}</p>}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className="rounded border border-border px-2 py-1 hover:bg-accent" onClick={refresh}>{tr('refresh')}</button>
+        {openRun && <button type="button" className="rounded border border-border px-2 py-1 hover:bg-accent" onClick={openRun}>{tr('openRunInspector')}</button>}
+      </div>
+    </header>
+    {readFailed && <p role="alert">{tr('readFailed')}</p>}
+    {stale && <p role="status">{tr('stale')}</p>}
+    {inspection && state && initialInstance ? <>
+      <Messages030 key={JSON.stringify([identity, initialInstanceId])} instanceId={initialInstanceId} run={inspection} stale={stale} refresh={refresh} />
+      {renderHumans?.(inspection, false, openOccurrence, instanceOccurrences && new Set(instanceOccurrences.map(item => item.activation.id)))}
+      <details open={instanceDetailsOpen} onToggle={event => {
+        if (event.target === event.currentTarget) setInstanceDetailsOpen(event.currentTarget.open);
+      }}><summary>{tr('instanceActivity')}</summary>
+        {instanceOccurrences ? <RuntimeProjectionView030
+          page={{ scope: state.scope, revision: state.revision, flowInvocationId: state.flowInvocationId, stopping: state.stopping, verdict: state.verdict,
+            total: String(1 + instanceOccurrences.length), nextPage: null,
+            items: [{ kind: 'instance', value: initialInstance }, ...instanceOccurrences.map(item => ({ kind: 'activation' as const, value: item.activation }))] }}
+          labels={runtimeLabels} selected={selection.runtime} select={runtime => choose({ runtime })} /> : <p>{tr('incomplete')}</p>}
+      </details>
+    </> : <p role="status">{tr(readState?.kind === 'loading' ? 'loading' : 'unavailable')}</p>}
+  </section>;
   return <section aria-label={tr('monitor')} className={canvasMode ? 'agsdl-canvas-shell' : 'min-h-0 min-w-0 flex-1 overflow-auto text-xs text-foreground'}>
     {canvasMode && <>
       {design || !inspectorProps ? canvas : <RunInspector030 {...inspectorProps} graphOnly renderGraph={value => <div className="agsdl-captured-graph" onDoubleClick={() => setDrawerOpen(true)}>{renderGraph?.({ ...value, inspect: () => setDrawerOpen(true) })}</div>} />}
