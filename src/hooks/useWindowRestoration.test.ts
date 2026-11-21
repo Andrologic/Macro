@@ -4,6 +4,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { RestartSafetySelectorInput } from '../services/restartSafety';
 
+const closeNotificationMock = mock((_title: string, _options: { description?: string; actions: { onClick: () => void | Promise<void> }[] }) => undefined);
+const startPilotMock = mock(async () => undefined);
 let activeSyntheticWork = false;
 let approveClose = false;
 let loadPreferencesMock: ReturnType<typeof mock>;
@@ -13,6 +15,9 @@ let showMainWindowMock: ReturnType<typeof mock>;
 let windowAvailableMonitorBoundsMock: ReturnType<typeof mock>;
 let appUpdateExitAfterCleanShutdownMock: ReturnType<typeof mock>;
 let appExitCleanlyMock: ReturnType<typeof mock>;
+let appShutdownActiveRunsMock: ReturnType<typeof mock>;
+let appShutdownPrepareMock: ReturnType<typeof mock>;
+let confirmCloseMock: ReturnType<typeof mock>;
 let appInstallerCloseRespondMock: ReturnType<typeof mock>;
 let installerClosePending: boolean;
 let windowCurrentMonitorWorkAreaMock: ReturnType<typeof mock>;
@@ -54,7 +59,7 @@ const registerWindowRestorationMocks = async () => {
       taskCommandRuns: activeSyntheticWork ? { synthetic: { taskId: 'synthetic', status: 'running' } } : {},
     }),
   }));
-  mock.module('@tauri-apps/plugin-dialog', () => ({ ask: async () => approveClose }));
+  mock.module('@tauri-apps/plugin-dialog', () => ({ ask: (...args: unknown[]) => confirmCloseMock(...args) }));
   const actualPreferences = await import(
     `../services/preferences.ts?window-restoration-preferences-test=${importCounter + 1}`
   );
@@ -69,7 +74,10 @@ const registerWindowRestorationMocks = async () => {
     savePreference: (...args: unknown[]) => savePreferenceMock(...args),
   }));
 
+  mock.module('../components/ui/toastService', () => ({ notify: { actionRequired: closeNotificationMock } }));
+  closeNotificationMock.mockClear();
   mock.module('../services/tauriWindow', () => ({
+    windowClose: async () => { await closeRequestedListener?.(createCloseRequestedEvent()); },
     isTauriEnvironment: () => true,
     showMainWindow: (...args: unknown[]) => showMainWindowMock(...args),
     windowAvailableMonitorBounds: (...args: unknown[]) => windowAvailableMonitorBoundsMock(...args),
@@ -132,10 +140,16 @@ const registerWindowRestorationMocks = async () => {
 
   mock.module('../services/tauriIpc', () => ({
     appExitCleanly: (...args: unknown[]) => appExitCleanlyMock(...args),
+    appShutdownActiveRuns: (...args: unknown[]) => appShutdownActiveRunsMock(...args),
+    appShutdownPrepare: (...args: unknown[]) => appShutdownPrepareMock(...args),
     appInstallerCloseRequestPending: async () => installerClosePending,
     appInstallerCloseRespond: (...args: unknown[]) => appInstallerCloseRespondMock(...args),
     appUpdateExitAfterCleanShutdown: (...args: unknown[]) => appUpdateExitAfterCleanShutdownMock(...args),
   }));
+  mock.module('../composition/macroPilotDesktop', () => ({
+    macroPilotRuntime: { isStarted: () => true, stop: async () => undefined, start: startPilotMock },
+  }));
+  startPilotMock.mockClear();
   mock.module('../services/appShutdownGate', () => ({
     beginAppShutdownGate: () => () => undefined,
     isAppShutdownGateActive: () => false,
@@ -227,6 +241,9 @@ describe('ensureWindowRestoredOnce', () => {
     }]);
     appUpdateExitAfterCleanShutdownMock = mock(async () => undefined);
     appExitCleanlyMock = mock(async () => undefined);
+    appShutdownActiveRunsMock = mock(async (): Promise<string[]> => []);
+    appShutdownPrepareMock = mock(async () => undefined);
+    confirmCloseMock = mock(async () => approveClose);
     appInstallerCloseRespondMock = mock(async () => undefined);
     installerClosePending = false;
     windowCurrentMonitorWorkAreaMock = mock(async () => ({
@@ -288,6 +305,7 @@ describe('ensureWindowRestoredOnce', () => {
     windowScaleFactorMock = mock(async () => 2);
     await act(async () => { await closeRequestedListener?.(createCloseRequestedEvent()); });
     expect(appUpdateExitAfterCleanShutdownMock).not.toHaveBeenCalled();
+    expect(appShutdownPrepareMock).not.toHaveBeenCalled();
     expect(savePreferenceMock).not.toHaveBeenCalled();
     approveClose = true;
     let release!: () => void;
@@ -296,13 +314,93 @@ describe('ensureWindowRestoredOnce', () => {
     let close!: Promise<void>;
     await act(async () => { close = Promise.resolve(closeRequestedListener?.(createCloseRequestedEvent())); });
     expect(appUpdateExitAfterCleanShutdownMock).not.toHaveBeenCalled();
+    expect(appShutdownPrepareMock).not.toHaveBeenCalled();
     expect(savePreferenceMock).toHaveBeenCalledWith('windowX', 2000);
     expect(savePreferenceMock).toHaveBeenCalledWith('windowWidth', 1000);
     expect(savePreferenceMock).toHaveBeenCalledWith('windowPositionVersion', 1);
     await act(async () => { release(); await close; });
     expect(appUpdateExitAfterCleanShutdownMock).toHaveBeenCalledTimes(1);
+    expect(appShutdownPrepareMock).toHaveBeenCalledTimes(1);
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it('requires consent for native calls outside the selected UI and retires them before exit', async () => {
+    appShutdownActiveRunsMock.mockImplementation(async () => ['call-only', 'other-plan']);
+    const { useWindowRestoration, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
+    await ensureWindowRestoredOnce();
+    try {
+      await act(async () => { await closeRequestedListener?.(createCloseRequestedEvent()); });
+      expect(confirmCloseMock).toHaveBeenCalledTimes(1);
+      expect(appShutdownPrepareMock).not.toHaveBeenCalled();
+      expect(appUpdateExitAfterCleanShutdownMock).not.toHaveBeenCalled();
+      approveClose = true;
+      const order: string[] = [];
+      appShutdownPrepareMock.mockImplementation(async () => { order.push('retire'); });
+      appUpdateExitAfterCleanShutdownMock.mockImplementation(async () => { order.push('exit'); });
+      await act(async () => { await closeRequestedListener?.(createCloseRequestedEvent()); });
+      expect(appShutdownPrepareMock).toHaveBeenCalledWith(['call-only', 'other-plan']);
+      expect(order).toEqual(['retire', 'exit']);
+    } finally { await act(async () => root.unmount()); container.remove(); }
+  });
+
+  it('keeps close retryable when the native activity read or retirement is unavailable', async () => {
+    const { useWindowRestoration, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
+    await ensureWindowRestoredOnce();
+    try {
+      appShutdownActiveRunsMock.mockImplementationOnce(async () => { throw Error('Unavailable'); });
+      await act(async () => { await closeRequestedListener?.(createCloseRequestedEvent()); });
+      expect(appShutdownPrepareMock).not.toHaveBeenCalled();
+      expect(appUpdateExitAfterCleanShutdownMock).not.toHaveBeenCalled();
+      appShutdownPrepareMock.mockImplementationOnce(async () => { throw Error('APP_SHUTDOWN_PENDING'); });
+      await act(async () => { await closeRequestedListener?.(createCloseRequestedEvent()); });
+      expect(appUpdateExitAfterCleanShutdownMock).not.toHaveBeenCalled();
+      expect(pageShuttingDown).toBe(false);
+      await act(async () => { await closeRequestedListener?.(createCloseRequestedEvent()); });
+      expect(appUpdateExitAfterCleanShutdownMock).toHaveBeenCalledTimes(1);
+    } finally { await act(async () => root.unmount()); container.remove(); }
+  });
+
+  for (const started of [false, true]) {
+    it(`reports native retirement ${started ? 'engaged' : 'not engaged'} and retries without a false resume`, async () => {
+      const { useWindowRestoration, ensureWindowRestoredOnce } = await loadWindowRestoration();
+      const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
+      await ensureWindowRestoredOnce();
+      try {
+        appShutdownActiveRunsMock.mockImplementation(async () => ['running']);
+        approveClose = true;
+        appShutdownPrepareMock.mockImplementationOnce(async () => {
+          throw { code: 'APP_SHUTDOWN_PENDING', shutdownStarted: started };
+        });
+        await act(async () => { await closeRequestedListener?.(createCloseRequestedEvent()); });
+        expect(startPilotMock).toHaveBeenCalledTimes(started ? 0 : 1);
+        expect(appUpdateExitAfterCleanShutdownMock).not.toHaveBeenCalled();
+        expect(pageShuttingDown).toBe(false);
+        const options = closeNotificationMock.mock.calls.at(-1)![1];
+        expect(options.description).toContain(started ? 'Task shutdown has begun' : 'Macro is still open');
+        await act(async () => { await options.actions[0].onClick(); });
+        expect(confirmCloseMock.mock.calls.at(-1)?.[1]).toMatchObject({ cancelLabel: started ? 'Cancel' : 'Keep working' });
+        expect(appUpdateExitAfterCleanShutdownMock).toHaveBeenCalledTimes(1);
+      } finally { await act(async () => root.unmount()); container.remove(); }
+    });
+  }
+
+  it('asks again when a native run starts during consent and preserves a second refusal', async () => {
+    appShutdownActiveRunsMock.mockImplementationOnce(async () => ['first']);
+    appShutdownActiveRunsMock.mockImplementationOnce(async () => ['first', 'new']);
+    confirmCloseMock.mockImplementationOnce(async () => true);
+    confirmCloseMock.mockImplementationOnce(async () => false);
+    const { useWindowRestoration, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
+    await ensureWindowRestoredOnce();
+    try {
+      await act(async () => { await closeRequestedListener?.(createCloseRequestedEvent()); });
+      expect(confirmCloseMock).toHaveBeenCalledTimes(2);
+      expect(appShutdownPrepareMock).not.toHaveBeenCalled();
+      expect(appUpdateExitAfterCleanShutdownMock).not.toHaveBeenCalled();
+    } finally { await act(async () => root.unmount()); container.remove(); }
   });
 
   it('restores physical coordinates on a denser secondary monitor before sizing', async () => {
@@ -796,4 +894,25 @@ describe('ensureWindowRestoredOnce', () => {
     await act(async () => { root.unmount(); });
     container.remove();
   });
+  for (const manualInstaller of [false, true]) {
+    it(`keeps Pilot stopped when ${manualInstaller ? 'installer' : 'regular'} exit rejects after retirement`, async () => {
+      installerClosePending = manualInstaller;
+      const { __resetWindowRestorationForTests, useWindowRestoration } = await loadWindowRestoration();
+      const exit = manualInstaller ? appExitCleanlyMock : appUpdateExitAfterCleanShutdownMock;
+      exit.mockImplementationOnce(async () => { throw Error('Exit failed'); });
+      __resetWindowRestorationForTests();
+      const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
+      await delay(80);
+      await closeRequestedListener?.(createCloseRequestedEvent());
+      expect(startPilotMock).not.toHaveBeenCalled();
+      expect(pageShuttingDown).toBe(false);
+      await closeRequestedListener?.(createCloseRequestedEvent());
+      expect(exit).toHaveBeenCalledTimes(2);
+      expect(startPilotMock).not.toHaveBeenCalled();
+      expect(pageShuttingDown).toBe(true);
+      await act(async () => { root.unmount(); });
+      container.remove();
+    });
+  }
+
 });

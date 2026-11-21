@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import {
   getFocusedProjectIdForGroup,
+  getActiveProjectRegistry,
+  isProjectPlanActionable,
   getRepositoryScopedProjectIds,
   getScopedArchitectContextProjectIds,
   getScopedGitActionableProjectIds,
@@ -39,6 +41,16 @@ const projectGroups = [
 ];
 
 describe('globalProjects', () => {
+  it('keeps archives available without allowing plan creation in them', () => {
+    const archived = { ...makeProject('archive', '/workspace/archive'), status: 'archived' as const,
+      gitSetupState: 'ready' as const, isReadOnly: false };
+    const registry = { standaloneProjects: [archived], projectGroups: [] };
+    expect(getActiveProjectRegistry(registry).standaloneProjects).toEqual([]);
+    expect(registry.standaloneProjects).toEqual([archived]);
+    expect(isProjectPlanActionable(archived)).toBe(false);
+    expect(isProjectPlanActionable({ ...archived, status: 'active' })).toBe(true);
+  });
+
   it('keeps the explicit group scope unfocused when no project was chosen', () => {
     expect(resolveExplicitProjectIdForGroup(projectGroups, 'group-main', null)).toBeNull();
   });

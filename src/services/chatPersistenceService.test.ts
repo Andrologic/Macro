@@ -1,6 +1,7 @@
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it, mock, spyOn } from "bun:test";
 
 import type { ChatMessage, Conversation, ToolTrace } from "../types";
+import { mapDbConversationToConversation } from "./chatDbMappers";
 import type {
   DbChatBootstrapSnapshot,
   DbConversation,
@@ -114,6 +115,7 @@ const adapters = (params?: {
 }): ChatPersistenceAdapters => ({
   isTauriAvailable: () => params?.available ?? true,
   ipc: baseIpc(params?.ipc),
+  assistantProvenance: { recordInterrupted: async () => undefined, recordFinal: async () => undefined, readFinal: async () => null },
   now: () => new Date("2026-05-16T10:00:00.000Z"),
   randomIdSuffix: () => "abc123",
 });
@@ -131,6 +133,37 @@ describe("chatPersistenceService", () => {
     expect(loaded.messages[0]?.content).toBe('accepted');
     expect(loaded.messages[0]?.generation_attempts).toEqual(attempts);
   });
+  for (const source of ['list', 'bootstrap'] as const) it(`preserves native results and final empty responses while omitting empty checkpoints: ${source}`, async () => {
+    const nativeState = { provider: 'chatgpt' as const, response_id: 'response', output_items: [
+      { type: 'function_call_output', call_id: 'call', output: 'Useful result' },
+    ] };
+    const rows = [
+      dbMessage({ id: 'placeholder', content: '' }),
+      dbMessage({ id: 'checkpoint', content: '', generation_attempts_json: JSON.stringify([
+        { id: 'attempt', status: 'abandoned', rawText: 'Discarded generation', acceptedText: '', costUsd: null },
+      ]), provider_turn_state_json: JSON.stringify({ provider: 'chatgpt', response_id: 'checkpoint', output_items: [] }) }),
+      dbMessage({ id: 'empty-final', content: '', completion_reason: 'completed' }),
+      dbMessage({ id: 'input-result', content: '', provider_input_items_json: JSON.stringify(nativeState.output_items) }),
+      dbMessage({ id: 'native-result', content: '', provider_turn_state_json: JSON.stringify(nativeState) }),
+      dbMessage({ id: 'tool-trace', content: '', tool_traces_json: JSON.stringify([
+        { tool_call_id: 'call', tool_name: 'read_file', status: 'done', summary: 'Useful result' },
+      ]) }),
+      dbMessage({ id: 'invalid-native-state', content: '', provider_turn_state_json: JSON.stringify({ provider: 'unknown', output_items: nativeState.output_items }) }),
+    ];
+    const persistence = adapters({ ipc: {
+      listMessages: async () => rows,
+      getChatBootstrapSnapshot: async () => ({ conversations: [dbConversation()], messages_by_conversation_id: { 'conv-1': rows } }),
+    } });
+    const loaded = source === 'list'
+      ? await loadConversationMessages(persistence, { conversationId: 'conv-1', conversations: [] })
+      : (await loadChatBootstrapSnapshot(persistence)).messages;
+    expect(loaded.map(message => message.id)).toEqual(['empty-final', 'input-result', 'native-result', 'tool-trace']);
+    expect(loaded.find(message => message.id === 'empty-final')?.completion_reason).toBe('completed');
+    expect(loaded.find(message => message.id === 'input-result')?.provider_input_items).toEqual(nativeState.output_items);
+    expect(loaded.find(message => message.id === 'native-result')?.provider_turn_state).toEqual(nativeState);
+    expect(loaded.find(message => message.id === 'tool-trace')?.tool_traces).toHaveLength(1);
+  });
+
   it("loads bootstrap snapshots and maps conversations/messages", async () => {
     const snapshot: DbChatBootstrapSnapshot = {
       conversations: [dbConversation({ message_count: 1 })],
@@ -199,6 +232,75 @@ describe("chatPersistenceService", () => {
 
     expect(result[0]?.task_id).toBe("task-1");
     expect(result[0]?.content).toBe("Answer");
+  });
+
+  it("indexes conversations once per transcript load and preserves message attachments", async () => {
+    const conversations = [
+      dbConversation(),
+      dbConversation({ id: "conv-2", task_id: "task-2" }),
+      dbConversation({ id: "conv-null", task_id: null }),
+    ].map(mapDbConversationToConversation);
+    const messages = [
+      dbMessage({ id: "user-1", role: "user", content: "Question" }),
+      dbMessage({ id: "assistant-2", conversation_id: "conv-2", content: "Answer" }),
+      dbMessage({ id: "missing", conversation_id: "conv-missing" }),
+      dbMessage({ id: "null-task", conversation_id: "conv-null" }),
+      dbMessage({ id: "assistant-1", provider_input_items_json: '[{"id":"input-1"}]' }),
+    ];
+    const listMessages = mock(async () => messages);
+    const persistence = adapters({ ipc: { listMessages } });
+    const indexTraversal = spyOn(conversations, "map");
+
+    try {
+      const result = await loadConversationMessages(persistence, {
+        conversationId: "conv-1",
+        conversations,
+      });
+
+      expect(indexTraversal).toHaveBeenCalledTimes(1);
+      expect(listMessages).toHaveBeenCalledWith("conv-1");
+      expect(result.map(({ id, conversation_id, task_id, role, content }) => ({
+        id, conversation_id, task_id, role, content,
+      }))).toEqual([
+        { id: "user-1", conversation_id: "conv-1", task_id: "task-1", role: "user", content: "Question" },
+        { id: "assistant-2", conversation_id: "conv-2", task_id: "task-2", role: "assistant", content: "Answer" },
+        { id: "missing", conversation_id: "conv-missing", task_id: "", role: "assistant", content: "Hello" },
+        { id: "null-task", conversation_id: "conv-null", task_id: "", role: "assistant", content: "Hello" },
+        { id: "assistant-1", conversation_id: "conv-1", task_id: "task-1", role: "assistant", content: "Hello" },
+      ]);
+      expect(result[4]?.provider_input_items).toEqual([{ id: "input-1" }]);
+      expect(result[4]?.turn_id).toBe("turn-1");
+      expect(result[4]?.timestamp).toBe(messages[4]?.created_at);
+
+      conversations[0].task_id = "task-updated";
+      const reloaded = await loadConversationMessages(persistence, {
+        conversationId: "conv-1",
+        conversations,
+      });
+      expect(indexTraversal).toHaveBeenCalledTimes(2);
+      expect(listMessages).toHaveBeenCalledTimes(2);
+      expect(reloaded[0]?.task_id).toBe("task-updated");
+      expect(reloaded[4]?.task_id).toBe("task-updated");
+    } finally {
+      indexTraversal.mockRestore();
+    }
+  });
+
+  it("preserves transcript load failures without indexing conversations", async () => {
+    const error = new Error("transcript unavailable");
+    const conversations: Conversation[] = [];
+    const indexTraversal = spyOn(conversations, "map");
+    const listMessages = mock(async (): Promise<DbMessage[]> => { throw error; });
+
+    try {
+      await expect(loadConversationMessages(adapters({ ipc: { listMessages } }), {
+        conversationId: "conv-1",
+        conversations,
+      })).rejects.toBe(error);
+      expect(indexTraversal).not.toHaveBeenCalled();
+    } finally {
+      indexTraversal.mockRestore();
+    }
   });
 
   it("creates deterministic non-Tauri user and assistant messages", async () => {
@@ -322,6 +424,15 @@ describe("chatPersistenceService", () => {
       providerTurnState: undefined,
       completionReason: "tool_turn_limit",
     });
+  });
+
+  it("records a final save for transports without a reason and never certifies progress", async () => {
+    const updateMessage = mock<ChatPersistenceIpc["updateMessage"]>(async () => {});
+    const ipc = baseIpc({ updateMessage }); const persistence = { ...adapters(), ipc };
+    await persistAssistantPartialResult(persistence, chatMessage({ content: "Progress", completion_reason: "completed" }));
+    expect(updateMessage.mock.calls.at(-1)?.[2]?.completionReason).toBeUndefined();
+    await persistAssistantCompletionResult(persistence, { assistantMessageId: "message-1", result: { visibleContent: "" } });
+    expect(ipc.updateMessage).toHaveBeenLastCalledWith("message-1", "", expect.objectContaining({ completionReason: "completed" }));
   });
 
   it("serializes partial and final writes for one assistant message", async () => {

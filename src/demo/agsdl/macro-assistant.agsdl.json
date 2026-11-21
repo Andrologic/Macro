@@ -1,0 +1,22 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "macro-assistant",
+  "title": "Assistant",
+  "agents": {
+    "agent1": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Répondre à la demande et présenter un résultat clair."
+    }
+  },
+  "flow": {
+    "entry": "agent1",
+    "steps": {
+      "agent1": {
+        "type": "agent",
+        "agent": "agent1",
+        "title": "Traiter votre demande"
+      }
+    }
+  }
+}

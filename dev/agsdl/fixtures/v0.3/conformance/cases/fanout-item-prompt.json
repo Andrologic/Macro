@@ -1,0 +1,111 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "fanout-item-prompt",
+  "agents": {
+    "architect": {
+      "harness": "example",
+      "permissions": "read-only",
+      "instructs": true,
+      "results": {
+        "plan": {
+          "mediaType": "text/markdown"
+        },
+        "files": {
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "file": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "developer": {
+      "harness": "example",
+      "permissions": "workspace"
+    }
+  },
+  "flow": {
+    "entry": "plan",
+    "steps": {
+      "plan": {
+        "type": "agent",
+        "agent": "architect",
+        "next": {
+          "split": {
+            "step": "build",
+            "each": [
+              "instructions"
+            ],
+            "max": 10,
+            "message": {
+              "prompt": {
+                "from": [
+                  "item"
+                ]
+              },
+              "resources": {
+                "plan": {
+                  "from": [
+                    "results",
+                    "plan"
+                  ]
+                }
+              }
+            }
+          },
+          "fix": {
+            "step": "build",
+            "each": [
+              "results",
+              "files"
+            ],
+            "message": {
+              "prompt": {
+                "from": [
+                  "item"
+                ]
+              },
+              "resources": {
+                "file": {
+                  "from": [
+                    "item",
+                    "file"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "build": {
+        "type": "agent",
+        "agent": "developer",
+        "instance": "new",
+        "next": "gather"
+      },
+      "gather": {
+        "type": "join",
+        "failures": "keep",
+        "next": {
+          "done": "summary",
+          "incomplete": "plan"
+        }
+      },
+      "summary": {
+        "type": "agent",
+        "agent": "architect",
+        "prompt": "Summarize."
+      }
+    }
+  }
+}

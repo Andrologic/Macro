@@ -1,0 +1,47 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "join-shared-step",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": [
+          "x",
+          "y"
+        ]
+      },
+      "x": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": {
+          "long": "z",
+          "short": "j"
+        }
+      },
+      "y": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "z"
+      },
+      "z": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "j"
+      },
+      "j": {
+        "type": "join"
+      }
+    }
+  }
+}

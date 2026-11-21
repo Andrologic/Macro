@@ -79,10 +79,12 @@ interface TerminalStore extends TerminalVisibilityState {
   lastManualContext: ManualTerminalContext | null;
   upsertSession: (session: tauriIpc.TerminalSessionDto) => tauriIpc.TerminalSessionDto;
   createSession: (params: {
+    chatAdmission?: import('../services/ipc/chatAdmission').ChatToolAdmission;
     projectId?: string | null;
     cwd?: string | null;
   }) => Promise<tauriIpc.TerminalSessionDto>;
   runCommand: (params: {
+    chatAdmission?: import('../services/ipc/chatAdmission').ChatToolAdmission;
     sessionId: string;
     command: string;
     timeoutMs?: number | null;
@@ -91,9 +93,10 @@ interface TerminalStore extends TerminalVisibilityState {
   readSession: (sessionId: string) => Promise<tauriIpc.TerminalSessionDto>;
   killSession: (
     sessionId: string,
-    executionId?: string | null
+    executionId?: string | null,
+    chatAdmission?: import('../services/ipc/chatAdmission').ChatToolAdmission,
   ) => Promise<tauriIpc.TerminalSessionDto>;
-  initialize: (context?: LifecycleContext) => Promise<void>;
+  initialize: (context?: LifecycleContext, options?: { syncDisplayMetadata?: boolean }) => Promise<void>;
   startRuntime: (context?: LifecycleContext) => Promise<void>;
   stopRuntime: () => Promise<void>;
   setLifecyclePort: (port: TerminalLifecyclePort) => void;
@@ -137,6 +140,8 @@ interface TerminalStore extends TerminalVisibilityState {
     command: string;
     reveal: boolean;
     promptContext?: tauriIpc.TerminalPromptContextInput | null;
+    beforeEffect?: () => Promise<void>;
+    expectedBranch?: string | null;
   }) => Promise<TerminalTab>;
   startWorktreeSetupCommandTab: (params: {
     taskId: string;
@@ -145,6 +150,8 @@ interface TerminalStore extends TerminalVisibilityState {
     title: string;
     command: string;
     promptContext?: tauriIpc.TerminalPromptContextInput | null;
+    beforeEffect?: () => Promise<void>;
+    expectedBranch?: string | null;
   }) => Promise<TerminalTab>;
   syncTerminalDisplayMetadata: (params?: { taskId?: string | null }) => Promise<void>;
   reconnectTab: (tabId: string) => Promise<TerminalTab>;
@@ -709,6 +716,7 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
   const blockedTabs = new Set<string>();
   const closedTabs = new Set<string>();
   const closingTabs = new Map<string, Promise<void>>();
+  const openingTabs = new Map<string, Promise<TerminalTab>>();
   const listenerCleanups = new Set<() => void>();
   const captureRuntime = () => {
     const epoch = runtimeEpoch;
@@ -721,6 +729,7 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
     }
   };
   let initializePromise: Promise<void> | null = null;
+  let initialTerminalEvents: Array<() => void> | null = null;
   let pendingOutputEvents: Record<string, tauriIpc.TerminalOutputEvent> = {};
   let outputFlushTimer: number | null = null;
   let manualSelectionRevision = 0;
@@ -909,7 +918,10 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       registrationsScope.track(Promise.resolve().then(() => {
         if (!isCurrent()) return;
         return listen<T>(name, (event) => {
-          if (isCurrent()) handler(event);
+          if (!isCurrent()) return;
+          const dispatch = () => { if (isCurrent()) handler(event); };
+          if (initialTerminalEvents) initialTerminalEvents.push(dispatch);
+          else dispatch();
         }).then((unlisten) => {
           if (isCurrent()) acquired.add(unlisten);
           else unlisten();
@@ -1093,11 +1105,11 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       return session;
     },
 
-    createSession: async ({ projectId, cwd }) => {
+    createSession: async ({ projectId, cwd, chatAdmission }) => {
       const current = captureRuntime();
       assertCurrent(current);
       if (!projectId) {
-        const session = await acquisitionScope.track(tauriIpc.terminalCreateSession({
+        const session = await acquisitionScope.track(tauriIpc.terminalCreateSession({ chatAdmission,
           projectId: null,
           cwd: cwd ?? null,
         }));
@@ -1105,7 +1117,7 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       }
 
       const resolvedProject = resolveSupportedTerminalProject(projectId);
-      const session = await acquisitionScope.track(tauriIpc.terminalCreateSession({
+      const session = await acquisitionScope.track(tauriIpc.terminalCreateSession({ chatAdmission,
         projectId: resolvedProject.projectId,
         cwd: resolveSessionCreationCwd({
           projectId: resolvedProject.projectId,
@@ -1116,10 +1128,10 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       return current() ? get().upsertSession(session) : session;
     },
 
-    runCommand: async ({ sessionId, command, timeoutMs, executionId }) => {
+    runCommand: async ({ sessionId, command, timeoutMs, executionId, chatAdmission }) => {
       const current = captureRuntime();
       assertCurrent(current);
-      const session = await acquisitionScope.track(tauriIpc.terminalRun({
+      const session = await acquisitionScope.track(tauriIpc.terminalRun({ chatAdmission,
         sessionId,
         command,
         timeoutMs: timeoutMs ?? null,
@@ -1135,10 +1147,10 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       return current() ? get().upsertSession(session) : session;
     },
 
-    killSession: async (sessionId, executionId) => {
+    killSession: async (sessionId, executionId, chatAdmission) => {
       const current = captureRuntime();
       // Cancellation belongs to the admitted execution, even after its UI retires.
-      const session = await acquisitionScope.track(tauriIpc.terminalKill(sessionId, executionId));
+      const session = await acquisitionScope.track(tauriIpc.terminalKill(sessionId, executionId, chatAdmission));
       return current() ? get().upsertSession(session) : session;
     },
 
@@ -1165,6 +1177,8 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       runtimeContext = undefined;
       manualSelectionRevision += 1;
       initializePromise = null;
+      openingTabs.clear();
+      initialTerminalEvents = null;
       for (const cleanup of listenerCleanups) cleanup();
       if (outputFlushTimer !== null) globalThis.clearTimeout(outputFlushTimer);
       outputFlushTimer = null;
@@ -1179,7 +1193,7 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       return stopPromise;
     },
 
-    initialize: async (context) => {
+    initialize: async (context, options) => {
       context?.assertActive();
       if (context && runtimeContext !== context) {
         if (runtimeContext) await get().stopRuntime();
@@ -1203,6 +1217,7 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
 
       initializePromise = acquisitionScope.track((async () => {
         set({ initializing: true });
+        initialTerminalEvents = [];
         try {
           const [savedHeight, savedActiveTabId, savedLastManualProjects] = await Promise.all([
             loadPreference<number>(PREF_KEYS.TERMINAL_PANEL_HEIGHT),
@@ -1215,6 +1230,8 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
           const lastManualProjectIdByTaskId = normalizeLastManualProjectIdByTaskId(
             savedLastManualProjects
           );
+          await registerListeners(current);
+          assertCurrent(current);
           const tabDtos = (await loadTabsWithRetry(current)).filter((dto) => !blockedTabs.has(dto.id));
           assertCurrent(current);
           const tabs = tabDtos.reduce<Record<string, TerminalTab>>((acc, dto) => {
@@ -1252,13 +1269,17 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
             lastManualProjectIdByTaskId,
             hiddenTerminalTabCount: computeCurrentHiddenCount(nextState),
           });
-          await registerListeners(current);
-          assertCurrent(current);
+          const queuedEvents = initialTerminalEvents;
+          initialTerminalEvents = null;
+          queuedEvents?.forEach((dispatch) => dispatch());
           set({ initialized: true, initializing: false });
-          await get().syncTerminalDisplayMetadata();
+          if (options?.syncDisplayMetadata !== false) await get().syncTerminalDisplayMetadata();
           assertCurrent(current);
         } catch (error) {
-          if (current()) set({ initializing: false });
+          if (current()) {
+            initialTerminalEvents = null;
+            set({ initializing: false });
+          }
           throw error;
         }
       })()).finally(() => {
@@ -1445,29 +1466,40 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
         throw new Error(getManualTerminalUnavailableMessage());
       }
 
-      const siblingTabs = get()
-        .getTabsForTask(context.taskId)
-        .filter((tab) => tab.kind === 'manual' && tab.projectId === context.projectId);
-      const instanceIndex = getNextManualInstanceIndex(siblingTabs);
-      const displayMetadata = buildTerminalDisplayMetadata({
-        projectLabel: context.projectLabel,
-        taskLabel: context.taskLabel,
-        instanceIndex,
-      });
+      const key = JSON.stringify(['manual', context.taskId, context.projectId]);
+      let pending = openingTabs.get(key);
+      if (!pending) {
+        pending = (async () => {
+          const siblingTabs = get()
+            .getTabsForTask(context.taskId)
+            .filter((tab) => tab.kind === 'manual' && tab.projectId === context.projectId);
+          const instanceIndex = getNextManualInstanceIndex(siblingTabs);
+          const displayMetadata = buildTerminalDisplayMetadata({
+            projectLabel: context.projectLabel,
+            taskLabel: context.taskLabel,
+            instanceIndex,
+          });
 
-      const dto = await acquisitionScope.track(tauriIpc.terminalCreateTab({
-        kind: 'manual',
-        projectId: context.projectId,
-        cwd: context.cwd,
-        title: displayMetadata.title,
-        taskId: context.taskId,
-        promptContext: displayMetadata.promptContext,
-      }));
-      const tab = mapTabDto(dto, get().tabs[dto.id]);
-      if (!current() || blockedTabs.has(dto.id)) return tab;
-      const isLatestSelection = selectionRevision === manualSelectionRevision;
-      upsertTab(tab, { activate: isLatestSelection, openPanel: isLatestSelection ? true : undefined });
-      if (isLatestSelection) {
+          const dto = await acquisitionScope.track(tauriIpc.terminalCreateTab({
+            kind: 'manual',
+            projectId: context.projectId,
+            cwd: context.cwd,
+            title: displayMetadata.title,
+            taskId: context.taskId,
+            promptContext: displayMetadata.promptContext,
+          }));
+          const tab = mapTabDto(dto, get().tabs[dto.id]);
+          if (!current() || blockedTabs.has(dto.id)) return tab;
+          upsertTab(tab, {});
+          return tab;
+        })().finally(() => {
+          if (openingTabs.get(key) === pending) openingTabs.delete(key);
+        });
+        openingTabs.set(key, pending);
+      }
+      const tab = await pending;
+      if (current() && !blockedTabs.has(tab.id) && selectionRevision === manualSelectionRevision) {
+        upsertTab(tab, { activate: true, openPanel: true });
         persistLastManualProjectSelection(context.taskId, context.projectId);
         set({ lastManualContext: context });
       }
@@ -1504,36 +1536,53 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       assertCurrent(current);
       const resolvedProject = resolveSupportedTerminalProject(projectId);
       const resolvedProjectId = resolvedProject.projectId;
-      const existing = Object.values(get().tabs).find(
-        (tab) => tab.kind === 'task' && tab.taskId === taskId && tab.projectId === resolvedProjectId
-      );
-      if (existing) assertCurrent(current, existing.id);
-      const dto = existing
-        ? existing.hasLiveSession
-          ? await acquisitionScope.track(tauriIpc.terminalReadTab(existing.id))
-          : await acquisitionScope.track(tauriIpc.terminalReconnectTab(existing.id))
-        : await acquisitionScope.track(tauriIpc.terminalCreateTab({
-            kind: 'task',
-            projectId: resolvedProjectId,
-            cwd,
-            title,
-            taskId,
-            promptContext: promptContext ?? null,
-          }));
+      const key = JSON.stringify(['task', taskId, resolvedProjectId]);
+      let pending = openingTabs.get(key);
+      if (!pending) {
+        pending = (async () => {
+          const existing = Object.values(get().tabs).find(
+            (tab) => tab.kind === 'task' && tab.taskId === taskId && tab.projectId === resolvedProjectId
+          );
+          if (existing) assertCurrent(current, existing.id);
+          const dto = existing
+            ? existing.hasLiveSession
+              ? await acquisitionScope.track(tauriIpc.terminalReadTab(existing.id))
+              : await acquisitionScope.track(tauriIpc.terminalReconnectTab(existing.id))
+            : await acquisitionScope.track(tauriIpc.terminalCreateTab({
+                kind: 'task',
+                projectId: resolvedProjectId,
+                cwd,
+                title,
+                taskId,
+                promptContext: promptContext ?? null,
+              }));
 
-      const tab = mapTabDto(dto, get().tabs[dto.id]);
-      if (!current() || blockedTabs.has(dto.id)) return tab;
-      upsertTab(tab, { activate: reveal, openPanel: reveal ? true : undefined });
+          const tab = mapTabDto(dto, get().tabs[dto.id]);
+          if (!current() || blockedTabs.has(dto.id)) return tab;
+          upsertTab(tab, {});
+          return tab;
+        })().finally(() => {
+          if (openingTabs.get(key) === pending) openingTabs.delete(key);
+        });
+        openingTabs.set(key, pending);
+      }
+      const tab = await pending;
+      if (current() && !blockedTabs.has(tab.id)) {
+        upsertTab(tab, { activate: reveal, openPanel: reveal ? true : undefined });
+      }
       return tab;
     },
 
-    startTaskCommandTab: async ({ taskId, projectId, cwd, title, command, reveal, promptContext }) => {
+    startTaskCommandTab: async ({ taskId, projectId, cwd, title, command, reveal, promptContext, beforeEffect, expectedBranch }) => {
+      await beforeEffect?.();
       const current = captureRuntime();
-      await get().initialize();
+      await get().initialize(undefined, beforeEffect ? { syncDisplayMetadata: false } : undefined);
       assertCurrent(current);
       const resolvedProject = resolveSupportedTerminalProject(projectId);
       const resolvedProjectId = resolvedProject.projectId;
+      await beforeEffect?.();
       const dto = await acquisitionScope.track(tauriIpc.terminalStartCommandTab({
+        ...(beforeEffect ? { pilotOnly: true, expectedBranch } : {}),
         kind: 'task',
         projectId: resolvedProjectId,
         cwd,
@@ -1548,13 +1597,16 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       return tab;
     },
 
-    startWorktreeSetupCommandTab: async ({ taskId, projectId, cwd, title, command, promptContext }) => {
+    startWorktreeSetupCommandTab: async ({ taskId, projectId, cwd, title, command, promptContext, beforeEffect, expectedBranch }) => {
+      await beforeEffect?.();
       const current = captureRuntime();
-      await get().initialize();
+      await get().initialize(undefined, beforeEffect ? { syncDisplayMetadata: false } : undefined);
       assertCurrent(current);
       const resolvedProject = resolveSupportedTerminalProject(projectId);
       const resolvedProjectId = resolvedProject.projectId;
+      await beforeEffect?.();
       const dto = await acquisitionScope.track(tauriIpc.terminalStartCommandTab({
+        ...(beforeEffect ? { pilotOnly: true, expectedBranch } : {}),
         kind: 'worktree_setup',
         projectId: resolvedProjectId,
         cwd,

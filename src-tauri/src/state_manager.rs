@@ -77,7 +77,7 @@ impl StateManager {
                     read_only = true;
                     tracing::warn!(
                         path = %path.display(),
-                        "state.json utilise une version non prise en charge et ne sera pas modifié"
+                        "state.json uses an unsupported version and will not be modified"
                     );
                     StateSnapshot::default()
                 }
@@ -85,7 +85,7 @@ impl StateManager {
                     tracing::warn!(
                         path = %path.display(),
                         %error,
-                        "state.json est invalide, démarrage avec un état temporaire vide"
+                        "state.json is invalid; starting with empty temporary state"
                     );
                     StateSnapshot::default()
                 }
@@ -145,9 +145,7 @@ impl StateManager {
         let next =
             tokio::task::spawn_blocking(move || mutate_state_file(&path, &lock_path, mutation))
                 .await
-                .map_err(|error| {
-                    format!("La mise à jour de state.json a été interrompue : {error}")
-                })??;
+                .map_err(|error| format!("The state.json update was interrupted: {error}"))??;
 
         *published_snapshot = next.clone();
         Ok(next)
@@ -156,8 +154,7 @@ impl StateManager {
     fn ensure_writable(&self) -> Result<(), String> {
         if self.read_only {
             return Err(
-                "state.json utilise une version non prise en charge et reste en lecture seule."
-                    .to_string(),
+                "state.json uses an unsupported version and remains read-only.".to_string(),
             );
         }
         Ok(())
@@ -170,18 +167,9 @@ fn lock_state_file(lock_path: &Path) -> Result<File, String> {
         .read(true)
         .write(true)
         .open(lock_path)
-        .map_err(|error| {
-            format!(
-                "Impossible d’ouvrir le verrou d’état {} : {error}",
-                lock_path.display()
-            )
-        })?;
-    FileExt::lock_exclusive(&file).map_err(|error| {
-        format!(
-            "Impossible de verrouiller l’état {} : {error}",
-            lock_path.display()
-        )
-    })?;
+        .map_err(|error| format!("Failed to open state lock {}: {error}", lock_path.display()))?;
+    FileExt::lock_exclusive(&file)
+        .map_err(|error| format!("Failed to lock state {}: {error}", lock_path.display()))?;
     Ok(file)
 }
 
@@ -192,13 +180,11 @@ where
     let _file_lock = lock_state_file(lock_path)?;
     let mut snapshot = if path.exists() {
         let raw = fs::read(path).map_err(|error| error.to_string())?;
-        let snapshot = serde_json::from_slice::<StateSnapshot>(&raw).map_err(|error| {
-            format!("state.json est invalide et ne peut pas être modifié : {error}")
-        })?;
+        let snapshot = serde_json::from_slice::<StateSnapshot>(&raw)
+            .map_err(|error| format!("state.json is invalid and cannot be modified: {error}"))?;
         if snapshot.schema_version != STATE_SCHEMA_VERSION {
             return Err(
-                "state.json utilise une version non prise en charge et reste en lecture seule."
-                    .to_string(),
+                "state.json uses an unsupported version and remains read-only.".to_string(),
             );
         }
         snapshot
@@ -216,7 +202,7 @@ where
 
 fn validate_state_key(key: &str) -> Result<(), String> {
     if key.trim().is_empty() || key.len() > 160 || key.contains(['/', '\\']) {
-        return Err("La clé d’état n’est pas valide.".to_string());
+        return Err("Invalid state key.".to_string());
     }
     Ok(())
 }
@@ -297,7 +283,7 @@ mod tests {
             .await
             .expect_err("future state must remain read-only");
 
-        assert!(error.contains("lecture seule"));
+        assert!(error.contains("read-only"));
         assert_eq!(fs::read(&path).expect("preserved state"), original);
     }
 
@@ -314,7 +300,7 @@ mod tests {
             .await
             .expect_err("older state must remain read-only");
 
-        assert!(error.contains("lecture seule"));
+        assert!(error.contains("read-only"));
         assert_eq!(fs::read(&path).expect("preserved state"), original);
         assert!(validate_backup_state(&original).is_err());
     }

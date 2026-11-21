@@ -10,6 +10,8 @@ const translationMock = createTranslationMock({
   'chat.renderingDiagram': 'Rendering diagram...',
   'chat.mermaidRenderError': 'Unable to render Mermaid diagram',
   'chat.mermaidDiagram': 'Mermaid diagram',
+  'chat.renderMermaidDiagram': 'Render diagram',
+  'chat.mermaidExternalResourceWarning': 'Rendering this diagram may contact external sites.',
   'chat.copied': 'Copied',
   'chat.copyCode': 'Copy code',
   'chat.hideCode': 'Hide code',
@@ -66,7 +68,7 @@ describe('MermaidRenderer security', () => {
     mock.restore();
   });
 
-  it('initializes Mermaid with strict security for rendered diagrams', async () => {
+  it('requires a click before initializing Mermaid, then keeps strict security', async () => {
     const initialize = mock(() => undefined);
     const parse = mock(async () => true);
     const render = mock(async () => ({
@@ -100,12 +102,106 @@ describe('MermaidRenderer security', () => {
       await new Promise((resolve) => setTimeout(resolve, 64));
     });
 
+    expect(container.textContent).toContain('Rendering this diagram may contact external sites.');
+    expect(initialize).not.toHaveBeenCalled();
+    expect(parse).not.toHaveBeenCalled();
+    expect(render).not.toHaveBeenCalled();
+
+    const renderButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Render diagram',
+    );
+    expect(renderButton).toBeTruthy();
+    await act(async () => { renderButton?.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 64)); });
+
     expect(initialize).toHaveBeenCalledWith(
       expect.objectContaining({
         securityLevel: 'strict',
       }),
     );
     expect(parse).toHaveBeenCalledWith('graph TD\nA-->B', { suppressErrors: true });
+    expect(render).toHaveBeenCalledTimes(1);
+  });
+
+  it('never calls Mermaid for unapproved resource syntax or URL variants', async () => {
+    const initialize = mock(() => undefined);
+    const parse = mock(async () => true);
+    const render = mock(async () => ({ svg: '<svg />' }));
+    installReactI18nextMock(translationMock);
+    globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+    mock.module('../theme/ThemeProvider', () => ({ useTheme: () => ({ isDark: false }) }));
+    mock.module('mermaid', () => ({ default: { initialize, parse, render } }));
+    const { MermaidRenderer } = await import(`./MermaidRenderer.tsx?unapproved-resources-test=${Date.now()}`);
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    const diagrams = [
+      'flowchart LR\nA@{ img: "https://tracker.example/pixel.png" }',
+      'flowchart LR\nA@{ img: "//tracker.example/pixel.png" }',
+      'flowchart LR\nA@{ img: "h&#116;tps://tracker.example/pixel.png" }',
+      '%%{init: {"themeCSS": "@import url(https://tracker.example/style.css)"}}%%\nflowchart LR\nA-->B',
+      'flowchart LR\nA["<img src=https://tracker.example/pixel.png>"]',
+    ];
+
+    for (const [index, code] of diagrams.entries()) {
+      await act(async () => { root?.render(<MermaidRenderer code={code} blockKey={index} />); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 32)); });
+      expect(container.textContent).toContain('Rendering this diagram may contact external sites.');
+    }
+
+    expect(initialize).not.toHaveBeenCalled();
+    expect(parse).not.toHaveBeenCalled();
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it('requires fresh approval after content changes or a cached diagram remounts', async () => {
+    const initialize = mock(() => undefined);
+    const parse = mock(async () => true);
+    const render = mock(async () => ({
+      svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>Cached diagram</text></svg>',
+    }));
+    installReactI18nextMock(translationMock);
+    globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+    mock.module('../theme/ThemeProvider', () => ({ useTheme: () => ({ isDark: false }) }));
+    mock.module('mermaid', () => ({ default: { initialize, parse, render } }));
+    const { MermaidRenderer } = await import(`./MermaidRenderer.tsx?remount-approval-test=${Date.now()}`);
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const originalCode = 'flowchart LR\nA-->B';
+    await act(async () => { root?.render(<MermaidRenderer code={originalCode} blockKey={1} />); });
+    const renderButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Render diagram',
+    );
+    await act(async () => { renderButton?.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 64)); });
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('Cached diagram');
+
+    await act(async () => {
+      root?.render(<MermaidRenderer code={'flowchart LR\nA@{ img: "https://tracker.example/pixel.png" }'} blockKey={1} />);
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 32)); });
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('Rendering this diagram may contact external sites.');
+    expect(container.textContent).not.toContain('Cached diagram');
+
+    await act(async () => { root?.render(<MermaidRenderer code={originalCode} blockKey={1} />); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 32)); });
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('Rendering this diagram may contact external sites.');
+    expect(container.textContent).not.toContain('Cached diagram');
+
+    await act(async () => { root?.unmount(); });
+    root = createRoot(container);
+    await act(async () => { root?.render(<MermaidRenderer code={originalCode} blockKey={2} />); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 32)); });
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('Rendering this diagram may contact external sites.');
+    expect(container.textContent).not.toContain('Cached diagram');
   });
 
   it('removes executable SVG content before injection', async () => {

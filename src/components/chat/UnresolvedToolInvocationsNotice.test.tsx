@@ -16,7 +16,7 @@ let container: HTMLDivElement;
 const invocation = (status: 'pending' | 'unknown', toolName = 'terminal_run', turnId = 'turn'): ToolInvocation => ({
   conversation_id: 'first', turn_id: turnId, message_id: 'message', call_id: toolName,
   tool_name: toolName, effect_class: 'workspace_mutation', arguments_sha256: 'secret-hash',
-  remote_execution_id: null, status, receipt_id: null, created_at: '', updated_at: '',
+  remote_execution_id: null, status, receipt_id: null, result_json: null, created_at: '', updated_at: '',
 });
 
 beforeAll(async () => {

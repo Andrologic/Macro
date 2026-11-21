@@ -1,0 +1,18 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "mcp-empty-argument",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full"
+    }
+  },
+  "mcpServers": {
+    "s": {
+      "command": [
+        "server",
+        ""
+      ]
+    }
+  }
+}

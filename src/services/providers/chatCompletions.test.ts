@@ -21,6 +21,11 @@ const loadModule = async () => {
 
   mock.module('../aiConfig', aiConfigMock);
   mock.module('../aiConfig.ts', aiConfigMock);
+  const transportMock = () => ({
+    tauriFetch: (url: string, init?: RequestInit) => globalThis.fetch(url, init),
+  });
+  mock.module('../tauriHttp', transportMock);
+  mock.module('../tauriHttp.ts', transportMock);
 
   importCounter += 1;
   return import(`./chatCompletions.ts?chat-completions-test=${importCounter}`);
@@ -87,6 +92,7 @@ describe('sendChatCompletion', () => {
       },
     });
     expect(fetchCalls[0]?.url).toBe('https://api.example.com/v1/chat/completions');
+    expect(fetchCalls[0]?.init).toMatchObject({ maxRedirections: 0 });
     expect(fetchCalls[0]?.init?.body).toBe(
       JSON.stringify({
         model: 'model-1',
@@ -162,5 +168,56 @@ describe('sendChatCompletion', () => {
         },
       },
     });
+  });
+
+  it('rejects remote HTTP before sending the provider key', async () => {
+    providerConfig = { apiKey: 'test-api-key', baseUrl: 'http://provider.example.test/v1' };
+    const { sendChatCompletion } = await loadModule();
+
+    await expect(sendChatCompletion(buildRequest())).rejects.toThrow('loopback host');
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it('rejects credentials embedded in the provider URL', async () => {
+    providerConfig = { apiKey: 'test-api-key', baseUrl: 'https://user:pass@provider.example.test/v1' };
+    const { sendChatCompletion } = await loadModule();
+
+    await expect(sendChatCompletion(buildRequest())).rejects.toThrow('must not contain credentials');
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it('does not follow a provider redirect carrying the API key', async () => {
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      return new Response('', { status: 302, headers: { location: 'https://other.example.test/' } });
+    }) as unknown as typeof fetch;
+    const { sendChatCompletion } = await loadModule();
+
+    await expect(sendChatCompletion(buildRequest())).rejects.toMatchObject({
+      code: 'CHAT_REQUEST_FAILED',
+    });
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]?.init).toMatchObject({ maxRedirections: 0 });
+  });
+
+  it('rejects oversized successful provider responses', async () => {
+    globalThis.fetch = mock(async () => new Response('x', {
+      headers: { 'content-length': String(8 * 1024 * 1024 + 1) },
+    })) as unknown as typeof fetch;
+    const { sendChatCompletion } = await loadModule();
+
+    await expect(sendChatCompletion(buildRequest())).rejects.toThrow('size limit');
+  });
+
+  it('rejects an oversized streamed response without Content-Length', async () => {
+    globalThis.fetch = mock(async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(8 * 1024 * 1024 + 1));
+        controller.close();
+      },
+    }))) as unknown as typeof fetch;
+    const { sendChatCompletion } = await loadModule();
+
+    await expect(sendChatCompletion(buildRequest())).rejects.toThrow('size limit');
   });
 });

@@ -1,0 +1,25 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "call-answer-timeout-command",
+  "agents": {
+    "dev": {
+      "harness": "example",
+      "permissions": "workspace"
+    }
+  },
+  "flow": {
+    "entry": "build",
+    "steps": {
+      "build": {
+        "type": "agent",
+        "agent": "dev",
+        "next": "tests"
+      },
+      "tests": {
+        "type": "call",
+        "command": "npm test",
+        "answerTimeoutMs": 600000
+      }
+    }
+  }
+}

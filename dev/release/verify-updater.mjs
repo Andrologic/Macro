@@ -131,7 +131,7 @@ function configuredUpdaterPublicKey(tauriConfigPath) {
   return publicKey.trim();
 }
 
-function verifyMinisignAssets(assetPairs, publicKey) {
+function verifyMinisignAssets(assetPairs, publicKey, version) {
   const args = [
     'run',
     '--quiet',
@@ -141,6 +141,8 @@ function verifyMinisignAssets(assetPairs, publicKey) {
     '--',
     '--public-key-b64',
     publicKey,
+    '--version',
+    version,
   ];
   for (const pair of assetPairs) {
     args.push('--asset', pair.assetPath, '--signature', pair.signaturePath);
@@ -198,7 +200,7 @@ export function verifyLocalUpdaterAssets(
 
   if (assetPairs.length === UPDATER_TARGETS.length) {
     try {
-      verifyMinisignAssets(assetPairs, publicKey ?? configuredUpdaterPublicKey(tauriConfigPath));
+      verifyMinisignAssets(assetPairs, publicKey ?? configuredUpdaterPublicKey(tauriConfigPath), manifest.version);
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
     }

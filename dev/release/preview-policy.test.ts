@@ -68,12 +68,16 @@ describe('preview publication policy', () => {
     })).toThrow('another commit');
   });
 
-  test('requires a complete remote state when a Preview release exists', () => {
+  test.each(['main', 'develop'])('reads published Preview state from %s', (branch) => {
     const assets = expectedPreviewAssetNames('0.2.0-rc.1').map((name) => ({ name }));
     expect(readPublishedPreviewState({
-      release: { body: `Macro 0.2.0-rc.1 is a validated rc build from develop.\n<!-- source-sha:${SHA_A} -->`, assets },
+      release: { body: `Macro 0.2.0-rc.1 is a validated rc build from ${branch}.\n<!-- source-sha:${SHA_A} -->`, assets },
       manifest: validManifest('0.2.0-rc.1'),
     })).toEqual({ version: '0.2.0-rc.1', sourceSha: SHA_A, assetNames: assets.map(({ name }) => name) });
+  });
+
+  test('requires a complete remote state when a Preview release exists', () => {
+    const assets = expectedPreviewAssetNames('0.2.0-rc.1').map((name) => ({ name }));
     expect(() => readPublishedPreviewState({
       release: { body: `Macro 0.2.0-rc.1 is a validated rc build from develop.\n<!-- source-sha missing -->`, assets },
       manifest: validManifest('0.2.0-rc.1'),

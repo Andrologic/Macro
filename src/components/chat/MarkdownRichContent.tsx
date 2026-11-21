@@ -1,6 +1,9 @@
+import { PROVIDER_ERROR_BLOCK_LANGUAGE, parseProviderErrorBlock } from '../../services/chatErrorPresentation';
+import { ProviderErrorNotice } from './ProviderErrorNotice';
+import { COMPOSER_REFERENCE_PATTERN } from "../../services/chat/composerReferenceText";
 import React, { Suspense, lazy, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -55,8 +58,7 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   mysql: 'sql',
 };
 
-const MARKDOWN_CONTEXT_MENTION_PATTERN =
-  /\[(skill|file|source|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
+const MARKDOWN_CONTEXT_MENTION_PATTERN = COMPOSER_REFERENCE_PATTERN;
 
 let blockKeySeed = 0;
 
@@ -266,7 +268,8 @@ const normalizeContextKind = (kind: string): ContextRefKind => {
     normalized === 'source' ||
     normalized === 'conversation' ||
     normalized === 'plan-node' ||
-    normalized === 'predicted-branch'
+    normalized === 'predicted-branch' ||
+    normalized === 'agsdl'
   ) {
     return normalized;
   }
@@ -427,6 +430,11 @@ const MarkdownCode: NonNullable<Components['code']> = ({ className, children, ..
     );
   }
 
+  if (language.toLowerCase() === PROVIDER_ERROR_BLOCK_LANGUAGE) {
+    const presentation = parseProviderErrorBlock(codeText);
+    if (presentation) return <ProviderErrorNotice presentation={presentation} />;
+  }
+
   if (language.toLowerCase() === 'thinking') {
     return <div className="whitespace-pre-wrap text-sm text-muted-foreground">{codeText}</div>;
   }
@@ -473,11 +481,86 @@ export const isMarkdownVideo = (
 const normalizeMediaLabel = (alt: string | null | undefined): string =>
   alt?.replace(/^video:\s*/i, '').trim() ?? '';
 
-const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }) => {
+const MARKDOWN_MEDIA_BASE_URL = 'https://macro-local.invalid/';
+const MARKDOWN_MEDIA_BASE_ORIGIN = new URL(MARKDOWN_MEDIA_BASE_URL).origin;
+
+const getRemoteMediaHost = (src: string): string | null => {
+  try {
+    const resolved = new URL(src, MARKDOWN_MEDIA_BASE_URL);
+    const hasScheme = /^[a-z][a-z\d+.-]*:/i.test(src.trim());
+    if (!hasScheme && resolved.origin === MARKDOWN_MEDIA_BASE_ORIGIN) return null;
+    const url = hasScheme ? new URL(src) : resolved;
+    return url.hostname || url.protocol.slice(0, -1);
+  } catch {
+    return '';
+  }
+};
+
+interface MarkdownMediaProps {
+  src: string;
+  alt?: string;
+  title?: string;
+}
+
+const MarkdownMedia: React.FC<MarkdownMediaProps> = ({ src, alt, title }) => {
   const { t } = useTranslation();
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const isVideo = isMarkdownVideo(src, alt);
+  const label = normalizeMediaLabel(alt);
+  const caption = title?.trim() || (isVideo ? label : '');
+  const remoteHost = getRemoteMediaHost(src);
+  const showMedia = remoteHost === null || loadedSrc === src;
+  const sourceLabel = remoteHost || t('markdown.unknownSource', 'an unknown source');
+
+  return (
+    <span className="my-5 block overflow-hidden rounded-xl border border-border bg-background/65 shadow-sm">
+      {showMedia ? (
+        isVideo ? (
+          <video
+            src={src}
+            aria-label={label || t('markdown.video', 'Video')}
+            controls
+            playsInline
+            preload="metadata"
+            className="block max-h-[min(62vh,620px)] w-full bg-black object-contain"
+          />
+        ) : (
+          <img
+            src={src}
+            alt={label}
+            title={title}
+            loading="lazy"
+            decoding="async"
+            className="block max-h-[min(62vh,620px)] w-full object-contain"
+          />
+        )
+      ) : (
+        <button
+          type="button"
+          onClick={() => setLoadedSrc(src)}
+          className="block w-full px-3 py-4 text-center text-xs text-primary hover:bg-accent/50 hover:underline"
+        >
+          {isVideo
+            ? t('markdown.loadRemoteVideo', 'Load video from {{host}}', { host: sourceLabel })
+            : t('markdown.loadRemoteImage', 'Load image from {{host}}', { host: sourceLabel })}
+        </button>
+      )}
+      {caption ? (
+        <span className="block border-t border-border px-3 py-2 text-center text-xs text-muted-foreground">
+          {caption}
+        </span>
+      ) : null}
+    </span>
+  );
+};
+
+const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }) => {
   const normalizedContent = useMemo(() => normalizeLatexBracketMath(content), [content]);
   const components = useMemo<Components>(() => ({
     a: ({ href, children, ...props }) => {
+      if (href?.startsWith('macro-context://')) {
+        return <>{renderContextMentionsInText(`[${getTextFromChildren(children)}]`, 'reference')}</>;
+      }
       const domProps = omitMarkdownDomProps(props);
       return (
         <a
@@ -493,38 +576,7 @@ const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }
     },
     img: ({ src, alt, title }) => {
       if (!src) return null;
-
-      const label = normalizeMediaLabel(alt);
-      const caption = title?.trim() || (isMarkdownVideo(src, alt) ? label : '');
-
-      return (
-        <span className="my-5 block overflow-hidden rounded-xl border border-border bg-background/65 shadow-sm">
-          {isMarkdownVideo(src, alt) ? (
-            <video
-              src={src}
-              aria-label={label || t('markdown.video', 'Video')}
-              controls
-              playsInline
-              preload="metadata"
-              className="block max-h-[min(62vh,620px)] w-full bg-black object-contain"
-            />
-          ) : (
-            <img
-              src={src}
-              alt={label}
-              title={title}
-              loading="lazy"
-              decoding="async"
-              className="block max-h-[min(62vh,620px)] w-full object-contain"
-            />
-          )}
-          {caption ? (
-            <span className="block border-t border-border px-3 py-2 text-center text-xs text-muted-foreground">
-              {caption}
-            </span>
-          ) : null}
-        </span>
-      );
+      return <MarkdownMedia src={src} alt={alt} title={title} />;
     },
     p: ({ className: paragraphClassName, children, ...props }) => {
       const domProps = omitMarkdownDomProps(props);
@@ -629,10 +681,11 @@ const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }
       }
       return <input {...domProps} type={type} className={inputClassName} />;
     },
-  }), [t]);
+  }), []);
 
   return (
     <ReactMarkdown
+      urlTransform={(url) => url.startsWith('macro-context://') ? url : defaultUrlTransform(url)}
       remarkPlugins={[remarkGfm, remarkMath]}
       rehypePlugins={[rehypeKatex]}
       skipHtml

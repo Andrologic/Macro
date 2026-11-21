@@ -1,16 +1,13 @@
-//! Development-only benchmark compiling the actual private database modules.
-//! No Tauri app, global config manager, secrets initialization or provider calls.
-#![allow(dead_code, unused_imports)]
-#[path = "../src/db/mod.rs"]
-mod db;
-#[path = "../src/ai/macro_ai.rs"]
-pub mod macro_ai;
-mod ai {
-    pub use crate::macro_ai;
-}
-#[path = "../src/secrets/mod.rs"]
-mod secrets;
-pub use macro_lib::config;
+//! Development-only SQLite benchmark using the application's repository.
+use crate::db;
+
+#[path = "performance-sqlite/contracts.rs"]
+mod contracts;
+#[path = "performance-sqlite/diagnostics.rs"]
+mod diagnostics;
+
+#[path = "performance-sqlite/content_baseline.rs"]
+mod content_baseline;
 
 use db::models::{CreateConversationInput, CreateMessageInput, ImportMessageInput};
 use db::repository;
@@ -91,7 +88,7 @@ fn append_content(i: usize) -> String {
     format!("{:<256}", format!("synthetic append {i:06}"))
 }
 
-async fn run_case(size: usize) -> Result<Value> {
+async fn run_case(size: usize, diagnostics_mode: bool) -> Result<Value> {
     let directory = tempfile::Builder::new()
         .prefix("macro-native-perf-")
         .tempdir()?;
@@ -102,7 +99,7 @@ async fn run_case(size: usize) -> Result<Value> {
     let started = Instant::now();
     let pool = db::create_pool(&path).await?;
     let migration_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let outcome = measure_case(&pool, &path, size, migration_ms).await;
+    let outcome = measure_case(&pool, &path, size, migration_ms, diagnostics_mode).await;
     finish_case(pool, directory, outcome).await
 }
 
@@ -125,6 +122,7 @@ async fn measure_case(
     path: &Path,
     size: usize,
     migration_ms: f64,
+    diagnostics_mode: bool,
 ) -> Result<Value> {
     assert_path(pool, path).await?;
     if assert_path(pool, path.parent().ok_or("Missing fixture parent")?)
@@ -149,7 +147,16 @@ async fn measure_case(
         sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
             .fetch_all(pool)
             .await?;
-    if !migrations.contains(&5) || journal != "wal" || synchronous != 1 || foreign_keys != 1 {
+    // Migration 2 is accepted on existing databases and skipped on fresh ones.
+    let fresh_migrations = db::SUPPORTED_MIGRATION_VERSIONS
+        .iter()
+        .copied()
+        .filter(|&version| version != 2);
+    if !migrations.iter().copied().eq(fresh_migrations)
+        || journal != "wal"
+        || synchronous != 1
+        || foreign_keys != 1
+    {
         return Err("Unexpected database runtime settings".into());
     }
     let conversation = repository::create_conversation(
@@ -184,42 +191,64 @@ async fn measure_case(
         return Err("Seed import mismatch".into());
     }
     verify(pool, &conversation.id, size).await?;
+    let diagnostics = if diagnostics_mode {
+        Some(diagnostics::measure(pool, &conversation.id, size).await?)
+    } else {
+        None
+    };
     let mut reads = Vec::new();
-    for i in 0..WARMUP + SAMPLES {
-        let start = Instant::now();
-        let messages = repository::list_messages(pool, &conversation.id).await?;
-        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-        if messages.len() != size {
-            return Err("Read fixture changed".into());
-        }
-        std::hint::black_box(&messages);
-        if i >= WARMUP {
-            reads.push(elapsed);
+    let mut serialization = Vec::new();
+    let mut payload_bytes = 0;
+    if !diagnostics_mode {
+        for i in 0..WARMUP + SAMPLES {
+            let start = Instant::now();
+            let messages = repository::list_messages(pool, &conversation.id).await?;
+            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+            if messages.len() != size {
+                return Err("Read fixture changed".into());
+            }
+            let start = Instant::now();
+            let serialized = serde_json::to_vec(&messages)?;
+            let serialization_ms = start.elapsed().as_secs_f64() * 1000.0;
+            payload_bytes = serialized.len();
+            let decoded: Vec<db::models::Message> = serde_json::from_slice(&serialized)?;
+            if decoded.len() != size
+                || decoded.first().map(|m| &m.content) != messages.first().map(|m| &m.content)
+            {
+                return Err("Serialized fixture mismatch".into());
+            }
+            std::hint::black_box(&serialized);
+            if i >= WARMUP {
+                reads.push(elapsed);
+                serialization.push(serialization_ms);
+            }
         }
     }
     let mut writes = Vec::new();
-    for i in 0..WARMUP + SAMPLES {
-        let input = CreateMessageInput {
-            id: Some(format!("append-{i:06}")),
-            conversation_id: conversation.id.clone(),
-            turn_id: None,
-            role: "assistant".into(),
-            content: append_content(i),
-            token_count: None,
-            tool_traces_json: None,
-            hidden_context: None,
-            provider_input_items_json: None,
-            provider_turn_state_json: None,
-            context_refs_json: None,
-            completion_reason: None,
-            generation_attempts_json: None,
-        };
-        let start = Instant::now();
-        let message = repository::create_message(pool, input).await?;
-        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-        std::hint::black_box(message);
-        if i >= WARMUP {
-            writes.push(elapsed);
+    if !diagnostics_mode {
+        for i in 0..WARMUP + SAMPLES {
+            let input = CreateMessageInput {
+                id: Some(format!("append-{i:06}")),
+                conversation_id: conversation.id.clone(),
+                turn_id: None,
+                role: "assistant".into(),
+                content: append_content(i),
+                token_count: None,
+                tool_traces_json: None,
+                hidden_context: None,
+                provider_input_items_json: None,
+                provider_turn_state_json: None,
+                context_refs_json: None,
+                completion_reason: None,
+                generation_attempts_json: None,
+            };
+            let start = Instant::now();
+            let message = repository::create_message(pool, input).await?;
+            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+            std::hint::black_box(message);
+            if i >= WARMUP {
+                writes.push(elapsed);
+            }
         }
     }
     let final_count = size + WARMUP + SAMPLES;
@@ -249,7 +278,11 @@ async fn measure_case(
     Ok(
         json!({"initial_messages":size, "message_bytes":CONTENT.len(), "read_messages":size,
         "write_start_messages":size+WARMUP, "final_messages":final_count,
-        "read":summary(reads), "create_message_commit":summary(writes),
+        "read":if diagnostics_mode { Value::Null } else { summary(reads) },
+        "serialize_messages_json":if diagnostics_mode { Value::Null } else { summary(serialization) },
+        "serialized_messages_json_bytes":payload_bytes,
+        "create_message_commit":if diagnostics_mode { Value::Null } else { summary(writes) },
+        "diagnostics":diagnostics,
         "fresh_pool_and_migrations_ms":migration_ms, "reopen_pool_and_migrations_ms":reopen_ms,
         "sqlite_version":sqlite_version, "migrations":migrations,
         "pragmas":{"journal_mode":journal,"synchronous":synchronous,"foreign_keys":foreign_keys},
@@ -271,7 +304,9 @@ async fn self_test() -> Result<()> {
         .prefix("macro-native-perf-failure-")
         .tempdir()?;
     let owned_path = directory.path().to_owned();
-    let pool = db::create_pool(&owned_path.join("fixture.db")).await?;
+    let path = owned_path.join("fixture.db");
+    let pool = db::create_pool(&path).await?;
+    assert_path(&pool, &path).await?;
     let failure = finish_case(pool, directory, Err("Synthetic failure".into())).await;
     assert!(failure.is_err());
     assert!(!owned_path.exists());
@@ -281,7 +316,7 @@ async fn self_test() -> Result<()> {
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn main() -> Result<()> {
+pub async fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--build-identity"] {
         println!(
@@ -293,25 +328,46 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
-    if !args.is_empty() && args != ["--self-test"] {
-        return Err("Only --self-test is supported".into());
+    if args == ["--content-baseline"] || args == ["--content-baseline", "--pilot"] {
+        self_test().await?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&content_baseline::run(args.len() == 2).await?)?
+        );
+        return Ok(());
+    }
+    if !args.is_empty() && args != ["--self-test"] && args != ["--diagnostics"] {
+        return Err("Only --self-test or --diagnostics is supported".into());
     }
     self_test().await?;
-    let sizes: &[usize] = if args.is_empty() {
+    let contract_checks = if args == ["--self-test"] {
+        Some(contracts::run().await?)
+    } else {
+        None
+    };
+    let diagnostics_mode = args == ["--diagnostics"];
+    let diagnostic_smoke = if args == ["--self-test"] {
+        Some(run_case(3, true).await?)
+    } else {
+        None
+    };
+    let sizes: &[usize] = if args != ["--self-test"] {
         &[100, 1_000, 10_000]
     } else {
         &[3]
     };
     let mut cases = Vec::new();
     for &size in sizes {
-        cases.push(run_case(size).await?);
+        cases.push(run_case(size, diagnostics_mode).await?);
     }
     println!(
         "{}",
-        serde_json::to_string_pretty(&json!({"schema":1,
+        serde_json::to_string_pretty(
+            &json!({"schema":2,"contract_checks":contract_checks,"diagnostic_smoke":diagnostic_smoke,
         "boundary":"in-process Rust repository -> SQLx -> on-disk SQLite; no transport",
         "build_profile":"debug", "warmup":WARMUP, "samples":SAMPLES, "percentile":"nearest-rank",
-        "cold_disk_cache":false, "power_loss_tested":false, "cases":cases}))?
+        "cold_disk_cache":false, "power_loss_tested":false, "cases":cases})
+        )?
     );
     Ok(())
 }

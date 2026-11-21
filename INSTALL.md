@@ -11,10 +11,11 @@ Open the latest GitHub release:
 https://github.com/Andrologic/Macro/releases/latest
 
 For the 0.1 release line, support is focused on the desktop workflow.
-Stable GitHub releases include a universal macOS DMG, a Windows NSIS installer,
-Linux AppImage/deb/rpm packages, checksums, and GitHub source archives. The
-macOS package is signed, notarized, and runs on Apple Silicon and Intel Macs.
-The Windows installer is Authenticode-signed, and the Linux packages are smoke
+Stable GitHub releases include a universal macOS DMG, Windows x64 and ARM64 NSIS
+installers, Linux AppImage/deb/rpm packages, checksums, and GitHub source archives.
+The macOS package is signed, notarized, and runs on Apple Silicon and Intel Macs.
+The Windows installers are intentionally not Authenticode-signed. Their Tauri
+updater artifacts are cryptographically signed. The Linux packages are smoke
 tested on the release runner before their checksums are generated.
 
 After installing, configure your AI providers from the app settings. Macro does
@@ -28,7 +29,7 @@ configured provider.
 - [Bun](https://bun.sh) 1.3.14, pinned by `package.json` and the release workflow.
 - [Rust](https://rustup.rs/) with Cargo, installed through `rustup`.
 - Tauri system dependencies for your operating system.
-- Python only if you need to run `bun run i18n:generate`.
+- Python 3 only if you need to run `bun run i18n:generate`.
 
 ### Platform Dependencies
 

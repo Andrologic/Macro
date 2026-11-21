@@ -1,3 +1,4 @@
+import { normalizePlanIcon } from './planIcon';
 import type { PlanNode, PredictedBranch, ProjectGitFlowSettings } from '../types';
 import * as tauriIpc from './tauriIpc';
 import { devLogger } from '../utils/devLogger';
@@ -120,10 +121,12 @@ export interface ArchitectPlanChatMessage {
 }
 
 export interface ArchitectPlanRecord {
+  agsdl?: import('../types/agsdl').AgsdlEditorDocument;
   id: string;
   slug: string;
   title: string;
   label?: string;
+  icon?: string;
   description: string;
   planKind?: ArchitectPlanKind;
   gitFlowPlan?: ArchitectPlanGitFlowMetadata;
@@ -152,10 +155,12 @@ export interface ArchitectPlanRecord {
 }
 
 export interface ArchitectPlanSummary {
+  hasAgsdl?: boolean;
   id: string;
   slug: string;
   title: string;
   label?: string;
+  icon?: string;
   description: string;
   planKind?: ArchitectPlanKind;
   gitFlowPlan?: ArchitectPlanGitFlowMetadata;
@@ -376,6 +381,7 @@ export const planRecordFromActivationSummary = (
     slug: summary.slug,
     title: summary.title,
     label: summary.label,
+    icon: normalizePlanIcon(summary.icon),
     description: summary.description,
     planKind: summary.planKind,
     gitFlowPlan: summary.gitFlowPlan,
@@ -1670,6 +1676,7 @@ export const sanitizeArchitectPlanRecord = (
     slug: normalizedSlug,
     title: normalizedTitle,
     label: normalizePlanLabel(plan.label),
+    icon: normalizePlanIcon(plan.icon),
     planKind: normalizedPlanKind,
     gitFlowPlan: normalizeArchitectPlanGitFlowMetadata({
       planKind: normalizedPlanKind,
@@ -1835,6 +1842,7 @@ export const sanitizeArchitectPlanSummary = (
     slug: normalizedSlug,
     title: normalizedTitle,
     label: normalizePlanLabel(summary.label),
+    icon: normalizePlanIcon(summary.icon),
     planKind: normalizedPlanKind,
     gitFlowPlan: normalizeArchitectPlanGitFlowMetadata({
       planKind: normalizedPlanKind,
@@ -2018,6 +2026,7 @@ export const buildReplicaComparableSummary = (summary: ArchitectPlanSummary): un
   slug: summary.slug,
   title: summary.title,
   label: summary.label,
+  icon: normalizePlanIcon(summary.icon),
   description: summary.description,
   planKind: summary.planKind,
   gitFlowPlan: summary.gitFlowPlan,
@@ -2033,6 +2042,7 @@ export const buildReplicaComparableSummary = (summary: ArchitectPlanSummary): un
   projectIds: summary.projectIds,
   contextProjectIds: summary.contextProjectIds,
   createdAt: summary.createdAt,
+  hasAgsdl: summary.hasAgsdl === true,
   nodeCount: summary.nodeCount,
   predictedBranchCount: summary.predictedBranchCount,
   expectedProjectIds: summary.expectedProjectIds,
@@ -2079,6 +2089,7 @@ export const toSummary = (
     slug: plan.slug,
     title: plan.title,
     label: plan.label,
+    icon: normalizePlanIcon(plan.icon),
     description: plan.description,
     planKind: getArchitectPlanKind(plan),
     gitFlowPlan: plan.gitFlowPlan,
@@ -2097,6 +2108,7 @@ export const toSummary = (
     createdAt: plan.createdAt,
     updatedAt: plan.updatedAt,
     revision: typeof plan.revision === 'number' ? plan.revision : 1,
+    hasAgsdl: Boolean(plan.agsdl),
     nodeCount: plan.nodes.length,
     predictedBranchCount: plan.predictedBranches.length,
     chatMessageCount: options?.chatMessageCount,

@@ -1,3 +1,4 @@
+use super::manager::ReloadOutcome;
 use super::{
     ConfigApiError, ConfigChangeSource, ConfigDocument, ConfigDocumentKind, ConfigManager,
     ConfigPatchRequest, ConfigPatchResult, ConfigScope, ConfigSnapshot, ConfigValidationResult,
@@ -81,6 +82,9 @@ fn referenced_secret_ids(documents: &[Value]) -> (BTreeSet<String>, BTreeSet<Str
             }
         }
     }
+    // The registered controlled Claude engine consumes this reserved secret
+    // without creating an HTTP provider document.
+    api_keys.insert("claude-native".into());
     (api_keys, sessions)
 }
 
@@ -89,12 +93,14 @@ pub async fn list_orphan_secrets(
 ) -> Result<Vec<OrphanSecretDto>, ConfigApiError> {
     let documents = manager.secret_reference_documents().await;
     let (api_keys, sessions) = referenced_secret_ids(&documents);
-    let entries = crate::secrets::list_secret_metadata().map_err(|error| ConfigApiError {
-        code: "config.secrets.read_failed".to_string(),
-        message: format!("Impossible de lire les métadonnées des secrets : {error}"),
-        document: None,
-        diagnostics: Vec::new(),
-    })?;
+    let entries = crate::secrets::list_secret_metadata_async()
+        .await
+        .map_err(|error| ConfigApiError {
+            code: "config.secrets.read_failed".to_string(),
+            message: format!("Failed to read secret metadata: {error}"),
+            document: None,
+            diagnostics: Vec::new(),
+        })?;
     Ok(entries
         .into_iter()
         .filter(|entry| {
@@ -130,6 +136,23 @@ pub struct DeleteOrphanSecretRequest {
     secret_type: String,
 }
 
+#[cfg(test)]
+static ORPHAN_DELETE_PAUSE: std::sync::Mutex<
+    Option<(
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    )>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+async fn pause_before_orphan_delete() {
+    let pause = ORPHAN_DELETE_PAUSE.lock().unwrap().take();
+    if let Some((reached, release)) = pause {
+        let _ = reached.send(());
+        let _ = release.await;
+    }
+}
+
 pub async fn delete_orphan_secret(
     manager: &ConfigManager,
     request: DeleteOrphanSecretRequest,
@@ -137,32 +160,37 @@ pub async fn delete_orphan_secret(
     if !matches!(request.secret_type.as_str(), "apiKey" | "chatgptSession") {
         return Err(ConfigApiError {
             code: "config.secrets.invalid_type".to_string(),
-            message: "Le type de secret à supprimer est invalide.".to_string(),
+            message: "Invalid secret type for deletion.".to_string(),
             document: None,
             diagnostics: Vec::new(),
         });
     }
     let _reference_guard = manager.lock_secret_references().await;
-    let is_orphan = list_orphan_secrets(manager)
-        .await?
-        .into_iter()
-        .any(|entry| entry.id == request.id && entry.secret_type == request.secret_type);
-    if !is_orphan {
-        return Err(ConfigApiError {
-            code: "config.secrets.not_orphan".to_string(),
-            message: "Ce secret est encore utilisé ou n’existe plus.".to_string(),
-            document: None,
-            diagnostics: Vec::new(),
-        });
-    }
-    crate::secrets::delete_secret_metadata(&request.id, &request.secret_type).map_err(|error| {
-        ConfigApiError {
-            code: "config.secrets.delete_failed".to_string(),
-            message: format!("Impossible de supprimer le secret orphelin : {error}"),
-            document: None,
-            diagnostics: Vec::new(),
+    crate::secrets::blocking::with_guard(_reference_guard, async {
+        let is_orphan = list_orphan_secrets(manager)
+            .await?
+            .into_iter()
+            .any(|entry| entry.id == request.id && entry.secret_type == request.secret_type);
+        if !is_orphan {
+            return Err(ConfigApiError {
+                code: "config.secrets.not_orphan".to_string(),
+                message: "This secret is still in use or no longer exists.".to_string(),
+                document: None,
+                diagnostics: Vec::new(),
+            });
         }
+        #[cfg(test)]
+        pause_before_orphan_delete().await;
+        crate::secrets::delete_secret_metadata_async(&request.id, &request.secret_type)
+            .await
+            .map_err(|error| ConfigApiError {
+                code: "config.secrets.delete_failed".to_string(),
+                message: format!("Failed to delete orphan secret: {error}"),
+                document: None,
+                diagnostics: Vec::new(),
+            })
     })
+    .await
 }
 
 #[tauri::command]
@@ -177,8 +205,14 @@ pub async fn config_delete_orphan_secret(
 pub async fn config_get_snapshot(
     manager: State<'_, ConfigManager>,
     project_ids: Option<Vec<String>>,
+    observe_only: Option<bool>,
 ) -> Result<ConfigSnapshot, ConfigApiError> {
-    manager.get_snapshot(&project_ids.unwrap_or_default()).await
+    let project_ids = project_ids.unwrap_or_default();
+    if observe_only.unwrap_or(false) {
+        manager.get_loaded_snapshot(&project_ids).await
+    } else {
+        manager.get_snapshot(&project_ids).await
+    }
 }
 
 #[tauri::command]
@@ -249,25 +283,29 @@ pub async fn config_reload(
     kind: ConfigDocumentKind,
     scope: Option<ConfigScope>,
 ) -> Result<ConfigDocument, ConfigApiError> {
-    let outcome = manager
-        .reload(
-            kind,
-            scope.unwrap_or_default(),
-            ConfigChangeSource::UserInterface,
-        )
-        .await?;
+    let outcome = reload_config_from_disk(&manager, kind, scope.unwrap_or_default()).await?;
     if outcome.invalid {
         let _ = app.emit(EVENT_INVALID, &outcome.document);
+    } else if let Some(pending) = &outcome.pending {
+        let _ = app.emit(EVENT_PENDING, pending);
     } else if outcome.changed {
         let _ = app.emit(EVENT_CHANGED, &outcome.document);
-    }
-    if let Some(pending) = &outcome.pending {
-        let _ = app.emit(EVENT_PENDING, pending);
     }
     if outcome.restart_required {
         let _ = app.emit(EVENT_RESTART, &outcome.document);
     }
     Ok(outcome.document)
+}
+
+async fn reload_config_from_disk(
+    manager: &ConfigManager,
+    kind: ConfigDocumentKind,
+    scope: ConfigScope,
+) -> Result<ReloadOutcome, ConfigApiError> {
+    // A reload observes bytes on disk. Clicking Reload does not authorize those bytes.
+    manager
+        .reload(kind, scope, ConfigChangeSource::ExternalEditor)
+        .await
 }
 
 #[tauri::command]
@@ -290,7 +328,7 @@ pub async fn config_open_directory(
         .open_path(target.to_string_lossy().to_string(), None::<&str>)
         .map_err(|error| ConfigApiError {
             code: "config.directory.open_failed".to_string(),
-            message: format!("Impossible d’ouvrir le dossier de configuration : {error}"),
+            message: format!("Failed to open configuration directory: {error}"),
             document: None,
             diagnostics: Vec::new(),
         })?;
@@ -362,9 +400,40 @@ pub fn config_validate(
 pub async fn config_patch(
     app: AppHandle,
     manager: State<'_, ConfigManager>,
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     mut request: ConfigPatchRequest,
 ) -> Result<ConfigPatchResult, ConfigApiError> {
     request.source = ConfigChangeSource::Agent;
+    if let Some(admission) = chat_admission {
+        let admission_error = |message: String| ConfigApiError {
+            code: "CHAT_ADMISSION_REFUSED".into(),
+            message,
+            document: None,
+            diagnostics: Vec::new(),
+        };
+        let (reservation, work) = crate::commands::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await
+        .map_err(|error| admission_error(error.message))?;
+        let manager = manager.inner().clone();
+        let received = reservation
+            .spawn_tool(work, move |_cancel| async move {
+                // The configuration owner's file transactions run to completion;
+                // dropping the browser waiter never detaches this writer.
+                let result = manager.apply_patch(request).await?;
+                emit_patch_events(&app, &result);
+                Ok::<_, ConfigApiError>(result)
+            })
+            .map_err(admission_error)?;
+        return received.await.map_err(admission_error)?;
+    }
     let result = manager.apply_patch(request).await?;
     emit_patch_events(&app, &result);
     Ok(result)
@@ -386,6 +455,38 @@ mod tests {
     use super::*;
     use crate::config::JsonPatchOperation;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn reload_command_keeps_external_tool_policy_change_pending() {
+        let temp = tempfile::tempdir().expect("temporary config root");
+        let manager = ConfigManager::initialize(temp.path().join("config"))
+            .await
+            .expect("config manager");
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+            .await
+            .expect("tools document");
+        let mut external = document.value;
+        external["builtIn"] = json!({"terminal_run": false});
+        std::fs::write(&document.file_path, serde_json::to_vec(&external).unwrap())
+            .expect("external editor writes tools document");
+
+        let outcome =
+            reload_config_from_disk(&manager, ConfigDocumentKind::Tools, ConfigScope::User)
+                .await
+                .expect("reload external file");
+
+        let pending = outcome.pending.expect("sensitive change stays pending");
+        assert_eq!(pending.source, ConfigChangeSource::ExternalEditor);
+        assert!(pending
+            .changed_paths
+            .contains(&"/builtIn/terminal_run".to_string()));
+        assert!(
+            manager.get_snapshot(&[]).await.unwrap().effective["tools"]["builtIn"]["terminal_run"]
+                .is_null()
+        );
+        assert_eq!(manager.list_pending_changes().await[0].id, pending.id);
+    }
 
     #[test]
     fn project_and_pending_documents_keep_referenced_secrets_alive() {
@@ -414,6 +515,85 @@ mod tests {
         assert!(api_keys.contains("speech-provider:dictation"));
         assert!(api_keys.contains("speech:dictation"));
         assert!(api_keys.contains("web-search:brave"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_orphan_delete_keeps_real_reference_authority_through_the_write() {
+        use fs2::FileExt;
+        let _serial = crate::secrets::lock_test_store();
+        let directory = tempfile::tempdir().unwrap();
+        crate::secrets::init(directory.path()).unwrap();
+        let manager = ConfigManager::initialize(directory.path().join("config"))
+            .await
+            .unwrap();
+        let id = build_mcp_oauth_client_secret_id("synthetic-orphan");
+        crate::secrets::set_api_key(&id, "synthetic-preserved").unwrap();
+        let (reached, started) = tokio::sync::oneshot::channel();
+        let (release, resume) = tokio::sync::oneshot::channel();
+        *ORPHAN_DELETE_PAUSE.lock().unwrap() = Some((reached, resume));
+        let caller = {
+            let manager = manager.clone();
+            let id = id.clone();
+            tokio::spawn(async move {
+                delete_orphan_secret(
+                    &manager,
+                    DeleteOrphanSecretRequest {
+                        id,
+                        secret_type: "apiKey".into(),
+                    },
+                )
+                .await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(3), started)
+            .await
+            .unwrap()
+            .unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(directory.path().join("provider-secrets.lock"))
+            .unwrap();
+        file.lock_exclusive().unwrap();
+        let before = std::fs::read(directory.path().join("provider-secrets.json")).unwrap();
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while crate::secrets::policy::POLICY.pending_for_test() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        let mut reader = Box::pin(manager.lock_mcp_runtime_configuration());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), &mut reader)
+                .await
+                .is_err()
+        );
+        let mut writer = Box::pin(manager.lock_secret_references());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), &mut writer)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("provider-secrets.json")).unwrap(),
+            before
+        );
+        FileExt::unlock(&file).unwrap();
+        let guard = tokio::time::timeout(std::time::Duration::from_secs(3), reader)
+            .await
+            .unwrap();
+        assert!(crate::secrets::get_api_key(&id).unwrap().is_none());
+        drop(guard);
+        drop(
+            tokio::time::timeout(std::time::Duration::from_secs(3), writer)
+                .await
+                .unwrap(),
+        );
+        crate::secrets::blocking::join_test_jobs().await;
     }
 
     #[tokio::test]

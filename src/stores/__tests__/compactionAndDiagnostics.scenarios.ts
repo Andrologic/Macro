@@ -1426,6 +1426,88 @@ export const registerCompactionAndDiagnosticsScenarios = (
       ]);
     });
 
+    for (const previousStatus of [null, { phase: 'safety_compacting' as const }, { phase: 'compacted' as const, summaryText: 'Previous summary' }]) {
+      it(`clears safety compaction on Stop after previous phase ${previousStatus?.phase ?? 'idle'}`, async () => {
+        appState.mode = 'Chat';
+        appState.selectedGroupId = null;
+        appState.selectedProjectId = null;
+        localStorage.setItem('macro_compaction.auto', JSON.stringify(false));
+        localStorage.setItem('macro_compaction.prune', JSON.stringify(false));
+        localStorage.setItem('macro_compaction.reservedTokens', JSON.stringify(0));
+        providerState.modelsByProvider = {
+          'provider-1': [
+            {
+              id: 'model-1',
+              name: 'Small context model',
+              isEnabled: true,
+              contextWindowTokens: 8000,
+              outputLimitTokens: 1200,
+            } as never,
+          ],
+        };
+        const summaryDeferred = createDeferred<string>();
+        queueSendChatNonStreamingImplementation(async () => summaryDeferred.promise);
+
+        const { useChatStore } = await loadChatStore();
+        const oldContext = 'ancien contexte utile\n'.repeat(5000);
+        const messages = [
+          {
+            id: 'u1',
+            task_id: '',
+            conversation_id: 'chat-conv',
+            role: 'user' as const,
+            content: `Analyse ce gros historique.\n${oldContext}`,
+            timestamp: '2026-04-14T10:00:00.000Z',
+          },
+          {
+            id: 'a1',
+            task_id: '',
+            conversation_id: 'chat-conv',
+            role: 'assistant' as const,
+            content: `Historique analysé.\n${oldContext}`,
+            timestamp: '2026-04-14T10:01:00.000Z',
+          },
+        ];
+        useChatStore.setState(createIdleChatStoreState({
+          conversations: [
+            {
+              ...createConversation('chat-conv', ''),
+              message_count: messages.length,
+            },
+          ],
+          messages,
+          selectedConversationId: 'chat-conv',
+          selectedConversationIdsByMode: { Chat: 'chat-conv' },
+          conversationCompactionStatusById: previousStatus ? { 'chat-conv': previousStatus } : {},
+        }));
+
+        const sendPromise = useChatStore.getState().sendMessage({
+          conversationId: 'chat-conv',
+          content: 'Continue avec une réponse courte.',
+        });
+        await flushAsyncWork();
+
+        expect(streamChatMock).not.toHaveBeenCalled();
+        expect(
+          useChatStore.getState().conversationCompactionStatusById['chat-conv'],
+        ).toMatchObject({
+          phase: 'safety_compacting',
+          kind: 'safety_prestream',
+        });
+
+        useChatStore.getState().stopStreaming();
+        summaryDeferred.resolve(JSON.stringify({
+          currentObjective: 'Stopped request', userInstructions: [], decisions: [],
+          openQuestions: [], activeFiles: [], toolFacts: [], remainingWork: [], summary: 'Synthetic summary',
+        }));
+        await sendPromise;
+        await flushAsyncWork();
+        expect(useChatStore.getState().conversationCompactionStatusById['chat-conv']?.phase ?? 'idle').toBe(previousStatus?.phase === 'compacted' ? 'compacted' : 'idle');
+        expect(useChatStore.getState().sessionCompactionEventsByConversationId['chat-conv'] ?? []).toEqual([]);
+        expect(streamChatMock).not.toHaveBeenCalled();
+      });
+    }
+
     it('ignores legacy compaction preferences and still runs safety prestream compaction', async () => {
       appState.mode = 'Chat';
       appState.selectedGroupId = null;
@@ -1993,6 +2075,105 @@ export const registerCompactionAndDiagnosticsScenarios = (
         useChatStore.getState().contextDiagnosticsByConversationId['chat-conv'];
       expect(diagnostics?.counts.citations).toBe(0);
       expect(JSON.stringify(diagnostics?.breakdown ?? [])).not.toContain('Late file');
+    });
+
+    if (process.env.MACRO_BENCHMARK_DIAGNOSTICS_STORE_SIZE) {
+      it('measures the live diagnostics callback connected to the store', async () => {
+        appState.mode = 'Chat';
+        const size = Number(process.env.MACRO_BENCHMARK_DIAGNOSTICS_STORE_SIZE);
+        expect(Number.isInteger(size) && size > 0).toBe(true);
+        providerState.modelsByProvider = {
+          'provider-1': [{ id: 'model-1', name: 'Model 1', isEnabled: true, contextWindowTokens: 100_000_000, outputLimitTokens: 4_000 } as never],
+        };
+        const { useChatStore } = await loadChatStore();
+        const messages: ChatMessage[] = Array.from({ length: size }, (_, index) => ({
+          id: `history-${index}`, task_id: '', conversation_id: 'chat-conv',
+          role: index % 2 ? 'assistant' : 'user', content: 'Synthetic historical context',
+          timestamp: '2026-01-01T00:00:00.000Z',
+        }));
+        useChatStore.setState(createIdleChatStoreState({
+          conversations: [createConversation('chat-conv', '')], messages,
+          selectedConversationId: 'chat-conv', selectedConversationIdsByMode: { Chat: 'chat-conv' },
+        }));
+        await useChatStore.getState().sendMessage({ conversationId: 'chat-conv', content: 'Measure context.' });
+        await flushAsyncWork();
+        const options = getLatestStreamOptions<{
+          onLiveContextUpdate?: (snapshot: { version: number; visibleContent: string; visibleContentLength: number; toolTraces: [] }) => void;
+        }>();
+        expect(options.onLiveContextUpdate).toBeDefined();
+        const samples: number[] = [];
+        for (let version = 1; version <= 110; version += 1) {
+          const snapshot = { version, visibleContent: 'delta', visibleContentLength: 5, toolTraces: [] as [] };
+          const start = performance.now();
+          options.onLiveContextUpdate!(snapshot);
+          const elapsed = performance.now() - start;
+          if (version > 10) samples.push(elapsed);
+        }
+        expect(useChatStore.getState().liveStreamContextEstimatesByConversationId['chat-conv']?.version).toBe(110);
+        console.log('MACRO_DIAGNOSTICS_STORE_RESULT=' + JSON.stringify({
+          historyMessages: size, warmup: 10, samples: 100,
+          callbackSamplesMs: samples,
+        }));
+      });
+    }
+
+    it('shares the isolated diagnostics baseline across deltas and rejects replaced or cancelled sessions', async () => {
+      appState.mode = 'Chat';
+      const { useChatStore } = await loadChatStore();
+      const history: ChatMessage[] = Array.from({ length: 100 }, (_, index) => ({
+        id: `history-${index}`, task_id: '', conversation_id: 'chat-conv',
+        role: index % 2 ? 'assistant' : 'user', content: 'Historical context',
+        timestamp: '2026-01-01T00:00:00.000Z',
+      }));
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [createConversation('chat-conv', ''), createConversation('other-conv', '')],
+        messages: history, selectedConversationId: 'chat-conv',
+        selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      }));
+      await useChatStore.getState().sendMessage({ conversationId: 'chat-conv', content: 'Capture context.' });
+      await flushAsyncWork();
+      const options = getLatestStreamOptions<{
+        onLiveContextUpdate?: (snapshot: { version: number; visibleContent: string; visibleContentLength: number; toolTraces: [] }) => void;
+      }>();
+      const read = () => useChatStore.getState().liveStreamContextEstimatesByConversationId['chat-conv'];
+      const initial = read()!;
+      const baseline = initial.baseline!;
+      expect(baseline.orderedMessages.find((message: ChatMessage) => message.id === history[0].id)).not.toBe(history[0]);
+      const baselineBefore = structuredClone(baseline);
+      expect(baseline.toolDefinitions.length).toBeGreaterThan(0);
+      history[0].content = 'Changed after capture';
+      useChatStore.setState({ selectedConversationId: 'other-conv' });
+      for (let version = 1; version <= 100; version += 1) {
+        options.onLiveContextUpdate?.({ version, visibleContent: `delta ${version}`, visibleContentLength: 9, toolTraces: [] });
+        expect(read()?.baseline).toBe(baseline);
+      }
+      expect(baseline.orderedMessages[0].content).toBe('Historical context');
+      await useChatStore.getState().refreshConversationContextDiagnostics('chat-conv', { mode: 'live_stream' });
+      expect(baseline).toEqual(baselineBefore);
+      options.onLiveContextUpdate?.({ version: 2, visibleContent: 'stale', visibleContentLength: 5, toolTraces: [] });
+      expect(read()?.version).toBe(100);
+      const runtime = useChatStore.getState().conversationRuntimeById['chat-conv'];
+      useChatStore.setState({ conversationRuntimeById: {
+        ...useChatStore.getState().conversationRuntimeById,
+        'chat-conv': { ...runtime, sessionId: 'replacement-session' },
+      } });
+      options.onLiveContextUpdate?.({ version: 101, visibleContent: 'replaced', visibleContentLength: 8, toolTraces: [] });
+      expect(read()?.version).toBe(100);
+      useChatStore.setState({
+        selectedConversationId: 'chat-conv',
+        conversationRuntimeById: { ...useChatStore.getState().conversationRuntimeById, 'chat-conv': runtime },
+      });
+      useChatStore.getState().stopStreaming();
+      options.onLiveContextUpdate?.({ version: 102, visibleContent: 'cancelled', visibleContentLength: 9, toolTraces: [] });
+      expect(read()).toBeUndefined();
+      await useChatStore.getState().sendMessage({ conversationId: 'chat-conv', content: 'New generation.' });
+      await flushAsyncWork();
+      const replacement = read()!;
+      expect(replacement.baseline).not.toBe(baseline);
+      expect(replacement.baseline?.sessionId).toBe(replacement.sessionId);
+      expect(replacement.baseline?.assistantMessageId).toBe(replacement.assistantMessageId);
+      options.onLiveContextUpdate?.({ version: 103, visibleContent: 'late old generation', visibleContentLength: 19, toolTraces: [] });
+      expect(read()).toBe(replacement);
     });
 
     it('ignores older live context snapshots after a newer version is recorded', async () => {

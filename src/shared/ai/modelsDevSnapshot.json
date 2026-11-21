@@ -1,0 +1,288 @@
+{
+  "source": "https://models.dev/api.json",
+  "fetchedAt": "2026-10-14",
+  "license": "MIT",
+  "notice": "licenses/models.dev-LICENSE.txt",
+  "providers": {
+    "openai": {
+      "id": "openai",
+      "models": {
+        "gpt-4o": {
+          "id": "gpt-4o",
+          "name": "GPT-4o",
+          "description": "Omni-era GPT for multimodal chat, practical coding, and general assistants",
+          "family": "gpt",
+          "tool_call": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ]
+          },
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          },
+          "reasoning": false,
+          "updatedAt": "2026-10-14"
+        },
+        "gpt-4.1": {
+          "id": "gpt-4.1",
+          "name": "GPT-4.1",
+          "description": "Long-lived GPT workhorse for coding, instruction following, and production apps",
+          "family": "gpt",
+          "tool_call": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ]
+          },
+          "limit": {
+            "context": 1047576,
+            "output": 32768
+          },
+          "reasoning": false,
+          "updatedAt": "2026-10-14"
+        },
+        "gpt-5": {
+          "id": "gpt-5",
+          "canonical_model_id": "openai/gpt-5",
+          "name": "GPT-5",
+          "description": "Original GPT-5 workhorse for reasoning, coding, writing, and tool workflows",
+          "family": "gpt",
+          "tool_call": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ]
+          },
+          "limit": {
+            "context": 400000,
+            "input": 272000,
+            "output": 128000
+          },
+          "reasoning": true,
+          "reasoning_options": [
+            {
+              "type": "effort",
+              "values": [
+                "minimal",
+                "low",
+                "medium",
+                "high"
+              ]
+            }
+          ],
+          "updatedAt": "2026-10-14"
+        }
+      }
+    },
+    "anthropic": {
+      "id": "anthropic",
+      "models": {
+        "claude-3-5-sonnet-latest": {
+          "id": "claude-3-5-sonnet-latest",
+          "limit": {
+            "context": 200000,
+            "output": 8192
+          },
+          "updatedAt": "2026-05-11T00:00:00.000Z"
+        },
+        "claude-sonnet-4-5": {
+          "id": "claude-sonnet-4-5",
+          "canonical_model_id": "anthropic/claude-sonnet-4-5",
+          "name": "Claude Sonnet 4.5 (latest)",
+          "description": "Balanced Claude model for coding, analysis, agent workflows, and cost control",
+          "family": "claude-sonnet",
+          "tool_call": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ]
+          },
+          "limit": {
+            "context": 200000,
+            "output": 64000
+          },
+          "reasoning": true,
+          "reasoning_options": [],
+          "updatedAt": "2026-10-14"
+        }
+      }
+    },
+    "openrouter": {
+      "id": "openrouter",
+      "models": {
+        "moonshotai/kimi-k2": {
+          "id": "moonshotai/kimi-k2",
+          "canonical_model_id": "moonshotai/kimi-k2",
+          "name": "Kimi K2 0711",
+          "description": "Kimi model for long-context chat, coding, and agentic reasoning",
+          "family": "kimi-k2",
+          "tool_call": true,
+          "modalities": {
+            "input": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 131072,
+            "output": 98304
+          },
+          "reasoning": false,
+          "updatedAt": "2026-10-14"
+        },
+        "anthropic/claude-sonnet-4.5": {
+          "id": "anthropic/claude-sonnet-4.5",
+          "canonical_model_id": "anthropic/claude-sonnet-4-5",
+          "name": "Claude Sonnet 4.5 (latest)",
+          "description": "Balanced Claude model for coding, analysis, agent workflows, and cost control",
+          "family": "claude-sonnet",
+          "tool_call": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "pdf"
+            ]
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          },
+          "reasoning": true,
+          "reasoning_options": [],
+          "updatedAt": "2026-10-14"
+        },
+        "qwen/qwen3.6-plus": {
+          "id": "qwen/qwen3.6-plus",
+          "canonical_model_id": "alibaba/qwen3.6-plus",
+          "name": "Qwen3.6 Plus",
+          "description": "Earlier Qwen multimodal workhorse for million-token agent and document tasks",
+          "family": "qwen",
+          "tool_call": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "video"
+            ]
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 65536
+          },
+          "reasoning": true,
+          "reasoning_options": [],
+          "updatedAt": "2026-10-14"
+        },
+        "qwen3.6-plus": {
+          "id": "qwen3.6-plus",
+          "limit": {
+            "context": 1000000,
+            "output": 66000
+          },
+          "updatedAt": "2026-05-11T00:00:00.000Z"
+        }
+      }
+    },
+    "github-copilot": {
+      "id": "github-copilot",
+      "models": {
+        "gpt-4o": {
+          "id": "gpt-4o",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          },
+          "updatedAt": "2026-05-11T00:00:00.000Z"
+        },
+        "claude-sonnet-4.5": {
+          "id": "claude-sonnet-4.5",
+          "limit": {
+            "context": 200000,
+            "output": 64000
+          },
+          "updatedAt": "2026-05-11T00:00:00.000Z"
+        }
+      }
+    },
+    "opencode-go": {
+      "id": "opencode-go",
+      "models": {
+        "kimi-k2.6": {
+          "id": "kimi-k2.6",
+          "name": "Kimi K2.6",
+          "description": "Kimi multimodal agent model for visual understanding, coding, and planning",
+          "family": "kimi-k2",
+          "tool_call": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "video"
+            ]
+          },
+          "limit": {
+            "context": 262144,
+            "output": 65536
+          },
+          "reasoning": true,
+          "reasoning_options": [],
+          "updatedAt": "2026-10-14"
+        },
+        "kimi-k2": {
+          "id": "kimi-k2",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          },
+          "updatedAt": "2026-05-11T00:00:00.000Z"
+        },
+        "qwen3.6-plus": {
+          "id": "qwen3.6-plus",
+          "name": "Qwen3.6 Plus",
+          "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
+          "family": "qwen3.6",
+          "tool_call": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "video"
+            ]
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 65536
+          },
+          "reasoning": true,
+          "reasoning_options": [],
+          "updatedAt": "2026-10-14"
+        },
+        "qwen3-6-plus": {
+          "id": "qwen3-6-plus",
+          "limit": {
+            "context": 262144,
+            "output": 66000
+          },
+          "updatedAt": "2026-05-11T00:00:00.000Z"
+        },
+        "qwen/qwen3.6-plus": {
+          "id": "qwen/qwen3.6-plus",
+          "limit": {
+            "context": 262144,
+            "output": 66000
+          },
+          "updatedAt": "2026-05-11T00:00:00.000Z"
+        }
+      }
+    }
+  }
+}

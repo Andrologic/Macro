@@ -1,0 +1,26 @@
+{
+  "negotiation_version": "1.0",
+  "type": "negotiated",
+  "request_id": "request-demo",
+  "instance_id": "instance-demo",
+  "selected_version": "2.0",
+  "capabilities": [
+    "read-authority-1"
+  ],
+  "read_authority": {
+    "authority_binding": "authority-demo",
+    "account_id": "account-demo",
+    "session_id": "session-demo",
+    "device_id": "device-demo",
+    "session_revision": 0,
+    "access_revision": 0,
+    "instance_id": "instance-demo",
+    "producer_generation": "producer-demo",
+    "permissions": [
+      "supervise",
+      "review"
+    ],
+    "issued_at": "2026-01-01T00:00:00.000Z",
+    "expires_at": "2026-01-01T00:00:30.000Z"
+  }
+}

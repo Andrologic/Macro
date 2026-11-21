@@ -1,0 +1,1141 @@
+//! Durable product intent protocol. Admission authority remains native.
+use super::*;
+// Rejected legacy payload shape, retained only for a precise admission refusal.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutionExternalDelivery {
+    pub system_start_id: String,
+    pub delivery_id: String,
+    pub agent_name: String,
+    pub message_json: String,
+}
+use public::PublicStartReceipt;
+
+macro_rules! object {
+    ($name:ident {$($(#[$attr:meta])* $field:ident: $ty:ty),* $(,)?}) => {
+        #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        pub struct $name { $( $(#[$attr])* pub $field: $ty),* }
+    };
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutionIntentScope {
+    #[ts(as = "super::dto::ipc::EngineSourceOwner")]
+    pub owner: EngineSourceOwner,
+    pub conversation_id: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutionIntentKey {
+    pub scope: ExecutionIntentScope,
+    pub intent_id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub enum ExecutionIntentFormatVersion {
+    #[serde(rename = "1")]
+    V1,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ExecutionIntentPayload {
+    Start {
+        #[ts(as = "super::dto::ipc::EngineStartRequest")]
+        request: EngineStartRequest,
+    },
+    Deliver {
+        #[ts(as = "super::dto::ipc::EngineSourceRevision")]
+        source: EngineSourceRevision,
+        request: ExecutionExternalDelivery,
+    },
+}
+object!(PublicStartReceipt030 {
+    system_start_id: String,
+    flow_invocation_id: String,
+    #[ts(as = "super::dto::ipc::EngineSourceRevision")]
+    source: EngineSourceRevision,
+    #[ts(as = "super::dto::ipc::EngineVersions")]
+    versions: EngineVersions,
+    entry_delivery_id: Option<String>
+});
+object!(ExecutionRunCorrelation030 {
+    key: ExecutionIntentKey,
+    receipt: PublicStartReceipt030
+});
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ExecutionIntentAdmission {
+    Start {
+        #[ts(as = "super::public::ipc::PublicStartReceipt")]
+        receipt: PublicStartReceipt,
+    },
+    Start030 {
+        receipt: PublicStartReceipt030,
+    },
+    Deliver {
+        #[ts(as = "super::dto::ipc::EngineAcceptedDelivery")]
+        receipt: EngineAcceptedDelivery,
+    },
+}
+macro_rules! codes {
+    ($name:ident {$($variant:ident),*}) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+        #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+        pub enum $name { $($variant),* }
+    };
+}
+codes!(ExecutionIntentRefusalCode {
+    ScopeInvalid,
+    SourceChanged,
+    TargetInvalid,
+    TargetClosed,
+    InputConstraint
+});
+codes!(ExecutionIntentRetryableCode {
+    RuntimeUnavailable,
+    CaptureChanged,
+    PolicyUnavailable,
+    ScopeUnavailable,
+    ExecutionUnavailable
+});
+codes!(ExecutionIntentErrorCode {
+    InvalidRequest,
+    InputLimit,
+    ScopeInvalid,
+    ScopeUnavailable,
+    IdentityConflict,
+    SlotOccupied,
+    RevisionConflict,
+    SubmissionInProgress,
+    NotFound,
+    CloseConflict,
+    StorageUncertain,
+    RuntimeUnavailable
+});
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ExecutionIntentDisposition {
+    Acknowledged,
+    Discarded,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ExecutionIntentState {
+    Prepared,
+    SubmissionPending {
+        retryable_failure: Option<ExecutionIntentRetryableCode>,
+    },
+    Admitted {
+        admission: ExecutionIntentAdmission,
+    },
+    Refused {
+        code: ExecutionIntentRefusalCode,
+    },
+    Closed {
+        disposition: ExecutionIntentDisposition,
+        admission: Option<ExecutionIntentAdmission>,
+    },
+}
+object!(PublicExecutionIntent {
+    format_version: ExecutionIntentFormatVersion,
+    key: ExecutionIntentKey,
+    revision: String,
+    payload: ExecutionIntentPayload,
+    state: ExecutionIntentState
+});
+object!(ExecutionStageIntentRequest {
+    scope: ExecutionIntentScope,
+    intent_id: String,
+    payload: ExecutionIntentPayload
+});
+object!(ExecutionReadIntentsRequest {
+    scope: ExecutionIntentScope
+});
+object!(ExecutionCloseIntentRequest {
+    key: ExecutionIntentKey,
+    expected_revision: String,
+    disposition: ExecutionIntentDisposition
+});
+object!(ExecutionEnsureStopRequest {system_start_id: String, activation_id: Option<String>});
+object!(ExecutionIntentError {code: ExecutionIntentErrorCode, current_intent_key: Option<ExecutionIntentKey>});
+pub(crate) type IntentResult<T> = std::result::Result<T, ExecutionIntentError>;
+pub(crate) fn error(code: ExecutionIntentErrorCode) -> ExecutionIntentError {
+    ExecutionIntentError {
+        code,
+        current_intent_key: None,
+    }
+}
+impl From<sqlx::Error> for ExecutionIntentError {
+    fn from(_: sqlx::Error) -> Self {
+        error(ExecutionIntentErrorCode::StorageUncertain)
+    }
+}
+impl From<serde_json::Error> for ExecutionIntentError {
+    fn from(_: serde_json::Error) -> Self {
+        error(ExecutionIntentErrorCode::StorageUncertain)
+    }
+}
+
+pub(crate) fn validate_key(key: &ExecutionIntentKey) -> IntentResult<()> {
+    use ExecutionIntentErrorCode::*;
+    for value in [
+        &key.intent_id,
+        &key.scope.owner.project_id,
+        &key.scope.owner.plan_id,
+        &key.scope.owner.branch,
+        &key.scope.conversation_id,
+    ] {
+        if value.len() > 512 {
+            return Err(error(InputLimit));
+        }
+        opaque(value).map_err(|_| error(InvalidRequest))?;
+    }
+    let owner = &key.scope.owner;
+    if owner.branch.trim() != owner.branch
+        || owner.branch.contains('\\')
+        || owner
+            .branch
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || owner.plan_id.trim() != owner.plan_id
+        || owner.plan_id.contains(['/', '\\'])
+        || [".", ".."].contains(&owner.plan_id.as_str())
+    {
+        return Err(error(InvalidRequest));
+    }
+    Ok(())
+}
+fn revision(value: &str) -> IntentResult<()> {
+    if value.len() > 4096 {
+        return Err(error(ExecutionIntentErrorCode::InputLimit));
+    }
+    decimal(value).map_err(|_| error(ExecutionIntentErrorCode::InvalidRequest))
+}
+fn advance(value: &str) -> IntentResult<String> {
+    let next = next(value);
+    revision(&next)?;
+    Ok(next)
+}
+fn source(payload: &ExecutionIntentPayload) -> &EngineSourceRevision {
+    match payload {
+        ExecutionIntentPayload::Start { request } => &request.source,
+        ExecutionIntentPayload::Deliver { source, .. } => source,
+    }
+}
+fn keys(payload: &ExecutionIntentPayload) -> (Option<&str>, Option<&str>) {
+    match payload {
+        ExecutionIntentPayload::Start { request } => (
+            Some(&request.request_id),
+            request
+                .entry
+                .as_ref()
+                .map(|entry| entry.delivery_id.as_str()),
+        ),
+        ExecutionIntentPayload::Deliver { request, .. } => (None, Some(&request.delivery_id)),
+    }
+}
+fn validate_payload(
+    key: &ExecutionIntentKey,
+    payload: &ExecutionIntentPayload,
+) -> IntentResult<String> {
+    use ExecutionIntentErrorCode::*;
+    validate_key(key)?;
+    let source = source(payload);
+    if source.owner != key.scope.owner {
+        return Err(error(InvalidRequest));
+    }
+    revision(&source.revision)?;
+    if source.source_sha256.len() != 64
+        || !source
+            .source_sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(error(InvalidRequest));
+    }
+    let (request_id, delivery_id) = keys(payload);
+    for value in [request_id, delivery_id].into_iter().flatten() {
+        if value.len() > 512 {
+            return Err(error(InputLimit));
+        }
+        opaque(value).map_err(|_| error(InvalidRequest))?;
+    }
+    let message = match payload {
+        ExecutionIntentPayload::Start { request } => {
+            if !matches!(request.profile.as_str(), "macro-agsdl-030-v1")
+                || request.associations.workspace_id.is_some()
+                || request.associations.conversation_id.is_some()
+            {
+                return Err(error(InvalidRequest));
+            }
+            if let Some(task_id) = &request.associations.task_id {
+                if task_id.len() > 512 {
+                    return Err(error(InputLimit));
+                }
+                opaque(task_id).map_err(|_| error(InvalidRequest))?;
+            }
+            request.entry.as_ref().map(|entry| &entry.message_json)
+        }
+        ExecutionIntentPayload::Deliver { request, .. } => {
+            for value in [&request.agent_name, &request.system_start_id] {
+                if value.len() > 512 {
+                    return Err(error(InputLimit));
+                }
+                opaque(value).map_err(|_| error(InvalidRequest))?;
+            }
+            Some(&request.message_json)
+        }
+    };
+    if let Some(message) = message {
+        if message.len() > 1_000_000 {
+            return Err(error(InputLimit));
+        }
+        validate_json(message).map_err(|_| error(InvalidRequest))?;
+    }
+    let encoded = serde_json::to_string(payload)?;
+    if encoded.len() > 4_000_000 {
+        return Err(error(InputLimit));
+    }
+    Ok(encoded)
+}
+
+struct Retained {
+    key: ExecutionIntentKey,
+    payload: ExecutionIntentPayload,
+    revision: String,
+    status: String,
+    retryable: Option<ExecutionIntentRetryableCode>,
+    refusal: Option<ExecutionIntentRefusalCode>,
+    disposition: Option<ExecutionIntentDisposition>,
+    admitted: Option<String>,
+    admitted030: Option<String>,
+}
+fn parse_code<T: serde::de::DeserializeOwned>(value: Option<String>) -> IntentResult<Option<T>> {
+    value
+        .map(|value| serde_json::from_value(serde_json::Value::String(value)))
+        .transpose()
+        .map_err(Into::into)
+}
+fn retained(row: sqlx::sqlite::SqliteRow) -> IntentResult<Retained> {
+    Ok(Retained {
+        key: ExecutionIntentKey {
+            intent_id: row.get("intent_id"),
+            scope: ExecutionIntentScope {
+                owner: EngineSourceOwner {
+                    project_id: row.get("project_id"),
+                    plan_id: row.get("plan_id"),
+                    branch: row.get("branch"),
+                },
+                conversation_id: row.get("conversation_id"),
+            },
+        },
+        payload: serde_json::from_str(row.get("payload_json"))?,
+        revision: row.get("revision"),
+        status: row.get("status"),
+        retryable: parse_code(row.get("retryable_code"))?,
+        refusal: parse_code(row.get("refusal_code"))?,
+        disposition: parse_code(row.get("disposition"))?,
+        admitted: row.get("admission_system_id"),
+        admitted030: row.get("admission_system030_id"),
+    })
+}
+async fn find(
+    db: &mut SqliteConnection,
+    key: &ExecutionIntentKey,
+) -> IntentResult<Option<Retained>> {
+    let row = sqlx::query("SELECT * FROM engine_ui_intents WHERE intent_id = ? AND project_id = ? AND plan_id = ? AND branch = ? AND conversation_id = ?")
+        .bind(&key.intent_id).bind(&key.scope.owner.project_id).bind(&key.scope.owner.plan_id).bind(&key.scope.owner.branch).bind(&key.scope.conversation_id)
+        .fetch_optional(db).await?;
+    row.map(retained).transpose()
+}
+pub(crate) async fn conversation(
+    db: &mut SqliteConnection,
+    scope: &ExecutionIntentScope,
+) -> IntentResult<()> {
+    let project: Option<String> =
+        sqlx::query_scalar("SELECT project_id FROM conversations WHERE id = ?")
+            .bind(&scope.conversation_id)
+            .fetch_optional(db)
+            .await?;
+    if project.as_deref() != Some(&scope.owner.project_id) {
+        return Err(error(ExecutionIntentErrorCode::ScopeInvalid));
+    }
+    Ok(())
+}
+fn storage(_: EngineFailure) -> ExecutionIntentError {
+    error(ExecutionIntentErrorCode::StorageUncertain)
+}
+async fn public(db: &mut SqliteConnection, row: Retained) -> IntentResult<PublicExecutionIntent> {
+    let admission = if let Some(system) = &row.admitted030 {
+        if row.admitted.is_some() {
+            return Err(error(ExecutionIntentErrorCode::StorageUncertain));
+        }
+        let ExecutionIntentPayload::Start { request } = &row.payload else {
+            return Err(error(ExecutionIntentErrorCode::StorageUncertain));
+        };
+        let retained = sqlx::query("SELECT request_json,capture_json,receipt_json,invocation_id,snapshot_id,capture_epoch FROM engine_start030_requests WHERE system_id=? AND request_id=?")
+            .bind(system).bind(&request.request_id).fetch_one(&mut *db).await?;
+        let request_json: String = retained.get("request_json");
+        if request_json != serde_json::to_string(request)? {
+            return Err(error(ExecutionIntentErrorCode::StorageUncertain));
+        }
+        let capture: super::start030::StartCapture030 =
+            serde_json::from_str(retained.get("capture_json"))?;
+        let receipt: super::start030::StartReceipt030 =
+            serde_json::from_str(retained.get("receipt_json"))?;
+        let identity = &capture.identity;
+        if receipt.identity != *identity
+            || identity.flow_invocation_id != retained.get::<&str, _>("invocation_id")
+            || identity.snapshot_id != retained.get::<&str, _>("snapshot_id")
+            || identity.epoch != retained.get::<&str, _>("capture_epoch")
+            || identity.system_start_id != *system
+        {
+            return Err(error(ExecutionIntentErrorCode::StorageUncertain));
+        }
+        // Reuse Start's complete capture validation, including every version
+        // against the compiled plan, before returning any retained public fact.
+        super::start030::validate_capture(request, &capture).map_err(storage)?;
+        Some(ExecutionIntentAdmission::Start030 {
+            receipt: PublicStartReceipt030 {
+                system_start_id: system.clone(),
+                flow_invocation_id: capture.identity.flow_invocation_id,
+                source: capture.source,
+                versions: capture.versions,
+                entry_delivery_id: request
+                    .entry
+                    .as_ref()
+                    .map(|entry| entry.delivery_id.clone()),
+            },
+        })
+    } else if row.admitted.is_some() {
+        return Err(error(ExecutionIntentErrorCode::StorageUncertain));
+    } else {
+        None
+    };
+    let state = match row.status.as_str() {
+        "prepared" => ExecutionIntentState::Prepared,
+        "submissionPending" => ExecutionIntentState::SubmissionPending {
+            retryable_failure: row.retryable,
+        },
+        "admitted" => ExecutionIntentState::Admitted {
+            admission: admission
+                .ok_or_else(|| error(ExecutionIntentErrorCode::StorageUncertain))?,
+        },
+        "refused" => ExecutionIntentState::Refused {
+            code: row
+                .refusal
+                .ok_or_else(|| error(ExecutionIntentErrorCode::StorageUncertain))?,
+        },
+        "closed" => ExecutionIntentState::Closed {
+            disposition: row
+                .disposition
+                .ok_or_else(|| error(ExecutionIntentErrorCode::StorageUncertain))?,
+            admission,
+        },
+        _ => return Err(error(ExecutionIntentErrorCode::StorageUncertain)),
+    };
+    Ok(PublicExecutionIntent {
+        format_version: ExecutionIntentFormatVersion::V1,
+        key: row.key,
+        revision: row.revision,
+        payload: row.payload,
+        state,
+    })
+}
+async fn absence(db: &mut SqliteConnection, payload: &ExecutionIntentPayload) -> IntentResult<()> {
+    let (request_id, delivery_id) = keys(payload);
+    let admitted: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_start030_requests WHERE request_id = ?) OR EXISTS(SELECT 1 FROM engine_start030_entries WHERE delivery_id = ?)")
+        .bind(request_id).bind(delivery_id).fetch_one(db).await?;
+    if admitted != 0 {
+        return Err(error(ExecutionIntentErrorCode::IdentityConflict));
+    }
+    Ok(())
+}
+async fn target(
+    db: &mut SqliteConnection,
+    payload: &ExecutionIntentPayload,
+) -> IntentResult<Option<ExecutionIntentRefusalCode>> {
+    let _ = db;
+    if matches!(payload, ExecutionIntentPayload::Deliver { .. }) {
+        return Ok(Some(ExecutionIntentRefusalCode::TargetInvalid));
+    }
+    Ok(None)
+}
+#[cfg(test)]
+pub(crate) async fn stage(
+    pool: &SqlitePool,
+    request: ExecutionStageIntentRequest,
+    current: &EngineSourceRevision,
+) -> IntentResult<PublicExecutionIntent> {
+    stage_current(pool, request, current, true).await
+}
+pub(crate) async fn stage_current(
+    pool: &SqlitePool,
+    request: ExecutionStageIntentRequest,
+    current: &EngineSourceRevision,
+    consistent: bool,
+) -> IntentResult<PublicExecutionIntent> {
+    let key = ExecutionIntentKey {
+        scope: request.scope,
+        intent_id: request.intent_id,
+    };
+    let payload_json = validate_payload(&key, &request.payload)?;
+    let mut connection = pool.acquire().await?;
+    let mut tx = durable(&mut connection).await.map_err(storage)?;
+    conversation(&mut tx, &key.scope).await?;
+    if let Some(row) = find(&mut tx, &key).await? {
+        if serde_json::to_string(&row.payload)? != payload_json {
+            return Err(error(ExecutionIntentErrorCode::IdentityConflict));
+        }
+        let result = public(&mut tx, row).await?;
+        tx.commit().await?;
+        return Ok(result);
+    }
+    let identity: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_ui_intents WHERE intent_id = ?)")
+            .bind(&key.intent_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if identity {
+        return Err(error(ExecutionIntentErrorCode::IdentityConflict));
+    }
+    if let Some(row) = sqlx::query("SELECT * FROM engine_ui_intents WHERE project_id = ? AND plan_id = ? AND branch = ? AND conversation_id = ? AND status <> 'closed'")
+        .bind(&key.scope.owner.project_id).bind(&key.scope.owner.plan_id).bind(&key.scope.owner.branch).bind(&key.scope.conversation_id).fetch_optional(&mut *tx).await? {
+        return Err(ExecutionIntentError {code: ExecutionIntentErrorCode::SlotOccupied, current_intent_key: Some(retained(row)?.key)});
+    }
+    let (request_id, delivery_id) = keys(&request.payload);
+    let reserved: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM engine_ui_intents WHERE request_id = ? OR delivery_id = ?)",
+    )
+    .bind(request_id)
+    .bind(delivery_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if reserved {
+        return Err(error(ExecutionIntentErrorCode::IdentityConflict));
+    }
+    absence(&mut tx, &request.payload).await?;
+    if matches!(&request.payload, ExecutionIntentPayload::Start { .. }) && !consistent {
+        return Err(error(ExecutionIntentErrorCode::ScopeUnavailable));
+    }
+    if matches!(&request.payload, ExecutionIntentPayload::Start { .. })
+        && source(&request.payload) != current
+    {
+        return Err(error(ExecutionIntentErrorCode::InvalidRequest));
+    }
+    if target(&mut tx, &request.payload).await?.is_some() {
+        return Err(error(ExecutionIntentErrorCode::InvalidRequest));
+    }
+    let kind = match request.payload {
+        ExecutionIntentPayload::Start { .. } => "start",
+        ExecutionIntentPayload::Deliver { .. } => "deliver",
+    };
+    sqlx::query("INSERT INTO engine_ui_intents(intent_id,format_version,project_id,plan_id,branch,conversation_id,kind,request_id,delivery_id,payload_json,status,revision) VALUES(?,'1',?,?,?,?,?,?,?,?,'prepared','1')")
+        .bind(&key.intent_id).bind(&key.scope.owner.project_id).bind(&key.scope.owner.plan_id).bind(&key.scope.owner.branch).bind(&key.scope.conversation_id).bind(kind).bind(request_id).bind(delivery_id).bind(payload_json)
+        .execute(&mut *tx).await?;
+    let row = find(&mut tx, &key)
+        .await?
+        .ok_or_else(|| error(ExecutionIntentErrorCode::StorageUncertain))?;
+    let result = public(&mut tx, row).await?;
+    tx.commit().await?;
+    Ok(result)
+}
+pub(crate) async fn read(
+    pool: &SqlitePool,
+    key: &ExecutionIntentKey,
+) -> IntentResult<Option<PublicExecutionIntent>> {
+    validate_key(key)?;
+    let mut connection = pool.acquire().await?;
+    let mut tx = durable(&mut connection).await.map_err(storage)?;
+    conversation(&mut tx, &key.scope).await?;
+    let result = match find(&mut tx, key).await? {
+        Some(row) => Some(public(&mut tx, row).await?),
+        None => None,
+    };
+    tx.commit().await?;
+    Ok(result)
+}
+pub(crate) async fn read_open(
+    pool: &SqlitePool,
+    scope: &ExecutionIntentScope,
+) -> IntentResult<Vec<PublicExecutionIntent>> {
+    validate_key(&ExecutionIntentKey {
+        scope: scope.clone(),
+        intent_id: "scope-read".into(),
+    })?;
+    let mut connection = pool.acquire().await?;
+    let mut tx = durable(&mut connection).await.map_err(storage)?;
+    conversation(&mut tx, scope).await?;
+    let rows = sqlx::query("SELECT * FROM engine_ui_intents WHERE project_id = ? AND plan_id = ? AND branch = ? AND conversation_id = ? AND status <> 'closed' LIMIT 2")
+        .bind(&scope.owner.project_id).bind(&scope.owner.plan_id).bind(&scope.owner.branch).bind(&scope.conversation_id).fetch_all(&mut *tx).await?;
+    if rows.len() > 1 {
+        return Err(error(ExecutionIntentErrorCode::StorageUncertain));
+    }
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(public(&mut tx, retained(row)?).await?);
+    }
+    tx.commit().await?;
+    Ok(result)
+}
+
+/// Historical attestation, including acknowledged tombstones. This deferred
+/// transaction only reads retained facts and never reconciles or admits work.
+pub(crate) async fn read_run_correlation030(
+    pool: &SqlitePool,
+    scope: &ExecutionIntentScope,
+    system_start_id: &str,
+) -> IntentResult<ExecutionRunCorrelation030> {
+    use ExecutionIntentErrorCode::*;
+    validate_key(&ExecutionIntentKey {
+        scope: scope.clone(),
+        intent_id: system_start_id.into(),
+    })?;
+    let mut connection = pool.acquire().await?;
+    let mut tx = connection.begin().await?;
+    conversation(&mut tx, scope).await?;
+    let rows = sqlx::query("SELECT * FROM engine_ui_intents WHERE admission_system030_id=? AND project_id=? AND plan_id=? AND branch=? AND conversation_id=? LIMIT 2")
+        .bind(system_start_id).bind(&scope.owner.project_id).bind(&scope.owner.plan_id)
+        .bind(&scope.owner.branch).bind(&scope.conversation_id)
+        .fetch_all(&mut *tx).await?;
+    if rows.len() > 1 {
+        return Err(error(StorageUncertain));
+    }
+    let Some(row) = rows.into_iter().next() else {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM engine_start030_requests WHERE system_id=?)",
+        )
+        .bind(system_start_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        return Err(error(if exists { ScopeInvalid } else { NotFound }));
+    };
+    let row = retained(row)?;
+    // Authenticate the retained owner and public request constraints as well as
+    // the persisted request/capture/receipt checks performed by public().
+    validate_payload(&row.key, &row.payload).map_err(|_| error(StorageUncertain))?;
+    let link = IntentAdmissionLink {
+        key: row.key.clone(),
+        payload: row.payload.clone(),
+    };
+    verify_attached030(&mut tx, &link, system_start_id)
+        .await
+        .map_err(storage)?;
+    let intent = public(&mut tx, row).await?;
+    let receipt = match intent.state {
+        ExecutionIntentState::Admitted {
+            admission: ExecutionIntentAdmission::Start030 { receipt },
+        }
+        | ExecutionIntentState::Closed {
+            disposition: ExecutionIntentDisposition::Acknowledged,
+            admission: Some(ExecutionIntentAdmission::Start030 { receipt }),
+        } => receipt,
+        _ => return Err(error(StorageUncertain)),
+    };
+    tx.commit().await?;
+    Ok(ExecutionRunCorrelation030 {
+        key: intent.key,
+        receipt,
+    })
+}
+fn code<T: Serialize>(value: T) -> IntentResult<String> {
+    serde_json::from_value(serde_json::to_value(value)?).map_err(Into::into)
+}
+async fn update(
+    db: &mut SqliteConnection,
+    row: &Retained,
+    status: &str,
+    retryable: Option<ExecutionIntentRetryableCode>,
+    refusal: Option<ExecutionIntentRefusalCode>,
+    disposition: Option<ExecutionIntentDisposition>,
+    admitted: Option<&str>,
+) -> IntentResult<()> {
+    let revision = advance(&row.revision)?;
+    sqlx::query("UPDATE engine_ui_intents SET status = ?, revision = ?, retryable_code = ?, refusal_code = ?, disposition = ?, admission_system_id = ?, admission_system030_id = ? WHERE intent_id = ? AND revision = ? AND status <> 'closed'")
+        .bind(status).bind(revision).bind(retryable.map(code).transpose()?).bind(refusal.map(code).transpose()?).bind(disposition.map(code).transpose()?).bind(admitted).bind(row.admitted030.as_deref()).bind(&row.key.intent_id).bind(&row.revision)
+        .execute(db).await?;
+    Ok(())
+}
+/// Not deserializable and never exposed over IPC.
+pub(crate) struct IntentAdmissionLink {
+    pub(crate) key: ExecutionIntentKey,
+    pub(crate) payload: ExecutionIntentPayload,
+}
+pub(crate) enum Submission {
+    Retained(PublicExecutionIntent),
+    Dispatch(IntentAdmissionLink),
+}
+#[cfg(test)]
+pub(crate) async fn begin_submission(
+    pool: &SqlitePool,
+    key: &ExecutionIntentKey,
+    current: &EngineSourceRevision,
+) -> IntentResult<Submission> {
+    begin_submission_current(pool, key, current, true).await
+}
+pub(crate) async fn begin_submission_current(
+    pool: &SqlitePool,
+    key: &ExecutionIntentKey,
+    current: &EngineSourceRevision,
+    consistent: bool,
+) -> IntentResult<Submission> {
+    let mut connection = pool.acquire().await?;
+    let mut tx = durable(&mut connection).await.map_err(storage)?;
+    conversation(&mut tx, &key.scope).await?;
+    let row = find(&mut tx, key)
+        .await?
+        .ok_or_else(|| error(ExecutionIntentErrorCode::NotFound))?;
+    if !["prepared", "submissionPending"].contains(&row.status.as_str()) {
+        let result = public(&mut tx, row).await?;
+        tx.commit().await?;
+        return Ok(Submission::Retained(result));
+    }
+    if matches!(&row.payload, ExecutionIntentPayload::Start { .. }) && !consistent {
+        return Err(error(ExecutionIntentErrorCode::ScopeUnavailable));
+    }
+    // A pending row can only have an admission through the atomic link below.
+    absence(&mut tx, &row.payload).await?;
+    let refusal = if matches!(row.payload, ExecutionIntentPayload::Start { .. })
+        && source(&row.payload) != current
+    {
+        Some(ExecutionIntentRefusalCode::SourceChanged)
+    } else {
+        target(&mut tx, &row.payload).await?
+    };
+    if let Some(refusal) = refusal {
+        update(&mut tx, &row, "refused", None, Some(refusal), None, None).await?;
+        let row = find(&mut tx, key)
+            .await?
+            .ok_or_else(|| error(ExecutionIntentErrorCode::StorageUncertain))?;
+        let result = public(&mut tx, row).await?;
+        tx.commit().await?;
+        return Ok(Submission::Retained(result));
+    }
+    if row.status != "submissionPending" || row.retryable.is_some() {
+        update(&mut tx, &row, "submissionPending", None, None, None, None).await?;
+    }
+    let link = IntentAdmissionLink {
+        key: row.key,
+        payload: row.payload,
+    };
+    tx.commit().await?;
+    Ok(Submission::Dispatch(link))
+}
+#[cfg(test)]
+pub(crate) async fn finish_failure(
+    pool: &SqlitePool,
+    key: &ExecutionIntentKey,
+    failure: &EngineFailure,
+) -> IntentResult<PublicExecutionIntent> {
+    finish_failure_current(pool, key, failure, None).await
+}
+pub(crate) async fn finish_failure_current(
+    pool: &SqlitePool,
+    key: &ExecutionIntentKey,
+    failure: &EngineFailure,
+    current: Option<&EngineSourceRevision>,
+) -> IntentResult<PublicExecutionIntent> {
+    let mut connection = pool.acquire().await?;
+    let mut tx = durable(&mut connection).await.map_err(storage)?;
+    conversation(&mut tx, &key.scope).await?;
+    let row = find(&mut tx, key)
+        .await?
+        .ok_or_else(|| error(ExecutionIntentErrorCode::NotFound))?;
+    if row.status != "admitted" {
+        if failure.code == "STORAGE" {
+            return Err(error(ExecutionIntentErrorCode::StorageUncertain));
+        }
+        absence(&mut tx, &row.payload).await?;
+        let proven_refusal = if matches!(&row.payload, ExecutionIntentPayload::Start { .. })
+            && current.is_some_and(|current| current != source(&row.payload))
+        {
+            Some(ExecutionIntentRefusalCode::SourceChanged)
+        } else {
+            target(&mut tx, &row.payload).await?
+        };
+        let (retryable, refusal) = if proven_refusal.is_some() {
+            (None, proven_refusal)
+        } else {
+            match failure.code.as_str() {
+                "INPUT_CONSTRAINT" => (None, Some(ExecutionIntentRefusalCode::InputConstraint)),
+                "INTENT_SOURCE_CHANGED" => (None, Some(ExecutionIntentRefusalCode::SourceChanged)),
+                "CAPTURE_CHANGED" => (Some(ExecutionIntentRetryableCode::CaptureChanged), None),
+                "POLICY_UNAVAILABLE" | "PERMISSION" => {
+                    (Some(ExecutionIntentRetryableCode::PolicyUnavailable), None)
+                }
+                "SOURCE_UNAVAILABLE" | "INTENT_SCOPE_UNAVAILABLE" => {
+                    (Some(ExecutionIntentRetryableCode::ScopeUnavailable), None)
+                }
+                "RUNTIME_UNAVAILABLE" => {
+                    (Some(ExecutionIntentRetryableCode::RuntimeUnavailable), None)
+                }
+                _ => (
+                    Some(ExecutionIntentRetryableCode::ExecutionUnavailable),
+                    None,
+                ),
+            }
+        };
+        if row.retryable != retryable || row.refusal != refusal {
+            update(
+                &mut tx,
+                &row,
+                if refusal.is_some() {
+                    "refused"
+                } else {
+                    "submissionPending"
+                },
+                retryable,
+                refusal,
+                None,
+                None,
+            )
+            .await?;
+        }
+    }
+    let row = find(&mut tx, key)
+        .await?
+        .ok_or_else(|| error(ExecutionIntentErrorCode::StorageUncertain))?;
+    let result = public(&mut tx, row).await?;
+    tx.commit().await?;
+    Ok(result)
+}
+pub(crate) async fn close(
+    pool: &SqlitePool,
+    request: &ExecutionCloseIntentRequest,
+) -> IntentResult<PublicExecutionIntent> {
+    validate_key(&request.key)?;
+    revision(&request.expected_revision)?;
+    let mut connection = pool.acquire().await?;
+    let mut tx = durable(&mut connection).await.map_err(storage)?;
+    conversation(&mut tx, &request.key.scope).await?;
+    let row = find(&mut tx, &request.key)
+        .await?
+        .ok_or_else(|| error(ExecutionIntentErrorCode::NotFound))?;
+    if row.status == "closed" {
+        if row.disposition != Some(request.disposition) {
+            return Err(error(ExecutionIntentErrorCode::CloseConflict));
+        }
+        let result = public(&mut tx, row).await?;
+        tx.commit().await?;
+        return Ok(result);
+    }
+    if row.revision != request.expected_revision {
+        return Err(error(ExecutionIntentErrorCode::RevisionConflict));
+    }
+    match request.disposition {
+        ExecutionIntentDisposition::Acknowledged if row.status != "admitted" => {
+            return Err(error(ExecutionIntentErrorCode::CloseConflict))
+        }
+        ExecutionIntentDisposition::Discarded => {
+            if row.admitted.is_some() || row.admitted030.is_some() {
+                return Err(error(ExecutionIntentErrorCode::CloseConflict));
+            }
+            absence(&mut tx, &row.payload).await?;
+        }
+        _ => (),
+    }
+    update(
+        &mut tx,
+        &row,
+        "closed",
+        None,
+        None,
+        Some(request.disposition),
+        row.admitted.as_deref(),
+    )
+    .await?;
+    let row = find(&mut tx, &request.key)
+        .await?
+        .ok_or_else(|| error(ExecutionIntentErrorCode::StorageUncertain))?;
+    let result = public(&mut tx, row).await?;
+    tx.commit().await?;
+    Ok(result)
+}
+
+async fn reserved(
+    db: &mut SqliteConnection,
+    column: &str,
+    value: &str,
+    link: Option<&IntentAdmissionLink>,
+) -> Result<()> {
+    let query = match column {
+        "request_id" => "SELECT * FROM engine_ui_intents WHERE request_id = ?",
+        _ => "SELECT * FROM engine_ui_intents WHERE delivery_id = ?",
+    };
+    let row = sqlx::query(query)
+        .bind(value)
+        .fetch_optional(&mut *db)
+        .await?;
+    if let Some(row) = row {
+        let row = retained(row).map_err(|_| failure("STORAGE", "", "Invalid retained intent"))?;
+        let link = link.ok_or_else(|| {
+            failure(
+                "INTENT_IDENTITY_CONFLICT",
+                "",
+                "Execution identity is reserved",
+            )
+        })?;
+        require(
+            row.key == link.key
+                && serde_json::to_string(&row.payload)? == serde_json::to_string(&link.payload)?,
+            "Intent admission link does not match reservation",
+        )?;
+        require(
+            row.status == "submissionPending"
+                || row.status == "admitted"
+                || (row.status == "closed"
+                    && row.disposition == Some(ExecutionIntentDisposition::Acknowledged)),
+            "Intent does not allow admission",
+        )?;
+        conversation(db, &row.key.scope).await.map_err(|_| {
+            failure(
+                "INTENT_SCOPE_INVALID",
+                "",
+                "Intent conversation is no longer valid",
+            )
+        })?;
+    } else if link.is_some() {
+        return Err(failure(
+            "INTENT_IDENTITY_CONFLICT",
+            "",
+            "Intent admission reservation is absent",
+        ));
+    }
+    Ok(())
+}
+pub(crate) async fn reserve_start(
+    db: &mut SqliteConnection,
+    request: &EngineStartRequest,
+    link: Option<&IntentAdmissionLink>,
+) -> Result<()> {
+    if let Some(link) = link {
+        require(
+            matches!(&link.payload,ExecutionIntentPayload::Start{request: retained} if retained == request),
+            "Wrong Start admission link",
+        )?;
+    }
+    reserved(db, "request_id", &request.request_id, link).await?;
+    if let Some(entry) = &request.entry {
+        reserved(db, "delivery_id", &entry.delivery_id, link).await?;
+    }
+    Ok(())
+}
+
+/// Link an authenticated 0.3 Start to its reservation inside the Start transaction.
+pub(crate) async fn attach030(
+    db: &mut SqliteConnection,
+    link: &IntentAdmissionLink,
+    system: &str,
+) -> Result<()> {
+    let row = find(db, &link.key)
+        .await
+        .map_err(|_| failure("STORAGE", "", "Cannot read intent admission"))?
+        .ok_or_else(|| failure("INTENT_IDENTITY_CONFLICT", "", "Missing intent"))?;
+    require(
+        row.admitted.is_none(),
+        "Conflicting intent admission version",
+    )?;
+    require(
+        row.key == link.key
+            && serde_json::to_string(&row.payload)? == serde_json::to_string(&link.payload)?,
+        "Intent link differs",
+    )?;
+    conversation(db, &row.key.scope).await.map_err(|_| {
+        failure(
+            "INTENT_SCOPE_INVALID",
+            "",
+            "Intent conversation is no longer valid",
+        )
+    })?;
+    if let Some(admitted) = &row.admitted030 {
+        require(admitted == system, "Conflicting 0.3 intent admission")?;
+        return Ok(());
+    }
+    require(
+        row.status == "submissionPending",
+        "First intent admission must be pending",
+    )?;
+    let ExecutionIntentPayload::Start { request } = &row.payload else {
+        return Err(failure(
+            "INTENT_IDENTITY_CONFLICT",
+            "",
+            "Not a Start intent",
+        ));
+    };
+    let stored: Option<String> = sqlx::query_scalar(
+        "SELECT request_json FROM engine_start030_requests WHERE system_id=? AND request_id=?",
+    )
+    .bind(system)
+    .bind(&request.request_id)
+    .fetch_optional(&mut *db)
+    .await?;
+    require(
+        stored.as_deref() == Some(serde_json::to_string(request)?.as_str()),
+        "Start request differs",
+    )?;
+    let revision =
+        advance(&row.revision).map_err(|_| failure("STORAGE", "", "Intent revision is invalid"))?;
+    let changed = sqlx::query("UPDATE engine_ui_intents SET status='admitted', revision=?, retryable_code=NULL, admission_system030_id=? WHERE intent_id=? AND revision=? AND status='submissionPending'")
+        .bind(revision).bind(system).bind(&row.key.intent_id).bind(&row.revision).execute(&mut *db).await?.rows_affected();
+    require(changed == 1, "Intent admission changed")
+}
+
+pub(crate) async fn verify_attached030(
+    db: &mut SqliteConnection,
+    link: &IntentAdmissionLink,
+    system: &str,
+) -> Result<()> {
+    let row = find(db, &link.key)
+        .await
+        .map_err(|_| failure("STORAGE", "", "Cannot read intent admission"))?
+        .ok_or_else(|| failure("INTENT_IDENTITY_CONFLICT", "", "Missing intent"))?;
+    require(
+        row.admitted.is_none() && row.admitted030.as_deref() == Some(system),
+        "Start intent is not attached",
+    )?;
+    require(
+        row.status == "admitted"
+            || (row.status == "closed"
+                && row.disposition == Some(ExecutionIntentDisposition::Acknowledged)),
+        "Start intent is not admitted",
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn staged() -> ExecutionStageIntentRequest {
+        let owner = EngineSourceOwner {
+            project_id: "project".into(),
+            plan_id: "plan".into(),
+            branch: "feature/synthetic".into(),
+        };
+        ExecutionStageIntentRequest {
+            scope: ExecutionIntentScope {
+                owner: owner.clone(),
+                conversation_id: "conversation".into(),
+            },
+            intent_id: "intent".into(),
+            payload: ExecutionIntentPayload::Start {
+                request: EngineStartRequest {
+                    source: EngineSourceRevision {
+                        owner,
+                        revision: "9007199254740993".into(),
+                        source_sha256: "a".repeat(64),
+                    },
+                    profile: "macro-agsdl-030-v1".into(),
+                    associations: EngineAssociations::default(),
+                    request_id: "start".into(),
+                    entry: Some(EngineEntry {
+                        delivery_id: "delivery".into(),
+                        message_json: "{\"n\":1.0}".into(),
+                    }),
+                },
+            },
+        }
+    }
+    #[tokio::test]
+    async fn admitted_030_start_is_not_reported_absent() {
+        let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql("PRAGMA foreign_keys=ON; CREATE TABLE engine_systems(system_id TEXT PRIMARY KEY, request_id TEXT UNIQUE); CREATE TABLE engine_deliveries(delivery_id TEXT PRIMARY KEY);")
+            .execute(&mut db).await.unwrap();
+        sqlx::raw_sql(include_str!("../migrations/030_execution_flow.sql"))
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!("../migrations/031_execution_start_entry.sql"))
+            .execute(&mut db)
+            .await
+            .unwrap();
+        let payload = staged().payload;
+        assert!(absence(&mut db, &payload).await.is_ok());
+        sqlx::raw_sql(r#"INSERT INTO engine_flow030_runs VALUES ('s','f','snapshot','epoch','{}','{}','{}'); INSERT INTO engine_start030_requests VALUES ('start','{"entry":{"deliveryId":"delivery"}}','s','f','snapshot','epoch','{}','{}');"#)
+            .execute(&mut db).await.unwrap();
+        assert_eq!(
+            absence(&mut db, &payload).await.unwrap_err().code,
+            ExecutionIntentErrorCode::IdentityConflict
+        );
+        let mut other = staged().payload;
+        if let ExecutionIntentPayload::Start { request } = &mut other {
+            request.request_id = "another-request".into();
+        }
+        assert_eq!(
+            absence(&mut db, &other).await.unwrap_err().code,
+            ExecutionIntentErrorCode::IdentityConflict
+        );
+    }
+
+    #[test]
+    fn intent_validation_bounds_exact_json_and_canonical_path_identities() {
+        let initial = staged();
+        let key = ExecutionIntentKey {
+            scope: initial.scope,
+            intent_id: initial.intent_id,
+        };
+        assert!(validate_payload(&key, &initial.payload).is_ok());
+        for branch in [
+            " feature/x",
+            "feature/x ",
+            "feature//x",
+            "/feature/x",
+            "feature/x/",
+            "feature/../x",
+            "feature/./x",
+            "feature\\x",
+        ] {
+            let mut key = key.clone();
+            key.scope.owner.branch = branch.into();
+            assert_eq!(
+                validate_key(&key).unwrap_err().code,
+                ExecutionIntentErrorCode::InvalidRequest
+            );
+        }
+        let mut excessive = key.clone();
+        excessive.intent_id = "é".repeat(257);
+        assert_eq!(
+            validate_key(&excessive).unwrap_err().code,
+            ExecutionIntentErrorCode::InputLimit
+        );
+        assert_eq!(
+            advance(&"9".repeat(4096)).unwrap_err().code,
+            ExecutionIntentErrorCode::InputLimit
+        );
+        assert_eq!(advance("9007199254740993").unwrap(), "9007199254740994");
+        let mut payload = initial.payload;
+        let ExecutionIntentPayload::Start { request } = &mut payload else {
+            unreachable!()
+        };
+        request.entry.as_mut().unwrap().message_json = "{\"n\":1,\"n\":2}".into();
+        assert_eq!(
+            validate_payload(&key, &payload).unwrap_err().code,
+            ExecutionIntentErrorCode::InvalidRequest
+        );
+        let ExecutionIntentPayload::Start { request } = &mut payload else {
+            unreachable!()
+        };
+        request.entry.as_mut().unwrap().message_json =
+            serde_json::to_string(&"é".repeat(500000)).unwrap();
+        assert_eq!(
+            validate_payload(&key, &payload).unwrap_err().code,
+            ExecutionIntentErrorCode::InputLimit
+        );
+        let mut unknown = serde_json::to_value(staged()).unwrap();
+        unknown["workspacePath"] = "untrusted".into();
+        assert!(serde_json::from_value::<ExecutionStageIntentRequest>(unknown).is_err());
+    }
+}

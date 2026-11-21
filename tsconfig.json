@@ -33,6 +33,6 @@
     /* Bun compatibility */
     "types": ["bun-types"]
   },
-  "include": ["src"],
+  "include": ["src", "dev/agsdl/conformance-host030.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

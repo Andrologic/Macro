@@ -1,6 +1,6 @@
 import type { CommandErrorPayload } from '../../types/generated/ipc';
 
-export interface ServiceError extends CommandErrorPayload {
+export interface ServiceError extends Omit<CommandErrorPayload, 'details'> {
   code: string;
   details?: unknown;
 }
@@ -9,6 +9,7 @@ export const SERVICE_ERROR_CODES = {
   PLAN_METADATA_MISSING: 'PLAN_METADATA_MISSING',
   PLAN_REPLICA_DIVERGED: 'PLAN_REPLICA_DIVERGED',
   GIT_OBJECT_MISSING: 'GIT_OBJECT_MISSING',
+  CONFLICT_ASSISTANT_CONTEXT_CHANGED: 'CONFLICT_ASSISTANT_CONTEXT_CHANGED',
   DIRECT_MODE_CONFIGURATION_REQUIRED: 'DIRECT_MODE_CONFIGURATION_REQUIRED',
   DIRECT_CHECKPOINT_MISSING: 'DIRECT_CHECKPOINT_MISSING',
   DIRECT_CHECKPOINT_CORRUPT: 'DIRECT_CHECKPOINT_CORRUPT',
@@ -164,3 +165,7 @@ export const isWorkspaceStateUnavailableError = (error: unknown): boolean => {
     (message.includes('failed to read workspace state') && !isResourcePressureError(error))
   );
 };
+
+/** Admission failures must not become provider retries or local compaction fallbacks. */
+export const isChatAdmissionFailure = (error: unknown): boolean =>
+  toServiceError(error).code.startsWith('CHAT_ADMISSION_');

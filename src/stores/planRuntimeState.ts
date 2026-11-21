@@ -6,6 +6,8 @@ export interface PlanRuntimeStateSnapshot {
 
 export interface ClearPlanRuntimeStateParams {
   planId?: string | null;
+  /** Storage branch of an archived or deleted plan; also drops its pending draft. */
+  branchName?: string | null;
   deletedWorktreeKeys?: string[];
 }
 

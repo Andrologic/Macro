@@ -1,0 +1,155 @@
+{
+  "description": "With remaining wait, the join decides at once but the run continues only once the other branches have ended.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "quorum-wait",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "reviewer": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "spread",
+      "steps": {
+        "spread": {
+          "type": "agent",
+          "agent": "lead",
+          "next": [
+            "r1",
+            "r2",
+            "r3"
+          ]
+        },
+        "r1": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "next": {
+            "approve": "vote",
+            "reject": "vote"
+          }
+        },
+        "r2": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "next": {
+            "approve": "vote",
+            "reject": "vote"
+          }
+        },
+        "r3": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "next": {
+            "approve": "vote",
+            "reject": "vote"
+          }
+        },
+        "vote": {
+          "type": "join",
+          "quorum": {
+            "count": 1,
+            "accept": [
+              "approve"
+            ]
+          },
+          "remaining": "wait",
+          "next": {
+            "reached": "publish",
+            "missed": "revise"
+          }
+        },
+        "publish": {
+          "type": "call",
+          "command": "make publish"
+        },
+        "revise": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Revise."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "spread",
+      "returns": {
+        "text": "Vote."
+      }
+    },
+    {
+      "work": "r2",
+      "returns": {
+        "choice": "approve"
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "r1"
+        },
+        {
+          "step": "r3"
+        }
+      ]
+    },
+    {
+      "work": "r1",
+      "returns": {
+        "choice": "reject"
+      }
+    },
+    {
+      "work": "r3",
+      "returns": {
+        "choice": "approve"
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "publish"
+        }
+      ]
+    },
+    {
+      "work": "publish",
+      "command": {
+        "exitCode": 0
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "spread": 1,
+      "r1": 1,
+      "r2": 1,
+      "r3": 1,
+      "publish": 1
+    },
+    "joins": [
+      {
+        "join": "vote",
+        "outcome": "reached",
+        "branches": {
+          "r2": {
+            "choice": "approve"
+          }
+        }
+      }
+    ],
+    "failures": []
+  }
+}

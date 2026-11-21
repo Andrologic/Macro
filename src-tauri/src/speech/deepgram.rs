@@ -1,4 +1,7 @@
-use super::{read_provider_response, SpeechError, TranscriptionRequest, TranscriptionResult};
+use super::{
+    bounded_provider_error, read_provider_response, SpeechError, TranscriptionRequest,
+    TranscriptionResult,
+};
 use crate::db::models::SpeechProviderConfig;
 use serde::Deserialize;
 use std::time::Duration;
@@ -76,7 +79,7 @@ pub(super) async fn transcribe(
             .ok()
             .and_then(|value| value.err_msg.or(value.message))
             .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
-        return Err(SpeechError::Request(message));
+        return Err(SpeechError::Request(bounded_provider_error(&message)));
     }
 
     let parsed = serde_json::from_slice::<DeepgramResponse>(&body)

@@ -112,12 +112,12 @@ initial-load transfer. Fonts, native binaries, source maps and framing are exclu
 | `MarkdownRichContent-CnCMovbT.js` | 10,736 | 3,893 |
 
 Vite warned about mixed static/dynamic imports of `tauriRuntimeBridge` and a
-chunk above 1,200 kB. The measured largest `index` chunk exceeds the existing
-1,425,000-byte entry budget in `dev/check-bundle-size.mjs` by 27,987 bytes.
-This is an observation on the unchanged product base, not a new regression
-introduced by this developer-only tooling. The temporary output was removed;
-the bundle budget command itself was not run against `dist`. Investigate this
-base/toolchain result before changing chunk boundaries or relaxing a budget.
+chunk above 1,200 kB. The measured largest `index` chunk is 197,013 bytes below
+the current 1,650,000-byte entry budget in `dev/check-bundle-size.mjs`.
+This measurement describes the unchanged product base used for this tooling
+experiment. The temporary output was removed; the bundle budget command itself
+was not run against `dist`. Use a fresh build and `bun run bundle:check` before
+changing chunk boundaries or budgets.
 
 ## Runtime measurements still absent
 
@@ -216,7 +216,7 @@ bun --no-install test dev/performance/native-sqlite.test.ts
 ```
 
 The command runs `cargo build --manifest-path src-tauri/Cargo.toml --example
-performance-sqlite --locked --offline -j 1`, with explicit overrides
+performance-sqlite --features performance-sqlite --locked --offline -j 1`, with explicit overrides
 `profile.dev.package.macro.debug=0`, `profile.test.package.macro.debug=0`,
 `profile.dev.incremental=false` and `profile.test.incremental=false`, plus
 `TAURI_CONFIG='{"bundle":{"externalBin":[]}}'`. Dependencies must already be
@@ -234,13 +234,10 @@ caching. The replacement race is reproduced by a focused staging test. No source
 the cache owner is changed. A cache hit does not mean a release build or an
 idle machine.
 
-The repository's database module is private. The dedicated example compiles its
-actual source files with `#[path]`, including the real migration/pool code,
-models and repository, rather than adding public production APIs. Its AI/secrets
-module dependencies are compiled from their source but never initialized or
-called for provider access. The existing public config module is linked without
-installing a manager. Default provider rows inserted by migrations stay within
-the fixture database; no credentials or provider connections are used.
+The dedicated example calls a feature-gated entry point in the library. The
+benchmark uses the private repository and migration code directly. Its temporary
+database gets the default provider rows from migrations. The benchmark opens no
+provider connection and loads no credentials.
 
 ### Isolation and validation
 
@@ -267,6 +264,9 @@ foreign keys. Every committed append ID must survive reopen. The small
 to nearest-rank percentile and failure-cleanup assertions. The Bun test checks
 that provenance hashes change for tracked/untracked sources and ignore Cargo
 build outputs.
+
+The general benchmark checks the current migration chain for a fresh database.
+The separate content baseline keeps its exact historical schema requirements.
 
 The report records HEAD, dirty state, a fingerprint of tracked and untracked
 nonignored `src-tauri` and `dev/performance` files, executable SHA-256, Rust/Cargo
@@ -524,3 +524,578 @@ locale objects matched their source JSON. These checks cover emitted imports
 and data, not first-open latency, WebView rendering or a native startup timing.
 The earlier performance series in this document remain tied to their recorded
 commits and are not re-measured by this build.
+
+## Bundle budgets for the local stabilization scope
+
+Fresh production builds compared `develop` at
+`65fffca4ca486ecb1efe45f0b24cd7f25e63644a` with the stabilization candidate
+`3e31241085ef389c12485a15e7a88445731920b0`, using Bun 1.3.14, the same locked
+dependencies and `NODE_ENV=production bun dev/performance/build-bundles.mjs`.
+The old guard already rejected the base entry, Korean and Japanese chunks.
+The candidate also exceeded the task-queue, French and German caps.
+
+| Output | Base bytes | Candidate bytes | Candidate gzip bytes, level 9 | Budget bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Application entry | 1,468,818 | 1,487,044 | 390,994 | 1,505,000 |
+| TaskQueue | 61,285 | 62,167 | 18,393 | 63,000 |
+| ChatZone | 198,692 | 199,494 | 57,853 | 201,000, unchanged |
+| French locale | 138,429 | 143,205 | 42,490 | 145,500 |
+| Korean locale | 138,974 | 143,769 | 42,586 | 145,500 |
+| Japanese locale | 153,710 | 159,064 | 44,374 | 161,000 |
+
+The stabilization scope adds task and archive guards, project validation, Git
+diagnostics and conflict inspection, shared-dialog integration and their
+translations. The entry grows by 18,226 bytes, or 1.24%, against the current
+base. The new ceilings allow approximately 1% above these measured outputs.
+The vendor, deferred-chat and rich-markdown limits remain unchanged. These
+adjustments account for the retained behavior and copy; they do not establish
+a performance improvement.
+
+The deduplicated static entry closure grows from 1,817,373 to 1,835,599 bytes,
+and from 492,778 to 498,500 gzip bytes. Its six chunks are unchanged in
+composition. Both builds report zero forbidden deferred modules in startup,
+deep-compare all 12 emitted locale objects with their source JSON, and retain
+terminal CSS rules. Total emitted JS/CSS grows from 9,371,068 to 9,425,567
+bytes. The raw reports and failed old-budget results are retained outside Git.
+
+This is a local candidate measurement, not a published version. Subsequent
+candidate corrections must still pass the fixed gate. Browser startup,
+first-open latency, rendering and native timing were not measured here.
+
+
+### Native refusal translation follow-up
+
+The production build of `afdfaa7beacbf09c4740c23e4531c611febb6869`
+measures TaskQueue at 63,040 bytes. Its native SQLite lock refusal now uses the
+existing translated message, with an additional exact backend diagnostic
+recognized by the presentation helper. The build exceeds the 63,000-byte cap
+by 40 bytes. The TaskQueue cap moves to 63,200 bytes, leaving 160 bytes above
+this measured output. All other caps remain unchanged. The raw measurement
+and failed old-budget result are retained with the local QA proofs.
+
+This adjustment accounts for the retained refusal translation. It does not
+establish a performance improvement or change the previously recorded startup
+and first-open measurements. Subsequent builds still use the budget guard.
+
+
+### AgSDL 0.2 and bounded develop integration
+
+The combined worktree starts from the integrated Chat candidate
+`cc0edb66bca867eba7a04ba3015a42b998fba8e6` and merges develop only through
+`0dad2a36a651d75d77e5d9da86f62fc03ad90374`. A local production build with
+Bun 1.3.14 and the final frozen lock measures the outputs below. These are
+working-tree measurements used to resolve the conflicting budgets. A fresh
+build of the committed candidate must pass the same guard before integration.
+
+| Output | Bytes | Gzip bytes, level 9 | Budget bytes |
+| --- | ---: | ---: | ---: |
+| Application entry | 1,633,013 | 432,579 | 1,650,000 |
+| ChatZone | 202,043 | 58,797 | 204,000, unchanged |
+| TaskQueue | 60,357 | 17,915 | 62,000, unchanged |
+| German locale | 141,613 | 43,674 | 143,200 |
+| Spanish locale | 138,417 | 42,500 | 138,500, unchanged |
+| French locale | 144,447 | 42,771 | 146,600 |
+| Korean locale | 145,081 | 43,061 | 146,600 |
+| Japanese locale | 160,587 | 44,864 | 162,300 |
+
+The entry retains the AgSDL compiler and revisioned editing contracts together
+with develop's plan hydration, conflict validation, approval and diagnostics
+changes. Its ceiling and the expanded locale ceilings leave about 1% above the
+measured combined output. German and Spanish now have separate ceilings so the
+Spanish limit remains unchanged. Deferred Chat, task queue, vendor and rich
+Markdown limits keep their existing values.
+
+The Vite build still reports its large-entry warning. This measurement does
+not establish a startup, rendering or native performance improvement. The
+fresh candidate measurement separately checks the static startup closure,
+emitted locale values and terminal styles.
+
+## History loading and long-session resource protocol
+
+The developer runner below separates JSON decoding, the production
+`loadConversationMessages` mapping, `buildMessageState` indexing and transcript
+item construction. It does not install instrumentation in production or change
+storage, pagination, eviction or UI behavior.
+
+```sh
+bun --no-install test dev/performance/history-resources.test.ts
+bun --no-install x tsc --noEmit --strict --skipLibCheck --moduleResolution bundler --module esnext --target es2022 --jsx react-jsx --allowImportingTsExtensions --resolveJsonModule --types bun-types,vite/client dev/performance/history-resources.ts dev/performance/history-resources.test.ts
+bun --no-install dev/performance/history-resources.ts --self-test > /tmp/macro-history-resources-smoke.json
+bun --no-install dev/performance/history-resources.ts > /tmp/macro-history-resources.json
+```
+
+Commit source changes before the two runner commands. They require a clean
+worktree and check its HEAD again at completion. Reports record timestamp,
+HEAD, Bun, lockfile hash, OS, CPU, memory and start/end load averages. Repeat the
+full runner in three fresh processes with other heavy work stopped. Each timing
+case uses 10 warmups and 100 observations, nearest-rank percentiles, without
+outlier removal or forced GC. The smoke uses three messages and six resource
+cycles and supplies no performance baseline.
+
+History fixtures contain 100, 1,000 or 10,000 messages. Plain fixtures match the
+native example's 256 ASCII content bytes, user roles, null optional fields and
+ordered seed IDs. Conversation IDs differ and payload byte totals therefore
+need not match. Nested fixtures alternate roles and add valid tool traces,
+provider input JSON and assistant provider turn JSON. They exercise the actual
+parsers rather than a substitute mapping loop. Fixtures, JSON preparation and
+assertions are outside timed sections. The mapping includes the immediate
+synthetic Promise adapter, conversation-map creation and the production mapper;
+there are no conversations in that map, so project/task lookup and bootstrap
+loading are not represented. Index and transcript timings reuse already mapped
+messages. They exclude store publication, recovery merging, React, layout and
+Markdown rendering. Indexes point to the same message objects; the separate
+arrays add references, not content copies.
+
+The native example additionally reports `serialize_messages_json` and
+`serialized_messages_json_bytes`. Its existing `read` boundary remains the real
+repository/SQLx call, including pool acquisition, SQL, row materialization and
+model conversion. Serialization times only `serde_json::to_vec` of the returned
+models, after the read boundary. A JSON roundtrip count/content check follows
+outside timing. No SQL execution-only subdivision or Tauri IPC is claimed.
+Serialization and its untimed validation allocate between read samples; this
+extended protocol therefore also changes inter-sample allocator/cache state.
+Separate stage percentiles cannot be added to infer an end-to-end percentile.
+The native and Bun fixtures/engines are separate experiments.
+
+### Resources exercised and retained
+
+The runner executes 10,000 sequential cycles of real production helpers. Each
+cycle reopens the same 100-message history through production mapping and index
+helpers, replacing the prior synthetic owner state. Checkpoints report its
+retained message count, which should stay at 100; this is not a mounted
+useChatStore or an eviction policy test. It
+completes and cancels alternating chat turns, tracks/drains settled stream
+promises, consumes steers, forgets session identities and clears the synthetic
+state port. It creates and cancels real Web Streams through the production
+stream registry. Each lifecycle scope owns a real EventTarget subscription and
+a real timer, then stops twice and drains admitted work. A real SubagentRuntime
+uses a synthetic immediate executor and a clock adapter around real timers;
+its completed snapshots accumulate deliberately until `releaseRun` is called.
+The run checks callback delivery, stream cancellation, projected-state counts,
+owned timer counts, subagent timer counts and stream-registry size. After idle,
+unsubscribe and a further completed run that verifies listener removal, then
+dispose, it explicitly releases all settled runs and checks
+that public snapshots reach zero. It does not inspect private Maps or claim
+that an empty public API proves garbage collection of every internal object.
+
+Memory checkpoints record `process.memoryUsage()` before and after full Bun GC
+at 0 and every 1,000 cycles, then after dispose and after explicit run release.
+They are whole-process observations with allocator, JIT, sampling allocations
+and intentionally retained records mixed in. Snapshot counting itself allocates
+copies. The runtime variable remains reachable at the final checkpoint inside the
+helper. Empty parent pools are removed by `SubagentRuntime.#pump` once active
+and queued work reach zero; the helper does not measure private pool counts. RSS is not retained-object size, and Bun GC is not WebView GC.
+These checkpoints can reveal a direction to investigate, not establish a leak
+or prove its absence. They do not launch child processes or open any profile.
+
+| Owner | Intended retention and release | Evidence boundary |
+| --- | --- | --- |
+| `useChatStore` history | Loaded messages and ready status remain for revisits; concurrent load promises are removed in `finally`. Replacing one conversation rebuilds indexes over all loaded messages. | Source inspection of `ensureMessagesLoadedForConversation` and `replaceLoadedConversationMessages`; runner measures mapping/index helpers, not the mounted store. |
+| `chatMessageState` | Two arrays reference each message, plus an ID-to-index entry. | Identity assertions in the runner; no duplicate content payload in these indexes. |
+| `chatTurnRuntime` | Sessions persist until forget/reset; completion ownership releases explicitly; tracked streams remove themselves on settlement. | Real helper cycles, cancellation, completion, drain and forget. |
+| `streamResources` | Registry holds active readers/streams/request IDs; prune removes only an empty entry owned by that invocation. | Real Web Stream cancellation; no HTTP reader, native request or provider is opened. |
+| `lifecycleScope` / configuration effects | Scope owns unsubscribe/dispose functions and admitted promises; stop revokes then releases, drain waits. Config effects own store and preference subscriptions. | Scope cycles with EventTarget/timer; configuration subscriptions inspected, not mounted. |
+| `SubagentRuntime` / Goal audit | Runtime keeps settled snapshots until `releaseRun`; dispose cancels work and removes listeners. GoalAuditCoordinator calls releaseRun after observing results, and the durable journal releases transient data. | Real runtime completion/dispose/release cycles, synthetic executor; coordinator release path inspected, not a provider-driven audit. |
+| `terminalRuntime` | Detach retains at most six detached renderers; attached tabs remain. Disposal clears queued writes, RAF/retry timers, observers, links, input/global listeners and xterm. | Source inspection only; helper cycles do not instantiate xterm or measure WebView rendering. |
+| Native terminal store | PTYs/process groups and output tasks have native close paths; snapshots cap at 1,000,000 bytes per terminal. | Source inspection only; no native process lifetime measured by this runner. |
+| `useGitStore` | Tree/commit data retained per project; request identity Maps clear in finally; invalidateProject clears results and invalidates requests. Project registry owns invalidation. | Source inspection of store and gitCacheComposition; no repository polling experiment. |
+| `modelContextCatalog` | Catalog snapshot and status listeners have application lifetimes; persisted catalog is intentional cache data. | Source inspection only; no network refresh or user cache is accessed. |
+
+A Map alone is not evidence of a leak. A positive leak conclusion needs an
+unexpected retaining owner after the relevant release boundary, preferably a
+heap retaining path and repeatable growth across equal settled cycles.
+
+### Missing native and WebView portions
+
+Run these only in an isolated disposable synthetic profile, with providers
+absent and no user projects. Follow the identifier/config isolation described
+in `DEVELOPMENT.md`; a config directory override alone is insufficient.
+
+1. Seed the same fixture sizes in a disposable database. Run 10 warmups and 100
+   full-history opens per size in a native Tauri WebView. Wrap its actual
+   `__TAURI_INTERNALS__.invoke` with `installNativeProbe` from
+   `dev/performance/native-probe.ts`; measure the actual open action until its
+   message count is correct and the virtualized first/last target has painted
+   after two animation frames. Export aggregate call/JSON-byte distributions
+   and uninstall the probe. JSON bytes exclude framing and native events.
+2. Capture a WebView performance trace for those opens. Correlate the command
+   span with mapping/index work and React/paint. Native invoke duration includes
+   repository and transport work; subtracting percentiles from separate runners
+   does not isolate IPC overhead. An exact native transport split requires
+   command-level trace correlation; no synthetic JSON result fills that gap.
+3. For resource retention, repeat a fixed batch of 100 open/switch/close actions
+   ten times, then wait for stream settlement, terminal close acknowledgements,
+   RAF/retry queues and idle work. Record app/backend and WebView process-tree
+   RSS, open file descriptors and live child PIDs before/after each batch. In
+   WebView DevTools take heap snapshots at matching settled boundaries. Compare
+   retained paths for messages, detached DOM, xterm renderers and subscriptions,
+   distinguishing six cached detached terminals from closed ones. Keep selected
+   entities and fixture sizes fixed so intentional loaded-history growth is
+   separated from repeated same-entity retention.
+4. Close every created terminal, verify child/descendant PIDs disappear and
+   check that output tasks stop. Dispose the app runtime, close the app, verify
+   the isolated process tree exits, then remove only owned fixtures. Record
+   browser/WebView/toolchain versions, source SHA, lifecycle action counts and
+   boundaries. Repeat in three fresh processes. This protocol requires an
+   authorized browser/native driver and has not been executed by the Bun runner.
+
+### Executed history stages, 2026-10-22
+
+Three fresh processes per runner measured clean source
+`f4b1dd00cd4d7f453fcd0ee07bd578e37839386a`, based on product revision
+`57ca43aeaf79e66732667e564ea4af8b3410261c`. This lot adds developer tooling only.
+Environment was Linux 7.0.0-1019-nvidia arm64, 20 logical CPUs, 121.625 GiB,
+Bun 1.3.14, Rust/Cargo 1.95.0. The OS did not expose a CPU model. The lockfile
+SHA-256 was `1e49b5eaeebc035002a02f5367bc01bcea6dc0aa64c3f3b81ebed1b229408e4c`.
+Runs were sequential with other chantier benchmarks/builds paused, but shared
+host load was uncontrolled. These are observations, not regression thresholds.
+Raw JSON, logs and the external capture wrapper remain outside Git.
+
+All timing cells are medians of three process-level p50 / p95 values in
+milliseconds. They are not percentiles of pooled observations. Each process
+used 10 warmups and 100 retained observations per case; none were discarded.
+
+| Messages | Native repository/SQLx read | Rust JSON serialization | Serialized bytes |
+| ---: | ---: | ---: | ---: |
+| 100 | 1.622 / 1.965 | 1.857 / 1.870 | 62,401 |
+| 1,000 | 14.324 / 16.353 | 18.556 / 18.663 | 624,001 |
+| 10,000 | 124.367 / 133.677 | 185.665 / 187.159 | 6,240,001 |
+
+The native build used the documented dev profile, one Cargo job and shared
+cache, locked/offline dependencies and a verified private executable per run.
+The source fingerprint was
+`6610d8a22aaeb327e2302229d53032d959c1696eb0aa4b4a2e3c2dff4f7b2b87`.
+SQLite was 3.46.0 with migrations `[1,3,4,5,6,7,8,9,10]`, WAL, synchronous 1
+and foreign keys on. All path/content/metadata/integrity/reopen/cleanup checks
+passed. One preparatory smoke was rejected because developer source changed
+during its build; its output was excluded. The frozen-source smoke and all
+three final runs passed.
+
+The 185.665 ms serialization median is for an **unoptimized dev example**,
+not a release Tauri command or an observed native IPC encode duration. Both full
+repository materialization and serialization scale with payload in this build.
+An optimized-build reproduction and a native trace are required before deciding
+whether either explains product latency. These data do not isolate SQL execution
+from SQLx decoding, and cannot justify pagination or a storage change.
+
+| Messages | Fixture | Bun JSON decode | Production persistence mapping | Message indexing | Transcript items |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 100 | Plain | 0.049 / 0.055 | 0.016 / 0.023 | 0.014 / 0.022 | 0.014 / 0.022 |
+| 1,000 | Plain | 0.420 / 0.604 | 0.053 / 0.104 | 0.112 / 0.137 | 0.044 / 0.072 |
+| 10,000 | Plain | 3.743 / 5.592 | 0.297 / 0.627 | 1.012 / 1.952 | 0.305 / 0.647 |
+| 100 | Nested | 0.170 / 0.179 | 0.140 / 0.169 | 0.010 / 0.014 | 0.007 / 0.013 |
+| 1,000 | Nested | 1.431 / 1.786 | 1.010 / 1.463 | 0.095 / 0.113 | 0.050 / 0.058 |
+| 10,000 | Nested | 14.384 / 17.470 | 10.780 / 15.596 | 1.182 / 1.873 | 0.448 / 0.592 |
+
+At 10,000 messages, plain/nested JSON contained 6,100,001 / 15,383,891 bytes.
+Nested parsers add visible work to real frontend mapping in Bun. Their cost is
+separate from transport and from the diagnostics copy measured elsewhere. These
+fixtures do not establish real-user payload distributions or WebView latency.
+No stage percentile is added to a different stage, engine or process.
+
+### Executed resource cycles, 2026-10-22
+
+Each of the three complete JS runs passed 10,000 cycles. Each ended with 10,000
+settled stream promises, 10,000 cancelled Web Streams, 10,000 delivered
+EventTarget events and 5,000 cancelled chat turns. Projected runtime states,
+active-stream registry entries, owned timers and subagent timers all reached
+zero. Reopening the same history retained 100 messages. Subagent snapshots
+reached 10,000 and stayed at 10,000 after dispose, then reached zero after
+explicit releaseRun. A further completed run after unsubscribe delivered no
+notification to the removed listener.
+
+Memory in those complete runs included prior history timing allocations.
+Separate fresh processes therefore called the same exported `resourceCycles`
+helper without the preceding history benchmark. To reproduce the additional
+returned-owner boundary from a clean repository root:
+
+```sh
+bun --no-install --eval '
+import { resourceCycles } from "./dev/performance/history-resources.ts";
+import { assertCleanBuildSource } from "./dev/performance/build-provenance.ts";
+const head = assertCleanBuildSource(process.cwd());
+const retention = await resourceCycles(10_000, 1_000);
+await new Promise(resolve => setImmediate(resolve));
+await new Promise(resolve => setImmediate(resolve));
+Bun.gc(true);
+const afterReturnedOwnerAndIdle = process.memoryUsage();
+if (assertCleanBuildSource(process.cwd()) !== head) throw new Error("Source changed");
+console.log(JSON.stringify({ head, bun: Bun.version, retention, afterReturnedOwnerAndIdle }));
+' > /tmp/macro-resources-isolated.json
+```
+
+The retained data returned by the helper contains numeric checkpoints, not the
+runtime owner. Two macrotask turns allow host cleanup to progress after the
+helper returns. The executed external wrapper also recorded environment,
+lockfile and its own source hashes, and rechecked HEAD/cleanliness. This boundary
+is stronger than reading process memory immediately inside the loop, but is
+still not a heap retaining-path inspection.
+
+| Fresh process | Initial heap / RSS MiB | At 10,000 cycles heap / RSS MiB | After releaseRun, owner still live | After helper return, two turns and GC |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 1.062 / 58.488 | 11.111 / 159.945 | 11.111 / 147.312 | 5.005 / 135.887 |
+| 2 | 1.065 / 59.719 | 11.133 / 160.215 | 11.133 / 161.465 | 5.004 / 161.652 |
+| 3 | 1.062 / 59.004 | 11.108 / 159.496 | 11.108 / 160.590 | 5.001 / 160.777 |
+
+These whole-process values mix module/JIT initialization, allocation pools,
+cleared timer handles and intentional history/run data. In particular, immediate
+heap accounting did not drop after releaseRun, although public snapshot count
+became zero; after returning and yielding it fell to about 5 MiB. RSS did not
+return to its initial value. Neither observation identifies a retaining owner
+or establishes a leak. The executed evidence confirms the tested release
+contracts and explicit data retention only. WebView heaps, DOM/listeners,
+xterm/RAF, native PTYs/process groups and app shutdown remain unmeasured; use
+the separate native/WebView protocol above before making claims about them.
+
+
+The original JSON captures at `f4b1dd00` contain an incorrect sentence in their
+`retained` narrative field stating that an empty parent pool persists until
+runtime collection. Preserve those raw captures and their original SHA/hashes.
+That sentence is corrected here and in future runner output.
+[`SubagentRuntime.#pump`](../src/services/subagentRuntime/SubagentRuntime.ts#L539)
+deletes an empty pool, and `#startExecution` decrements its active count and
+pumps again in `finally`. This correction changes no timings, numeric resource
+counts or memory readings; it removes an unsupported attribution of retention.
+### Local Pilot integration compatibility build
+
+The production build combining the current desktop with the Pilot transport
+measures 1,525,486 bytes for the entry, 821,607 bytes for the native client and
+643,898 bytes for the desktop composition. The latter two deferred transport
+chunks now have dedicated budgets with approximately 1% headroom. Other lazy
+chunks retain their 600,000-byte cap. The largest ordinary locale fragment is
+153,341 bytes and Japanese is 169,841 bytes; their caps are 155,000 and 172,000
+bytes. These measurements describe the combined scope, not a performance gain.
+
+
+## Native SQLite stage diagnostics on the current schema
+
+The native example now has a separate `--diagnostics` mode. Keep the ordinary
+mode for timing the uninstrumented repository. The diagnostic mode replays the
+current literal statements, extracted from the compiled repository source, on
+fresh file-backed fixtures. It does not install production instrumentation.
+
+```sh
+bun --no-install dev/performance/native-sqlite.ts --self-test
+bun --no-install dev/performance/native-sqlite.ts
+bun --no-install dev/performance/native-sqlite.ts --diagnostics
+```
+
+Use the same explicit `PATH`, `RUSTC` and compatible `CARGO_TARGET_DIR` for every
+compared revision. The reduced dev/test overrides, one Cargo job, offline/locked
+resolution, compiled source/nonce handshake and private binary staging above
+still apply. Build before measuring; never time an operation during a Cargo job.
+The first build after a toolchain change can recompile dependencies. Its duration
+is excluded from the series. Keep three successive fresh processes per mode and
+revision, clean sources and the source/binary/lock fingerprints. Aggregate with
+the median of process-level p50 and p95, not a percentile over pooled samples.
+
+The fixture remains 100, 1,000 or 10,000 messages with 256 ASCII content bytes,
+identical seed timestamps and ordered distinct IDs. Seeding is outside timing.
+Both modes perform 10 warmups and 100 retained samples. Every append commits,
+so final row counts are 210, 1,110 and 10,110. The example now requires the exact
+current migration set `[1,3,4,5,6,7,8,9,10,11,12]`, with WAL, synchronous NORMAL,
+foreign keys and the production pool configuration. No migration was added.
+
+Read diagnostics report pool acquisition, `fetch_all` and conversion of the
+complete 14-column projection into `Message`. Fetch includes SQLite execution,
+SQLx worker dispatch, value copies, row-channel transfer and row allocation.
+Conversion includes field decoding, strings, model allocation and destruction
+of fetched SQLx rows. Every diagnostic output is compared field for field and
+in order against the real repository outside timing. These phase percentiles
+cannot be added or subtracted to reconstruct an operation percentile.
+
+A separate engine diagnostic locks the actual SQLx SQLite handle, prepares and
+binds the same SELECT, steps all rows and finalizes the statement. It records
+exact returned rows and VM steps. This uses the same locked SQLite library and
+file, with no SQLx row objects or Rust text/model copies. Pool/handle acquisition
+is excluded; statement preparation is included, unlike a warmed SQLx statement
+cache. It is an executed diagnostic with a different boundary, not an estimate
+of the SQLite contribution inside an asynchronous repository call. The pinned
+`libsqlite3-sys` dev dependency only exposes this existing library to the example.
+It is not a second SQLite engine or a production dependency change.
+
+Write diagnostics replay acquisition, `BEGIN IMMEDIATE`, the insert with FTS,
+COUNT, latest-row query, preview conversion, metadata update, commit and result
+construction. Statements come from the current source. Execution phases include
+SQLx dispatch/scheduling and returned rows, so they are not pure engine timers.
+The ordinary mode remains the measurement of actual `create_message`, including
+metadata refresh and commit acknowledgement. Diagnostic replay maintenance is
+required when the repository control flow changes; a source fingerprint does
+not automatically instrument new branches.
+
+The diagnostic also compares reads through a disposable second pool with the
+same cloned connection options and only its bounded row channel changed to 512.
+This is an exploratory throughput experiment. It does not change the production
+pool's default capacity of 50 and cannot justify that global change without
+assessing memory/backpressure on other queries and large payloads. Its series
+runs after the default pool; order and shared-machine effects remain possible.
+
+`--self-test` separately checks empty/missing histories, all 14 fields with null
+and non-null values, reverse insertion with timestamp ties, a future latest
+message, Unicode previews, duplicate/FK errors, rollback of the message and FTS
+after a metadata failure, and a WAL reader while an append waits for a writer.
+It closes and reopens the owned file and compares exact content, order, metadata
+and FTS results. Contract checks stay outside comparison runs. Every measured
+fixture also checks path ownership, final counts/content/metadata, committed
+append IDs, integrity and reopening, then closes and removes its own directory.
+Commit-to-file plus reopening is the tested durability boundary; process kill,
+power failure and physical-storage guarantees are untested.
+
+
+### Executed ordinal-decoding comparison
+
+Product base `3ed3a91981ae6d8a5e9811469fe89582c878c1db` was compared with
+`c08df292ba7a2db04f40de1e871676640b5c43c5` on clean sources. An intermediate
+benchmark-only revision `f55d5558f67971f3a777c5eaa2427bfada4a60f3` supplied the
+before-stage diagnostics and an unchanged-product control. All groups used
+Rust/Cargo 1.97.1, native SQLite 3.46.0, the reduced debug settings above,
+one offline locked Cargo job, and the same cache. Each series ran in three
+successive fresh processes from a verified private binary, after Cargo exited.
+Values are milliseconds, median of the three process-level p50 / p95 values.
+
+| Seed messages | Base read | Candidate read | Base create + metadata + commit | Candidate create + metadata + commit | Final rows |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 1.356 / 1.451 | 0.934 / 0.984 | 0.436 / 0.587 | 0.433 / 0.575 | 210 |
+| 1,000 | 12.992 / 13.194 | 8.679 / 8.914 | 0.510 / 1.163 | 0.503 / 1.135 | 1,110 |
+| 10,000 | 129.175 / 135.728 | 87.173 / 88.383 | 1.223 / 1.734 | 1.217 / 1.741 | 10,110 |
+
+| Diagnostic, 10,000 rows | Before p50 / p95 | After p50 / p95 |
+| --- | ---: | ---: |
+| Direct SQLite prepare/bind/step/finalize | 5.969 / 6.184 | 6.126 / 6.261 |
+| Pool acquisition | 0.088 / 0.125 | 0.091 / 0.119 |
+| SQLx fetch_all | 61.505 / 63.254 | 61.390 / 62.514 |
+| SQLx rows to Message | 67.850 / 68.550 | 25.826 / 26.735 |
+
+The 10,000-row actual repository read decreased by 32.5% at p50 and
+34.9% at p95 in this debug fixture. The conversion diagnostic decreased
+by 61.9% at p50. The only product change decodes the existing explicit
+14-column projection by ordinal rather than looking up every column name. The
+diagnostic now calls that actual mapper. An independent named-decode test with
+distinct field values, nullable fields, Unicode and timestamp/ID ties protects
+the projection contract. Statement contents, ordering, result volume, pool,
+transactions, metadata refresh and migrations are unchanged. Source comparison
+confirmed the complete create/metadata functions were identical. No write gain
+is established.
+
+Query plans used `idx_messages_conversation_created_at_id` for ordered reads
+and latest-row selection, and the covering `idx_messages_conversation` for
+COUNT, with no temporary sorting tree. The schema fingerprint was
+`a0719d4aeb484b4293317cfe6b95a8d6c15b72a9be12f0fdd5af6cc1315df283` in all diagnostic processes, and VM-step counts matched
+before/after. The exploratory 512-row channel did not yield a stable fetch gain;
+the default remains 50. COUNT cost scales with history size, but replacing it
+with a cached increment would change the metadata recomputation contract and
+was not justified by these observations.
+
+All 29 repository tests, native self-tests and the two staging/provenance tests
+passed. Every measured fixture passed its count, content, metadata, integrity,
+reopen and cleanup checks. Shared-machine load and OS caches were uncontrolled,
+outliers were retained, and no cold-disk, release-profile, large optional-payload,
+JavaScript, transport, production or UI speedup is established. The old Bun
+in-memory and historical 128 ms values are separate references. Full aggregate
+reports, process timestamps/load, manifests, source/binary fingerprints and
+superseded build failures remain outside Git.
+
+### Historical content protocol 4 after native admission
+
+This section records the schema13 runner. New executions use protocol 5 below;
+its earlier observations and source hashes remain schema13 evidence.
+
+`bun --no-install dev/performance/native-sqlite.ts --content-baseline --pilot`
+runs the current SQLite content pilot with one warmup and three retained samples
+at 100, 1,000 and 10,000 messages. It is not reference eligible. After independent
+adapter review, the same command without `--pilot` uses ten warmups and 100
+samples. A reference requires three fresh sequential processes on clean committed
+sources, with each process verified before starting the next.
+
+Protocol 4 requires exact migrations `[1,3,4,5,6,7,8,9,10,11,12,13]` and the
+production WAL/NORMAL/FK pool. Its distinct `content-v3-native` fixture retains
+the mixed-256 inputs, fourteen-field assistant, provenance v2 receipt,
+stream update schedule and batch/tail100 inputs of content-v2. Its definition
+and complete Rust content module produce a new SHA-256; content-v2 reports and
+hashes remain historical schema-12 evidence. The validator still reads protocol
+3 with its original runtime/cell checks, but a current run must publish protocol
+4 and the hash of its current fixture source. The older ordinary/diagnostic
+modes retain their schema-12 runtime guard and refuse the current bootstrap.
+
+The 38 existing content cells retain their boundaries and admission outcomes.
+Four additional cells at each size call the real native repository ports:
+
+| Cell | Timed work | Untimed input and result checks |
+| --- | --- | --- |
+| `native_version` | Content token transaction and commit | Exact incarnation and decimal revision against the stamp table |
+| `native_metadata_open100` | First metadata page, opening, descriptors and commit | First 100 ordered descriptors, exact totals/opening and next anchor |
+| `native_metadata_after50` | Continuation from descriptor 49, limit 100 | 50 rows at N=100, otherwise 100; opening absent and next anchor exact |
+| `native_window50` | Admission and joined body/receipt/revision fetch for the final 50 IDs, mapping and commit | Exact projected fields, requested order, consumed count and decimal revisions |
+
+These 50 cells retain 150 observations in the pilot or 5,000 per reference
+process. Native JSON byte counts are computed outside timing and checked against
+the existing 4 MiB admission estimate. They are not IPC or memory measurements.
+No new serialization timing cells are added. The N=10,000 bounded full-read
+refusal remains a refusal; the successful 50-body window has a different result
+volume and cannot be compared as the same operation.
+
+Fixture-derived fields and positions, independent legacy/SQL observations,
+FTS, metadata and row counts are checked before mutation resets. Each write and
+reset advances the native token without assuming an increment of one, and the
+final token and projected fields survive reopen. Native public controls cover a
+large receipt refusal, exact admitted prefix, invalid suffix and stale token.
+Existing native database tests provide the audited pre-fetch trace witnesses;
+the benchmark adds no trace instrumentation. The original legacy payload/fetch
+controls remain in place.
+
+The new fixture is a fresh file bootstrapped with migration 13. It does not time
+migration of an existing file. DML timings include the production triggers,
+metadata/FTS and commit, without isolating the causal cost of triggers. Validation
+and reset work stay outside timers but can affect cache and WAL state. Keep
+machine sharing, debug profile and OS cache limits in each report. No threshold
+or resource limit is raised for this protocol. Source/nonce handshake, private
+binary staging, complete stdout/stderr, cleanup and source stability checks stay
+required.
+
+This runner measures in-process Rust/SQLx/SQLite on disk. Capture construction,
+Tauri IPC, transport, displayed UI, RSS and heap remain unmeasured. A2 SQLite
+percentiles and A4 memory-port percentiles cannot be added to claim a complete
+path or global gain. This section defines the protocol; it does not announce a
+new accepted reference or a performance improvement.
+
+### Current content protocol 5 with catalogue migration14
+
+The same `--content-baseline` and `--pilot` commands now require exact migrations
+`[1,3,4,5,6,7,8,9,10,11,12,13,14]`, WAL/NORMAL and foreign keys. Protocol 5 has a
+distinct `content-v4-native-catalog` fixture identity and a new hash of that
+identity plus the complete Rust content module. Protocols 3 and 4 remain readable
+as historical evidence with their own fixture/runtime guards; the current runner
+refuses to publish either as a new execution. No historical report is relabelled.
+
+The 50 cells, message inputs, write/reset schedule, sample counts, validation and
+source/nonce checks remain unchanged. This profile measures those existing cells
+on a fresh database with migration14's catalogue triggers installed. It does not
+time an existing database migration, isolate trigger overhead, exercise the new
+catalogue IPC/page ports or prove a capture/network/UI/heap improvement. Those
+need separate measurements after their consumers are connected. The schema13
+reference cannot be pooled with this profile. No new accepted reference is
+announced by this tooling change, and no thresholds or resource limits change.
+
+The AgSDL and Macro Connect integration was measured with the production Vite
+build after combining both branches. These are emitted bytes, not a runtime
+latency or memory measurement.
+
+| Chunk | Emitted bytes | Budget bytes |
+| --- | ---: | ---: |
+| Application entry | 1,497,142 | 1,505,000 |
+| Native content validation | 797,869 | 830,000 |
+| Pilot desktop | 180,629 | 651,000 |
+| Chat zone | 202,935 | 204,000 |
+| Task queue | 58,429 | 63,200 |
+| Rich Markdown | 12,710 | 70,000 |
+| Spanish locale | 154,460 | 156,100 |
+| German locale | 157,917 | 159,500 |
+| French locale | 160,977 | 163,700 |
+| Korean locale | 162,042 | 163,700 |
+| Japanese locale | 179,689 | 181,500 |
+
+The application entry ceiling is tightened from develop's 1,542,000 bytes to
+1,505,000 bytes. The locale ceilings
+cover the combined translation catalogs with approximately 1% headroom. Other
+ceilings remain unchanged. Vite still reports its large-chunk warning; no runtime
+performance improvement is inferred from this build.

@@ -1,0 +1,29 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "permissions-zone",
+  "agents": {
+    "dev": {
+      "harness": "example",
+      "permissions": {
+        "preset": "workspace",
+        "outside": "deny",
+        "directories": {
+          "../shared-docs": "read",
+          "/tmp/build-cache": "write"
+        },
+        "rules": [
+          {
+            "action": "read",
+            "match": "**/.env*",
+            "effect": "deny"
+          },
+          {
+            "action": "write",
+            "match": "~/.config/**",
+            "effect": "deny"
+          }
+        ]
+      }
+    }
+  }
+}

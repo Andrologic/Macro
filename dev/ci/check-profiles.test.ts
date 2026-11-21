@@ -21,6 +21,11 @@ describe('local CI profiles', () => {
     expect(checks).not.toContain('Check all Windows native targets');
   });
 
+  test('parallel Linux profiles preserve every check in conservative validation', () => {
+    expect(new Set([...names('frontend'), ...names('argentic'), ...names('native-macro')]))
+      .toEqual(new Set(names('native')));
+  });
+
   test('native core builds the required sidecar before Rust tests on a clean checkout', () => {
     expect(names('native-core')).toEqual([
       'Install locked frontend dependencies',
@@ -32,8 +37,16 @@ describe('local CI profiles', () => {
       'Build AI runtime sidecar',
       'Check generated config contracts',
       'Check generated ipc contracts',
+      'Run locked argentic-core tests for all targets',
+      'Run locked argentic-core doc tests',
+      'Run locked argentic-runtime tests for all targets',
+      'Run locked argentic-runtime doc tests',
+      'Build standalone Argentic host',
+      'Verify native approval boundary',
       'Run locked Rust tests for all targets',
       'Run locked Rust doc tests',
+      'Verify headless HTTP transport',
+      'Verify native process interruption recovery',
     ]);
   });
 
@@ -124,4 +137,57 @@ test('active native profiles check both generated contract domains after the sid
     }
   }
   expect(stepsForProfile('frontend').some((entry) => entry.args.includes('generate_config'))).toBe(false);
+});
+
+test('process recovery is explicit in Linux native profiles and absent from frontend checks', () => {
+  for (const profile of ['native', 'native-core', 'full']) {
+    expect(stepsForProfile(profile, { platform: 'linux' }).filter(entry => entry.args.includes('test:native:process-recovery'))).toHaveLength(1);
+  }
+  for (const platform of ['darwin', 'win32']) {
+    for (const profile of ['native', 'native-core', 'full']) {
+      expect(stepsForProfile(profile, { platform }).some(entry => entry.args.includes('test:native:process-recovery'))).toBe(false);
+    }
+  }
+  for (const profile of ['frontend', 'documentation', 'windows', 'windows-core', 'sidecar']) {
+    expect(stepsForProfile(profile).some(entry => entry.args.includes('test:native:process-recovery'))).toBe(false);
+  }
+});
+
+
+test('native profiles reuse the headless HTTP smoke once after native compilation', () => {
+  for (const platform of ['linux', 'win32', 'darwin']) {
+    for (const profile of ['native', 'native-core', 'windows', 'windows-core', 'full']) {
+      const steps = stepsForProfile(profile, { platform });
+      const checks = steps.filter(entry => entry.args.includes('test:e2e:headless'));
+      expect(checks).toHaveLength(1);
+      expect(checks[0]).toMatchObject({ command: 'bun', args: ['run', 'test:e2e:headless'] });
+      expect(steps.indexOf(checks[0])).toBeGreaterThan(steps.findLastIndex(entry => entry.command === 'cargo'));
+    }
+  }
+  for (const profile of ['frontend', 'documentation', 'sidecar']) {
+    expect(stepsForProfile(profile).some(entry => entry.args.includes('test:e2e:headless'))).toBe(false);
+  }
+});
+
+
+test('exhaustive native profiles test both standalone workspaces and build the real host', () => {
+  for (const profile of ['argentic', 'native', 'native-core', 'full']) {
+    const steps = stepsForProfile(profile);
+    for (const crate of ['argentic-core', 'argentic-runtime']) {
+      const own = steps.filter(entry => entry.args.includes(crate));
+      expect(own.filter(entry => entry.args.includes('--all-targets') && entry.args[0] === 'dev/ci/argentic.mjs')).toHaveLength(1);
+      expect(own.filter(entry => entry.args.includes('--doc'))).toHaveLength(1);
+      expect(own.every(entry => entry.args.includes('--locked'))).toBe(true);
+    }
+    expect(steps.filter(entry => entry.args.includes('argentic-host'))).toHaveLength(1);
+    expect(steps.filter(entry => entry.args.includes('approval_boundary'))).toHaveLength(1);
+  }
+  expect(stepsForProfile('argentic').every(entry => entry.args[0] === 'dev/ci/argentic.mjs')).toBe(true);
+  for (const profile of ['windows', 'windows-core']) {
+    for (const crate of ['argentic-core', 'argentic-runtime']) {
+      expect(stepsForProfile(profile).filter(entry => entry.args[0] === 'dev/ci/argentic.mjs'
+        && entry.args[2] === 'check' && entry.args.includes(crate)
+        && entry.args.includes('--all-targets'))).toHaveLength(1);
+    }
+  }
 });

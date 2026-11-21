@@ -31,6 +31,13 @@ For provider keys during local Tauri development, copy the example file and keep
 cp dev/ai-keys.local.example.json dev/ai-keys.local.json
 ```
 
+## Branches and pull requests
+
+Macro uses GitHub Flow. Create a short-lived branch from current `origin/main`
+for each change and open a pull request targeting `main`. Merge after review
+and passing checks, then delete the topic branch. Stable versions are published
+from version tags on `main`.
+
 ## Required Checks
 
 Use Bun 1.3.14 and the Rust toolchain pinned in `rust-toolchain.toml`. Install
@@ -45,13 +52,15 @@ bun run ci:pre-push
 See [docs/test-strategy.md](docs/test-strategy.md) for test scope, coverage
 interpretation, maintenance rules, and the current refactoring sequence.
 
-The gate compares the complete pull request range against `origin/develop` for
-feature branches and against `origin/main` for release and hotfix branches. It
+The gate compares the complete pull request range against `origin/main` for each
+topic branch. It
 always checks pushed whitespace, versions, and tracked binaries. It then runs
 ESLint for changed scripts and related tests for changed TypeScript,
 `cargo fmt --check` for changed Rust, and the relevant dependency-lock,
-workflow, updater, or translation policy checks. It does not install
-dependencies or run repository-wide typechecks, builds, or test suites.
+workflow, updater, or translation policy checks. Changes affecting domain
+boundaries also run the import-boundary guard. Copilot bridge inputs, Bun
+manifests, and CI scripts trigger `typecheck:copilot`. The gate does not install
+dependencies or run repository-wide frontend typechecks, builds, or test suites.
 
 GitHub's pull request checks are the merge authority and run the exhaustive
 profiles on clean runners. Use `bun run ci` when a full validation is useful
@@ -68,7 +77,7 @@ a transient infrastructure failure.
 
 ## CI Cost Model
 
-The change classifier always reports a check. Draft pull requests and documentation-only changes stop there. Frontend changes add one Linux job; Rust, Tauri, sidecar, workflow, manifest, lockfile, and build-script changes also add a focused Windows native check. macOS and full desktop installers are reserved for authorized release tags.
+The change classifier always reports a check. Draft pull requests and documentation-only changes stop there. Frontend changes add one Linux job; Rust, Tauri, sidecar, workflow, manifest, lockfile, and build-script changes also add Windows native validation and a macOS recovery smoke job. Full desktop installers are built by the release and preview workflows.
 
 See [`docs/ci.md`](docs/ci.md) for path classification details, required branch and tag rules, and protected release-environment setup.
 
@@ -80,6 +89,14 @@ See [`docs/ci.md`](docs/ci.md) for path classification details, required branch 
 - Do not commit generated release artifacts, local databases, provider keys, signing material, build output, or large binaries.
 - Keep user-facing strings routed through the existing i18n patterns when applicable.
 - Use the shared notification system for user-facing notifications.
+
+## Documentation
+
+Practical documentation lives in [docs/README.md](docs/README.md), with separate
+paths for users and agents. Follow its authoring checklist when adding a guide.
+Update the relevant guide in the same pull request as a user-facing workflow
+change. Record the application version used for a walkthrough and distinguish
+source review from an actual run in the desktop app.
 
 ## Pull Requests
 

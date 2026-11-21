@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
+import fr from '../../i18n/locales/fr.json';
+import { createInstance } from 'i18next';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+
+const frenchI18n = createInstance();
+await frenchI18n.init({ lng: 'fr', resources: { fr: { translation: fr } }, interpolation: { escapeValue: false } });
+let frenchToolDescriptions = false;
 
 type MockCitation = {
   id: string;
@@ -206,7 +212,11 @@ const getMockCitationState = () => ({
   removeCitation: removeCitationMock,
 });
 const toggleChatToolMock = mock((_toolId: string) => undefined);
-const createConversationMock = mock(async () => ({ id: 'chat-conv' }));
+const createConversationMock = mock(async () => {
+  selectedConversationIdMock = 'chat-conv';
+  emitCitationChange();
+  return { id: 'chat-conv' };
+});
 const addComposerContextRefMock = mock((ref: {
   id: string;
   kind: string;
@@ -227,10 +237,11 @@ const clipboardWriteTextMock = mock(async (_text: string) => undefined);
 const notifyErrorMock = mock((_title: string, _options?: unknown) => undefined);
 let clipboardReadTextMock = mock(async () => 'clipboard text');
 let fetchWebPageShouldFail = false;
+let fetchWebPageFailure: unknown = null;
 let webFetchEnabledMock = true;
 const fetchWebPageMock = mock(async (url: string) => {
   if (fetchWebPageShouldFail) {
-    throw new Error('preview failed');
+    throw fetchWebPageFailure ?? new Error('preview failed');
   }
   const isSecond = url.includes('second');
   const favicon = isSecond
@@ -367,6 +378,10 @@ const loadContextToolbox = async () => {
         fallbackOrOptions?: string | { defaultValue?: string },
         maybeOptions?: { defaultValue?: string },
       ) => {
+        if (frenchToolDescriptions && (_key.startsWith('chat.contextToolbox.toolDescriptions.') || _key === 'chat.contextToolbox.sourceSummary' || _key === 'chat.newConversation')) {
+          const values = typeof fallbackOrOptions === 'object' ? fallbackOrOptions : maybeOptions;
+          return frenchI18n.t(_key, { ...values });
+        }
         if (typeof fallbackOrOptions === 'string') return fallbackOrOptions;
         return maybeOptions?.defaultValue ?? fallbackOrOptions?.defaultValue ?? _key;
       },
@@ -420,7 +435,6 @@ const loadContextToolbox = async () => {
   mock.module('../../services/webSearch', () => ({
     extractDomain: (url: string) => new URL(url).hostname,
     fetchWebPage: fetchWebPageMock,
-    getFaviconUrl: (url: string) => `${url}/favicon.ico`,
   }));
 
   mock.module('../../services/webSearchSettings', () => ({
@@ -467,26 +481,6 @@ const loadContextToolbox = async () => {
     ),
   }));
 
-  mock.module('../ui/Switch', () => ({
-    Switch: ({
-      checked,
-      disabled,
-      onCheckedChange,
-    }: {
-      checked?: boolean;
-      disabled?: boolean;
-      onCheckedChange?: (checked: boolean) => void;
-    }) => (
-      <button
-        type="button"
-        role="switch"
-        aria-checked={Boolean(checked)}
-        disabled={disabled}
-        onClick={() => onCheckedChange?.(!checked)}
-      />
-    ),
-  }));
-
   mock.module('../ui/toastService', () => ({
     notify: {
       error: notifyErrorMock,
@@ -502,6 +496,7 @@ describe('ContextToolbox', () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    frenchToolDescriptions = false;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -515,6 +510,7 @@ describe('ContextToolbox', () => {
     citationVersion = 0;
     citationSubscribers.clear();
     fetchWebPageShouldFail = false;
+    fetchWebPageFailure = null;
     webFetchEnabledMock = true;
     focusEvents.length = 0;
     inputChangeHandlers.clear();
@@ -681,6 +677,113 @@ describe('ContextToolbox', () => {
     expect(removeComposerContextRefMock).toHaveBeenCalledWith('source-interesting', 'source');
   });
 
+  it('clears the previous conversation context when the selection is cleared', async () => {
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => {
+      root?.render(<ContextToolbox />);
+    });
+    expect(container?.textContent).toContain('notes.md');
+
+    await act(async () => {
+      selectedConversationIdMock = null;
+      root?.render(<ContextToolbox />);
+    });
+    expect(container?.textContent).not.toContain('notes.md');
+  });
+
+  it('keeps a delayed paste in its original conversation after navigation', async () => {
+    let resolveClipboard!: (text: string) => void;
+    clipboardReadTextMock = mock(() => new Promise<string>((resolve) => {
+      resolveClipboard = resolve;
+    }));
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { readText: clipboardReadTextMock },
+    });
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => {
+      root?.render(<ContextToolbox />);
+    });
+    await act(async () => {
+      findButtonByText(container!, 'Paste').click();
+    });
+    await act(async () => {
+      selectedConversationIdMock = null;
+      root?.render(<ContextToolbox />);
+    });
+    await act(async () => {
+      resolveClipboard('Original conversation only');
+      await Promise.resolve();
+    });
+    expect(addCitationMock).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'chat-conv', content: 'Original conversation only',
+    }));
+    expect(container?.textContent).not.toContain('Clipboard text');
+    expect(container?.textContent).not.toContain('notes.md');
+  });
+
+  it('keeps a delayed URL preview in its original conversation after navigation', async () => {
+    let resolvePreview!: (preview: Awaited<ReturnType<typeof fetchWebPageMock>>) => void;
+    fetchWebPageMock.mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePreview = resolve;
+    }));
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => { root?.render(<ContextToolbox />); });
+    await changeInputByPlaceholder('https://example.com/article', 'example.com/delayed');
+    await act(async () => { findButtonByExactText(container!, 'Add').click(); });
+    await act(async () => {
+      selectedConversationIdMock = null;
+      root?.render(<ContextToolbox />);
+    });
+    await act(async () => {
+      resolvePreview({ url: 'https://example.com/delayed', title: 'Delayed preview',
+        snippet: 'Original URL only', content: 'Original URL only', favicon: '' });
+      await Promise.resolve();
+    });
+    expect(addCitationMock).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'chat-conv', content: 'Original URL only',
+    }));
+    expect(container?.textContent).not.toContain('Delayed preview');
+  });
+
+  it('keeps a delayed file import in its original conversation after navigation', async () => {
+    let resolveFile!: (bytes: ArrayBuffer) => void;
+    const file = new File(['Original file only'], 'delayed.md', { type: 'text/markdown' });
+    file.arrayBuffer = () => new Promise((resolve) => { resolveFile = resolve; });
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => { root?.render(<ContextToolbox />); });
+    await uploadFile(container!, file);
+    await act(async () => {
+      selectedConversationIdMock = null;
+      root?.render(<ContextToolbox />);
+    });
+    await act(async () => {
+      resolveFile(new TextEncoder().encode('Original file only').buffer);
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(addCitationMock).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'chat-conv', content: 'Original file only',
+    }));
+    expect(container?.textContent).not.toContain('delayed.md');
+  });
+
+  it('names all six tool switches and preserves their activation state', async () => {
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => { root?.render(<ContextToolbox />); });
+    await act(async () => { findButtonByText(container!, 'Tools').click(); });
+    const switches = container!.querySelectorAll<HTMLButtonElement>('[role="switch"]');
+    expect(switches).toHaveLength(6);
+    for (const [index, control] of Array.from(switches).entries()) {
+      expect(control.getAttribute('aria-label')).toBe(chatTools[index].name);
+      expect(control.getAttribute('aria-checked')).toBe('true');
+    }
+    const enabled = Array.from(switches).find((control) => !control.disabled)!;
+    const index = Array.from(switches).indexOf(enabled);
+    await act(async () => { enabled.click(); });
+    expect(toggleChatToolMock).toHaveBeenCalledWith(chatTools[index].id);
+  });
+
   it('offers only conversations in the current project as explicit sources', async () => {
     conversationsMock = [
       { id: 'chat-conv', title: 'Current work', project_id: 'project-1', updated_at: '2026-09-28T12:00:00Z' },
@@ -736,6 +839,33 @@ describe('ContextToolbox', () => {
     expect(alreadyAddedButton.querySelector('[data-icon="check"]')).toBeTruthy();
   });
 
+  it('shows French descriptions for the six Chat tools without changing their names', async () => {
+    frenchToolDescriptions = true;
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => root?.render(<ContextToolbox />));
+    await act(async () => { findButtonByText(container!, 'Tools').click(); });
+    for (const tool of chatTools) {
+      expect(container?.textContent).toContain(tool.name);
+      expect(container?.textContent).toContain(fr.chat.contextToolbox.toolDescriptions[tool.id as keyof typeof fr.chat.contextToolbox.toolDescriptions]);
+      expect(container?.textContent).not.toContain(tool.description);
+    }
+  });
+
+  it('uses singular and plural French passage summaries', async () => {
+    frenchToolDescriptions = true;
+    sourceCitations = createInitialSourceCitations().slice(0, 1);
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => root?.render(<ContextToolbox />));
+    await act(async () => { findButtonByText(container!, 'Sources').click(); });
+    expect(container?.textContent).toContain('1 passage');
+    expect(container?.textContent).not.toContain('1 passages');
+    await act(async () => {
+      sourceCitations = createInitialSourceCitations();
+      emitCitationChange();
+    });
+    expect(container?.textContent).toContain('2 passages');
+  });
+
   it('disables Web Fetch in the Chat tools list when URL fetching is disabled globally', async () => {
     webFetchEnabledMock = false;
     const { ContextToolbox } = await loadContextToolbox();
@@ -757,6 +887,7 @@ describe('ContextToolbox', () => {
   });
 
   it('keeps uploaded files visible when the toolbox creates the chat conversation', async () => {
+    frenchToolDescriptions = true;
     selectedConversationIdMock = null;
     contextCitations = [];
     const { ContextToolbox } = await loadContextToolbox();
@@ -776,7 +907,7 @@ describe('ContextToolbox', () => {
       }),
     );
 
-    expect(createConversationMock).toHaveBeenCalled();
+    expect(createConversationMock).toHaveBeenCalledWith(frenchI18n.t('chat.newConversation'), null, null);
     expect(container?.textContent).toContain('upload-from-empty.md');
     expect(container?.textContent).not.toContain('Visible after conversation creation.');
     expect(container?.textContent).not.toContain('Delete');
@@ -948,6 +1079,36 @@ describe('ContextToolbox', () => {
     expect(container?.textContent).toContain('No pasted text added');
   });
 
+  it('renders only inline favicons without contacting a third-party image host', async () => {
+    contextCitations = [
+      {
+        id: 'web-no-icon', type: 'web', scope: 'context', source: 'https://first.example',
+        title: 'No icon', url: 'https://first.example/article',
+        messageId: 'manual-no-icon', conversationId: 'chat-conv', timestamp: '2026-03-19T00:00:00.000Z',
+      },
+      {
+        id: 'web-remote-icon', type: 'web', scope: 'context', source: 'https://second.example',
+        title: 'Remote icon', url: 'https://second.example/article',
+        favicon: 'https://images.example/favicon.ico',
+        messageId: 'manual-remote-icon', conversationId: 'chat-conv', timestamp: '2026-03-19T00:00:00.000Z',
+      },
+      {
+        id: 'web-inline-icon', type: 'web', scope: 'context', source: 'https://third.example',
+        title: 'Inline icon', url: 'https://third.example/article',
+        favicon: 'data:image/png;base64,AQIDBA==',
+        messageId: 'manual-inline-icon', conversationId: 'chat-conv', timestamp: '2026-03-19T00:00:00.000Z',
+      },
+    ];
+    const { ContextToolbox } = await loadContextToolbox();
+
+    await act(async () => { root?.render(<ContextToolbox />); });
+
+    expect(findCardForText(container!, 'No icon').querySelector('[data-icon="globe"]')).toBeTruthy();
+    expect(findCardForText(container!, 'Remote icon').querySelector('[data-icon="globe"]')).toBeTruthy();
+    expect(findImageBySrc(container!, 'data:image/png;base64,AQIDBA==')).toBeTruthy();
+    expect(container?.querySelector('img[src^="https://"]')).toBeNull();
+  });
+
   it('shows a visible URL fallback when preview fetching fails', async () => {
     fetchWebPageShouldFail = true;
     const originalConsoleError = console.error;
@@ -974,6 +1135,37 @@ describe('ContextToolbox', () => {
       expect(notifyErrorMock).toHaveBeenCalledWith(
         'Could not fetch URL preview',
         expect.objectContaining({ description: 'https://example.net/story' }),
+      );
+    } finally {
+      console.error = originalConsoleError;
+    }
+  });
+
+  it('explains a native network policy refusal while keeping the URL citation', async () => {
+    fetchWebPageShouldFail = true;
+    fetchWebPageFailure = {
+      code: 'WEB_FETCH_DESTINATION_BLOCKED',
+      message: 'Web fetch destination blocked: local network address',
+    };
+    const originalConsoleError = console.error;
+    console.error = mock(() => undefined) as never;
+    const { ContextToolbox } = await loadContextToolbox();
+    try {
+      await act(async () => {
+        root?.render(<ContextToolbox />);
+        await Promise.resolve();
+      });
+      await changeInputByPlaceholder('https://example.com/article', 'http://127.0.0.1:54579/accentuee');
+      await act(async () => {
+        findButtonByExactText(container!, 'Add').click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(fetchWebPageMock).toHaveBeenCalledWith('http://127.0.0.1:54579/accentuee');
+      expect(container?.textContent).toContain('127.0.0.1');
+      expect(notifyErrorMock).toHaveBeenCalledWith(
+        'Could not fetch URL preview',
+        expect.objectContaining({ description: 'For security, previews cannot access local, private, reserved or link-local network addresses. Use a public URL.' }),
       );
     } finally {
       console.error = originalConsoleError;

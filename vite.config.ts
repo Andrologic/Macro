@@ -1,14 +1,48 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig, transformWithEsbuild } from "vite";
+import { defineConfig, loadEnv, transformWithEsbuild, type UserConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import {
+  generateMacroPilotValidators,
+  macroPilotSchemaPaths,
+} from "./dev/generate-macro-pilot-validators";
 
-// @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 const ALLOWED_PUBLIC_SECRET_FILES = new Set(["ai-keys.local.example.json"]);
 const MERMAID_PARSER_VIRTUAL_PREFIX = "\0macro-mermaid-parser-source:";
+const MACRO_PILOT_VALIDATORS_VIRTUAL_ID = "\0macro-pilot-schema-validators";
+
+export const isMacroPilotValidatorsImport = (
+  source: string,
+  importer: string | undefined,
+  rootDir: string = projectRoot
+): boolean => {
+  const importerPath = importer?.split(/[?#]/, 1)[0].replace(/\\/g, "/");
+  const protocolPath = resolve(rootDir, "src/services/macroPilot/protocol.ts").replace(/\\/g, "/");
+  return source === "./schemaValidators" && importerPath === protocolPath;
+};
+
+const createMacroPilotValidatorsPlugin = () => {
+  return {
+    name: "macro-pilot-schema-validators",
+    enforce: "pre" as const,
+    resolveId(source: string, importer?: string) {
+      if (isMacroPilotValidatorsImport(source, importer)) {
+        return MACRO_PILOT_VALIDATORS_VIRTUAL_ID;
+      }
+      return null;
+    },
+    async load(id: string) {
+      if (id !== MACRO_PILOT_VALIDATORS_VIRTUAL_ID) return null;
+      for (const schemaPath of macroPilotSchemaPaths(projectRoot)) {
+        this.addWatchFile(schemaPath);
+      }
+      return generateMacroPilotValidators(projectRoot);
+    },
+  };
+};
 
 export const isPathInside = (parentPath: string, candidatePath: string): boolean => {
   const relativePath = relative(parentPath, candidatePath);
@@ -166,6 +200,16 @@ const manualVendorChunk = (id: string): string | undefined => {
   // makes every dynamic caller statically load the diagram runtime.
   if (moduleId === "\0vite/preload-helper.js") return "utils-vendor";
 
+  // Retiring the 0.2 compiler removes Rollup's former shared dependency spine.
+  // Keep workflow inspection and Macro tool policy in their own shared chunks
+  // rather than folding their dependencies into the application entry.
+  if (moduleId.endsWith("/src/services/workflowAgentTasks.ts")) {
+    return "workflow-runtime";
+  }
+  if (moduleId.endsWith("/src/services/toolSecurityPolicy.ts")) {
+    return "tool-policy";
+  }
+
   if (!moduleId.includes("/node_modules/")) {
     return undefined;
   }
@@ -177,7 +221,7 @@ const manualVendorChunk = (id: string): string | undefined => {
     return "react-vendor";
   }
 
-  if (hasNodePackage(moduleId, "zustand") || hasNodePackage(moduleId, "jotai")) {
+  if (hasNodePackage(moduleId, "zustand")) {
     return "state-vendor";
   }
 
@@ -293,11 +337,7 @@ const manualVendorChunk = (id: string): string | undefined => {
     return "diagram-d3-vendor";
   }
 
-  if (
-    hasNodePackage(moduleId, "dagre-d3-es") ||
-    hasNodePackage(moduleId, "dagre") ||
-    hasNodePackage(moduleId, "graphlib")
-  ) {
+  if (hasNodePackage(moduleId, "dagre-d3-es")) {
     return "diagram-layout-vendor";
   }
 
@@ -352,8 +392,7 @@ const manualVendorChunk = (id: string): string | undefined => {
     hasNodePackage(moduleId, "@tauri-apps/plugin-dialog") ||
     hasNodePackage(moduleId, "@tauri-apps/plugin-http") ||
     hasNodePackage(moduleId, "@tauri-apps/plugin-notification") ||
-    hasNodePackage(moduleId, "@tauri-apps/plugin-opener") ||
-    hasNodePackage(moduleId, "@tauri-apps/plugin-store")
+    hasNodePackage(moduleId, "@tauri-apps/plugin-opener")
   ) {
     return "desktop-vendor";
   }
@@ -377,7 +416,18 @@ const manualVendorChunk = (id: string): string | undefined => {
   return undefined;
 };
 
-const manualChunk = (id: string): string | undefined => manualVendorChunk(id);
+const manualChunk = (id: string): string | undefined => {
+  if (id === MACRO_PILOT_VALIDATORS_VIRTUAL_ID) return "pilot-schema-validators";
+  // Keep content validation within the existing native-client transport budget,
+  // independently of the account and vault orchestration that imports it.
+  if (id.replace(/\\/g, "/").endsWith("/src/services/macroPilot/contentValidators.generated.js")) {
+    return "nativeClient-content-validation";
+  }
+  if (id.replace(/\\/g, "/").endsWith("/src/services/markdownRenderProjection.ts")) {
+    return "markdown-render-projection";
+  }
+  return manualVendorChunk(id);
+};
 
 const collectProhibitedPublicSecretFiles = (dir: string, root: string): string[] => {
   if (!existsSync(dir)) {
@@ -421,28 +471,62 @@ export const validatePublicSecretFiles = (rootDir: string = projectRoot): void =
 
 // https://vitejs.dev/config/
 // Optimized for Bun runtime - Maximum Performance Configuration
-export default defineConfig(({ command }) => {
+const PUBLIC_VITE_ENV_KEYS = [
+  'VITE_BACKEND_TRANSPORT',
+  'VITE_REMOTE_API_BASE_URL',
+  'VITE_REMOTE_API_PREFIX',
+  'VITE_REMOTE_BACKEND_URL',
+  'VITE_REMOTE_TIMEOUT_MS',
+  'VITE_REMOTE_WORKSPACE_ID',
+] as const;
+
+export default defineConfig(({ command, mode }): UserConfig => {
   const appVersion = readPackageVersion(projectRoot);
+  const loadedEnv = loadEnv(mode, projectRoot, '');
+  const publicDefines = Object.fromEntries(PUBLIC_VITE_ENV_KEYS.map((key) => [
+    `import.meta.env.${key}`,
+    JSON.stringify(loadedEnv[key] ?? ''),
+  ]));
 
   if (command === "build") {
     validatePublicSecretFiles(projectRoot);
   }
 
   return {
+    cacheDir: process.env.VITE_MACRO_DEMO === '1' ? '.demo-vite-cache' : 'node_modules/.vite',
     base: command === "build" ? "./" : "/",
+    // Vite's prefix matching would expose arbitrary VITE_* secrets. Publish
+    // exact non-secret keys below instead of opening a broad prefix.
+    envPrefix: '__MACRO_NO_PUBLIC_ENV__',
     define: {
       'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
+      ...publicDefines,
+      'import.meta.env.VITE_MACRO_DEMO': JSON.stringify(
+        command === 'build' ? '' : loadedEnv.VITE_MACRO_DEMO ?? '',
+      ),
+      'import.meta.env.VITE_TAURI_BROWSER_BRIDGE_PORT': JSON.stringify(
+        command === 'build' ? undefined : loadedEnv.VITE_TAURI_BROWSER_BRIDGE_PORT,
+      ) ?? 'undefined',
+      'import.meta.env.VITE_TAURI_BROWSER_BRIDGE': JSON.stringify(
+        command === 'build' ? '' : loadedEnv.VITE_TAURI_BROWSER_BRIDGE ?? '',
+      ),
+      'import.meta.env.VITE_TAURI_BROWSER_BRIDGE_TOKEN': JSON.stringify(
+        command === 'build' ? '' : loadedEnv.VITE_TAURI_BROWSER_BRIDGE_TOKEN ?? '',
+      ),
     },
     // Local JSON is consumed through default exports; emit object literals so
     // large locale objects do not gain an escaped JSON.parse string wrapper.
     json: { namedExports: false, stringify: false },
     plugins: [
+      createMacroPilotValidatorsPlugin(),
       createMermaidParserSourcePlugin(),
       react({
         // Use automatic JSX runtime for smaller bundle
         jsxRuntime: 'automatic',
       }),
     ],
+
+    esbuild: { legalComments: 'none' },
 
     // =============================================================================
     // BUILD OPTIMIZATIONS - Code Splitting & Chunking
@@ -457,24 +541,20 @@ export default defineConfig(({ command }) => {
       terserOptions: {
         compress: {
           passes: 2,
+          // Keep console.error/warn in release builds for crash diagnostics.
+          pure_funcs: process.env.NODE_ENV === 'production'
+            ? ['console.log', 'console.info', 'console.debug', 'console.trace']
+            : [],
+          drop_debugger: process.env.NODE_ENV === 'production',
         },
         format: {
           comments: false,
         },
       },
 
-      // Aggressive esbuild options
-      esbuildOptions: {
-        // Remove console.log in production
-        drop: process.env.NODE_ENV === 'production' ? ['console', 'debugger'] : [],
-        // Legal comments handling
-        legalComments: 'none',
-        // Target modern engines
-        target: 'esnext',
-      },
-
       // Code splitting configuration
       rollupOptions: {
+        input: { main: resolve(projectRoot, "index.html") },
         output: {
           // Manual chunks for optimal code splitting
           manualChunks: manualChunk,
@@ -539,6 +619,9 @@ export default defineConfig(({ command }) => {
         "react/jsx-dev-runtime",
         "sonner",
         "zustand",
+        // Pre-bundle React Flow for its CommonJS selector dependencies.
+        // The Architect panel still imports it lazily at runtime.
+        "@xyflow/react",
         "i18next",
         "react-i18next",
         "lucide-react",
@@ -552,7 +635,6 @@ export default defineConfig(({ command }) => {
         "@codemirror/view",
         "@codemirror/state",
         "codemirror",
-        "@xyflow/react",
       ],
 
       // Force re-optimization when these change
@@ -563,7 +645,7 @@ export default defineConfig(({ command }) => {
     // SERVER CONFIGURATION - Tauri Development
     // =============================================================================
     server: {
-      port: 1422,
+      port: Number(process.env.MACRO_TAURI_BROWSER_UI_PORT || 1422),
       strictPort: true,
       host: host || false,
       hmr: host

@@ -1,0 +1,32 @@
+{
+  "title": "Assistant",
+  "description": "Un assistant qui attend votre demande.",
+  "projectId": "demo-macro-library",
+  "planKind": "feature",
+  "icon": "sparkles",
+  "design": {
+    "version": 1,
+    "kind": "blueprint",
+    "purpose": "",
+    "context": "Projet fictif : les services, données et résultats sont simulés.",
+    "rules": [],
+    "requirements": []
+  },
+  "display": {
+    "title": "Assistant",
+    "cards": {
+      "/agents/agent1": {
+        "title": "Traiter votre demande"
+      },
+      "/flow/steps/agent1": {
+        "title": "Traiter votre demande"
+      },
+      "/bindings/engine": {
+        "title": "Macro"
+      },
+      "/configurations/standard": {
+        "title": "Standard"
+      }
+    }
+  }
+}

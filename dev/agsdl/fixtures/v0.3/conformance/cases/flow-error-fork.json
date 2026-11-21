@@ -1,0 +1,43 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "flow-error-fork",
+  "agents": {
+    "reviewer": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "onError": [
+      "x",
+      "y"
+    ],
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "reviewer",
+        "next": [
+          "x",
+          "y"
+        ]
+      },
+      "x": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new",
+        "next": "j"
+      },
+      "y": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new",
+        "next": "j"
+      },
+      "j": {
+        "type": "join",
+        "onError": []
+      }
+    }
+  }
+}

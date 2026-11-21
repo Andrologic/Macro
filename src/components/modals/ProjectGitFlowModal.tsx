@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { services } from '../../services';
 import { toServiceError } from '../../services/contracts/errors';
+import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
 import { ProjectIcon } from '../project/ProjectIcon';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
@@ -13,6 +14,7 @@ import {
   renderStandaloneFeatureBranchName,
   resolveProjectGitFlowSettings,
   validateProjectGitFlowSettings,
+  validateProjectGitFlowBranches,
 } from '../../services/architectGitNaming';
 import type {
   ProjectAccessChangePreview,
@@ -81,6 +83,8 @@ const buildTemplatePreview = (settings: ProjectGitFlowSettings) => ({
 
 export const ProjectGitFlowModal: React.FC = () => {
   const { t } = useTranslation();
+  const formId = useId();
+  const accessToggleRef = useRef<HTMLButtonElement>(null);
   const projectId = useAppStore((state) => state.projectGitFlowModalProjectId);
   const getProjectById = useAppStore((state) => state.getProjectById);
   const updateProjectGitFlow = useAppStore((state) => state.updateProjectGitFlow);
@@ -107,6 +111,8 @@ export const ProjectGitFlowModal: React.FC = () => {
 
   const appDefaults = useMemo(() => getDefaultProjectGitFlowSettings(), []);
   const validationErrors = useMemo(() => validateProjectGitFlowSettings(settings), [settings]);
+  const branchErrors = validateProjectGitFlowBranches(settings);
+  const templateErrors = validationErrors.filter(error => !Object.values(branchErrors).includes(error));
   const previews = useMemo(() => buildTemplatePreview(settings), [settings]);
   const isMainlineWorkflow = useMemo(() => isMainlineGitWorkflow(settings), [settings]);
   const resolvedProjectPath = project?.path ?? '';
@@ -231,7 +237,7 @@ export const ProjectGitFlowModal: React.FC = () => {
             );
 
   const handleClose = () => {
-    if (!isSaving) {
+    if (!isSaving && !isAccessSaving) {
       closeProjectGitFlowModal();
     }
   };
@@ -346,7 +352,7 @@ export const ProjectGitFlowModal: React.FC = () => {
   };
 
   const handlePrepareProjectGit = async () => {
-    if (!projectId || isAccessSaving) {
+    if (!projectId || isAccessSaving || validationErrors.length > 0) {
       return;
     }
 
@@ -553,22 +559,31 @@ export const ProjectGitFlowModal: React.FC = () => {
     placeholder: string
   ) => (
     <div className="space-y-2">
-      <label className="text-sm font-medium text-foreground">{label}</label>
+      <label htmlFor={`${formId}-${key}`} className="text-sm font-medium text-foreground">{label}</label>
       <input
+        id={`${formId}-${key}`}
+        aria-invalid={Boolean(key === 'baseBranch' || key === 'mainBranch' ? branchErrors[key] : false)}
+        aria-describedby={(key === 'baseBranch' || key === 'mainBranch') && branchErrors[key] ? `${formId}-${key}-error` : undefined}
         value={value}
         onChange={(event) => setSettings((prev) => ({ ...prev, [key]: event.target.value }))}
         className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
         placeholder={placeholder}
       />
+      {(key === 'baseBranch' || key === 'mainBranch') && branchErrors[key] && (
+        <p id={`${formId}-${key}-error`} role="alert" className="text-xs text-red-500">
+          {t('projects.gitFlowInvalidBranch', 'Enter a valid Git branch name.')}
+        </p>
+      )}
     </div>
   );
 
   const renderCompletionMergePolicySelect = () => (
     <div className="space-y-2 md:col-span-2">
-      <label className="text-sm font-medium text-foreground">
+      <label htmlFor={`${formId}-completionMergePolicy`} className="text-sm font-medium text-foreground">
         {t('projects.gitFlowCompletionMergePolicy', 'Task completion merge policy')}
       </label>
       <select
+        id={`${formId}-completionMergePolicy`}
         value={settings.completionMergePolicy}
         onChange={(event) =>
           setSettings((prev) => ({
@@ -596,8 +611,12 @@ export const ProjectGitFlowModal: React.FC = () => {
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/50" onClick={handleClose} />
+    <Dialog
+      title={t('projects.projectSettingsTitle', 'Project settings')}
+      onClose={handleClose}
+      closeOnBackdropClick
+      backdropClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+    >
 
       <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
         <div className="flex shrink-0 items-center justify-between border-b border-border px-5 py-4">
@@ -619,6 +638,7 @@ export const ProjectGitFlowModal: React.FC = () => {
           <button
             type="button"
             onClick={handleClose}
+            aria-label={t('common.close', 'Close')}
             className="rounded-lg p-1.5 transition-colors hover:bg-accent"
           >
             <Icon name="x" size={16} className="text-muted-foreground" />
@@ -680,6 +700,7 @@ export const ProjectGitFlowModal: React.FC = () => {
                 {project.gitSetupState === 'ready' || project.directEdit ? (
                   <button
                     type="button"
+                    ref={accessToggleRef}
                     onClick={() => void handleToggleAccess()}
                     disabled={isAccessSaving}
                     className={cn(
@@ -806,9 +827,9 @@ export const ProjectGitFlowModal: React.FC = () => {
             </div>
           </section>
 
-          {validationErrors.length > 0 && (
+          {templateErrors.length > 0 && (
             <section className="space-y-1 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2">
-              {validationErrors.map((error) => (
+              {templateErrors.map((error) => (
                 <p key={error} className="text-xs text-red-500">{error}</p>
               ))}
             </section>
@@ -858,6 +879,7 @@ export const ProjectGitFlowModal: React.FC = () => {
       {accessPreview && (
         <ConfirmPromptModal
           isOpen
+          returnFocusRef={accessToggleRef}
           title={t('projects.readOnlyImpactTitle', 'Switch to read-only?')}
           description={t(
             'projects.readOnlyImpactDescription',
@@ -1006,7 +1028,7 @@ export const ProjectGitFlowModal: React.FC = () => {
           </div>
         </ConfirmPromptModal>
       )}
-    </div>
+    </Dialog>
   );
 };
 

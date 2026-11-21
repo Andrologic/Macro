@@ -43,7 +43,7 @@ export const getUpdateButtonPresentation = (
     case 'ready':
       return {
         icon: 'check-circle',
-        label: translate('updates.readyForNextLaunch', 'Update v{{version}} will be installed the next time Macro opens', {
+        label: translate('updates.readyVersion', 'Macro v{{version}} is ready', {
           version: version ?? '',
         }),
         spinning: false,

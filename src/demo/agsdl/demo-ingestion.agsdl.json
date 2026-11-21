@@ -1,0 +1,171 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "demo-ingestion",
+  "title": "Import de catalogue",
+  "agents": {
+    "inspect": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Détecter les colonnes, le séparateur et les champs obligatoires. Signaler les changements de format."
+    },
+    "normalize": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Uniformiser les prix, les devises et les identifiants. Chaque ligne respecte le schéma du catalogue ; signaler à part les valeurs d’origine modifiées."
+    },
+    "repair": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Expliquer les lignes rejetées et proposer une correction. Ne pas supprimer silencieusement les doublons."
+    },
+    "report": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Présenter le nombre de lignes acceptées, rejetées et modifiées, avec des exemples."
+    },
+    "scene-checkedNormalization-validate": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Contrôler le schéma"
+    },
+    "scene-checkedNormalization-valid": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Catalogue conforme ?"
+    },
+    "scene-checkedNormalization-correctable": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Format à corriger ?"
+    },
+    "scene-checkedNormalization-feedback": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Renvoyer les erreurs de format"
+    },
+    "scene-main-prepare": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Préparer les lignes"
+    },
+    "scene-main-store": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Enregistrer le catalogue"
+    },
+    "scene-main-handoff": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre les statistiques"
+    }
+  },
+  "flow": {
+    "entry": "inspect",
+    "steps": {
+      "inspect": {
+        "type": "agent",
+        "agent": "inspect",
+        "title": "Analyser le fichier",
+        "next": "prepare"
+      },
+      "prepare": {
+        "type": "agent",
+        "agent": "scene-main-prepare",
+        "title": "Préparer les lignes",
+        "next": "normalization"
+      },
+      "normalization": {
+        "type": "compose",
+        "composition": "checkedNormalization",
+        "agents": {
+          "normalizer": "normalize"
+        },
+        "title": "Normaliser le catalogue",
+        "next": {
+          "valid": [
+            "repair"
+          ],
+          "invalid": [
+            "repair"
+          ]
+        }
+      },
+      "repair": {
+        "type": "agent",
+        "agent": "repair",
+        "title": "Traiter les anomalies",
+        "next": "store"
+      },
+      "store": {
+        "type": "agent",
+        "agent": "scene-main-store",
+        "title": "Enregistrer le catalogue",
+        "next": "handoff"
+      },
+      "handoff": {
+        "type": "agent",
+        "agent": "scene-main-handoff",
+        "title": "Transmettre les statistiques",
+        "next": "report"
+      },
+      "report": {
+        "type": "agent",
+        "agent": "report",
+        "title": "Présenter le bilan"
+      }
+    }
+  },
+  "compositions": {
+    "checkedNormalization": {
+      "entry": "normalize",
+      "steps": {
+        "normalize": {
+          "type": "agent",
+          "agent": {
+            "parameter": "normalizer"
+          },
+          "title": "Normaliser les données",
+          "next": "validate"
+        },
+        "validate": {
+          "type": "agent",
+          "agent": "scene-checkedNormalization-validate",
+          "title": "Contrôler le schéma",
+          "next": "valid"
+        },
+        "valid": {
+          "type": "agent",
+          "agent": "scene-checkedNormalization-valid",
+          "title": "Catalogue conforme ?",
+          "next": "correctable"
+        },
+        "correctable": {
+          "type": "agent",
+          "agent": "scene-checkedNormalization-correctable",
+          "title": "Format à corriger ?",
+          "next": "feedback"
+        },
+        "feedback": {
+          "type": "agent",
+          "agent": "scene-checkedNormalization-feedback",
+          "title": "Renvoyer les erreurs de format",
+          "next": {
+            "valid": {
+              "output": "valid"
+            },
+            "invalid": {
+              "output": "invalid"
+            }
+          }
+        }
+      },
+      "parameters": [
+        "normalizer"
+      ],
+      "outputs": [
+        "valid",
+        "invalid"
+      ]
+    }
+  }
+}

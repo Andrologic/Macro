@@ -20,6 +20,7 @@ interface CodeMirrorThemeTokens {
   border: string;
   lineNumberBorder: string;
   selectionBackground: string;
+  collapsedLinesHoverBackground: string;
   activeLineBackground: string;
   cursor: string;
   focusRing: string;
@@ -137,6 +138,7 @@ const createTokens = (theme?: Theme): CodeMirrorThemeTokens => {
     border,
     lineNumberBorder,
     selectionBackground,
+    collapsedLinesHoverBackground: withAlpha(colors.primary, isDark ? 0.82 : 0.98),
     activeLineBackground,
     cursor,
     focusRing,
@@ -522,7 +524,7 @@ export const createCodeMirrorDiffTheme = (theme?: Theme) => {
       fontWeight: '500',
     },
     '.macro-diff-merge-root .cm-collapsedLines:hover': {
-      backgroundColor: withAlpha(tokens.selectionBackground, tokens.isDark ? 0.82 : 0.98),
+      backgroundColor: tokens.collapsedLinesHoverBackground,
       color: tokens.editorForeground,
       borderColor: withAlpha(tokens.cursor, tokens.isDark ? 0.48 : 0.3),
     },

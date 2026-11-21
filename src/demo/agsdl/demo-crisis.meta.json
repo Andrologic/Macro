@@ -1,0 +1,201 @@
+{
+  "title": "Cellule de crise",
+  "description": "Croiser trois analyses, retenir la première piste étayée, choisir une réponse, faire approuver l’intervention puis comparer les contrôles techniques et métier. Les sous-processus conservent leurs agents et leurs sorties propres.",
+  "projectId": "demo-helio",
+  "planKind": "feature",
+  "icon": "server",
+  "design": {
+    "version": 1,
+    "kind": "blueprint",
+    "purpose": "Croiser trois analyses, retenir la première piste étayée, choisir une réponse, faire approuver l’intervention puis comparer les contrôles techniques et métier. Les sous-processus conservent leurs agents et leurs sorties propres.",
+    "context": "Projet fictif : les services, données et résultats sont simulés.",
+    "rules": [],
+    "requirements": [
+      {
+        "id": "model",
+        "label": "Modèle des agents",
+        "description": "Choix pour cette utilisation simulée",
+        "value": "Macro AI · Démo"
+      }
+    ]
+  },
+  "display": {
+    "title": "Cellule de crise",
+    "cards": {
+      "/agents/metrics": {
+        "title": "Expert métriques"
+      },
+      "/agents/traces": {
+        "title": "Expert traces"
+      },
+      "/agents/customer": {
+        "title": "Expert parcours client"
+      },
+      "/agents/lead": {
+        "title": "Responsable de crise"
+      },
+      "/agents/planner": {
+        "title": "Concepteur de l’intervention"
+      },
+      "/agents/observer": {
+        "title": "Analyste de surveillance"
+      },
+      "/agents/technical": {
+        "title": "Contrôleur technique"
+      },
+      "/agents/business": {
+        "title": "Contrôleur métier"
+      },
+      "/agents/reviewer": {
+        "title": "Auditeur des preuves"
+      },
+      "/agents/verifier": {
+        "title": "Contre-expert"
+      },
+      "/agents/report": {
+        "title": "Rédacteur"
+      },
+      "/agents/escalation": {
+        "title": "Coordinateur"
+      },
+      "/agents/recovery": {
+        "title": "Analyste technique"
+      },
+      "/flow/steps/launch": {
+        "title": "Ouvrir les trois investigations",
+        "macroGroup": "Investigation concurrente"
+      },
+      "/flow/steps/metrics": {
+        "title": "Analyser les métriques",
+        "macroGroup": "Investigation concurrente"
+      },
+      "/flow/steps/traces": {
+        "title": "Analyser les traces",
+        "macroGroup": "Investigation concurrente"
+      },
+      "/flow/steps/customer": {
+        "title": "Analyser les parcours",
+        "macroGroup": "Investigation concurrente"
+      },
+      "/flow/steps/first": {
+        "title": "Première piste étayée",
+        "macroGroup": "Investigation concurrente"
+      },
+      "/flow/steps/decide": {
+        "title": "Choisir la réponse"
+      },
+      "/flow/steps/intervention": {
+        "title": "Préparer une intervention",
+        "macroGroup": "Intervention autorisée"
+      },
+      "/flow/steps/observation": {
+        "title": "Évaluer la surveillance"
+      },
+      "/flow/steps/operationsApproval": {
+        "title": "Accord opérations",
+        "macroGroup": "Intervention autorisée"
+      },
+      "/flow/steps/securityApproval": {
+        "title": "Accord sécurité",
+        "macroGroup": "Intervention autorisée"
+      },
+      "/flow/steps/deploy": {
+        "title": "Intervenir sur le service",
+        "macroGroup": "Intervention autorisée"
+      },
+      "/flow/steps/watch": {
+        "title": "Déclencher les contrôles",
+        "macroGroup": "Contrôles croisés"
+      },
+      "/flow/steps/technical": {
+        "title": "Vérifier les indicateurs",
+        "macroGroup": "Contrôles croisés"
+      },
+      "/flow/steps/business": {
+        "title": "Vérifier les commandes",
+        "macroGroup": "Contrôles croisés"
+      },
+      "/flow/steps/all": {
+        "title": "Attendre les deux contrôles",
+        "macroGroup": "Contrôles croisés"
+      },
+      "/flow/steps/evidence": {
+        "title": "Rassembler les preuves",
+        "macroGroup": "Contrôles croisés"
+      },
+      "/flow/steps/closure": {
+        "title": "Auditer la clôture",
+        "macroGroup": "Contrôles croisés"
+      },
+      "/flow/steps/report": {
+        "title": "Rapport de clôture"
+      },
+      "/flow/steps/escalation": {
+        "title": "Coordination humaine"
+      },
+      "/flow/steps/recovery": {
+        "title": "Examiner l’échec technique"
+      },
+      "/compositions/assessment": {
+        "title": "Expertise contre-vérifiée"
+      },
+      "/compositions/assessment/steps/review": {
+        "title": "Mobiliser le spécialiste"
+      },
+      "/compositions/assessment/steps/handoff": {
+        "title": "Transmettre le rapport"
+      },
+      "/compositions/assessment/steps/counterCheck": {
+        "title": "Contre-expertiser"
+      },
+      "/compositions/assessment/steps/check": {
+        "title": "Preuves suffisantes ?"
+      },
+      "/bindings/operationsApproval": {
+        "title": "Opérations"
+      },
+      "/bindings/securityApproval": {
+        "title": "Sécurité"
+      },
+      "/bindings/deployment": {
+        "title": "Déploiement"
+      },
+      "/skills/diagnosis": {
+        "title": "Diagnostic"
+      },
+      "/skills/risk": {
+        "title": "Analyse des risques"
+      },
+      "/skills/reporting": {
+        "title": "Compte rendu"
+      },
+      "/flow": {
+        "title": "Cellule de crise"
+      },
+      "/bindings/engine": {
+        "title": "Macro"
+      },
+      "/content/mode": {
+        "title": "Mode d’analyse"
+      },
+      "/configurations/analyseApprofondie": {
+        "title": "Analyse approfondie"
+      },
+      "/configurations/analyse": {
+        "title": "Analyse"
+      },
+      "/configurations/approfondi": {
+        "title": "Approfondi"
+      },
+      "/configurations/redaction": {
+        "title": "Rédaction"
+      },
+      "/bindings/analytics": {
+        "title": "Parcours clients"
+      },
+      "/bindings/observability": {
+        "title": "Métriques et traces"
+      }
+    }
+  }
+}

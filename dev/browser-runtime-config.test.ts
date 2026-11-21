@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   resolveQaBrowserLogDirectory,
+  resolveQaBrowserPorts,
+  resolveQaBrowserOrigin,
   validateQaBrowserRuntimeConfig,
 } from './browser-runtime-config.mjs';
 
@@ -31,4 +33,30 @@ test('the default browser runtime config is isolated from the production profile
     'logs',
   ));
   expect(logDirectory).not.toBe(join('/tmp', 'com.macro.desktop', 'logs'));
+});
+
+test('allocates separate loopback UI and bridge ports without weakening origin checks', () => {
+  expect(resolveQaBrowserPorts({})).toEqual({ ui: 1422, bridge: 1430, origin: 'http://127.0.0.1:1422' });
+  expect(resolveQaBrowserPorts({ MACRO_TAURI_BROWSER_UI_PORT: '1426', MACRO_TAURI_BROWSER_BRIDGE_PORT: '1436' }))
+    .toEqual({ ui: 1426, bridge: 1436, origin: 'http://127.0.0.1:1426' });
+  for (const raw of ['0', '80', '65536', '1436/path', '1436.5', 'https://example.com']) {
+    expect(() => resolveQaBrowserPorts({ MACRO_TAURI_BROWSER_BRIDGE_PORT: raw })).toThrow();
+  }
+  expect(() => resolveQaBrowserPorts({ MACRO_TAURI_BROWSER_UI_PORT: '1430' })).toThrow('distinct');
+});
+
+test('allows a different loopback UI port without accepting remote origins', () => {
+  expect(resolveQaBrowserOrigin({})).toBe('http://127.0.0.1:1422');
+  expect(resolveQaBrowserOrigin({ build: { devUrl: 'http://127.0.0.1:1428/' } })).toBe('http://127.0.0.1:1428');
+  for (const devUrl of ['http://example.com:1428', 'http://0.0.0.0:1428', 'https://127.0.0.1', 'http://user@127.0.0.1', 'http://127.0.0.1/path']) {
+    expect(() => resolveQaBrowserOrigin({ build: { devUrl } })).toThrow('loopback');
+  }
+});
+
+// Shared parser is also used by the browser transport and launcher.
+test('bridge ports are canonical, bounded, and default only when absent', async () => {
+  const { browserRuntimePort } = await import('../src/shared/browserRuntimePort.mjs');
+  expect(browserRuntimePort(undefined)).toBe(1430);
+  for (const value of ['1', '1430', '1450', '65535']) expect(browserRuntimePort(value)).toBe(Number(value));
+  for (const value of ['', '0', '01', '+1', ' 1430', '1430 ', '65536', '1.0', '1e3', '１２', null, 1430]) expect(() => browserRuntimePort(value)).toThrow('canonical');
 });

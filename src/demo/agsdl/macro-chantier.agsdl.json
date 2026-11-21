@@ -1,0 +1,44 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "macro-chantier",
+  "title": "Chantier coordonné",
+  "agents": {
+    "agent1": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Définir les étapes et répartir le travail."
+    },
+    "agent2": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Réaliser le travail confié et transmettre les résultats."
+    },
+    "agent3": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Relire les changements et vérifier le résultat global."
+    }
+  },
+  "flow": {
+    "entry": "agent1",
+    "steps": {
+      "agent1": {
+        "type": "agent",
+        "agent": "agent1",
+        "title": "Préparer le chantier",
+        "next": "agent2"
+      },
+      "agent2": {
+        "type": "agent",
+        "agent": "agent2",
+        "title": "Réaliser les changements",
+        "next": "agent3"
+      },
+      "agent3": {
+        "type": "agent",
+        "agent": "agent3",
+        "title": "Vérifier le résultat"
+      }
+    }
+  }
+}

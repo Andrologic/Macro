@@ -6,11 +6,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{MatchedPath, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{extract::Request, Json, Router};
 use macro_lib::config::{
     delete_orphan_secret, install_runtime_config_manager, list_orphan_secrets,
     resolve_standalone_config_root, ConfigApiError, ConfigChangeSource, ConfigDocumentKind,
@@ -41,7 +42,7 @@ use macro_lib::workspace::metadata::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::{Mutex as AsyncMutex, Notify};
+use tokio::sync::{Mutex as AsyncMutex, Notify, RwLock as AsyncRwLock};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 #[derive(Clone)]
@@ -49,6 +50,7 @@ struct RegisteredProject {
     canonical_path: PathBuf,
     root_identity: fs::WorkspaceRootIdentity,
     is_read_only: bool,
+    tools: Value,
 }
 
 #[derive(Clone)]
@@ -56,7 +58,8 @@ struct HeadlessState {
     bearer_token: Option<BearerTokenDigest>,
     approval_token: Option<BearerTokenDigest>,
     allowed_roots: Vec<PathBuf>,
-    registered_projects: BTreeMap<String, RegisteredProject>,
+    workspace_id: String,
+    registered_projects: Arc<AsyncRwLock<BTreeMap<String, RegisteredProject>>>,
     workspace_path: PathBuf,
     git_state: GitState,
     config_manager: ConfigManager,
@@ -65,10 +68,19 @@ struct HeadlessState {
     execution_registry: Arc<AsyncMutex<BTreeMap<String, Arc<ExecutionSlot>>>>,
 }
 
+#[derive(Clone)]
+struct RequestSecurity {
+    allowed_hosts: Vec<HeaderValue>,
+    allowed_origins: Vec<HeaderValue>,
+    bearer_token: BearerTokenDigest,
+    approval_token: Option<BearerTokenDigest>,
+}
+
 const MAX_TRACKED_TOOL_EXECUTIONS: usize = 1_024;
 const MAX_PENDING_TOOL_EXECUTIONS: usize = 4;
 const MAX_TOOL_EXECUTION_RECORD_BYTES: u64 = 80 * 1024 * 1024;
 const MAX_TOOL_EXECUTION_JOURNAL_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_HEADLESS_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION: u8 = 1;
 
 struct ExecutionSlot {
@@ -109,6 +121,7 @@ enum PersistedToolExecutionState {
 struct HealthResponse {
     status: &'static str,
     service: &'static str,
+    workspace_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -169,6 +182,12 @@ struct ToolCancelRequest {
     execution_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResolveIndeterminateExecutionRequest {
+    resolution: String,
+}
+
 #[derive(Debug, Serialize)]
 struct ApiError {
     message: String,
@@ -216,11 +235,12 @@ struct ConfigPendingDecisionRequest {
     restore_approved: bool,
 }
 
-const DEFAULT_HEADLESS_CORS_ORIGINS: [&str; 6] = [
+const DEFAULT_HEADLESS_CORS_ORIGINS: [&str; 7] = [
     "http://localhost:4173",
     "http://localhost:5173",
     "http://127.0.0.1:4173",
     "http://127.0.0.1:5173",
+    "http://127.0.0.1:1422",
     "http://tauri.localhost",
     "tauri://localhost",
 ];
@@ -269,14 +289,53 @@ fn parse_listen_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
 }
 
 fn validate_listen_security(addr: SocketAddr, bearer_token: Option<&str>) -> Result<(), String> {
-    if addr.ip().is_loopback() || bearer_token.is_some_and(|token| !token.is_empty()) {
+    if bearer_token.is_some_and(|token| !token.is_empty()) {
         return Ok(());
     }
 
     Err(format!(
-        "Refusing non-loopback headless listener {} without MACRO_HEADLESS_BEARER_TOKEN",
+        "Refusing headless listener {} without MACRO_HEADLESS_BEARER_TOKEN",
         addr
     ))
+}
+
+fn configured_headless_hosts(addr: SocketAddr) -> Result<Vec<HeaderValue>, String> {
+    let mut hosts = Vec::new();
+    if !addr.ip().is_unspecified() {
+        hosts.push(addr.to_string());
+    }
+    if addr.ip().is_loopback() {
+        hosts.push(format!("localhost:{}", addr.port()));
+    }
+    if let Ok(raw) = std::env::var("MACRO_HEADLESS_ALLOWED_HOSTS") {
+        for host in raw
+            .split(',')
+            .map(str::trim)
+            .filter(|host| !host.is_empty())
+        {
+            let authority = host
+                .parse::<axum::http::uri::Authority>()
+                .map_err(|_| "MACRO_HEADLESS_ALLOWED_HOSTS contains an invalid authority")?;
+            if authority.as_str() != host
+                || authority.port_u16() != Some(addr.port())
+                || host.contains('@')
+                || host.contains('*')
+            {
+                return Err(
+                    "MACRO_HEADLESS_ALLOWED_HOSTS requires exact host:listener-port authorities"
+                        .to_string(),
+                );
+            }
+            hosts.push(host.to_string());
+        }
+    }
+    if hosts.is_empty() {
+        return Err("MACRO_HEADLESS_ALLOWED_HOSTS is required for a wildcard listener".to_string());
+    }
+    hosts
+        .into_iter()
+        .map(|host| HeaderValue::from_str(&host).map_err(|_| "Invalid headless host".to_string()))
+        .collect()
 }
 
 fn configured_headless_allowed_roots(
@@ -345,17 +404,92 @@ fn configured_cors_origins() -> Result<Vec<HeaderValue>, String> {
     origins
         .into_iter()
         .map(|origin| {
+            let parsed = url::Url::parse(&origin)
+                .map_err(|_| format!("Invalid headless CORS origin: {origin}"))?;
+            if !matches!(parsed.scheme(), "http" | "https" | "tauri")
+                || parsed.host_str().is_none()
+                || parsed.username() != ""
+                || parsed.password().is_some()
+                || !matches!(parsed.path(), "" | "/")
+                || parsed.query().is_some()
+                || parsed.fragment().is_some()
+                || parsed.as_str().trim_end_matches('/') != origin
+            {
+                return Err(format!("Invalid headless CORS origin: {origin}"));
+            }
             HeaderValue::from_str(&origin)
                 .map_err(|error| format!("Invalid headless CORS origin '{}': {}", origin, error))
         })
         .collect()
 }
 
-fn headless_cors_layer() -> Result<CorsLayer, String> {
-    Ok(CorsLayer::new()
-        .allow_origin(AllowOrigin::list(configured_cors_origins()?))
+fn headless_cors_layer(origins: Vec<HeaderValue>) -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
         .allow_methods([Method::GET, Method::POST])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]))
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+}
+
+async fn enforce_request_security(
+    State(security): State<RequestSecurity>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Some(status) = request_security_error(&security, &request) {
+        return status.into_response();
+    }
+    next.run(request).await
+}
+
+fn request_security_error(security: &RequestSecurity, request: &Request) -> Option<StatusCode> {
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(MatchedPath::as_str)
+        .unwrap_or_else(|| request.uri().path());
+    request_security_error_for_route(security, request, route)
+}
+
+// The route template comes from Axum, never from a request header or body.
+fn request_security_error_for_route(
+    security: &RequestSecurity,
+    request: &Request,
+    route: &str,
+) -> Option<StatusCode> {
+    let headers = request.headers();
+    let one_header = |name| {
+        let mut values = headers.get_all(name).iter();
+        let first = values.next();
+        first.filter(|_| values.next().is_none())
+    };
+    if !one_header(header::HOST).is_some_and(|host| security.allowed_hosts.contains(host)) {
+        return Some(StatusCode::MISDIRECTED_REQUEST);
+    }
+    if headers.contains_key(header::ORIGIN)
+        && !one_header(header::ORIGIN)
+            .is_some_and(|origin| security.allowed_origins.contains(origin))
+    {
+        return Some(StatusCode::FORBIDDEN);
+    }
+    // A browser preflight cannot carry Authorization. CORS only answers it for
+    // an allowed Origin; all actual requests still require a bearer.
+    if request.method() != Method::OPTIONS {
+        let expected = if matches!(
+            route,
+            "/api/v1/config/pending/accept"
+                | "/api/v1/config/pending/reject"
+                | "/api/v1/tools/executions/{execution_id}/resolve-indeterminate"
+                | "/v1/tools/executions/{execution_id}/resolve-indeterminate"
+        ) {
+            security.approval_token.as_ref()
+        } else {
+            Some(&security.bearer_token)
+        };
+        if !bearer_token_authorizes(headers, expected) {
+            return Some(StatusCode::UNAUTHORIZED);
+        }
+    }
+    None
 }
 
 fn backend_error_to_status(error: &BackendError) -> StatusCode {
@@ -576,23 +710,43 @@ fn backend_error_response(error: BackendError) -> axum::response::Response {
     (status, Json(error)).into_response()
 }
 
-fn resolve_scoped_workspace_state(
+async fn resolve_scoped_workspace_state(
     state: &HeadlessState,
     workspace_id: &str,
-) -> Result<HeadlessState, BackendError> {
+) -> Result<HeadlessState, Response> {
     let workspace_id = workspace_id.trim();
     if workspace_id.is_empty() {
-        return Err(BackendError::Validation(
+        return Err(backend_error_response(BackendError::Validation(
             "A non-empty workspace id is required".to_string(),
-        ));
+        )));
     }
-    let workspace = state
-        .registered_projects
-        .get(workspace_id)
-        .ok_or_else(|| BackendError::NotFound(format!("Unknown workspace id: {workspace_id}")))?;
+    let registered = state.registered_projects.read().await;
+    let workspace_path = if workspace_id == state.workspace_id {
+        // The kernel's advertised identity also names its configured root.
+        // A project with the same id must not silently select a different root.
+        if registered
+            .get(workspace_id)
+            .is_some_and(|project| project.canonical_path != state.workspace_path)
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "code": "REMOTE_WORKSPACE_AMBIGUOUS",
+                    "message": "The kernel workspace id is also registered for a different project root.",
+                })),
+            ).into_response());
+        }
+        state.workspace_path.clone()
+    } else {
+        registered
+            .get(workspace_id)
+            .map(|project| project.canonical_path.clone())
+            .ok_or_else(|| workspace_id_mismatch_response(workspace_id))?
+    };
+    drop(registered);
 
     Ok(HeadlessState {
-        workspace_path: workspace.canonical_path.clone(),
+        workspace_path,
         ..state.clone()
     })
 }
@@ -649,65 +803,9 @@ async fn resolve_project_repo_path(
     Ok(project.path)
 }
 
-async fn register_headless_project_config_roots(state: &HeadlessState) -> Result<(), BackendError> {
-    let workspace_metadata_root = resolve_metadata_root_for_workspace(state)?;
-    let bootstrap =
-        workspace::get_bootstrap(&state.workspace_path, &workspace_metadata_root).await?;
-    let projects = bootstrap
-        .standalone_projects
-        .into_iter()
-        .chain(
-            bootstrap
-                .project_groups
-                .into_iter()
-                .flat_map(|group| group.projects),
-        )
-        .collect::<Vec<_>>();
-
-    for project in projects {
-        if parse_wsl_unc_path(&project.path).is_some() {
-            tracing::warn!(
-                project_id = %project.id,
-                "Skipping headless project policy registration for an unsupported WSL project"
-            );
-            continue;
-        }
-        let project_state = HeadlessState {
-            workspace_path: PathBuf::from(&project.path),
-            ..state.clone()
-        };
-        let metadata_root = match resolve_metadata_root_for_workspace(&project_state) {
-            Ok(root) => root,
-            Err(error) => {
-                tracing::warn!(
-                    project_id = %project.id,
-                    %error,
-                    "Unable to resolve the headless project policy root"
-                );
-                continue;
-            }
-        };
-        if let Err(error) = state
-            .config_manager
-            .register_project_root(&project.id, metadata_root)
-            .await
-        {
-            tracing::warn!(
-                project_id = %project.id,
-                code = %error.code,
-                message = %error.message,
-                "Unable to register the headless project policy root"
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Derive the server-side project_id → canonical project path registry from
-/// the workspace project registry. Headless clients never get to declare
-/// where a project lives: this map is the source of truth used to reject
-/// inconsistent workspace_path/project_mount payloads before any policy or
-/// tool execution happens.
+/// Build one server-authoritative project snapshot from one workspace
+/// bootstrap. Each entry binds its canonical path, access state, root identity,
+/// and effective tools policy before the snapshot can replace the live one.
 async fn collect_registered_projects(
     state: &HeadlessState,
 ) -> Result<BTreeMap<String, RegisteredProject>, BackendError> {
@@ -726,6 +824,10 @@ async fn collect_registered_projects(
 
     let mut registry = BTreeMap::new();
     for project in projects {
+        // A duplicate or newly unavailable project must not retain an entry
+        // built earlier in this refresh. The new snapshot either contains the
+        // project's current path and policy together, or excludes it entirely.
+        registry.remove(&project.id);
         if parse_wsl_unc_path(&project.path).is_some() {
             tracing::warn!(
                 project_id = %project.id,
@@ -733,23 +835,57 @@ async fn collect_registered_projects(
             );
             continue;
         }
-        match PathBuf::from(&project.path).canonicalize() {
-            Ok(canonical_path) => {
-                let root_identity = fs::workspace_root_identity(&canonical_path)?;
-                registry.insert(
-                    project.id,
-                    RegisteredProject {
-                        canonical_path,
-                        root_identity,
-                        is_read_only: project.user_read_only || project.is_read_only,
-                    },
-                );
+        let project_id = project.id.clone();
+        let registered = async {
+            let canonical_path = validate_headless_workspace_path(
+                Some(&project.path),
+                &state.workspace_path,
+                &state.allowed_roots,
+            )
+            .map_err(|error| BackendError::Validation(error.message))?
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                BackendError::Validation(format!(
+                    "Project '{}' has no usable workspace path",
+                    project.id
+                ))
+            })?;
+            let root_identity = fs::workspace_root_identity(&canonical_path)?;
+            let project_state = HeadlessState {
+                workspace_path: canonical_path.clone(),
+                ..state.clone()
+            };
+            let project_metadata_root = resolve_metadata_root_for_workspace(&project_state)?;
+            state
+                .config_manager
+                .register_project_root(&project.id, project_metadata_root)
+                .await
+                .map_err(|error| {
+                    BackendError::Validation(format!(
+                        "Unable to register the headless policy root for project '{}': {}: {}",
+                        project.id, error.code, error.message
+                    ))
+                })?;
+            let tools = load_project_tools_policy(state, &project.id)
+                .await
+                .map_err(BackendError::Validation)?;
+            Ok::<RegisteredProject, BackendError>(RegisteredProject {
+                canonical_path,
+                root_identity,
+                is_read_only: project.user_read_only || project.is_read_only,
+                tools,
+            })
+        }
+        .await;
+        match registered {
+            Ok(project) => {
+                registry.insert(project_id, project);
             }
             Err(error) => {
                 tracing::warn!(
-                    project_id = %project.id,
+                    project_id = %project_id,
                     %error,
-                    "Skipping an unresolvable project path in the headless registry"
+                    "Excluding an unavailable project from the headless registry snapshot"
                 );
             }
         }
@@ -757,9 +893,53 @@ async fn collect_registered_projects(
     Ok(registry)
 }
 
+async fn refresh_registered_projects(
+    state: &HeadlessState,
+) -> Result<BTreeMap<String, RegisteredProject>, BackendError> {
+    let mut registered_projects = state.registered_projects.write().await;
+    let refreshed = collect_registered_projects(state).await?;
+    *registered_projects = refreshed.clone();
+    Ok(refreshed)
+}
+
+fn derived_workspace_id(workspace_path: &std::path::Path) -> String {
+    let digest = Sha256::digest(workspace_path.to_string_lossy().as_bytes());
+    format!("ws_{:x}", digest)[..27].to_string()
+}
+
+fn configured_workspace_id(workspace_path: &std::path::Path) -> Result<String, String> {
+    let configured = std::env::var("MACRO_HEADLESS_WORKSPACE_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let workspace_id = configured.unwrap_or_else(|| derived_workspace_id(workspace_path));
+    if workspace_id.len() > 128
+        || !workspace_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(
+            "MACRO_HEADLESS_WORKSPACE_ID must contain 1 to 128 ASCII letters, digits, '-' or '_'"
+                .to_string(),
+        );
+    }
+    Ok(workspace_id)
+}
+
+fn workspace_id_mismatch_response(requested: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "code": "REMOTE_WORKSPACE_NOT_FOUND",
+            "message": format!("Workspace '{requested}' is not registered by this headless kernel."),
+        })),
+    )
+        .into_response()
+}
+
 fn bearer_token_authorizes(headers: &HeaderMap, expected: Option<&BearerTokenDigest>) -> bool {
     let Some(expected) = expected else {
-        return true;
+        return false;
     };
 
     headers
@@ -977,28 +1157,61 @@ async fn load_project_tools_policy(
         .get_snapshot(&[project_id.to_string()])
         .await
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let scoped_tools = snapshot.documents.iter().find(|document| {
+        document.kind == ConfigDocumentKind::Tools
+            && document.scope
+                == ConfigScope::Project {
+                    project_id: project_id.to_string(),
+                }
+    });
+    let Some(scoped_tools) = scoped_tools else {
+        return Err(format!(
+            "No scoped tools policy is loaded for project '{project_id}'"
+        ));
+    };
+    if scoped_tools.invalid {
+        return Err(format!(
+            "The scoped tools policy for project '{project_id}' is invalid"
+        ));
+    }
+    // Headless has no file watcher. Validate availability and syntax on each
+    // request without promoting unapproved disk values into effective policy.
+    let raw = tokio::fs::read(&scoped_tools.file_path)
+        .await
+        .map_err(|error| format!("Project '{project_id}' tools file is unavailable: {error}"))?;
+    let live: Value = serde_json::from_slice(&raw)
+        .map_err(|error| format!("Project '{project_id}' tools file is malformed: {error}"))?;
+    let validation = state.config_manager.validate(
+        ConfigDocumentKind::Tools,
+        ConfigScope::Project {
+            project_id: project_id.into(),
+        },
+        &live,
+    );
+    if !validation.valid || validation.read_only {
+        return Err(format!(
+            "Project '{project_id}' tools file is invalid or unsupported"
+        ));
+    }
     project_tools_from_snapshot(&snapshot, project_id).cloned()
 }
 
-async fn load_project_tools_policies(
-    state: &HeadlessState,
+fn registered_project_tools_policies(
+    registry: &BTreeMap<String, RegisteredProject>,
     project_ids: &BTreeSet<String>,
 ) -> Result<Vec<(String, Value)>, String> {
     if project_ids.is_empty() {
         return Err("At least one project is required for tool policy decisions".to_string());
     }
-    let requested_ids = project_ids.iter().cloned().collect::<Vec<_>>();
-    let snapshot = state
-        .config_manager
-        .get_snapshot(&requested_ids)
-        .await
-        .map_err(|error| format!("{}: {}", error.code, error.message))?;
-    requested_ids
-        .into_iter()
+    project_ids
+        .iter()
         .map(|project_id| {
-            project_tools_from_snapshot(&snapshot, &project_id)
-                .cloned()
-                .map(|tools| (project_id, tools))
+            registry
+                .get(project_id)
+                .map(|project| (project_id.clone(), project.tools.clone()))
+                .ok_or_else(|| {
+                    format!("Project '{project_id}' is not registered in the current workspace")
+                })
         })
         .collect()
 }
@@ -1092,6 +1305,7 @@ async fn health(State(state): State<Arc<HeadlessState>>, headers: HeaderMap) -> 
     Json(HealthResponse {
         status: "ok",
         service: "macro-headless",
+        workspace_id: state.workspace_id.clone(),
     })
     .into_response()
 }
@@ -1105,11 +1319,17 @@ async fn tool_mode_policy(
         return unauthorized_response().into_response();
     }
 
-    let tools = match load_project_tools_policy(&state, &params.project_id).await {
-        Ok(tools) => tools,
-        Err(error) => return policy_denied_response(error),
+    let registered_projects = match refresh_registered_projects(&state).await {
+        Ok(projects) => projects,
+        Err(error) => return backend_error_response(error),
     };
-    match configured_mode_policy(&params.mode, &tools) {
+    let Some(project) = registered_projects.get(params.project_id.trim()) else {
+        return policy_denied_response(format!(
+            "Project '{}' is not registered in the current workspace",
+            params.project_id.trim()
+        ));
+    };
+    match configured_mode_policy(&params.mode, &project.tools) {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(error) => policy_denied_response(error),
     }
@@ -1124,9 +1344,15 @@ async fn tool_validate(
         return unauthorized_response().into_response();
     }
 
-    let tools = match load_project_tools_policy(&state, &payload.project_id).await {
-        Ok(tools) => tools,
-        Err(error) => return policy_denied_response(error),
+    let registered_projects = match refresh_registered_projects(&state).await {
+        Ok(projects) => projects,
+        Err(error) => return backend_error_response(error),
+    };
+    let Some(project) = registered_projects.get(payload.project_id.trim()) else {
+        return policy_denied_response(format!(
+            "Project '{}' is not registered in the current workspace",
+            payload.project_id.trim()
+        ));
     };
     let validation_args = if payload.args.is_null() {
         payload
@@ -1141,7 +1367,7 @@ async fn tool_validate(
         &payload.mode,
         &payload.tool_id,
         &validation_args,
-        &tools,
+        &project.tools,
     ) {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(error) => policy_denied_response(error),
@@ -1368,6 +1594,124 @@ fn remove_abandoned_tool_execution_temporaries(root: &std::path::Path) -> Result
     Ok(())
 }
 
+fn read_tool_execution_record_file(
+    path: &std::path::Path,
+    kind: ToolExecutionJournalKind,
+) -> Result<PersistedToolExecution, String> {
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        format!(
+            "Failed to inspect the tool execution journal {}: {error}",
+            path.display()
+        )
+    })?;
+    if metadata.len() > MAX_TOOL_EXECUTION_RECORD_BYTES {
+        return Err(format!(
+            "The tool execution journal {} exceeds the per-record size limit",
+            path.display()
+        ));
+    }
+    let raw = std::fs::read(path).map_err(|error| {
+        format!(
+            "Failed to read the tool execution journal {}: {error}",
+            path.display()
+        )
+    })?;
+    let record = serde_json::from_slice::<PersistedToolExecution>(&raw).map_err(|error| {
+        format!(
+            "The tool execution journal {} is invalid: {error}",
+            path.display()
+        )
+    })?;
+    if record.schema_version != TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION {
+        return Err(format!(
+            "The tool execution journal {} uses unsupported schema version {}",
+            path.display(),
+            record.schema_version
+        ));
+    }
+    let state_matches_path = matches!(
+        (kind, &record.state),
+        (
+            ToolExecutionJournalKind::Pending,
+            PersistedToolExecutionState::Pending
+        ) | (
+            ToolExecutionJournalKind::Completed,
+            PersistedToolExecutionState::Completed { .. }
+        )
+    );
+    if !state_matches_path {
+        return Err(format!(
+            "The tool execution journal state does not match {}",
+            path.display()
+        ));
+    }
+    Ok(record)
+}
+
+fn reconcile_completed_tool_execution_pairs(root: &std::path::Path) -> Result<(), String> {
+    let entries = read_tool_execution_journal_entries(root)?;
+    let mut removed = false;
+    for pending_entry in entries
+        .iter()
+        .filter(|entry| entry.kind == ToolExecutionJournalKind::Pending)
+    {
+        let pending = read_tool_execution_record_file(
+            &pending_entry.path,
+            ToolExecutionJournalKind::Pending,
+        )?;
+        if pending_entry.path
+            != tool_execution_journal_path(
+                root,
+                &pending.execution_id,
+                ToolExecutionJournalKind::Pending,
+            )
+        {
+            return Err(format!(
+                "The tool execution journal identity does not match {}",
+                pending_entry.path.display()
+            ));
+        }
+        let completed_path = tool_execution_journal_path(
+            root,
+            &pending.execution_id,
+            ToolExecutionJournalKind::Completed,
+        );
+        if !completed_path.exists() {
+            continue;
+        }
+        let completed =
+            read_tool_execution_record_file(&completed_path, ToolExecutionJournalKind::Completed)?;
+        if completed.execution_id != pending.execution_id
+            || completed.fingerprint != pending.fingerprint
+        {
+            return Err(format!(
+                "The completed tool execution journal does not match {}",
+                pending_entry.path.display()
+            ));
+        }
+        std::fs::remove_file(&pending_entry.path).map_err(|error| {
+            format!(
+                "Failed to retire reconciled pending tool execution record {}: {error}",
+                pending_entry.path.display()
+            )
+        })?;
+        removed = true;
+    }
+    if removed {
+        sync_tool_execution_journal_directory(root)?;
+    }
+    Ok(())
+}
+
+fn completed_execution_is_indeterminate(record: &PersistedToolExecution) -> bool {
+    matches!(
+        &record.state,
+        PersistedToolExecutionState::Completed { response }
+            if response.body.get("code").and_then(Value::as_str)
+                == Some("REMOTE_MUTATION_OUTCOME_INDETERMINATE")
+    )
+}
+
 fn remove_completed_journal_entries_to_fit(
     root: &std::path::Path,
     entries: &mut Vec<ToolExecutionJournalEntry>,
@@ -1380,11 +1724,29 @@ fn remove_completed_journal_entries_to_fit(
             .ok_or_else(|| "The tool execution journal size overflowed".to_string())
     })?;
     let mut entry_count = entries.len();
-    let mut completed = entries
+    let mut completed = Vec::new();
+    for entry in entries
         .iter()
         .filter(|entry| entry.kind == ToolExecutionJournalKind::Completed)
-        .cloned()
-        .collect::<Vec<_>>();
+    {
+        let record =
+            read_tool_execution_record_file(&entry.path, ToolExecutionJournalKind::Completed)?;
+        if entry.path
+            != tool_execution_journal_path(
+                root,
+                &record.execution_id,
+                ToolExecutionJournalKind::Completed,
+            )
+        {
+            return Err(format!(
+                "The tool execution journal identity does not match {}",
+                entry.path.display()
+            ));
+        }
+        if !completed_execution_is_indeterminate(&record) {
+            completed.push(entry.clone());
+        }
+    }
     completed.sort_by_key(|entry| entry.modified);
 
     for stale in completed {
@@ -1461,6 +1823,7 @@ async fn persist_pending_tool_execution(
         std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .map_err(|error| format!("Failed to secure the tool execution journal: {error}"))?;
         remove_abandoned_tool_execution_temporaries(&root)?;
+        reconcile_completed_tool_execution_pairs(&root)?;
         let encoded = serde_json::to_vec(&record)
             .map_err(|error| format!("Failed to encode the tool execution journal: {error}"))?;
         if encoded.len() as u64 > MAX_TOOL_EXECUTION_RECORD_BYTES {
@@ -1678,19 +2041,54 @@ fn stored_tool_execution_response(result: StoredToolExecution) -> Response {
     (status, Json(result.body)).into_response()
 }
 
+fn bound_stored_tool_execution(result: StoredToolExecution) -> StoredToolExecution {
+    bound_stored_tool_execution_with_limit(result, MAX_HEADLESS_RESPONSE_BYTES)
+}
+
+fn bound_stored_tool_execution_with_limit(
+    result: StoredToolExecution,
+    max_response_bytes: usize,
+) -> StoredToolExecution {
+    match serde_json::to_vec(&result.body) {
+        Ok(encoded) if encoded.len() <= max_response_bytes => result,
+        Ok(encoded) => StoredToolExecution {
+            status_code: StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
+            body: json!({
+                "code": "REMOTE_RESPONSE_TOO_LARGE",
+                "message": format!(
+                    "The headless response was {} bytes and exceeded the {}-byte limit",
+                    encoded.len(),
+                    max_response_bytes
+                ),
+            }),
+        },
+        Err(error) => StoredToolExecution {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            body: json!({ "message": format!("Failed to encode the tool response: {error}") }),
+        },
+    }
+}
+
+fn bounded_json_response(status: StatusCode, body: Value) -> Response {
+    stored_tool_execution_response(bound_stored_tool_execution(StoredToolExecution {
+        status_code: status.as_u16(),
+        body,
+    }))
+}
+
 async fn perform_tool_execution(
     state: Arc<HeadlessState>,
     payload: ToolExecuteRequest,
+    registered_projects: Arc<BTreeMap<String, RegisteredProject>>,
 ) -> StoredToolExecution {
     let checkpoint_required = payload.checkpoint_required;
     let expected_workspace_roots = Arc::new(
-        state
-            .registered_projects
+        registered_projects
             .values()
             .map(|project| (project.canonical_path.clone(), project.root_identity))
             .collect::<BTreeMap<_, _>>(),
     );
-    match execute_workspace_tool_controlled_with_options(
+    let response = match execute_workspace_tool_controlled_with_options(
         state.workspace_path.clone(),
         state.workspace_path.clone(),
         state.git_state.clone(),
@@ -1703,10 +2101,11 @@ async fn perform_tool_execution(
         payload.virtual_root_enabled,
         payload.focused_project_id,
         payload.execution_id,
-        WorkspaceToolExecutionOptions {
-            capture_checkpoint_snapshots: checkpoint_required,
-            raw_checkpoint_snapshot: false,
-            expected_workspace_roots: Some(expected_workspace_roots),
+        {
+            let mut options = WorkspaceToolExecutionOptions::default();
+            options.capture_checkpoint_snapshots = checkpoint_required;
+            options.expected_workspace_roots = Some(expected_workspace_roots);
+            options
         },
     )
     .await
@@ -1751,7 +2150,8 @@ async fn perform_tool_execution(
             body: serde_json::to_value(error)
                 .unwrap_or_else(|_| json!({ "message": "Tool execution failed" })),
         },
-    }
+    };
+    bound_stored_tool_execution(response)
 }
 
 async fn tool_execute(
@@ -1774,6 +2174,24 @@ async fn tool_execute(
         );
     };
 
+    let registered_projects = Arc::new(match refresh_registered_projects(&state).await {
+        Ok(projects) => projects,
+        Err(error) => return backend_error_response(error),
+    });
+    let Some(focused_project) = registered_projects.get(project_id) else {
+        return policy_denied_response(format!(
+            "focused_project_id '{project_id}' is not registered in the current workspace"
+        ));
+    };
+    if payload
+        .workspace_path
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+    {
+        payload.workspace_path = Some(focused_project.canonical_path.to_string_lossy().to_string());
+    }
+
     // Canonicalize and cross-check every client-declared path against the
     // server-derived project registry BEFORE any policy is loaded or
     // evaluated, so a mismatched A-policy/B-path request is rejected on its
@@ -1794,7 +2212,7 @@ async fn tool_execute(
         None => None,
     };
     if let Err(error) = validate_headless_workspace_consistency(
-        &state.registered_projects,
+        &registered_projects,
         project_id,
         payload.workspace_path.as_deref(),
         payload.project_mounts.as_deref().unwrap_or_default(),
@@ -1816,16 +2234,17 @@ async fn tool_execute(
         BTreeSet::from([project_id.to_string()])
     };
     if let Err(error) = validate_headless_mutation_projects(
-        &state.registered_projects,
+        &registered_projects,
         &affected_project_ids,
         &payload.tool_id,
     ) {
         return policy_denied_response(error);
     }
-    let policies = match load_project_tools_policies(&state, &affected_project_ids).await {
-        Ok(policies) => policies,
-        Err(error) => return policy_denied_response(error),
-    };
+    let policies =
+        match registered_project_tools_policies(&registered_projects, &affected_project_ids) {
+            Ok(policies) => policies,
+            Err(error) => return policy_denied_response(error),
+        };
     for (policy_project_id, tools) in policies {
         match configured_tool_execution_validation(
             &payload.mode,
@@ -1865,7 +2284,9 @@ async fn tool_execute(
     }
 
     if !is_idempotent_remote_mutation(&payload.tool_id) {
-        return stored_tool_execution_response(perform_tool_execution(state, payload).await);
+        return stored_tool_execution_response(
+            perform_tool_execution(state, payload, registered_projects).await,
+        );
     }
 
     let execution_id = match payload
@@ -1896,7 +2317,8 @@ async fn tool_execute(
         let task_execution_id = execution_id.clone();
         let task_fingerprint = fingerprint.clone();
         tokio::spawn(async move {
-            let response = perform_tool_execution(task_state.clone(), payload).await;
+            let response =
+                perform_tool_execution(task_state.clone(), payload, registered_projects).await;
             let record = PersistedToolExecution {
                 schema_version: TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION,
                 execution_id: task_execution_id,
@@ -1948,19 +2370,25 @@ async fn tool_execution_status(
         Ok(Some(PersistedToolExecution {
             state: PersistedToolExecutionState::Pending,
             ..
-        })) => (StatusCode::OK, Json(json!({ "state": "pending" }))).into_response(),
-        Ok(Some(PersistedToolExecution {
-            state: PersistedToolExecutionState::Completed { response },
-            ..
         })) => (
             StatusCode::OK,
             Json(json!({
-                "state": "completed",
-                "status_code": response.status_code,
-                "body": response.body,
+                "state": "pending",
+                "recovery": "record_indeterminate_with_approval",
             })),
         )
             .into_response(),
+        Ok(Some(PersistedToolExecution {
+            state: PersistedToolExecutionState::Completed { response },
+            ..
+        })) => bounded_json_response(
+            StatusCode::OK,
+            json!({
+                "state": "completed",
+                "status_code": response.status_code,
+                "body": response.body,
+            }),
+        ),
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -1978,6 +2406,122 @@ async fn tool_execution_status(
         )
             .into_response(),
     }
+}
+
+async fn resolve_indeterminate_tool_execution(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Path(execution_id): Path<String>,
+    Json(payload): Json<ResolveIndeterminateExecutionRequest>,
+) -> impl IntoResponse {
+    if !approval_authorized(&headers, &state) {
+        return approval_unauthorized_response().into_response();
+    }
+    let execution_id = execution_id.trim();
+    if execution_id.is_empty() {
+        return policy_denied_response("A non-empty execution_id is required");
+    }
+    if payload.resolution != "record_indeterminate" {
+        return policy_denied_response(
+            "The only safe recovery resolution is 'record_indeterminate'",
+        );
+    }
+
+    let execution_registry = state.execution_registry.lock().await;
+    if execution_registry.get(execution_id).is_some_and(|slot| {
+        slot.result
+            .lock()
+            .map(|result| result.is_none())
+            .unwrap_or(true)
+    }) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "code": "REMOTE_MUTATION_STILL_RUNNING",
+                "message": "The mutation is still running in this kernel process and cannot be resolved as indeterminate",
+            })),
+        )
+            .into_response();
+    }
+
+    let _journal_guard = state.execution_journal_lock.lock().await;
+    let pending =
+        match load_persisted_tool_execution(&state.execution_journal_root, execution_id).await {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "code": "REMOTE_EXECUTION_NOT_FOUND",
+                        "message": "No durable tool execution exists for this execution_id",
+                    })),
+                )
+                    .into_response()
+            }
+            Err(error) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "code": "REMOTE_MUTATION_JOURNAL_UNAVAILABLE",
+                        "message": error,
+                    })),
+                )
+                    .into_response()
+            }
+        };
+    if let PersistedToolExecutionState::Completed { response } = &pending.state {
+        return bounded_json_response(
+            StatusCode::OK,
+            json!({
+                "state": "completed",
+                "status_code": response.status_code,
+                "body": response.body,
+            }),
+        );
+    }
+
+    let resolved_at = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    let response = StoredToolExecution {
+        status_code: StatusCode::CONFLICT.as_u16(),
+        body: json!({
+            "code": "REMOTE_MUTATION_OUTCOME_INDETERMINATE",
+            "message": "The pre-crash mutation outcome is unknown. The pending intent was closed without replaying the mutation.",
+            "resolution": "record_indeterminate",
+            "resolved_at_unix_seconds": resolved_at,
+        }),
+    };
+    let completed = PersistedToolExecution {
+        state: PersistedToolExecutionState::Completed {
+            response: response.clone(),
+        },
+        ..pending
+    };
+    if let Err(error) =
+        persist_completed_tool_execution(&state.execution_journal_root, &completed).await
+    {
+        return (
+            StatusCode::INSUFFICIENT_STORAGE,
+            Json(json!({
+                "code": "REMOTE_MUTATION_JOURNAL_UNAVAILABLE",
+                "message": error,
+            })),
+        )
+            .into_response();
+    }
+    drop(execution_registry);
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "state": "completed",
+            "status_code": response.status_code,
+            "body": response.body,
+        })),
+    )
+        .into_response()
 }
 
 async fn tool_cancel(
@@ -2012,6 +2556,24 @@ async fn checkpoint_snapshot(
         return policy_denied_response("A path is required for checkpoint snapshots");
     }
 
+    let registered_projects = Arc::new(match refresh_registered_projects(&state).await {
+        Ok(projects) => projects,
+        Err(error) => return backend_error_response(error),
+    });
+    let Some(project) = registered_projects.get(&project_id) else {
+        return policy_denied_response(format!(
+            "Project '{project_id}' is not registered in the current workspace"
+        ));
+    };
+    if payload
+        .workspace_path
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+    {
+        payload.workspace_path = Some(project.canonical_path.to_string_lossy().to_string());
+    }
+
     payload.workspace_path = match validate_headless_workspace_path(
         payload.workspace_path.as_deref(),
         &state.workspace_path,
@@ -2021,7 +2583,7 @@ async fn checkpoint_snapshot(
         Err(error) => return (StatusCode::FORBIDDEN, Json(error)).into_response(),
     };
     if let Err(error) = validate_headless_workspace_consistency(
-        &state.registered_projects,
+        &registered_projects,
         &project_id,
         payload.workspace_path.as_deref(),
         &[],
@@ -2029,11 +2591,7 @@ async fn checkpoint_snapshot(
         return policy_denied_response(error);
     }
 
-    let tools = match load_project_tools_policy(&state, &project_id).await {
-        Ok(tools) => tools,
-        Err(error) => return policy_denied_response(error),
-    };
-    match configured_tool_validation(&payload.mode, "read", Some(&payload.path), &tools) {
+    match configured_tool_validation(&payload.mode, "read", Some(&payload.path), &project.tools) {
         Ok(validation) if validation.allowed => {}
         Ok(validation) => {
             return policy_denied_response(
@@ -2058,22 +2616,22 @@ async fn checkpoint_snapshot(
         Some(false),
         Some(project_id),
         None,
-        WorkspaceToolExecutionOptions {
-            capture_checkpoint_snapshots: false,
-            raw_checkpoint_snapshot: true,
-            expected_workspace_roots: Some(Arc::new(
-                state
-                    .registered_projects
+        {
+            let mut options = WorkspaceToolExecutionOptions::default();
+            options.raw_checkpoint_snapshot = true;
+            options.expected_workspace_roots = Some(Arc::new(
+                registered_projects
                     .values()
                     .map(|project| (project.canonical_path.clone(), project.root_identity))
                     .collect::<BTreeMap<_, _>>(),
-            )),
+            ));
+            options
         },
     )
     .await
     {
         Ok(snapshot) => match serde_json::from_str::<Value>(&snapshot) {
-            Ok(snapshot) => (StatusCode::OK, Json(json!({ "snapshot": snapshot }))).into_response(),
+            Ok(snapshot) => bounded_json_response(StatusCode::OK, json!({ "snapshot": snapshot })),
             Err(error) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ApiError {
@@ -2113,9 +2671,9 @@ async fn workspace_bootstrap_scoped(
     if !authorized(&headers, &state) {
         return unauthorized_response().into_response();
     }
-    let scoped_state = match resolve_scoped_workspace_state(&state, &workspace_id) {
+    let scoped_state = match resolve_scoped_workspace_state(&state, &workspace_id).await {
         Ok(state) => Arc::new(state),
-        Err(error) => return backend_error_response(error),
+        Err(response) => return response,
     };
     workspace_bootstrap(State(scoped_state), headers)
         .await
@@ -2149,9 +2707,9 @@ async fn workspace_tasks_scoped(
     if !authorized(&headers, &state) {
         return unauthorized_response().into_response();
     }
-    let scoped_state = match resolve_scoped_workspace_state(&state, &workspace_id) {
+    let scoped_state = match resolve_scoped_workspace_state(&state, &workspace_id).await {
         Ok(state) => Arc::new(state),
-        Err(error) => return backend_error_response(error),
+        Err(response) => return response,
     };
     workspace_tasks(State(scoped_state), headers)
         .await
@@ -2187,9 +2745,9 @@ async fn workspace_architect_list_plans_scoped(
     if !authorized(&headers, &state) {
         return unauthorized_response().into_response();
     }
-    let scoped_state = match resolve_scoped_workspace_state(&state, &workspace_id) {
+    let scoped_state = match resolve_scoped_workspace_state(&state, &workspace_id).await {
         Ok(state) => Arc::new(state),
-        Err(error) => return backend_error_response(error),
+        Err(response) => return response,
     };
     workspace_architect_list_plans(State(scoped_state), headers, Json(payload))
         .await
@@ -2227,9 +2785,9 @@ async fn workspace_architect_activate_plan_head_scoped(
     if !authorized(&headers, &state) {
         return unauthorized_response().into_response();
     }
-    let scoped_state = match resolve_scoped_workspace_state(&state, &workspace_id) {
+    let scoped_state = match resolve_scoped_workspace_state(&state, &workspace_id).await {
         Ok(state) => Arc::new(state),
-        Err(error) => return backend_error_response(error),
+        Err(response) => return response,
     };
     workspace_architect_activate_plan_head(State(scoped_state), headers, Json(payload))
         .await
@@ -2267,9 +2825,9 @@ async fn workspace_architect_activate_plan_chat_scoped(
     if !authorized(&headers, &state) {
         return unauthorized_response().into_response();
     }
-    let scoped_state = match resolve_scoped_workspace_state(&state, &workspace_id) {
+    let scoped_state = match resolve_scoped_workspace_state(&state, &workspace_id).await {
         Ok(state) => Arc::new(state),
-        Err(error) => return backend_error_response(error),
+        Err(response) => return response,
     };
     workspace_architect_activate_plan_chat(State(scoped_state), headers, Json(payload))
         .await
@@ -2368,6 +2926,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::os::unix::fs::PermissionsExt::from_mode(0o700),
     )
     .await?;
+    let reconciliation_root = execution_journal_root.clone();
+    tokio::task::spawn_blocking(move || {
+        remove_abandoned_tool_execution_temporaries(&reconciliation_root)?;
+        reconcile_completed_tool_execution_pairs(&reconciliation_root)
+    })
+    .await
+    .map_err(|error| format!("Tool execution journal reconciliation failed: {error}"))??;
     let config_manager = ConfigManager::initialize(config_root)
         .await
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
@@ -2409,12 +2974,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         normalize_bearer_token(std::env::var("MACRO_HEADLESS_APPROVAL_TOKEN").ok());
     validate_approval_authority(bearer_token.as_deref(), approval_token.as_deref())?;
     validate_listen_security(addr, bearer_token.as_deref())?;
+    let bearer_digest = BearerTokenDigest::new(bearer_token.as_deref().expect("validated bearer"));
+    let approval_digest = approval_token.as_deref().map(BearerTokenDigest::new);
+    let allowed_origins = configured_cors_origins()?;
+    let request_security = RequestSecurity {
+        allowed_hosts: configured_headless_hosts(addr)?,
+        allowed_origins: allowed_origins.clone(),
+        bearer_token: bearer_digest.clone(),
+        approval_token: approval_digest.clone(),
+    };
     let mut config = load_config()?;
     apply_runtime_workspace(&mut config, &runtime)?;
     let workspace_path = config
         .workspace_path
         .canonicalize()
         .map_err(|error| format!("Headless workspace path is not accessible: {}", error))?;
+    let workspace_id = configured_workspace_id(&workspace_path)?;
     let runtime_roots = runtime
         .get("allowedRoots")
         .and_then(Value::as_array)
@@ -2426,10 +3001,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let allowed_roots = configured_headless_allowed_roots(&workspace_path, &runtime_roots)?;
 
     let state = HeadlessState {
-        bearer_token: bearer_token.as_deref().map(BearerTokenDigest::new),
-        approval_token: approval_token.as_deref().map(BearerTokenDigest::new),
+        bearer_token: Some(bearer_digest),
+        approval_token: approval_digest,
         allowed_roots,
-        registered_projects: BTreeMap::new(),
+        workspace_id,
+        registered_projects: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         workspace_path,
         git_state: GitState::new(),
         config_manager,
@@ -2437,12 +3013,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         execution_journal_lock: Arc::new(AsyncMutex::new(())),
         execution_registry: Arc::new(AsyncMutex::new(BTreeMap::new())),
     };
-    register_headless_project_config_roots(&state).await?;
     let registered_projects = collect_registered_projects(&state).await?;
-    let state = Arc::new(HeadlessState {
-        registered_projects,
-        ..state
-    });
+    *state.registered_projects.write().await = registered_projects;
+    let state = Arc::new(state);
 
     let app = Router::new()
         .route("/health", get(health))
@@ -2453,6 +3026,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/v1/tools/executions/{execution_id}",
             get(tool_execution_status),
         )
+        .route(
+            "/v1/tools/executions/{execution_id}/resolve-indeterminate",
+            post(resolve_indeterminate_tool_execution),
+        )
         .route("/v1/tools/checkpoint-snapshot", post(checkpoint_snapshot))
         .route("/v1/tools/cancel", post(tool_cancel))
         .route("/api/v1/tools/mode-policy", get(tool_mode_policy))
@@ -2461,6 +3038,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/api/v1/tools/executions/{execution_id}",
             get(tool_execution_status),
+        )
+        .route(
+            "/api/v1/tools/executions/{execution_id}/resolve-indeterminate",
+            post(resolve_indeterminate_tool_execution),
         )
         .route(
             "/api/v1/tools/checkpoint-snapshot",
@@ -2524,7 +3105,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(project_git_commits),
         )
         .with_state(state)
-        .layer(headless_cors_layer()?);
+        .layer(headless_cors_layer(allowed_origins))
+        .layer(middleware::from_fn_with_state(
+            request_security,
+            enforce_request_security,
+        ));
 
     tracing::info!("macro-headless listening on {}", addr);
 
@@ -2556,15 +3141,21 @@ mod tests {
                     )
                     .expect("workspace identity"),
                     is_read_only: false,
+                    tools: json!({
+                        "riskLevel": "balanced",
+                        "builtIn": {},
+                        "modes": {},
+                    }),
                 },
             );
         }
         let workspace_path = root.path().canonicalize().expect("canonical test root");
         HeadlessState {
-            bearer_token: None,
+            bearer_token: Some(BearerTokenDigest::new("agent-secret")),
             approval_token: None,
             allowed_roots: vec![workspace_path.clone()],
-            registered_projects,
+            workspace_id: configured_workspace_id(&workspace_path).expect("workspace id"),
+            registered_projects: Arc::new(AsyncRwLock::new(registered_projects)),
             workspace_path,
             git_state: GitState::new(),
             config_manager: ConfigManager::initialize(root.path().join("config"))
@@ -2623,6 +3214,11 @@ mod tests {
                     root_identity: macro_lib::fs::operations::workspace_root_identity(&project_dir)
                         .expect("project root identity"),
                     is_read_only: false,
+                    tools: json!({
+                        "riskLevel": "balanced",
+                        "builtIn": {},
+                        "modes": {},
+                    }),
                 },
             );
         }
@@ -2685,19 +3281,15 @@ mod tests {
     async fn scoped_workspace_commands_isolate_two_concurrent_workspaces() {
         let root = TempDir::new().expect("workspace registry root");
         let state = Arc::new(test_headless_state(&root, &["workspace-a", "workspace-b"]).await);
-        write_workspace_marker(
-            &state.registered_projects["workspace-a"].canonical_path,
-            "alpha",
-        );
-        write_workspace_marker(
-            &state.registered_projects["workspace-b"].canonical_path,
-            "beta",
-        );
+        let registered = state.registered_projects.read().await;
+        write_workspace_marker(&registered["workspace-a"].canonical_path, "alpha");
+        write_workspace_marker(&registered["workspace-b"].canonical_path, "beta");
+        drop(registered);
 
         let load = |workspace_id: &'static str| {
             workspace_bootstrap_scoped(
                 State(state.clone()),
-                HeaderMap::new(),
+                bearer_headers("agent-secret"),
                 Path(workspace_id.to_string()),
             )
         };
@@ -2724,12 +3316,133 @@ mod tests {
         assert_eq!(beta["standaloneProjects"][0]["name"], "beta");
         let missing = workspace_bootstrap_scoped(
             State(state.clone()),
-            HeaderMap::new(),
+            bearer_headers("agent-secret"),
             Path("missing-workspace".to_string()),
         )
         .await
         .into_response();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn scoped_bootstrap_routes_the_configured_kernel_workspace() {
+        let root = TempDir::new().expect("kernel workspace");
+        let mut state = test_headless_state(&root, &["registered-project"]).await;
+        state.workspace_id = "configured-kernel".into();
+        write_workspace_marker(&state.workspace_path, "kernel-marker");
+        let response = workspace_bootstrap_scoped(
+            State(Arc::new(state)),
+            bearer_headers("agent-secret"),
+            Path("configured-kernel".into()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["standaloneProjects"][0]["name"], "kernel-marker");
+    }
+
+    #[tokio::test]
+    async fn scoped_bootstrap_rejects_a_kernel_id_bound_to_another_project_root() {
+        let root = TempDir::new().expect("kernel workspace collision");
+        let mut state = test_headless_state(&root, &["registered-project"]).await;
+        state.workspace_id = "registered-project".into();
+        let response = workspace_bootstrap_scoped(
+            State(Arc::new(state)),
+            bearer_headers("agent-secret"),
+            Path("registered-project".into()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "REMOTE_WORKSPACE_AMBIGUOUS");
+    }
+
+    async fn loaded_project_policy_fixture() -> (TempDir, HeadlessState, PathBuf) {
+        let root = TempDir::new().unwrap();
+        let state = test_headless_state(&root, &["project-policy"]).await;
+        let project_root = state.registered_projects.read().await["project-policy"]
+            .canonical_path
+            .clone();
+        let config_root = state
+            .config_manager
+            .register_project_root("project-policy", project_root.join(".macro"))
+            .await
+            .unwrap();
+        let minimal = br#"{"$schema":"./schemas/v1/tools.schema.json","schemaVersion":1}"#;
+        let path = config_root.join("tools.json");
+        fs::write(&path, minimal).unwrap();
+        fs::write(
+            config_root.join("agents.json"),
+            br#"{"$schema":"./schemas/v1/agents.schema.json","schemaVersion":1}"#,
+        )
+        .unwrap();
+        state
+            .config_manager
+            .get_snapshot(&["project-policy".into()])
+            .await
+            .unwrap();
+        assert!(load_project_tools_policy(&state, "project-policy")
+            .await
+            .is_ok());
+        (root, state, path)
+    }
+
+    #[tokio::test]
+    async fn headless_policy_rejects_invalid_live_tools_instead_of_cached_snapshot() {
+        let (_root, state, path) = loaded_project_policy_fixture().await;
+        for value in [
+            "{ invalid json",
+            r#"{"$schema":"./schemas/v1/tools.schema.json","schemaVersion":1,"builtIn":{"read":"yes"}}"#,
+            r#"{"$schema":"./schemas/v1/tools.schema.json","schemaVersion":99}"#,
+        ] {
+            fs::write(&path, value).unwrap();
+            assert!(
+                load_project_tools_policy(&state, "project-policy")
+                    .await
+                    .is_err(),
+                "accepted {value}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn headless_policy_rejects_deleted_tools_while_other_project_documents_remain() {
+        let (_root, state, path) = loaded_project_policy_fixture().await;
+        fs::remove_file(&path).unwrap();
+        assert!(path.parent().unwrap().join("agents.json").is_file());
+        assert!(load_project_tools_policy(&state, "project-policy")
+            .await
+            .is_err());
+        assert!(
+            !path.exists(),
+            "policy lookup must not recreate a missing document"
+        );
+    }
+
+    #[tokio::test]
+    async fn headless_policy_does_not_promote_a_valid_unapproved_live_edit() {
+        let (_root, state, path) = loaded_project_policy_fixture().await;
+        let approved = load_project_tools_policy(&state, "project-policy")
+            .await
+            .unwrap();
+        fs::write(
+            &path,
+            br#"{"$schema":"./schemas/v1/tools.schema.json","schemaVersion":1,"riskLevel":"yolo"}"#,
+        )
+        .unwrap();
+        let unchanged = load_project_tools_policy(&state, "project-policy")
+            .await
+            .unwrap();
+        assert_eq!(unchanged, approved);
+        assert_eq!(unchanged["riskLevel"], "balanced");
     }
 
     #[test]
@@ -2870,6 +3583,122 @@ mod tests {
                 .expect("missing lookup")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn tool_execution_journal_reconciles_a_durable_completed_pending_pair() {
+        let root = TempDir::new().expect("journal root");
+        let pending = PersistedToolExecution {
+            schema_version: TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION,
+            execution_id: "execution-crash-window".to_string(),
+            fingerprint: "fingerprint-crash-window".to_string(),
+            state: PersistedToolExecutionState::Pending,
+        };
+        let completed = PersistedToolExecution {
+            state: PersistedToolExecutionState::Completed {
+                response: StoredToolExecution {
+                    status_code: 200,
+                    body: json!({ "result": "written" }),
+                },
+            },
+            ..pending.clone()
+        };
+        let pending_path = tool_execution_journal_path(
+            root.path(),
+            &pending.execution_id,
+            ToolExecutionJournalKind::Pending,
+        );
+        let completed_path = tool_execution_journal_path(
+            root.path(),
+            &completed.execution_id,
+            ToolExecutionJournalKind::Completed,
+        );
+        write_tool_execution_record_atomically(
+            root.path(),
+            &pending_path,
+            &serde_json::to_vec(&pending).expect("encode pending"),
+        )
+        .expect("write pending");
+        write_tool_execution_record_atomically(
+            root.path(),
+            &completed_path,
+            &serde_json::to_vec(&completed).expect("encode completed"),
+        )
+        .expect("write completed");
+
+        reconcile_completed_tool_execution_pairs(root.path()).expect("reconcile journal");
+
+        assert!(!pending_path.exists());
+        assert!(completed_path.exists());
+    }
+
+    #[tokio::test]
+    async fn tool_execution_journal_never_evicts_an_indeterminate_resolution() {
+        let root = TempDir::new().expect("journal root");
+        let indeterminate = PersistedToolExecution {
+            schema_version: TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION,
+            execution_id: "execution-indeterminate".to_string(),
+            fingerprint: "fingerprint-indeterminate".to_string(),
+            state: PersistedToolExecutionState::Completed {
+                response: StoredToolExecution {
+                    status_code: StatusCode::CONFLICT.as_u16(),
+                    body: json!({
+                        "code": "REMOTE_MUTATION_OUTCOME_INDETERMINATE",
+                        "message": "The mutation outcome is indeterminate"
+                    }),
+                },
+            },
+        };
+        let ordinary = PersistedToolExecution {
+            schema_version: TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION,
+            execution_id: "execution-ordinary".to_string(),
+            fingerprint: "fingerprint-ordinary".to_string(),
+            state: PersistedToolExecutionState::Completed {
+                response: StoredToolExecution {
+                    status_code: StatusCode::OK.as_u16(),
+                    body: json!({ "result": "written" }),
+                },
+            },
+        };
+        let indeterminate_path = tool_execution_journal_path(
+            root.path(),
+            &indeterminate.execution_id,
+            ToolExecutionJournalKind::Completed,
+        );
+        let ordinary_path = tool_execution_journal_path(
+            root.path(),
+            &ordinary.execution_id,
+            ToolExecutionJournalKind::Completed,
+        );
+        write_tool_execution_record_atomically(
+            root.path(),
+            &indeterminate_path,
+            &serde_json::to_vec(&indeterminate).expect("encode indeterminate"),
+        )
+        .expect("write indeterminate");
+        write_tool_execution_record_atomically(
+            root.path(),
+            &ordinary_path,
+            &serde_json::to_vec(&ordinary).expect("encode ordinary"),
+        )
+        .expect("write ordinary");
+
+        let mut entries = read_tool_execution_journal_entries(root.path()).expect("read journal");
+        remove_completed_journal_entries_to_fit(
+            root.path(),
+            &mut entries,
+            0,
+            MAX_TRACKED_TOOL_EXECUTIONS - 1,
+        )
+        .expect("evict ordinary completion under entry pressure");
+
+        assert!(!ordinary_path.exists());
+        assert!(indeterminate_path.exists());
+        let reloaded = load_persisted_tool_execution(root.path(), &indeterminate.execution_id)
+            .await
+            .expect("load indeterminate execution")
+            .expect("indeterminate execution retained");
+        assert!(completed_execution_is_indeterminate(&reloaded));
     }
 
     #[tokio::test]
@@ -3160,6 +3989,256 @@ mod tests {
             &bearer_headers("intruder"),
             Some(&digest)
         ));
-        assert!(bearer_token_authorizes(&HeaderMap::new(), None));
+        assert!(!bearer_token_authorizes(&HeaderMap::new(), None));
+    }
+
+    #[test]
+    fn headless_listener_requires_a_bearer_even_on_loopback() {
+        let loopback = "127.0.0.1:8787".parse().unwrap();
+        assert!(validate_listen_security(loopback, None).is_err());
+        assert!(validate_listen_security(loopback, Some("agent-secret")).is_ok());
+    }
+
+    #[test]
+    fn request_gate_reserves_indeterminate_resolution_for_approval_bearer() {
+        let mut security = RequestSecurity {
+            allowed_hosts: vec![HeaderValue::from_static("127.0.0.1:8787")],
+            allowed_origins: vec![],
+            bearer_token: BearerTokenDigest::new("agent-secret"),
+            approval_token: Some(BearerTokenDigest::new("approval-secret")),
+        };
+        let request = |path: &str, token: &str| {
+            Request::builder()
+                .method(Method::POST)
+                .uri(path)
+                .header(header::HOST, "127.0.0.1:8787")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        for (path, route) in [
+            (
+                "/api/v1/tools/executions/work-1/resolve-indeterminate",
+                "/api/v1/tools/executions/{execution_id}/resolve-indeterminate",
+            ),
+            (
+                "/v1/tools/executions/work-1/resolve-indeterminate",
+                "/v1/tools/executions/{execution_id}/resolve-indeterminate",
+            ),
+        ] {
+            assert_eq!(
+                request_security_error_for_route(&security, &request(path, "agent-secret"), route),
+                Some(StatusCode::UNAUTHORIZED)
+            );
+            assert_eq!(
+                request_security_error_for_route(
+                    &security,
+                    &request(path, "approval-secret"),
+                    route
+                ),
+                None
+            );
+        }
+        for route in [
+            "/api/v1/tools/executions/{execution_id}",
+            "/api/v1/tools/executions/{execution_id}/resolve-indeterminate/preview",
+        ] {
+            assert_eq!(
+                request_security_error_for_route(
+                    &security,
+                    &request("/api/v1/tools/executions/work-1", "agent-secret"),
+                    route
+                ),
+                None
+            );
+            assert_eq!(
+                request_security_error_for_route(
+                    &security,
+                    &request("/api/v1/tools/executions/work-1", "approval-secret"),
+                    route
+                ),
+                Some(StatusCode::UNAUTHORIZED)
+            );
+        }
+        security.approval_token = None;
+        for token in ["agent-secret", "approval-secret"] {
+            assert_eq!(
+                request_security_error_for_route(
+                    &security,
+                    &request(
+                        "/api/v1/tools/executions/work-1/resolve-indeterminate",
+                        token
+                    ),
+                    "/api/v1/tools/executions/{execution_id}/resolve-indeterminate"
+                ),
+                Some(StatusCode::UNAUTHORIZED)
+            );
+        }
+    }
+
+    #[test]
+    fn request_gate_rejects_rebinding_cross_origin_and_missing_tokens() {
+        let security = RequestSecurity {
+            allowed_hosts: vec![HeaderValue::from_static("127.0.0.1:8787")],
+            allowed_origins: vec![HeaderValue::from_static("http://127.0.0.1:5173")],
+            bearer_token: BearerTokenDigest::new("agent-secret"),
+            approval_token: Some(BearerTokenDigest::new("approval-secret")),
+        };
+        let request = |path: &str, host: &str, origin: Option<&str>, bearer: Option<&str>| {
+            let mut builder = Request::builder().uri(path).header(header::HOST, host);
+            if let Some(origin) = origin {
+                builder = builder.header(header::ORIGIN, origin);
+            }
+            if let Some(bearer) = bearer {
+                builder = builder.header(header::AUTHORIZATION, format!("Bearer {bearer}"));
+            }
+            builder.body(axum::body::Body::empty()).unwrap()
+        };
+
+        assert_eq!(
+            request_security_error(
+                &security,
+                &request(
+                    "/health",
+                    "attacker.example:8787",
+                    None,
+                    Some("agent-secret")
+                )
+            ),
+            Some(StatusCode::MISDIRECTED_REQUEST)
+        );
+        assert_eq!(
+            request_security_error(
+                &security,
+                &request(
+                    "/api/v1/tools/execute",
+                    "127.0.0.1:8787",
+                    Some("http://attacker.example"),
+                    Some("agent-secret")
+                )
+            ),
+            Some(StatusCode::FORBIDDEN)
+        );
+        assert_eq!(
+            request_security_error(
+                &security,
+                &request("/api/v1/tools/execute", "127.0.0.1:8787", None, None)
+            ),
+            Some(StatusCode::UNAUTHORIZED)
+        );
+        assert_eq!(
+            request_security_error(
+                &security,
+                &request(
+                    "/api/v1/tools/execute",
+                    "127.0.0.1:8787",
+                    Some("http://127.0.0.1:5173"),
+                    Some("agent-secret")
+                )
+            ),
+            None
+        );
+        assert_eq!(
+            request_security_error(
+                &security,
+                &request(
+                    "/api/v1/config/pending/accept",
+                    "127.0.0.1:8787",
+                    None,
+                    Some("agent-secret")
+                )
+            ),
+            Some(StatusCode::UNAUTHORIZED)
+        );
+        assert_eq!(
+            request_security_error(
+                &security,
+                &request(
+                    "/api/v1/config/pending/accept",
+                    "127.0.0.1:8787",
+                    None,
+                    Some("approval-secret")
+                )
+            ),
+            None
+        );
+
+        let mut websocket = request(
+            "/api/v1/events",
+            "127.0.0.1:8787",
+            Some("http://attacker.example"),
+            Some("agent-secret"),
+        );
+        websocket
+            .headers_mut()
+            .insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+        assert_eq!(
+            request_security_error(&security, &websocket),
+            Some(StatusCode::FORBIDDEN)
+        );
+
+        let mut websocket_without_token = request(
+            "/api/v1/events",
+            "127.0.0.1:8787",
+            Some("http://127.0.0.1:5173"),
+            None,
+        );
+        websocket_without_token
+            .headers_mut()
+            .insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+        assert_eq!(
+            request_security_error(&security, &websocket_without_token),
+            Some(StatusCode::UNAUTHORIZED)
+        );
+
+        let mut stream = request(
+            "/api/v1/events",
+            "127.0.0.1:8787",
+            Some("http://127.0.0.1:5173"),
+            None,
+        );
+        stream.headers_mut().insert(
+            header::ACCEPT,
+            HeaderValue::from_static("text/event-stream"),
+        );
+        assert_eq!(
+            request_security_error(&security, &stream),
+            Some(StatusCode::UNAUTHORIZED)
+        );
+    }
+
+    #[test]
+    fn derived_workspace_identity_is_stable_and_path_scoped() {
+        let first = derived_workspace_id(std::path::Path::new("/srv/macro/workspace"));
+        let repeated = derived_workspace_id(std::path::Path::new("/srv/macro/workspace"));
+        let second = derived_workspace_id(std::path::Path::new("/srv/macro/other"));
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, second);
+        assert!(first.starts_with("ws_"));
+        assert_eq!(first.len(), 27);
+    }
+
+    #[test]
+    fn oversized_headless_tool_responses_fail_with_a_small_structured_error() {
+        let oversized = bound_stored_tool_execution_with_limit(
+            StoredToolExecution {
+                status_code: StatusCode::OK.as_u16(),
+                body: json!({ "result": "x".repeat(128) }),
+            },
+            32,
+        );
+
+        assert_eq!(
+            oversized.status_code,
+            StatusCode::PAYLOAD_TOO_LARGE.as_u16()
+        );
+        assert_eq!(oversized.body["code"], json!("REMOTE_RESPONSE_TOO_LARGE"));
+        assert!(
+            serde_json::to_vec(&oversized.body)
+                .expect("encoded error")
+                .len()
+                < 512
+        );
     }
 }

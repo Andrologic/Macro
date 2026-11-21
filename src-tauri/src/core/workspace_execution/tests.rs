@@ -358,7 +358,7 @@ fn parse_apply_patch_supports_add_update_delete_sections() {
 
     assert_eq!(parsed.len(), 3);
     match &parsed[0] {
-        ParsedPatchOperation::Update { path, hunks } => {
+        ParsedPatchOperation::Update { path, hunks, .. } => {
             assert_eq!(path, "src/app.ts");
             assert_eq!(hunks.len(), 1);
         }
@@ -396,7 +396,7 @@ fn apply_patch_hunks_to_content_updates_expected_lines() {
     )
     .expect("parse apply_patch");
 
-    let ParsedPatchOperation::Update { path, hunks } = &parsed[0] else {
+    let ParsedPatchOperation::Update { path, hunks, .. } = &parsed[0] else {
         panic!("expected update operation");
     };
 
@@ -438,7 +438,7 @@ fn apply_patch_hunks_advance_past_the_first_repeated_block() {
         "*** Begin Patch\n*** Update File: repeated.txt\n@@\n-old\n+first\n@@\n-old\n+second\n*** End Patch",
     )
     .expect("parse repeated-block patch");
-    let ParsedPatchOperation::Update { path, hunks } = &parsed[0] else {
+    let ParsedPatchOperation::Update { path, hunks, .. } = &parsed[0] else {
         panic!("expected update operation");
     };
     let updated = apply_patch_hunks_to_content(path, "old\nbetween\nold\n", hunks)
@@ -849,6 +849,7 @@ async fn execute_workspace_tool_edit_rejects_a_stale_revision() {
     .await
     .expect_err("stale edit must fail");
 
+    assert_eq!(error.code(), Some("REVISION_CONFLICT"));
     assert!(error.message.contains("Stale content"));
     assert_eq!(
         fs::read_to_string(path).expect("read guarded file"),
@@ -1068,6 +1069,7 @@ async fn commit_pending_file_changes_rolls_back_a_late_revision_conflict() {
     .await
     .expect_err("the second mutation must observe the first revision change");
 
+    assert_eq!(error.code(), Some("REVISION_CONFLICT"));
     assert!(error.message.contains("Stale content for 'shared.txt'"));
     assert_eq!(
         fs::read_to_string(path).expect("read rolled back file"),
@@ -1485,6 +1487,10 @@ async fn partial_rollback_continues_past_conflicts_and_preserves_external_edits(
     assert!(error.message.contains("Post-mutation validation failed"));
     assert!(error.message.contains("Rollback conflict for second.txt"));
     assert_eq!(
+        serde_json::to_value(&error).unwrap()["code"],
+        "REVISION_CONFLICT"
+    );
+    assert_eq!(
         fs::read_to_string(first_path).expect("restorable target must roll back"),
         "first-original\n"
     );
@@ -1518,6 +1524,10 @@ async fn guarded_readback_rejects_and_preserves_an_external_winner() {
 
     assert!(error.message.contains("External modification detected"));
     assert!(error.message.contains("Rollback conflict for shared.txt"));
+    assert_eq!(
+        serde_json::to_value(&error).unwrap()["code"],
+        "REVISION_CONFLICT"
+    );
     assert_eq!(
         fs::read_to_string(path).expect("external winner must survive"),
         "external edit\n"
@@ -1766,4 +1776,462 @@ async fn mixed_mount_patch_rejects_read_only_target_before_any_write() {
     );
     assert!(!writable.path().join("first.txt").exists());
     assert!(!read_only.path().join("second.txt").exists());
+}
+
+#[tokio::test]
+async fn owned_workspace_waits_for_the_actual_write_after_stop_request() {
+    let workspace = TempDir::new().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    let path = root.join("held.txt");
+    fs::write(&path, "original").unwrap();
+    let reached = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    install_write_before_revalidation_hook(path.clone(), reached.clone(), release.clone());
+    let roots = Arc::new(std::collections::BTreeMap::from([(
+        root.clone(),
+        crate::fs::operations::workspace_root_identity(&root).unwrap(),
+    )]));
+    let id = "owned-write-stop-proof";
+    let task = tokio::spawn(execute_workspace_tool_owned(
+        root.clone(),
+        root,
+        GitState::new(),
+        "Implement".into(),
+        "write".into(),
+        json!({"path":"held.txt","content":"replacement","expected_revision":content_revision(b"original")}),
+        id.into(),
+        json!({}),
+        roots,
+    ));
+    tokio::time::timeout(Duration::from_secs(5), reached.wait())
+        .await
+        .unwrap();
+    assert!(tool_cancel_workspace(id.into()));
+    assert!(
+        !task.is_finished(),
+        "Stop cannot complete while the native write is held"
+    );
+    release.wait().await;
+    let _completed = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!TOOL_EXECUTION_CANCELLATION_REGISTRY
+        .lock()
+        .unwrap()
+        .active
+        .contains_key(id));
+    // Either committed or rolled back, but the owned call cannot leave this join running.
+    assert!(matches!(
+        fs::read_to_string(path).unwrap().as_str(),
+        "original" | "replacement"
+    ));
+}
+#[tokio::test]
+async fn owned_workspace_honors_pre_dispatch_stop_for_delete_and_git() {
+    let workspace = TempDir::new().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    fs::write(root.join("kept.txt"), "keep").unwrap();
+    for tool in ["delete", "git_status"] {
+        let id = format!("owned-pre-stop-{tool}");
+        assert!(!tool_cancel_workspace(id.clone()));
+        let roots = Arc::new(std::collections::BTreeMap::from([(
+            root.clone(),
+            crate::fs::operations::workspace_root_identity(&root).unwrap(),
+        )]));
+        let error = execute_workspace_tool_owned(
+            root.clone(),
+            root.clone(),
+            GitState::new(),
+            "Implement".into(),
+            tool.into(),
+            json!({"path":"kept.txt"}),
+            id,
+            json!({}),
+            roots,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.message.contains("cancelled before dispatch"));
+        assert_eq!(error.code(), Some("TOOL_EXECUTION_CANCELLED"));
+    }
+    assert_eq!(fs::read_to_string(root.join("kept.txt")).unwrap(), "keep");
+}
+
+#[tokio::test]
+async fn controlled_tool_errors_distinguish_cancellation_from_both_timeout_paths() {
+    let workspace = TempDir::new().expect("workspace");
+    git2::Repository::init(workspace.path()).expect("repository");
+    // Hold the real metadata repository lock so the read stays pending until
+    // its execution budget expires or its registered cancellation is observed.
+    let _guard = crate::workspace::lock_git_repository(workspace.path())
+        .await
+        .unwrap();
+    let cancelled_id = uuid::Uuid::new_v4().to_string();
+    tool_cancel_workspace(cancelled_id.clone());
+    for (execution_id, expected_code) in [
+        (Some(cancelled_id), "TOOL_EXECUTION_CANCELLED"),
+        (
+            Some(uuid::Uuid::new_v4().to_string()),
+            "TOOL_EXECUTION_TIMEOUT",
+        ),
+        (None, "TOOL_EXECUTION_TIMEOUT"),
+    ] {
+        let error = tokio::time::timeout(
+            Duration::from_secs(8),
+            execute_workspace_tool_controlled(
+                workspace.path().to_path_buf(),
+                workspace.path().to_path_buf(),
+                GitState::new(),
+                "Implement".into(),
+                "read".into(),
+                json!({"path": "held.txt"}),
+                None,
+                Some("metadata".into()),
+                None,
+                None,
+                None,
+                execution_id,
+            ),
+        )
+        .await
+        .expect("tool budget must settle the blocked read")
+        .unwrap_err();
+        assert_eq!(error.code(), Some(expected_code));
+        if expected_code == "TOOL_EXECUTION_CANCELLED" {
+            assert_eq!(error.message, "Tool execution cancelled: read.");
+        }
+    }
+}
+
+#[tokio::test]
+async fn initial_storage_failure_keeps_priority_over_a_real_rollback_conflict() {
+    let workspace = TempDir::new().expect("workspace");
+    let first = workspace.path().join("first.txt");
+    let second = workspace.path().join("second.txt");
+    fs::write(&first, "first-original\n").unwrap();
+    fs::write(&second, "second-original\n").unwrap();
+    let reached = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    install_write_before_revalidation_hook(
+        second.canonicalize().unwrap(),
+        reached.clone(),
+        release.clone(),
+    );
+    let mut missing_delete = pending_update_change(workspace.path(), "missing.txt", "");
+    missing_delete.new_content = None;
+    missing_delete.status = "deleted".into();
+    let changes = vec![
+        pending_update_change(workspace.path(), "first.txt", "first-updated\n"),
+        pending_update_change(workspace.path(), "second.txt", "second-updated\n"),
+        missing_delete,
+    ];
+    let mutation = tokio::spawn(commit_and_validate_pending_file_changes(
+        changes,
+        Default::default(),
+    ));
+    tokio::time::timeout(Duration::from_secs(5), reached.wait())
+        .await
+        .expect("second write reached");
+    fs::write(&first, "external edit\n").expect("external writer wins after first mutation");
+    release.wait().await;
+    let error = mutation
+        .await
+        .unwrap()
+        .expect_err("missing deletion must fail");
+    assert_eq!(
+        serde_json::to_value(&error).unwrap()["code"],
+        "FilesystemNotFound"
+    );
+    assert!(error.message.contains("Failed to delete missing.txt"));
+    assert!(error.message.contains("Rollback conflict for first.txt"));
+    assert_eq!(fs::read_to_string(&first).unwrap(), "external edit\n");
+    assert_eq!(fs::read_to_string(&second).unwrap(), "second-original\n");
+}
+
+#[tokio::test]
+async fn agsdl_frozen_write_policy_guards_actual_executor_without_partial_writes() {
+    let workspace = TempDir::new().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    fs::create_dir(root.join("sub")).unwrap();
+    fs::create_dir(root.join("docs")).unwrap();
+    fs::write(root.join(".env"), "secret\n").unwrap();
+    fs::write(root.join("allowed.txt"), "old\n").unwrap();
+    let rules = json!({"writeRules":[{"action":"write","effect":"deny","match":".env*"}]});
+    let invoke = |tool: &str, args: serde_json::Value, permissions: serde_json::Value| {
+        let roots = Arc::new(std::collections::BTreeMap::from([(
+            root.clone(),
+            crate::fs::operations::workspace_root_identity(&root).unwrap(),
+        )]));
+        execute_workspace_tool_owned(
+            root.clone(),
+            root.clone(),
+            GitState::new(),
+            "Implement".into(),
+            tool.into(),
+            args,
+            uuid::Uuid::new_v4().to_string(),
+            permissions,
+            roots,
+        )
+    };
+    // Positive control proves that this reaches the real transactional executor.
+    invoke(
+        "write",
+        json!({"path":"allowed.txt","content":"old\n"}),
+        rules.clone(),
+    )
+    .await
+    .unwrap();
+    for (tool, args) in [
+        ("write", json!({"path":".env","content":"changed"})),
+        (
+            "edit",
+            json!({"path":"sub/../.env","old_text":"secret","new_text":"changed"}),
+        ),
+        ("delete", json!({"path":".env"})),
+        (
+            "apply_patch",
+            json!({"patch_text":"*** Begin Patch\n*** Update File: allowed.txt\n@@\n-old\n+changed\n*** Add File: created.txt\n+created\n*** Delete File: .env\n*** End Patch"}),
+        ),
+        (
+            "apply_patch",
+            json!({"patch_text":"*** Begin Patch\n*** Update File: allowed.txt\n*** Move to: .env.local\n@@\n-old\n+changed\n*** End Patch"}),
+        ),
+        (
+            "apply_patch",
+            json!({"patch_text":"*** Begin Patch\n*** Update File: .env\n*** Move to: moved.txt\n@@\n-secret\n+changed\n*** End Patch"}),
+        ),
+    ] {
+        let error = invoke(tool, args, rules.clone()).await.unwrap_err();
+        assert!(error.message.contains("PERMISSION"), "{error:?}");
+        assert_eq!(fs::read_to_string(root.join(".env")).unwrap(), "secret\n");
+        assert_eq!(
+            fs::read_to_string(root.join("allowed.txt")).unwrap(),
+            "old\n"
+        );
+        for path in ["created.txt", ".env.local", "moved.txt"] {
+            assert!(!root.join(path).exists());
+        }
+    }
+    #[cfg(unix)]
+    {
+        fs::write(root.join(r".env\local"), "secret").unwrap();
+        for (tool, args) in [
+            ("write", json!({"path":r".env\local","content":"changed"})),
+            (
+                "edit",
+                json!({"path":r".env\local","old_text":"secret","new_text":"changed"}),
+            ),
+            ("delete", json!({"path":r".env\local"})),
+            (
+                "apply_patch",
+                json!({"patch_text":concat!("*** Begin Patch\n*** Add File: created.txt\n+created\n*** Delete File: ", r".env\local", "\n*** End Patch")}),
+            ),
+        ] {
+            assert!(invoke(tool, args, rules.clone())
+                .await
+                .unwrap_err()
+                .message
+                .contains("PERMISSION"));
+            assert_eq!(
+                fs::read_to_string(root.join(r".env\local")).unwrap(),
+                "secret"
+            );
+            assert!(!root.join("created.txt").exists());
+        }
+    }
+    #[cfg(unix)]
+    fs::set_permissions(root.join("allowed.txt"), fs::Permissions::from_mode(0o755)).unwrap();
+    // Successful moves exercise both the parser and the transactional mutations.
+    invoke("apply_patch", json!({"patch_text":"*** Begin Patch\n*** Update File: allowed.txt\n*** Move to: renamed.txt\n@@\n-old\n+changed\n*** End Patch"}), rules.clone()).await.unwrap();
+    assert!(!root.join("allowed.txt").exists());
+    #[cfg(unix)]
+    assert_eq!(
+        fs::metadata(root.join("renamed.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("renamed.txt")).unwrap(),
+        "changed\n"
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("../.env", root.join("docs/link")).unwrap();
+        assert!(invoke(
+            "write",
+            json!({"path":"docs/link","content":"changed"}),
+            rules.clone()
+        )
+        .await
+        .unwrap_err()
+        .message
+        .contains("PERMISSION"));
+        fs::create_dir(root.join("secret")).unwrap();
+        std::os::unix::fs::symlink("../secret", root.join("docs/alias")).unwrap();
+        let rules =
+            json!({"writeRules":[{"action":"write","effect":"deny","match":"docs/**/.env"}]});
+        assert!(invoke(
+            "write",
+            json!({"path":"docs/alias/.env","content":"changed"}),
+            rules
+        )
+        .await
+        .unwrap_err()
+        .message
+        .contains("PERMISSION"));
+        assert!(!root.join("secret/.env").exists());
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn agsdl_policy_checks_the_actual_target_after_symlink_parent_normalization() {
+    let workspace = TempDir::new().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    for path in ["secret", "other/nested"] {
+        fs::create_dir_all(root.join(path)).unwrap();
+    }
+    std::os::unix::fs::symlink("secret", root.join("alias")).unwrap();
+    std::os::unix::fs::symlink("../other/nested", root.join("secret/link")).unwrap();
+    for path in ["secret/file.txt", "other/file.txt"] {
+        fs::write(root.join(path), "original\n").unwrap();
+    }
+    let raw = "alias/link/../file.txt";
+    // Demonstrate the validator/executor discrepancy that the policy must cover.
+    assert_eq!(
+        root.join(raw).canonicalize().unwrap(),
+        root.join("other/file.txt")
+    );
+    let validated = crate::fs::validate_path_for_write(std::path::Path::new(raw), &root).unwrap();
+    assert_eq!(
+        validated.canonicalize().unwrap(),
+        root.join("secret/file.txt")
+    );
+    let invoke = |tool: &str, args: serde_json::Value, permissions: serde_json::Value| {
+        let roots = Arc::new(std::collections::BTreeMap::from([(
+            root.clone(),
+            crate::fs::operations::workspace_root_identity(&root).unwrap(),
+        )]));
+        execute_workspace_tool_owned(
+            root.clone(),
+            root.clone(),
+            GitState::new(),
+            "Implement".into(),
+            tool.into(),
+            args,
+            uuid::Uuid::new_v4().to_string(),
+            permissions,
+            roots,
+        )
+    };
+    invoke(
+        "write",
+        json!({"path":raw,"content":"positive control\n"}),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(root.join("secret/file.txt")).unwrap(),
+        "positive control\n"
+    );
+    fs::write(root.join("secret/file.txt"), "original\n").unwrap();
+    let rules = json!({"writeRules":[{"action":"write","effect":"deny","match":"secret/**"}]});
+    for (tool, args) in [
+        ("write", json!({"path":raw,"content":"changed"})),
+        (
+            "edit",
+            json!({"path":raw,"old_text":"original","new_text":"changed"}),
+        ),
+        ("delete", json!({"path":raw})),
+        (
+            "apply_patch",
+            json!({"patch_text":format!("*** Begin Patch\n*** Add File: allowed.txt\n+created\n*** Update File: {raw}\n@@\n-original\n+changed\n*** End Patch")}),
+        ),
+        (
+            "apply_patch",
+            json!({"patch_text":format!("*** Begin Patch\n*** Update File: {raw}\n*** Move to: moved.txt\n@@\n-original\n+changed\n*** End Patch")}),
+        ),
+        (
+            "apply_patch",
+            json!({"patch_text":format!("*** Begin Patch\n*** Update File: other/file.txt\n*** Move to: {raw}\n@@\n-original\n+changed\n*** End Patch")}),
+        ),
+    ] {
+        assert!(invoke(tool, args, rules.clone())
+            .await
+            .unwrap_err()
+            .message
+            .contains("PERMISSION"));
+        for path in ["secret/file.txt", "other/file.txt"] {
+            assert_eq!(fs::read_to_string(root.join(path)).unwrap(), "original\n");
+        }
+        assert!(!root.join("allowed.txt").exists());
+        assert!(!root.join("moved.txt").exists());
+    }
+}
+
+#[tokio::test]
+async fn agsdl_policy_refuses_metadata_aliases_before_remapping_or_mutation() {
+    let workspace = TempDir::new().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    fs::create_dir_all(root.join(".macro/protected")).unwrap();
+    fs::write(root.join(".macro/protected/x.txt"), "original\n").unwrap();
+    let invoke = |tool: &str, args: serde_json::Value, permissions: serde_json::Value| {
+        let roots = Arc::new(std::collections::BTreeMap::from([(
+            root.clone(),
+            crate::fs::operations::workspace_root_identity(&root).unwrap(),
+        )]));
+        execute_workspace_tool_owned(
+            root.clone(),
+            root.clone(),
+            GitState::new(),
+            "Implement".into(),
+            tool.into(),
+            args,
+            uuid::Uuid::new_v4().to_string(),
+            permissions,
+            roots,
+        )
+    };
+    for raw in [
+        ".macro/protected/x.txt",
+        r".macro\protected\x.txt",
+        " .macro/protected/x.txt ",
+        "./.macro/protected/x.txt",
+    ] {
+        for rules in [
+            json!({}),
+            json!({"writeRules":[{"action":"write","effect":"allow"}]}),
+            json!({"writeRules":[{"action":"write","effect":"deny","match":".macro/protected/**"}]}),
+        ] {
+            for (tool, args) in [
+                ("write", json!({"path":raw,"content":"changed"})),
+                (
+                    "edit",
+                    json!({"path":raw,"old_text":"original","new_text":"changed"}),
+                ),
+                ("delete", json!({"path":raw})),
+                (
+                    "apply_patch",
+                    json!({"patch_text":format!("*** Begin Patch\n*** Add File: allowed.txt\n+created\n*** Delete File: {raw}\n*** End Patch")}),
+                ),
+            ] {
+                assert!(invoke(tool, args, rules.clone())
+                    .await
+                    .unwrap_err()
+                    .message
+                    .contains("PERMISSION"));
+                assert_eq!(
+                    fs::read_to_string(root.join(".macro/protected/x.txt")).unwrap(),
+                    "original\n"
+                );
+                assert!(!root.join("allowed.txt").exists());
+            }
+        }
+    }
 }

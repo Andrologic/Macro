@@ -13,7 +13,8 @@ import {
 import { beginAppShutdownGate } from '../../services/appShutdownGate';
 import { isProjectGitActionable } from '../../services/globalProjects';
 import { PREF_KEYS, savePreference } from '../../services/preferences';
-import { prepareForPotentialShutdown } from '../../services/windowShutdown';
+import { runWithPotentialShutdown } from '../../services/windowShutdown';
+import { macroPilotRuntime } from '../../composition/macroPilotDesktop';
 import { MarkdownRenderer } from '../chat/MarkdownRenderer';
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
@@ -96,27 +97,34 @@ export const UpdateModal: React.FC = () => {
       return;
     }
 
+    let prepared = false;
     try {
-      await prepareForPotentialShutdown(getSelectedWorkspacePaths());
+      const installed = await runWithPotentialShutdown(async () => {
+        prepared = true;
+        if (update.notes.trim()) {
+          try {
+            await savePreference(PREF_KEYS.RELEASE_NOTES_PENDING_UPDATE, {
+              version: update.version,
+              content: update.notes,
+            });
+          } catch {
+            // Release notes are useful after relaunch, but never block a verified update.
+          }
+        }
+        return installAndRestart();
+      }, releaseShutdownGate, macroPilotRuntime, getSelectedWorkspacePaths());
+      if (installed) return;
     } catch {
-      releaseShutdownGate();
-      notify.error(t('updates.prepareFailed', 'Macro could not prepare the restart'));
+      if (!prepared) {
+        notify.error(t('updates.prepareFailed', 'Macro could not prepare the restart'));
+        return;
+      }
+      notify.error(t('updates.installFailed', 'The update could not be installed'), {
+        description: useAppUpdateStore.getState().error ?? undefined,
+      });
       return;
     }
-
-    if (update.notes.trim()) {
-      try {
-        await savePreference(PREF_KEYS.RELEASE_NOTES_PENDING_UPDATE, {
-          version: update.version,
-          content: update.notes,
-        });
-      } catch {
-        // Release notes are useful after relaunch, but never block a verified update.
-      }
-    }
-
-    if (!(await installAndRestart())) {
-      releaseShutdownGate();
+    if (useAppUpdateStore.getState().phase !== 'ready') {
       notify.error(t('updates.installFailed', 'The update could not be installed'), {
         description: useAppUpdateStore.getState().error ?? undefined,
       });
@@ -223,10 +231,7 @@ export const UpdateModal: React.FC = () => {
           )}
         </div>
 
-        <footer className="flex items-center justify-between gap-3 border-t border-border bg-background/30 px-5 py-4 sm:px-6">
-          <p className="text-xs text-muted-foreground">
-            {t('updates.installsNextLaunch', 'It will be installed the next time Macro opens.')}
-          </p>
+        <footer className="flex items-center justify-end gap-3 border-t border-border bg-background/30 px-5 py-4 sm:px-6">
           <div className="flex shrink-0 gap-2">
             <Button ref={closeActionRef} type="button" size="sm" variant="ghost" disabled={isInstalling} onClick={close}>
               {t('common.close', 'Close')}

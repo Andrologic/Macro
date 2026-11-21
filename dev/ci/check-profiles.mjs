@@ -13,6 +13,7 @@ const copilotTypecheck = step('Typecheck Copilot bridge', 'bun', ['run', 'typech
 
 const frontendChecks = [
   architectureCheck,
+  step('Check embedded Connect identities', 'bun', ['dev/generate-connect-transfer-identities.mjs', '--check']),
   step('Typecheck frontend', 'bun', ['run', 'typecheck']),
   copilotTypecheck,
   step('Lint frontend', 'bun', ['run', 'lint']),
@@ -23,11 +24,11 @@ const frontendChecks = [
 ];
 
 const sidecarCheck = step('Build AI runtime sidecar', 'bun', ['run', 'build:ai-runtime']);
-const rustTestCheck = step('Run locked Rust tests for all targets', 'cargo', [
-  'test',
-  '--manifest-path',
-  'src-tauri/Cargo.toml',
+const argenticScript = 'dev/ci/argentic.mjs';
+const rustTestCheck = step('Run locked Rust tests for all targets', 'bun', [
+  argenticScript, 'macro', 'test',
   '--locked',
+  '--features', 'performance-sqlite',
   '--all-targets',
   '--',
   '--test-threads=1',
@@ -45,21 +46,47 @@ const generatedContractChecks = ['config', 'ipc'].map((domain) => step(
     '--example', 'generate_config', '--', '--domain', domain, '--check',
   ],
 ));
-const nativeChecks = [sidecarCheck, ...generatedContractChecks, rustTestCheck, rustDocTestCheck];
+// Check the same standalone workspaces that Cargo resolves for Macro.
+const argenticChecks = ['argentic-core', 'argentic-runtime'].flatMap((crate) => [
+  step(`Run locked ${crate} tests for all targets`, 'bun', [
+    argenticScript, crate, 'test', '--locked', '--all-targets', '--', '--test-threads=1',
+  ]),
+  step(`Run locked ${crate} doc tests`, 'bun', [
+    argenticScript, crate, 'test', '--locked', '--doc',
+  ]),
+]);
+argenticChecks.push(
+  step('Build standalone Argentic host', 'bun', [
+    argenticScript, 'argentic-runtime', 'build', '--locked', '--example', 'argentic-host',
+  ]),
+  step('Verify native approval boundary', 'bun', [
+    argenticScript, 'argentic-runtime', 'test', '--locked', '--features', 'dev-support',
+    '--test', 'approval_boundary', '--', '--test-threads=1',
+  ]),
+);
+const argenticWindowsChecks = ['argentic-core', 'argentic-runtime'].map((crate) =>
+  step(`Check ${crate} Windows targets`, 'bun', [
+    argenticScript, crate, 'check', '--locked', '--all-targets',
+  ]),
+);
+const processRecoveryCheck = step('Verify native process interruption recovery', 'bun', ['run', 'test:native:process-recovery']);
+const headlessHttpCheck = step('Verify headless HTTP transport', 'bun', ['run', 'test:e2e:headless']);
+const nativeChecks = [sidecarCheck, ...generatedContractChecks, ...argenticChecks, rustTestCheck, rustDocTestCheck, headlessHttpCheck];
 
-const windowsNativeCheck = step('Check all Windows native targets', 'cargo', [
-  'check',
-  '--manifest-path',
-  'src-tauri/Cargo.toml',
+const windowsNativeCheck = step('Check all Windows native targets', 'bun', [
+  argenticScript, 'macro', 'check',
   '--locked',
+  '--features', 'performance-sqlite',
   '--all-targets',
 ]);
 
 export const CHECK_PROFILES = Object.freeze([
   'documentation',
+  'argentic',
   'frontend',
   'native',
   'native-core',
+  'native-macro',
   'sidecar',
   'windows',
   'windows-core',
@@ -69,24 +96,28 @@ export const CHECK_PROFILES = Object.freeze([
 export function stepsForProfile(profile, options = {}) {
   const skipInstall = options.skipInstall === true;
   const install = skipInstall ? [] : [installStep];
+  const processRecovery = (options.platform ?? process.platform) === 'linux' ? [processRecoveryCheck] : [];
 
   switch (profile) {
+    case 'argentic':
+      return [...argenticChecks];
     case 'documentation':
       return [...repositoryChecks];
     case 'frontend':
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks];
     case 'native':
-      return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks];
+      return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks, ...processRecovery];
     case 'native-core':
-      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, rustTestCheck, rustDocTestCheck];
+    case 'native-macro':
+      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, ...(profile === 'native-core' ? argenticChecks : []), rustTestCheck, rustDocTestCheck, headlessHttpCheck, ...processRecovery];
     case 'sidecar':
       return [...install, copilotTypecheck, sidecarCheck];
     case 'windows':
-      return [...install, workflowStep, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, windowsNativeCheck];
+      return [...install, workflowStep, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, ...argenticWindowsChecks, windowsNativeCheck, headlessHttpCheck];
     case 'windows-core':
-      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, windowsNativeCheck];
+      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, ...argenticWindowsChecks, windowsNativeCheck, headlessHttpCheck];
     case 'full': {
-      return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks];
+      return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks, ...processRecovery];
     }
     default:
       throw new Error(`Unknown CI profile "${profile}". Expected one of: ${CHECK_PROFILES.join(', ')}.`);

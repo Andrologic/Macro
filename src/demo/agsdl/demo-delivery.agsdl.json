@@ -1,0 +1,207 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "demo-delivery",
+  "title": "Livraison multi-plateforme",
+  "agents": {
+    "coordinator": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Identifier les versions web et mobile et leurs critères de validation."
+    },
+    "webReviewer": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier le paquet web et produire un rapport structuré avec les preuves."
+    },
+    "mobileReviewer": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier les paquets mobiles et les contraintes de distribution."
+    },
+    "coordinatorReview": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Comparer les rapports web et mobile avant de demander l’accord de publication."
+    },
+    "repair": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Rassembler les constats qui empêchent la livraison. Préparer une nouvelle proposition."
+    },
+    "scene-evidenceReview-check": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Critères satisfaits ?"
+    },
+    "scene-packageReview-prepare": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Préparer les critères"
+    },
+    "scene-packageReview-check": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Paquet conforme ?"
+    },
+    "scene-main-approval": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Autoriser la publication"
+    },
+    "scene-main-publish": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Publier la version validée"
+    }
+  },
+  "flow": {
+    "entry": "coordinator",
+    "steps": {
+      "coordinator": {
+        "type": "agent",
+        "agent": "coordinator",
+        "title": "Préparer la livraison",
+        "next": "web"
+      },
+      "web": {
+        "type": "compose",
+        "composition": "packageReview",
+        "agents": {
+          "specialist": "webReviewer"
+        },
+        "title": "Contrôler la version web",
+        "next": {
+          "ready": [
+            "mobile"
+          ],
+          "blocked": [
+            "mobile"
+          ]
+        }
+      },
+      "mobile": {
+        "type": "compose",
+        "composition": "packageReview",
+        "agents": {
+          "specialist": "mobileReviewer"
+        },
+        "title": "Contrôler la version mobile",
+        "next": {
+          "ready": [
+            "coordinatorReview"
+          ],
+          "blocked": [
+            "coordinatorReview"
+          ]
+        }
+      },
+      "coordinatorReview": {
+        "type": "compose",
+        "composition": "evidenceReview",
+        "agents": {
+          "reviewer": "coordinatorReview"
+        },
+        "title": "Consolider les preuves",
+        "next": {
+          "pass": [
+            "approval"
+          ],
+          "fail": [
+            "approval"
+          ]
+        }
+      },
+      "approval": {
+        "type": "agent",
+        "agent": "scene-main-approval",
+        "title": "Autoriser la publication",
+        "next": "publish"
+      },
+      "publish": {
+        "type": "agent",
+        "agent": "scene-main-publish",
+        "title": "Publier la version validée",
+        "next": "repair"
+      },
+      "repair": {
+        "type": "agent",
+        "agent": "repair",
+        "title": "Préparer une nouvelle version"
+      }
+    }
+  },
+  "compositions": {
+    "evidenceReview": {
+      "entry": "review",
+      "steps": {
+        "review": {
+          "type": "agent",
+          "agent": {
+            "parameter": "reviewer"
+          },
+          "title": "Examiner les preuves",
+          "next": "check"
+        },
+        "check": {
+          "type": "agent",
+          "agent": "scene-evidenceReview-check",
+          "title": "Critères satisfaits ?",
+          "next": {
+            "pass": {
+              "output": "pass"
+            },
+            "fail": {
+              "output": "fail"
+            }
+          }
+        }
+      },
+      "parameters": [
+        "reviewer"
+      ],
+      "outputs": [
+        "pass",
+        "fail"
+      ]
+    },
+    "packageReview": {
+      "entry": "prepare",
+      "steps": {
+        "prepare": {
+          "type": "agent",
+          "agent": "scene-packageReview-prepare",
+          "title": "Préparer les critères",
+          "next": "audit"
+        },
+        "audit": {
+          "type": "agent",
+          "agent": {
+            "parameter": "specialist"
+          },
+          "title": "Examiner le paquet",
+          "next": "check"
+        },
+        "check": {
+          "type": "agent",
+          "agent": "scene-packageReview-check",
+          "title": "Paquet conforme ?",
+          "next": {
+            "ready": {
+              "output": "ready"
+            },
+            "blocked": {
+              "output": "blocked"
+            }
+          }
+        }
+      },
+      "parameters": [
+        "specialist"
+      ],
+      "outputs": [
+        "ready",
+        "blocked"
+      ]
+    }
+  }
+}

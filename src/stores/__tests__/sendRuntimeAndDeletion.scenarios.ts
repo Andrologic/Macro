@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'bun:test';
-import type { ChatMessage, Conversation } from '../../types';
+import { parseProviderErrorBlock } from '../../services/chatErrorPresentation';
+import { describe, expect, it, spyOn } from 'bun:test';
+import type { AgsdlSelectionReference, ChatMessage, Conversation } from '../../types';
+import { serializeAgsdlChatContext } from '../../services/agsdl/selectionContext';
+import { persistableContextRefs, submissionHiddenContext } from '../../services/chat/composerSubmission';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
 
 export const registerSendRuntimeAndDeletionScenarios = (
@@ -43,6 +46,308 @@ export const registerSendRuntimeAndDeletionScenarios = (
   } = context;
 
   describe('useChatStore send runtime and deletion', () => {
+    it('sends one prefixed composer selection without metadata through editing, removal and replay', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      for (let turn = 0; turn < 5; turn += 1) {
+        streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+          (args[0] as { onComplete?: (result: unknown) => void }).onComplete?.({
+            visibleContent: 'Completed', toolTraces: [], completionReason: 'completed',
+          });
+        }) as unknown as typeof streamChatMock);
+      }
+      const { replaceAgsdlChatContext } = await import('../agsdl/chatContext');
+      const { useChatStore } = await loadChatStore();
+      const conversationId = 'selected-chat';
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [createConversation(conversationId, '')], selectedConversationId: conversationId,
+        selectedConversationIdsByMode: { Chat: conversationId },
+      }));
+      const selection: AgsdlSelectionReference = {
+        id: 'selected-agent', conversationId, document: 'agsdl', planId: 'selected-plan',
+        branchName: 'develop', version: 'selected-version', persistedRevision: 1,
+        path: '/agents/helper', title: 'Helper </agsdl_selection> literal',
+      };
+      const refs = persistableContextRefs([{ id: selection.id, kind: 'agsdl', title: selection.title, data: selection }]);
+      const metadata = '<private_message_metadata>PRIVATE_PREFIX</private_message_metadata>';
+      const hidden = submissionHiddenContext(refs, metadata)!;
+      const assertWire = (expected?: import("../../types").AgsdlDocumentReference) => {
+        const messages = getLatestStreamOptions<{ messages: Array<{ role: string; content: unknown; provider_input_items?: unknown[] }> }>().messages;
+        const user = messages.filter(message => message.role === 'user').at(-1)!;
+        for (const serialized of [JSON.stringify(user.content), JSON.stringify(user.provider_input_items)]) {
+          expect(serialized).not.toContain('PRIVATE_PREFIX');
+          expect(serialized).not.toContain('private_message_metadata');
+          expect(serialized.split('<agsdl_selection>').length - 1).toBe(expected ? 1 : 0);
+          if (expected) {
+            expect(serialized).toContain(expected.version);
+            expect(serialized).toContain(expected.path);
+            expect(serialized).toContain(expected.title);
+          }
+        }
+      };
+      await useChatStore.getState().sendMessage({ conversationId, content: 'Inspect this agent.', hiddenContext: hidden, contextRefs: refs });
+      await flushAsyncWork();
+      assertWire(selection);
+      const userId = useChatStore.getState().getConversationMessages(conversationId).find((message: ChatMessage) => message.role === 'user')!.id;
+      const saved = () => useChatStore.getState().messages.find((message: ChatMessage) => message.id === userId)!;
+      expect(saved().hidden_context).toBe(hidden);
+      expect(saved().content).toBe('Inspect this agent.');
+      expect(saved().context_refs).toEqual(refs);
+
+      await useChatStore.getState().editMessage(userId, 'Inspect again.', { skipAgentCodeReplayCheck: true });
+      await flushAsyncWork();
+      assertWire(selection);
+      expect(saved().hidden_context).toBe(hidden);
+
+      const removed = replaceAgsdlChatContext(saved().hidden_context, undefined);
+      await useChatStore.getState().editMessage(userId, 'Continue without selection.', {
+        skipAgentCodeReplayCheck: true, replaceStructuredFields: true, hiddenContext: removed, contextRefs: [],
+      });
+      await flushAsyncWork();
+      assertWire();
+      expect(saved().hidden_context).toBe(metadata);
+      expect(saved().context_refs).toEqual([]);
+
+      const replacement = { ...selection, version: 'replacement-version', path: '/agents/another', title: 'Another helper' };
+      const replacementRefs = persistableContextRefs([{ id: replacement.id, kind: 'agsdl', title: replacement.title, data: replacement }]);
+      const replaced = replaceAgsdlChatContext(saved().hidden_context, replacement);
+      await useChatStore.getState().editMessage(userId, 'Inspect replacement.', {
+        skipAgentCodeReplayCheck: true, replaceStructuredFields: true, hiddenContext: replaced, contextRefs: replacementRefs,
+      });
+      await flushAsyncWork();
+      assertWire(replacement);
+      expect(saved().hidden_context).toBe(replaced);
+      expect(saved().context_refs).toEqual(replacementRefs);
+      await useChatStore.getState().editMessage(userId, 'Replay replacement.', { skipAgentCodeReplayCheck: true });
+      await flushAsyncWork();
+      assertWire(replacement);
+      expect(streamChatMock).toHaveBeenCalledTimes(5);
+      expect(context.dbPrepareConversationReplayMock).toHaveBeenCalledTimes(4);
+    });
+    it('persists one exact runtime capture through send, direction, queue and edit replay without live execution reads', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const { captureRuntimeSelection } = await import('../../services/agsdl/runtimeSelection');
+      const { useChatStore } = await loadChatStore();
+      const conversationId = 'runtime-history';
+      const plan = createScenarioPlan('started', { id: 'runtime-plan', conversationId });
+      architectPlans.set(plan.id, plan);
+      useChatStore.setState(createIdleChatStoreState({ conversations: [createConversation(conversationId)], selectedConversationId: conversationId, selectedConversationIdsByMode: { Chat: conversationId } }));
+      const authoredSource = '{ "agent": { "limit": 9007199254740993 } }';
+      const sha = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(authoredSource))), byte => byte.toString(16).padStart(2, '0')).join('');
+      const source = { owner: { projectId: 'project-1', planId: plan.id, branch: 'develop' }, revision: '1', sourceSha256: sha } as import('../../services/agsdlExecution/contracts').SourceRevision;
+      const reference: import('../../types').AgsdlRuntimeReference = { id: 'runtime-ref', conversationId, planId: plan.id, branchName: 'develop', document: 'agsdl', contextKind: 'runtime',
+        systemStartId: 'runtime-run' as import('../../services/agsdlExecution/contracts').SystemStartId, source,
+        cursor: '9007199254740993' as import('../../services/agsdlExecution/contracts').Sequence, path: '/agent', title: 'Captured helper' };
+      let executionReads = 0;
+      const capture = await captureRuntimeSelection(reference, { snapshot: async () => { executionReads++; return { systemStartId: reference.systemStartId, source, authoredSource,
+        versions: { snapshot: '1', contract: 'agsdl-0.2.0', compiler: 'c', runtime: 'r', registry: 'g', profile: 'macro-serial-inline-v1' }, associations: {} }; },
+        diagnostic: async () => { executionReads++; return { systemStartId: reference.systemStartId, source, activation: null, through: reference.cursor, diagnostics: [], incomplete: false, nextBefore: null }; } });
+      const hidden = serializeAgsdlChatContext(reference, capture)!;
+      const refs = persistableContextRefs([{ id: reference.id, kind: 'agsdl', title: reference.title, data: reference }])!;
+      const hold = createDeferred<void>();
+      streamChatMock.mockImplementationOnce((async (...args: unknown[]) => { await hold.promise;
+        (args[0] as { onComplete?: (result: unknown) => void }).onComplete?.({ visibleContent: 'Completed', toolTraces: [], completionReason: 'completed' });
+      }) as unknown as typeof streamChatMock);
+      for (let turn = 0; turn < 2; turn++) streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+        (args[0] as { onComplete?: (result: unknown) => void }).onComplete?.({ visibleContent: 'Completed', toolTraces: [], completionReason: 'completed' });
+      }) as unknown as typeof streamChatMock);
+      const sending = useChatStore.getState().sendMessage({ conversationId, content: 'Inspect capture', contextRefs: refs, hiddenContext: hidden });
+      await flushAsyncWork();
+      const options = getLatestStreamOptions<{ preparePendingSteers: (id: string) => Promise<Array<{content: unknown}>>; onSteerRequestEnded: (id: string) => Promise<void> }>();
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId, content: 'Direct with capture', contextRefs: refs, hiddenContext: hidden }, 'steer');
+      const directions = await options.preparePendingSteers('runtime-followup'); await options.onSteerRequestEnded('runtime-followup');
+      expect(directions[0]?.content).toContain(hidden);
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId, content: 'Queue capture', contextRefs: refs, hiddenContext: hidden }, 'queue');
+      hold.resolve(); await sending; await flushAsyncWork(); await flushAsyncWork();
+      for (const content of ['Inspect capture', 'Direct with capture', 'Queue capture']) {
+        const user = useChatStore.getState().getConversationMessages(conversationId).find((message: ChatMessage) => message.content === content)!;
+        expect(user.hidden_context).toBe(hidden); expect(user.context_refs).toEqual(refs);
+      }
+      const first = useChatStore.getState().getConversationMessages(conversationId).find((message: ChatMessage) => message.content === 'Inspect capture')!;
+      await useChatStore.getState().editMessage(first.id, 'Replay capture', { skipAgentCodeReplayCheck: true }); await flushAsyncWork();
+      expect(useChatStore.getState().messages.find((message: ChatMessage) => message.id === first.id)?.hidden_context).toBe(hidden);
+      expect(JSON.stringify(getLatestStreamOptions().messages)).toContain('9007199254740993');
+      expect(executionReads).toBe(2);
+    });
+    it('preserves hidden context through steering persistence and a queued turn', async () => {
+      const selectionContext = (title: string) => serializeAgsdlChatContext({
+        id: title, conversationId: 'chat-context', document: 'agsdl', planId: 'context-plan',
+        branchName: 'develop', version: 'context-version', persistedRevision: 1, path: '/agents/helper', title,
+      })!;
+      const initialContext = selectionContext('initial reference');
+      const steerContext = selectionContext('steer reference');
+      const queuedContext = selectionContext('queued reference');
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const hold = createDeferred<void>();
+      streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+        await hold.promise;
+        const options = args[0] as { onComplete?: (result: unknown) => void };
+        options.onComplete?.({ visibleContent: 'Completed', toolTraces: [], completionReason: 'completed' });
+      }) as unknown as typeof streamChatMock);
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [createConversation('chat-context')], selectedConversationId: 'chat-context',
+        selectedConversationIdsByMode: { Chat: 'chat-context' },
+      }));
+      const sending = useChatStore.getState().sendMessage({ conversationId: 'chat-context', content: 'First', hiddenContext: initialContext });
+      await flushAsyncWork();
+      const options = getLatestStreamOptions<{ preparePendingSteers: (id: string) => Promise<Array<{content: unknown}>>; onSteerRequestEnded: (id: string) => Promise<void>; messages: unknown[] }>();
+      expect(JSON.stringify(options.messages)).toContain('initial reference');
+      const capturedRefs = [{ id: 'captured-file', kind: 'file' as const, title: 'Captured file', path: '/synthetic/captured.ts' }];
+      useChatStore.setState({ composerContextRefs: [{ id: 'later-file', kind: 'file', title: 'Later file', data: { path: '/synthetic/later.ts' } }] });
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'chat-context', content: 'Steer visibly', hiddenContext: steerContext, contextRefs: capturedRefs }, 'steer');
+      const steers = await options.preparePendingSteers('mock-followup-request');
+      await options.onSteerRequestEnded('mock-followup-request');
+      expect(steers[0]?.content).toContain('steer reference');
+      const persisted = useChatStore.getState().getConversationMessages('chat-context').find((message: ChatMessage) => message.content === 'Steer visibly');
+      expect(persisted?.hidden_context).toContain('steer reference');
+      expect(persisted?.context_refs).toEqual(capturedRefs);
+      expect(persisted?.content).toBe('Steer visibly');
+      expect(createMessageMock).toHaveBeenCalledWith('chat-context', 'user', 'Steer visibly', expect.objectContaining({ hiddenContext: steerContext }));
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'chat-context', content: 'Queued visibly', hiddenContext: queuedContext }, 'queue');
+      expect(useChatStore.getState().getConversationMessages('chat-context').some((message: ChatMessage) => message.content === 'Queued visibly')).toBe(false);
+      hold.resolve(); await sending; await flushAsyncWork(); await flushAsyncWork();
+      const queued = useChatStore.getState().getConversationMessages('chat-context').find((message: ChatMessage) => message.content === 'Queued visibly');
+      expect(queued?.content).toBe('Queued visibly');
+      expect(queued?.hidden_context).toContain('queued reference');
+      expect(JSON.stringify(getLatestStreamOptions().messages)).toContain('queued reference');
+      expect(JSON.stringify(getLatestStreamOptions().messages)).toContain('initial reference');
+      expect(createMessageMock).toHaveBeenCalledWith('chat-context', 'user', 'Queued visibly', expect.objectContaining({ hiddenContext: queuedContext }));
+    });
+
+    it('keeps a failed queued submission retryable with its hidden context', async () => {
+      const retainedContext = serializeAgsdlChatContext({
+        id: 'queued-selection', conversationId: 'queue-retry', document: 'agsdl', planId: 'retry-plan',
+        branchName: 'develop', version: 'retry-version', persistedRevision: 1, path: '/agents/helper', title: 'keep this reference',
+      })!;
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const { notify } = await import('../../components/ui/toastService');
+      let retry: (() => void | Promise<void>) | undefined;
+      const notice = spyOn(notify, 'actionRequired').mockImplementation((_title, options) => {
+        retry = options.actions[0].onClick;
+        return 'queued-failure-test';
+      });
+      const hold = createDeferred<void>();
+      streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+        await hold.promise;
+        (args[0] as { onComplete?: (result: unknown) => void }).onComplete?.({ visibleContent: 'Completed', toolTraces: [], completionReason: 'completed' });
+      }) as unknown as typeof streamChatMock);
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [createConversation('queue-retry')], selectedConversationId: 'queue-retry', selectedConversationIdsByMode: { Chat: 'queue-retry' } }));
+      const sending = useChatStore.getState().sendMessage({ conversationId: 'queue-retry', content: 'First' });
+      await flushAsyncWork();
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'queue-retry', content: 'Keep this request', hiddenContext: retainedContext }, 'queue');
+      const selectedProvider = providerState.selectedProviderId;
+      const sendMessage = useChatStore.getState().sendMessage;
+      providerState.selectedProviderId = null;
+      useChatStore.setState({ sendMessage: async () => { throw new Error('Queued launch unavailable'); } });
+      hold.resolve(); await sending; await flushAsyncWork();
+      expect(notice).toHaveBeenCalledTimes(1);
+      expect(useChatStore.getState().getConversationMessages('queue-retry').some((message: ChatMessage) => message.content === 'Keep this request')).toBe(false);
+      useChatStore.setState({ sendMessage: async () => {
+        // A different dispatch may publish the same visible text and context.
+        // It must not acknowledge the queued attempt being cancelled here.
+        useChatStore.getState().addMessage({ id: 'concurrent-request', conversation_id: 'queue-retry', task_id: '', role: 'user', content: 'Keep this request', hidden_context: retainedContext, timestamp: '2026-09-10T12:00:00Z' });
+        return { status: 'cancelled', conversationId: 'queue-retry', turnId: '', userMessageId: null, assistantMessageId: null };
+      } });
+      await expect(Promise.resolve(retry!())).rejects.toThrow();
+      expect(notice).toHaveBeenCalledTimes(2);
+      useChatStore.setState({ sendMessage });
+      await retry!(); await flushAsyncWork();
+      expect(useChatStore.getState().getConversationMessages('queue-retry').find((message: ChatMessage) => message.content === 'Keep this request')?.hidden_context).toContain('keep this reference');
+      expect(JSON.stringify(getLatestStreamOptions().messages)).toContain('keep this reference');
+      expect(getLatestStreamOptions().providerId).toBe(selectedProvider);
+      expect(useChatStore.getState().getConversationMessages('queue-retry').filter((message: ChatMessage) => message.content === 'Keep this request')).toHaveLength(2);
+      providerState.selectedProviderId = selectedProvider;
+      notice.mockRestore();
+    });
+
+    it('does not resend a queued message already published before a launch failure', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const { notify } = await import('../../components/ui/toastService');
+      const notice = spyOn(notify, 'actionRequired').mockReturnValue('published-queue-failure');
+      const hold = createDeferred<void>();
+      streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+        await hold.promise;
+        (args[0] as { onComplete?: (result: unknown) => void }).onComplete?.({ visibleContent: 'Completed', toolTraces: [], completionReason: 'completed' });
+      }) as unknown as typeof streamChatMock);
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [createConversation('queue-published')], selectedConversationId: 'queue-published', selectedConversationIdsByMode: { Chat: 'queue-published' } }));
+      const sending = useChatStore.getState().sendMessage({ conversationId: 'queue-published', content: 'First' });
+      await flushAsyncWork();
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'queue-published', content: 'Already saved request', hiddenContext: serializeAgsdlChatContext({ id: 'retained', conversationId: 'queue-published', planId: 'plan', branchName: 'develop', document: 'agsdl', version: 'v1', persistedRevision: 1, path: '', title: 'retained reference' }) }, 'queue');
+      const internalTools = toolsStoreState.internalTools;
+      toolsStoreState.internalTools = {};
+      toolsStoreState.lastError = 'settings unavailable';
+      hold.resolve(); await sending; await flushAsyncWork();
+      const saved = () => useChatStore.getState().getConversationMessages('queue-published').filter((message: ChatMessage) => message.content === 'Already saved request');
+      expect(saved()).toHaveLength(1);
+      expect(saved()[0].hidden_context).toContain('retained reference');
+      expect(notice).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ actions: [expect.objectContaining({ label: 'Open conversation' })] }));
+      toolsStoreState.internalTools = internalTools;
+      toolsStoreState.lastError = null;
+      await useChatStore.getState().sendMessage({ conversationId: 'queue-published', content: 'A later request' });
+      await flushAsyncWork();
+      expect(saved()).toHaveLength(1);
+      notice.mockRestore();
+    });
+
+    it('does not restore queued content after the conversation is deleted during dispatch', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const { notify } = await import('../../components/ui/toastService');
+      const notice = spyOn(notify, 'actionRequired').mockReturnValue('deleted-queue');
+      const hold = createDeferred<void>();
+      streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+        await hold.promise;
+        (args[0] as { onComplete?: (result: unknown) => void }).onComplete?.({ visibleContent: 'Completed', toolTraces: [], completionReason: 'completed' });
+      }) as unknown as typeof streamChatMock);
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [{ ...createConversation('queue-deleted'), scope_mode: 'Chat' }], selectedConversationId: 'queue-deleted', selectedConversationIdsByMode: { Chat: 'queue-deleted' } }));
+      const sending = useChatStore.getState().sendMessage({ conversationId: 'queue-deleted', content: 'First' });
+      await flushAsyncWork();
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'queue-deleted', content: 'Cancelled by deletion', hiddenContext: serializeAgsdlChatContext({ id: 'retained', conversationId: 'queue-deleted', planId: 'plan', branchName: 'develop', document: 'agsdl', version: 'v1', persistedRevision: 1, path: '', title: 'selection' }) }, 'queue');
+      useChatStore.setState({ sendMessage: async () => {
+        await useChatStore.getState().deleteConversation('queue-deleted');
+        throw new Error('Conversation deleted during dispatch');
+      } });
+      hold.resolve(); await sending; await flushAsyncWork();
+      expect(useChatStore.getState().conversations).toHaveLength(0);
+      expect(notice).not.toHaveBeenCalled();
+      notice.mockRestore();
+  });
+
+    it('keeps a remote Chat send on its stored scope and model while Implement is active', async () => {
+      appState.mode = 'Implement'; appState.agentType = 'build';
+      appState.selectedTaskId = 'task-1'; appState.selectedProjectId = 'project-2';
+      providerState.selectedProviderId = 'unrelated-provider'; providerState.selectedModelId = 'unrelated-model';
+      context.tauriAvailable = true;
+      await savePreferenceForTest('toolRiskLevel', 'yolo');
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [{
+        ...createConversation('remote-chat'), scope_mode: 'Chat', project_id: 'project-1', group_id: null,
+        provider_id: 'provider-1', model_id: 'model-1', reasoning_effort: 'high',
+      }], selectedConversationId: 'other-conversation' }));
+      const result = await useChatStore.getState().sendMessage({ conversationId: 'remote-chat', content: 'Continue here.',
+        contextRefs: [], pilotTarget: { mode: 'Chat', actionToken: Symbol('remote-test'), beforeEffect: async () => undefined },
+      });
+      expect(result.status).toBe('sent');
+      const options = getLatestStreamOptions<{
+        conversationId: string; providerId: string; modelId: string;
+        onToolCall?: (name: string, args: Record<string, unknown>, id: string) => Promise<unknown>;
+      }>();
+      expect(options.conversationId).toBe('remote-chat');
+      expect(options.providerId).toBe('provider-1'); expect(options.modelId).toBe('model-1');
+      expect(useChatStore.getState().conversations[0]?.reasoning_effort).toBe('high');
+      expect(options).toMatchObject({ mode: 'Chat', reasoningEffort: 'high' });
+      const { resolveProjectExecutionContext } = await import('../../services/projectExecutionContext');
+      expect(resolveProjectExecutionContext).toHaveBeenCalledWith(expect.objectContaining({ mode: 'Chat', conversationId: 'remote-chat', activeRepositoryPath: null, workspacePathOverridesByProjectId: undefined }));
+    });
+
     it('freezes cited conversation passages in the normal user message before streaming', async () => {
       context.tauriAvailable = true;
       appState.mode = 'Chat';
@@ -199,9 +504,10 @@ export const registerSendRuntimeAndDeletionScenarios = (
       expect(useChatStore.getState().lastError).toBeNull();
       expect(runtime.lastErrorOrigin).toBe('provider');
       expect(runtime.lastErrorDisplayTarget).toBe('transcript');
-      expect(assistantMessage?.content).toContain('### Erreur du provider');
-      expect(assistantMessage?.content).toContain('Too many requests for this model.');
-      expect(assistantMessage?.content).toContain('Statut HTTP: `429`');
+      expect(assistantMessage?.content).toContain('```macro-provider-error');
+      expect(parseProviderErrorBlock(assistantMessage?.content.split('\n')[1] ?? '')).toMatchObject({
+        message: 'Too many requests for this model.', status: 429, retryable: true, retryAfterMs: 45000,
+      });
     });
 
     it('keeps launch-time Macro errors in the composer and removes the empty assistant placeholder', async () => {
@@ -986,7 +1292,7 @@ export const registerSendRuntimeAndDeletionScenarios = (
       expect(useChatStore.getState().getConversationRuntime('chat-2').phase).toBe('streaming');
 
       useChatStore.getState().stopConversationStream('chat-1');
-      await Promise.resolve();
+      await flushAsyncWork();
 
       expect(useChatStore.getState().getConversationRuntime('chat-1').phase).toBe('idle');
       expect(useChatStore.getState().getConversationRuntime('chat-2').phase).toBe('streaming');
@@ -1081,6 +1387,51 @@ export const registerSendRuntimeAndDeletionScenarios = (
 
       const previousTasks = taskStoreState.tasks;
       taskStoreState.tasks = [createImplementTask({ status: 'Completed' })];
+      emitTaskStoreUpdate(previousTasks);
+      await Promise.resolve();
+
+      expect(useChatStore.getState().getConversationRuntime('implement-conv').phase).toBe('idle');
+      expect(abortController.signal.aborted).toBe(true);
+      expect(cancelStreamMock.mock.calls).toEqual([['session-task-1']]);
+    });
+
+    it('stops a legacy node-linked stream when its durable task becomes completed', async () => {
+      appState.mode = 'Implement';
+      appState.selectedTaskId = 'task-1';
+      taskStoreState.tasks = [createImplementTask({ status: 'InProgress', node_id: 'legacy-node' })];
+
+      const { cancelStream } = await import('../../services/streamingChat');
+      const cancelStreamMock = cancelStream as unknown as { mockClear: () => void; mock: { calls: unknown[][] } };
+      cancelStreamMock.mockClear();
+
+      const { useChatStore } = await loadChatStore();
+      await Promise.resolve();
+
+      const abortController = new AbortController();
+      useChatStore.setState({
+        conversations: [
+          {
+            ...createConversation('implement-conv'),
+            scope_mode: 'Implement',
+            task_id: 'legacy-node',
+            title: 'Task - Implement checkout',
+          },
+        ],
+        conversationRuntimeById: {
+          'implement-conv': {
+            phase: 'streaming',
+            sessionId: 'session-task-1',
+            assistantMessageId: 'assistant-1',
+            abortController,
+            lastError: null,
+          },
+        },
+        selectedConversationId: 'implement-conv',
+        selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      });
+
+      const previousTasks = taskStoreState.tasks;
+      taskStoreState.tasks = [createImplementTask({ status: 'Completed', node_id: 'legacy-node' })];
       emitTaskStoreUpdate(previousTasks);
       await Promise.resolve();
 
@@ -1285,6 +1636,7 @@ export const registerSendRuntimeAndDeletionScenarios = (
 
       expect(useChatStore.getState().conversations).toEqual([]);
       expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
+      expect(useChatStore.getState().messageLoadStatusByConversationId['chat-1']).toBeUndefined();
     });
 
     it('persists and resumes toolbox cleanup after a conversation deletion commits', async () => {
@@ -1458,11 +1810,15 @@ export const registerSendRuntimeAndDeletionScenarios = (
         selectedConversationIdsByMode: { Chat: 'chat-1' },
       }));
 
+      await expect(useChatStore.getState().sendMessage({
+        conversationId: 'chat-1', content: 'Envoi pendant la terminaison.',
+      })).rejects.toThrow('already running');
+      oldStreamReleased.resolve(undefined);
+      await flushAsyncWork();
       const newSend = await useChatStore.getState().sendMessage({
         conversationId: 'chat-1',
         content: 'Nouvelle session légitime.',
       });
-      oldStreamReleased.resolve(undefined);
       await flushAsyncWork();
 
       expect(newSend).toMatchObject({ status: 'sent', conversationId: 'chat-1' });
@@ -1828,7 +2184,8 @@ export const registerSendRuntimeAndDeletionScenarios = (
       appState.mode = 'Chat';
       context.tauriAvailable = true;
       const deferredA = createDeferred<Array<ReturnType<typeof createChatMessageRecord>>>();
-      listMessagesMock.mockImplementationOnce(async () => deferredA.promise);
+      const loadStarted = createDeferred<void>();
+      listMessagesMock.mockImplementationOnce(async () => { loadStarted.resolve(undefined); return deferredA.promise; });
       const { useChatStore } = await loadChatStore();
       useChatStore.setState(createIdleChatStoreState({
         conversations: [
@@ -1842,7 +2199,7 @@ export const registerSendRuntimeAndDeletionScenarios = (
       const sendA = useChatStore.getState().sendMessage({
         conversationId: 'chat-a', content: 'late A',
       });
-      await Promise.resolve();
+      await loadStarted.promise;
       expect(listMessagesMock).toHaveBeenCalledWith('chat-a');
       expect(useChatStore.getState().getConversationRuntime('chat-a').phase).toBe('preparing');
       useChatStore.getState().stopConversationStream('chat-a');

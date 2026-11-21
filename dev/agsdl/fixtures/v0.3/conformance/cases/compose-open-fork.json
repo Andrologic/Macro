@@ -1,0 +1,57 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "compose-open-fork",
+  "agents": {},
+  "compositions": {
+    "c": {
+      "parameters": [],
+      "entry": "fork",
+      "outputs": [
+        "a",
+        "b"
+      ],
+      "steps": {
+        "fork": {
+          "type": "call",
+          "command": "true",
+          "next": [
+            "a",
+            "b"
+          ]
+        },
+        "a": {
+          "type": "call",
+          "command": "true",
+          "next": {
+            "output": "a"
+          }
+        },
+        "b": {
+          "type": "call",
+          "command": "true",
+          "next": {
+            "output": "b"
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "c",
+    "steps": {
+      "c": {
+        "type": "compose",
+        "composition": "c",
+        "agents": {},
+        "next": {
+          "a": "end",
+          "b": "end"
+        }
+      },
+      "end": {
+        "type": "call",
+        "command": "true"
+      }
+    }
+  }
+}

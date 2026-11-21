@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../stores/useChatStore';
 import { isConversationRuntimeActive } from '../../domains/chat/runtimeState';
@@ -6,7 +6,8 @@ import { useCitationsStore } from '../../stores/useCitationsStore';
 import type { Citation } from '../../stores/useCitationsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useToolsStore } from '../../stores/useToolsStore';
-import { extractDomain, fetchWebPage, getFaviconUrl } from '../../services/webSearch';
+import { extractDomain, fetchWebPage } from '../../services/webSearch';
+import { toServiceError } from '../../services/contracts/errors';
 import { getWebSearchSettings } from '../../services/webSearchSettings';
 import { compareLocalized, formatRelativeTimeShort } from '../../i18n/format';
 import { cn } from '../../utils/cn';
@@ -35,6 +36,15 @@ type ToolboxTab = 'context' | 'tools' | 'sources';
 type SourceFilter = 'all' | 'interesting' | 'used';
 type SourceSort = 'recent' | 'title' | 'source';
 
+const TOOL_DESCRIPTION_KEYS: Record<string, string> = {
+  web_search: 'chat.contextToolbox.toolDescriptions.web_search',
+  web_fetch: 'chat.contextToolbox.toolDescriptions.web_fetch',
+  question: 'chat.contextToolbox.toolDescriptions.question',
+  read_file: 'chat.contextToolbox.toolDescriptions.read_file',
+  terminal_create_session: 'chat.contextToolbox.toolDescriptions.terminal_create_session',
+  mark_source_passage: 'chat.contextToolbox.toolDescriptions.mark_source_passage',
+};
+
 const createManualMessageId = (): string =>
   `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -50,6 +60,9 @@ const formatByteSize = (value?: number): string | null => {
   }
   return `${amount >= 10 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unitIndex]}`;
 };
+
+const isInlineFavicon = (value?: string): value is string =>
+  Boolean(value && /^data:image\/(?:png|jpe?g|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon);base64,/i.test(value));
 
 export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => {
   const { t, i18n } = useTranslation();
@@ -80,9 +93,6 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const [sourceSort, setSourceSort] = useState<SourceSort>('recent');
   const [expandedSourceIds, setExpandedSourceIds] = useState<Set<string>>(() => new Set());
   const [failedFaviconUrls, setFailedFaviconUrls] = useState<Set<string>>(() => new Set());
-  const [contextConversationId, setContextConversationId] = useState<string | null>(
-    selectedConversationId
-  );
   const [lastAddedContextCitationId, setLastAddedContextCitationId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const urlInputRef = useRef<HTMLInputElement>(null);
@@ -92,7 +102,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     webSearchSettings.provider === 'tavily'
       ? webSearchSettings.hasTavilySecret
       : webSearchSettings.hasBraveSecret;
-  const effectiveConversationId = selectedConversationId ?? contextConversationId;
+  const effectiveConversationId = selectedConversationId;
   const targetConversation = conversations.find((conversation) => conversation.id === effectiveConversationId);
   const selectedConversationSources = composerContextRefs.filter((ref) => ref.kind === 'conversation');
   const availableConversationSources = useMemo(() => {
@@ -160,19 +170,11 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     { id: 'sources', label: t('chat.contextToolbox.tabs.sources', 'Sources'), icon: 'file-text', count: sourcePassageCount },
   ];
 
-  useEffect(() => {
-    if (selectedConversationId) {
-      setContextConversationId(selectedConversationId);
-    }
-  }, [selectedConversationId]);
-
   const ensureConversation = useCallback(async () => {
     if (selectedConversationId) {
-      setContextConversationId(selectedConversationId);
       return selectedConversationId;
     }
-    const conversation = await createConversation(t('chat.newChat', 'New Chat'), null, null);
-    setContextConversationId(conversation.id);
+    const conversation = await createConversation(t('chat.newConversation', 'New Conversation'), null, null);
     return conversation.id;
   }, [createConversation, selectedConversationId, t]);
 
@@ -183,7 +185,6 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     conversationIdOverride?: string,
   ) => {
     const conversationId = conversationIdOverride ?? await ensureConversation();
-    setContextConversationId(conversationId);
     const citationId = addCitation({
       ...citationData,
       scope: 'context',
@@ -210,7 +211,6 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       });
       const conversationId = await ensureConversation();
       const ids = await persistConversationAttachments(prepared, conversationId, addCitationAndPersist);
-      setContextConversationId(conversationId);
       setLastAddedContextCitationId(ids.at(-1) ?? null);
     } catch (error) {
       console.error('Failed to attach files:', error);
@@ -322,7 +322,9 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       notify.error(
         t('chat.contextToolbox.urlPreviewFailedTitle', 'Could not fetch URL preview'),
         {
-          description: normalizedUrl,
+          description: toServiceError(error).code === 'WEB_FETCH_DESTINATION_BLOCKED'
+            ? t('chat.contextToolbox.urlPreviewBlockedDescription', 'For security, previews cannot access local, private, reserved or link-local network addresses. Use a public URL.')
+            : normalizedUrl,
         }
       );
       await addContextCitationAndReveal({
@@ -612,7 +614,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                   <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">{webCitations.length}</span>
                 </div>
               </div>
-              <div data-tour-id="chat-context-add-url" className="rounded-lg border border-border bg-accent/20 p-2.5 space-y-2">
+              <div data-tour-id="chat-context-add-url" className="space-y-2">
                 <div className="flex items-center gap-2">
                   <Input
                     ref={urlInputRef}
@@ -639,7 +641,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                       citation.url ? extractDomain(citation.url) : citation.source,
                       formatRelativeTimeShort(citation.timestamp, Date.now(), locale),
                     ].filter(Boolean);
-                    const faviconSrc = citation.favicon || (citation.url ? getFaviconUrl(citation.url) : '');
+                    const faviconSrc = isInlineFavicon(citation.favicon) ? citation.favicon : '';
                     const showFavicon = faviconSrc && !failedFaviconUrls.has(faviconSrc);
                     return (
                       <div
@@ -757,9 +759,9 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                       <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0"><Icon name={tool.icon as any} size={12} className="text-primary" /></div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm text-foreground">{tool.name}</p>
-                        <p className="text-xs text-muted-foreground truncate">{tool.description}</p>
+                        <p className="text-xs text-muted-foreground truncate">{TOOL_DESCRIPTION_KEYS[tool.id] ? t(TOOL_DESCRIPTION_KEYS[tool.id], tool.description) : tool.description}</p>
                       </div>
-                      <Switch checked={isChatToolEnabled(tool.id)} disabled={disabled} onCheckedChange={() => { if (!disabled) toggleChatTool(tool.id); }} />
+                      <Switch aria-label={tool.name} checked={isChatToolEnabled(tool.id)} disabled={disabled} onCheckedChange={() => { if (!disabled) toggleChatTool(tool.id); }} />
                       {tooltip && <div className="pointer-events-none absolute -top-2 right-2 hidden group-hover:block z-10"><div className="rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md whitespace-nowrap">{tooltip}</div></div>}
                     </div>
                   );
@@ -773,7 +775,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
           <div className="space-y-4">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2"><Icon name="book-open" size={12} />{t('chat.contextToolbox.tabs.sources', 'Sources')}</h3>
-              <span className="text-xs text-muted-foreground">{t('chat.contextToolbox.sourceSummary', '{{interesting}} found • {{used}} used • {{total}} passages', { interesting: interestingSourceCitations.length, used: usedSourceCitations.length, total: sourcePassageCount })}</span>
+              <span className="text-xs text-muted-foreground">{t('chat.contextToolbox.sourceSummary', '{{interesting}} found • {{used}} used • {{total}} passages', { interesting: interestingSourceCitations.length, used: usedSourceCitations.length, total: sourcePassageCount, count: sourcePassageCount })}</span>
             </div>
             {!isChatToolEnabled('mark_source_passage') && <div className="rounded-md border border-muted bg-muted/50 px-2.5 py-1.5"><p className="text-[11px] text-muted-foreground"><span className="font-medium">{t('chat.contextToolbox.collectionDisabledTitle', 'Collection disabled')}</span> {t('chat.contextToolbox.collectionDisabledDescription', 'Enable the Sources tool to save new passages.')}</p></div>}
             <div className="space-y-2">

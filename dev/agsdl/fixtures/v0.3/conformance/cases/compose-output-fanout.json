@@ -1,0 +1,86 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "compose-output-fanout",
+  "agents": {
+    "lead": {
+      "harness": "example",
+      "permissions": "read-only",
+      "results": {
+        "files": {
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "worker": {
+      "harness": "example",
+      "permissions": "workspace"
+    }
+  },
+  "compositions": {
+    "plan": {
+      "parameters": [
+        "planner"
+      ],
+      "entry": "list",
+      "outputs": [
+        "listed"
+      ],
+      "steps": {
+        "list": {
+          "type": "agent",
+          "agent": {
+            "parameter": "planner"
+          },
+          "next": {
+            "output": "listed"
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "plan",
+    "steps": {
+      "plan": {
+        "type": "compose",
+        "composition": "plan",
+        "agents": {
+          "planner": "lead"
+        },
+        "next": {
+          "listed": {
+            "step": "fix",
+            "each": [
+              "results",
+              "files"
+            ],
+            "message": {
+              "resources": {
+                "file": {
+                  "from": [
+                    "item",
+                    "path"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "fix": {
+        "type": "agent",
+        "agent": "worker",
+        "maxVisits": 1,
+        "next": "gather"
+      },
+      "gather": {
+        "type": "join"
+      }
+    }
+  }
+}

@@ -1,9 +1,10 @@
+import type { ChatIntentReceipt, ChatWorkPhase, ProviderAdmission } from '../ipc/chatAdmission';
 import type { AppMode, ChatCompletionReason, GenerationAttempt, MCPTool, ProjectMount, ProviderTurnState, ReasoningEffort, ReasoningTransportMode, ToolTrace } from '../../types';
 import type { InternalAgentProfile } from '../internalAgentProfile';
 import type { ImageContextMetadata } from '../contextTokenEstimation';
 import type { WebSearchOptions } from '../webSearch';
 
-export type ToolErrorKind = 'validation' | 'execution' | 'permission' | 'aborted';
+export type ToolErrorKind = 'validation' | 'execution' | 'permission' | 'aborted' | 'uncertain';
 
 export interface StreamMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -47,6 +48,8 @@ export interface StreamCompletionResult {
   providerInputItems?: unknown[];
   providerTurnState?: ProviderTurnState;
   completionReason?: StreamCompletionReason;
+  /** Last contiguous provider delta range, captured only at an explicit stop. */
+  interruptedProviderText?: string;
   generationAttempts?: GenerationAttempt[];
 }
 
@@ -56,6 +59,8 @@ export interface LiveStreamContextSnapshot {
   version: number;
   visibleContent: string;
   visibleContentLength: number;
+  /** Excludes local system chunks and tool results. */
+  providerDeltaText?: string;
   toolTraces: ToolTrace[];
   hiddenContext?: string;
   providerInputItems?: unknown[];
@@ -119,6 +124,26 @@ export interface StreamingFollowUpCompactionResult {
 }
 
 export interface StreamingChatOptions {
+  /** Opt-in for resident execution; ordinary chat keeps its transport strategy. */
+  executionPolicy?: 'native-serial';
+  /** Provisional Agent checkpoint; durability belongs to the terminal transaction. */
+  onExecutionMessages?: (messages: readonly StreamMessage[]) => void;
+  nativeExecution?: {
+    /** Names from the captured Configuration.tools, mapped to qualified Macro IDs. */
+    toolAliases?: readonly { readonly name: string; readonly toolId: string }[];
+    /** Captured publication protocol, offered only to the resident native profile. */
+    publication?: { readonly choices: readonly string[] };
+    beforeRequest(requestId: string, request?: import('../ipc/ai').AiStreamChatInput): Promise<'registered' | 'duplicate'>;
+    /** Private resident dispatch preserves the same request and shared native transport. */
+    dispatch?: (request: import('../ipc/ai').AiStreamChatInput) => Promise<void>;
+    requestEnded(requestId: string): Promise<void>;
+    visibleMessage(requestId: string, text: string): Promise<void>;
+  };
+  /** Owns exact decoding, validation and durable dispatch before any JSON.parse. */
+  onRawToolCall?: (call: ToolCall) => Promise<ToolCallResolution>;
+  providerAdmission: ProviderAdmission;
+  /** Local receipts for steers already included in this request, never provider content. */
+  providerSteerReceipts?: () => ChatIntentReceipt[];
   sessionId?: string;
   conversationId?: string;
   mode?: AppMode;
@@ -163,6 +188,10 @@ export interface StreamingChatOptions {
     | StreamMessage[]
     | void;
   consumePendingSteers?: () => StreamMessage[];
+  hasPendingSteers?: () => boolean;
+  preparePendingSteers?: (requestId: string) => StreamMessage[] | Promise<StreamMessage[]>;
+  onSteerRequestEnded?: (requestId: string) => void | Promise<void>;
+  isRequestCurrent?: () => boolean;
   fileToolContext?: Array<{
     title: string;
     source: string;
@@ -189,7 +218,11 @@ export interface StreamingChatOptions {
 }
 
 export interface StreamingTurnResult {
+  /** Native journal receipt, or failure to obtain it. Never sent to a provider. */
+  admissionOutcome?: ChatWorkPhase | 'unavailable';
   content: string;
+  /** Provider-visible text without reasoning, when the native transport separates it. */
+  visibleText?: string;
   toolCalls: ToolCall[];
   completionReason?: StreamCompletionReason;
   providerInputItems?: unknown[];

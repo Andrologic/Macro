@@ -1,93 +1,20 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  DEFAULT_SMART_COMMIT_PROMPT,
-  PREF_KEYS,
-  PROMPT_PREFERENCE_DEFINITIONS,
-  PROMPT_PREFERENCE_KEYS,
-  getDefaultPromptForPreferenceKey,
-  loadPreferences,
-  savePreferences,
-  type PromptPreferenceKey,
-} from '../../../services/preferences';
+  PROMPT_EDITOR_DEFINITIONS,
+  PROMPT_EDITOR_KEYS,
+  getDefaultPromptValue,
+  usePromptDraft,
+  type PromptEditorDefinition,
+} from './promptDraft';
 import { Icon } from '../../ui/Icon';
 import { cn } from '../../../utils/cn';
 import { SettingsSectionHeader } from '../SettingsSectionHeader';
 import { notify } from '../../ui/toastService';
 
-type CommitPromptKey = typeof PREF_KEYS.SMART_COMMIT_PROMPT;
-type PromptEditorKey = PromptPreferenceKey | CommitPromptKey;
-type PromptState = Record<PromptPreferenceKey, string> & Record<CommitPromptKey, string>;
-type PromptEditorDefinition = {
-  key: PromptEditorKey;
-  label: string;
-  description: string;
-};
-
-const COMMIT_PROMPT_DEFINITION: PromptEditorDefinition = {
-  key: PREF_KEYS.SMART_COMMIT_PROMPT,
-  label: 'Commit generation prompt',
-  description:
-    'Guides AI-generated Conventional Commit messages. Macro still validates the final message and removes scopes before committing.',
-};
-
-const PROMPT_EDITOR_DEFINITIONS: PromptEditorDefinition[] = [
-  ...PROMPT_PREFERENCE_DEFINITIONS,
-  COMMIT_PROMPT_DEFINITION,
-];
-
-const PROMPT_EDITOR_KEYS = [
-  ...PROMPT_PREFERENCE_KEYS,
-  PREF_KEYS.SMART_COMMIT_PROMPT,
-] as PromptEditorKey[];
-
-const getDefaultPromptValue = (key: PromptEditorKey): string =>
-  key === PREF_KEYS.SMART_COMMIT_PROMPT
-    ? DEFAULT_SMART_COMMIT_PROMPT
-    : getDefaultPromptForPreferenceKey(key);
-
-const createDefaultPromptState = (): PromptState =>
-  Object.fromEntries(
-    PROMPT_EDITOR_KEYS.map((key) => [key, getDefaultPromptValue(key)])
-  ) as PromptState;
-
-const DEFAULT_PROMPT_STATE = createDefaultPromptState();
-
 export const PromptsView: React.FC = () => {
   const { t } = useTranslation();
-  const [prompts, setPrompts] = useState<PromptState>(DEFAULT_PROMPT_STATE);
-  const [savedPrompts, setSavedPrompts] = useState<PromptState>(DEFAULT_PROMPT_STATE);
-  const promptsTouchedRef = useRef(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
-
-  useEffect(() => {
-    const loadPromptValues = async () => {
-      const storedPrompts = await loadPreferences<Partial<PromptState>>([
-        ...PROMPT_EDITOR_KEYS,
-      ]);
-
-      if (cancelled) {
-        return;
-      }
-
-      const loadedPrompts = {
-        ...DEFAULT_PROMPT_STATE,
-        ...storedPrompts,
-      };
-      setSavedPrompts(loadedPrompts);
-      if (!promptsTouchedRef.current) {
-        setPrompts(loadedPrompts);
-      }
-    };
-
-    let cancelled = false;
-    void loadPromptValues();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const { prompts, savedPrompts, changePrompt, restoreAll, loadState, retryLoad, save, isSaving, saveSuccess } = usePromptDraft();
 
   const hasAnyModifiedPrompt = useMemo(
     () =>
@@ -98,40 +25,15 @@ export const PromptsView: React.FC = () => {
     () => PROMPT_EDITOR_KEYS.some((key) => prompts[key] !== savedPrompts[key]),
     [prompts, savedPrompts]
   );
-  const handlePromptChange = (key: PromptEditorKey, value: string) => {
-    promptsTouchedRef.current = true;
-    setPrompts((current) => ({
-      ...current,
-      [key]: value,
-    }));
-  };
-
-  const handleRestorePrompt = (key: PromptEditorKey) => {
-    handlePromptChange(key, getDefaultPromptValue(key));
-  };
-
   const handleSave = async () => {
-    promptsTouchedRef.current = true;
-    setIsSaving(true);
-    setSaveSuccess(false);
-
     try {
-      await savePreferences(prompts);
-      setSavedPrompts(prompts);
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
+      await save();
     } catch (error) {
       notify.error(t('prompts.saveFailed', 'Unable to save system prompts.'), {
         description: error instanceof Error ? error.message : undefined,
       });
-    } finally {
-      setIsSaving(false);
-    }
-  };
 
-  const handleRestoreAll = () => {
-    promptsTouchedRef.current = true;
-    setPrompts(createDefaultPromptState());
+    }
   };
 
   const renderPromptEditor = (definition: PromptEditorDefinition) => {
@@ -154,7 +56,7 @@ export const PromptsView: React.FC = () => {
           </div>
           <button
             type="button"
-            onClick={() => handleRestorePrompt(key)}
+            onClick={() => changePrompt(key, getDefaultPromptValue(key))}
             disabled={!isModified}
             className={cn(
               'shrink-0 px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
@@ -169,7 +71,7 @@ export const PromptsView: React.FC = () => {
         <textarea
           id={key}
           value={prompts[key]}
-          onChange={(event) => handlePromptChange(key, event.target.value)}
+          onChange={(event) => changePrompt(key, event.target.value)}
           className="w-full min-h-[140px] p-3 rounded-lg bg-background border border-border/50 text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary resize-y font-mono"
           spellCheck={false}
         />
@@ -187,7 +89,7 @@ export const PromptsView: React.FC = () => {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={handleRestoreAll}
+              onClick={restoreAll}
               disabled={!hasAnyModifiedPrompt}
               className={cn(
                 'px-3 py-1.5 text-xs font-medium transition-colors rounded-md',
@@ -201,7 +103,7 @@ export const PromptsView: React.FC = () => {
             <button
               type="button"
               onClick={handleSave}
-              disabled={isSaving || !isDirty}
+              disabled={loadState !== 'ready' || isSaving || !isDirty}
               className={cn(
                 'px-4 py-1.5 rounded-md text-xs font-medium transition-all duration-200 flex items-center gap-2',
                 saveSuccess
@@ -218,11 +120,21 @@ export const PromptsView: React.FC = () => {
               ) : (
                 <Icon name="edit" size={14} />
               )}
-              {saveSuccess ? t('common.saved', 'Saved') : t('common.saveChanges', 'Save Changes')}
+              {saveSuccess && !isDirty ? t('common.saved', 'Saved') : t('common.saveChanges', 'Save Changes')}
             </button>
           </div>
         }
       />
+
+      {loadState === 'loading' && <p role="status">{t('common.loading', 'Loading...')}</p>}
+      {loadState === 'error' && (
+        <div role="alert" className="space-y-2 text-sm text-destructive">
+          <p>{t('prompts.loadFailed', 'Unable to load system prompts. Retry before saving.')}</p>
+          <button type="button" onClick={retryLoad} className="rounded-md border border-border px-3 py-1.5">
+            {t('common.retry', 'Retry')}
+          </button>
+        </div>
+      )}
 
       <div className="space-y-6 bg-card/40 p-5 rounded-xl border border-border/50">
         {PROMPT_EDITOR_DEFINITIONS.map((definition, index) => (

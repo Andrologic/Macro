@@ -1,3 +1,4 @@
+import { assistantProvenance, type AssistantProvenance } from './macroPilot/assistantProvenance';
 import type {
   ChatMessage,
   Conversation,
@@ -19,6 +20,14 @@ import {
   parseDbProviderTurnState,
 } from "./chatDbMappers";
 import { parseToolTracesJson } from "./toolTraceState";
+import { isSuccessfulCompletionReason } from "./ai/completionRecovery";
+
+/** A placeholder has no transcript content; generation checkpoints alone are not a response. */
+export const isEmptyAssistantPlaceholder = (message: ChatMessage): boolean =>
+  message.role === "assistant" && !message.completion_reason && !message.content.trim() &&
+  !message.tool_traces?.length && !message.provider_input_items?.length &&
+  !message.provider_turn_state?.output_items.length && !message.hidden_context &&
+  !message.questionnaire && !message.choices?.length;
 
 export interface ChatPersistenceIpc {
   getChatBootstrapSnapshot: () => Promise<DbChatBootstrapSnapshot>;
@@ -72,6 +81,7 @@ export interface ChatPersistenceAdapters {
   ipc: ChatPersistenceIpc;
   now?: () => Date;
   randomIdSuffix?: () => string;
+  assistantProvenance?: AssistantProvenance;
 }
 
 export interface ChatBootstrapLoadResult {
@@ -88,6 +98,7 @@ export interface AssistantCompletionPersistenceResult {
   providerTurnState?: ProviderTurnState;
   toolTraces?: ToolTrace[];
   completionReason?: ChatMessage["completion_reason"];
+  interruptedProviderText?: string;
   generationAttempts?: ChatMessage["generation_attempts"];
 }
 
@@ -134,7 +145,8 @@ export const loadChatBootstrapSnapshot = async (
     const conversationById = buildConversationById(conversations);
     const messages = Object.values(snapshot.messages_by_conversation_id)
       .flatMap((items) => items ?? [])
-      .map((message) => mapDbMessageToChatMessage(message, conversationById));
+      .map((message) => mapDbMessageToChatMessage(message, conversationById))
+      .filter(message => !isEmptyAssistantPlaceholder(message));
     return {
       conversations,
       messages,
@@ -167,14 +179,16 @@ export const loadConversationMessages = async (
   }
 
   const dbMessages = await adapters.ipc.listMessages(params.conversationId);
+  const conversationById = buildConversationById(params.conversations);
   return dbMessages.map((message) =>
-    mapDbMessageToChatMessage(message, buildConversationById(params.conversations)),
-  );
+    mapDbMessageToChatMessage(message, conversationById),
+  ).filter(message => !isEmptyAssistantPlaceholder(message));
 };
 
 export const createUserMessage = async (
   adapters: ChatPersistenceAdapters,
   params: {
+    id?: string;
     conversationId: string;
     turnId: string;
     taskId: string;
@@ -192,7 +206,7 @@ export const createUserMessage = async (
 
   if (!adapters.isTauriAvailable()) {
     return {
-      id: `msg-${now().getTime()}`,
+      id: params.id ?? `msg-${now().getTime()}`,
       turn_id: params.turnId,
       task_id: params.taskId,
       conversation_id: params.conversationId,
@@ -212,6 +226,7 @@ export const createUserMessage = async (
     "user",
     params.content,
     {
+      ...(params.id ? { id: params.id } : {}),
       turnId: params.turnId,
       hiddenContext: params.hiddenContext,
       providerInputItems: params.providerInputItems,
@@ -401,7 +416,8 @@ export const persistAssistantPartialResult = async (
     hiddenContext: assistantMessage.hidden_context,
     providerInputItems: assistantMessage.provider_input_items,
     providerTurnState: assistantMessage.provider_turn_state,
-    ...(assistantMessage.completion_reason
+    // Only the final write can certify successful completion after reload.
+    ...(assistantMessage.completion_reason && !isSuccessfulCompletionReason(assistantMessage.completion_reason)
       ? { completionReason: assistantMessage.completion_reason }
       : {}),
     generationAttempts: assistantMessage.generation_attempts,
@@ -428,12 +444,28 @@ export const persistAssistantCompletionResult = async (
       hiddenContext: params.result.hiddenContext,
       providerInputItems: params.result.providerInputItems,
       providerTurnState: params.result.providerTurnState,
-      ...(params.result.completionReason
-        ? { completionReason: params.result.completionReason }
-        : {}),
+      // Some transports omit their reason. This final write still records completion.
+      completionReason: params.result.completionReason ?? "completed",
       generationAttempts: params.result.generationAttempts,
     },
   ));
+  // Every provider converges here with display and structured replay output from onComplete.
+  // A receipt is independent of completion_reason and bound to these exact bytes.
+  try {
+    const proof = adapters.assistantProvenance ?? assistantProvenance();
+    if (params.result.completionReason === "incomplete" && params.result.interruptedProviderText) {
+      await proof.recordInterrupted(params.assistantMessageId, params.result.visibleContent, params.result.interruptedProviderText);
+      return;
+    }
+    await proof.recordFinal(
+      params.assistantMessageId,
+      params.result.visibleContent,
+      params.result.providerInputItems ?? params.result.providerTurnState?.output_items,
+    );
+  } catch {
+    // Optional export evidence must not turn an already saved local reply into an
+    // error. Without a matching receipt the content producer withholds the text.
+  }
 };
 
 export const renameConversation = async (

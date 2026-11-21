@@ -1,3 +1,4 @@
+import type { ChatToolAdmission } from './ipc/chatAdmission';
 import type {
   ConfigDocument,
   ConfigDocumentKind,
@@ -30,6 +31,12 @@ export const configurationGetSnapshot = (projectIds: string[] = []): Promise<Con
         method: 'POST',
         body: JSON.stringify({ projectIds }),
       });
+
+/** Pilot observes approved configuration already loaded by desktop lifecycle. */
+export const configurationGetLoadedSnapshot = (projectIds: string[] = []): Promise<ConfigSnapshot> => {
+  if (!isNativeConfigClientAvailable()) return Promise.reject(new Error('content_unavailable'));
+  return tauriIpc.configGetSnapshot(projectIds, true);
+};
 
 export interface ScopedTurnConfiguration {
   projectIds: string[];
@@ -226,10 +233,12 @@ export const configurationGetDocument = (
 
 export const configurationApplyPatch = (
   request: ConfigPatchRequest,
+  chatAdmission?: ChatToolAdmission,
 ): Promise<ConfigPatchResult> => isNativeConfigClientAvailable()
   ? request.source === 'agent'
-    ? tauriIpc.configApplyAgentPatch(request)
+    ? tauriIpc.configApplyAgentPatch(request, chatAdmission)
     : tauriIpc.configApplyPatch(request)
+  : chatAdmission ? Promise.reject(new Error('Admitted configuration changes require the desktop backend.'))
   : remoteRequest<ConfigPatchResult>('/config/patch', {
       method: 'POST',
       body: JSON.stringify({
@@ -289,6 +298,7 @@ export const configurationAcceptPendingChange = (id: string): Promise<ConfigDocu
   isNativeConfigClientAvailable()
     ? tauriIpc.configAcceptPendingChange(id)
     : remoteRequest<ConfigDocument>('/config/pending/accept', {
+        authKind: 'approval',
         method: 'POST',
         body: JSON.stringify({ id }),
       });
@@ -299,6 +309,7 @@ export const configurationRejectPendingChange = (input: {
 }): Promise<ConfigDocument> => isNativeConfigClientAvailable()
   ? tauriIpc.configRejectPendingChange(input)
   : remoteRequest<ConfigDocument>('/config/pending/reject', {
+      authKind: 'approval',
       method: 'POST',
       body: JSON.stringify(input),
     });

@@ -644,3 +644,118 @@ pub struct ProjectRegistryDbRepairReport {
     pub project_contexts_updated: usize,
     pub session_context_updated: bool,
 }
+
+// Native repository contracts only. No transport capability is advertised by these DTOs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationContentToken {
+    pub version: u8,
+    pub incarnation: String,
+    pub revision: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationContentAnchor {
+    pub created_at: String,
+    pub id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationContentMetadataInput {
+    pub conversation_id: String,
+    pub expected_token: Option<ConversationContentToken>,
+    pub after: Option<ConversationContentAnchor>,
+    pub limit: u32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationContentDescriptor {
+    pub id: String,
+    pub conversation_id: String,
+    pub role: String,
+    pub created_at: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationContentMetadata {
+    pub conversation_id: String,
+    pub revision: String,
+    pub archived: bool,
+    pub response_revision: String,
+    pub read_revision: String,
+    pub pending_tool: bool,
+    pub provider_failed: bool,
+    pub question_message_id: Option<String>,
+    pub preview_message_id: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationContentOpening {
+    pub total_raw: String,
+    pub total_exportable: String,
+    pub conversation: Conversation,
+    pub metadata: ConversationContentMetadata,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationContentMetadataPage {
+    pub token: ConversationContentToken,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub opening: Option<ConversationContentOpening>,
+    pub items: Vec<ConversationContentDescriptor>,
+    pub next_after: Option<ConversationContentAnchor>,
+    pub admission_estimate_bytes: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationContentWindowInput {
+    pub conversation_id: String,
+    pub expected_token: ConversationContentToken,
+    pub ids: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationContentItem {
+    pub id: String,
+    pub conversation_id: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
+    pub completion_reason: Option<String>,
+    pub provider_turn_state_json: Option<String>,
+    pub tool_traces_json: Option<String>,
+    pub provenance_json: Option<String>,
+    pub response_revision_decimal: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationContentWindow {
+    pub token: ConversationContentToken,
+    pub items: Vec<ConversationContentItem>,
+    pub consumed_count: u32,
+    pub admission_estimate_bytes: u64,
+}
+
+// Internal bounded catalog reads. These tokens do not grant transport authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationCatalogToken {
+    pub version: u8,
+    pub generation: String,
+    pub incarnation: String,
+    pub revision: String,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationCatalogVersionInput {
+    pub expected_token: Option<ConversationCatalogToken>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationCatalogAnchor {
+    pub id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationCatalogPageInput {
+    pub expected_token: Option<ConversationCatalogToken>,
+    pub after: Option<ConversationCatalogAnchor>,
+    pub limit: u32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationCatalogPage {
+    pub token: ConversationCatalogToken,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub total_raw: Option<String>,
+    pub items: Vec<Conversation>,
+    pub next_after: Option<ConversationCatalogAnchor>,
+    pub admission_estimate_bytes: u64,
+}

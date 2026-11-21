@@ -108,12 +108,11 @@ describe("chat request preparation", () => {
     compact.mockResolvedValueOnce({ ...f.compacted,
       footprintAfter: { ...f.compacted.footprintAfter, threshold: "blocking" } });
     const status = spyOn(f.ports.compaction, "setStatus");
-    f.ports.compaction.status = () => ({ phase: "idle", summaryText: "Previous summary" });
     await f.run();
     expect(compact.mock.calls.map(([input]) => input.mode)).toEqual(["blocking", "safety_prestream"]);
     expect(compact.mock.calls[1][0].forcePrune).toBe(true);
     expect(compact.mock.calls[1][0].displayAfterMessageId).toBe("user");
-    expect(status.mock.calls[0][1]).toMatchObject({ phase: "safety_compacting", summaryText: "Previous summary" });
+    expect(status).not.toHaveBeenCalled();
   });
 
   it("uses the serialized payload estimate to enter safety compaction before the first pass", async () => {

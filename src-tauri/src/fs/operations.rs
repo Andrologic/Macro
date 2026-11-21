@@ -28,123 +28,54 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-#[cfg(test)]
+#[cfg(any(
+    test,
+    all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
+))]
 use std::collections::HashMap;
-#[cfg(test)]
+#[cfg(any(
+    test,
+    all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
+))]
 use std::sync::{LazyLock, Mutex};
-#[cfg(test)]
+#[cfg(any(
+    test,
+    all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
+))]
 use tokio::sync::Barrier;
 
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WorkspaceRootIdentity {
-    #[cfg(unix)]
-    device: u64,
-    #[cfg(unix)]
-    inode: u64,
-    #[cfg(windows)]
-    volume: Option<u32>,
-    #[cfg(windows)]
-    file_index: Option<u64>,
-}
-
-impl WorkspaceRootIdentity {
-    /// Lossless, opaque identity for comparing observations across IPC calls.
-    /// Strings preserve native 64-bit identifiers without JavaScript rounding.
-    pub fn observation_key(self) -> Option<String> {
-        #[cfg(unix)]
-        return Some(format!("unix:{:x}:{:x}", self.device, self.inode));
-        #[cfg(windows)]
-        return Some(format!("windows:{:x}:{:x}", self.volume?, self.file_index?));
-    }
-}
-
+pub use argentic_runtime::content_io::admitted::WorkspaceRootIdentity;
 #[cfg(unix)]
-fn workspace_root_identity_from_std(metadata: &std::fs::Metadata) -> WorkspaceRootIdentity {
-    use std::os::unix::fs::MetadataExt;
-    WorkspaceRootIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    }
+use argentic_runtime::content_io::admitted::{
+    workspace_root_identity_from_cap, workspace_root_identity_from_std,
+};
+#[cfg(windows)]
+fn workspace_root_identity_from_std(path: &Path) -> Result<WorkspaceRootIdentity, BackendError> {
+    argentic_runtime::content_io::admitted::workspace_root_identity_from_std(path)
+        .map_err(Into::into)
 }
-
 #[cfg(windows)]
 fn workspace_root_identity_from_handle(
     handle: std::os::windows::io::RawHandle,
-    workspace: &Path,
+    path: &Path,
 ) -> Result<WorkspaceRootIdentity, BackendError> {
-    use windows_sys::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-    };
-
-    let mut information = BY_HANDLE_FILE_INFORMATION::default();
-    let result = unsafe { GetFileInformationByHandle(handle as _, &mut information) };
-    if result == 0 {
-        return Err(io_error_to_backend_error(
-            std::io::Error::last_os_error(),
-            workspace,
-        ));
-    }
-
-    Ok(WorkspaceRootIdentity {
-        volume: Some(information.dwVolumeSerialNumber),
-        file_index: Some(
-            ((information.nFileIndexHigh as u64) << u32::BITS) | information.nFileIndexLow as u64,
-        ),
-    })
+    argentic_runtime::content_io::admitted::workspace_root_identity_from_handle(handle, path)
+        .map_err(Into::into)
 }
-
-#[cfg(windows)]
-fn workspace_root_identity_from_std(
-    workspace: &Path,
-) -> Result<WorkspaceRootIdentity, BackendError> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-
-    let file = std::fs::OpenOptions::new()
-        .access_mode(0)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(workspace)
-        .map_err(|error| io_error_to_backend_error(error, workspace))?;
-    workspace_root_identity_from_handle(file.as_raw_handle(), workspace)
-}
-
-#[cfg(unix)]
-fn workspace_root_identity_from_cap(metadata: &cap_std::fs::Metadata) -> WorkspaceRootIdentity {
-    use cap_std::fs::MetadataExt;
-    WorkspaceRootIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    }
-}
-
 #[cfg(windows)]
 fn workspace_root_identity_from_cap(
     directory: &CapabilityDir,
-    workspace: &Path,
+    path: &Path,
 ) -> Result<WorkspaceRootIdentity, BackendError> {
-    use std::os::windows::io::AsRawHandle;
-    workspace_root_identity_from_handle(directory.as_raw_handle(), workspace)
+    argentic_runtime::content_io::admitted::workspace_root_identity_from_cap(directory, path)
+        .map_err(Into::into)
 }
-
-pub fn workspace_root_identity(workspace: &Path) -> Result<WorkspaceRootIdentity, BackendError> {
-    #[cfg(windows)]
-    return workspace_root_identity_from_std(workspace);
-
-    #[cfg(unix)]
-    {
-        let metadata = std::fs::metadata(workspace)
-            .map_err(|error| io_error_to_backend_error(error, workspace))?;
-        Ok(workspace_root_identity_from_std(&metadata))
-    }
+pub fn workspace_root_identity(path: &Path) -> Result<WorkspaceRootIdentity, BackendError> {
+    argentic_runtime::content_io::admitted::workspace_root_identity(path).map_err(Into::into)
 }
-
 tokio::task_local! {
     static EXPECTED_WORKSPACE_ROOTS: Arc<BTreeMap<PathBuf, WorkspaceRootIdentity>>;
 }
@@ -318,6 +249,13 @@ static WRITE_AFTER_REVALIDATION_HOOKS: LazyLock<
     Mutex<HashMap<PathBuf, (Arc<Barrier>, Arc<Barrier>)>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[cfg(any(
+    test,
+    all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
+))]
+pub(crate) use argentic_runtime::content_io::admitted::{
+    content_before_open_hook_pending, install_content_before_open_hook,
+};
 #[cfg(test)]
 static WSL_WRITE_TEMP_CLEANUP_HOOK: LazyLock<Mutex<Option<std::sync::mpsc::Sender<String>>>> =
     LazyLock::new(|| Mutex::new(None));
@@ -483,58 +421,15 @@ fn capability_task_error(error: tokio::task::JoinError) -> BackendError {
 fn open_workspace_capability(
     workspace: &Path,
     validated_path: &Path,
-    expected_identity: Option<WorkspaceRootIdentity>,
+    identity: Option<WorkspaceRootIdentity>,
 ) -> Result<(Arc<CapabilityDir>, PathBuf), BackendError> {
-    let lexical_workspace = normalize_path(workspace);
-    let canonical_workspace = workspace
-        .canonicalize()
-        .map_err(|error| io_error_to_backend_error(error, workspace))?;
-    let relative_path = validated_path
-        .strip_prefix(&lexical_workspace)
-        .or_else(|_| validated_path.strip_prefix(&canonical_workspace))
-        .map(Path::to_path_buf)
-        .map_err(|_| BackendError::FilesystemInvalidPath {
-            message: format!(
-                "Path '{}' cannot be addressed relative to workspace '{}'",
-                validated_path.display(),
-                workspace.display()
-            ),
-        })?;
-    if relative_path.as_os_str().is_empty()
-        || relative_path
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(BackendError::FilesystemInvalidPath {
-            message: format!(
-                "Path '{}' is not a writable file target inside the workspace",
-                validated_path.display()
-            ),
-        });
-    }
-    let directory = CapabilityDir::open_ambient_dir(&canonical_workspace, ambient_authority())
-        .map_err(|error| io_error_to_backend_error(error, &canonical_workspace))?;
-    if let Some(expected_identity) = expected_identity {
-        #[cfg(unix)]
-        let actual_identity = workspace_root_identity_from_cap(
-            &directory
-                .dir_metadata()
-                .map_err(|error| io_error_to_backend_error(error, &canonical_workspace))?,
-        );
-        #[cfg(windows)]
-        let actual_identity = workspace_root_identity_from_cap(&directory, &canonical_workspace)?;
-        if actual_identity != expected_identity {
-            return Err(BackendError::FilesystemInvalidPath {
-                message: format!(
-                    "Workspace root '{}' changed after server validation",
-                    workspace.display()
-                ),
-            });
-        }
-    }
-    Ok((Arc::new(directory), relative_path))
+    argentic_runtime::content_io::admitted::open_workspace_capability(
+        workspace,
+        validated_path,
+        identity,
+    )
+    .map_err(Into::into)
 }
-
 #[derive(Clone)]
 pub(crate) struct WorkspaceCapabilityTarget {
     directory: Arc<CapabilityDir>,
@@ -746,6 +641,17 @@ pub(crate) async fn resolve_workspace_for_path(
     workspace_scope: Option<&str>,
 ) -> Result<PathBuf, BackendError> {
     let base_workspace = workspace_path.unwrap_or(workspace);
+    if matches!(workspace_scope.map(str::trim), Some("metadata_existing")) {
+        // Observation must never initialize, repair, or migrate a metadata worktree.
+        return crate::git::find_existing_macro_metadata_worktree_root(&base_workspace)
+            .or_else(|| {
+                let legacy = base_workspace.join(".macro");
+                legacy.is_dir().then_some(legacy)
+            })
+            .ok_or_else(|| BackendError::FilesystemNotFound {
+                message: "Existing Macro metadata is unavailable.".to_string(),
+            });
+    }
     let metadata_scope = matches!(workspace_scope.map(str::trim), Some("metadata"));
     let direct_scope = matches!(workspace_scope.map(str::trim), Some("direct"));
     if allow_outside_workspace.unwrap_or(false)
@@ -2444,6 +2350,14 @@ pub async fn list_dir_internal(
     let should_include_hidden = include_hidden.unwrap_or(false);
     let should_recurse = recursive.unwrap_or(false);
     let depth_limit = max_depth.unwrap_or(u32::MAX);
+
+    if should_recurse && depth_limit == 0 {
+        // Probe root access without traversing the directory or returning children.
+        let _directory = tokio::fs::read_dir(&validated_path)
+            .await
+            .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
+        return Ok(Vec::new());
+    }
 
     let mut entries = Vec::new();
 
@@ -4259,6 +4173,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_existing_metadata_resolution_does_not_initialize_git_metadata() {
+        let workspace = setup_empty_workspace();
+        let repo = init_git_repo(workspace.path());
+        let before_refs: Vec<_> = repo
+            .references()
+            .unwrap()
+            .map(|r| r.unwrap().name().unwrap().to_string())
+            .collect();
+        let before_entries: Vec<_> = std::fs::read_dir(repo.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        let result = resolve_workspace_for_path(
+            workspace.path().to_path_buf(),
+            GitState::new(),
+            None,
+            "branches/develop/plans/index.json",
+            None,
+            Some("metadata_existing"),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemNotFound { .. })
+        ));
+        assert_eq!(
+            before_refs,
+            repo.references()
+                .unwrap()
+                .map(|r| r.unwrap().name().unwrap().to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            before_entries,
+            std::fs::read_dir(repo.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect::<Vec<_>>()
+        );
+        assert!(!workspace.path().join(".macro").exists());
+    }
+
+    #[tokio::test]
+    async fn test_existing_metadata_resolution_does_not_repair_or_migrate_existing_files() {
+        let workspace = setup_empty_workspace();
+        let repo = init_git_repo(workspace.path());
+        let metadata = repo.path().join(crate::git::MACRO_WORKTREE_DIR_NAME);
+        std::fs::create_dir_all(&metadata).unwrap();
+        std::fs::write(
+            metadata.join(".git"),
+            "gitdir: /synthetic/missing-registration\n",
+        )
+        .unwrap();
+        std::fs::write(metadata.join("workspace.json"), "legacy fixture").unwrap();
+        let resolved = resolve_workspace_for_path(
+            workspace.path().to_path_buf(),
+            GitState::new(),
+            None,
+            "workspace.json",
+            None,
+            Some("metadata_existing"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved, std::fs::canonicalize(&metadata).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(metadata.join(".git")).unwrap(),
+            "gitdir: /synthetic/missing-registration\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(metadata.join("workspace.json")).unwrap(),
+            "legacy fixture"
+        );
+        assert!(!metadata.join(".gitignore").exists());
+        assert_eq!(std::fs::read_dir(metadata).unwrap().count(), 2);
+    }
+
+    #[tokio::test]
     async fn test_metadata_path_resolution_aligns_explicit_and_virtual_scopes() {
         let default_workspace = setup_empty_workspace();
         let explicit_repo = setup_empty_workspace();
@@ -5172,6 +5164,114 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_list_dir_zero_depth_rejects_unreadable_root() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("Skipping unreadable-root check: root can bypass directory permissions");
+            return;
+        }
+
+        let workspace = setup_empty_workspace();
+        let selected = setup_empty_workspace();
+        let original_permissions = fs::metadata(selected.path()).unwrap().permissions();
+        struct RestorePermissions<'a>(&'a Path, fs::Permissions);
+        impl Drop for RestorePermissions<'_> {
+            fn drop(&mut self) {
+                fs::set_permissions(self.0, self.1.clone())
+                    .expect("restore test directory permissions");
+            }
+        }
+        let _restore = RestorePermissions(selected.path(), original_permissions);
+        fs::set_permissions(selected.path(), fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(
+            fs::read_dir(selected.path()).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "fixture must deny directory access for the current user"
+        );
+
+        let result = list_dir_internal(
+            workspace.path(),
+            selected.path().to_string_lossy().into_owned(),
+            Some(true),
+            None,
+            Some(0),
+            Some(true),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(BackendError::FilesystemPermissionDenied { .. })),
+            "unreadable selected directory was accepted: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_dir_zero_depth_accepts_empty_and_large_selected_roots() {
+        let workspace = setup_empty_workspace();
+        let selected = setup_empty_workspace();
+        for populated in [false, true] {
+            if populated {
+                // An access probe must not consume the directory listing budget.
+                for index in 0..=DIRECTORY_LIST_LIMIT {
+                    fs::write(selected.path().join(format!("entry-{index}")), b"").unwrap();
+                }
+            }
+            let entries = list_dir_internal(
+                workspace.path(),
+                selected.path().to_string_lossy().into_owned(),
+                Some(true),
+                Some(true),
+                Some(0),
+                Some(true),
+            )
+            .await
+            .expect("readable selected directory should pass the access probe");
+            assert!(
+                entries.is_empty(),
+                "zero depth must not expose child entries"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_dir_zero_depth_preserves_path_errors() {
+        let workspace = setup_empty_workspace();
+        fs::write(workspace.path().join("file.txt"), b"content").unwrap();
+        for path in ["missing", "file.txt"] {
+            let result = list_dir_internal(
+                workspace.path(),
+                path.to_string(),
+                Some(true),
+                None,
+                Some(0),
+                Some(true),
+            )
+            .await;
+            match path {
+                "missing" => assert!(matches!(
+                    result,
+                    Err(BackendError::FilesystemNotFound { .. })
+                )),
+                _ => assert!(matches!(result, Err(BackendError::FilesystemIsFile { .. }))),
+            }
+        }
+        let outside = setup_empty_workspace();
+        let result = list_dir_internal(
+            workspace.path(),
+            outside.path().to_string_lossy().into_owned(),
+            Some(true),
+            None,
+            Some(0),
+            Some(false),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemPathOutsideWorkspace { .. })
+        ));
     }
 
     #[test]

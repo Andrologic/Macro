@@ -108,14 +108,30 @@ commands, read [INSTALL.md](INSTALL.md).
 
 ## Documentation
 
+Start with the [documentation hub](docs/README.md):
+
+- [User guide](docs/user-guide/README.md), including a
+  [first-change walkthrough](docs/user-guide/getting-started.md).
+- [Agent documentation](docs/agents/README.md), including the
+  [execution and verification protocol](docs/agents/getting-started.md).
+
+These practical guides are currently written in French. Installation,
+contribution, and technical references remain available below.
+
 - [INSTALL.md](INSTALL.md) - install Macro or build it from source.
 - [DEVELOPMENT.md](DEVELOPMENT.md) - local development, scripts, environment
   variables, and validation commands.
+- [docs/macos-pilot-qa-signing.md](docs/macos-pilot-qa-signing.md) - isolated
+  Pilot QA app builds and stable local macOS signing.
 - [RELEASES.md](RELEASES.md) - versioning and the multiplatform release
   process.
 - [HEADLESS.md](HEADLESS.md) - internal experimental notes for a possible future remote runtime.
 - [docs/configuration.md](docs/configuration.md) - JSON configuration files,
   scopes, schemas, agent tools, skills, and security rules.
+- [Native Codex for AgSDL](docs/agsdl-codex-native.md) - private profile setup,
+  tool policy, continuity, and qualification limits.
+- [Connect reader authority](docs/macro-pilot/connect-reader-authority.md) - bounded
+  read authority, synthetic checks, and the native lifecycle limitation.
 - [CONTRIBUTING.md](CONTRIBUTING.md) - contribution guidelines.
 - [SECURITY.md](SECURITY.md) - security reporting and security model notes.
 - [SUPPORT.md](SUPPORT.md) - supported workflows for the current release line.

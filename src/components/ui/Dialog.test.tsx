@@ -116,6 +116,60 @@ describe('Dialog', () => {
     expect(document.body.querySelector('[inert]')).toBeNull();
   });
 
+  it('traps SVG keyboard focus and restores the exact edge after a nested dialog closes', async () => {
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const GraphDialogs = () => {
+      const [outerOpen, setOuterOpen] = useState(true);
+      const [detailsOpen, setDetailsOpen] = useState(false);
+      const initialFocusRef = useRef<HTMLButtonElement>(null);
+      return outerOpen ? <Dialog title="Graph" onClose={() => setOuterOpen(false)}>
+        <button type="button">Shrink graph</button>
+        <svg><g role="button" tabIndex={0} aria-label="Exact relation"
+          onKeyDown={event => { if (event.key === 'Enter') setDetailsOpen(true); }}>
+          <path d="M0 0 L10 10" />
+        </g></svg>
+        {detailsOpen && <Dialog title="Relation" initialFocusRef={initialFocusRef}
+          onClose={() => setDetailsOpen(false)}>
+          <button type="button">First action</button>
+          <button type="button" ref={initialFocusRef}>Initial details action</button>
+        </Dialog>}
+      </Dialog> : null;
+    };
+    await act(async () => root?.render(<GraphDialogs />));
+    const outer = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    const fallback = outer.querySelector<HTMLButtonElement>('button')!;
+    const relation = outer.querySelector<SVGElement>('g[role="button"]')!;
+    expect(relation instanceof HTMLElement).toBe(false);
+    relation.focus();
+    expect(document.activeElement === relation).toBe(true);
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    relation.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(document.activeElement === fallback).toBe(true);
+    const shiftTab = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+    fallback.dispatchEvent(shiftTab);
+    expect(shiftTab.defaultPrevented).toBe(true);
+    expect(document.activeElement === relation).toBe(true);
+    await act(async () => relation.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    const dialogs = document.body.querySelectorAll<HTMLElement>('[role="dialog"]');
+    expect(dialogs).toHaveLength(2);
+    expect(document.activeElement === dialogs[1].querySelectorAll('button')[1]).toBe(true);
+    expect(outer.parentElement?.hasAttribute('inert')).toBe(true);
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    expect(document.activeElement === relation).toBe(true);
+    expect(outer.parentElement?.hasAttribute('inert')).toBe(false);
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement === trigger).toBe(true);
+    expect(document.body.querySelector('[inert]')).toBeNull();
+  });
+
   it('closes only a nested confirmation when Escape is pressed', async () => {
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -546,6 +600,98 @@ describe('Dialog', () => {
     const remainingDialogs = document.body.querySelectorAll<HTMLElement>('[role="dialog"]');
     expect(remainingDialogs).toHaveLength(1);
     expect(remainingDialogs[0]?.contains(document.activeElement)).toBe(true);
+  });
+
+
+  it('returns to an explicit target after focus loss and falls back if it is unavailable', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    let openChild: () => void = () => undefined;
+    const DeferredConfirmation = () => {
+      const targetRef = useRef<HTMLButtonElement>(null);
+      const [childOpen, setChildOpen] = useState(false);
+      openChild = () => setChildOpen(true);
+      return (
+        <Dialog title="Parent" onClose={() => undefined}>
+          <button type="button">Parent fallback</button>
+          <button type="button" ref={targetRef}>Explicit target</button>
+          <ConfirmPromptModal
+            isOpen={childOpen}
+            title="Child"
+            returnFocusRef={targetRef}
+            onCancel={() => setChildOpen(false)}
+            onConfirm={() => undefined}
+          />
+        </Dialog>
+      );
+    };
+
+    for (const availability of ['usable', 'disabled', 'detached', 'hidden']) {
+      await act(async () => root?.render(<DeferredConfirmation key={availability} />));
+      const parent = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+      const [fallback, target] = parent.querySelectorAll<HTMLButtonElement>('button');
+      target.focus();
+      target.blur();
+      expect(document.activeElement === document.body).toBe(true);
+      await act(async () => openChild());
+      if (availability === 'disabled') target.disabled = true;
+      if (availability === 'detached') target.remove();
+      if (availability === 'hidden') target.hidden = true;
+      await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape', bubbles: true, cancelable: true,
+      })));
+      expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+      expect(document.activeElement === (availability === 'usable' ? target : fallback)).toBe(true);
+      await act(async () => root?.render(null));
+    }
+  });
+
+  it('keeps focus in the topmost dialog when an older child with a return target closes', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    let closeChild: () => void = () => undefined;
+    let openIndependent: () => void = () => undefined;
+    const ThreeDialogs = () => {
+      const targetRef = useRef<HTMLButtonElement>(null);
+      const [childOpen, setChildOpen] = useState(true);
+      const [independentOpen, setIndependentOpen] = useState(false);
+      closeChild = () => setChildOpen(false);
+      openIndependent = () => setIndependentOpen(true);
+      return (
+        <>
+          <Dialog title="Parent" onClose={() => undefined}>
+            <button ref={targetRef} type="button">Parent target</button>
+            <ConfirmPromptModal
+              isOpen={childOpen}
+              title="Child"
+              returnFocusRef={targetRef}
+              onCancel={closeChild}
+              onConfirm={() => undefined}
+            />
+          </Dialog>
+          {independentOpen && (
+            <Dialog title="Independent" backdropClassName="z-[100]" onClose={() => setIndependentOpen(false)}>
+              <button type="button">Independent action</button>
+            </Dialog>
+          )}
+        </>
+      );
+    };
+    await act(async () => root?.render(<ThreeDialogs />));
+    await act(async () => openIndependent());
+    const dialogs = document.body.querySelectorAll<HTMLElement>('[role="dialog"]');
+    expect(dialogs).toHaveLength(3);
+    const topmostButton = dialogs[2].querySelector<HTMLButtonElement>('button')!;
+    expect(document.activeElement === topmostButton).toBe(true);
+    expect(dialogs[0].parentElement?.hasAttribute('inert')).toBe(true);
+    expect(dialogs[1].parentElement?.hasAttribute('inert')).toBe(true);
+    await act(async () => closeChild());
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+    expect(document.activeElement === topmostButton).toBe(true);
+    expect(dialogs[0].parentElement?.hasAttribute('inert')).toBe(true);
+    expect(dialogs[2].parentElement?.hasAttribute('inert')).toBe(false);
   });
 
   it('closes a newer independent confirmation before an older nested stack', async () => {

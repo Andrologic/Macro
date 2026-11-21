@@ -1,0 +1,117 @@
+import type { ViewerCard } from './viewer';
+import type { ViewerEdge } from './graphLayout';
+
+export type GraphReadingMode = 'overview' | 'exchanges';
+export interface PresentationGroup { id: string; title: string; members: ViewerCard[] }
+export interface PresentationEdge extends ViewerEdge { originals: ViewerEdge[] }
+
+const groupName = (card: ViewerCard): string => {
+  const own = (card.details.displayAnnotations ?? card.details.annotations) as Record<string, unknown> | undefined;
+  const agent = card.details.agentDefinition as Record<string, unknown> | undefined;
+  const inherited = agent?.annotations as Record<string, unknown> | undefined;
+  const value = own?.macroGroup ?? inherited?.macroGroup;
+  return typeof value === 'string' ? value.trim() : '';
+};
+
+/** Groups are explicit author annotations, never inferred execution steps. */
+export function graphGroups(cards: ViewerCard[]): PresentationGroup[] {
+  const groups = new Map<string, ViewerCard[]>();
+  for (const card of cards) {
+    const name = groupName(card);
+    if (name) groups.set(name, [...(groups.get(name) ?? []), card]);
+  }
+  return [...groups].map(([title, members]) => ({ id: `macro-group:${encodeURIComponent(title)}`, title, members }));
+}
+
+/** A reversible display projection. Original relation identities survive folding. */
+export function presentGraph(cards: ViewerCard[], edges: ViewerEdge[], collapsed: ReadonlySet<string>, mode: GraphReadingMode) {
+  const groups = graphGroups(cards);
+  const paths = new Set(cards.map(card => card.path));
+  const owner = new Map<string, string>();
+  const folded = groups.filter(group => collapsed.has(group.id));
+  for (const group of folded) for (const member of group.members) owner.set(member.path, group.id);
+  const projectedCards = cards.filter(card => !owner.has(card.path));
+  for (const group of folded) projectedCards.push({
+    path: group.id, id: group.id, title: group.title, kind: 'displayGroup', mission: '', unresolved: false,
+    inputs: [], outputs: [], branches: [], details: {},
+  });
+  const bundles = new Map<string, PresentationEdge>();
+  for (const edge of edges) {
+    if (!paths.has(edge.source) || !paths.has(edge.target)) continue;
+    if (mode === 'overview' ? edge.exchangeOnly : !edge.transfers?.length) continue;
+    const source = owner.get(edge.source) ?? edge.source;
+    const target = owner.get(edge.target) ?? edge.target;
+    if (source === target && (owner.has(edge.source) || owner.has(edge.target))) continue;
+    const key = owner.has(edge.source) || owner.has(edge.target)
+      ? JSON.stringify([source, target, edge.dependency, edge.label, Boolean(edge.exchangeOnly)])
+      : edge.id;
+    const existing = bundles.get(key);
+    if (existing) {
+      existing.originals.push(edge);
+      existing.transfers = [...new Set([...(existing.transfers ?? []), ...(edge.transfers ?? [])])];
+    } else bundles.set(key, { ...edge, source, target, originals: [edge] });
+  }
+  return { cards: projectedCards, edges: [...bundles.values()], groups, owner };
+}
+
+/** Keep the process visible; reveal additional declared exchanges around the selection. */
+export function presentFocusedGraph(cards: ViewerCard[], edges: ViewerEdge[], collapsed: ReadonlySet<string>, selected: string) {
+  const overview = presentGraph(cards, edges, collapsed, 'overview');
+  if (!selected) return overview;
+  const focus = overview.owner.get(selected) ?? selected;
+  const exchanges = presentGraph(cards, edges, collapsed, 'exchanges').edges;
+  const existing = new Set(overview.edges.map(edge => edge.id));
+  return { ...overview, edges: [...overview.edges, ...exchanges.filter(edge =>
+    edge.exchangeOnly && !existing.has(edge.id) && (edge.source === focus || edge.target === focus || edge.id === focus))] };
+}
+
+export function graphNeighborhood(path: string, edges: ViewerEdge[]) {
+  const nodes = new Set([path]);
+  const relations = new Set<string>();
+  for (const edge of edges) if (edge.source === path || edge.target === path || edge.id === path) {
+    nodes.add(edge.source); nodes.add(edge.target); relations.add(edge.id);
+  }
+  return { nodes, edges: relations };
+}
+
+export type GraphBlockShape = 'card' | 'execution' | 'subprocess' | 'routing';
+
+/** Agents and approvals are cards, calls run code, compositions open, routing steps are pills. */
+export function graphBlockShape(card: ViewerCard): GraphBlockShape {
+  if (['prepare', 'condition', 'join'].includes(card.kind)) return 'routing';
+  if (card.kind === 'call') return 'execution';
+  if (card.kind === 'compose') return 'subprocess';
+  return 'card';
+}
+
+/** The canvas uses occurrence identities; editing always targets the source owner. */
+export const graphSourcePath = (card: ViewerCard) => card.static030?.sourcePath ?? card.edition030?.ownerPath ?? card.path.slice(card.path.lastIndexOf('#') + 1);
+
+/** Null conversation keys deliberately leave fresh and unbound instances independent. */
+export function graphConversationKey(card: ViewerCard): string | undefined {
+  if (card.kind !== 'agent') return undefined;
+  if (card.edition030) return card.static030?.agent?.conversationKey ?? undefined;
+  return typeof card.details.agent === 'string' ? `${card.path.slice(0, card.path.lastIndexOf('/'))}\u0000${card.details.agent}` : undefined;
+}
+
+/** A configured policy says nothing about messages actually waiting in a run. */
+export function graphDeliveryPolicy(card: ViewerCard): 'queue' | 'steer' | undefined {
+  if (card.edition030) return card.static030?.agent?.delivery ?? undefined;
+  return card.kind === 'agent' ? card.details.delivery === 'steering' ? 'steer' : 'queue' : undefined;
+}
+
+/** Who performs the step, as declared in AgSDL: the agent, the called binding, the approver or the composition. */
+export function graphBlockPerformer(card: ViewerCard, shownTitle: string, declarations: ViewerCard[] = []): string | undefined {
+  if (card.edition030) {
+    if (card.kind !== 'agent') return undefined;
+    const owner = card.static030?.agent?.agentPath ?? card.edition030.agentPath ?? card.participant?.target;
+    const label = declarations.find(item => item.path === owner)?.title ?? card.participant?.label;
+    return label?.trim() && label.trim() !== shownTitle.trim() ? label.trim() : undefined;
+  }
+  const reference = card.kind === 'agent' ? card.participant
+    : card.kind === 'call' ? card.tools?.[0]
+      : card.kind === 'approval' ? card.approvalBinding
+        : card.kind === 'compose' ? card.composition : undefined;
+  const label = reference?.label?.trim();
+  return label && label !== shownTitle.trim() ? label : undefined;
+}

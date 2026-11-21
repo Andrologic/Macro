@@ -1,15 +1,12 @@
 export function targetBaseForBranch(branchName, remoteSha) {
   const hasRemoteCommit = remoteSha && !/^0+$/.test(remoteSha);
-  if (branchName === 'develop' || branchName === 'main') {
+  if (branchName === 'main') {
     return {
-      ref: hasRemoteCommit ? remoteSha : `origin/${branchName}`,
+      ref: hasRemoteCommit ? remoteSha : 'origin/main',
       mode: 'direct',
     };
   }
-  if (branchName.startsWith('release/') || branchName.startsWith('hotfix/')) {
-    return { ref: 'origin/main', mode: 'merge-base' };
-  }
-  return { ref: 'origin/develop', mode: 'merge-base' };
+  return { ref: 'origin/main', mode: 'merge-base' };
 }
 
 export function strongestProfile(profiles) {

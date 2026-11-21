@@ -1,0 +1,50 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "branch-ends-without-result",
+  "agents": {
+    "dev": {
+      "harness": "example",
+      "permissions": "workspace"
+    },
+    "watcher": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "start",
+    "steps": {
+      "start": {
+        "type": "agent",
+        "agent": "dev",
+        "instance": "lead",
+        "next": [
+          "code",
+          "watch"
+        ]
+      },
+      "code": {
+        "type": "agent",
+        "agent": "dev",
+        "next": "merge"
+      },
+      "watch": {
+        "type": "agent",
+        "agent": "watcher",
+        "next": {
+          "nothing": [],
+          "alert": "merge"
+        }
+      },
+      "merge": {
+        "type": "join",
+        "next": "review"
+      },
+      "review": {
+        "type": "agent",
+        "agent": "watcher",
+        "instance": "reviewer"
+      }
+    }
+  }
+}

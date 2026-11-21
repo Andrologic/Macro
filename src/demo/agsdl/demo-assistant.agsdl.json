@@ -1,0 +1,66 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "example-feature",
+  "title": "Assistant",
+  "agents": {
+    "specify": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Comprendre la demande. Consignez le résultat et les points qui demandent une décision."
+    },
+    "implement": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Préparer la réponse. Consignez le résultat et les points qui demandent une décision."
+    },
+    "verify": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier le résultat. Consignez le résultat et les points qui demandent une décision."
+    },
+    "scene-main-prepare-implement": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre le rapport"
+    },
+    "scene-main-prepare-verify": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre le rapport"
+    }
+  },
+  "flow": {
+    "entry": "specify",
+    "steps": {
+      "specify": {
+        "type": "agent",
+        "agent": "specify",
+        "title": "Comprendre la demande",
+        "next": "prepare-implement"
+      },
+      "prepare-implement": {
+        "type": "agent",
+        "agent": "scene-main-prepare-implement",
+        "title": "Transmettre le rapport",
+        "next": "implement"
+      },
+      "implement": {
+        "type": "agent",
+        "agent": "implement",
+        "title": "Préparer la réponse",
+        "next": "prepare-verify"
+      },
+      "prepare-verify": {
+        "type": "agent",
+        "agent": "scene-main-prepare-verify",
+        "title": "Transmettre le rapport",
+        "next": "verify"
+      },
+      "verify": {
+        "type": "agent",
+        "agent": "verify",
+        "title": "Vérifier le résultat"
+      }
+    }
+  }
+}

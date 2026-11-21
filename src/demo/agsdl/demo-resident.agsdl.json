@@ -1,0 +1,22 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "demo-resident",
+  "title": "Équipe support permanente",
+  "agents": {
+    "concierge": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Clarifier la demande et identifier le bon interlocuteur. Conserver l’historique des échanges avec le client."
+    },
+    "orders": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Expliquer l’état d’une commande à partir des ressources fournies. Demander les références manquantes."
+    },
+    "policy": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Expliquer la politique commerciale applicable et les cas qui demandent une décision humaine."
+    }
+  }
+}

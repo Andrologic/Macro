@@ -1,3 +1,4 @@
+import { buildProviderErrorTranscriptMarkdown, resolveChatErrorPresentation } from '../../services/chatErrorPresentation';
 import { describe, expect, it, spyOn } from 'bun:test';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -119,6 +120,54 @@ describe('MarkdownRichContent media rendering', () => {
     expect(markup).toContain('<video');
     expect(markup).toContain('aria-label="Feature demo"');
   });
+
+  it('waits for an explicit click before loading a remote image', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<MarkdownRichContent content={'![Tracking pixel](https://images.example/pixel.png)'} />);
+      });
+
+      expect(container.querySelector('img')).toBeNull();
+      const loadButton = container.querySelector('button');
+      expect(loadButton?.textContent).toContain('images.example');
+
+      await act(async () => { loadButton?.click(); });
+      expect(container.querySelector('img')?.getAttribute('src')).toBe('https://images.example/pixel.png');
+    } finally {
+      await act(async () => { root.unmount(); });
+      container.remove();
+    }
+  });
+
+  it('blocks protocol-relative images and remote videos until clicked', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<MarkdownRichContent content={
+          '![Pixel](//images.example/pixel.png)\n\n![video: Demo](https://videos.example/demo.mp4)'
+        } />);
+      });
+
+      expect(container.querySelector('img, video')).toBeNull();
+      const buttons = Array.from(container.querySelectorAll('button'));
+      expect(buttons.map((button) => button.textContent)).toEqual([
+        expect.stringContaining('images.example'),
+        expect.stringContaining('videos.example'),
+      ]);
+
+      await act(async () => { buttons[1]?.click(); });
+      expect(container.querySelector('img')).toBeNull();
+      expect(container.querySelector('video')?.getAttribute('src')).toBe('https://videos.example/demo.mp4');
+    } finally {
+      await act(async () => { root.unmount(); });
+      container.remove();
+    }
+  });
 });
 
 describe('MarkdownRichContent code block rendering', () => {
@@ -191,6 +240,14 @@ describe('MarkdownRichContent context references', () => {
     expect(markup).not.toContain('[skill: test-skill]');
   });
 
+  it('renders stable AgSDL references without exposing internal links', () => {
+    const markup = renderToStaticMarkup(
+      <MarkdownRichContent content={'Inspect [agsdl: Release](macro-context://agsdl/selection-1)'} />,
+    );
+    expect(markup).toContain('data-context-reference-kind="agsdl"');
+    expect(markup).not.toContain('href="macro-context:');
+  });
+
   it('does not render context reference chips inside inline code', () => {
     const markup = renderToStaticMarkup(
       <MarkdownRichContent content={'Keep `[skill: test-skill]` literal'} />
@@ -233,5 +290,49 @@ describe('MarkdownRichContent clipboard', () => {
       copy.mockRestore();
       error.mockRestore();
     }
+  });
+});
+
+describe('provider error notices', () => {
+  it('keeps diagnostics out of the initial rendered message', () => {
+    const presentation = resolveChatErrorPresentation(Object.assign(new Error('Request failed: 503'), {
+      providerError: true, kind: 'provider_overloaded', status: 503, retryable: true,
+      providerRawBodyExcerpt: 'private diagnostic body',
+    }));
+    const markup = renderToStaticMarkup(<MarkdownRichContent content={buildProviderErrorTranscriptMarkdown(presentation)} />);
+    expect(markup).toContain('The model could not complete this request.');
+    expect(markup).toContain('Try again in a moment.');
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).not.toContain('private diagnostic body');
+  });
+
+  it('opens and closes the retained diagnostics on request', async () => {
+    const presentation = resolveChatErrorPresentation(Object.assign(new Error('Request failed: 503'), {
+      providerError: true, kind: 'provider_overloaded', status: 503, retryable: true,
+      providerRawBodyExcerpt: 'synthetic diagnostic body',
+    }));
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => { root.render(<MarkdownRichContent content={buildProviderErrorTranscriptMarkdown(presentation)} />); });
+      const trigger = container.querySelector<HTMLButtonElement>('button[aria-expanded]')!;
+      expect(container.textContent).not.toContain('synthetic diagnostic body');
+      await act(async () => { trigger.click(); });
+      expect(trigger.getAttribute('aria-expanded')).toBe('true');
+      expect(container.textContent).toContain('synthetic diagnostic body');
+      await act(async () => { trigger.click(); });
+      expect(trigger.getAttribute('aria-expanded')).toBe('false');
+      expect(container.textContent).not.toContain('synthetic diagnostic body');
+    } finally {
+      await act(async () => { root.unmount(); });
+      container.remove();
+    }
+  });
+
+  it('renders malformed structured blocks as code instead of hiding them', () => {
+    const markup = renderToStaticMarkup(<MarkdownRichContent content={'```macro-provider-error\ninvalid payload\n```'} />);
+    expect(markup).toContain('invalid payload');
+    expect(markup).not.toContain('The model could not complete this request.');
   });
 });

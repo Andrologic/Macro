@@ -1,0 +1,66 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "example-release",
+  "title": "Release mobile",
+  "agents": {
+    "checklist": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier les prérequis. Consignez le résultat et les points qui demandent une décision."
+    },
+    "review": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Relire les changements. Consignez le résultat et les points qui demandent une décision."
+    },
+    "installers": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier les installateurs. Consignez le résultat et les points qui demandent une décision."
+    },
+    "scene-main-prepare-review": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre le rapport"
+    },
+    "scene-main-prepare-installers": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre le rapport"
+    }
+  },
+  "flow": {
+    "entry": "checklist",
+    "steps": {
+      "checklist": {
+        "type": "agent",
+        "agent": "checklist",
+        "title": "Vérifier les prérequis",
+        "next": "prepare-review"
+      },
+      "prepare-review": {
+        "type": "agent",
+        "agent": "scene-main-prepare-review",
+        "title": "Transmettre le rapport",
+        "next": "review"
+      },
+      "review": {
+        "type": "agent",
+        "agent": "review",
+        "title": "Relire les changements",
+        "next": "prepare-installers"
+      },
+      "prepare-installers": {
+        "type": "agent",
+        "agent": "scene-main-prepare-installers",
+        "title": "Transmettre le rapport",
+        "next": "installers"
+      },
+      "installers": {
+        "type": "agent",
+        "agent": "installers",
+        "title": "Vérifier les installateurs"
+      }
+    }
+  }
+}

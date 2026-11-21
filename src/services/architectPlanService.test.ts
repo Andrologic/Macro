@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
-const actualTauriIpc = await import('./tauriIpc');
-import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
+import { afterEach,beforeEach,describe,expect,it,mock,spyOn } from 'bun:test';
+import { DEFAULT_NEW_PLAN_LABEL } from './architectPlanPresentation';
+import { installArchitectPlanPorts,type ArchitectPlanServiceAppState } from './architectPlanReadContext';
+import type { ArchitectPlanRecord,ArchitectPlanSummary } from './architectPlanService';
 import type { WorkspaceScope } from './tauriIpc';
 import type { ValidProjectRegistrySnapshot } from './validProjectRegistry';
-import { DEFAULT_NEW_PLAN_LABEL } from './architectPlanPresentation';
-import { installArchitectPlanPorts, type ArchitectPlanServiceAppState } from './architectPlanReadContext';
+const actualTauriIpc = await import('./tauriIpc');
 const registerAppStateGetter = (getAppState: () => unknown) => installArchitectPlanPorts({
   getAppState: () => getAppState() as ArchitectPlanServiceAppState,
 });
@@ -54,6 +54,8 @@ interface LoadArchitectPlanServiceOptions {
     operation: string;
     workspaceScope?: WorkspaceScope;
   }>;
+  readPaths?: string[];
+  failDelete?: (path: string) => boolean;
   failWriteOnce?: (params: {
     path: string;
     workspacePath?: string | null;
@@ -202,6 +204,7 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       workspaceScope?: WorkspaceScope;
     }) => {
       options.workspaceScopeCalls?.push({ operation: 'read', workspaceScope: params.workspaceScope });
+      options.readPaths?.push(params.path);
       const workspacePath = params.workspacePath ?? '';
       const content = workspaceFilesByWorkspacePath[workspacePath]?.[normalizeMockPath(params.path)];
       if (typeof content !== 'string') {
@@ -250,6 +253,7 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       workspaceScope?: WorkspaceScope;
     }) => {
       options.workspaceScopeCalls?.push({ operation: 'delete', workspaceScope: params.workspaceScope });
+      if (options.failDelete?.(params.path)) throw new Error('Injected deletion denied');
       const workspacePath = params.workspacePath ?? '';
       const workspaceFiles = workspaceFilesByWorkspacePath[workspacePath] ?? {};
       const normalizedPath = normalizeMockPath(params.path);
@@ -347,6 +351,23 @@ describe('architectPlanService', () => {
     mock.restore();
     delete (globalThis as { window?: unknown }).window;
     delete (globalThis as { localStorage?: unknown }).localStorage;
+  });
+
+  it('roundtrips AgSDL source and annexes, preserves them across plan edits, and rejects stale writes', async () => {
+    const plan = await service.createArchitectPlan({ branchName, title: 'AgSDL test' });
+    const agsdl = { source: '{ "opaque":900719925474099312345, "title":"Édition" }', annexes: { library: '{ "external": true }' } };
+    await service.updateArchitectPlan({ branchName, planId: plan.id, agsdl, expectedAgsdlRevision: 0 });
+    await service.updateArchitectPlan({ branchName, planId: plan.id, description: 'Updated plan' });
+    expect((await service.getArchitectPlan(branchName, plan.id))?.agsdl).toEqual({ ...agsdl, revision: 1 });
+    await expect(service.updateArchitectPlan({ branchName, planId: plan.id, agsdl: { ...agsdl, source: '{}' }, expectedAgsdlRevision: 0 })).rejects.toThrow('changed');
+    const outcomes = await Promise.allSettled([
+      service.updateArchitectPlan({ branchName, planId: plan.id, agsdl, expectedAgsdlRevision: 1 }),
+      service.updateArchitectPlan({ branchName, planId: plan.id, agsdl, expectedAgsdlRevision: 1 }),
+    ]);
+    expect(outcomes.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect((await service.getArchitectPlan(branchName, plan.id))?.agsdl?.revision).toBe(2);
+    await service.updateArchitectPlan({ branchName, planId: plan.id, status: 'validated' });
+    await expect(service.updateArchitectPlan({ branchName, planId: plan.id, agsdl, expectedAgsdlRevision: 2 })).rejects.toThrow('draft');
   });
 
   it('allows main as the target branch in mainline mode', async () => {
@@ -470,6 +491,18 @@ describe('architectPlanService', () => {
     expect(
       listed.plans.filter((plan: ArchitectPlanSummary) => plan.id === 'explicit-collision')
     ).toHaveLength(1);
+  });
+
+  it('persists a plan icon in the record and catalog, preserves it on edits and resets it', async () => {
+    const created = await service.createArchitectPlan({ branchName, planId: 'custom-icon-plan', title: 'Synthetic plan' });
+    await service.updateArchitectPlan({ branchName, planId: created.id, icon: 'shield' });
+    expect((await service.getArchitectPlan(branchName, created.id))?.icon).toBe('shield');
+    expect((await service.listArchitectPlans(branchName, true, true)).plans.find((plan: ArchitectPlanSummary) => plan.id === created.id)?.icon).toBe('shield');
+    await service.updateArchitectPlan({ branchName, planId: created.id, description: 'Updated description' });
+    expect((await service.getArchitectPlan(branchName, created.id))?.icon).toBe('shield');
+    await service.updateArchitectPlan({ branchName, planId: created.id, icon: null });
+    expect((await service.getArchitectPlan(branchName, created.id))?.icon).toBeUndefined();
+    expect((await service.listArchitectPlans(branchName, true, true)).plans.find((plan: ArchitectPlanSummary) => plan.id === created.id)?.icon).toBeUndefined();
   });
 
   it('treats title updates as label updates for canonical plans', async () => {
@@ -978,6 +1011,12 @@ describe('architectPlanService', () => {
       predictedBranches: [],
     };
     seedLegacyPlan(storage, legacyExpectedOnlyPlan);
+
+    const storageSnapshot = () => Array.from({ length: storage.length }, (_, index) => storage.key(index)!).sort().map(key => [key, storage.getItem(key)]);
+    const beforeRead = storageSnapshot();
+    const snapshot = await service.readArchitectPlanSnapshot(branchName, legacyExpectedOnlyPlan.id);
+    expect(snapshot?.projectIds).toEqual(['web']);
+    expect(storageSnapshot()).toEqual(beforeRead);
 
     const hydratedLegacy = await service.getArchitectPlan(branchName, legacyExpectedOnlyPlan.id);
     expect(hydratedLegacy?.projectIds).toEqual(['web']);
@@ -1980,6 +2019,23 @@ describe('architectPlanService', () => {
       registrySnapshot,
       filesByWorkspacePath,
     });
+    const readPaths: string[] = [];
+    const readScopes: Array<{ operation: string; workspaceScope?: WorkspaceScope }> = [];
+    filesByWorkspacePath['/repos/docs']['branches/develop/plans/mixed-recovery-plan/artifacts/large.txt'] = 'Large artifact body';
+    service = await loadArchitectPlanService({ tauriAvailable: true, appSettings, workspaceRoot: '/repos/docs', registrySnapshot, filesByWorkspacePath, readPaths, workspaceScopeCalls: readScopes });
+    const beforeReadFiles = JSON.stringify(filesByWorkspacePath);
+    const beforeReadSettings = [...appSettings];
+    expect(await service.readArchitectPlanSnapshot(branchName, 'unrelated-missing-plan')).toBeNull();
+    await service.readArchitectPlanSnapshot(branchName, 'mixed-recovery-plan');
+    expect(JSON.stringify(filesByWorkspacePath)).toBe(beforeReadFiles);
+    expect([...appSettings]).toEqual(beforeReadSettings);
+    expect(readPaths.some(path => path.includes('/artifacts/') || path.endsWith('/chat.jsonl'))).toBe(false);
+    expect(readScopes.filter(call => call.operation === 'read').every(call => call.workspaceScope === 'direct' || call.workspaceScope === 'metadata_existing')).toBe(true);
+    await expect(service.updateArchitectPlan({ branchName, planId: 'mixed-recovery-plan', description: 'Guarded update',
+      beforeEffect: async () => { throw new Error('authorization revoked'); },
+    })).rejects.toThrow('authorization revoked');
+    expect(JSON.stringify(filesByWorkspacePath)).toBe(beforeReadFiles);
+    expect([...appSettings]).toEqual(beforeReadSettings);
     await service.listArchitectPlans(branchName, true, true);
 
     expect(JSON.parse(
@@ -2091,6 +2147,117 @@ describe('architectPlanService', () => {
         'branches/develop/plans/plan-task-metadata/tasks/task-remove/executed.md'
       ]
     ).toBe('# Executed task');
+    filesByWorkspacePath['/repos/web']['branches/develop/plans/plan-task-metadata/tasks/orphan/planned.md'] = 'Orphan';
+    service = await loadArchitectPlanService({ tauriAvailable: true, workspaceRoot: '/repos/web', registrySnapshot, filesByWorkspacePath,
+      failDelete: path => path.endsWith('/orphan/planned.md'),
+    });
+    await expect(service.updateArchitectPlan({ branchName, planId: 'plan-task-metadata', description: 'Guarded change',
+      beforeEffect: async () => undefined,
+    })).rejects.toThrow('content_unavailable');
+    expect(filesByWorkspacePath['/repos/web']['branches/develop/plans/plan-task-metadata/tasks/orphan/planned.md']).toBe('Orphan');
+  });
+
+  it('keeps foreign plan fields and orphaned planned files during a Pilot task rename', async () => {
+    const registrySnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: null,
+      scopedProjectIds: [],
+      actionableProjectIds: ['web'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['web']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['web'],
+      validProjectIdSet: new Set(['web']),
+      repoPathByProjectId: new Map([['web', '/repos/web']]),
+      workspacePathByProjectId: new Map([['web', '/repos/web']]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([['web', 'git']]),
+      hasRegisteredProjects: true,
+    };
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/web': {},
+    };
+
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/web',
+      registrySnapshot,
+      filesByWorkspacePath,
+    });
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: 'pilot-task-rename',
+      projectIds: ['web'],
+      nodes: [
+        {
+          id: 'task-primary',
+          title: 'Primary task',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'feature/primary',
+          projectId: 'web',
+          projectIds: ['web'],
+        },
+        {
+          id: 'task-foreign',
+          title: 'Foreign task',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'feature/foreign',
+          projectId: 'web',
+          projectIds: ['web'],
+        },
+      ],
+    });
+
+    const planPath = 'branches/develop/plans/pilot-task-rename/plan.json';
+    const indexPath = 'branches/develop/plans/index.json';
+    const manifestPath = 'branches/develop/plans/pilot-task-rename/manifest.json';
+    const rawPlan = JSON.parse(filesByWorkspacePath['/repos/web'][planPath] || '{}') as Record<string, any>;
+    rawPlan.foreignPlanField = { keep: true };
+    rawPlan.nodes[1].foreignNodeField = { keep: true };
+    filesByWorkspacePath['/repos/web'][planPath] = JSON.stringify(rawPlan, null, 2);
+    const rawIndex = JSON.parse(filesByWorkspacePath['/repos/web'][indexPath] || '{}') as Record<string, any>;
+    rawIndex.foreignIndexField = { keep: true };
+    rawIndex.plans[0].foreignSummaryField = { keep: true };
+    filesByWorkspacePath['/repos/web'][indexPath] = JSON.stringify(rawIndex, null, 2);
+    const rawManifest = JSON.parse(filesByWorkspacePath['/repos/web'][manifestPath] || '{}') as Record<string, any>;
+    rawManifest.foreignManifestField = { keep: true };
+    filesByWorkspacePath['/repos/web'][manifestPath] = JSON.stringify(rawManifest, null, 2);
+    const orphanPath = 'branches/develop/plans/pilot-task-rename/tasks/orphan/planned.md';
+    filesByWorkspacePath['/repos/web'][orphanPath] = 'Keep this orphan for desktop inspection';
+
+    await service.updateArchitectPlan({
+      branchName,
+      planId: created.id,
+      nodes: created.nodes.map((node: ArchitectPlanRecord['nodes'][number]) => node.id === 'task-primary'
+        ? { ...node, title: 'Renamed primary task' }
+        : node),
+      pilotTaskId: 'task-primary',
+      beforeEffect: async () => undefined,
+    });
+
+    const persistedPlan = JSON.parse(filesByWorkspacePath['/repos/web'][planPath] || '{}');
+    expect(persistedPlan.foreignPlanField).toEqual({ keep: true });
+    expect(persistedPlan.nodes[1].foreignNodeField).toEqual({ keep: true });
+    const persistedIndex = JSON.parse(filesByWorkspacePath['/repos/web'][indexPath] || '{}');
+    expect(persistedIndex.foreignIndexField).toEqual({ keep: true });
+    expect(persistedIndex.plans[0].foreignSummaryField).toEqual({ keep: true });
+    const persistedManifest = JSON.parse(filesByWorkspacePath['/repos/web'][manifestPath] || '{}');
+    expect(persistedManifest.foreignManifestField).toEqual({ keep: true });
+    expect(filesByWorkspacePath['/repos/web'][orphanPath]).toBe('Keep this orphan for desktop inspection');
+    expect(filesByWorkspacePath['/repos/web'][
+      'branches/develop/plans/pilot-task-rename/tasks/task-primary/planned.md'
+    ]).toContain('Renamed primary task');
+    const beforeNoop = JSON.stringify(filesByWorkspacePath);
+    const renamed = await service.readArchitectPlanSnapshot(branchName, created.id);
+    await service.updateArchitectPlan({
+      branchName, planId: created.id, nodes: renamed!.nodes,
+      pilotTaskId: 'task-primary', beforeEffect: async () => undefined,
+    });
+    expect(JSON.stringify(filesByWorkspacePath)).toBe(beforeNoop);
   });
 
   it('does not treat unscoped legacy plans as visible inside a selected project scope', () => {
@@ -2349,6 +2516,55 @@ describe('architectPlanService', () => {
     expect(payload?.chatMessages).toHaveLength(0);
   });
 
+  it('creates an AgSDL blueprint snapshot atomically with its source and annexes', async () => {
+    const agsdl = { source: '{ "opaque":900719925474099312345 }', annexes: { guidance: 'Synthetic release guidance' } };
+    const created = await service.createArchitectPlan({ branchName, planId: 'blueprint-snapshot', label: 'Release blueprint', setActive: false, agsdl });
+    expect(created.agsdl).toEqual({ ...agsdl, revision: 1 });
+    expect(created.revision).toBe(1);
+    expect((await service.getArchitectPlan(branchName, created.id))?.agsdl).toEqual({ ...agsdl, revision: 1 });
+    const listing = await service.listArchitectPlans(branchName);
+    expect(listing.plans.find((plan: ArchitectPlanSummary) => plan.id === created.id)?.hasAgsdl).toBe(true);
+    expect(listing.activePlanId).not.toBe(created.id);
+  });
+
+  it('persists 0.2 design intent outside the unchanged closed source and includes metadata in size limits', async () => {
+    const source = '{"contract":"agsdl-0.2.0","id":"release","agents":{},"configurations":{},"bindings":{}}';
+    const design = { version: 1 as const, kind: 'blueprint' as const, purpose: 'Vérifier la release.', context: '', rules: [], requirements: [] };
+    const agsdl = { source, annexes: {}, design, display: { title: 'Release' } };
+    const created = await service.createArchitectPlan({ branchName, planId: 'edition-020', label: 'Release', setActive: false, agsdl });
+    expect((await service.getArchitectPlan(branchName, created.id))?.agsdl).toEqual({ ...agsdl, revision: 1 });
+    expect(JSON.parse(created.agsdl!.source).annotations).toBeUndefined();
+    await expect(service.updateArchitectPlan({ branchName, planId: created.id, expectedAgsdlRevision: 1,
+      agsdl: { ...agsdl, design: { ...design, context: 'é'.repeat(1024 * 1024) } } })).rejects.toThrow('1 MiB');
+    expect((await service.getArchitectPlan(branchName, created.id))?.agsdl).toEqual({ ...agsdl, revision: 1 });
+    await expect(service.createArchitectPlan({ branchName, planId: 'invalid-design', label: 'Invalid',
+      agsdl: { ...agsdl, design: { ...design, rules: [{ id: '', title: 'Invalid', instructions: '' }] } } })).rejects.toThrow('design metadata');
+    expect(await service.getArchitectPlan(branchName, 'invalid-design')).toBeNull();
+    for (const display of [{ title: 42 }, { cards: { '/agents/checklist': { title: {} } } }]) {
+      await expect(service.updateArchitectPlan({ branchName, planId: created.id, expectedAgsdlRevision: 1,
+        agsdl: { ...agsdl, display: display as unknown as NonNullable<ArchitectPlanRecord['agsdl']>['display'] } })).rejects.toThrow('display metadata');
+      expect((await service.getArchitectPlan(branchName, created.id))?.agsdl).toEqual({ ...agsdl, revision: 1 });
+    }
+  });
+
+  it('rejects oversized initial AgSDL before creating a plan or reserving its id', async () => {
+    await expect(service.createArchitectPlan({ branchName, planId: 'oversized-blueprint', label: 'Oversized', agsdl: { source: '{}', annexes: { large: 'a'.repeat(1024 * 1024) } } })).rejects.toThrow('1 MiB');
+    expect(await service.getArchitectPlan(branchName, 'oversized-blueprint')).toBeNull();
+    const created = await service.createArchitectPlan({ branchName, planId: 'oversized-blueprint', label: 'Retry', agsdl: { source: '{}', annexes: {} } });
+    expect(created.id).toBe('oversized-blueprint');
+  });
+
+  it('fully activates an AgSDL-only draft and marks its summary as authored', async () => {
+    const created = await service.createArchitectPlan({ branchName, planId: 'agsdl-only', label: DEFAULT_NEW_PLAN_LABEL });
+    const source = '{ "opaque":900719925474099312345 }';
+    await service.updateArchitectPlan({ branchName, planId: created.id, agsdl: { source, annexes: {} }, expectedAgsdlRevision: 0 });
+    const listed = await service.listArchitectPlans(branchName, true, true);
+    expect(listed.plans.find((plan: ArchitectPlanSummary) => plan.id === created.id)?.hasAgsdl).toBe(true);
+    const payload = await service.getArchitectPlanActivationPayload(branchName, created.id);
+    expect(payload?.resolutionMode).toBe('full');
+    expect(payload?.plan.agsdl?.source).toBe(source);
+  });
+
   it('returns a blank fast-path activation payload for an untouched new plan', async () => {
     const created = await service.createArchitectPlan({
       branchName,
@@ -2366,4 +2582,5 @@ describe('architectPlanService', () => {
     expect(payload?.chatMessages).toHaveLength(0);
     expect(payload?.conversationId).toBeNull();
   });
+
 });

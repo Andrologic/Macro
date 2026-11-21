@@ -1,71 +1,75 @@
-import type { ArchitectPlanServiceDependencies } from './architectPlanReadContext';
-import type { PlanNode, PredictedBranch } from '../types';
+import type { PlanNode,PredictedBranch } from '../types';
 import { devLogger } from '../utils/devLogger';
-import { isCanonicalArchitectPlan } from './architectPlanPresentation';
-import { type ValidProjectRegistrySnapshot } from './validProjectRegistry';
-import { normalizeArchitectPlanIdList } from './architectPlanScope';
+import { retainDesignOrigin,updateDesignMetadata,validDisplayMetadata } from './agsdl/design';
 import {
-  normalizeArchitectPlanGitFlowMetadata,
-  normalizeArchitectPlanKind,
-  type ArchitectPlanGitFlowMetadata,
-  type ArchitectPlanKind,
+normalizeArchitectPlanGitFlowMetadata,
+normalizeArchitectPlanKind,
+type ArchitectPlanGitFlowMetadata,
+type ArchitectPlanKind,
 } from './architectPlanKinds';
 import {
-  assertPlanReplicaSetWritable,
-  getArchitectPlan,
-  loadPlanReplicaSet,
-  readAggregatedIndex,
-  type CreateArchitectPlanInput,
-} from './architectPlanReadService';
+buildRemoveReplicaMutationTarget,
+buildUpsertReplicaMutationTarget,
+enqueueArchitectPlanCreation,
+enqueueArchitectPlanMutation,
+getPlanExecutionModes,
+runArchitectPlanReplicaMutation,
+type ArchitectPlanReplicaMutationTarget,
+} from './architectPlanMutationPersistence';
+import { isCanonicalArchitectPlan } from './architectPlanPresentation';
+import type { ArchitectPlanServiceDependencies } from './architectPlanReadContext';
 import {
-  createGitFlowMetadataNormalizationContext,
-  dedupeScopes,
-  ensurePlanScopes,
-  invalidateArchitectPlanRuntimeCaches,
-  loadArchitectPlanRegistrySnapshot,
-  resolveArchitectPlanServiceDependencies,
-  type ResolvedArchitectPlanServiceDependencies,
+createGitFlowMetadataNormalizationContext,
+dedupeScopes,
+ensurePlanScopes,
+existingMetadataScope,
+invalidateArchitectPlanRuntimeCaches,
+loadArchitectPlanRegistrySnapshot,
+resolveArchitectPlanServiceDependencies,
+type ResolvedArchitectPlanServiceDependencies,
 } from './architectPlanReadContext';
 import {
-  applyArchitectPlanLifecycleForStatus,
-  areArchitectPlansSemanticallyEqual,
-  assertGitFlowTargetBranch,
-  createAvailablePlanSlug,
-  getArchitectPlanCrudCapabilities,
-  getArchitectPlanEffectiveTargetBranchesByProjectId,
-  isArchitectPlanReplicaDivergenceError,
-  isArchitectPlanRestorableStatus,
-  isArchitectPlanSlugMutable,
-  mergeGitFlowTargetBranchesByProjectId,
-  normalizeBranchName,
-  normalizeContextProjectIds,
-  normalizePersistedExecutionModes,
-  normalizePlanLabel,
-  normalizePlanNodes,
-  normalizePlanPredictedBranches,
-  normalizeProjectIds,
-  normalizeTargetBranchesByProjectId,
-  resolveArchivedArchitectPlanRestoreStatus,
-  resolvePlanProjectIds,
-  sanitizeArchitectPlanRecord,
-  sanitizeId,
-  slugifyPlanTitle,
-  stableSerialize,
-  throwPlanMetadataMissing,
-  type ArchitectPlanRecord,
-  type ArchitectPlanReplicaSet,
-  type ArchitectPlanStatus,
+applyArchitectPlanLifecycleForStatus,
+areArchitectPlansSemanticallyEqual,
+assertGitFlowTargetBranch,
+createAvailablePlanSlug,
+getArchitectPlanCrudCapabilities,
+getArchitectPlanEffectiveTargetBranchesByProjectId,
+isArchitectPlanReplicaDivergenceError,
+isArchitectPlanRestorableStatus,
+isArchitectPlanSlugMutable,
+mergeGitFlowTargetBranchesByProjectId,
+normalizeBranchName,
+normalizeContextProjectIds,
+normalizePersistedExecutionModes,
+normalizePlanLabel,
+normalizePlanNodes,
+normalizePlanPredictedBranches,
+normalizeProjectIds,
+normalizeTargetBranchesByProjectId,
+resolveArchivedArchitectPlanRestoreStatus,
+resolvePlanProjectIds,
+sanitizeArchitectPlanRecord,
+sanitizeId,
+slugifyPlanTitle,
+stableSerialize,
+throwPlanMetadataMissing,
+type ArchitectPlanRecord,
+type ArchitectPlanReplicaSet,
+type ArchitectPlanStatus,
 } from './architectPlanReadModel';
 import {
-  buildRemoveReplicaMutationTarget,
-  buildUpsertReplicaMutationTarget,
-  enqueueArchitectPlanCreation,
-  enqueueArchitectPlanMutation,
-  getPlanExecutionModes,
-  runArchitectPlanReplicaMutation,
-  type ArchitectPlanReplicaMutationTarget,
-} from './architectPlanMutationPersistence';
-import { readIndexAtScope, readPlanChatAtScope } from './architectPlanReplicaStorage';
+assertPlanReplicaSetWritable,
+getArchitectPlan,
+loadPlanReplicaSet,
+readAggregatedIndex,
+readArchitectPlanSnapshot,
+type CreateArchitectPlanInput,
+} from './architectPlanReadService';
+import { readIndexAtScope,readPlanChatAtScope } from './architectPlanReplicaStorage';
+import { normalizeArchitectPlanIdList } from './architectPlanScope';
+import { normalizePlanIcon } from './planIcon';
+import { type ValidProjectRegistrySnapshot } from './validProjectRegistry';
 
 export const createArchitectPlanId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -80,10 +84,32 @@ export const createArchitectPlanId = (): string => {
   return `plan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 };
 
+const assertAgsdlEditorDocument = (
+  document: Omit<import('../types/agsdl').AgsdlEditorDocument, 'revision'>,
+): void => {
+  if (!document || typeof document.source !== 'string' || !document.annexes ||
+      typeof document.annexes !== 'object' || Array.isArray(document.annexes) ||
+      Object.values(document.annexes).some((value) => typeof value !== 'string')) {
+    throw new Error('Invalid AgSDL editor document.');
+  }
+  if (document.design !== undefined) updateDesignMetadata(undefined, document.design);
+  if (document.display !== undefined && !validDisplayMetadata(document.display)) {
+    throw new Error('Invalid AgSDL display metadata.');
+  }
+  if (document.migration !== undefined && (!document.migration || typeof document.migration !== 'object' || document.migration.version !== 1 || !['macro-legacy-plan', 'agsdl-0.1.0'].includes(document.migration.from) || !Array.isArray(document.migration.issues) || document.migration.issues.some(issue => typeof issue !== 'string'))) {
+    throw new Error('Invalid AgSDL migration metadata.');
+  }
+  const metadata = JSON.stringify({ design: document.design, display: document.display, migration: document.migration });
+  if (new TextEncoder().encode(document.source + Object.values(document.annexes).join('') + metadata).length > 1024 * 1024) {
+    throw new Error('AgSDL inputs exceed the 1 MiB editor limit.');
+  }
+};
+
 export const createArchitectPlanUnlocked = async (
   input: CreateArchitectPlanInput,
   deps: ResolvedArchitectPlanServiceDependencies
 ): Promise<ArchitectPlanRecord> => {
+  if (input.agsdl !== undefined) assertAgsdlEditorDocument(input.agsdl);
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const now = new Date().toISOString();
@@ -153,6 +179,7 @@ export const createArchitectPlanUnlocked = async (
   });
 
   const initialPlanRecord = applyArchitectPlanLifecycleForStatus({
+    ...(input.agsdl !== undefined ? { agsdl: { ...input.agsdl, revision: 1 } } : {}),
     id: planId,
     slug: canonicalSlug,
     title: planId,
@@ -229,11 +256,14 @@ export const createArchitectPlan = async (
   enqueueArchitectPlanCreation(input.branchName, () => createArchitectPlanUnlocked(input, deps));
 
 export interface UpdateArchitectPlanInput {
+  agsdl?: Omit<import('../types/agsdl').AgsdlEditorDocument, 'revision'>;
+  expectedAgsdlRevision?: number;
   branchName: string;
   planId: string;
   expectedRevision?: number;
   title?: string;
   label?: string;
+  icon?: string | null;
   slug?: string;
   description?: string;
   planKind?: ArchitectPlanKind;
@@ -249,6 +279,8 @@ export interface UpdateArchitectPlanInput {
   nodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
   setActive?: boolean;
+  beforeEffect?: () => Promise<void>;
+  pilotTaskId?: string;
 }
 
 export type ArchitectPlanDerivedUpdate = Pick<UpdateArchitectPlanInput, 'nodes' | 'predictedBranches' | 'status'>;
@@ -279,14 +311,31 @@ export const updateArchitectPlanWithDerivedUpdate = async (
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(input.planId);
   return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
+  await input.beforeEffect?.();
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
-    registrySnapshot,
+    registrySnapshot, disableAutoHeal: Boolean(input.beforeEffect), existingMetadataOnly: Boolean(input.beforeEffect),
   }, deps);
   if (!replicaSet) {
     throwPlanMetadataMissing(normalizedBranch, safeId);
   }
   const existing = replicaSet.canonical.plan;
+  if (input.agsdl !== undefined) {
+    if (existing.status !== 'draft') throw new Error('AgSDL editing requires a draft plan.');
+    if (input.expectedAgsdlRevision !== (existing.agsdl?.revision ?? 0)) {
+      throw new Error('The AgSDL document changed. Reload it before saving.');
+    }
+    const design = retainDesignOrigin(existing.agsdl?.design, input.agsdl.design);
+    input = { ...input, agsdl: { ...input.agsdl, ...(design !== undefined ? { design } : {}) } };
+    assertAgsdlEditorDocument(input.agsdl!);
+  }
+  if (input.beforeEffect) {
+    const allowed = new Set(['branchName', 'planId', 'nodes', 'setActive', 'beforeEffect', 'expectedRevision', 'pilotTaskId']);
+    if (deriveUpdate || Object.keys(input).some(key => !allowed.has(key)) || input.setActive === true ||
+      !input.pilotTaskId || !input.nodes?.some(node => node.id === input.pilotTaskId)) {
+      throw new Error('content_unavailable');
+    }
+  }
   if (
     input.expectedRevision !== undefined &&
     (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1)
@@ -306,7 +355,8 @@ export const updateArchitectPlanWithDerivedUpdate = async (
     input = { ...input, ...deriveUpdate(existing) };
   }
   const inputKeys = Object.keys(input).filter(
-    (key) => key !== 'branchName' && key !== 'planId' && key !== 'expectedRevision',
+    (key) => key !== 'branchName' && key !== 'planId' && key !== 'expectedRevision' &&
+      key !== 'beforeEffect' && key !== 'pilotTaskId',
   );
   const isRestoringArchivedPlan =
     existing.status === 'archived' &&
@@ -490,11 +540,15 @@ export const updateArchitectPlanWithDerivedUpdate = async (
 
   const candidateResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
     ...existing,
+    agsdl: input.agsdl !== undefined
+      ? { ...input.agsdl, revision: (existing.agsdl?.revision ?? 0) + 1 }
+      : existing.agsdl,
     slug: requestedSlug,
     title: isCanonicalPlan ? existing.title : input.title?.trim() || existing.title,
     label: isCanonicalPlan
       ? (input.label !== undefined || input.title !== undefined ? requestedLabel : existing.label)
       : normalizePlanLabel(input.label) ?? existing.label,
+    icon: input.icon !== undefined ? normalizePlanIcon(input.icon) : existing.icon,
     description: input.description !== undefined ? input.description.trim() : existing.description,
     planKind,
     gitFlowPlan: normalizedGitFlowPlan,
@@ -517,15 +571,18 @@ export const updateArchitectPlanWithDerivedUpdate = async (
     throwPlanMetadataMissing(normalizedBranch, safeId);
   }
   const candidate = candidateResult.plan;
+  const targetedTaskId = input.beforeEffect ? input.pilotTaskId?.trim() || undefined : undefined;
+  if (input.beforeEffect && !targetedTaskId) throw new Error('content_unavailable');
 
-  const targetScopes = await ensurePlanScopes(
+  const resolvedTargetScopes = await ensurePlanScopes(
     candidate.expectedProjectIds || candidate.projectIds || [],
     registrySnapshot,
     deps,
     getPlanExecutionModes(candidate, registrySnapshot),
   );
+  const targetScopes = resolvedTargetScopes.map(scope => input.beforeEffect ? existingMetadataScope(scope) : scope);
   const existingScopes = dedupeScopes([
-    ...replicaSet.expectedScopes,
+    ...replicaSet.expectedScopes.map(scope => input.beforeEffect ? existingMetadataScope(scope) : scope),
     ...replicaSet.snapshots.map((snapshot) => snapshot.scope),
   ]);
   const targetScopeKeys = new Set(targetScopes.map((scope) => scope.scopeKey));
@@ -538,6 +595,7 @@ export const updateArchitectPlanWithDerivedUpdate = async (
   const hasScopeChanges =
     targetScopes.length !== existingScopes.length ||
     targetScopes.some((scope) => !existingScopeKeys.has(scope.scopeKey));
+  if (input.beforeEffect && hasScopeChanges) throw new Error('content_unavailable');
   const hasSemanticChange = !areArchitectPlansSemanticallyEqual(existing, candidate);
   let shouldActivate = input.setActive === true;
   if (shouldActivate) {
@@ -569,6 +627,7 @@ export const updateArchitectPlanWithDerivedUpdate = async (
       branchName: normalizedBranch,
       planId: safeId,
       operation: 'update',
+      beforeEffect: input.beforeEffect,
       targets,
       registrySnapshot,
       deps,
@@ -598,6 +657,7 @@ export const updateArchitectPlanWithDerivedUpdate = async (
       registrySnapshot,
       setActive: shouldActivate,
       chatMessageCount: replicaSet.canonical.manifest.conversation.messageCount,
+      targetedTaskId,
     }))),
     ...await Promise.all(removedScopes.map((scope) => buildRemoveReplicaMutationTarget({
       scope,
@@ -611,6 +671,7 @@ export const updateArchitectPlanWithDerivedUpdate = async (
     branchName: normalizedBranch,
     planId: next.id,
     operation: existing.status === 'archived' && next.status !== 'archived' ? 'restore' : 'update',
+    beforeEffect: input.beforeEffect,
     targets,
     registrySnapshot,
     deps,
@@ -622,7 +683,7 @@ export const updateArchitectPlanWithDerivedUpdate = async (
   });
 
   try {
-    return (await getArchitectPlan(normalizedBranch, next.id, deps)) || next;
+    return (await (input.beforeEffect ? readArchitectPlanSnapshot : getArchitectPlan)(normalizedBranch, next.id, deps)) || next;
   } catch (error) {
     if (isArchitectPlanReplicaDivergenceError(error)) {
       devLogger.warn(

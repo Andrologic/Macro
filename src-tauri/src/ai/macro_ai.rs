@@ -30,6 +30,15 @@ fn provisioning_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn bootstrap_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| format!("Failed to prepare Macro AI activation: {error}"))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InstallationIdentity {
     installation_id: String,
@@ -154,87 +163,146 @@ pub fn access_token() -> Result<Option<String>, String> {
         .map_err(|error| format!("Failed to read the Macro AI access token: {error}"))
 }
 
+pub async fn access_token_async() -> Result<Option<String>, String> {
+    secrets::blocking::run(access_token)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 pub async fn ensure_access_token(pool: &SqlitePool) -> Result<String, String> {
-    if let Some(token) = access_token()? {
+    if let Some(token) = access_token_async().await? {
         return Ok(token);
     }
     provision(pool).await?;
-    access_token()?.ok_or_else(|| "Macro AI activation returned no access token.".to_string())
+    access_token_async()
+        .await?
+        .ok_or_else(|| "Macro AI activation returned no access token.".to_string())
 }
 
 pub async fn provision(pool: &SqlitePool) -> Result<MacroAiProvisioningStatus, String> {
     let _guard = provisioning_lock().lock().await;
-    ensure_managed_provider_and_model(pool).await?;
+    crate::secrets::blocking::with_guard(_guard, async {
+        ensure_managed_provider_and_model(pool).await?;
 
-    if access_token()?.is_some() {
+        if access_token_async().await?.is_some() {
+            repository::set_provider_has_stored_api_key(pool, PROVIDER_ID, true)
+                .await
+                .map_err(|error| error.to_string())?;
+            return Ok(MacroAiProvisioningStatus {
+                provider_id: PROVIDER_ID.to_string(),
+                model_id: DEFAULT_MODEL_ID.to_string(),
+                context_window_tokens: CONTEXT_WINDOW_TOKENS,
+                activated_now: false,
+            });
+        }
+
+        let identity = secrets::blocking::run(load_or_create_installation_identity)
+            .await
+            .map_err(|error| error.to_string())??;
+        let client = bootstrap_client()?;
+        let response = client
+            .post(BOOTSTRAP_URL)
+            .json(&BootstrapRequest {
+                installation_id: &identity.installation_id,
+                installation_proof: &identity.installation_proof,
+                client_version: env!("CARGO_PKG_VERSION"),
+                platform: std::env::consts::OS,
+            })
+            .send()
+            .await
+            .map_err(|error| format!("Macro AI activation is currently unavailable: {error}"))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error = response
+                .json::<BootstrapError>()
+                .await
+                .ok()
+                .and_then(|payload| payload.error)
+                .unwrap_or_else(|| "the activation service returned an error".to_string());
+            return Err(format!("Macro AI activation failed ({status}): {error}"));
+        }
+
+        let payload = response
+            .json::<BootstrapResponse>()
+            .await
+            .map_err(|error| {
+                format!("Macro AI returned an invalid activation response: {error}")
+            })?;
+        if payload.access_token.trim().is_empty()
+            || payload.model != DEFAULT_MODEL_ID
+            || payload.context_window_tokens != CONTEXT_WINDOW_TOKENS
+        {
+            return Err("Macro AI returned inconsistent activation metadata.".to_string());
+        }
+
+        secrets::set_api_key_async(PROVIDER_ID, payload.access_token.trim())
+            .await
+            .map_err(|error| format!("Failed to store the Macro AI access token: {error}"))?;
         repository::set_provider_has_stored_api_key(pool, PROVIDER_ID, true)
             .await
             .map_err(|error| error.to_string())?;
-        return Ok(MacroAiProvisioningStatus {
+
+        Ok(MacroAiProvisioningStatus {
             provider_id: PROVIDER_ID.to_string(),
             model_id: DEFAULT_MODEL_ID.to_string(),
             context_window_tokens: CONTEXT_WINDOW_TOKENS,
-            activated_now: false,
-        });
-    }
-
-    let identity = load_or_create_installation_identity()?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|error| format!("Failed to prepare Macro AI activation: {error}"))?;
-    let response = client
-        .post(BOOTSTRAP_URL)
-        .json(&BootstrapRequest {
-            installation_id: &identity.installation_id,
-            installation_proof: &identity.installation_proof,
-            client_version: env!("CARGO_PKG_VERSION"),
-            platform: std::env::consts::OS,
+            activated_now: true,
         })
-        .send()
-        .await
-        .map_err(|error| format!("Macro AI activation is currently unavailable: {error}"))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let error = response
-            .json::<BootstrapError>()
-            .await
-            .ok()
-            .and_then(|payload| payload.error)
-            .unwrap_or_else(|| "the activation service returned an error".to_string());
-        return Err(format!("Macro AI activation failed ({status}): {error}"));
-    }
-
-    let payload = response
-        .json::<BootstrapResponse>()
-        .await
-        .map_err(|error| format!("Macro AI returned an invalid activation response: {error}"))?;
-    if payload.access_token.trim().is_empty()
-        || payload.model != DEFAULT_MODEL_ID
-        || payload.context_window_tokens != CONTEXT_WINDOW_TOKENS
-    {
-        return Err("Macro AI returned inconsistent activation metadata.".to_string());
-    }
-
-    secrets::set_api_key(PROVIDER_ID, payload.access_token.trim())
-        .map_err(|error| format!("Failed to store the Macro AI access token: {error}"))?;
-    repository::set_provider_has_stored_api_key(pool, PROVIDER_ID, true)
-        .await
-        .map_err(|error| error.to_string())?;
-
-    Ok(MacroAiProvisioningStatus {
-        provider_id: PROVIDER_ID.to_string(),
-        model_id: DEFAULT_MODEL_ID.to_string(),
-        context_window_tokens: CONTEXT_WINDOW_TOKENS,
-        activated_now: true,
     })
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bootstrap_client_does_not_forward_installation_proof_on_redirect() {
+        use axum::{
+            http::{header, StatusCode},
+            routing::any,
+            Router,
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let followed = std::sync::Arc::new(AtomicBool::new(false));
+        let leak_flag = followed.clone();
+        let app = Router::new()
+            .route(
+                "/start",
+                any(|| async {
+                    (
+                        StatusCode::TEMPORARY_REDIRECT,
+                        [(header::LOCATION, "/leak")],
+                    )
+                }),
+            )
+            .route(
+                "/leak",
+                any(move || {
+                    let flag = leak_flag.clone();
+                    async move {
+                        flag.store(true, Ordering::SeqCst);
+                        StatusCode::OK
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let response = bootstrap_client()
+            .unwrap()
+            .post(format!("http://{address}/start"))
+            .json(&serde_json::json!({ "installation_proof": "test-proof" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert!(!followed.load(Ordering::SeqCst));
+        server.abort();
+    }
 
     #[test]
     fn installation_identity_has_stable_safe_shapes() {

@@ -1,0 +1,24 @@
+{
+  "contract_version": "2.0",
+  "type": "response",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "operation": "attachment.status",
+  "result": {
+    "ref": {
+      "instance_id": "instance-demo",
+      "kind": "conversation",
+      "conversation_id": "conversation-demo"
+    },
+    "intent_id": "intent-demo",
+    "batch_id": "batch-demo",
+    "transfer_id": "transfer-demo",
+    "attachment_id": null,
+    "state": "receiving",
+    "received_bytes": 0,
+    "total_bytes": 6,
+    "sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+    "observed_at": "2026-10-10T12:00:00.000Z",
+    "expires_at": "2026-10-10T12:15:00.000Z"
+  }
+}

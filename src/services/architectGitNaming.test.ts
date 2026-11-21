@@ -1,7 +1,9 @@
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'bun:test';
 import type { ProjectGitFlowSettings } from '../types';
 import {
   isMainlineGitWorkflow,
+  isValidGitBranchName,
   renderStandaloneTaskBranchName,
   validateProjectGitFlowParsing,
   validateProjectGitFlowSettings,
@@ -51,6 +53,22 @@ describe('architectGitNaming', () => {
     expect(errors).toContain(
       'Plan branch template must render a valid Git branch name.',
     );
+  });
+
+  it('checks literal branch names against Git without repairing invalid input', () => {
+    const names = ['HEAD', '@', 'main', 'develop', 'feature/café', 'topic/-part', 'topic/a.b',
+      'branch invalid', 'topic..bad', 'topic.lock', 'topic.lock/next', 'topic@{1}',
+      '-topic', '/topic', 'topic/', 'topic//part', 'topic\\part', '.topic',
+      'topic/.part', 'topic.', 'topic~1', 'topic^', 'topic:part', 'topic?',
+      'topic*', 'topic[1]', 'topic\tpart', 'topic\x7f', ' main', 'main ', ''];
+    for (const name of names) {
+      const accepted = spawnSync('git', ['check-ref-format', '--branch', name]).status === 0;
+      expect(isValidGitBranchName(name)).toBe(accepted);
+      for (const field of ['baseBranch', 'mainBranch'] as const) {
+        const errors = validateProjectGitFlowSettings(createSettings({ [field]: name }));
+        expect(errors.length === 0).toBe(accepted);
+      }
+    }
   });
 
   it('renders standalone branches from the task kind selected by the agent', () => {

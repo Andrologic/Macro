@@ -4,7 +4,9 @@
  * Supports: OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, and any OpenAI-compatible API
  */
 
+import i18n from 'i18next';
 import { tauriFetch } from './tauriHttp';
+import { assertSecureProviderEndpoint, readBoundedProviderError } from './providerEndpoint';
 import { getPageLifecycleSignal, isPageShuttingDown } from '../utils/pageLifecycle';
 import { createCombinedAbortSignal } from '../utils/abortSignals';
 import { devLogger } from '../utils/devLogger';
@@ -398,8 +400,8 @@ const readProbeBody = async <T>(
 
 const readResponseErrorText = async (response: Response, signal: AbortSignal): Promise<string> => {
   try {
-    const text = await readProbeBody(response, signal, () => response.text());
-    return text || response.statusText || 'Unknown error';
+    const text = await readProbeBody(response, signal, () => readBoundedProviderError(response));
+    return text.slice(0, 2048) || response.statusText || 'Unknown error';
   } catch (error) {
     if (signal.aborted) throw error;
     return response.statusText || 'Unknown error';
@@ -417,11 +419,13 @@ const requestModelsJson = async (params: {
   timeout: number;
   signal: AbortSignal;
 }): Promise<{ response: Response; data?: unknown; errorText?: string }> => {
+  assertSecureProviderEndpoint(params.url);
   const response = await tauriFetch(params.url, {
     method: 'GET',
     headers: params.headers,
     connectTimeout: params.timeout,
     signal: params.signal,
+    maxRedirections: 0,
   });
 
   if (!response.ok) {
@@ -609,7 +613,7 @@ const probeLmStudioNativeModels = async (params: {
         success: true,
         status: 'reachable',
         source: 'models_endpoint',
-        message: `Connected! Found ${models.length} LM Studio models.`,
+        message: i18n.t('providers.connectionLmStudioModelsFound', { count: models.length, defaultValue: 'Connected! Found {{count}} LM Studio models.' }),
         models,
       };
     } catch (error) {
@@ -679,11 +683,13 @@ export async function probeModelsEndpoint(
         }
       }
 
+      assertSecureProviderEndpoint(`${baseUrl}/models`);
       const response = await tauriFetch(`${baseUrl}/models`, {
         method: 'GET',
         headers,
         connectTimeout: effectiveTimeout,
         signal,
+        maxRedirections: 0,
       });
 
       if (!response.ok) {
@@ -738,7 +744,7 @@ export async function probeModelsEndpoint(
         success: true,
         status: 'reachable',
         source: 'models_endpoint',
-        message: `Connected! Found ${models.length} models.`,
+        message: i18n.t('providers.connectionModelsFound', { count: models.length, defaultValue: 'Connected! Found {{count}} models.' }),
         models,
       };
     } finally {
@@ -794,6 +800,7 @@ export async function probeChatCompletionsEndpoint(
     }, effectiveTimeout);
 
     try {
+      assertSecureProviderEndpoint(`${baseUrl}/chat/completions`);
       const response = await tauriFetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers,
@@ -805,6 +812,7 @@ export async function probeChatCompletionsEndpoint(
         }),
         connectTimeout: effectiveTimeout,
         signal,
+        maxRedirections: 0,
       });
 
       if (!response.ok) {
@@ -850,7 +858,7 @@ export async function probeChatCompletionsEndpoint(
         success: true,
         status: 'reachable',
         source: 'chat_completions_probe',
-        message: `Connected using model ${modelId}.`,
+        message: i18n.t('providers.connectionModelVerified', { model: modelId, defaultValue: 'Connected using model {{model}}.' }),
         models: [],
         httpStatus: response.status,
         modelIdUsed: modelId,

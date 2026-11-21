@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { providerHasCredentials, useProviderStore } from '../../../../stores/useProviderStore';
@@ -8,6 +8,7 @@ import { Icon } from '../../../ui/Icon';
 import { Button } from '../../../ui/Button';
 import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
 import { Input } from '../../../ui/Input';
+import { DialogContext } from '../../../ui/Dialog';
 import { Switch } from '../../../ui/Switch';
 import {
   Accordion,
@@ -37,6 +38,7 @@ import {
 } from '../../../../services/reasoningCatalog';
 import {
   getModelContextCatalogStatus,
+  listProviderCatalogModels,
   MODEL_CONTEXT_CATALOG_TTL_MS,
   refreshModelContextCatalog,
   subscribeModelContextCatalogStatus,
@@ -119,7 +121,9 @@ const parseContextWindowInput = (value: string): number | null => {
 };
 
 export const ModelsSettings: React.FC = () => {
+  const manualModelMenuId = useId();
   const { t } = useTranslation();
+  const dialogContext = useContext(DialogContext);
   const setSettingsTab = useAppStore((state) => state.setSettingsTab);
   const { matches, query } = useSettingsSearch();
   const {
@@ -156,6 +160,10 @@ export const ModelsSettings: React.FC = () => {
   } | null>(null);
   const [manualModelId, setManualModelId] = useState('');
   const [manualModelName, setManualModelName] = useState('');
+  const [catalogSuggestionsOpen, setCatalogSuggestionsOpen] = useState(false);
+  const [catalogSuggestionIndex, setCatalogSuggestionIndex] = useState(-1);
+  const suggestedNameRef = useRef<string | null>(null);
+  const catalogSuggestionsId = useId();
   const [manualReasoningConfigurable, setManualReasoningConfigurable] = useState(false);
   const [manualReasoningEfforts, setManualReasoningEfforts] = useState<ReasoningEffort[]>([]);
   const [manualDefaultReasoningEffort, setManualDefaultReasoningEffort] =
@@ -373,10 +381,52 @@ export const ModelsSettings: React.FC = () => {
     saveCommitModelConfig(normalizedMetadataModelConfig);
   }, [normalizedMetadataModelConfig, saveCommitModelConfig, metadataModelConfig]);
 
+  const manualProvider = providerConfigs.find((provider) => provider.id === manualModelEditor?.providerId);
+  const providerCatalogModels = useMemo(() => manualProvider && !manualModelEditor?.originalModelId
+    ? listProviderCatalogModels({
+        providerType: manualProvider.providerType,
+        providerId: manualProvider.id,
+        baseUrl: manualProvider.baseUrl,
+      })
+    : [],
+    // A catalog synchronization replaces the service snapshot without changing the provider.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [manualProvider, manualModelEditor?.originalModelId, catalogStatus]);
+  const catalogQuery = manualModelId.trim().toLowerCase();
+  const catalogSuggestions = providerCatalogModels.filter((model) =>
+    model.id.toLowerCase().includes(catalogQuery) || model.name.toLowerCase().includes(catalogQuery)
+  ).slice(0, 8);
+  const showCatalogSuggestions = catalogSuggestionsOpen && catalogSuggestions.length > 0;
+  const activeCatalogSuggestion = showCatalogSuggestions ? catalogSuggestions[catalogSuggestionIndex] : undefined;
+  useEffect(() => {
+    if (!showCatalogSuggestions || !dialogContext) return;
+    return dialogContext.registerEscapeHandler(() => {
+      setCatalogSuggestionsOpen(false);
+      setCatalogSuggestionIndex(-1);
+    });
+  }, [showCatalogSuggestions, dialogContext]);
+  useEffect(() => {
+    if (!activeCatalogSuggestion) return;
+    document.getElementById(`${catalogSuggestionsId}-${catalogSuggestionIndex}`)
+      ?.scrollIntoView?.({ block: 'nearest' });
+  }, [activeCatalogSuggestion, catalogSuggestionIndex, catalogSuggestionsId]);
+  const selectCatalogSuggestion = (model: typeof catalogSuggestions[number]) => {
+    setManualModelId(model.id);
+    if (!manualModelName.trim() || manualModelName === suggestedNameRef.current) {
+      setManualModelName(model.name);
+      suggestedNameRef.current = model.name;
+    }
+    setCatalogSuggestionsOpen(false);
+    setCatalogSuggestionIndex(-1);
+  };
+
   const closeManualModelEditor = () => {
     setManualModelEditor(null);
     setManualModelId('');
     setManualModelName('');
+    suggestedNameRef.current = null;
+    setCatalogSuggestionsOpen(false);
+    setCatalogSuggestionIndex(-1);
     setManualReasoningConfigurable(false);
     setManualReasoningEfforts([]);
     setManualDefaultReasoningEffort(null);
@@ -392,6 +442,9 @@ export const ModelsSettings: React.FC = () => {
     setManualModelEditor({ providerId, originalModelId: null });
     setManualModelId('');
     setManualModelName('');
+    suggestedNameRef.current = null;
+    setCatalogSuggestionsOpen(false);
+    setCatalogSuggestionIndex(-1);
     setManualReasoningConfigurable(false);
     setManualReasoningEfforts([]);
     setManualDefaultReasoningEffort(null);
@@ -464,40 +517,53 @@ export const ModelsSettings: React.FC = () => {
   };
 
   useEffect(() => {
-    if (!activeManualModelActions) {
-      manualModelActionsTriggerRef.current = null;
-      return;
-    }
+    if (!activeManualModelActions || !manualModelActionsRef.current) return;
+    const menu = manualModelActionsRef.current;
+    const trigger = manualModelActionsTriggerRef.current;
+    const closeAndRestoreFocus = () => {
+      setActiveManualModelActions(null);
+      trigger?.focus({ preventScroll: true });
+    };
+    const unregisterPortal = dialogContext?.registerPortal(menu);
+    const unregisterEscape = dialogContext?.registerEscapeHandler(closeAndRestoreFocus);
+    menu.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus({ preventScroll: true });
 
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (manualModelActionsRef.current?.contains(target)) return;
-      if (manualModelActionsTriggerRef.current?.contains(target)) return;
+      if (menu.contains(target) || trigger?.contains(target)) return;
       setActiveManualModelActions(null);
     };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+    const handleFocusIn = (event: FocusEvent) => {
+      if (!menu.contains(event.target as Node) && event.target !== trigger) {
         setActiveManualModelActions(null);
       }
     };
-
-    const handleViewportChange = () => {
-      setActiveManualModelActions(null);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !dialogContext) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeAndRestoreFocus();
+      }
     };
-
     document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('focusin', handleFocusIn);
     window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('resize', handleViewportChange);
-    window.addEventListener('scroll', handleViewportChange, true);
+    window.addEventListener('resize', closeAndRestoreFocus);
+    window.addEventListener('scroll', closeAndRestoreFocus, true);
 
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('focusin', handleFocusIn);
       window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('resize', handleViewportChange);
-      window.removeEventListener('scroll', handleViewportChange, true);
+      window.removeEventListener('resize', closeAndRestoreFocus);
+      window.removeEventListener('scroll', closeAndRestoreFocus, true);
+      unregisterEscape?.();
+      unregisterPortal?.();
+      if (menu.contains(document.activeElement) || document.activeElement === document.body) {
+        trigger?.focus({ preventScroll: true });
+      }
     };
-  }, [activeManualModelActions]);
+  }, [activeManualModelActions, dialogContext]);
 
   if (providers.length === 0) {
     return (
@@ -573,8 +639,8 @@ export const ModelsSettings: React.FC = () => {
           </div>
 
           {activeMetadataModelConfig?.mode === 'dedicated' && (
-            <div className="grid gap-3 md:grid-cols-3">
-              <label className="space-y-1.5">
+            <div className="grid min-w-0 gap-3 xl:grid-cols-3">
+              <label className="min-w-0 space-y-1.5">
                 <span className="text-xs font-medium text-muted-foreground">
                   {t('settings.providers', 'AI Providers')}
                 </span>
@@ -601,7 +667,7 @@ export const ModelsSettings: React.FC = () => {
                   ))}
                 </select>
               </label>
-              <label className="space-y-1.5">
+              <label className="min-w-0 space-y-1.5">
                 <span className="text-xs font-medium text-muted-foreground">
                   {t('chat.selectModel', 'Select a model')}
                 </span>
@@ -667,6 +733,7 @@ export const ModelsSettings: React.FC = () => {
       </section>
 
       <SettingsCollectionHeader
+        wrapActions
         title={t('models.collectionTitle', 'Models')}
         description={t('models.collectionDescription', 'Manage models by provider')}
         searchPlaceholder={t('models.searchPlaceholder', 'Search models...')}
@@ -730,8 +797,8 @@ export const ModelsSettings: React.FC = () => {
               className="bg-card border border-border rounded-xl px-4 overflow-hidden"
             >
               <AccordionTrigger className="hover:no-underline py-4">
-                <div className="flex items-center justify-between w-full pr-4">
-                  <div className="flex items-center gap-3">
+                <div className="flex min-w-0 items-center justify-between w-full pr-4">
+                  <div className="flex min-w-0 items-center gap-3">
                     <div
                       className={cn(
                         'w-8 h-8 rounded-md flex items-center justify-center',
@@ -742,8 +809,8 @@ export const ModelsSettings: React.FC = () => {
                     >
                       <Icon name="cpu" size={16} />
                     </div>
-                    <div className="text-left">
-                      <div className="font-medium text-sm flex items-center gap-2">
+                    <div className="min-w-0 break-words text-left">
+                      <div className="font-medium text-sm flex flex-wrap items-center gap-2">
                         {provider.name}
                         {!provider.isEnabled && (
                           <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground">
@@ -764,7 +831,7 @@ export const ModelsSettings: React.FC = () => {
 
               <AccordionContent className="pt-0 pb-4">
                 <div className="border-t border-border pt-4">
-                  <div className="flex items-center justify-between mb-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
                     <div className="flex flex-wrap items-center gap-2">
                       <Button
                         variant="secondary"
@@ -797,7 +864,7 @@ export const ModelsSettings: React.FC = () => {
                       )}
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <Button
                         variant="secondary"
                         size="sm"
@@ -866,9 +933,9 @@ export const ModelsSettings: React.FC = () => {
                     {filteredModels.map((model) => (
                       <div
                         key={model.id}
-                        className="flex items-center justify-between gap-3 p-3 rounded-md border border-border/60 bg-muted/20 hover:bg-muted/40 transition-colors"
+                        className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-md border border-border/60 bg-muted/20 hover:bg-muted/40 transition-colors"
                       >
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1 basis-48">
                           <div className="flex items-center gap-2">
                             <span className="truncate text-sm font-medium text-foreground">
                               {model.name || model.id}
@@ -884,7 +951,7 @@ export const ModelsSettings: React.FC = () => {
                               </span>
                             )}
                           </div>
-                          <div className="text-xs text-muted-foreground mt-0.5 font-mono">
+                          <div className="break-all text-xs text-muted-foreground mt-0.5 font-mono">
                             {model.id}
                           </div>
                           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -913,7 +980,7 @@ export const ModelsSettings: React.FC = () => {
                             </button>
                           </div>
                         </div>
-                        <div className="flex shrink-0 items-center gap-1.5">
+                        <div className="flex flex-wrap shrink-0 items-center gap-1.5">
                           <Switch
                             checked={model.isEnabled !== false}
                             aria-label={t('common.enable', 'Enable')}
@@ -957,6 +1024,10 @@ export const ModelsSettings: React.FC = () => {
                                   : 'border-border/70 bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground'
                               )}
                               title={t('models.manualModelActions', 'Model actions')}
+                              aria-label={t('models.manualModelActions', 'Model actions')}
+                              aria-haspopup="menu"
+                              aria-expanded={activeManualModelActions?.providerId === provider.id && activeManualModelActions?.modelId === model.id}
+                              aria-controls={activeManualModelActions?.providerId === provider.id && activeManualModelActions?.modelId === model.id ? manualModelMenuId : undefined}
                               onClick={(event) => {
                                 event.preventDefault();
                                 event.stopPropagation();
@@ -1017,7 +1088,20 @@ export const ModelsSettings: React.FC = () => {
         createPortal(
           <div
             ref={manualModelActionsRef}
+            id={manualModelMenuId}
             role="menu"
+            onKeyDown={(event) => {
+              const actions = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+              const index = actions.indexOf(document.activeElement as HTMLButtonElement);
+              let next: number;
+              if (event.key === 'ArrowDown') next = (index + 1) % actions.length;
+              else if (event.key === 'ArrowUp') next = (index - 1 + actions.length) % actions.length;
+              else if (event.key === 'Home') next = 0;
+              else if (event.key === 'End') next = actions.length - 1;
+              else return;
+              event.preventDefault();
+              actions[next]?.focus({ preventScroll: true });
+            }}
             aria-label={t('models.manualModelActions', 'Model actions')}
             style={{
               position: 'fixed',
@@ -1082,13 +1166,70 @@ export const ModelsSettings: React.FC = () => {
 
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
               <div className="space-y-1.5">
-                <label className="text-sm font-medium">{t('models.modelId', 'Model ID')}</label>
+                <label htmlFor={`${catalogSuggestionsId}-input`} className="text-sm font-medium">{t('models.modelId', 'Model ID')}</label>
                 <Input
+                  id={`${catalogSuggestionsId}-input`}
                   value={manualModelId}
-                  onChange={(event) => setManualModelId(event.target.value)}
+                  role={!isEditingManualModel ? 'combobox' : undefined}
+                  aria-autocomplete={!isEditingManualModel ? 'list' : undefined}
+                  aria-expanded={!isEditingManualModel ? showCatalogSuggestions : undefined}
+                  aria-controls={showCatalogSuggestions ? catalogSuggestionsId : undefined}
+                  aria-activedescendant={activeCatalogSuggestion
+                    ? `${catalogSuggestionsId}-${catalogSuggestionIndex}` : undefined}
+                  autoComplete="off"
+                  onFocus={() => setCatalogSuggestionsOpen(true)}
+                  onBlur={() => setCatalogSuggestionsOpen(false)}
+                  onChange={(event) => {
+                    setManualModelId(event.target.value);
+                    if (suggestedNameRef.current !== null) {
+                      setManualModelName('');
+                      suggestedNameRef.current = null;
+                    }
+                    setCatalogSuggestionsOpen(true);
+                    setCatalogSuggestionIndex(-1);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      event.preventDefault();
+                      setCatalogSuggestionsOpen(false);
+                      setCatalogSuggestionIndex(-1);
+                    } else if (catalogSuggestions.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+                      event.preventDefault();
+                      setCatalogSuggestionsOpen(true);
+                      setCatalogSuggestionIndex((index) => event.key === 'ArrowDown'
+                        ? (index + 1) % catalogSuggestions.length
+                        : (index <= 0 ? catalogSuggestions.length : index) - 1);
+                    } else if (event.key === 'Enter' && activeCatalogSuggestion) {
+                      event.preventDefault();
+                      selectCatalogSuggestion(activeCatalogSuggestion);
+                    }
+                  }}
                   placeholder={t('models.modelIdPlaceholder', 'e.g. gpt-4o-mini')}
                   className="font-mono text-sm"
                 />
+                {showCatalogSuggestions && (
+                  <div id={catalogSuggestionsId} role="listbox"
+                    aria-label={t('models.catalogSuggestions', 'Catalog suggestions')}
+                    className="max-h-48 overflow-y-auto rounded-lg border border-border bg-card">
+                    {catalogSuggestions.map((model, index) => (
+                      <button key={model.id} id={`${catalogSuggestionsId}-${index}`} type="button"
+                        role="option" aria-selected={index === catalogSuggestionIndex}
+                        tabIndex={-1}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => selectCatalogSuggestion(model)}
+                        className={cn('block w-full px-3 py-2 text-left text-sm hover:bg-accent',
+                          index === catalogSuggestionIndex && 'bg-accent')}>
+                        <span className="block truncate">{model.name}</span>
+                        <span className="block truncate font-mono text-xs text-muted-foreground">{model.id}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {!isEditingManualModel && (
+                  <p className="text-xs text-muted-foreground">
+                    {t('models.catalogSuggestionsHint', 'Search the provider catalog by ID or name, or enter any model ID.')}
+                  </p>
+                )}
               </div>
 
               <div className="space-y-1.5">
@@ -1100,7 +1241,10 @@ export const ModelsSettings: React.FC = () => {
                 </label>
                 <Input
                   value={manualModelName}
-                  onChange={(event) => setManualModelName(event.target.value)}
+                  onChange={(event) => {
+                    setManualModelName(event.target.value);
+                    suggestedNameRef.current = null;
+                  }}
                   placeholder={t('models.displayNamePlaceholder', 'e.g. GPT-4o Mini')}
                 />
               </div>

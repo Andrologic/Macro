@@ -1,0 +1,105 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "demo-incident",
+  "title": "Diagnostic d’incident",
+  "agents": {
+    "triage": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Délimiter la période, les utilisateurs concernés et les symptômes observés."
+    },
+    "investigate": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Comparer les traces avec les métriques. Présenter une hypothèse vérifiable, sans la confondre avec un fait."
+    },
+    "verify": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier l’hypothèse contre les traces. Répondre Confirmée uniquement avec une preuve."
+    },
+    "conclude": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Résumer la cause, l’impact et les mesures de prévention."
+    },
+    "scene-main-collect": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Collecter les métriques"
+    },
+    "scene-main-metrics": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Préparer les métriques"
+    },
+    "scene-main-handoff": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre l’hypothèse"
+    },
+    "scene-main-confirmed": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Hypothèse confirmée ?"
+    }
+  },
+  "flow": {
+    "entry": "triage",
+    "steps": {
+      "triage": {
+        "type": "agent",
+        "agent": "triage",
+        "title": "Qualifier l’incident",
+        "next": "collect"
+      },
+      "collect": {
+        "type": "agent",
+        "agent": "scene-main-collect",
+        "title": "Collecter les métriques",
+        "next": "metrics"
+      },
+      "metrics": {
+        "type": "agent",
+        "agent": "scene-main-metrics",
+        "title": "Préparer les métriques",
+        "next": "refocus"
+      },
+      "refocus": {
+        "type": "agent",
+        "agent": "investigate",
+        "title": "Recentrer l’analyse",
+        "next": "investigate"
+      },
+      "investigate": {
+        "type": "agent",
+        "agent": "investigate",
+        "title": "Examiner les traces",
+        "next": "handoff"
+      },
+      "handoff": {
+        "type": "agent",
+        "agent": "scene-main-handoff",
+        "title": "Transmettre l’hypothèse",
+        "next": "verify"
+      },
+      "verify": {
+        "type": "agent",
+        "agent": "verify",
+        "title": "Tester l’hypothèse",
+        "next": "confirmed"
+      },
+      "confirmed": {
+        "type": "agent",
+        "agent": "scene-main-confirmed",
+        "title": "Hypothèse confirmée ?",
+        "next": "conclude"
+      },
+      "conclude": {
+        "type": "agent",
+        "agent": "conclude",
+        "title": "Rédiger le post-mortem"
+      }
+    }
+  }
+}

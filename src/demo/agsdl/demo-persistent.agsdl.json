@@ -1,0 +1,100 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "demo-persistent",
+  "title": "Rédaction supervisée avec validation éditoriale et révision du même agent",
+  "agents": {
+    "writer": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Rédiger le dossier en conservant les décisions éditoriales entre les messages. Intégrer les consignes reçues pendant la rédaction."
+    },
+    "observer": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier l’angle et les sources. Transmettre une consigne courte au rédacteur si le dossier s’éloigne de la demande."
+    },
+    "reviewer": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Comparer le dossier au brief. Répondre Prêt lorsque les critères sont satisfaits, sinon formuler une demande de révision."
+    },
+    "scene-main-start": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Lancer la rédaction supervisée"
+    },
+    "scene-main-advice": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Préparer une consigne"
+    },
+    "scene-main-ready": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Dossier prêt ?"
+    },
+    "scene-main-finish": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Conserver le dossier"
+    }
+  },
+  "flow": {
+    "entry": "start",
+    "steps": {
+      "start": {
+        "type": "agent",
+        "agent": "scene-main-start",
+        "title": "Lancer la rédaction supervisée",
+        "next": "write"
+      },
+      "write": {
+        "type": "agent",
+        "agent": "writer",
+        "title": "Rédiger un dossier technique étayé sans perdre les consignes reçues en cours de travail",
+        "next": "observe"
+      },
+      "observe": {
+        "type": "agent",
+        "agent": "observer",
+        "title": "Observer le travail",
+        "next": "advice"
+      },
+      "advice": {
+        "type": "agent",
+        "agent": "scene-main-advice",
+        "title": "Préparer une consigne",
+        "next": "steer"
+      },
+      "steer": {
+        "type": "agent",
+        "agent": "writer",
+        "title": "Réorienter le rédacteur",
+        "next": "review"
+      },
+      "review": {
+        "type": "agent",
+        "agent": "reviewer",
+        "title": "Relire le dossier",
+        "next": "ready"
+      },
+      "ready": {
+        "type": "agent",
+        "agent": "scene-main-ready",
+        "title": "Dossier prêt ?",
+        "next": "revise"
+      },
+      "revise": {
+        "type": "agent",
+        "agent": "writer",
+        "title": "Reprendre avec le même agent",
+        "next": "finish"
+      },
+      "finish": {
+        "type": "agent",
+        "agent": "scene-main-finish",
+        "title": "Conserver le dossier"
+      }
+    }
+  }
+}

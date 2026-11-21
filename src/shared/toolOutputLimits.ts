@@ -93,12 +93,13 @@ export interface TextBytePage {
 }
 
 const CURSOR_VERSION = "v1";
-const FNV_OFFSET_BASIS = 0xcbf29ce484222325n;
-const FNV_PRIME = 0x100000001b3n;
-const FNV_MASK = 0xffffffffffffffffn;
+const FNV_OFFSET_HIGH = 0xcbf29ce4;
+const FNV_OFFSET_LOW = 0x84222325;
+const FNV_PRIME_LOW = 0x1b3;
+const UINT32_BASE = 0x1_0000_0000;
 
 const utf8Encoder = new TextEncoder();
-const utf8Decoder = new TextDecoder();
+const utf8Decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 
 const isUtf8ContinuationByte = (byte: number | undefined): boolean =>
   typeof byte === "number" && (byte & 0xc0) === 0x80;
@@ -210,12 +211,16 @@ export const compareToolPaths = (left: string, right: string): number => {
 };
 
 const fingerprintScope = (scope: string): string => {
-  let hash = FNV_OFFSET_BASIS;
+  let high = FNV_OFFSET_HIGH, low = FNV_OFFSET_LOW;
   for (const byte of utf8Encoder.encode(scope)) {
-    hash ^= BigInt(byte);
-    hash = (hash * FNV_PRIME) & FNV_MASK;
+    low = (low ^ byte) >>> 0;
+    // FNV prime = 2^40 + 0x1b3. Carry the low product into the high word;
+    // every intermediate is below 2^42, so Number arithmetic stays exact.
+    const product = low * FNV_PRIME_LOW;
+    high = (high * FNV_PRIME_LOW + Math.floor(product / UINT32_BASE) + low * 0x100) >>> 0;
+    low = product >>> 0;
   }
-  return hash.toString(16).padStart(16, "0");
+  return high.toString(16).padStart(8, "0") + low.toString(16).padStart(8, "0");
 };
 
 export const createToolCursor = (scope: string, offset: number): string =>

@@ -555,11 +555,28 @@ export async function workspaceFinalizeManualFeature(params: {
   );
 }
 
+type PilotManualTaskMutation =
+  | { action: 'rename'; title: string }
+  | { action: 'archive'; reason: string | null; mergedAt: string | null }
+  | { action: 'delete'; draftOnly: boolean }
+  | { action: 'bind_checkpoint'; projectId: string; checkpointId: string };
+
+async function workspacePilotMutateManualTask(
+  taskId: string,
+  mutation: PilotManualTaskMutation,
+): Promise<WorkspaceManualFeatureDto | null> {
+  const result = await invoke<WorkspaceManualFeatureDto | null>('workspace_pilot_mutate_manual_task', { taskId, mutation });
+  if (mutation.action !== 'delete' && !result) throw new Error('content_unavailable');
+  return result;
+}
+
 export async function workspaceBindManualFeatureDirectCheckpoint(params: {
   taskId: string;
   projectId: string;
   checkpointId: string;
+  pilotOnly?: boolean;
 }): Promise<WorkspaceManualFeatureDto> {
+  if (params.pilotOnly) return (await workspacePilotMutateManualTask(params.taskId, { action: 'bind_checkpoint', projectId: params.projectId, checkpointId: params.checkpointId }))!;
   return invoke<WorkspaceManualFeatureDto>(
     'workspace_bind_manual_feature_direct_checkpoint',
     params,
@@ -585,11 +602,18 @@ export async function workspaceRevertManualFeatureToDraft(params: {
   );
 }
 
-export async function workspaceDeleteManualFeatureDraft(params: {
-  taskId: string;
-  taskLifecycleLeaseId?: string | null;
-}): Promise<boolean> {
-  return invoke<boolean>("workspace_delete_manual_feature_draft", {
+export async function workspaceDeleteManualFeatureDraft(
+  params: { taskId: string; taskLifecycleLeaseId?: string | null } | string,
+  pilotOnly = false,
+): Promise<boolean> {
+  if (typeof params === 'string') {
+    if (pilotOnly) {
+      await workspacePilotMutateManualTask(params, { action: 'delete', draftOnly: true });
+      return true;
+    }
+    params = { taskId: params };
+  }
+  return invoke<boolean>('workspace_delete_manual_feature_draft', {
     taskId: params.taskId,
     taskLifecycleLeaseId: params.taskLifecycleLeaseId ?? null,
   });
@@ -625,7 +649,9 @@ export async function workspaceReleaseTaskLifecycleLock(leaseId: string): Promis
 export async function workspaceRenameManualFeature(params: {
   taskId: string;
   title: string;
+  pilotOnly?: boolean;
 }): Promise<WorkspaceManualFeatureDto> {
+  if (params.pilotOnly) return (await workspacePilotMutateManualTask(params.taskId, { action: 'rename', title: params.title }))!;
   return invoke<WorkspaceManualFeatureDto>("workspace_rename_manual_feature", {
     taskId: params.taskId,
     title: params.title,
@@ -636,7 +662,9 @@ export async function workspaceArchiveManualFeature(params: {
   taskId: string;
   reason?: string | null;
   mergedAt?: string | null;
+  pilotOnly?: boolean;
 }): Promise<WorkspaceManualFeatureDto> {
+  if (params.pilotOnly) return (await workspacePilotMutateManualTask(params.taskId, { action: 'archive', reason: params.reason ?? null, mergedAt: params.mergedAt ?? null }))!;
   return invoke<WorkspaceManualFeatureDto>("workspace_archive_manual_feature", {
     taskId: params.taskId,
     reason: params.reason ?? null,
@@ -652,11 +680,18 @@ export async function workspaceRestoreManualFeature(
   });
 }
 
-export async function workspaceDeleteManualFeature(params: {
-  taskId: string;
-  taskLifecycleLeaseId?: string | null;
-}): Promise<void> {
-  return invoke("workspace_delete_manual_feature", {
+export async function workspaceDeleteManualFeature(
+  params: { taskId: string; taskLifecycleLeaseId?: string | null } | string,
+  pilotOnly = false,
+): Promise<void> {
+  if (typeof params === 'string') {
+    if (pilotOnly) {
+      await workspacePilotMutateManualTask(params, { action: 'delete', draftOnly: false });
+      return;
+    }
+    params = { taskId: params };
+  }
+  return invoke<void>('workspace_delete_manual_feature', {
     taskId: params.taskId,
     taskLifecycleLeaseId: params.taskLifecycleLeaseId ?? null,
   });

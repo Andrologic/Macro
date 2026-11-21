@@ -1,0 +1,10 @@
+{
+  "contract": "agsdl-0.2.0",
+  "id": "shape-wrong-contract",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  }
+}

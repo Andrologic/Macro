@@ -1,6 +1,8 @@
 # Continuous integration and release governance
 
-Macro uses two GitHub Actions workflows with deliberately different cost profiles.
+Macro uses four GitHub Actions workflows: `ci.yml`, `preview.yml`,
+`publish-update-channel.yml`, and `release.yml`. They validate changes, build
+previews, publish update-channel manifests, and prepare stable releases.
 
 ## Local validation gate
 
@@ -20,13 +22,15 @@ request workflow:
 | --- | --- |
 | Every push | Whitespace errors in the pushed range, version manifests, and tracked-binary policy |
 | JavaScript or TypeScript | ESLint on changed files plus changed, sibling, and direct-relative-importing test files |
+| Frontend, extracted native modules, architecture tooling, `package.json`, or `vite.config.ts` | Import-boundary check with `architecture:check` |
+| Copilot bridge, shared tools, generated IPC types, Copilot fixtures, Bun manifests, or CI scripts | `typecheck:copilot` |
 | Rust | `cargo fmt --check` when an existing Rust source changes |
 | Workflows or CI scripts | Workflow syntax and repository Actions policy |
 | Bun manifests or lockfile | Frozen lockfile consistency, without installing packages |
 | Locales or i18n tooling | Translation audit |
 | Updater manifests or tooling | Updater configuration preflight |
 
-The hook never installs dependencies, type-checks the whole application, builds
+The hook never installs dependencies, type-checks the whole frontend, builds
 the frontend, or runs a complete frontend or Rust suite. If a selected check
 needs missing dependencies, it exits with an instruction to run `bun install`
 once. Use `bun run ci` whenever an exhaustive local rehearsal is useful. GitHub
@@ -61,7 +65,7 @@ release environment.
 
 ## Pull request and branch CI
 
-The ordinary `CI` workflow runs for pull requests targeting `develop` or `main`, and as a safety net for direct pushes to those two branches. Feature-branch pushes do not trigger a second push workflow. A stable concurrency key per pull request cancels obsolete runs.
+The ordinary `CI` workflow runs for pull requests targeting `main` and for pushes to `main` after merge. Feature-branch pushes do not trigger a second push workflow. A stable concurrency key per pull request cancels obsolete runs.
 
 The always-present `Classify changes` check compares pull requests from their merge base, examines both paths of renames, and also sees deleted files. For pull requests it runs the classifier stored on the trusted target revision, so proposed code cannot falsify which required jobs may be skipped. The first pull request introducing the classifier cannot trust a base copy, so it forces every validation instead. Direct branch pushes use the exact pushed range, while a newly created ref is classified conservatively. It selects the remaining checks as follows:
 
@@ -70,11 +74,17 @@ The always-present `Classify changes` check compares pull requests from their me
 | Draft pull request | `Classify changes` only |
 | Documentation or issue templates only | `Classify changes` only |
 | Frontend or shared UI code | Classification and `Linux validation` |
-| Rust, Tauri, or AI sidecar code | Classification, `Linux validation`, and `Windows native check` |
-| Workflows, manifests, lockfiles, or build scripts | All three checks, conservatively |
-| Unclassified path | All three checks, conservatively |
+| Rust, Tauri, or AI sidecar code | Classification, `Linux validation`, `Windows native check`, and `macOS native recovery smoke` |
+| Workflows, manifests, lockfiles, or build scripts | All four checks, conservatively |
+| Unclassified path | All four checks, conservatively |
 
-`Linux validation` keeps frontend checks in one runner and adds Rust checks only when native or configuration files are involved. `Windows native check` performs a focused `cargo check`; it does not duplicate frontend tests or build an installer. Ordinary CI never uses a macOS runner.
+`Linux validation` keeps frontend checks in one runner and adds Rust checks only
+when native or configuration files are involved. `Windows native check` runs the
+`windows-core` profile for native changes, adds the sidecar profile when needed,
+and uses the conservative `windows` profile for configuration changes. It also
+runs `dev/ci/native-recovery-smoke.mjs` for migration, recovery, and updater
+coverage. It does not build an installer. `macOS native recovery smoke` runs the
+same smoke script on `macos-15` for native or configuration changes.
 
 All actions are pinned to immutable commits, checkouts do not persist credentials, jobs have timeouts, and ordinary CI has read-only repository permissions. Pull requests from forks therefore receive the same validation without repository write access or release secrets.
 
@@ -91,15 +101,15 @@ branch contains JSON manifests only. Installers remain GitHub Release assets.
 
 Publishing a stable release advances five stable pointers after the owner
 publishes the draft. The stable workflow can also be relaunched manually with
-the exact published tag. The `Preview` workflow builds `develop` every night at
+the exact published tag. The `Preview` workflow builds `main` every night at
 02:17 UTC, but only after `v0.1.1` exists as a published stable release. It
-skips scheduled builds when `develop` has not changed. A manual run can publish
+skips scheduled builds when `main` has not changed. A manual run can publish
 either a nightly or an explicit `x.y.z-rc.n` release candidate.
 
 All preview assets live on the mutable `preview` tag in one GitHub prerelease
 named `Macro Preview`. Asset names include the semantic version, so an existing
 manifest always addresses the matching signed binary while a new preview is
-uploaded. The workflow moves the `preview` tag to the validated `develop`
+uploaded. The workflow moves the `preview` tag to the validated `main`
 commit and records that commit in the release notes. Stable releases still use
 immutable `v*` tags and remain eligible for GitHub's `Latest` badge.
 
@@ -124,19 +134,12 @@ Repository administrators must apply the following settings manually. Workflow f
 
 ### Branch rules
 
-For `develop`:
-
-- require a pull request and resolved conversations;
-- require `Classify changes`, `Linux validation`, and `Windows native check`;
-- require the job checks themselves (job-level `skipped` conclusions are acceptable; do not add workflow-level path filters that leave checks pending);
-- block direct pushes except, if desired, a narrowly scoped administrator break-glass account;
-- block force-pushes and deletion.
-
 For `main`:
 
-- require a pull request from a release or hotfix branch and resolved conversations;
-- require the same three checks;
-- block all direct pushes, force-pushes, and deletion.
+- require a pull request and resolved conversations;
+- require `Classify changes`, `Linux validation`, `Windows native check`, and `macOS native recovery smoke`;
+- require the job checks themselves (job-level `skipped` conclusions are acceptable);
+- block direct pushes, force-pushes, and deletion.
 
 Use GitHub rulesets or equivalent branch protection. Confirm the exact check names after the workflows have run once on an authorized pull request.
 
@@ -161,7 +164,7 @@ The build matrix declares this environment, so it waits for approval before cons
 Create an environment named `preview`, allow deployments from the default
 `main` branch, and copy the Tauri updater and Apple signing secrets used by the
 release build. GitHub starts scheduled workflows from the default branch; the
-workflow itself checks out and records the exact `develop` commit that it
+workflow itself checks out and records the exact `main` commit that it
 builds. Do not require a reviewer for scheduled nightlies. Pull request
 workflows never reference this environment. The workflow needs no personal
 access token or second repository.

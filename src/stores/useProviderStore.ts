@@ -11,13 +11,9 @@ import {
 } from '../types';
 import * as tauriIpc from '../services/tauriIpc';
 import {
-  buildCatalogModelContextLimitOverlay,
-  buildProviderModelContextLimitOverlay,
   enrichModelWithCatalogContextLimits,
-  inferProviderContextWindowTokens,
-  inferProviderInputLimitTokens,
-  inferProviderOutputLimitTokens,
   mergeProviderModelContextLimitOverlays,
+  mergeProviderModelContextLimits,
 } from '../services/providerModelContextLimits';
 import { refreshModelContextCatalog } from '../services/modelContextCatalog';
 import { findProviderConfig, loadAIConfigFile } from '../services/aiConfig';
@@ -870,8 +866,10 @@ interface ProviderStore {
     modelId: string;
     reasoningEffort: ReasoningEffort | null;
   } | null>;
+  commitCachedSelection: (selection: { providerId: string; modelId: string; reasoningEffort: ReasoningEffort | null }) => boolean;
   selectProvider: (providerId: string) => void;
   selectModel: (modelId: string) => void;
+  selectProviderModel: (providerId: string, modelId: string) => void;
   selectReasoningEffort: (effort: ReasoningEffort | null) => void;
   getAvailableReasoningEfforts: (providerId?: string | null, modelId?: string | null) => ReasoningEffort[];
   selectedSupportsReasoningEffort: () => boolean;
@@ -1407,9 +1405,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort } : {}),
         }));
-        await get().refreshLoadedModelContextCatalog(providerId, lifecycle);
-        lifecycle?.assertActive();
-        if (!isCurrent()) return get().modelsByProvider[providerId] || [];
+        // Local model restoration uses the persisted limits immediately. Refreshing
+        // the external catalogue must not hold the conversation's read lifecycle.
+        void get().refreshLoadedModelContextCatalog(providerId, lifecycle).catch((error: unknown) => {
+          if (!isCurrent()) return;
+          devLogger.warn('Failed to refresh model context catalogue', error);
+        });
 
         const { selectedProviderId, selectedModelId } = get();
         if (selectedProviderId === providerId && selectedModelId) {
@@ -1728,38 +1729,13 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               supportedReasoningEfforts: model.supported_reasoning_efforts,
               defaultReasoningEffort: model.default_reasoning_effort,
             });
-            const providerContextWindowTokens = inferProviderContextWindowTokens(model);
-            const providerInputLimitTokens = inferProviderInputLimitTokens(model);
-            const providerOutputLimitTokens = inferProviderOutputLimitTokens(model);
-            const catalogOverlay = providerContextWindowTokens
-              ? {}
-              : buildCatalogModelContextLimitOverlay({
-                  providerType: config.providerType,
-                  providerId,
-                  baseUrl: config.baseUrl,
-                  modelId: model.id,
-                });
-            const contextWindowTokens =
-              providerContextWindowTokens ??
-              catalogOverlay.contextWindowTokens ??
-              null;
-            const contextWindowSource = providerContextWindowTokens
-              ? 'provider_metadata'
-              : catalogOverlay.contextWindowSource ?? null;
-            const contextLimitsUpdatedAt =
-              contextWindowSource === 'provider_metadata'
-                ? new Date().toISOString()
-                : catalogOverlay.contextLimitsUpdatedAt ?? null;
-            const userOverrideContext =
-              existingModel?.contextWindowSource === 'user_override' &&
-              existingModel.contextWindowTokens
-                ? {
-                    contextWindowTokens: existingModel.contextWindowTokens,
-                    contextWindowSource: 'user_override' as const,
-                    contextLimitsUpdatedAt:
-                      existingModel.contextLimitsUpdatedAt ?? contextLimitsUpdatedAt,
-                  }
-                : null;
+            const contextModel = enrichModelWithCatalogContextLimits(
+              mergeProviderModelContextLimits(existingModel ?? {
+                id: model.id, name: model.name || model.id, provider_id: providerId,
+              }, model),
+              { providerType: config.providerType, providerId, baseUrl: config.baseUrl },
+              { refreshCatalogSource: true },
+            );
 
             return {
               model_id: model.id,
@@ -1772,15 +1748,15 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               reasoning_efforts: reasoningCapability.reasoningEfforts,
               default_reasoning_effort: reasoningCapability.defaultReasoningEffort,
               context_window_tokens:
-                userOverrideContext?.contextWindowTokens ?? contextWindowTokens,
+                contextModel.contextWindowTokens ?? null,
               input_limit_tokens:
-                providerInputLimitTokens ?? catalogOverlay.inputLimitTokens ?? null,
+                contextModel.inputLimitTokens ?? null,
               output_limit_tokens:
-                providerOutputLimitTokens ?? catalogOverlay.outputLimitTokens ?? null,
+                contextModel.outputLimitTokens ?? null,
               context_window_source:
-                userOverrideContext?.contextWindowSource ?? contextWindowSource,
+                contextModel.contextWindowSource ?? null,
               context_limits_updated_at:
-                userOverrideContext?.contextLimitsUpdatedAt ?? contextLimitsUpdatedAt,
+                contextModel.contextLimitsUpdatedAt ?? null,
             };
             }),
           });
@@ -1866,15 +1842,13 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           supportedReasoningEfforts: m.supported_reasoning_efforts,
           defaultReasoningEffort: m.default_reasoning_effort,
         });
-        const providerOverlay = buildProviderModelContextLimitOverlay(m);
-        const catalogOverlay = providerOverlay.contextWindowTokens
-          ? {}
-          : buildCatalogModelContextLimitOverlay({
-              providerType: config.providerType,
-              providerId,
-              baseUrl: config.baseUrl,
-              modelId: m.id,
-            });
+        const contextModel = enrichModelWithCatalogContextLimits(
+          mergeProviderModelContextLimits(existingModel ?? {
+            id: m.id, name: m.name || m.id, provider_id: providerId,
+          }, m),
+          { providerType: config.providerType, providerId, baseUrl: config.baseUrl },
+          { refreshCatalogSource: true },
+        );
         const normalized = {
           id: m.id,
           name: m.name || m.id,
@@ -1891,16 +1865,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           },
           isEnabled: true,
           nativeToolCalling: supportsNativeToolCallingForProviderType(config.providerType),
-          ...catalogOverlay,
-          ...providerOverlay,
-          ...(existingModel?.contextWindowSource === 'user_override' &&
-          existingModel.contextWindowTokens
-            ? {
-                contextWindowTokens: existingModel.contextWindowTokens,
-                contextWindowSource: existingModel.contextWindowSource,
-                contextLimitsUpdatedAt: existingModel.contextLimitsUpdatedAt,
-              }
-            : {}),
+          contextWindowTokens: contextModel.contextWindowTokens,
+          inputLimitTokens: contextModel.inputLimitTokens,
+          outputLimitTokens: contextModel.outputLimitTokens,
+          contextWindowSource: contextModel.contextWindowSource,
+          contextLimitsUpdatedAt: contextModel.contextLimitsUpdatedAt,
         } satisfies AIModel;
         return { ...normalized, isFree: computeIsFreeModel(normalized) };
       });
@@ -2276,16 +2245,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       contextLimitsUpdatedAt: _contextLimitsUpdatedAt,
       ...modelWithoutLearnedLimit
     } = currentModel;
-    const catalogOverlay = buildCatalogModelContextLimitOverlay({
+    const nextModel = enrichModelWithCatalogContextLimits(modelWithoutLearnedLimit, {
       providerType: providerConfig?.providerType,
       providerId,
       baseUrl: providerConfig?.baseUrl,
-      modelId,
     });
-    const nextModel: AIModel = {
-      ...modelWithoutLearnedLimit,
-      ...catalogOverlay,
-    };
 
     if (tauriIpc.isTauriAvailable()) {
       const persisted = await persistProviderModelsIfCurrent(providerId, [
@@ -2728,14 +2692,23 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       selectedModelId: resolvedModelId,
       selectedReasoningEffort,
     });
-    if (lifecycle) { await get().refreshModelsForProviderIfNeeded(providerId, 'boot', lifecycle); lifecycle?.assertActive(); }
-    else void get().refreshModelsForProviderIfNeeded(providerId, 'boot');
+    // Restoring a known selection must not wait for a network rescan.
+    // Missing models were loaded above; catalogue maintenance has its own refresh paths.
 
     return {
       providerId,
       modelId: resolvedModelId,
       reasoningEffort: selectedReasoningEffort,
     };
+  },
+
+  commitCachedSelection: (selection) => {
+    const state = get();
+    const provider = state.providerConfigs.find(item => item.id === selection.providerId);
+    const model = state.modelsByProvider[selection.providerId]?.find(item => item.id === selection.modelId && item.isEnabled !== false);
+    if (!provider || !providerHasCredentials(provider) || !model || selection.reasoningEffort !== null && !state.getAvailableReasoningEfforts(selection.providerId, selection.modelId).includes(selection.reasoningEffort)) return false;
+    set({ selectedProviderId: selection.providerId, selectedModelId: selection.modelId, selectedReasoningEffort: selection.reasoningEffort });
+    return true;
   },
 
   selectProvider: (providerId: string) => {
@@ -2776,6 +2749,28 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         'model_selection',
       );
     }
+  },
+
+  selectProviderModel: (providerId: string, modelId: string) => {
+    const state = get();
+    const provider = state.providerConfigs.find((entry) => entry.id === providerId);
+    const model = (state.modelsByProvider[providerId] ?? [])
+      .find((entry) => entry.id === modelId && entry.isEnabled !== false);
+    if (!provider || !providerHasCredentials(provider) || !model) return;
+
+    set({
+      selectedProviderId: providerId,
+      selectedModelId: modelId,
+      selectedReasoningEffort: resolveSelectedReasoningEffort({
+        providerId,
+        modelId,
+        modelsByProvider: state.modelsByProvider,
+        unsupported: state.reasoningUnsupportedModelKeys,
+        requested: state.selectedProviderId === providerId ? state.selectedReasoningEffort : null,
+      }),
+    });
+    void get().refreshModelsForProviderIfNeeded(providerId, 'provider_selection');
+    void get().ensureSelectedModelContextMetadata(providerId, modelId, 'model_selection');
   },
 
   selectReasoningEffort: (effort: ReasoningEffort | null) => {

@@ -1,3 +1,4 @@
+import { clearConflictAssistantContext, registerConflictAssistantContext, type VerifiedConflictAssistantContext } from '../../../services/conflictAssistantContext';
 import { expect, it } from 'bun:test';
 import { act, type ReactElement } from 'react';
 import type { Root } from 'react-dom/client';
@@ -32,6 +33,60 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
     requireRoot,
     setComposerText,
   } = context;
+
+
+  const prepareConflict = (kind: 'code' | 'metadata'): VerifiedConflictAssistantContext => {
+    context.appState = { ...context.appState, mode: 'Implement', selectedTaskId: null, selectedProjectId: 'project-1' };
+    context.chatState = { ...context.chatState,
+      conversations: [{ id: 'conflict-ui', title: 'Conflict inspection', scope_mode: 'Implement', task_id: null, project_id: 'project-1', group_id: 'group-1' }],
+      selectedConversationId: 'conflict-ui', messages: [],
+    };
+    const verified = { conversationId: 'conflict-ui', projectId: 'project-1', groupId: 'group-1', kind,
+      repositories: [{ projectId: 'project-1', projectPath: '/tmp/api', repoPath: kind === 'metadata' ? '/tmp/metadata' : '/tmp/api',
+        branch: kind === 'metadata' ? '@macro' : 'feature/api', head: 'abc', conflictFiles: ['src/api.ts'], mergeInProgress: true }],
+    };
+    registerConflictAssistantContext(verified);
+    return verified;
+  };
+  for (const kind of ['code', 'metadata'] as const) it(`allows the verified ${kind} inspection composer without selecting a task`, async () => {
+    prepareConflict(kind);
+    try {
+      await act(async () => { requireRoot().render(renderChatZone()); });
+      const composer = await setComposerText('Inspect this conflict');
+      expect(composer.disabled).toBe(false);
+      expect(requireContainer().querySelector('[data-testid="conflict-assistant-context"]')?.textContent).toContain('Read-only conflict inspection');
+      expect(requireContainer().querySelector('[data-testid="conflict-assistant-context"]')?.textContent).toContain(kind === 'metadata' ? '@macro' : 'feature/api');
+      const send = requireContainer().querySelector('span[data-icon="arrow-up"]')?.closest('button');
+      expect(send).not.toBeNull();
+      await act(async () => { send?.click(); });
+      expect(context.chatState.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'conflict-ui', taskId: null, internalAgentProfile: 'repo_auditor' }));
+    } finally { clearConflictAssistantContext('conflict-ui'); }
+  });
+
+  it('disables a conflict composer after a foreign task, project or group is selected', async () => {
+    prepareConflict('code');
+    try {
+      await act(async () => { requireRoot().render(renderChatZone()); });
+      const composer = await setComposerText('Inspect');
+      expect(composer.disabled).toBe(false);
+      for (const patch of [{ selectedTaskId: 'foreign' }, { selectedProjectId: 'foreign' }, { selectedGroupId: 'foreign' }]) {
+        await act(async () => {
+          context.appState = { ...context.appState, selectedTaskId: null, selectedProjectId: 'project-1', selectedGroupId: 'group-1', ...patch };
+          context.emitAppStore();
+        });
+        expect(composer.disabled).toBe(true);
+      }
+      expect(context.chatState.sendMessage).not.toHaveBeenCalled();
+    } finally { clearConflictAssistantContext('conflict-ui'); }
+  });
+
+  it('keeps an Implement conversation without a verified conflict context disabled', async () => {
+    prepareConflict('code'); clearConflictAssistantContext('conflict-ui');
+    await act(async () => { requireRoot().render(renderChatZone()); });
+    const composer = await setComposerText('Inspect');
+    expect(composer.disabled).toBe(true);
+    expect(context.chatState.sendMessage).not.toHaveBeenCalled();
+  });
 
   it('shows the selected task plan, project, and branch in the Implement header', async () => {
     context.appState = {
@@ -71,6 +126,32 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
     expect(taskContext?.getAttribute('title')).toBe(
       'Plan: Macro 0.1.4 • Project: API • Branch: feature/active-context'
     );
+  });
+
+  it('opens the active task workflow from the header icon without changing the task', async () => {
+    context.appState = { ...context.appState, mode: 'Implement', selectedTaskId: 'workflow-task' };
+    context.taskState = { ...context.taskState, tasks: [{
+      id: 'workflow-task', title: 'Review the dossier', task_source: 'architect',
+      status: 'Pending', project_ids: ['project-1'], project_id: 'project-1',
+      dependencies: [], estimated_changes: [], description: '',
+    }] };
+    await act(async () => { requireRoot().render(renderChatZone()); });
+    const icon = requireContainer().querySelector<HTMLButtonElement>(
+      '[data-chat-conversation-header] button[aria-label="View workflow"]'
+    );
+    expect(icon).not.toBeNull();
+    await act(async () => { icon!.click(); await import('../../tasks/TaskExecutionGraphDialog'); });
+    const dialog = requireContainer().querySelector('[role="dialog"][data-task-id="workflow-task"]');
+    expect(dialog?.textContent).toContain('Review the dossier');
+    expect(context.appState.selectedTaskId).toBe('workflow-task');
+    expect(context.appState.mode).toBe('Implement');
+    await clickButtonWithText('Close workflow');
+    expect(requireContainer().querySelector('[role="dialog"][data-task-id]')).toBeNull();
+    await act(async () => {
+      context.appState = { ...context.appState, selectedTaskId: null };
+      context.emitAppStore();
+    });
+    expect(requireContainer().querySelector('button[aria-label="View workflow"]')).toBeNull();
   });
 
   it('omits unavailable task context fields and hides the row without an active task', async () => {
@@ -614,6 +695,7 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
 
     expect(context.taskState.startTask).toHaveBeenCalledWith('task-1');
     expect(context.chatState.sendMessage).toHaveBeenCalledWith({
+      images: [], contextRefs: [],
       conversationId: 'conv-1',
       content: expect.stringContaining('DEVELOPER NOTES\nNeed to reuse checkout components.'),
       taskId: 'task-1',
@@ -659,6 +741,7 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
 
     expect(context.taskState.startTask).toHaveBeenCalledWith('task-1');
     expect(context.chatState.sendMessage).toHaveBeenCalledWith({
+      images: [], contextRefs: [],
       conversationId: 'conv-1',
       content: expect.stringContaining(
         'DEVELOPER NOTES\nShip the checkout flow end to end',
@@ -727,6 +810,7 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
 
     expect(context.taskState.startTask).toHaveBeenCalledWith('task-1');
     expect(context.chatState.sendMessage).toHaveBeenCalledWith({
+      images: [], contextRefs: [],
       conversationId: 'conv-1',
       content: expect.stringContaining('DEVELOPER NOTES\nFocus on a minimal diff.'),
       taskId: 'task-1',
@@ -863,10 +947,11 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
     });
 
     expect(context.chatState.sendMessage).toHaveBeenCalledWith({
+      images: [], contextRefs: [],
       conversationId: 'conv-1',
       content: 'Implement the standalone feature directly.',
+      hiddenContext: undefined, onUserMessagePublished: expect.any(Function),
       taskId: 'task-1',
-      images: [],
     });
     expect(context.taskState.startTask).not.toHaveBeenCalled();
   });

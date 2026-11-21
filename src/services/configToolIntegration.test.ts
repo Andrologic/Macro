@@ -132,7 +132,7 @@ describe('configToolIntegration', () => {
         { op: 'add', path: '/providers/new/token', value: null },
       ],
       source: 'agent',
-    });
+    }, undefined);
     expect(result).toBe(JSON.stringify({ marker: 'patch' }, null, 2));
   });
 

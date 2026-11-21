@@ -1527,7 +1527,7 @@ mod tests {
             });
             state.watch_project_root("shared", &root).unwrap();
             {
-                let locked = state.state.lock().unwrap();
+                let mut locked = state.state.lock().unwrap();
                 assert!(!Arc::ptr_eq(
                     &locked.backend_errors,
                     &locked.global_backend_errors
@@ -1535,11 +1535,13 @@ mod tests {
                 if invalidation_only {
                     locked.global_invalidated.store(true, Ordering::Release);
                 } else {
-                    locked
-                        .global_backend_errors
-                        .lock()
-                        .unwrap()
-                        .insert(root.clone(), "permanent global failure".into());
+                    // Healthy native callbacks legitimately clear their transient
+                    // errors. Keep this permanent injected fault independent of
+                    // those callbacks while testing the maintenance backoff.
+                    locked.global_backend_errors = Arc::new(Mutex::new(BTreeMap::from([(
+                        root.clone(),
+                        "permanent global failure".into(),
+                    )])));
                     locked
                         .backend_errors
                         .lock()
@@ -1581,7 +1583,11 @@ mod tests {
                 tx.send_modify(|generation| *generation += 1);
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
-            assert!((1..=3).contains(&attempts.load(Ordering::SeqCst)));
+            let observed_attempts = attempts.load(Ordering::SeqCst);
+            assert!(
+                (1..=3).contains(&observed_attempts),
+                "invalidation_only={invalidation_only}, attempts={observed_attempts}"
+            );
             drop(state);
             tokio::time::timeout(Duration::from_secs(2), task)
                 .await

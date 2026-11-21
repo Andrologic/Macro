@@ -88,8 +88,12 @@ describe("native goal audit read port", () => {
     const result = executeNativeGoalAuditReadTool("read", {}, undefined, pending.signal, context);
     await Promise.resolve();
     pending.abort();
-    await expect(result).rejects.toHaveProperty("name", "AbortError");
+    let ended = false;
+    void result.then(() => { ended = true; }, () => { ended = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(ended).toBe(false);
     finish("stale contents");
+    await expect(result).rejects.toHaveProperty("name", "AbortError");
   });
 
   it("propagates native errors", async () => {
@@ -166,8 +170,12 @@ describe("goal audit executor with native read port", () => {
       const pending = options.onToolCall?.("read", { path: "README.md" });
       await started;
       controller.abort();
-      await expect(pending).rejects.toHaveProperty("name", "AbortError");
+      let ended = false;
+      void Promise.resolve(pending).then(() => { ended = true; }, () => { ended = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(ended).toBe(false);
       finishRead("stale contents");
+      await expect(pending).rejects.toHaveProperty("name", "AbortError");
       options.onComplete({ visibleContent: "stale completion", toolTraces: [] });
       delivered = await Promise.resolve(pending).catch(() => undefined);
       finishStream();

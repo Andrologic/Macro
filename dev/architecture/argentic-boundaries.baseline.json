@@ -1,0 +1,301 @@
+{
+  "schemaVersion": 1,
+  "baseRef": "627ea641d8ab1439ca41e9cd68bb07454ea33c49",
+  "counts": {
+    "rust": {
+      "src-tauri/src/agsdl_content/qa_cases.rs": {
+        "crate:core": 1,
+        "crate:fs": 10
+      },
+      "src-tauri/src/agsdl_content/qa_runner_tests.rs": {
+        "crate:core": 1
+      },
+      "src-tauri/src/agsdl_host_claude/mod.rs": {
+        "crate:config": 1,
+        "crate:core": 1,
+        "crate:db": 1,
+        "crate:secrets": 2,
+        "token:tauri": 3
+      },
+      "src-tauri/src/agsdl_host_claude/profile.rs": {
+        "crate:config": 1,
+        "crate:core": 1,
+        "crate:db": 2,
+        "token:ts_rs": 1
+      },
+      "src-tauri/src/agsdl_host_claude/protocol.rs": {
+        "crate:core": 1,
+        "crate:db": 1
+      },
+      "src-tauri/src/agsdl_host_codex/mod.rs": {
+        "crate:db": 1
+      },
+      "src-tauri/src/agsdl_host_example030.rs": {
+        "crate:ai": 1,
+        "crate:db": 14,
+        "token:AppHandle": 5,
+        "token:sqlx": 1,
+        "token:tauri": 12
+      },
+      "src-tauri/src/agsdl_host_example_human030.rs": {
+        "crate:db": 2,
+        "token:AppHandle": 1,
+        "token:tauri": 2
+      },
+      "src-tauri/src/agsdl_host_projection030.rs": {
+        "crate:db": 1,
+        "token:sqlx": 1
+      },
+      "src-tauri/src/agsdl_host_scenario030.rs": {
+        "crate:db": 4
+      },
+      "src-tauri/src/ai/stream_tasks.rs": {
+        "crate:core": 1,
+        "crate:db": 2
+      },
+      "src-tauri/src/core/tool_policy.rs": {
+        "crate:fs": 3,
+        "token:ts_rs": 2
+      },
+      "src-tauri/src/db/agsdl_execution/discovery030.rs": {
+        "token:sqlx": 4,
+        "token:ts_rs": 4
+      },
+      "src-tauri/src/db/agsdl_execution/discovery030_tests.rs": {
+        "crate:core": 1,
+        "crate:db": 1,
+        "token:sqlx": 16
+      },
+      "src-tauri/src/db/agsdl_execution/mod.rs": {
+        "token:sqlx": 1
+      },
+      "src-tauri/src/db/agsdl_execution/start030.rs": {
+        "token:sqlx": 1
+      },
+      "src-tauri/src/db/agsdl_execution/start030_tests.rs": {
+        "crate:db": 4,
+        "token:sqlx": 30
+      },
+      "src-tauri/src/db/agsdl_execution/v030/replay_verify030_tests.rs": {
+        "token:sqlx": 48
+      },
+      "src-tauri/src/fs/operations.rs": {
+        "crate:core": 4,
+        "crate:fs": 11,
+        "crate:git": 4,
+        "crate:project_path": 1,
+        "crate:workspace": 1
+      }
+    },
+    "imports": {
+      "src/services/agsdl/designReview.ts": {
+        "import:runtime:src/vendor/agsdl/shared/values.mjs": 1
+      },
+      "src/services/agsdl/document.ts": {
+        "import:runtime:src/vendor/agsdl/v0.3/reader.mjs": 1,
+        "import:type:src/vendor/agsdl/v0.3/reader.mjs": 1
+      },
+      "src/services/agsdl/humanReadAccess030.ts": {
+        "import:runtime:src/services/agsdlExecution/workIntegers030.ts": 1
+      },
+      "src/services/agsdl/reader030.worker.ts": {
+        "import:runtime:src/vendor/agsdl/v0.3/reader.mjs": 1
+      },
+      "src/services/agsdl/reader030WorkerProtocol.ts": {
+        "import:runtime:src/vendor/agsdl/v0.3/reader.mjs": 1,
+        "import:type:src/vendor/agsdl/v0.3/reader.mjs": 1
+      },
+      "src/services/agsdl/staticSemantics030.ts": {
+        "import:runtime:src/vendor/agsdl/v0.3/graph.mjs": 1,
+        "import:type:src/vendor/agsdl/v0.3/reader.mjs": 1
+      },
+      "src/services/agsdlExecution/agentSubmission030.ts": {
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:type:src/services/agsdlExecution/agentWorkContracts030.ts": 1,
+        "import:type:src/services/agsdlExecution/exact.ts": 1
+      },
+      "src/services/agsdlExecution/agentWorkContracts030.ts": {
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:runtime:src/services/agsdlExecution/workIntegers030.ts": 1,
+        "import:type:src/services/agsdlExecution/exact.ts": 1,
+        "import:type:src/services/agsdlExecution/workIntegers030.ts": 1
+      },
+      "src/services/agsdlExecution/agentWorkController030.ts": {
+        "import:runtime:src/services/agsdlExecution/agentSubmission030.ts": 1,
+        "import:runtime:src/services/agsdlExecution/agentWorkContracts030.ts": 1,
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:runtime:src/services/agsdlExecution/invariants.ts": 1,
+        "import:runtime:src/services/agsdlExecution/workIntegers030.ts": 1,
+        "import:type:src/services/agsdlExecution/agentWorkContracts030.ts": 1,
+        "import:type:src/services/agsdlExecution/exact.ts": 1,
+        "import:type:src/services/agsdlExecution/workIntegers030.ts": 1
+      },
+      "src/services/agsdlExecution/calls030.ts": {
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:runtime:src/services/agsdlExecution/messages030.ts": 1,
+        "import:type:src/services/agsdlExecution/exact.ts": 1,
+        "import:type:src/services/agsdlExecution/routes030.ts": 1
+      },
+      "src/services/agsdlExecution/compiler.ts": {
+        "import:runtime:src/services/agsdlExecution/compiler030.ts": 1
+      },
+      "src/services/agsdlExecution/compiler030.ts": {
+        "import:runtime:src/services/agsdlExecution/compilerGraph030.ts": 1,
+        "import:runtime:src/services/agsdlExecution/configuration030.ts": 1,
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:runtime:src/services/agsdlExecution/metadata.ts": 1,
+        "import:runtime:src/vendor/agsdl/v0.3/reader.mjs": 1,
+        "import:type:src/services/agsdlExecution/exact.ts": 1
+      },
+      "src/services/agsdlExecution/compilerGraph030.ts": {
+        "import:runtime:src/services/agsdlExecution/agentWorkContracts030.ts": 1,
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:runtime:src/services/agsdlExecution/routes030.ts": 1,
+        "import:runtime:src/vendor/agsdl/v0.3/graph.mjs": 1,
+        "import:type:src/services/agsdlExecution/exact.ts": 1,
+        "import:type:src/services/agsdlExecution/routes030.ts": 1,
+        "import:type:src/vendor/agsdl/v0.3/graph.mjs": 1
+      },
+      "src/services/agsdlExecution/configuration030.ts": {
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:runtime:src/services/agsdlExecution/metadata.ts": 1,
+        "import:runtime:src/vendor/agsdl/v0.3/graph.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.3/reader.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.3/valueschema.mjs": 1,
+        "import:type:src/services/agsdlExecution/exact.ts": 1,
+        "import:type:src/vendor/agsdl/v0.3/reader.mjs": 1
+      },
+      "src/services/agsdlExecution/contentResolution030.ts": {
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1
+      },
+      "src/services/agsdlExecution/dispatchValues.ts": {
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:type:src/services/agsdlExecution/exact.ts": 1
+      },
+      "src/services/agsdlExecution/exact.ts": {
+        "import:runtime:src/vendor/agsdl/shared/values.mjs": 1
+      },
+      "src/services/agsdlExecution/hostCompilation.ts": {
+        "import:runtime:src/services/agsdlExecution/compiler030.ts": 1,
+        "import:runtime:src/services/agsdlExecution/compilerGraph030.ts": 1,
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:runtime:src/services/agsdlExecution/messages030.ts": 1,
+        "import:runtime:src/vendor/agsdl/v0.3/schemacheck.mjs": 1,
+        "import:type:src/services/agsdlExecution/exact.ts": 1
+      },
+      "src/services/agsdlExecution/hostHumanClock030.ts": {
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:runtime:src/services/agsdlExecution/workClock030.ts": 1,
+        "import:runtime:src/services/agsdlExecution/workIntegers030.ts": 1,
+        "import:type:src/services/agsdlExecution/workClock030.ts": 1
+      },
+      "src/services/agsdlExecution/hostRouteBroker030.ts": {
+        "import:runtime:src/services/agsdlExecution/calls030.ts": 1,
+        "import:runtime:src/services/agsdlExecution/contentResolution030.ts": 1,
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:runtime:src/services/agsdlExecution/hostHumanClock030.ts": 1,
+        "import:runtime:src/services/agsdlExecution/prepareFlowRoute030.ts": 1,
+        "import:type:src/services/agsdlExecution/calls030.ts": 1,
+        "import:type:src/services/agsdlExecution/contentResolution030.ts": 1,
+        "import:type:src/services/agsdlExecution/prepareFlowRoute030.ts": 1,
+        "import:type:src/services/agsdlExecution/routes030.ts": 1
+      },
+      "src/services/agsdlExecution/hostWorkPort030.ts": {
+        "import:runtime:src/services/agsdlExecution/hostWorkTransition030.ts": 1,
+        "import:type:src/services/agsdlExecution/agentWorkContracts030.ts": 1
+      },
+      "src/services/agsdlExecution/hostWorkTransition030.ts": {
+        "import:runtime:src/services/agsdlExecution/agentWorkContracts030.ts": 1,
+        "import:runtime:src/services/agsdlExecution/agentWorkController030.ts": 1,
+        "import:runtime:src/services/agsdlExecution/hostWorkJournal030.ts": 1,
+        "import:type:src/services/agsdlExecution/agentWorkContracts030.ts": 1,
+        "import:type:src/services/agsdlExecution/agentWorkController030.ts": 1
+      },
+      "src/services/agsdlExecution/humanAnswer030.ts": {
+        "import:runtime:src/services/agsdlExecution/hostHumanClock030.ts": 1
+      },
+      "src/services/agsdlExecution/messages030.ts": {
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:type:src/services/agsdlExecution/exact.ts": 1,
+        "import:type:src/services/agsdlExecution/routes030.ts": 1
+      },
+      "src/services/agsdlExecution/metadata.ts": {
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1
+      },
+      "src/services/agsdlExecution/prepareFlowRoute030.ts": {
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:runtime:src/services/agsdlExecution/messages030.ts": 1,
+        "import:runtime:src/services/agsdlExecution/routes030.ts": 1,
+        "import:type:src/services/agsdlExecution/messages030.ts": 1,
+        "import:type:src/services/agsdlExecution/routes030.ts": 1
+      },
+      "src/services/agsdlExecution/routes030.ts": {
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:runtime:src/services/agsdlExecution/messages030.ts": 1,
+        "import:type:src/services/agsdlExecution/exact.ts": 1
+      },
+      "src/services/agsdlExecution/valueSchemaPort030.ts": {
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:type:src/services/agsdlExecution/agentWorkContracts030.ts": 1
+      },
+      "src/services/agsdlExecution/workClock030.ts": {
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1,
+        "import:runtime:src/services/agsdlExecution/workIntegers030.ts": 1,
+        "import:type:src/services/agsdlExecution/exact.ts": 1,
+        "import:type:src/services/agsdlExecution/workIntegers030.ts": 1
+      },
+      "src/services/agsdlExecution/workIntegers030.ts": {
+        "import:runtime:src/services/agsdlExecution/exact.ts": 1
+      },
+      "src/services/workflowAgentTasks.ts": {
+        "import:runtime:src/services/agsdlExecution/invariants.ts": 1
+      },
+      "src/vendor/agsdl/browser-reader.mjs": {
+        "import:runtime:src/vendor/agsdl/experimental/readers/javascript/json.mjs": 1
+      },
+      "src/vendor/agsdl/experimental/modular-candidate-1/readers/javascript/json.mjs": {
+        "import:runtime:src/vendor/agsdl/experimental/readers/javascript/json.mjs": 1
+      },
+      "src/vendor/agsdl/experimental/readers/javascript/core.mjs": {
+        "import:runtime:src/vendor/agsdl/experimental/readers/javascript/json.mjs": 1
+      },
+      "src/vendor/agsdl/experimental/readers/javascript/shape.mjs": {
+        "import:runtime:src/vendor/agsdl/experimental/readers/javascript/json.mjs": 1
+      },
+      "src/vendor/agsdl/shared/values.mjs": {
+        "import:runtime:src/vendor/agsdl/shared/json.mjs": 1
+      },
+      "src/vendor/agsdl/v0.3/graph.mjs": {
+        "import:runtime:src/vendor/agsdl/v0.3/values.mjs": 1
+      },
+      "src/vendor/agsdl/v0.3/json.mjs": {
+        "import:runtime:src/vendor/agsdl/experimental/readers/javascript/json.mjs": 1,
+        "import:runtime:src/vendor/agsdl/shared/json.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.3/values.mjs": 1
+      },
+      "src/vendor/agsdl/v0.3/reader.mjs": {
+        "import:runtime:src/vendor/agsdl/v0.3/json.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.3/validator.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.3/values.mjs": 1
+      },
+      "src/vendor/agsdl/v0.3/schemacheck.mjs": {
+        "import:runtime:src/vendor/agsdl/v0.3/values.mjs": 1
+      },
+      "src/vendor/agsdl/v0.3/validator.mjs": {
+        "import:runtime:src/vendor/agsdl/v0.3/graph.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.3/json.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.3/permissions.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.3/schemacheck.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.3/values.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.3/valueschema.mjs": 1
+      },
+      "src/vendor/agsdl/v0.3/values.mjs": {
+        "import:runtime:src/vendor/agsdl/shared/json.mjs": 1
+      },
+      "src/vendor/agsdl/v0.3/valueschema.mjs": {
+        "import:runtime:src/vendor/agsdl/v0.3/schemacheck.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.3/values.mjs": 1
+      }
+    }
+  }
+}

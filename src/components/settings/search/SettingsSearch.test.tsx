@@ -86,6 +86,35 @@ describe('SettingsSearch', () => {
     expect((container?.querySelector('input') as HTMLInputElement).value).toBe('');
   });
 
+  it('keeps the collection search and action focusable and usable together', async () => {
+    const { SettingsCollectionHeader, SettingsSearchProvider, useSettingsSearch } = await loadSearch();
+    const refresh = mock(() => undefined);
+    const Collection = () => {
+      const { query } = useSettingsSearch();
+      return <>
+        <SettingsCollectionHeader wrapActions title="Modèles" searchPlaceholder="Rechercher des modèles…"
+          action={<button type="button" onClick={refresh}>Rafraîchir le catalogue</button>} />
+        <output>{query}</output>
+      </>;
+    };
+    await act(async () => root?.render(<SettingsSearchProvider><Collection /></SettingsSearchProvider>));
+    const input = container!.querySelector<HTMLInputElement>('input')!;
+    input.focus();
+    expect(document.activeElement).toBe(input);
+    expect(input.getAttribute('aria-label')).toBe('Rechercher des modèles…');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'modèle QA');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(container!.querySelector('output')?.textContent).toBe('modèle QA');
+    const action = [...container!.querySelectorAll('button')].find((button) => button.textContent === 'Rafraîchir le catalogue')!;
+    action.focus();
+    expect(document.activeElement).toBe(action);
+    await act(async () => action.click());
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(input.value).toBe('modèle QA');
+  });
+
   it('renders the translated message supplied by the owning settings collection', async () => {
     const { SettingsSearchEmpty } = await loadSearch();
 

@@ -1,0 +1,37 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "routes-message-to-join",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": [
+          {
+            "step": "j",
+            "message": {
+              "prompt": "x"
+            }
+          },
+          "t"
+        ]
+      },
+      "t": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "t",
+        "next": "j"
+      },
+      "j": {
+        "type": "join"
+      }
+    }
+  }
+}

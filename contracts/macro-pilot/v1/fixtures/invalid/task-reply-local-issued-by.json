@@ -1,0 +1,22 @@
+{
+  "contract_version": "1.0",
+  "type": "command",
+  "kind": "task.reply",
+  "command_id": "command:decision:resolve:01",
+  "idempotency_key": "phone01-decision01-0001",
+  "expected_revision": 7,
+  "target": {
+    "type": "task",
+    "instance_id": "instance:studio-mac",
+    "workspace_id": "workspace:macro-suite",
+    "task_id": "task:pilot-contract"
+  },
+  "issued_by": {
+    "origin": "local"
+  },
+  "issued_at": "2026-09-06T12:01:00Z",
+  "payload": {
+    "conversation_id": "conv-4",
+    "answer": "Continue with the next task."
+  }
+}

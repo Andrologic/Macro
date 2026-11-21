@@ -8,7 +8,7 @@ use super::runtime::{
     McpAuthorityGuard, McpConnectedSession, McpConnectionRequest, McpConnector, McpFuture,
     McpOperationCancellation, McpRuntimeError, McpSession,
 };
-use super::stdio::resolve_stdio_transport;
+use super::stdio::resolve_stdio_transport_async;
 use super::streamable_http::{
     probe_modern_era, user_header_map, validate_endpoint, GuardedStreamableHttpClient,
     HttpEraProbeOutcome, RmcpLegacyHttpClient, RmcpModernHttpClient, ValidatedEndpoint,
@@ -46,17 +46,41 @@ const MIN_PROBE_TIMEOUT_MS: u32 = 500;
 const MAX_PROBE_TIMEOUT_MS: u32 = 15_000;
 
 #[derive(Default)]
-pub(crate) struct ConfiguredMcpConnector;
+pub(crate) struct ConfiguredMcpConnector {
+    manager: Option<config::ConfigManager>,
+}
 
-impl McpConnector for ConfiguredMcpConnector {
-    fn acquire_authority<'a>(&'a self) -> McpFuture<'a, Option<McpAuthorityGuard>> {
-        Box::pin(async move {
-            let manager = config::runtime_config_manager().ok_or_else(|| {
+impl ConfiguredMcpConnector {
+    fn manager(&self) -> Result<&config::ConfigManager, McpRuntimeError> {
+        self.manager
+            .as_ref()
+            .or_else(|| config::runtime_config_manager())
+            .ok_or_else(|| {
                 runtime_error(
                     "MCP_RUNTIME_CONFIG_UNAVAILABLE",
                     "The Macro configuration manager is unavailable.",
                 )
-            })?;
+            })
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_config_manager(manager: config::ConfigManager) -> Self {
+        Self {
+            manager: Some(manager),
+        }
+    }
+}
+
+impl McpConnector for ConfiguredMcpConnector {
+    fn configuration_changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.manager()
+            .ok()
+            .map(|manager| manager.subscribe_mcp_configuration_changes())
+    }
+
+    fn acquire_authority<'a>(&'a self) -> McpFuture<'a, Option<McpAuthorityGuard>> {
+        Box::pin(async move {
+            let manager = self.manager()?;
             let guard = manager.lock_mcp_runtime_configuration().await;
             Ok(Some(Box::new(guard) as McpAuthorityGuard))
         })
@@ -70,18 +94,30 @@ impl McpConnector for ConfiguredMcpConnector {
                 project_ids: selector.project_ids.clone(),
                 config_generation: 0,
             };
-            let definition = resolve_server_definition(&key).await?;
+            let definition = resolve_server_definition_with_manager(self.manager()?, &key).await?;
+            if definition.enabled != Some(true) {
+                return Err(runtime_error(
+                    "MCP_RUNTIME_SERVER_DISABLED",
+                    format!("MCP server '{}' is disabled.", key.server_id),
+                ));
+            }
             match &definition.transport {
                 McpTransport::StreamableHttp { .. } => {
                     // Fingerprints stay DNS-free: they cover the normalized
                     // URL, its origin and hashed resolved header values.
-                    let input = http_transport_fingerprint_input(&key.server_id, &definition)?;
+                    let server_id = key.server_id.clone();
+                    let secrets_definition = definition.clone();
+                    let input = secret_work(move || {
+                        http_transport_fingerprint_input(&server_id, &secrets_definition)
+                    })
+                    .await?;
                     Ok(http_config_fingerprint(&definition, &input))
                 }
                 _ => {
                     let server = definition_to_dto(&key.server_id, &definition);
-                    let (command, args, env) =
-                        resolve_stdio_transport(&server).map_err(|error| {
+                    let (command, args, env) = resolve_stdio_transport_async(&server)
+                        .await
+                        .map_err(|error| {
                             runtime_error("MCP_RUNTIME_CONFIG_INVALID", error.message)
                         })?;
                     stdio_config_fingerprint(&definition, &command, &args, &env)
@@ -95,7 +131,8 @@ impl McpConnector for ConfiguredMcpConnector {
         request: &'a McpConnectionRequest,
     ) -> McpFuture<'a, McpConnectedSession> {
         Box::pin(async move {
-            let definition = resolve_server_definition(&request.key).await?;
+            let definition =
+                resolve_server_definition_with_manager(self.manager()?, &request.key).await?;
             if definition.enabled != Some(true) {
                 return Err(runtime_error(
                     "MCP_RUNTIME_SERVER_DISABLED",
@@ -153,8 +190,9 @@ impl McpConnector for ConfiguredMcpConnector {
                     }
                     _ => {
                         let server = definition_to_dto(&request.key.server_id, &definition);
-                        let (command, args, env) =
-                            resolve_stdio_transport(&server).map_err(|error| {
+                        let (command, args, env) = resolve_stdio_transport_async(&server)
+                            .await
+                            .map_err(|error| {
                                 runtime_error("MCP_RUNTIME_CONFIG_INVALID", error.message)
                             })?;
                         let actual_fingerprint =
@@ -240,6 +278,25 @@ fn resolve_remote_header_value(
     } else {
         Ok(value.to_string())
     }
+}
+
+async fn secret_work<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, McpRuntimeError> + Send + 'static,
+) -> Result<T, McpRuntimeError> {
+    secrets::blocking::run(operation).await.map_err(|_| {
+        runtime_error(
+            "MCP_RUNTIME_SECRETS_UNAVAILABLE",
+            "The MCP secret operation owner is unavailable.",
+        )
+    })?
+}
+
+pub(crate) async fn resolve_oauth_settings_async(
+    server_id: &str,
+    definition: &McpServerDefinition,
+) -> Result<Option<ResolvedOAuthSettings>, McpRuntimeError> {
+    let (server_id, definition) = (server_id.to_owned(), definition.clone());
+    secret_work(move || resolve_oauth_settings(&server_id, &definition)).await
 }
 
 pub(crate) struct ResolvedOAuthSettings {
@@ -379,18 +436,23 @@ async fn resolve_http_transport(
     let endpoint = validate_endpoint(url)
         .await
         .map_err(|error| runtime_error("MCP_RUNTIME_CONFIG_INVALID", error.message))?;
-    let mut resolved_headers = BTreeMap::new();
-    for (name, value) in headers {
-        resolved_headers.insert(
-            name.clone(),
-            resolve_remote_header_value(&key.server_id, name, value)?,
-        );
-    }
+    let server_id = key.server_id.clone();
+    let secret_headers = headers.clone();
+    let resolved_headers = secret_work(move || {
+        secret_headers
+            .iter()
+            .map(|(name, value)| {
+                resolve_remote_header_value(&server_id, name, value)
+                    .map(|value| (name.clone(), value))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()
+    })
+    .await?;
     let user_headers = user_header_map(&resolved_headers)
         .map_err(|error| runtime_error("MCP_RUNTIME_CONFIG_INVALID", error.message))?;
     let mut client = GuardedStreamableHttpClient::new(endpoint.clone(), user_headers, None)
         .map_err(|error| runtime_error("MCP_RUNTIME_CONNECT_FAILED", error.message))?;
-    let oauth = resolve_oauth_settings(&key.server_id, definition)?;
+    let oauth = resolve_oauth_settings_async(&key.server_id, definition).await?;
     let oauth_client_secret = oauth
         .as_ref()
         .and_then(|settings| settings.client_secret.clone());
@@ -715,8 +777,7 @@ impl McpSession for ModernHttpSession {
             for _ in 0..100 {
                 match Arc::try_unwrap(client) {
                     Ok(client) => {
-                        client.shutdown().await;
-                        return Ok(());
+                        return client.shutdown().await;
                     }
                     Err(shared) => {
                         client = shared;
@@ -809,8 +870,7 @@ impl McpSession for LegacyHttpSession {
             for _ in 0..100 {
                 match Arc::try_unwrap(client) {
                     Ok(client) => {
-                        client.shutdown().await;
-                        return Ok(());
+                        return client.shutdown().await;
                     }
                     Err(shared) => {
                         client = shared;
@@ -905,7 +965,7 @@ async fn connect_stdio_transport(
             .or(Some(Duration::from_secs(5)));
             match RmcpModernStdioClient::probe(&probe_config).await {
                 Ok(McpModernProbeOutcome::Modern(probe)) => {
-                    probe.shutdown().await;
+                    probe.shutdown().await?;
                     let reason =
                         "The disposable sibling probe completed server/discover.".to_string();
                     let (session, era, version) =
@@ -1154,8 +1214,7 @@ async fn close_modern_client(
     for _ in 0..100 {
         match Arc::try_unwrap(client) {
             Ok(client) => {
-                client.shutdown().await;
-                return Ok(());
+                return client.shutdown().await;
             }
             Err(shared) => {
                 client = shared;
@@ -1262,8 +1321,7 @@ impl McpSession for LegacyRmcpSession {
             for _ in 0..100 {
                 match Arc::try_unwrap(client) {
                     Ok(client) => {
-                        client.shutdown().await;
-                        return Ok(());
+                        return client.shutdown().await;
                     }
                     Err(shared) => {
                         client = shared;
@@ -1289,6 +1347,13 @@ pub(crate) async fn resolve_server_definition(
             "The Macro configuration manager is unavailable.",
         )
     })?;
+    resolve_server_definition_with_manager(manager, key).await
+}
+
+async fn resolve_server_definition_with_manager(
+    manager: &config::ConfigManager,
+    key: &McpRuntimeKey,
+) -> Result<McpServerDefinition, McpRuntimeError> {
     let project_ids = if key.project_ids.is_empty() {
         key.project_id.iter().cloned().collect::<Vec<_>>()
     } else {
@@ -1501,6 +1566,54 @@ fn add_page_budget(current: usize, tools: &[McpToolDto]) -> Result<usize, McpRun
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_budget_accepts_exact_limit_and_rejects_excess_or_overflow() {
+        let tools = vec![McpToolDto {
+            id: "mcp__fixture__read".into(),
+            server_id: "fixture".into(),
+            name: "read".into(),
+            description: None,
+            input_schema: json!({"type": "object"}),
+            enabled: true,
+        }];
+        let page_bytes = serde_json::to_vec(&tools).unwrap().len();
+
+        assert_eq!(
+            add_page_budget(MAX_TOOLS_CATALOG_BYTES - page_bytes, &tools).unwrap(),
+            MAX_TOOLS_CATALOG_BYTES
+        );
+        for current in [MAX_TOOLS_CATALOG_BYTES - page_bytes + 1, usize::MAX] {
+            assert_eq!(
+                add_page_budget(current, &tools).unwrap_err().code,
+                "MCP_RUNTIME_CATALOG_TOO_LARGE"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn catalog_pagination_rejects_a_cursor_after_the_page_limit() {
+        let mut fetched = 0;
+        let error = paginate_tools(
+            |_| {
+                fetched += 1;
+                Ok(async {
+                    Ok(super::super::rmcp_adapter::McpToolPageDto {
+                        tools: Vec::new(),
+                        next_cursor: Some("next".into()),
+                    })
+                })
+            },
+            &[],
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(fetched, MAX_TOOLS_LIST_PAGES);
+        assert_eq!(error.code, "MCP_RUNTIME_CATALOG_PAGE_LIMIT");
+    }
+
     #[test]
     fn state_only_round_needs_no_host_but_requires_opaque_state() {
         let result =
@@ -1542,8 +1655,6 @@ mod tests {
             "MCP_INTERACTION_INVALID_REQUEST"
         );
     }
-    use super::*;
-
     #[test]
     fn validates_timeout_bounds_without_silent_clamping() {
         assert_eq!(validated_timeout("probe", None, 500, 15_000).unwrap(), None);
@@ -1567,6 +1678,90 @@ mod tests {
                 .code,
             "MCP_RUNTIME_CONFIG_INVALID"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_real_mcp_fingerprint_retains_configuration_authority() {
+        use fs2::FileExt;
+        let _serial = crate::secrets::lock_test_store();
+        let directory = tempfile::tempdir().unwrap();
+        crate::secrets::init(directory.path()).unwrap();
+        let manager = config::ConfigManager::initialize(directory.path().join("config"))
+            .await
+            .unwrap();
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, config::ConfigScope::User)
+            .await
+            .unwrap();
+        let result = manager
+            .apply_patch(config::ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope: config::ConfigScope::User,
+                expected_etag: document.etag,
+                patch: vec![config::JsonPatchOperation {
+                    op: "add".into(),
+                    path: "/mcpServers".into(),
+                    from: None,
+                    value: Some(json!({"synthetic-guard":{"enabled":true,"transport":{
+                        "type":"stdio","command":"synthetic-never-executed","args":[],
+                        "env":{"TOKEN":"macro-secret://mcp-env/synthetic-guard/TOKEN"}
+                    }}})),
+                }],
+                source: config::ConfigChangeSource::UserInterface,
+            })
+            .await
+            .unwrap();
+        assert!(result.pending_change.is_none());
+        let id = "mcp-env:synthetic-guard:TOKEN";
+        crate::secrets::set_api_key(id, "synthetic-token").unwrap();
+        crate::secrets::init(directory.path()).unwrap(); // exercise the real disk miss
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(directory.path().join("provider-secrets.lock"))
+            .unwrap();
+        file.lock_exclusive().unwrap();
+        let runtime = super::super::runtime::McpRuntimeManager::with_connector(Arc::new(
+            ConfiguredMcpConnector::with_config_manager(manager.clone()),
+        ));
+        let caller = {
+            let runtime = runtime.clone();
+            tokio::spawn(async move {
+                runtime
+                    .connect(McpRuntimeSelector {
+                        server_id: "synthetic-guard".into(),
+                        project_ids: Vec::new(),
+                    })
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while crate::secrets::policy::POLICY.pending_for_test() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        let mut mutation = Box::pin(manager.lock_secret_references());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut mutation)
+                .await
+                .is_err()
+        );
+        FileExt::unlock(&file).unwrap();
+        let guard = tokio::time::timeout(Duration::from_secs(3), mutation)
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::secrets::get_api_key(id).unwrap().as_deref(),
+            Some("synthetic-token")
+        );
+        assert!(runtime.snapshot().await.servers.is_empty());
+        drop(guard);
+        runtime.shutdown_all().await;
+        crate::secrets::blocking::join_test_jobs().await;
     }
 
     #[test]
@@ -1599,4 +1794,42 @@ mod tests {
         assert!(first.starts_with("sha256:"));
         assert!(!first.contains("secret-one"));
     }
+}
+
+#[cfg(test)]
+pub(super) async fn cleanup_fixture_session(
+    adapter: &str,
+    behavior: super::service_shutdown::fixture::CloseBehavior,
+) -> (
+    Arc<dyn McpSession>,
+    super::service_shutdown::fixture::CloseControl,
+) {
+    macro_rules! session {
+        ($client:ty, $session:ident) => {{
+            let (client, control) = <$client>::cleanup_fixture(behavior).await;
+            (
+                Arc::new($session {
+                    client: Mutex::new(Some(Arc::new(client))),
+                    disabled_tools: vec![],
+                }) as Arc<dyn McpSession>,
+                control,
+            )
+        }};
+    }
+    match adapter {
+        "legacy-stdio" => session!(RmcpLegacyStdioClient, LegacyRmcpSession),
+        "modern-stdio" => session!(RmcpModernStdioClient, ModernRmcpSession),
+        "legacy-http" => session!(RmcpLegacyHttpClient, LegacyHttpSession),
+        "modern-http" => session!(RmcpModernHttpClient, ModernHttpSession),
+        _ => panic!("unknown adapter"),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn qualification_header(
+    server_id: &str,
+    name: &str,
+    value: &str,
+) -> Result<String, McpRuntimeError> {
+    resolve_remote_header_value(server_id, name, value)
 }

@@ -46,6 +46,7 @@ interface ResolveActiveTaskIdsParams {
     id: string;
     node_id?: string | null;
     conversation_id?: string | null;
+    workflow_execution?: { state: string; stale?: boolean };
   }>;
   selectedConversationId?: string | null;
   selectedTaskId?: string | null;
@@ -197,6 +198,10 @@ export const resolveActiveTaskIds = ({
     activeTaskIds.add(selectedTaskId);
   }
 
+  for (const task of tasks) if (task.workflow_execution) {
+    if (task.workflow_execution.state === 'active' && !task.workflow_execution.stale) activeTaskIds.add(task.id);
+    else activeTaskIds.delete(task.id);
+  }
   return activeTaskIds;
 };
 
@@ -214,6 +219,7 @@ export const resolveTaskStatusIndicatorState = (
   const isPlanFinalizationTask = isPlanFinalizationTaskSource(taskSource);
 
   if (hasPendingUserRequest && status !== 'Completed') return 'awaiting_response';
+  if (taskSource === 'agsdl' && status === 'InProgress') return 'running';
 
   if (isAssistantRunning) {
     return 'running';

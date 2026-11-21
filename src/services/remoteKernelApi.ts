@@ -289,12 +289,13 @@ const completedRemoteToolExecution = (
   }
   if (Number(statusCode) < 200 || Number(statusCode) >= 300) {
     const body = status.body;
+    const code = remoteErrorCode(body);
     const message =
       body && typeof body === 'object' && 'message' in body && typeof body.message === 'string'
         ? body.message
         : `Remote mutation failed (${statusCode})`;
     throw {
-      code: 'REMOTE_EXECUTION_COMPLETED_ERROR',
+      code: code?.trim() ? code : 'REMOTE_EXECUTION_COMPLETED_ERROR',
       message,
       details: { status: statusCode, body },
     };
@@ -601,7 +602,13 @@ export const executeRemoteWorkspaceToolDetailed = async (params: {
       try {
         recoveredBeforeRetry = await pollRemoteMutationResult(executionId);
       } catch (recoveryError) {
-        if (remoteErrorCode(recoveryError) === 'REMOTE_MUTATION_PENDING') throw recoveryError;
+        if (
+          ['REMOTE_MUTATION_PENDING', 'REMOTE_MUTATION_OUTCOME_INDETERMINATE'].includes(
+            remoteErrorCode(recoveryError) ?? '',
+          )
+        ) {
+          throw recoveryError;
+        }
         // A status lookup can fail with the same transient transport outage.
         // The single resend below still uses the durable execution identity.
       }

@@ -1,3 +1,4 @@
+import { getFileChangesExecutionTargets } from '../../services/fileChangesReviewScope';
 import { getProjectCapabilities } from '../../services/projectCapabilities';
 import { ProjectCapabilitiesNotice } from '../project/ProjectCapabilitiesNotice';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -849,10 +850,13 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     }
   );
   const canUseDedicatedCommitModel = Boolean(dedicatedCommitProviderId && dedicatedCommitModelId);
-  const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
-  const hasRepositoryScope = workspaceState.scopedProjectIds.length > 0;
-  const unsupportedReviewProjects = [...new Set([...workspaceState.scopedProjectIds,
-    ...(currentTask?.execution_targets?.map((target) => target.projectId) ?? [])])]
+  const taskReviewProjectIds = currentTask
+    ? Array.from(new Set(getFileChangesExecutionTargets(currentTask).map((target) => target.projectId)))
+    : [];
+  const reviewScopeProjectIds = currentTask ? taskReviewProjectIds : workspaceState.scopedProjectIds;
+  const isWorkspaceMissing = !currentTask && isProjectWorkspaceMissing(workspaceState);
+  const hasRepositoryScope = reviewScopeProjectIds.length > 0;
+  const unsupportedReviewProjects = reviewScopeProjectIds
     .flatMap((id) => {
       const project = getProjectById(id);
       return project && !getProjectCapabilities(project).review ? [project] : [];
@@ -888,9 +892,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       .join('|') ?? '';
   });
   const reviewProjectId = suspendedReviewProjectId
-    ?? selectedProjectId
-    ?? currentTask?.execution_targets?.[0]?.projectId
-    ?? currentTask?.project_id
+    ?? taskReviewProjectIds[0]
     ?? null;
   const openReviewProjectSettings = useCallback(() => {
     if (reviewProjectId) {
@@ -1104,8 +1106,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     hasActiveMergeWorkflow,
     isPlanFinalizationTask,
     resetReviewState,
-    selectedGroupId,
-    selectedProjectId,
     selectedTaskId,
     selectedTaskWorktreeKey,
     isReadOnlyRemoteMode,
@@ -1203,8 +1203,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     isDiffModalOpen,
     isPlanFinalizationTask,
     loadCurrentChanges,
-    selectedGroupId,
-    selectedProjectId,
     selectedTaskId,
     isReadOnlyRemoteMode,
   ]);

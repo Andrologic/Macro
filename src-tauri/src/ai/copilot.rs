@@ -18,7 +18,9 @@ use crate::ai::types::{
 use crate::ai::{
     emit_timeline, AiState, AuthTask, CopilotRuntimeCache, DownloadTask, ProviderTimeline,
 };
-use crate::core::process::{background_command, background_tokio_command};
+use crate::core::process::{
+    background_command, background_tokio_command, ContainedBackgroundProcess,
+};
 use crate::db::models::{AiModel, ProviderAuthMetadata, ProviderModelInput};
 use crate::db::repository;
 use crate::tool_host::ToolHostConfig;
@@ -34,6 +36,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 use tar::Archive;
 use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
@@ -260,7 +263,7 @@ fn resource_candidates(app_handle: &AppHandle, relative_path: &str) -> Vec<PathB
     )
 }
 
-fn resolve_bridge_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn resolve_bridge_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
     bridge_candidates(app_handle)
         .into_iter()
         .find(|candidate| candidate.exists())
@@ -418,11 +421,11 @@ fn normalize_copilot_send_timeout_ms(value: Option<i64>) -> i64 {
         .unwrap_or(DEFAULT_COPILOT_SEND_TIMEOUT_MS)
 }
 
-fn spawn_bridge(
+fn bridge_command(
     app_handle: &AppHandle,
     args: &[&str],
     envs: &[(String, String)],
-) -> Result<Child, String> {
+) -> Result<tokio::process::Command, String> {
     let bridge_path = resolve_bridge_path(app_handle)?;
     let mut command = background_tokio_command(bridge_path);
     tracing::debug!(
@@ -442,7 +445,15 @@ fn spawn_bridge(
         command.env(key, value);
     }
 
-    command
+    Ok(command)
+}
+
+fn spawn_bridge(
+    app_handle: &AppHandle,
+    args: &[&str],
+    envs: &[(String, String)],
+) -> Result<Child, String> {
+    bridge_command(app_handle, args, envs)?
         .spawn()
         .map_err(|error| format!("Failed to start Macro AI runtime: {}", error))
 }
@@ -495,13 +506,17 @@ async fn run_bridge_json_command<T: for<'de> Deserialize<'de>>(
     let stderr_task = tokio::spawn(async move {
         let mut stderr_reader = BufReader::new(stderr).lines();
         let mut lines = Vec::new();
-        while let Ok(Some(line)) = stderr_reader.next_line().await {
+        while let Some(line) = stderr_reader
+            .next_line()
+            .await
+            .map_err(|error| format!("Failed to drain AI runtime stderr: {error}"))?
+        {
             let trimmed = line.trim();
             if !trimmed.is_empty() {
                 lines.push(trimmed.to_string());
             }
         }
-        lines.join("\n")
+        Ok::<_, String>(lines.join("\n"))
     });
 
     let mut parsed_values: Vec<Value> = Vec::new();
@@ -539,7 +554,9 @@ async fn run_bridge_json_command<T: for<'de> Deserialize<'de>>(
         .wait()
         .await
         .map_err(|error| format!("Failed to wait for AI runtime process: {}", error))?;
-    let stderr_output = stderr_task.await.unwrap_or_default();
+    let stderr_output = stderr_task
+        .await
+        .map_err(|error| format!("Failed to join AI runtime stderr: {error}"))??;
 
     if !status.success() {
         let message = if !parsed_values.is_empty() {
@@ -1354,6 +1371,18 @@ fn restore_previous_runtime(final_dir: &Path, backup_dir: &Path) -> Result<(), S
     Ok(())
 }
 
+fn checked_archive_size(downloaded: u64, chunk_size: usize, expected: u64) -> Result<u64, String> {
+    let chunk_size = u64::try_from(chunk_size)
+        .map_err(|_| "GitHub Copilot runtime archive exceeds the manifest size.".to_string())?;
+    let next = downloaded
+        .checked_add(chunk_size)
+        .ok_or_else(|| "GitHub Copilot runtime archive exceeds the manifest size.".to_string())?;
+    if next > expected {
+        return Err("GitHub Copilot runtime archive exceeds the manifest size.".to_string());
+    }
+    Ok(next)
+}
+
 async fn install_runtime_archive(
     app_handle: &AppHandle,
     pool: &SqlitePool,
@@ -1399,10 +1428,13 @@ async fn install_runtime_archive(
         ));
     }
 
-    let total_bytes = response
+    if response
         .content_length()
-        .or(Some(asset.archive_size))
-        .filter(|value| *value > 0);
+        .is_some_and(|length| length > asset.archive_size)
+    {
+        return Err("GitHub Copilot runtime archive exceeds the manifest size.".to_string());
+    }
+    let total_bytes = Some(asset.archive_size);
     let mut file = tokio::fs::File::create(&archive_path)
         .await
         .map_err(|error| format!("Failed to create archive file: {}", error))?;
@@ -1419,11 +1451,12 @@ async fn install_runtime_archive(
         let chunk = chunk_result.map_err(|error| {
             format!("Failed while downloading GitHub Copilot runtime: {}", error)
         })?;
+        let next_size = checked_archive_size(downloaded_bytes, chunk.len(), asset.archive_size)?;
         archive_hash.update(&chunk);
         file.write_all(&chunk)
             .await
             .map_err(|error| format!("Failed to write GitHub Copilot archive: {}", error))?;
-        downloaded_bytes += chunk.len() as u64;
+        downloaded_bytes = next_size;
 
         if downloaded_bytes.saturating_sub(last_reported) >= DOWNLOAD_PROGRESS_GRANULARITY_BYTES
             || total_bytes
@@ -1447,7 +1480,7 @@ async fn install_runtime_archive(
         .await
         .map_err(|error| format!("Failed to flush GitHub Copilot archive: {}", error))?;
 
-    let expected_size = total_bytes.unwrap_or(asset.archive_size);
+    let expected_size = asset.archive_size;
     if downloaded_bytes != expected_size {
         return Err(format!(
             "Downloaded GitHub Copilot archive size mismatch (expected {}, got {}).",
@@ -1986,25 +2019,31 @@ pub async fn sync_models(
         .map_err(|error| error.to_string())
 }
 
-pub async fn stream_chat(
+pub(crate) async fn stream_chat(
     app_handle: AppHandle,
     pool: SqlitePool,
     ai_state: AiState,
     request: AiChatRequest,
+    reservation: crate::ai::stream_tasks::StreamReservation,
+    work: std::sync::Arc<crate::ai::provider_work::ProviderWork>,
 ) -> Result<(), String> {
-    cancel_stream(&ai_state, &request.request_id).await?;
-
-    let request_id = request.request_id.clone();
     let task_request_id = request.request_id.clone();
     let task_provider_id = request.provider_id.clone();
     let app_for_task = app_handle.clone();
     let state_for_task = ai_state.clone();
     let task_started_at = Instant::now();
 
-    let handle = tokio::spawn(async move {
-        let result =
-            stream_chat_inner(app_for_task.clone(), pool, state_for_task.clone(), request).await;
-        if let Err(message) = result {
+    reservation.spawn_with_work(work.clone(), move |cancel| async move {
+        let result = stream_chat_inner(
+            app_for_task.clone(),
+            pool,
+            state_for_task.clone(),
+            request,
+            cancel,
+            &work,
+        )
+        .await;
+        if let Err(message) = &result {
             emit_timeline(
                 &app_for_task,
                 &task_request_id,
@@ -2017,41 +2056,19 @@ pub async fn stream_chat(
                 "ai:error",
                 AiStreamErrorEvent {
                     request_id: task_request_id.clone(),
-                    message,
+                    message: message.clone(),
+                    status: None,
                 },
             );
         }
-
-        let task_id = tokio::task::try_id();
-        let mut tasks = state_for_task.stream_tasks.lock().await;
-        let is_current_task = task_id
-            .map(|task_id| {
-                tasks
-                    .get(&task_request_id)
-                    .map(|handle| handle.id() == task_id)
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false);
-        if is_current_task {
-            tasks.remove(&task_request_id);
-            let mut tool_writers = state_for_task.copilot_tool_writers.lock().await;
-            tool_writers.remove(&task_request_id);
-        }
-    });
-
-    let mut tasks = ai_state.stream_tasks.lock().await;
-    tasks.insert(request_id, handle);
-    Ok(())
+        result
+    })
 }
 
 pub async fn cancel_stream(ai_state: &AiState, request_id: &str) -> Result<(), String> {
-    crate::ai::chatgpt::cancel_stream(ai_state, request_id).await?;
-    {
-        let mut tool_writers = ai_state.copilot_tool_writers.lock().await;
-        tool_writers.remove(request_id);
-    }
-
-    Ok(())
+    // The owning task removes its writer before it exits. Removing it here
+    // after join could erase a newly registered request with the same ID.
+    ai_state.cancel_stream_task(request_id).await
 }
 
 pub async fn submit_tool_result(
@@ -2094,6 +2111,8 @@ async fn stream_chat_inner(
     pool: SqlitePool,
     ai_state: AiState,
     request: AiChatRequest,
+    cancel: tokio_util::sync::CancellationToken,
+    work: &crate::ai::provider_work::ProviderWork,
 ) -> Result<(), String> {
     let mut request = request;
     let started_at = Instant::now();
@@ -2119,191 +2138,254 @@ async fn stream_chat_inner(
             .or(provider_settings.copilot_send_timeout_ms),
     ));
 
-    let runtime = ensure_copilot_runtime_for_send(&app_handle, &ai_state).await?;
+    let runtime = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err("AI stream cancelled.".into()),
+        result = ensure_copilot_runtime_for_send(&app_handle, &ai_state) => result?,
+    };
     let payload = serde_json::to_string(&request)
         .map_err(|error| format!("Failed to serialize Copilot request: {}", error))?;
-    let mut child = spawn_bridge(&app_handle, &["send"], &bridge_envs(&app_handle, &runtime))?;
+    let attempt = work
+        .attempt(&provider.id, "copilot-local-bridge:send")
+        .await?;
+    let mut child = ContainedBackgroundProcess::spawn(bridge_command(
+        &app_handle,
+        &["send"],
+        &bridge_envs(&app_handle, &runtime),
+    )?)
+    .map_err(|error| format!("Failed to start Macro AI runtime: {error}"))?;
 
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "AI runtime stdin is unavailable.".to_string())?;
-    let stdin = Arc::new(Mutex::new(stdin));
-    {
-        let mut writer = stdin.lock().await;
-        writer
-            .write_all(payload.as_bytes())
-            .await
-            .map_err(|error| format!("Failed to send AI runtime request: {}", error))?;
-        writer
-            .write_all(b"\n")
-            .await
-            .map_err(|error| format!("Failed to send AI runtime request newline: {}", error))?;
-        writer
-            .flush()
-            .await
-            .map_err(|error| format!("Failed to flush AI runtime request: {}", error))?;
-    }
-    timeline.emit("provider_request_sent");
-    {
-        let mut tool_writers = ai_state.copilot_tool_writers.lock().await;
-        tool_writers.insert(request.request_id.clone(), stdin);
-    }
+    let mut stderr_task = None;
+    let processing = async {
+        let stdin = child
+            .take_stdin()
+            .ok_or_else(|| "AI runtime stdin is unavailable.".to_string())?;
+        let stdin = Arc::new(Mutex::new(stdin));
+        {
+            let mut writer = stdin.lock().await;
+            attempt.dispatched().await?;
+            writer
+                .write_all(payload.as_bytes())
+                .await
+                .map_err(|error| format!("Failed to send AI runtime request: {}", error))?;
+            writer
+                .write_all(b"\n")
+                .await
+                .map_err(|error| format!("Failed to send AI runtime request newline: {}", error))?;
+            writer
+                .flush()
+                .await
+                .map_err(|error| format!("Failed to flush AI runtime request: {}", error))?;
+        }
+        timeline.emit("provider_request_sent");
+        {
+            let mut tool_writers = ai_state.copilot_tool_writers.lock().await;
+            tool_writers.insert(request.request_id.clone(), stdin);
+        }
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "AI runtime stdout is unavailable.".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "AI runtime stderr is unavailable.".to_string())?;
+        let stdout = child
+            .take_stdout()
+            .ok_or_else(|| "AI runtime stdout is unavailable.".to_string())?;
+        let stderr = child
+            .take_stderr()
+            .ok_or_else(|| "AI runtime stderr is unavailable.".to_string())?;
 
-    let mut stdout_reader = BufReader::new(stdout).lines();
-    let stderr_task = tokio::spawn(async move {
-        let mut stderr_reader = BufReader::new(stderr).lines();
-        let mut lines = Vec::new();
-        while let Ok(Some(line)) = stderr_reader.next_line().await {
+        let mut stdout_reader = BufReader::new(stdout).lines();
+        stderr_task = Some(tokio::spawn(async move {
+            let mut stderr_reader = BufReader::new(stderr).lines();
+            let mut lines = Vec::new();
+            while let Ok(Some(line)) = stderr_reader.next_line().await {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    lines.push(trimmed.to_string());
+                }
+            }
+            Ok::<_, String>(lines.join("\n"))
+        }));
+
+        let mut saw_done = false;
+        let mut done_payload = None;
+        let mut last_error: Option<(Option<String>, String)> = None;
+        let mut emitted_first_provider_event = false;
+        let mut emitted_first_token = false;
+
+        while let Some(line) = stdout_reader
+            .next_line()
+            .await
+            .map_err(|error| format!("Failed to read AI runtime output: {}", error))?
+        {
             let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                lines.push(trimmed.to_string());
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let event = serde_json::from_str::<BridgeSendEvent>(trimmed)
+                .map_err(|error| format!("Invalid AI runtime event: {}", error))?;
+
+            match event {
+                BridgeSendEvent::Delta { delta } => {
+                    if !emitted_first_provider_event {
+                        emitted_first_provider_event = true;
+                        timeline.emit("first_provider_event");
+                    }
+                    if !emitted_first_token {
+                        emitted_first_token = true;
+                        timeline.emit("first_token");
+                    }
+                    app_handle
+                        .emit(
+                            "ai:stream",
+                            AiStreamChunkEvent {
+                                request_id: request.request_id.clone(),
+                                delta,
+                            },
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                BridgeSendEvent::Done {
+                    content,
+                    reasoning_summary,
+                    hidden_context,
+                    accepted_submission_ids,
+                    tool_traces,
+                    completion_reason,
+                } => {
+                    saw_done = true;
+                    if !emitted_first_provider_event {
+                        emitted_first_provider_event = true;
+                        timeline.emit("first_provider_event");
+                    }
+                    done_payload = Some(AiStreamDoneEvent {
+                        request_id: request.request_id.clone(),
+                        output_text: content,
+                        visible_text: None,
+                        tool_calls: Vec::new(),
+                        response_id: None,
+                        output_items: None,
+                        provider_input_items: None,
+                        provider_turn_state: None,
+                        reasoning_summary,
+                        tool_traces,
+                        hidden_context,
+                        accepted_submission_ids: Some(accepted_submission_ids),
+                        completion_reason: completion_reason
+                            .or_else(|| Some("incomplete".to_string())),
+                    });
+                }
+                BridgeSendEvent::Error { code, message } => {
+                    if !emitted_first_provider_event {
+                        emitted_first_provider_event = true;
+                        timeline.emit("first_provider_event");
+                    }
+                    let mut status =
+                        bridge_send_error_to_status(&runtime, code.as_deref(), message.as_str());
+                    normalize_status_auth_source(&mut status);
+                    let _ = persist_provider_status(&pool, &provider.id, &status).await;
+                    last_error = Some((code, message));
+                }
+                BridgeSendEvent::ToolTrace { tool_trace } => {
+                    if !emitted_first_provider_event {
+                        emitted_first_provider_event = true;
+                        timeline.emit("first_provider_event");
+                    }
+                    app_handle
+                        .emit(
+                            "ai:tool-trace",
+                            AiStreamToolTraceEvent {
+                                request_id: request.request_id.clone(),
+                                tool_trace,
+                            },
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                BridgeSendEvent::ToolRequest {
+                    request_id,
+                    tool_call_id,
+                    tool_name,
+                    args,
+                } => {
+                    if !emitted_first_provider_event {
+                        emitted_first_provider_event = true;
+                        timeline.emit("first_provider_event");
+                    }
+                    app_handle
+                        .emit(
+                            "ai:tool-request",
+                            CopilotToolRequestEvent {
+                                request_id,
+                                tool_call_id,
+                                tool_name,
+                                args,
+                            },
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                BridgeSendEvent::Progress { .. } | BridgeSendEvent::LoginComplete { .. } => {}
             }
         }
-        lines.join("\n")
-    });
 
-    let mut saw_done = false;
-    let mut last_error: Option<(Option<String>, String)> = None;
-    let mut emitted_first_provider_event = false;
-    let mut emitted_first_token = false;
-
-    while let Some(line) = stdout_reader
-        .next_line()
+        Ok::<_, String>((saw_done, done_payload, last_error))
+    };
+    let result = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err("AI stream cancelled.".to_string()),
+        result = crate::ai::stream_tasks::run_catching_panic(processing) => result,
+    };
+    // All exits after spawn pass here, including invalid events, failed writes
+    // and cancellation. The stream task owns the child until wait completes.
+    ai_state
+        .copilot_tool_writers
+        .lock()
         .await
-        .map_err(|error| format!("Failed to read AI runtime output: {}", error))?
-    {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let event = serde_json::from_str::<BridgeSendEvent>(trimmed)
-            .map_err(|error| format!("Invalid AI runtime event: {}", error))?;
-
-        match event {
-            BridgeSendEvent::Delta { delta } => {
-                if !emitted_first_provider_event {
-                    emitted_first_provider_event = true;
-                    timeline.emit("first_provider_event");
-                }
-                if !emitted_first_token {
-                    emitted_first_token = true;
-                    timeline.emit("first_token");
-                }
-                app_handle
-                    .emit(
-                        "ai:stream",
-                        AiStreamChunkEvent {
-                            request_id: request.request_id.clone(),
-                            delta,
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
+        .remove(&request.request_id);
+    // Always terminate the whole process tree, then join the stderr reader.
+    let status = if result.is_err() || cancel.is_cancelled() {
+        child.terminate_with_grace(Duration::ZERO).await
+    } else {
+        let status = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => child.terminate_with_grace(Duration::ZERO).await,
+            status = child.wait() => status,
+        };
+        match status {
+            Ok(status) => child
+                .terminate_with_grace(Duration::ZERO)
+                .await
+                .map(|_| status),
+            Err(error) => {
+                let cleanup = child.terminate_with_grace(Duration::ZERO).await;
+                cleanup.and(Err(error))
             }
-            BridgeSendEvent::Done {
-                content,
-                reasoning_summary,
-                hidden_context,
-                accepted_submission_ids,
-                tool_traces,
-                completion_reason,
-            } => {
-                saw_done = true;
-                if !emitted_first_provider_event {
-                    emitted_first_provider_event = true;
-                    timeline.emit("first_provider_event");
-                }
-                timeline.emit("done");
-                app_handle
-                    .emit(
-                        "ai:done",
-                        AiStreamDoneEvent {
-                            request_id: request.request_id.clone(),
-                            output_text: content,
-                            tool_calls: Vec::new(),
-                            response_id: None,
-                            output_items: None,
-                            provider_input_items: None,
-                            provider_turn_state: None,
-                            reasoning_summary,
-                            tool_traces,
-                            hidden_context,
-                            accepted_submission_ids: Some(accepted_submission_ids),
-                            completion_reason: completion_reason
-                                .or_else(|| Some("incomplete".to_string())),
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
-            BridgeSendEvent::Error { code, message } => {
-                if !emitted_first_provider_event {
-                    emitted_first_provider_event = true;
-                    timeline.emit("first_provider_event");
-                }
-                let mut status =
-                    bridge_send_error_to_status(&runtime, code.as_deref(), message.as_str());
-                normalize_status_auth_source(&mut status);
-                let _ = persist_provider_status(&pool, &provider.id, &status).await;
-                last_error = Some((code, message));
-            }
-            BridgeSendEvent::ToolTrace { tool_trace } => {
-                if !emitted_first_provider_event {
-                    emitted_first_provider_event = true;
-                    timeline.emit("first_provider_event");
-                }
-                app_handle
-                    .emit(
-                        "ai:tool-trace",
-                        AiStreamToolTraceEvent {
-                            request_id: request.request_id.clone(),
-                            tool_trace,
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
-            BridgeSendEvent::ToolRequest {
-                request_id,
-                tool_call_id,
-                tool_name,
-                args,
-            } => {
-                if !emitted_first_provider_event {
-                    emitted_first_provider_event = true;
-                    timeline.emit("first_provider_event");
-                }
-                app_handle
-                    .emit(
-                        "ai:tool-request",
-                        CopilotToolRequestEvent {
-                            request_id,
-                            tool_call_id,
-                            tool_name,
-                            args,
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
-            BridgeSendEvent::Progress { .. } | BridgeSendEvent::LoginComplete { .. } => {}
         }
     }
-
-    let status = child
-        .wait()
-        .await
-        .map_err(|error| format!("Failed to wait for AI runtime process: {}", error))?;
-    let stderr_output = stderr_task.await.unwrap_or_default();
+    .map_err(|error| format!("AI runtime tree end was not confirmed: {error}"));
+    let stderr_output = if let Some(mut task) = stderr_task {
+        match tokio::time::timeout(Duration::from_secs(1), &mut task).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => Err(format!("AI runtime stderr task failed: {error}")),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                Err("AI runtime stderr drain was not confirmed".to_string())
+            }
+        }
+    } else {
+        Ok(String::new())
+    };
+    let status = status?;
+    let stderr_output = stderr_output?;
+    let (saw_done, done_payload, last_error) = result?;
+    if cancel.is_cancelled() {
+        return Err("AI stream cancelled.".into());
+    }
 
     if saw_done {
+        if let Some(payload) = done_payload {
+            timeline.emit("done");
+            app_handle
+                .emit("ai:done", payload)
+                .map_err(|error| error.to_string())?;
+        }
         return Ok(());
     }
 
@@ -2326,6 +2408,13 @@ async fn stream_chat_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_archive_chunks_beyond_manifest_size_before_write() {
+        assert_eq!(checked_archive_size(8, 2, 10).unwrap(), 10);
+        assert!(checked_archive_size(8, 3, 10).is_err());
+        assert!(checked_archive_size(u64::MAX, 1, u64::MAX).is_err());
+    }
 
     #[test]
     fn normalizes_copilot_send_timeout_with_tool_completion_margin() {

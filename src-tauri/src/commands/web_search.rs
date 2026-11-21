@@ -39,6 +39,7 @@ static WEB_OPERATION_CANCELLATIONS: OnceLock<Mutex<WebOperationCancellationRegis
     OnceLock::new();
 
 struct WebOperationCancellation {
+    native: Option<tokio_util::sync::CancellationToken>,
     cancelled: AtomicBool,
     notify: Notify,
 }
@@ -46,6 +47,7 @@ struct WebOperationCancellation {
 impl WebOperationCancellation {
     fn new() -> Self {
         Self {
+            native: None,
             cancelled: AtomicBool::new(false),
             notify: Notify::new(),
         }
@@ -58,6 +60,10 @@ impl WebOperationCancellation {
 
     fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+            || self
+                .native
+                .as_ref()
+                .is_some_and(|token| token.is_cancelled())
     }
 
     async fn cancelled(&self) {
@@ -68,7 +74,11 @@ impl WebOperationCancellation {
             if self.is_cancelled() {
                 return;
             }
-            notified.await;
+            if let Some(native) = &self.native {
+                tokio::select! { _ = notified => {}, _ = native.cancelled() => return }
+            } else {
+                notified.await;
+            }
         }
     }
 }
@@ -101,13 +111,24 @@ fn validate_web_operation_id(execution_id: &str) -> CommandResult<()> {
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
     {
-        return Err(command_error("L’identifiant d’exécution web est invalide."));
+        return Err(command_error("Invalid web execution ID."));
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn register_web_operation_cancellation(
     execution_id: Option<&str>,
+) -> CommandResult<(
+    Option<Arc<WebOperationCancellation>>,
+    Option<WebOperationCancellationGuard>,
+)> {
+    register_web_operation_cancellation_owned(execution_id, None)
+}
+
+fn register_web_operation_cancellation_owned(
+    execution_id: Option<&str>,
+    native: Option<tokio_util::sync::CancellationToken>,
 ) -> CommandResult<(
     Option<Arc<WebOperationCancellation>>,
     Option<WebOperationCancellationGuard>,
@@ -118,20 +139,20 @@ fn register_web_operation_cancellation(
     let execution_id = execution_id.trim();
     validate_web_operation_id(execution_id)?;
 
-    let cancellation = Arc::new(WebOperationCancellation::new());
+    let mut cancellation = WebOperationCancellation::new();
+    cancellation.native = native;
+    let cancellation = Arc::new(cancellation);
     let registry = WEB_OPERATION_CANCELLATIONS
         .get_or_init(|| Mutex::new(WebOperationCancellationRegistry::default()));
     let mut registry = registry
         .lock()
-        .map_err(|_| command_error("Le registre d’annulation web est indisponible."))?;
+        .map_err(|_| command_error("The web cancellation registry is unavailable."))?;
     let now = Instant::now();
     registry
         .pre_cancelled
         .retain(|_, cancelled_at| now.duration_since(*cancelled_at) < WEB_OPERATION_PRE_CANCEL_TTL);
     if registry.active.contains_key(execution_id) {
-        return Err(command_error(
-            "Cet identifiant d’exécution web est déjà actif.",
-        ));
+        return Err(command_error("This web execution ID is already active."));
     }
     if registry.pre_cancelled.remove(execution_id).is_some() {
         cancellation.cancel();
@@ -149,7 +170,7 @@ fn register_web_operation_cancellation(
 }
 
 fn web_operation_cancelled_error() -> crate::commands::CommandError {
-    command_error("La recherche ou la lecture web a été annulée.")
+    command_error("The web search or fetch was cancelled.")
 }
 
 fn ensure_web_operation_active(
@@ -223,6 +244,8 @@ pub struct WebFetchResourceDto {
 enum WebFetchResourceKind {
     Page,
     Favicon,
+    // Native admitted content only; never selected by the public command parser.
+    Content,
 }
 
 impl WebFetchResourceKind {
@@ -231,7 +254,7 @@ impl WebFetchResourceKind {
             "page" => Ok(Self::Page),
             "favicon" => Ok(Self::Favicon),
             _ => Err(command_error(
-                "Le type de ressource web doit être « page » ou « favicon ».",
+                "Web resource kind must be 'page' or 'favicon'.",
             )),
         }
     }
@@ -240,6 +263,7 @@ impl WebFetchResourceKind {
         match self {
             Self::Page => WEB_FETCH_PAGE_MAX_BYTES,
             Self::Favicon => WEB_FETCH_FAVICON_MAX_BYTES,
+            Self::Content => 10 * 1024 * 1024,
         }
     }
 
@@ -247,12 +271,13 @@ impl WebFetchResourceKind {
         match self {
             Self::Page => "text/html,application/xhtml+xml,text/plain;q=0.9",
             Self::Favicon => "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8",
+            Self::Content => "*/*",
         }
     }
 
     fn accepts_content_type(self, content_type: Option<&str>) -> bool {
         let Some(content_type) = content_type else {
-            return self == Self::Page;
+            return matches!(self, Self::Page | Self::Content);
         };
         let mime = content_type
             .split(';')
@@ -261,6 +286,7 @@ impl WebFetchResourceKind {
             .trim()
             .to_ascii_lowercase();
         match self {
+            Self::Content => true,
             Self::Page => {
                 mime == "text/html" || mime == "application/xhtml+xml" || mime == "text/plain"
             }
@@ -317,27 +343,38 @@ fn ip_is_public(address: IpAddr) -> bool {
     }
 }
 
+fn public_web_fetch_address(addresses: &[SocketAddr]) -> CommandResult<SocketAddr> {
+    let first = addresses
+        .first()
+        .copied()
+        .ok_or_else(|| command_error("The web_fetch host has no addresses."))?;
+    if addresses.iter().any(|address| !ip_is_public(address.ip())) {
+        return Err(command_error("Web fetch destination blocked: local, private, reserved and link-local addresses are not allowed."));
+    }
+    Ok(first)
+}
+
 fn validate_web_fetch_url(url: &reqwest::Url) -> CommandResult<()> {
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err(command_error(
-            "Seuls les liens HTTP et HTTPS sont autorisés pour web_fetch.",
+            "Only HTTP and HTTPS URLs are allowed for web_fetch.",
         ));
     }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(command_error(
-            "Les identifiants intégrés dans une URL web_fetch sont interdits.",
+            "Embedded credentials are not allowed in a web_fetch URL.",
         ));
     }
     let host = url
         .host_str()
-        .ok_or_else(|| command_error("L’URL web_fetch ne contient aucun hôte."))?;
+        .ok_or_else(|| command_error("The web_fetch URL has no host."))?;
     let normalized_host = host.trim_end_matches('.').to_ascii_lowercase();
     if normalized_host == "localhost"
         || normalized_host.ends_with(".localhost")
         || normalized_host.ends_with(".local")
     {
         return Err(command_error(
-            "web_fetch refuse les hôtes locaux et privés.",
+            "Web fetch destination blocked: local and private hosts are not allowed.",
         ));
     }
     Ok(())
@@ -351,27 +388,17 @@ async fn resolve_public_web_fetch_target(
     ensure_web_operation_active(cancellation)?;
     let host = url
         .host_str()
-        .ok_or_else(|| command_error("L’URL web_fetch ne contient aucun hôte."))?
+        .ok_or_else(|| command_error("The web_fetch URL has no host."))?
         .to_string();
     let port = url
         .port_or_known_default()
-        .ok_or_else(|| command_error("Le port de l’URL web_fetch est invalide."))?;
+        .ok_or_else(|| command_error("Invalid web_fetch URL port."))?;
     let addresses =
         await_web_operation(cancellation, tokio::net::lookup_host((host.as_str(), port)))
             .await?
-            .map_err(|error| {
-                command_error(format!("Impossible de résoudre l’hôte web_fetch : {error}"))
-            })?
+            .map_err(|error| command_error(format!("Failed to resolve web_fetch host: {error}")))?
             .collect::<Vec<_>>();
-    if addresses.is_empty() {
-        return Err(command_error("L’hôte web_fetch ne possède aucune adresse."));
-    }
-    if addresses.iter().any(|address| !ip_is_public(address.ip())) {
-        return Err(command_error(
-            "web_fetch refuse les adresses locales, privées, réservées et link-local.",
-        ));
-    }
-    Ok((host, addresses[0]))
+    Ok((host, public_web_fetch_address(&addresses)?))
 }
 
 async fn fetch_public_web_resource(
@@ -379,19 +406,77 @@ async fn fetch_public_web_resource(
     kind: WebFetchResourceKind,
     cancellation: Option<&WebOperationCancellation>,
 ) -> CommandResult<WebFetchResourceDto> {
+    fetch_admitted_web_resource(initial_url, kind, cancellation, &mut |_, _| async {
+        Ok(())
+    })
+    .await
+}
+
+/// Reuse the public web transport and its address protections. Native callers
+/// admit the URL before DNS and the pinned connection IP before every request.
+pub(crate) async fn fetch_content_with_admission<F, Fut>(
+    url: reqwest::Url,
+    cancel: &tokio_util::sync::CancellationToken,
+    admit: &mut F,
+) -> CommandResult<WebFetchResourceDto>
+where
+    F: FnMut(reqwest::Url, Option<IpAddr>) -> Fut + Send,
+    Fut: Future<Output = CommandResult<()>> + Send,
+{
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(command_error("Content read cancelled.")),
+        result = fetch_admitted_web_resource(url, WebFetchResourceKind::Content, None, admit) => result,
+    }
+}
+
+async fn fetch_admitted_web_resource<F, Fut>(
+    initial_url: reqwest::Url,
+    kind: WebFetchResourceKind,
+    cancellation: Option<&WebOperationCancellation>,
+    admit: &mut F,
+) -> CommandResult<WebFetchResourceDto>
+where
+    F: FnMut(reqwest::Url, Option<IpAddr>) -> Fut + Send,
+    Fut: Future<Output = CommandResult<()>> + Send,
+{
+    fetch_admitted_web_resource_with_resolver(
+        initial_url,
+        kind,
+        cancellation,
+        admit,
+        &mut |url| async move { resolve_public_web_fetch_target(&url, cancellation).await },
+    )
+    .await
+}
+
+async fn fetch_admitted_web_resource_with_resolver<F, Fut, R, RFut>(
+    initial_url: reqwest::Url,
+    kind: WebFetchResourceKind,
+    cancellation: Option<&WebOperationCancellation>,
+    admit: &mut F,
+    resolve: &mut R,
+) -> CommandResult<WebFetchResourceDto>
+where
+    F: FnMut(reqwest::Url, Option<IpAddr>) -> Fut + Send,
+    Fut: Future<Output = CommandResult<()>> + Send,
+    R: FnMut(reqwest::Url) -> RFut + Send,
+    RFut: Future<Output = CommandResult<(String, SocketAddr)>> + Send,
+{
     let mut url = initial_url;
     for redirect_count in 0..=WEB_FETCH_MAX_REDIRECTS {
         ensure_web_operation_active(cancellation)?;
-        let (host, address) = resolve_public_web_fetch_target(&url, cancellation).await?;
+        validate_web_fetch_url(&url)?;
+        admit(url.clone(), None).await?;
+        let (host, address) = resolve(url.clone()).await?;
+        admit(url.clone(), Some(address.ip())).await?;
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(WEB_FETCH_TIMEOUT)
             .resolve(host.as_str(), address)
             .build()
-            .map_err(|error| {
-                command_error(format!("Impossible de préparer web_fetch : {error}"))
-            })?;
+            .map_err(|error| command_error(format!("Failed to prepare web_fetch: {error}")))?;
         let response = await_web_operation(
             cancellation,
             client
@@ -404,13 +489,11 @@ async fn fetch_public_web_resource(
                 .send(),
         )
         .await?
-        .map_err(|error| command_error(format!("web_fetch a échoué : {error}")))?;
+        .map_err(|error| command_error(format!("web_fetch failed: {error}")))?;
 
         if response.status().is_redirection() {
             if redirect_count == WEB_FETCH_MAX_REDIRECTS {
-                return Err(command_error(
-                    "web_fetch a dépassé la limite de redirections.",
-                ));
+                return Err(command_error("web_fetch exceeded the redirect limit."));
             }
             let location = response
                 .headers()
@@ -418,16 +501,14 @@ async fn fetch_public_web_resource(
                 .and_then(|value| value.to_str().ok())
                 .ok_or_else(|| command_error("Redirection web_fetch sans destination valide."))?;
             url = url.join(location).map_err(|error| {
-                command_error(format!(
-                    "Destination de redirection web_fetch invalide : {error}"
-                ))
+                command_error(format!("Invalid web_fetch redirect destination: {error}"))
             })?;
             continue;
         }
 
         if !response.status().is_success() {
             return Err(command_error(format!(
-                "Impossible de récupérer la ressource web ({}).",
+                "Failed to fetch web resource ({}).",
                 response.status()
             )));
         }
@@ -437,7 +518,7 @@ async fn fetch_public_web_resource(
             .is_some_and(|length| length > max_bytes as u64)
         {
             return Err(command_error(format!(
-                "La ressource web dépasse la limite de {max_bytes} octets."
+                "The web resource exceeds the {max_bytes}-byte limit."
             )));
         }
         let content_type = response
@@ -447,7 +528,7 @@ async fn fetch_public_web_resource(
             .map(str::to_string);
         if !kind.accepts_content_type(content_type.as_deref()) {
             return Err(command_error(
-                "La ressource web possède un type de contenu non autorisé.",
+                "The web resource has a disallowed content type.",
             ));
         }
         let final_url = response.url().to_string();
@@ -455,11 +536,11 @@ async fn fetch_public_web_resource(
         let mut stream = response.bytes_stream();
         while let Some(chunk) = await_web_operation(cancellation, stream.next()).await? {
             let chunk = chunk.map_err(|error| {
-                command_error(format!("Impossible de lire la réponse web_fetch : {error}"))
+                command_error(format!("Failed to read web_fetch response: {error}"))
             })?;
             if body.len().saturating_add(chunk.len()) > max_bytes {
                 return Err(command_error(format!(
-                    "La ressource web dépasse la limite de {max_bytes} octets."
+                    "The web resource exceeds the {max_bytes}-byte limit."
                 )));
             }
             body.extend_from_slice(&chunk);
@@ -479,7 +560,7 @@ fn normalize_provider(provider: &str) -> CommandResult<&'static str> {
         TAVILY_PROVIDER => Ok(TAVILY_PROVIDER),
         BRAVE_PROVIDER => Ok(BRAVE_PROVIDER),
         _ => Err(command_error(
-            "Le fournisseur de recherche doit être « tavily » ou « brave ».",
+            "Search provider must be 'tavily' or 'brave'.",
         )),
     }
 }
@@ -497,8 +578,9 @@ pub async fn web_search_get_secret_status(
     provider: String,
 ) -> CommandResult<WebSearchSecretStatus> {
     let provider = normalize_provider(&provider)?;
-    let has_secret = secrets::get_api_key(&secret_id(provider))
-        .map_err(|error| command_error(format!("Impossible de vérifier le secret : {error}")))?
+    let has_secret = secrets::get_api_key_async(&secret_id(provider))
+        .await
+        .map_err(|error| command_error(format!("Failed to check secret: {error}")))?
         .is_some_and(|value| !value.trim().is_empty());
     Ok(WebSearchSecretStatus {
         provider: provider.to_string(),
@@ -513,10 +595,12 @@ pub async fn web_search_set_secret(
 ) -> CommandResult<WebSearchSecretStatus> {
     let provider = normalize_provider(&input.provider)?;
     match input.value.as_deref().map(str::trim) {
-        Some(value) if !value.is_empty() => secrets::set_api_key(&secret_id(provider), value),
-        _ => secrets::delete_api_key(&secret_id(provider)),
+        Some(value) if !value.is_empty() => {
+            secrets::set_api_key_async(&secret_id(provider), value).await
+        }
+        _ => secrets::delete_api_key_async(&secret_id(provider)).await,
     }
-    .map_err(|error| command_error(format!("Impossible de mettre à jour le secret : {error}")))?;
+    .map_err(|error| command_error(format!("Failed to update secret: {error}")))?;
 
     web_search_get_secret_status(provider.to_string()).await
 }
@@ -527,14 +611,52 @@ pub async fn web_search_execute(
     query: String,
     include_raw_content: Option<bool>,
     execution_id: Option<String>,
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
+) -> CommandResult<Vec<WebSearchResultDto>> {
+    if let Some(admission) = chat_admission {
+        let execution_id = Some(execution_id.unwrap_or_else(|| admission.request_id.clone()));
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let manager = manager.inner().clone();
+        let received = reservation
+            .spawn_tool(work, move |cancel| async move {
+                web_search_execute_owned(
+                    &manager,
+                    query,
+                    include_raw_content,
+                    execution_id,
+                    Some(cancel),
+                )
+                .await
+            })
+            .map_err(command_error)?;
+        return received.await.map_err(command_error)?;
+    }
+    web_search_execute_owned(&manager, query, include_raw_content, execution_id, None).await
+}
+
+async fn web_search_execute_owned(
+    manager: &ConfigManager,
+    query: String,
+    include_raw_content: Option<bool>,
+    execution_id: Option<String>,
+    native_cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> CommandResult<Vec<WebSearchResultDto>> {
     let (cancellation, _cancellation_guard) =
-        register_web_operation_cancellation(execution_id.as_deref())?;
+        register_web_operation_cancellation_owned(execution_id.as_deref(), native_cancel)?;
     ensure_web_operation_active(cancellation.as_deref())?;
 
     let query = query.trim();
     if query.is_empty() {
-        return Err(command_error("La requête de recherche est vide."));
+        return Err(command_error("The search query is empty."));
     }
 
     let tools = await_web_operation(
@@ -548,9 +670,7 @@ pub async fn web_search_execute(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     if !enabled {
-        return Err(command_error(
-            "La recherche web est désactivée dans tools.json.",
-        ));
+        return Err(command_error("Web search is disabled in tools.json."));
     }
 
     let provider = normalize_provider(
@@ -565,10 +685,11 @@ pub async fn web_search_execute(
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(DEFAULT_MAX_RESULTS)
         .clamp(1, MAX_RESULTS);
-    let api_key = secrets::get_api_key(&secret_id(provider))
-        .map_err(|error| command_error(format!("Impossible de lire le secret : {error}")))?
+    let api_key = secrets::get_api_key_async(&secret_id(provider))
+        .await
+        .map_err(|error| command_error(format!("Failed to read secret: {error}")))?
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| command_error("Aucune clé API de recherche web n’est configurée."))?;
+        .ok_or_else(|| command_error("No web search API key is configured."))?;
     ensure_web_operation_active(cancellation.as_deref())?;
 
     match provider {
@@ -592,9 +713,38 @@ pub async fn web_fetch_execute(
     url: String,
     resource_kind: String,
     execution_id: Option<String>,
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
+) -> CommandResult<WebFetchResourceDto> {
+    if let Some(admission) = chat_admission {
+        let execution_id = Some(execution_id.unwrap_or_else(|| admission.request_id.clone()));
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let received = reservation
+            .spawn_tool(work, move |cancel| async move {
+                web_fetch_execute_owned(url, resource_kind, execution_id, Some(cancel)).await
+            })
+            .map_err(command_error)?;
+        return received.await.map_err(command_error)?;
+    }
+    web_fetch_execute_owned(url, resource_kind, execution_id, None).await
+}
+
+async fn web_fetch_execute_owned(
+    url: String,
+    resource_kind: String,
+    execution_id: Option<String>,
+    native_cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> CommandResult<WebFetchResourceDto> {
     let (cancellation, _cancellation_guard) =
-        register_web_operation_cancellation(execution_id.as_deref())?;
+        register_web_operation_cancellation_owned(execution_id.as_deref(), native_cancel)?;
     ensure_web_operation_active(cancellation.as_deref())?;
 
     let normalized = url.trim();
@@ -602,7 +752,7 @@ pub async fn web_fetch_execute(
         return Err(command_error("L’URL web_fetch est vide."));
     }
     let parsed = reqwest::Url::parse(normalized)
-        .map_err(|error| command_error(format!("L’URL web_fetch est invalide : {error}")))?;
+        .map_err(|error| command_error(format!("Invalid web_fetch URL: {error}")))?;
     fetch_public_web_resource(
         parsed,
         WebFetchResourceKind::parse(&resource_kind)?,
@@ -620,7 +770,7 @@ pub fn web_search_cancel_execution(execution_id: String) -> CommandResult<bool> 
         .get_or_init(|| Mutex::new(WebOperationCancellationRegistry::default()));
     let mut registry = registry
         .lock()
-        .map_err(|_| command_error("Le registre d’annulation web est indisponible."))?;
+        .map_err(|_| command_error("The web cancellation registry is unavailable."))?;
     let now = Instant::now();
     registry
         .pre_cancelled
@@ -668,14 +818,14 @@ async fn search_tavily(
             .send(),
     )
     .await?
-    .map_err(|error| command_error(format!("La recherche Tavily a échoué : {error}")))?;
+    .map_err(|error| command_error(format!("Tavily search failed: {error}")))?;
     let status = response.status();
     if !status.is_success() {
         let detail =
             read_bounded_response(response, WEB_SEARCH_ERROR_MAX_BYTES, "Tavily", cancellation)
                 .await?;
         return Err(command_error(format!(
-            "Tavily a refusé la requête ({status}){}.",
+            "Tavily rejected the request ({status}){}.",
             format_http_error_detail(&detail),
         )));
     }
@@ -688,7 +838,7 @@ async fn search_tavily(
     .await?;
     ensure_web_operation_active(cancellation)?;
     let payload = serde_json::from_slice::<Value>(&body)
-        .map_err(|error| command_error(format!("Réponse Tavily invalide : {error}")))?;
+        .map_err(|error| command_error(format!("Invalid Tavily response: {error}")))?;
     Ok(payload
         .get("results")
         .and_then(Value::as_array)
@@ -725,7 +875,7 @@ async fn search_brave(
 ) -> CommandResult<Vec<WebSearchResultDto>> {
     ensure_web_operation_active(cancellation)?;
     let mut url = reqwest::Url::parse("https://api.search.brave.com/res/v1/web/search")
-        .map_err(|error| command_error(format!("URL Brave invalide : {error}")))?;
+        .map_err(|error| command_error(format!("Invalid Brave URL: {error}")))?;
     url.query_pairs_mut()
         .append_pair("q", query)
         .append_pair("count", &max_results.to_string())
@@ -740,7 +890,7 @@ async fn search_brave(
             .send(),
     )
     .await?
-    .map_err(|error| command_error(format!("La recherche Brave a échoué : {error}")))?;
+    .map_err(|error| command_error(format!("Brave search failed: {error}")))?;
     let status = response.status();
     if !status.is_success() {
         let detail = read_bounded_response(
@@ -751,7 +901,7 @@ async fn search_brave(
         )
         .await?;
         return Err(command_error(format!(
-            "Brave Search a refusé la requête ({status}){}.",
+            "Brave Search rejected the request ({status}){}.",
             format_http_error_detail(&detail),
         )));
     }
@@ -764,7 +914,7 @@ async fn search_brave(
     .await?;
     ensure_web_operation_active(cancellation)?;
     let payload = serde_json::from_slice::<Value>(&body)
-        .map_err(|error| command_error(format!("Réponse Brave invalide : {error}")))?;
+        .map_err(|error| command_error(format!("Invalid Brave response: {error}")))?;
     Ok(payload
         .pointer("/web/results")
         .and_then(Value::as_array)
@@ -803,14 +953,11 @@ async fn search_brave(
 
 fn web_search_client() -> CommandResult<reqwest::Client> {
     reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(WEB_SEARCH_CONNECT_TIMEOUT)
         .timeout(WEB_SEARCH_TIMEOUT)
         .build()
-        .map_err(|error| {
-            command_error(format!(
-                "Impossible de préparer le transport de recherche web : {error}"
-            ))
-        })
+        .map_err(|error| command_error(format!("Failed to prepare web search transport: {error}")))
 }
 
 fn append_bounded_chunk(
@@ -822,10 +969,10 @@ fn append_bounded_chunk(
     let next_len = body
         .len()
         .checked_add(chunk.len())
-        .ok_or_else(|| command_error(format!("Réponse {provider} trop volumineuse.")))?;
+        .ok_or_else(|| command_error(format!("{provider} response is too large.")))?;
     if next_len > max_bytes {
         return Err(command_error(format!(
-            "Réponse {provider} trop volumineuse (limite : {max_bytes} octets)."
+            "{provider} response is too large (limit: {max_bytes} bytes)."
         )));
     }
     body.extend_from_slice(chunk);
@@ -843,7 +990,7 @@ async fn read_bounded_response(
         .is_some_and(|content_length| content_length > max_bytes as u64)
     {
         return Err(command_error(format!(
-            "Réponse {provider} trop volumineuse (limite : {max_bytes} octets)."
+            "{provider} response is too large (limit: {max_bytes} bytes)."
         )));
     }
 
@@ -857,7 +1004,7 @@ async fn read_bounded_response(
     while let Some(chunk) = await_web_operation(cancellation, stream.next()).await? {
         let chunk = chunk.map_err(|error| {
             command_error(format!(
-                "Lecture de la réponse {provider} interrompue : {error}"
+                "Reading {provider} response was interrupted: {error}"
             ))
         })?;
         append_bounded_chunk(&mut body, &chunk, max_bytes, provider)?;
@@ -880,6 +1027,160 @@ fn format_http_error_detail(body: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    async fn content_http_fixture(requests: usize) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            for _ in 0..requests {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = String::new();
+                BufReader::new(&mut stream)
+                    .read_line(&mut request)
+                    .await
+                    .unwrap();
+                if request.starts_with("GET /start ") {
+                    let response = format!("HTTP/1.1 302 Found\r\nLocation: http://second.test:{}/image\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", address.port());
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                } else {
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\nConnection: close\r\n\r\n\x00\x01\x02\xff").await.unwrap();
+                }
+            }
+        });
+        (address, task)
+    }
+
+    #[tokio::test]
+    async fn content_http_reads_media_and_rechecks_each_redirect_destination() {
+        let (address, server) = content_http_fixture(2).await;
+        let attempts = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&attempts);
+        let mut admit = move |url: reqwest::Url, ip: Option<IpAddr>| {
+            observed
+                .lock()
+                .unwrap()
+                .push((url.host_str().unwrap().to_owned(), ip));
+            async { Ok(()) }
+        };
+        // A test resolver pins the fixture socket; production always uses
+        // resolve_public_web_fetch_target, whose private-address guard is tested separately.
+        let mut resolve = move |url: reqwest::Url| async move {
+            Ok((url.host_str().unwrap().to_owned(), address))
+        };
+        let initial =
+            reqwest::Url::parse(&format!("http://first.test:{}/start", address.port())).unwrap();
+        let result = fetch_admitted_web_resource_with_resolver(
+            initial,
+            WebFetchResourceKind::Content,
+            None,
+            &mut admit,
+            &mut resolve,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.body_base64, "AAEC/w==");
+        assert_eq!(result.content_type.as_deref(), Some("image/png"));
+        assert!(result.url.contains("second.test"));
+        assert_eq!(
+            *attempts.lock().unwrap(),
+            vec![
+                ("first.test".into(), None),
+                ("first.test".into(), Some(address.ip())),
+                ("second.test".into(), None),
+                ("second.test".into(), Some(address.ip()))
+            ]
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn content_http_refuses_redirect_before_connecting_to_its_target() {
+        let (address, server) = content_http_fixture(1).await;
+        let attempts = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&attempts);
+        let mut admit = move |url: reqwest::Url, ip: Option<IpAddr>| {
+            let host = url.host_str().unwrap().to_owned();
+            observed.lock().unwrap().push((host.clone(), ip));
+            async move {
+                if host == "second.test" {
+                    Err(command_error("Redirect denied by policy."))
+                } else {
+                    Ok(())
+                }
+            }
+        };
+        let mut resolve = move |url: reqwest::Url| async move {
+            Ok((url.host_str().unwrap().to_owned(), address))
+        };
+        let initial =
+            reqwest::Url::parse(&format!("http://first.test:{}/start", address.port())).unwrap();
+        let error = fetch_admitted_web_resource_with_resolver(
+            initial,
+            WebFetchResourceKind::Content,
+            None,
+            &mut admit,
+            &mut resolve,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.message, "Redirect denied by policy.");
+        assert_eq!(
+            *attempts.lock().unwrap(),
+            vec![
+                ("first.test".into(), None),
+                ("first.test".into(), Some(address.ip())),
+                ("second.test".into(), None)
+            ]
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn web_search_client_does_not_forward_api_key_on_redirect() {
+        use axum::{
+            http::{header, StatusCode},
+            routing::any,
+            Router,
+        };
+
+        let followed = Arc::new(AtomicBool::new(false));
+        let leak_flag = followed.clone();
+        let app = Router::new()
+            .route(
+                "/start",
+                any(|| async {
+                    (
+                        StatusCode::TEMPORARY_REDIRECT,
+                        [(header::LOCATION, "/leak")],
+                    )
+                }),
+            )
+            .route(
+                "/leak",
+                any(move || {
+                    let flag = leak_flag.clone();
+                    async move {
+                        flag.store(true, Ordering::SeqCst);
+                        StatusCode::OK
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let response = web_search_client()
+            .unwrap()
+            .get(format!("http://{address}/start"))
+            .header("X-Subscription-Token", "test-key")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert!(!followed.load(Ordering::SeqCst));
+        server.abort();
+    }
+
     #[test]
     fn web_search_secret_references_are_stable_and_do_not_contain_values() {
         assert_eq!(
@@ -897,7 +1198,7 @@ mod tests {
         assert_eq!(body.len(), 6);
 
         let error = append_bounded_chunk(&mut body, &[3], 6, "Test").expect_err("over limit");
-        assert!(error.message.contains("limite : 6 octets"));
+        assert!(error.message.contains("limit: 6 bytes"));
         assert_eq!(body.len(), 6, "the overflowing chunk must not be appended");
     }
 
@@ -974,6 +1275,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_cancellation_before_web_fetch_registration_prevents_transport() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let execution = web_fetch_execute_owned(
+            "not-a-url".into(),
+            "page".into(),
+            Some("native-cancel-before-web".into()),
+            Some(cancel.clone()),
+        );
+        cancel.cancel();
+        let error = execution.await.unwrap_err();
+        assert!(error.message.contains("was cancelled"));
+        let registry = WEB_OPERATION_CANCELLATIONS.get().unwrap().lock().unwrap();
+        assert!(!registry.active.contains_key("native-cancel-before-web"));
+    }
+
+    #[tokio::test]
     async fn web_operation_cancellation_drops_a_pending_future_after_it_starts() {
         let cancellation = Arc::new(WebOperationCancellation::new());
         let polled = Arc::new(AtomicBool::new(false));
@@ -1001,8 +1318,26 @@ mod tests {
             .expect("cancellation must return promptly")
             .expect("cancellation task must not panic");
         let error = result.expect_err("cancellation must return an error");
-        assert!(error.message.contains("a été annulée"));
+        assert!(error.message.contains("was cancelled"));
         assert!(dropped.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn blocked_destinations_return_a_stable_error_code_before_fetching() {
+        for url in [
+            "http://127.0.0.1:54579/accentuee",
+            "http://10.0.0.1/",
+            "http://localhost/",
+            "http://service.local/",
+        ] {
+            let url = reqwest::Url::parse(url).unwrap();
+            let error = resolve_public_web_fetch_target(&url, None)
+                .await
+                .unwrap_err();
+            let payload = serde_json::to_value(error).unwrap();
+            assert_eq!(payload["code"], "WEB_FETCH_DESTINATION_BLOCKED");
+            assert!(payload["message"].as_str().unwrap().contains("not allowed"));
+        }
     }
 
     #[test]
@@ -1030,6 +1365,19 @@ mod tests {
         ] {
             let parsed: IpAddr = address.parse().expect("valid test address");
             assert!(!ip_is_public(parsed), "{address} must be rejected");
+        }
+    }
+
+    #[test]
+    fn web_fetch_rejects_mixed_public_and_private_dns_answers_in_either_order() {
+        let public: SocketAddr = "1.1.1.1:443".parse().unwrap();
+        let private: SocketAddr = "192.168.1.10:443".parse().unwrap();
+        let mapped: SocketAddr = "[::ffff:127.0.0.1]:443".parse().unwrap();
+        assert_eq!(public_web_fetch_address(&[public]).unwrap(), public);
+        assert!(public_web_fetch_address(&[]).is_err());
+        for answer in [[public, private], [private, public], [public, mapped]] {
+            let error = public_web_fetch_address(&answer).unwrap_err();
+            assert_eq!(error.code(), Some("WEB_FETCH_DESTINATION_BLOCKED"));
         }
     }
 

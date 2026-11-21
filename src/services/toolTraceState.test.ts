@@ -124,3 +124,10 @@ describe("toolTraceState", () => {
     ]);
   });
 });
+
+it('does not erase an explicitly uncertain completion with a later generic completion', () => {
+  const original = { tool_call_id: 'call', tool_name: 'write', status: 'done' as const, recovery_state: 'unknown' as const };
+  const incoming = { ...original, recovery_state: 'completed' as const };
+  expect(mergeToolTracesPreservingDeniedStatus([incoming], [original])[0].recovery_state).toBe('unknown');
+  expect(parseToolTracesJson(JSON.stringify([original]))?.[0].recovery_state).toBe('unknown');
+});

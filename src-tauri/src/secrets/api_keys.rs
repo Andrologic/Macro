@@ -1,5 +1,4 @@
-use super::store::{delete_provider_secret_entry, read_provider_secret, write_provider_secret};
-use super::SecretError;
+use super::{policy::POLICY, SecretError};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
@@ -11,45 +10,51 @@ pub(super) fn clear_cache() {
 }
 
 pub fn get_api_key(provider_id: &str) -> Result<Option<String>, SecretError> {
-    if let Some(cached) = API_KEY_CACHE
-        .lock()
-        .expect("api key cache lock")
-        .get(provider_id)
-        .cloned()
-    {
-        return Ok(cached);
-    }
-
-    let Some(secret) = read_provider_secret(provider_id)? else {
-        API_KEY_CACHE
-            .lock()
-            .expect("api key cache lock")
-            .insert(provider_id.to_string(), None);
-        return Ok(None);
-    };
-
-    API_KEY_CACHE
-        .lock()
-        .expect("api key cache lock")
-        .insert(provider_id.to_string(), Some(secret.clone()));
-
-    Ok(Some(secret))
+    POLICY.cached(
+        || {
+            API_KEY_CACHE
+                .lock()
+                .expect("api key cache lock")
+                .get(provider_id)
+                .cloned()
+        },
+        |data| data.api_keys.get(provider_id).cloned(),
+        |value| {
+            API_KEY_CACHE
+                .lock()
+                .expect("api key cache lock")
+                .insert(provider_id.to_owned(), value.clone());
+        },
+    )
 }
 
 pub fn set_api_key(provider_id: &str, api_key: &str) -> Result<(), SecretError> {
-    write_provider_secret(provider_id, api_key)?;
-    API_KEY_CACHE
-        .lock()
-        .expect("api key cache lock")
-        .insert(provider_id.to_string(), Some(api_key.to_string()));
-    Ok(())
+    POLICY.mutation(|store, mut data| {
+        data.api_keys
+            .insert(provider_id.to_owned(), api_key.to_owned());
+        store.write_file(&data)?;
+        if !POLICY.available() {
+            return Err(SecretError::PolicyUnavailable);
+        }
+        API_KEY_CACHE
+            .lock()
+            .expect("api key cache lock")
+            .insert(provider_id.to_owned(), Some(api_key.to_owned()));
+        Ok(())
+    })
 }
 
 pub fn delete_api_key(provider_id: &str) -> Result<(), SecretError> {
-    delete_provider_secret_entry(provider_id)?;
-    API_KEY_CACHE
-        .lock()
-        .expect("api key cache lock")
-        .insert(provider_id.to_string(), None);
-    Ok(())
+    POLICY.mutation(|store, mut data| {
+        data.api_keys.remove(provider_id);
+        store.write_file(&data)?;
+        if !POLICY.available() {
+            return Err(SecretError::PolicyUnavailable);
+        }
+        API_KEY_CACHE
+            .lock()
+            .expect("api key cache lock")
+            .insert(provider_id.to_owned(), None);
+        Ok(())
+    })
 }

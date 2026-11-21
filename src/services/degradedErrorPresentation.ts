@@ -71,7 +71,12 @@ interface PresentServiceErrorOptions {
 const stringifyDetails = (value: unknown): string | null => {
   if (!value) return null;
   if (typeof value === 'string') return value;
-  if (value instanceof Error) return value.stack || value.message;
+  if (value instanceof Error) {
+    const message = value.message;
+    const stack = value.stack;
+    if (!stack) return message;
+    return stack.includes(message) ? stack : `${message}\n${stack}`;
+  }
   try {
     return JSON.stringify(value, null, 2);
   } catch {
@@ -375,6 +380,19 @@ export const presentServiceError = (
   const normalized = toServiceError(error);
   const message = serviceErrorMessage(normalized);
   const lower = message.toLowerCase();
+
+  if (normalized.code === SERVICE_ERROR_CODES.CONFLICT_ASSISTANT_CONTEXT_CHANGED) {
+    return {
+      title: title('errors.degraded.service.conflictAssistantContextChanged.title'),
+      body: body('errors.degraded.service.conflictAssistantContextChanged.body'),
+      nextStep: nextStep('errors.degraded.service.conflictAssistantContextChanged.nextStep'),
+      severity: 'warning',
+      technicalDetails: stringifyDetails(normalized.details) || message,
+      projectId: options.projectId ?? null,
+      repoPath: options.repoPath ?? null,
+      primaryAction: 'retry',
+    };
+  }
 
   if (normalized.code === SERVICE_ERROR_CODES.GIT_OBJECT_MISSING) {
     const worktreeUnmodified = (

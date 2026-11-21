@@ -20,6 +20,7 @@ const buildClient = (options?: {
   hasUpdate?: boolean;
   downloadError?: Error;
   installError?: Error;
+  installDeclined?: boolean;
   stagedError?: string;
 }) => {
   const reset = mock(async () => undefined);
@@ -47,6 +48,7 @@ const buildClient = (options?: {
     checkAndDownload,
     installAndRelaunch: mock(async () => {
       if (options?.installError) throw options.installError;
+      return !options?.installDeclined;
     }),
     reset,
   };
@@ -81,7 +83,7 @@ describe('app update store', () => {
         calls.push('staged');
         return { currentVersion: '0.1.0', update };
       }),
-      installAndRelaunch: mock(async () => undefined),
+      installAndRelaunch: mock(async () => true),
       reset: mock(async () => { calls.push('discard'); }),
     };
     const store = createAppUpdateStore(client);
@@ -116,7 +118,7 @@ describe('app update store', () => {
     const client: AppUpdaterClient = {
       status: mock(() => statusResult),
       checkAndDownload: mock(async () => ({ currentVersion: '0.1.0', update: null })),
-      installAndRelaunch: mock(async () => undefined),
+      installAndRelaunch: mock(async () => true),
       reset,
     };
     const store = createAppUpdateStore(client);
@@ -181,6 +183,19 @@ describe('app update store', () => {
     await store.getState().checkForUpdates();
     expect(await store.getState().installAndRestart()).toBe(true);
     expect(client.installAndRelaunch).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps the staged update ready when native downgrade confirmation is declined', async () => {
+    const { client } = buildClient({ installDeclined: true });
+    const store = createAppUpdateStore(client);
+    await store.getState().checkForUpdates();
+
+    expect(await store.getState().installAndRestart()).toBe(false);
+    expect(store.getState()).toMatchObject({
+      phase: 'ready',
+      error: null,
+      availableUpdate: { version: '0.1.1' },
+    });
   });
 
   test('keeps the staged update when installation fails and permits retry', async () => {

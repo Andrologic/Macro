@@ -2,14 +2,14 @@ import { describe, expect, test } from 'bun:test';
 import { parsePrePushInput, strongestProfile, targetBaseForBranch } from './pre-push-policy.mjs';
 
 describe('pre-push policy', () => {
-  test('maps GitFlow branches to their review target', () => {
-    expect(targetBaseForBranch('feature/hooks', '')).toEqual({ ref: 'origin/develop', mode: 'merge-base' });
+  test('uses main as the base for topic branches', () => {
+    expect(targetBaseForBranch('feature/hooks', '')).toEqual({ ref: 'origin/main', mode: 'merge-base' });
     expect(targetBaseForBranch('release/0.1.0', '')).toEqual({ ref: 'origin/main', mode: 'merge-base' });
     expect(targetBaseForBranch('hotfix/security', '')).toEqual({ ref: 'origin/main', mode: 'merge-base' });
   });
 
-  test('uses the exact remote commit for protected branch pushes', () => {
-    expect(targetBaseForBranch('develop', 'abc123')).toEqual({ ref: 'abc123', mode: 'direct' });
+  test('uses the exact previous commit for pushes to main', () => {
+    expect(targetBaseForBranch('main', 'abc123')).toEqual({ ref: 'abc123', mode: 'direct' });
     expect(targetBaseForBranch('main', '0'.repeat(40))).toEqual({ ref: 'origin/main', mode: 'direct' });
   });
 

@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import {
   DndContext,
@@ -16,6 +15,8 @@ import {
 import { useAppStore } from '../../stores/useAppStore';
 import { getServiceRuntimeCapabilities } from '../../services';
 import { toServiceError } from '../../services/contracts/errors';
+import { Dialog, DialogContext } from '../ui/Dialog';
+import { getActiveProjectRegistry } from '../../services/globalProjects';
 import { Icon } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { SearchBar } from '../ui/SearchBar';
@@ -59,8 +60,25 @@ interface MenuPosition {
 }
 
 type ProjectNavigatorMenuState =
-  | { type: 'group'; group: ProjectGroup; position: MenuPosition }
-  | { type: 'project'; project: Project; groupId: string | null; position: MenuPosition };
+  | { trigger: HTMLButtonElement; type: 'group'; group: ProjectGroup; position: MenuPosition }
+  | { trigger: HTMLButtonElement; type: 'project'; project: Project; groupId: string | null; position: MenuPosition };
+
+const ProjectNavigatorMenu: React.FC<{
+  trigger: HTMLButtonElement;
+  onClose: () => void;
+  children: React.ReactNode;
+}> = ({ trigger, onClose, children }) => {
+  const context = React.useContext(DialogContext);
+  const closeRef = useRef(onClose);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { closeRef.current = onClose; }, [onClose]);
+  useEffect(() => {
+    const unregister = context?.registerEscapeHandler(() => closeRef.current());
+    menuRef.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
+    return () => { unregister?.(); trigger.focus(); };
+  }, [context, trigger]);
+  return <div ref={menuRef} className="contents">{children}</div>;
+};
 
 const PROJECT_NAV_MENU_WIDTH = 160;
 const PROJECT_NAV_MENU_HEIGHT = 240;
@@ -278,6 +296,7 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
             onMenuOpen(e);
           }}
           data-project-nav-menu="true"
+          aria-label={t('projects.projectActions', 'Actions for {{name}}', { name: project.name })}
           className="p-1 rounded hover:bg-accent opacity-0 group-hover:opacity-100 transition-opacity"
         >
           <Icon name="more-vertical" size={14} className="text-muted-foreground" />
@@ -405,6 +424,9 @@ const InlineGroupDraftCard: React.FC<{
     inputRef.current?.select();
   }, [draft.id]);
 
+  const dialogContext = React.useContext(DialogContext);
+  useEffect(() => dialogContext?.registerEscapeHandler(onCancel), [dialogContext, onCancel]);
+
   return (
     <div
       ref={setNodeRef}
@@ -418,6 +440,7 @@ const InlineGroupDraftCard: React.FC<{
         <Icon name="layers" size={14} className="text-primary" />
         <input
           ref={inputRef}
+          aria-label={t('projects.groupNamePlaceholder', 'Group name')}
           value={draft.name}
           onChange={(event) => onNameChange(event.target.value)}
           onKeyDown={(event) => {
@@ -552,7 +575,8 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
 
   const filteredGroups = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    return projectGroups
+    const groups = showArchived ? projectGroups : getActiveProjectRegistry({ projectGroups, standaloneProjects: [] }).projectGroups;
+    return groups
       .map((group) => ({
         ...group,
         projects: group.projects.filter(
@@ -1043,28 +1067,21 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     }
 
     const handleDismiss = () => setMenuState(null);
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setMenuState(null);
-      }
-    };
-
     window.addEventListener('resize', handleDismiss);
     window.addEventListener('scroll', handleDismiss, true);
-    window.addEventListener('keydown', handleKeyDown);
 
     return () => {
       window.removeEventListener('resize', handleDismiss);
       window.removeEventListener('scroll', handleDismiss, true);
-      window.removeEventListener('keydown', handleKeyDown);
     };
   }, [menuState]);
 
   if (!isOpen) return null;
 
-  const projectMenuPortal =
-    menuState && typeof document !== 'undefined'
-      ? createPortal(
+  const projectMenu =
+    menuState
+      ? (
+        <ProjectNavigatorMenu trigger={menuState.trigger} onClose={() => setMenuState(null)}>
           <div
             className="fixed z-[9999] w-40 overflow-hidden rounded-lg border border-border bg-card py-1 shadow-2xl"
             style={{
@@ -1157,6 +1174,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                 <button
                   onClick={() => {
                     if (!projectManagementDisabled) {
+                      menuState.trigger.focus();
                       openProjectGitFlowModal(menuState.project.id);
                       setMenuState(null);
                     }
@@ -1292,14 +1310,18 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                 )}
               </>
             )}
-          </div>,
-          document.body
+          </div>
+        </ProjectNavigatorMenu>
         )
       : null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+    <Dialog
+      title={t('projects.title', 'Projects')}
+      onClose={() => { if (!isSubmittingConfirm) onClose(); }}
+      closeOnBackdropClick
+      backdropClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+    >
 
       <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
         <div className="flex shrink-0 items-center justify-between px-4 py-3 border-b border-border">
@@ -1322,6 +1344,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
             </button>
             <button
               onClick={onClose}
+              aria-label={t('common.close', 'Close')}
               className="p-1.5 rounded-lg hover:bg-accent transition-colors"
             >
               <Icon name="x" size={16} className="text-muted-foreground" />
@@ -1436,6 +1459,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                                       project,
                                       groupId: null,
                                       position: getProjectNavMenuPosition(trigger),
+                                      trigger,
                                     }
                               );
                             }}
@@ -1485,10 +1509,12 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                                     type: 'group',
                                     group,
                                     position: getProjectNavMenuPosition(trigger),
+                                    trigger,
                                   }
                             );
                           }}
                           data-project-nav-menu="true"
+                          aria-label={t('projects.projectActions', 'Actions for {{name}}', { name: group.name })}
                           className="p-1 rounded hover:bg-accent transition-colors"
                         >
                           <Icon name="more-vertical" size={14} className="text-muted-foreground" />
@@ -1538,6 +1564,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                                           project,
                                           groupId: group.id,
                                           position: getProjectNavMenuPosition(trigger),
+                                          trigger,
                                         }
                                   );
                                 }}
@@ -1734,7 +1761,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
           </div>
         )}
       </ConfirmPromptModal>
-      {projectMenuPortal}
-    </div>
+      {projectMenu}
+    </Dialog>
   );
 };

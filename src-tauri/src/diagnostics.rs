@@ -176,7 +176,7 @@ pub async fn app_diagnostic_generate(
         },
     };
     let content = serde_json::to_string_pretty(&report)
-        .map_err(|error| format!("Impossible de générer le diagnostic : {error}"))?;
+        .map_err(|error| format!("Failed to generate diagnostic report: {error}"))?;
     let report_id = uuid::Uuid::new_v4().to_string();
     *reports
         .report
@@ -195,7 +195,7 @@ pub async fn app_diagnostic_generate(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_diagnostic_save(
     report_id: String,
     path: String,
@@ -305,7 +305,7 @@ async fn database_diagnostic(pool: &DbPool, app: &AppHandle) -> DatabaseDiagnost
         .map(|status| recovery_status(&status.message).to_string())
         .unwrap_or_else(|_| "unavailable".to_string());
     let database = match pool.current() {
-        DbInitializationState::Ready(database) => database,
+        DbInitializationState::Ready(database) => database.pool,
         state => {
             let status = match state {
                 DbInitializationState::Initializing => "initializing",
@@ -539,15 +539,15 @@ fn persist_report(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut temporary = TempFileBuilder::new()
         .prefix(".macro-diagnostic-")
         .tempfile_in(parent)
-        .map_err(|error| format!("Impossible de préparer le rapport : {error}"))?;
+        .map_err(|error| format!("Failed to prepare report: {error}"))?;
     temporary
         .write_all(bytes)
         .and_then(|_| temporary.as_file().sync_all())
-        .map_err(|error| format!("Impossible d’enregistrer le rapport : {error}"))?;
+        .map_err(|error| format!("Failed to save report: {error}"))?;
     temporary
         .persist(path)
         .map(|_| ())
-        .map_err(|error| format!("Impossible de finaliser le rapport : {}", error.error))
+        .map_err(|error| format!("Failed to finalize report: {}", error.error))
 }
 
 #[cfg(test)]

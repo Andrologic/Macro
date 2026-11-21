@@ -16,11 +16,20 @@ export const isProjectGitActionable = (
 ): boolean => resolveProjectExecutionMode({ project }).mode === 'git';
 
 export const isProjectPlanActionable = (
-  project: Pick<Project, 'id' | 'path' | 'isReadOnly' | 'userReadOnly' | 'gitSetupState' | 'directEdit'> | null | undefined
+  project: Pick<Project, 'id' | 'path' | 'isReadOnly' | 'userReadOnly' | 'gitSetupState' | 'directEdit' | 'status'> | null | undefined
 ): boolean => {
+  if (project?.status === 'archived') return false;
   const mode = resolveProjectExecutionMode({ project }).mode;
   return mode === 'git' || mode === 'direct';
 };
+
+/** Active navigation is a projection; keep archived registry entries for restoration. */
+export const getActiveProjectRegistry = (registry: Pick<ProjectRegistry, 'projectGroups' | 'standaloneProjects'>) => ({
+  standaloneProjects: registry.standaloneProjects.filter(project => project.status !== 'archived'),
+  projectGroups: registry.projectGroups
+    .map(group => ({ ...group, projects: group.projects.filter(project => project.status !== 'archived') }))
+    .filter(group => group.projects.length > 0),
+});
 
 export const toGlobalProject = (group: ProjectGroup): GlobalProject => ({
   groupId: group.id,

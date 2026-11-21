@@ -1,9 +1,24 @@
 import { dirname, posix } from 'node:path';
-import { isExtractedNativeFile } from '../architecture/extracted-boundaries.mjs';
+import { isArgenticFile, isExtractedNativeFile } from '../architecture/extracted-boundaries.mjs';
 
 const LINTABLE_SCRIPT_PATTERN = /\.(?:[cm]?[jt]s|jsx|tsx)$/;
 const TEST_PATTERN = /\.test\.(?:ts|tsx)$/;
 const RUST_PATTERN = /\.rs$/;
+
+const AGSDL_CONFORMANCE_PATTERNS = [
+  /^crates\/argentic-(?:core|runtime)\//,
+  /^src-tauri\/src\/agsdl_/,
+  /^src-tauri\/src\/(?:argentic_(?:core|runtime)\/|argentic_(?:values|reader|routes|compile|work|route_data|clock)_conformance030_tests(?:\.rs|\/))/,
+  /^src-tauri\/src\/db\/(?:agsdl_execution\/|migrations\/)/,
+  /^src-tauri\/src\/(?:agsdl_host|lib)\.rs$/,
+  /^src-tauri\/(?:Cargo\.toml|Cargo\.lock)$/,
+  /^src\/services\/agsdlExecution\//,
+  /^src\/vendor\/agsdl\/v0\.3\//,
+  /^src\/vendor\/agsdl\/shared\/(?:json|values)\.mjs$/,
+  /^src\/vendor\/agsdl\/experimental\/readers\/javascript\/json\.mjs$/,
+  /^dev\/agsdl\/(?:conformance-host030\.ts|(?:compile|work|route-data|clock)-corpus030\.ts|(?:values|reader|routes|compile|native-json|work|route-data|clock)-oracle030(?:\.test)?\.ts|fixtures\/v0\.3\/)/,
+  /^dev\/ci\/(?:argentic|fast-local-checks|check-profiles)\.mjs$/,
+];
 
 const WORKFLOW_PATTERNS = [
   /^\.github\/(?:workflows|actions)\//,
@@ -42,6 +57,8 @@ const COPILOT_TYPECHECK_PATTERNS = [
 // DTO dependencies can live in any Rust module, including deleted/renamed files.
 // Keep this conservative without compiling Rust for unrelated frontend changes.
 const GENERATED_CONTRACT_PATTERNS = [
+  /^crates\/argentic-(?:core|runtime)\/.*\.rs$/,
+  /^crates\/argentic-(?:core|runtime)\/(?:Cargo\.toml|Cargo\.lock)$/,
   /^src-tauri\/.*\.rs$/,
   /^src-tauri\/(?:Cargo\.toml|Cargo\.lock|build\.rs)$/,
   /^src-tauri\/examples\/generate_config\//,
@@ -164,7 +181,7 @@ export function planFastLocalChecks(paths, options = {}) {
   }
   if (normalized.some((path) =>
     path.startsWith('src/') || path === 'package.json' ||
-    isExtractedNativeFile(path) ||
+    isExtractedNativeFile(path) || isArgenticFile(path) ||
     path.startsWith('dev/architecture/') || path === 'vite.config.ts')) {
     steps.push({
       name: 'Frontières des domaines',
@@ -222,6 +239,16 @@ export function planFastLocalChecks(paths, options = {}) {
         ],
       });
     }
+  }
+
+  if (normalized.some((path) => matchesAny(path, AGSDL_CONFORMANCE_PATTERNS))) {
+    steps.push({
+      name: 'Conformité AgSDL 0.3 en processus (37 scénarios)',
+      command: process.execPath,
+      args: ['dev/ci/argentic.mjs', 'argentic-runtime', 'test', '--locked', '--jobs', '2',
+        '--lib', 'conformance030_tests', '--', '--test-threads=1'],
+      needsDependencies: true,
+    });
   }
 
   return { paths: normalized, lintFiles, testFiles, steps };

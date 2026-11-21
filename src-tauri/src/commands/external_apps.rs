@@ -1618,10 +1618,17 @@ pub async fn open_external_target(
             command.current_dir(current_dir);
         }
 
-        command
+        let mut child = tokio::process::Command::from(command)
             .spawn()
-            .map(|_| ())
-            .map_err(|error| command_error(format!("Failed to launch external app: {}", error)))
+            .map_err(|error| command_error(format!("Failed to launch external app: {}", error)))?;
+        // Launchers may stay alive for the app's lifetime. Reap them separately
+        // so opening an app returns immediately and never leaves a zombie.
+        tokio::spawn(async move {
+            if let Err(error) = child.wait().await {
+                tracing::warn!(%error, "Failed to reap external app launcher");
+            }
+        });
+        Ok(())
     })
     .await
     .map_err(|error| command_error(format!("External launch task failed: {}", error)))?

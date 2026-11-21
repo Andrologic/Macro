@@ -23,7 +23,7 @@ const nativePorts = (): GoalProductFlowPorts => ({
   readQueuedCount: (id) => useChatStore.getState().pendingQueuedSubmissions.filter((entry) => entry.conversationId === id).length,
   readQueuedTurnIds: (id) => useChatStore.getState().pendingQueuedSubmissions.filter((entry) => entry.conversationId === id).map((entry) => entry.id),
   readQueuedAttemptedTurnIds: (id) => useChatStore.getState().attemptedQueuedSubmissions.filter((entry) => entry.conversationId === id).map((entry) => entry.id),
-  sendContinuation: (id, content) => useChatStore.getState().sendMessage({ conversationId: id, content }),
+  sendContinuation: (id, content) => useChatStore.getState().sendGoalContinuation(id, content),
   listRecoverable: listRecoverableConversationGoalAudits,
   subscribe: (listener) => useChatStore.subscribe(listener),
   publish: (id, goal) => useConversationGoalStore.getState().hydrateGoal(id, goal),

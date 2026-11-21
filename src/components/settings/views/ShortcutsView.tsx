@@ -32,14 +32,16 @@ export const ShortcutsView: React.FC = () => {
     resetBinding,
     resetAll,
   } = useShortcutsStore();
-  useSyncExternalStore(commandRegistry.subscribe, commandRegistry.getRevision, commandRegistry.getRevision);
+  const commandRevision = useSyncExternalStore(commandRegistry.subscribe, commandRegistry.getRevision, commandRegistry.getRevision);
   const mode = useAppStore((state) => state.mode);
   const settingsOpen = useAppStore((state) => state.settingsOpen);
   const isStreaming = useChatStore((state) => Boolean(state.selectedConversationId && state.getConversationRuntime(state.selectedConversationId).phase === 'streaming'));
-  const commands = commandRegistry.list({
+  const commands = useMemo(() => commandRegistry.list({
     mode, settingsOpen, isStreaming, promptHistoryNavigationMode,
     editable: false, isChatInputFocused: false,
-  });
+  // Registry mutations change the revision without changing the registry identity.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [commandRevision, mode, settingsOpen, isStreaming, promptHistoryNavigationMode]);
   const shortcutDefinitions = useMemo(() => commands.map((command) => ({ ...command.definition, id: command.id })), [commands]);
   const { matches } = useSettingsSearch();
   const [recordingId, setRecordingId] = useState<ShortcutId | null>(null);

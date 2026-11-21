@@ -6,6 +6,16 @@ import {
 } from "./restartSafety";
 
 describe("selectRestartSafetySnapshot", () => {
+  it("includes native run identities independently of Chat, tasks and UI selection", () => {
+    const empty = { conversations: [], conversationRuntimeById: {} };
+    const approved = selectRestartSafetySnapshot({ ...empty, executionIds: ['call-only', 'call-only'] });
+    expect(approved.activeWorkCount).toBe(1);
+    expect(approved.hasActiveWork).toBe(true);
+    expect(approved.activeExecutions?.map(activity => activity.id)).toEqual(['call-only']);
+    const current = selectRestartSafetySnapshot({ ...empty, executionIds: ['call-only', 'another-plan'] });
+    expect(hasUnapprovedRestartSafetyActivity(approved, current)).toBe(true);
+    expect(hasUnapprovedRestartSafetyActivity(current, approved)).toBe(false);
+  });
   it("collects active conversation runtimes and keeps their titles", () => {
     const snapshot = selectRestartSafetySnapshot({
       conversations: [

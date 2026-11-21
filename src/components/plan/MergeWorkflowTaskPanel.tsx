@@ -378,6 +378,9 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     })
   );
   const [isArchiving, setIsArchiving] = useState(false);
+  const retryRequestsByTaskIdRef = useRef(new Map<string, object>());
+  const [retryingTaskIds, setRetryingTaskIds] = useState<Set<string>>(() => new Set());
+  const isRetryingMerge = retryingTaskIds.has(task.id);
   const [isResolvingAutomatically, setIsResolvingAutomatically] = useState(false);
   const [repositoryResolutionStateById, setRepositoryResolutionStateById] =
     useState<Record<string, RepositoryResolutionState>>({});
@@ -1381,26 +1384,56 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
 
         <div className="border-t border-border bg-card p-3 shrink-0 space-y-2">
           <div className="text-xs text-muted-foreground break-words">{footerMessage}</div>
+          {isFailed && runtime?.message && (
+            <details className="text-xs text-destructive break-words">
+              <summary className="cursor-pointer">{t('errors.showDetails', 'Show details')}</summary>
+              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{runtime.message}</pre>
+            </details>
+          )}
           {isBlocked || isFailed ? (
-            isPlanFinalizationTask && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="w-full"
-                onClick={() => void handleArchive()}
-                disabled={!viewState.canArchive || isArchiving || isResolvingAutomatically}
-              >
-                {t('common.archive', 'Archive')}
-              </Button>
-            )
+            <div className="space-y-2">
+              {isFailed && (
+                <Button
+                  type="button"
+                  className="w-full"
+                  disabled={!viewState.canRetry || isArchiving || isResolvingAutomatically || isRetryingMerge}
+                  isLoading={isRetryingMerge}
+                  onClick={() => {
+                    if (retryRequestsByTaskIdRef.current.has(task.id)) return;
+                    const request = {};
+                    const retryTaskId = task.id;
+                    retryRequestsByTaskIdRef.current.set(retryTaskId, request);
+                    setRetryingTaskIds(new Set(retryRequestsByTaskIdRef.current.keys()));
+                    void handleRetryMerge().finally(() => {
+                      if (retryRequestsByTaskIdRef.current.get(retryTaskId) !== request) return;
+                      retryRequestsByTaskIdRef.current.delete(retryTaskId);
+                      setRetryingTaskIds(new Set(retryRequestsByTaskIdRef.current.keys()));
+                    });
+                  }}
+                >
+                  {t('common.retry', 'Retry')}
+                </Button>
+              )}
+              {isPlanFinalizationTask && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => void handleArchive()}
+                  disabled={!viewState.canArchive || isArchiving || isResolvingAutomatically || isRetryingMerge}
+                >
+                  {t('common.archive', 'Archive')}
+                </Button>
+              )}
+            </div>
           ) : (
             <div className={cn('grid gap-2', isPlanFinalizationTask ? 'grid-cols-2' : 'grid-cols-1')}>
               <Button
                 type="button"
                 className="w-full"
                 onClick={() => void handleMerge()}
-                disabled={!viewState.canMerge || isArchiving}
+                disabled={!viewState.canMerge || isArchiving || isRetryingMerge}
                 isLoading={viewState.isBusy}
               >
                 {viewState.isBusy
@@ -1413,7 +1446,7 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
                   variant="ghost"
                   className="w-full"
                   onClick={() => void handleArchive()}
-                  disabled={!viewState.canArchive || isArchiving}
+                  disabled={!viewState.canArchive || isArchiving || isRetryingMerge}
                   isLoading={isArchiving}
                 >
                   {t('common.archive', 'Archive')}

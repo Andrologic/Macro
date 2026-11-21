@@ -203,6 +203,8 @@ describe('bounded native extraction guard', () => {
       writeFileSync(join(root, 'package.json'), '{}');
       writeFileSync(join(root, 'vite.config.ts'), 'export default { resolve: { alias: {} } };');
       writeFileSync(join(root, 'baseline.json'), JSON.stringify(baseline));
+      mkdirSync(join(root, 'dev/architecture'), { recursive: true });
+      writeFileSync(join(root, 'dev/architecture/argentic-boundaries.baseline.json'), JSON.stringify({ schemaVersion: 1, baseRef: '627ea641d8ab1439ca41e9cd68bb07454ea33c49', counts: { rust: {}, imports: {} } }));
       const native = join(root, 'src-tauri/src/core/db_state.rs');
       const check = () => Bun.spawnSync([process.execPath, join(import.meta.dir, 'import-boundaries.mjs'),
         '--root', root, '--baseline', 'baseline.json', '--check', '--format', 'json']);

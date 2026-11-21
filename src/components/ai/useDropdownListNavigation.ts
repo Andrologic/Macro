@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type RefObject, type KeyboardEvent } from 'react';
 
 interface DropdownListNavigationOptions {
   isOpen: boolean;
@@ -6,6 +6,7 @@ interface DropdownListNavigationOptions {
   itemCount: number;
   selectedIndex: number;
   onSelect: (index: number) => void;
+  searchInputRef?: RefObject<HTMLInputElement | null>;
 }
 
 export const useDropdownListNavigation = ({
@@ -14,17 +15,18 @@ export const useDropdownListNavigation = ({
   itemCount,
   selectedIndex,
   onSelect,
+  searchInputRef,
 }: DropdownListNavigationOptions) => {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [activeIndex, setActiveIndex] = useState(Math.max(selectedIndex, 0));
 
   const open = useCallback((preferredIndex?: number) => {
-    if (itemCount === 0) return;
+    if (itemCount === 0 && !searchInputRef) return;
     const nextIndex = preferredIndex ?? (selectedIndex >= 0 ? selectedIndex : 0);
     setActiveIndex(Math.max(0, Math.min(nextIndex, itemCount - 1)));
     setIsOpen(true);
-  }, [itemCount, selectedIndex, setIsOpen]);
+  }, [itemCount, searchInputRef, selectedIndex, setIsOpen]);
 
   const close = useCallback((restoreFocus = false) => {
     setIsOpen(false);
@@ -40,10 +42,16 @@ export const useDropdownListNavigation = ({
   }, [close, itemCount, onSelect]);
 
   useEffect(() => {
-    if (!isOpen) return undefined;
+    if (!isOpen || !searchInputRef) return undefined;
+    const frameId = window.requestAnimationFrame(() => searchInputRef.current?.focus());
+    return () => window.cancelAnimationFrame(frameId);
+  }, [isOpen, searchInputRef]);
+
+  useEffect(() => {
+    if (!isOpen || searchInputRef) return undefined;
     const frameId = window.requestAnimationFrame(() => optionRefs.current[activeIndex]?.focus());
     return () => window.cancelAnimationFrame(frameId);
-  }, [activeIndex, isOpen]);
+  }, [activeIndex, isOpen, searchInputRef]);
 
   const handleTriggerKeyDown = useCallback((event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key === 'ArrowDown') {

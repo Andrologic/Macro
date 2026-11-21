@@ -1,0 +1,97 @@
+{
+  "description": "An approval passes on the message it received, with the person's comment in its comments; it fails with APPROVAL_TIMEOUT without an answer in time, a person's time included.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "approval",
+    "agents": {
+      "writer": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "write",
+      "steps": {
+        "write": {
+          "type": "agent",
+          "agent": "writer",
+          "next": "approve"
+        },
+        "approve": {
+          "type": "approval",
+          "title": "Publish the notes?",
+          "timeoutMs": 86400000,
+          "next": {
+            "publish": [],
+            "revise": "write"
+          }
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "write",
+      "returns": {
+        "text": "Draft 1"
+      }
+    },
+    {
+      "work": "approve",
+      "returns": {
+        "choice": "revise",
+        "comment": "Fix the title."
+      }
+    },
+    {
+      "work": "write",
+      "returns": {
+        "text": "Draft 2"
+      }
+    },
+    {
+      "elapse": 86400001
+    },
+    {
+      "running": []
+    }
+  ],
+  "expect": {
+    "run": "failed",
+    "starts": {
+      "write": 2,
+      "approve": 2
+    },
+    "messages": [
+      {
+        "to": "approve",
+        "nth": 1,
+        "resources": {
+          "text": "Draft 1"
+        }
+      },
+      {
+        "to": "write",
+        "nth": 2,
+        "resources": {
+          "text": "Draft 1"
+        },
+        "comments": [
+          {
+            "step": "approve",
+            "comment": "Fix the title."
+          }
+        ]
+      }
+    ],
+    "failures": [
+      {
+        "step": "approve",
+        "code": "APPROVAL_TIMEOUT"
+      }
+    ]
+  }
+}

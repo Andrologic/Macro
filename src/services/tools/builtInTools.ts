@@ -540,20 +540,7 @@ export const BUILT_IN_TOOLS: Tool[] = [
       internal: true,
     },
   },
-  {
-    id: 'strategy_generate',
-    name: 'Generate Strategy',
-    category: 'productivity',
-    status: 'enabled',
-    description: 'Generate strategy from the active plan conversation and project context',
-    icon: 'git-merge',
-    config: {
-      enabled: true,
-      visible: true,
-      chatMode: true,
-      internal: true,
-    },
-  },
+
   {
     id: 'task_todo_get',
     name: 'Read Task Todos',
@@ -723,46 +710,14 @@ export const BUILT_IN_TOOLS: Tool[] = [
     },
   },
   {
-    id: 'strategy_get',
-    name: 'Get Strategy',
-    category: 'productivity',
-    status: 'enabled',
-    description: 'Read strategy nodes and branches for the active Architect plan',
-    icon: 'git-merge',
-    config: {
-      enabled: true,
-      visible: true,
-      chatMode: true,
-      internal: true,
-    },
+    id: 'agsdl_get', name: 'Read AgSDL', category: 'productivity', status: 'enabled',
+    description: 'Read the plan AgSDL document and diagnostics', icon: 'git-merge',
+    config: { enabled: true, visible: true, chatMode: true, internal: true },
   },
   {
-    id: 'strategy_update',
-    name: 'Update Strategy',
-    category: 'productivity',
-    status: 'enabled',
-    description: 'Modify or replace strategy nodes for the active Architect plan',
-    icon: 'edit',
-    config: {
-      enabled: true,
-      visible: true,
-      chatMode: true,
-      internal: true,
-    },
-  },
-  {
-    id: 'strategy_delete',
-    name: 'Delete Strategy',
-    category: 'productivity',
-    status: 'enabled',
-    description: 'Delete strategy for the active Architect plan with confirmation',
-    icon: 'trash',
-    config: {
-      enabled: true,
-      visible: true,
-      chatMode: true,
-      internal: true,
-    },
+    id: 'agsdl_update', name: 'Edit AgSDL', category: 'productivity', status: 'enabled',
+    description: 'Edit and save the plan AgSDL document', icon: 'edit',
+    config: { enabled: true, visible: true, chatMode: true, internal: true },
   },
 ];
 
@@ -806,7 +761,6 @@ export const defaultToolSettings: Record<string, boolean> = {
   mark_source_passage: true,
   read_sources: true,
   edit_source_passage: true,
-  strategy_generate: true,
   task_todo_get: true,
   task_todo_update: true,
   task_artifact_list: true,
@@ -819,8 +773,7 @@ export const defaultToolSettings: Record<string, boolean> = {
   plan_delete: true,
   plan_restore: true,
   plan_set_active: true,
-  strategy_get: true,
-  strategy_update: true,
-  strategy_delete: true,
+  agsdl_get: true,
+  agsdl_update: true,
 };
 export const defaultMCPServerSettings: Record<string, boolean> = {};

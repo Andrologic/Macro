@@ -13,6 +13,16 @@ autobins = false
 name = "macro"
 path = "src/main.rs"
 
+[[bin]]
+name = "agsdl-content-helper-qa"
+path = "src/bin/agsdl_content_helper_qa.rs"
+required-features = ["agsdl-content-qa"]
+
+[[example]]
+name = "performance-sqlite"
+path = "examples/performance-sqlite/main.rs"
+required-features = ["performance-sqlite"]
+
 [[test]]
 name = "lsp_core"
 path = "tests/lsp_core.rs"
@@ -33,20 +43,30 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 browser-runtime-debug = ["dep:tauri-remote-ui"]
+agsdl-content-qa = ["argentic-runtime/agsdl-content-qa"]
+agsdl-engine-qa = []
+performance-sqlite = []
+custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
-tauri-build = { version = "=2.5.5", features = [] }
+tauri-build = { version = "=2.7.4", features = [] }
+serde_json = "1"
 
 [dependencies]
+argentic-core = { git = "https://github.com/Andrologic/argentic.git", rev = "e4f0f14606c77b917284f621ffb12441d55bf8cb" }
+argentic-runtime = { git = "https://github.com/Andrologic/argentic.git", rev = "e4f0f14606c77b917284f621ffb12441d55bf8cb" }
+# Same locked SQLite library as SQLx, for bounded native BLOB reads.
+libsqlite3-sys = "=0.30.1"
+keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
 tempfile = "3"
-tauri = { version = "=2.10.2", features = ["macos-private-api", "image-png"] }
+tauri = { version = "=2.12.5", features = ["macos-private-api", "image-png"] }
 tauri-plugin-opener = "2"
-tauri-plugin-http = "2"
+tauri-plugin-http = { version = "=2.5.9", path = "vendor/tauri-plugin-http" }
 tauri-plugin-dialog = "=2.6.0"
 tauri-plugin-process = "=2.3.1"
-tauri-plugin-updater = { version = "=2.10.1", path = "vendor/tauri-plugin-updater" }
+tauri-plugin-updater = { version = "=2.13.3", path = "vendor/tauri-plugin-updater" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value", "arbitrary_precision"] }
 serde_yaml = "0.9"
 unicode-normalization = "0.1"
 tokio = { version = "1", features = ["full"] }
@@ -55,7 +75,6 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
-tauri-plugin-store = "2"
 
 # Core
 tracing = "0.1"
@@ -85,6 +104,13 @@ same-file = "1"
 # while every OAuth request is routed through Macro's guarded HTTP adapter.
 rmcp = { version = "=3.1.3", default-features = false, features = ["auth", "client", "transport-streamable-http-client"] }
 reqwest = { version = "0.12", features = ["stream", "json", "multipart"] }
+# Direct access to already locked clients for the private owned Connect path.
+hyper = { version = "=1.11.0", features = ["client", "http1"] }
+hyper-util = { version = "=0.1.20", features = ["tokio"] }
+http-body-util = "=0.1.5"
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "=0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "=1.0.9"
 http = "1"
 bytes = "1"
 sse-stream = "0.2.4"
@@ -93,7 +119,8 @@ async-trait = "0.1"
 axum = "0.8"
 tower-http = { version = "0.6.8", features = ["cors"] }
 base64 = "0.22"
-minisign-verify = "0.2"
+minisign-verify = "=0.3.0"
+semver = "1"
 sha2 = "0.10"
 sha1 = "0.10"
 subtle = "2"
@@ -116,16 +143,29 @@ tauri-remote-ui = { path = "vendor/tauri-remote-ui", optional = true }
 
 # Utils
 [dev-dependencies]
+argentic-runtime = { git = "https://github.com/Andrologic/argentic.git", rev = "e4f0f14606c77b917284f621ffb12441d55bf8cb", features = ["dev-support"] }
 rmcp = { version = "=3.1.3", default-features = false, features = ["client", "server", "transport-async-rw"] }
+
+tauri = { version = "=2.12.5", features = ["test"] }
+
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2 = "0.6.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSGeometry", "NSThread", "objc2-core-foundation"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSBezierPath", "NSBitmapImageRep", "NSColor", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageRep", "NSMenu", "NSMenuItem", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSGeometry", "NSThread", "NSNotification", "NSDistributedNotificationCenter", "objc2-core-foundation"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSBezierPath", "NSBitmapImageRep", "NSColor", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageRep", "NSMenu", "NSMenuItem", "NSView", "NSWindow", "NSWorkspace"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming", "Wdk_System_SystemInformation"] }
+
+
+[workspace]
+members = []
+exclude = ["vendor/tauri-plugin-http", "vendor/tauri-plugin-updater", "vendor/tauri-remote-ui"]
+resolver = "2"
+
+[profile.dev.package.sha2]
+opt-level = 3

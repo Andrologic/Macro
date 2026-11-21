@@ -1,0 +1,65 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "quorum-no-next",
+  "agents": {
+    "lead": {
+      "harness": "example",
+      "permissions": "read-only"
+    },
+    "voter": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "propose",
+    "steps": {
+      "propose": {
+        "type": "agent",
+        "agent": "lead",
+        "next": [
+          "v1",
+          "v2",
+          "v3"
+        ]
+      },
+      "v1": {
+        "type": "agent",
+        "agent": "voter",
+        "instance": "new",
+        "next": {
+          "approve": "vote",
+          "reject": "vote"
+        }
+      },
+      "v2": {
+        "type": "agent",
+        "agent": "voter",
+        "instance": "new",
+        "next": {
+          "approve": "vote",
+          "reject": "vote"
+        }
+      },
+      "v3": {
+        "type": "agent",
+        "agent": "voter",
+        "instance": "new",
+        "next": {
+          "approve": "vote",
+          "reject": "vote"
+        }
+      },
+      "vote": {
+        "type": "join",
+        "quorum": {
+          "count": 2,
+          "accept": [
+            "approve"
+          ]
+        },
+        "remaining": "stop"
+      }
+    }
+  }
+}

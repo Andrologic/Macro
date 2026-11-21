@@ -1,0 +1,47 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "integer-index",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full",
+      "results": {
+        "items": {
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": {
+          "step": "t",
+          "message": {
+            "resources": {
+              "x": {
+                "from": [
+                  "results",
+                  "items",
+                  0.0
+                ]
+              }
+            }
+          }
+        }
+      },
+      "t": {
+        "type": "agent",
+        "agent": "a"
+      }
+    }
+  }
+}

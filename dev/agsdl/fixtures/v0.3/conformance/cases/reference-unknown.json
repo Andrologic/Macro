@@ -1,0 +1,23 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "reference-unknown",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only",
+      "skills": [
+        "missing"
+      ]
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "ghost",
+        "next": "nowhere"
+      }
+    }
+  }
+}

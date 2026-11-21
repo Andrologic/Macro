@@ -1,0 +1,73 @@
+import { evaluateClock030, type ClockRequest030 } from './clock-oracle030';
+import { buildClockCorpus030 } from './clock-corpus030';
+import { evaluateRouteData030, type RouteDataRequest030 } from './route-data-oracle030';
+import { buildRouteDataCorpus030 } from './route-data-corpus030';
+// JSON-lines transport for the native, in-process conformance test. Evaluators
+// are pure TS references; stdout is reserved for correlated replies.
+import { createInterface } from 'node:readline';
+import { compileHost030 } from '../../src/services/agsdlExecution/hostCompilation';
+import { createHostWorkPort030 } from '../../src/services/agsdlExecution/hostWorkPort030';
+import { createHostRoutePort030 } from '../../src/services/agsdlExecution/hostRouteBroker030';
+import { connectValueSchemaValidator030 } from '../../src/services/agsdlExecution/valueSchemaPort030';
+import { NumberToken, parse } from '../../src/vendor/agsdl/v0.3/json.mjs';
+import { validate } from '../../src/vendor/agsdl/v0.3/valueschema.mjs';
+import type { HostRouteJob030 } from '../../src/services/agsdlExecution/hostRouteBroker030';
+import type { HostWorkJob030 } from '../../src/services/agsdlExecution/hostWorkPort030';
+import type { CapturedRegistry030 } from '../../src/services/agsdlExecution/contracts030';
+import type { SourceRevision } from '../../src/services/agsdlExecution/contracts';
+import { evaluateValues030, type ValuesRequest030 } from './values-oracle030';
+import { evaluateReader030, type ReaderRequest030 } from './reader-oracle030';
+import { evaluateRoutes030, type RoutesRequest030 } from './routes-oracle030';
+import { evaluateNativeJson030, type NativeJsonRequest030 } from './native-json-oracle030';
+import { evaluateCompile030, type CompileRequest030 } from './compile-oracle030';
+import { buildCompileCorpus030 } from './compile-corpus030';
+import { evaluateWork030, type WorkRequest030 } from './work-oracle030';
+import { buildWorkCorpus030, WORK_MINIMUMS030, WORK_SEED030 } from './work-corpus030';
+
+type Request = { id: number } & (
+  | { kind: 'compile'; authoredSource: string; source: SourceRevision; registry: CapturedRegistry030 }
+  | { kind: 'work'; job: HostWorkJob030 }
+  | { kind: 'route'; job: HostRouteJob030 }
+  | { kind: 'values'; request: ValuesRequest030 }
+  | { kind: 'reader'; request: ReaderRequest030 }
+  | { kind: 'routes'; request: RoutesRequest030 }
+  | { kind: 'nativeJson'; request: NativeJsonRequest030 }
+  | { kind: 'compilePure'; request: CompileRequest030 }
+  | { kind: 'compileCorpus'; request: null }
+  | { kind: 'workPure'; request: WorkRequest030 }
+  | { kind: 'workCorpus'; request: null }
+  | { kind: 'clockPure'; request: ClockRequest030 }
+  | { kind: 'clockCorpus'; request: null }
+  | { kind: 'routeDataPure'; request: RouteDataRequest030 }
+  | { kind: 'routeDataCorpus'; request: null }
+);
+const validator = connectValueSchemaValidator030({ NumberToken, parse, validate });
+for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
+  let id: number | null = null;
+  try {
+    const request = JSON.parse(line) as Request;
+    id = request.id;
+    let output: unknown;
+    switch (request.kind) {
+      case 'compile': output = JSON.parse(await compileHost030(request.authoredSource, request.source, request.registry)); break;
+      case 'work': output = await createHostWorkPort030(request.job.generation, validator).evaluate(request.job); break;
+      case 'route': output = await createHostRoutePort030(request.job.generation).evaluate(request.job); break;
+      case 'values': output = evaluateValues030(request.request); break;
+      case 'reader': output = evaluateReader030(request.request); break;
+      case 'routes': output = evaluateRoutes030(request.request); break;
+      case 'nativeJson': output = { json: JSON.stringify(evaluateNativeJson030(request.request)) }; break;
+      case 'clockPure': output = { json: await evaluateClock030(request.request) }; break;
+      case 'clockCorpus': output = buildClockCorpus030(); break;
+      case 'routeDataPure': output = { json: await evaluateRouteData030(request.request) }; break;
+      case 'routeDataCorpus': output = await buildRouteDataCorpus030(); break;
+      case 'workCorpus': output = { seed: WORK_SEED030, minimums: WORK_MINIMUMS030, cases: buildWorkCorpus030() }; break;
+      case 'workPure': output = { json: evaluateWork030(request.request) }; break;
+      case 'compilePure': output = { json: await evaluateCompile030(request.request) }; break;
+      case 'compileCorpus': output = await buildCompileCorpus030(); break;
+      default: throw new Error('Unknown conformance host operation');
+    }
+    process.stdout.write(JSON.stringify({ id, output }) + '\n');
+  } catch (error) {
+    process.stdout.write(JSON.stringify({ id, error: String(error) }) + '\n');
+  }
+}

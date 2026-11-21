@@ -1,0 +1,243 @@
+import type { AgsdlChange } from "../../types/agsdl";
+import { keyId, list, object, pointerPart, readDocument, scanSource, text } from "./document";
+import type { ViewerCard } from "./viewer";
+
+export interface PropertyOption { value: string; label: string }
+export interface ComponentProperty {
+  exactJson?: boolean;
+  optional?: boolean;
+  path: string;
+  label: string;
+  value: string;
+  options?: PropertyOption[];
+  /** Declared step targets in the real source owner’s flow or composition. */
+  destinations030?: PropertyOption[];
+  readonly?: boolean;
+  /** A new relation is appended only when the optional reference is selected. */
+  relationSource?: string;
+  removePath?: string;
+  referenceGroup?: string;
+}
+export interface ComponentProperties { fields: ComponentProperty[]; shared: boolean; unsupported: boolean }
+const same = (a: unknown, b: unknown): boolean => {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) return JSON.stringify(a) === JSON.stringify(b);
+  if (a && b && typeof a === "object" && typeof b === "object") {
+    const left = object(a), right = object(b);
+    return Object.keys(left).length === Object.keys(right).length && Object.keys(left).every(key => Object.hasOwn(right, key) && same(left[key], right[key]));
+  }
+  return false;
+};
+
+/** Project the real owners. Unsupported contracts stay readable and are never rewritten. */
+export function componentProperties(source: string, card: ViewerCard): ComponentProperties {
+  if (card.edition030) return properties030(source, card);
+  const doc = readDocument(source);
+  if (doc.contract === "agsdl-0.2.0") return { fields: [], shared: false, unsupported: true };
+  const parsed = scanSource(source);
+  const decoder = new TextDecoder();
+  const raw = (path: string) => {
+    const span = parsed.spans.get(path);
+    if (!span) throw new Error(`Missing property: ${path}`);
+    return decoder.decode(parsed.bytes.subarray(span.start, span.end));
+  };
+  const definitions = list(doc.definitions).map(object);
+  const graphs = list(doc.graphs).map(object);
+  const steps = graphs.flatMap(graph => list(graph.steps).map(object));
+  const relations = list(doc.relations).map(object);
+  const unique = (key: unknown) => {
+    if (!["scope", "id", "version"].every(part => text(object(key)[part]))) return undefined;
+    const matches = definitions.map((value, index) => ({ value, index })).filter(({ value }) => keyId(value.key) === keyId(key));
+    return matches.length === 1 ? matches[0] : undefined;
+  };
+  let owner = card.details, path = card.path;
+  if (path.startsWith("/legacy/")) {
+    const matches = definitions.map((value, index) => ({ value, index })).filter(({ value }) => value.kind === "Agent" && object(value.annotations).macroLegacyNodeId === card.id);
+    if (matches.length !== 1) return { fields: [], shared: false, unsupported: true };
+    owner = matches[0].value; path = `/definitions/${matches[0].index}`;
+  }
+  const fields: ComponentProperty[] = [];
+  let unsupported = ["Resource", "Tool"].includes(text(owner.kind));
+  const options = (kind: string): PropertyOption[] => definitions.flatMap((definition, index) =>
+    definition.kind === kind && unique(definition.key) ? [{ value: raw(`/definitions/${index}/key`), label: [text(object(definition.annotations).title), `${text(object(definition.key).scope)}/${text(object(definition.key).id)}@${text(object(definition.key).version)}`].filter(Boolean).join(" · ") }] : []);
+  const reference = (at: string, value: unknown, label: string, kind: string, allowed = options(kind), readonly = false) => {
+    let original: string;
+    try { original = raw(at); } catch { unsupported = true; return; }
+    const resolved = unique(value);
+    const selected = allowed.find(option => keyId(JSON.parse(option.value)) === keyId(value));
+    const valueText = selected?.value ?? original;
+    fields.push({ path: at, label, value: valueText, readonly,
+      options: selected ? allowed : [{ value: valueText, label: text(object(value).id) || text(object(object(value).key).id) || "?" }, ...allowed] });
+    if (!resolved) unsupported = true;
+  };
+  const agent = owner.kind === "invoke" ? unique(owner.agent) : owner.kind === "Agent" ? unique(owner.key) : undefined;
+  if (agent?.value.kind === "Agent") {
+    const configured = list(object(doc.runtime).configurations).map(object).flatMap(configuration => list(configuration.agents).map(object)).some(binding => keyId(binding.agent) === keyId(agent.value.key) && (list(binding.tools).length > 0 || binding.engine != null));
+    if (configured) unsupported = true;
+    const agentPath = `/definitions/${agent.index}`;
+    relations.forEach((relation, index) => {
+      if (keyId(relation.source) !== keyId(agent.value.key)) return;
+      if (relation.relation === "uses" && relation.expectedKind === "Tool") {
+        reference(`/relations/${index}/target`, relation.target, "tools", "Tool", options("Tool"), configured);
+        const field = fields.at(-1);
+        if (field?.path === `/relations/${index}/target`) { field.referenceGroup = `tools:${agent.index}`; field.removePath = `/relations/${index}`; field.options!.unshift({ value: "", label: "remove" }); }
+      }
+      if (relation.relation === "exposes") {
+        const consumed = steps.some(step => keyId(step.agent) === keyId(agent.value.key) && keyId(step.interface) === keyId(relation.target));
+        reference(`/relations/${index}/target`, relation.target, "exposedInterfaces", "Interface", options("Interface"), consumed);
+        const field = fields.at(-1);
+        if (field?.path === `/relations/${index}/target`) field.referenceGroup = `interfaces:${agent.index}`;
+        if (consumed) unsupported = true;
+      }
+    });
+    if (Array.isArray(doc.relations) && !configured) fields.push({ path: "/relations/-", label: "addTool", value: "", options: [{ value: "", label: "none" }, ...options("Tool").filter(option => !relations.some(relation => relation.relation === "uses" && keyId(relation.source) === keyId(agent.value.key) && keyId(relation.target) === keyId(JSON.parse(option.value))))], referenceGroup: `tools:${agent.index}`, relationSource: raw(`${agentPath}/key`) });
+  }
+  if (owner.kind === "invoke") {
+    const candidates = options("Interface").filter(option => {
+      const definition = unique(JSON.parse(option.value))?.value;
+      const operations = list(object(definition?.payload).operations).map(object).filter(operation => operation.id === owner.operation);
+      return operations.length === 1 && ["inbound", "bidirectional"].includes(text(operations[0].direction)) && operations[0].mode === "request-response" && same(operations[0].inputs, owner.inputs) && same(operations[0].outputs, owner.outputs) && keyId(operations[0].action) === keyId(owner.action) && relations.some(relation => relation.relation === "exposes" && keyId(relation.source) === keyId(owner.agent) && keyId(relation.target) === keyId(JSON.parse(option.value)));
+    });
+    if (Object.hasOwn(owner, "interface")) reference(`${path}/interface`, owner.interface, "interfaces", "Interface", candidates);
+    fields.push({ path: `${path}/operation`, label: "operation", value: text(owner.operation), readonly: true });
+    if (Array.isArray(owner.resources)) {
+      owner.resources.forEach((resource, index) => {
+        reference(`${path}/resources/${index}`, resource, "resources", "Resource");
+        const field = fields.at(-1)!; field.referenceGroup = `${path}/resources`; field.removePath = field.path; field.options!.unshift({ value: "", label: "remove" });
+      });
+      fields.push({ path: `${path}/resources/-`, label: "addResource", value: "", referenceGroup: `${path}/resources`, options: [{ value: "", label: "none" }, ...options("Resource").filter(option => !list(owner.resources).some(resource => keyId(resource) === keyId(JSON.parse(option.value))))] });
+    } else unsupported = true;
+  }
+  const contracts = (at: string, value: Record<string, unknown>, consumed: boolean) => {
+    for (const direction of ["inputs", "outputs"]) Object.entries(object(value[direction])).forEach(([name, type]) => {
+      if (typeof type !== "string") { unsupported = true; return; }
+      fields.push({ path: `${at}/${direction}/${pointerPart(name)}`, label: `${direction} · ${name}`, value: type, readonly: consumed,
+        options: [...new Set([type, "string", "boolean", "json"])].map(value => ({ value, label: value })) });
+    });
+    if (consumed) unsupported = true;
+  };
+  if (owner.kind === "invoke") contracts(path, owner, true);
+  if (owner.kind === "Interface") list(object(owner.payload).operations).map(object).forEach((operation, index) => {
+    const at = `${path}/payload/operations/${index}`;
+    const consumed = steps.some(step => keyId(step.interface) === keyId(owner.key) && step.operation === operation.id);
+    fields.push({ path: `${at}/id`, label: "operation", value: text(operation.id), readonly: true });
+    contracts(at, operation, consumed);
+  });
+  if (owner.kind === "Tool") {
+    const referencesOwner = (value: unknown): boolean => {
+      if (value === owner) return false;
+      if (Array.isArray(value)) return value.some(referencesOwner);
+      if (!value || typeof value !== "object") return false;
+      const record = object(value);
+      return (typeof record.id === "string" && keyId(record) === keyId(owner.key)) || Object.values(record).some(referencesOwner);
+    };
+    // The card is a projection; skip the source definition rather than that copy.
+    const ownIndex = Number(path.split("/")[2]);
+    const elsewhere = { ...doc, definitions: definitions.filter((_, index) => index !== ownIndex) };
+    contracts(`${path}/payload`, object(owner.payload), referencesOwner(elsewhere));
+  }
+  return { fields, shared: Boolean(agent) || path.startsWith("/definitions/"), unsupported };
+}
+
+/** A reassignment and edits to the captured agent definition must be separate transactions. */
+export function agentPropertyLocks030(fields: ComponentProperty[], values: string[]) {
+  const changed = (field: ComponentProperty, index: number) => field.exactJson && (values[index] ?? field.value) !== field.value;
+  const referenceChanged = fields.some((field, index) => field.label === "agent" && !field.path.startsWith("/agents/") && changed(field, index));
+  const definitionChanged = fields.some((field, index) => field.path.startsWith("/agents/") && changed(field, index));
+  return {
+    referenceChanged, definitionChanged,
+    locked: (index: number) => referenceChanged && fields[index].path.startsWith("/agents/") || definitionChanged && fields[index].label === "agent" && !fields[index].path.startsWith("/agents/"),
+  };
+}
+
+export function propertyChanges(fields: ComponentProperty[], values: string[]): AgsdlChange[] {
+  const locks = agentPropertyLocks030(fields, values);
+  if (locks.referenceChanged && locks.definitionChanged) throw new Error("agsdl.authoring030.ownerChangeHint");
+  if (fields.some(field => field.exactJson)) return fields.flatMap((field, index): AgsdlChange[] => {
+    const value = values[index];
+    if (field.readonly || value === undefined || value === field.value) return [];
+    if (!value.trim()) {
+      if (!field.optional) throw new Error("agsdl.viewer.requiredProperty");
+      return field.removePath ? [{ op: "remove", path: field.removePath }] : [];
+    }
+    scanSource(value);
+    return [{ op: "set", path: field.path, valueJson: value }];
+  });
+  for (const group of new Set(fields.map(field => field.referenceGroup).filter(Boolean))) {
+    const members = fields.map((field, index) => ({ field, value: values[index] ?? field.value })).filter(item => item.field.referenceGroup === group);
+    if (!members.some(item => item.value !== item.field.value)) continue;
+    const keys = members.filter(item => item.value).map(item => {
+      const ref = object(JSON.parse(item.value));
+      return text(ref.dependency) ? JSON.stringify([ref.dependency, keyId(ref.key)]) : keyId(ref);
+    });
+    if (new Set(keys).size !== keys.length) throw new Error("agsdl.viewer.duplicateReference");
+  }
+  const resourceParents = new Set(fields.filter(field => /\/resources\/(?:\d+|-)$/.test(field.path)).map(field => field.path.slice(0, field.path.lastIndexOf("/"))));
+  for (const parent of resourceParents) {
+    const remaining = fields.filter((field, index) => field.path.startsWith(`${parent}/`) && (values[index] ?? field.value) !== "").length;
+    const changed = fields.some((field, index) => field.path.startsWith(`${parent}/`) && values[index] !== field.value);
+    if (changed && !remaining) throw new Error("agsdl.viewer.resourceRequired");
+  }
+  const changes = fields.flatMap((field, index): AgsdlChange[] => {
+    const value = values[index];
+    if (field.readonly || value === field.value || value === undefined) return [];
+    if (value === "") return field.removePath ? [{ op: "remove", path: field.removePath }] : [];
+    if (field.options && !field.options.some(option => option.value === value)) throw new Error("agsdl.viewer.invalidPropertySelection");
+    if (field.relationSource) return [{ op: "set", path: field.path, valueJson: `{"source":${field.relationSource},"relation":"uses","target":${value},"expectedKind":"Tool"}` }];
+    const isReference = /\/(target|interface|resources\/(?:\d+|-))$/.test(field.path);
+    return [{ op: "set", path: field.path, valueJson: isReference ? value : JSON.stringify(value) }];
+  });
+  // Replace existing entries and append first; remove array entries from the end.
+  return [...changes.filter(change => change.op !== "remove"), ...changes.filter(change => change.op === "remove").sort((a, b) => Number(b.path.split("/").at(-1)) - Number(a.path.split("/").at(-1)))];
+}
+
+
+const agentKeys030 = ["description", "harness", "harnessVersion", "harnessSettings", "model", "instructions", "resources", "skills", "mcpServers", "permissions", "results", "instructs", "plan", "planFirst", "completionCheck", "maxCorrections", "answerTimeoutMs"];
+const stepKeys030: Record<string, string[]> = {
+  agent: ["agent", "instance", "delivery", "prompt", "timeoutMs"],
+  call: ["command", "mcp", "parse", "arguments", "timeoutMs", "answerTimeoutMs"],
+  approval: ["timeoutMs"], compose: ["composition", "agents"],
+  join: ["quorum", "remaining", "failures", "maxFailures"],
+};
+
+/** Full property access uses exact subtrees; blank optional fields remove, never null them. */
+function properties030(source: string, card: ViewerCard): ComponentProperties {
+  const parsed = scanSource(source), fields: ComponentProperty[] = [];
+  const ownerPath = card.edition030?.ownerPath ?? card.path;
+  const add = (path: string, keys: string[], required: string[] = []) => {
+    const parentSpan = parsed.spans.get(path);
+    if (!parentSpan) return;
+    let owner: unknown = parsed.tree;
+    for (const part of path.split("/").slice(1)) owner = object(owner)[part.replaceAll("~1", "/").replaceAll("~0", "~")];
+    const all = [...new Set([...keys, ...Object.keys(object(owner))])];
+    for (const key of all) {
+      const at = `${path}/${pointerPart(key)}`, span = parsed.spans.get(at);
+      fields.push({ path: at, label: key, value: span ? new TextDecoder().decode(parsed.bytes.subarray(span.start, span.end)) : "",
+        exactJson: true, optional: !required.includes(key), ...(span ? { removePath: at } : {}), readonly: key === "contract" });
+    }
+  };
+  if (ownerPath === "") add("", ["$schema", "title", "description", "id", "content", "skills", "mcpServers", "agents", "flow", "compositions"], ["contract", "id", "agents"]);
+  else if (card.kind === "Agent") add(ownerPath, agentKeys030, ["harness", "permissions"]);
+  else if (["agent", "call", "approval", "compose", "join"].includes(card.kind)) {
+    add(ownerPath, ["type", "title", "description", "maxVisits", ...stepKeys030[card.kind], "next", "onError"], ["type", ...(card.kind === "agent" ? ["agent"] : card.kind === "compose" ? ["composition", "next"] : card.kind === "approval" ? ["next"] : [])]);
+    if (card.edition030?.agentPath) add(card.edition030.agentPath, agentKeys030, ["harness", "permissions"]);
+  } else if (card.kind === "Composition") add(ownerPath, ["title", "description", "parameters", "entry", "steps", "outputs"], ["entry", "steps", "outputs"]);
+  else if (card.kind === "Flow") add(ownerPath, ["entry", "steps", "onError"], ["entry", "steps"]);
+  else if (card.kind === "Skill") add(ownerPath, ["uri"], ["uri"]);
+  else if (card.kind === "McpServer") add(ownerPath, ["command", "url"]);
+  else if (card.kind === "Resource") add(ownerPath, ["value", "uri", "mediaType"]);
+  else if (card.kind === "Route") {
+    const span = parsed.spans.get(ownerPath);
+    if (span) fields.push({ path: ownerPath, label: "route", value: new TextDecoder().decode(parsed.bytes.subarray(span.start, span.end)), exactJson: true, optional: false });
+  }
+  const scopePath = /^(\/flow|\/compositions\/[^/]+)(?:\/|$)/.exec(ownerPath)?.[1];
+  if (scopePath) {
+    let scope: unknown = parsed.tree;
+    for (const part of scopePath.split("/").slice(1)) scope = object(scope)[part.replaceAll("~1", "/").replaceAll("~0", "~")];
+    const destinations = Object.entries(object(object(scope).steps))
+      .filter(([, step]) => ["agent", "call", "approval", "compose", "join"].includes(text(object(step).type)))
+      .map(([name, step]) => ({ value: name, label: text(object(step).title) || name }));
+    for (const field of fields) if (["next", "route"].includes(field.label)) field.destinations030 = destinations;
+  }
+  return { fields, shared: ownerPath.startsWith("/compositions/") || !!card.edition030?.agentPath || ["Agent", "Resource", "Skill", "McpServer", "Composition"].includes(card.kind), unsupported: !fields.length };
+}

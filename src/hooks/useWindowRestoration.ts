@@ -25,6 +25,7 @@ import {
   windowOnMoved,
   windowOnCloseRequested,
   windowOnResized,
+  windowClose,
   windowOuterPosition,
   windowOuterSize,
   windowPrimaryMonitorWorkArea,
@@ -36,8 +37,9 @@ import {
 } from "../services/tauriWindow";
 import {
   commitWindowShutdown,
-  prepareForPotentialShutdown,
+  runWithPotentialShutdown,
   registerWindowStateFlushHandler,
+  shutdownStartedAfterFailure,
 } from "../services/windowShutdown";
 import { getPlatformChromeState } from "../utils/desktopPlatform";
 import { isPageShuttingDown } from "../utils/pageLifecycle";
@@ -53,6 +55,8 @@ import { notify } from '../components/ui/toastService';
 import i18n from '../i18n';
 import {
   appExitCleanly,
+  appShutdownActiveRuns,
+  appShutdownPrepare,
   appInstallerCloseRequestPending,
   appInstallerCloseRespond,
   appUpdateExitAfterCleanShutdown,
@@ -91,7 +95,9 @@ const getSelectedProjectGroupWorkspacePaths = (): string[] => {
   );
 };
 
-const getRestartSafetySnapshot = (): RestartSafetySnapshot => {
+const getRestartSafetySnapshot = async (): Promise<RestartSafetySnapshot> => {
+  // A failed native read must reach the close error path, never become "idle".
+  const executionIds = await appShutdownActiveRuns();
   const chatState = useChatStore.getState();
   const taskState = useTaskStore.getState();
   return selectRestartSafetySnapshot({
@@ -100,20 +106,23 @@ const getRestartSafetySnapshot = (): RestartSafetySnapshot => {
     conversationCompactionStatusById: chatState.conversationCompactionStatusById,
     tasks: taskState.tasks,
     taskCommandRuns: taskState.taskCommandRuns,
+    executionIds,
   });
 };
 
-const confirmCloseWithActiveWork = async (activeWorkCount: number): Promise<boolean> => {
+const confirmCloseWithActiveWork = async (activeWorkCount: number, retirementStarted = false): Promise<boolean> => {
   const { ask } = await import('@tauri-apps/plugin-dialog');
   return ask(
-    activeWorkCount === 1
+    retirementStarted
+      ? i18n.t('shutdown.retirementPending', 'Task shutdown has begun. Closing is incomplete. Try closing Macro again.')
+      : activeWorkCount === 1
       ? i18n.t('shutdown.activeWorkSingle', 'A task is still running. Closing Macro will interrupt it.')
       : i18n.t('shutdown.activeWorkMultiple', '{{count}} tasks are still running. Closing Macro will interrupt them.', { count: activeWorkCount }),
     {
       title: i18n.t('shutdown.closeTitle', 'Close Macro?'),
       kind: 'warning',
       okLabel: i18n.t('shutdown.closeAction', 'Close Macro'),
-      cancelLabel: i18n.t('shutdown.keepWorking', 'Keep working'),
+      cancelLabel: retirementStarted ? i18n.t('common.cancel', 'Cancel') : i18n.t('shutdown.keepWorking', 'Keep working'),
     },
   );
 };
@@ -444,6 +453,8 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
  */
 export function useWindowRestoration() {
   const closeInProgressRef = useRef(false);
+  const nativeShutdownStartedRef = useRef(false);
+  const shutdownGateRef = useRef<(() => void) | null>(null);
   // Save current window state with debounce
   const saveWindowState = useCallback(async () => {
     const api = await getWindowApi();
@@ -533,9 +544,9 @@ export function useWindowRestoration() {
       let releaseShutdownGate: (() => void) | null = null;
       try {
         installerRequestedClose = await appInstallerCloseRequestPending();
-        const approvedSafety = getRestartSafetySnapshot();
+        const approvedSafety = await getRestartSafetySnapshot();
         if (approvedSafety.hasActiveWork) {
-          if (!(await confirmCloseWithActiveWork(approvedSafety.activeWorkCount))) {
+          if (!(await confirmCloseWithActiveWork(approvedSafety.activeWorkCount, nativeShutdownStartedRef.current))) {
             if (installerRequestedClose) {
               await appInstallerCloseRespond(false);
             }
@@ -544,11 +555,16 @@ export function useWindowRestoration() {
           }
         }
 
-        releaseShutdownGate = beginAppShutdownGate();
-        const safetyAfterConsent = getRestartSafetySnapshot();
+        shutdownGateRef.current ??= beginAppShutdownGate();
+        releaseShutdownGate = () => {
+          if (nativeShutdownStartedRef.current) return;
+          shutdownGateRef.current?.();
+          shutdownGateRef.current = null;
+        };
+        const safetyAfterConsent = await getRestartSafetySnapshot();
         if (
           hasUnapprovedRestartSafetyActivity(approvedSafety, safetyAfterConsent)
-          && !(await confirmCloseWithActiveWork(safetyAfterConsent.activeWorkCount))
+          && !(await confirmCloseWithActiveWork(safetyAfterConsent.activeWorkCount, nativeShutdownStartedRef.current))
         ) {
           if (installerRequestedClose) {
             await appInstallerCloseRespond(false);
@@ -559,24 +575,35 @@ export function useWindowRestoration() {
           return;
         }
 
-        await prepareForPotentialShutdown(
-          getSelectedProjectGroupWorkspacePaths(),
-        );
-        if (installerRequestedClose) {
-          await appInstallerCloseRespond(true);
-          await appExitCleanly();
+        const { macroPilotRuntime } = await import('../composition/macroPilotDesktop');
+        await runWithPotentialShutdown(async () => {
+          // Flush failures and declined consent leave native ownership intact.
+          try {
+            await appShutdownPrepare((safetyAfterConsent.activeExecutions ?? []).map(activity => activity.id));
+            nativeShutdownStartedRef.current = true;
+          } catch (error) {
+            nativeShutdownStartedRef.current ||= shutdownStartedAfterFailure(error);
+            throw error;
+          }
+          if (installerRequestedClose) {
+            await appInstallerCloseRespond(true);
+            await appExitCleanly();
+          } else {
+            await appUpdateExitAfterCleanShutdown();
+          }
           commitWindowShutdown('window-close-requested');
-        } else {
-          await appUpdateExitAfterCleanShutdown();
-          commitWindowShutdown('window-close-requested');
-        }
+        }, releaseShutdownGate, macroPilotRuntime, getSelectedProjectGroupWorkspacePaths(),
+        () => nativeShutdownStartedRef.current);
       } catch (error) {
         console.error('Failed to close window after flushing its state:', error);
-        notify.error(i18n.t('shutdown.closeFailed', 'Macro could not close'), {
+        notify.actionRequired(i18n.t('shutdown.closeFailed', 'Macro could not close'), {
           description: i18n.t(
-            'shutdown.closeFailedDescription',
-            'Your work was kept. Try closing Macro again.',
+            nativeShutdownStartedRef.current ? 'shutdown.retirementPending' : 'shutdown.closeFailedDescription',
+            nativeShutdownStartedRef.current
+              ? 'Task shutdown has begun. Closing is incomplete. Try closing Macro again.'
+              : 'Macro is still open. Try closing it again.',
           ),
+          actions: [{ label: i18n.t('shutdown.retry', 'Retry'), onClick: () => windowClose() }],
         });
         if (installerRequestedClose) {
           void appInstallerCloseRespond(false).catch(() => undefined);

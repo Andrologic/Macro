@@ -3,22 +3,12 @@
 import { invoke } from "../tauriRuntimeBridge";
 import type { NativeAppUpdateSnapshotDto } from "./updates.types";
 
-export async function updaterTarget(): Promise<string> {
-  return invoke<string>("updater_target");
-}
-
 export async function appUpdateStatus(): Promise<NativeAppUpdateSnapshotDto> {
   return invoke<NativeAppUpdateSnapshotDto>('app_update_status');
 }
 
-export async function appUpdateCheckAndStage(params: {
-  target: string;
-  allowDowngrades: boolean;
-}): Promise<NativeAppUpdateSnapshotDto> {
-  return invoke<NativeAppUpdateSnapshotDto>('app_update_check_and_stage', {
-    target: params.target,
-    allowDowngrades: params.allowDowngrades,
-  });
+export async function appUpdateCheckAndStage(): Promise<NativeAppUpdateSnapshotDto> {
+  return invoke<NativeAppUpdateSnapshotDto>('app_update_check_and_stage');
 }
 
 export async function appUpdateExitAfterCleanShutdown(): Promise<void> {
@@ -29,12 +19,22 @@ export async function appExitCleanly(): Promise<void> {
   return invoke<void>('app_exit_cleanly');
 }
 
+/** Process-owned executions, independent of the selected project or panel. */
+export async function appShutdownActiveRuns(): Promise<string[]> {
+  return invoke<string[]>('app_shutdown_active_runs');
+}
+
+/** The ids limit consent; native ownership determines what is retired. */
+export async function appShutdownPrepare(approvedRuns: string[]): Promise<void> {
+  return invoke<void>('app_shutdown_prepare', { approvedRuns });
+}
+
 export async function appUpdateDiscard(): Promise<void> {
   return invoke<void>('app_update_discard');
 }
 
-export async function appUpdateInstallNow(): Promise<void> {
-  return invoke<void>('app_update_install_now');
+export async function appUpdateInstallNow(): Promise<boolean> {
+  return invoke<boolean>('app_update_install_now');
 }
 
 export async function appInstallerCloseRequestPending(): Promise<boolean> {

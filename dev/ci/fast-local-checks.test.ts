@@ -88,6 +88,18 @@ describe('fast local check selection', () => {
     ]);
   });
 
+  test('formats Macro when the change also deletes old Argentic sources', () => {
+    const paths = ['src-tauri/src/main.rs', 'crates/argentic-core/src/lib.rs',
+      'crates/argentic-core/src/flow/mod.rs', 'crates/argentic-runtime/src/api.rs'];
+    const plan = planFastLocalChecks(paths);
+    expect(plan.steps.filter((step) => step.args[0] === 'fmt').map((step) => step.args[2])).toEqual([
+      'src-tauri/Cargo.toml',
+    ]);
+    for (const domain of ['config', 'ipc']) {
+      expect(plan.steps.filter((step) => step.name === `Contrats générés ${domain}`)).toHaveLength(1);
+    }
+  });
+
   test('checks dependency manifests and local GitHub actions without installing', () => {
     const plan = planFastLocalChecks(['bun.lock', 'bunfig.toml', '.github/actions/setup/action.yml']);
     expect(plan.steps.map((step) => step.name)).toEqual([
@@ -125,6 +137,15 @@ describe('fast local check selection', () => {
     }
     const unrelated = planFastLocalChecks(['src-tauri/src/core/diagnostics.rs']);
     expect(unrelated.steps.some((step) => step.args.includes('dev/architecture/import-boundaries.mjs'))).toBe(false);
+  });
+
+  test('routes Argentic files and deletions to the architecture guard', () => {
+    for (const path of ['src-tauri/src/agsdl_host_flow030.rs', 'src-tauri/src/argentic_core/new.rs', 'src-tauri/src/argentic_runtime/new.rs', 'crates/argentic-core/src/lib.rs', 'crates/argentic-runtime/src/lib.rs', 'src-tauri/src/ai/stream_tasks.rs']) {
+      for (const exists of [true, false]) {
+        const plan = planFastLocalChecks([path], { exists: () => exists });
+        expect(plan.steps.filter((step) => step.args.includes('dev/architecture/import-boundaries.mjs'))).toHaveLength(1);
+      }
+    }
   });
 
   test('typechecks changed Copilot code, configuration and imported dependencies once', () => {
@@ -180,4 +201,82 @@ test('selects CI policy tests when JavaScript gate implementations change', () =
     testFiles: tests,
     readFile: () => "import { stepsForProfile } from './check-profiles.mjs';",
   })).toEqual(['dev/ci/check-profiles.test.ts', 'dev/ci/fast-local-checks.test.ts', 'dev/ci/importer.test.ts']);
+});
+
+test('runs native AgSDL conformance for evaluator, engine, fixture and CI changes', () => {
+  for (const path of [
+    'crates/argentic-core/src/work/controller.rs',
+    'crates/argentic-runtime/src/agsdl_host_conformance030_tests.rs',
+    'crates/argentic-runtime/tests/fixtures/conformance/runs/approval.json',
+    'src-tauri/src/agsdl_host_runtime030.rs',
+    'src-tauri/src/agsdl_host_conformance030_tests.rs',
+    'src-tauri/src/argentic_core/exact/scan.rs',
+    'src-tauri/src/argentic_core/valueschema/mod.rs',
+    'src-tauri/src/argentic_values_conformance030_tests.rs',
+    'src-tauri/src/argentic_values_conformance030_tests/corpus.rs',
+    'src-tauri/src/argentic_core/reader/mod.rs',
+    'src-tauri/src/argentic_core/schema/pattern.rs',
+    'src-tauri/src/argentic_reader_conformance030_tests.rs',
+    'src-tauri/src/argentic_reader_conformance030_tests/corpus.rs',
+    'src-tauri/src/argentic_core/route.rs',
+    'src-tauri/src/argentic_core/native.rs',
+    'src-tauri/src/argentic_runtime/native_json/mod.rs',
+    'src-tauri/src/argentic_compile_conformance030_tests.rs',
+    'src-tauri/src/argentic_compile_conformance030_tests/numbers.rs',
+    'src-tauri/src/argentic_work_conformance030_tests.rs',
+    'src-tauri/src/argentic_clock_conformance030_tests.rs',
+    'src-tauri/src/argentic_clock_conformance030_tests/corpus.rs',
+    'src-tauri/src/argentic_core/clock/mod.rs',
+    'src-tauri/src/argentic_core/work/journal.rs',
+    'src-tauri/src/argentic_runtime/native_json/syntax.rs',
+    'src-tauri/src/argentic_core/messages.rs',
+    'src-tauri/src/argentic_routes_conformance030_tests.rs',
+    'src-tauri/src/argentic_routes_conformance030_tests/corpus.rs',
+    'src-tauri/src/db/agsdl_execution/v030/flow.rs',
+    'src-tauri/src/db/migrations/040_execution_flow_human_clock030.sql',
+    'src/services/agsdlExecution/hostWorkPort030.ts',
+    'src/vendor/agsdl/v0.3/valueschema.mjs',
+    'src/vendor/agsdl/shared/json.mjs',
+    'src/vendor/agsdl/shared/values.mjs',
+    'src/vendor/agsdl/experimental/readers/javascript/json.mjs',
+    'dev/agsdl/conformance-host030.ts',
+    'dev/agsdl/values-oracle030.ts',
+    'dev/agsdl/values-oracle030.test.ts',
+    'dev/agsdl/reader-oracle030.ts',
+    'dev/agsdl/reader-oracle030.test.ts',
+    'dev/agsdl/routes-oracle030.ts',
+    'dev/agsdl/routes-oracle030.test.ts',
+    'dev/agsdl/native-json-oracle030.ts',
+    'dev/agsdl/native-json-oracle030.test.ts',
+    'dev/agsdl/compile-oracle030.ts',
+    'dev/agsdl/compile-oracle030.test.ts',
+    'dev/agsdl/compile-corpus030.ts',
+    'dev/agsdl/work-corpus030.ts',
+    'dev/agsdl/work-oracle030.ts',
+    'dev/agsdl/work-oracle030.test.ts',
+    'dev/agsdl/clock-oracle030.ts',
+    'dev/agsdl/clock-oracle030.test.ts',
+    'dev/agsdl/clock-corpus030.ts',
+    'dev/agsdl/route-data-oracle030.ts',
+    'dev/agsdl/route-data-oracle030.test.ts',
+    'dev/agsdl/route-data-corpus030.ts',
+    'src-tauri/src/argentic_route_data_conformance030_tests.rs',
+    'src-tauri/src/argentic_core/calls_data.rs',
+    'src-tauri/src/argentic_core/messages/captured.rs',
+    'src-tauri/src/argentic_core/route/data.rs',
+    'src-tauri/src/argentic_core/route/preparation.rs',
+    'src-tauri/src/agsdl_host_conformance030_route_data.rs',
+    'dev/agsdl/fixtures/v0.3/conformance/runs/error-route.json',
+    'dev/ci/fast-local-checks.mjs',
+    'src-tauri/Cargo.toml',
+  ]) {
+    const plan = planFastLocalChecks([path], { exists: () => false });
+    expect(plan.steps.filter(step => step.args.includes('conformance030_tests'))).toEqual([
+      expect.objectContaining({ command: process.execPath, needsDependencies: true,
+        args: ['dev/ci/argentic.mjs', 'argentic-runtime', 'test', '--locked', '--jobs', '2',
+          '--lib', 'conformance030_tests', '--', '--test-threads=1'] }),
+    ]);
+  }
+  expect(planFastLocalChecks(['README.md', 'src/components/Panel.tsx']).steps
+    .some(step => step.args.includes('conformance030_tests'))).toBe(false);
 });

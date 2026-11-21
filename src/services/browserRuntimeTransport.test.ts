@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { BROWSER_RUNTIME_SESSION_REPLACED_EVENT } from './browserRuntimeEvents';
 
 type Listener = (event: { code?: number; data?: string; reason?: string }) => void;
 
@@ -219,7 +221,31 @@ test('borne le tampon du canal MCP si un index manque', async () => {
   expect(activeSocket.readyState).toBe(3);
 });
 
+test('préserve les octets audio et les en-têtes des invocations binaires', async () => {
+  const transport = await import('./browserRuntimeTransport');
+  const options = { headers: { 'x-macro-speech-mime-type': 'audio/wav' } };
+  const audio = new Uint8Array([9, 0, 128, 255, 8]);
+  for (const args of [audio.subarray(1, 4), new Uint8Array([0, 128, 255]).buffer]) {
+    const invocation = transport.invokeBrowserRuntime('speech_transcribe', args, options);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const activeSocket = FakeWebSocket.instances.at(-1)!;
+    const request = JSON.parse(activeSocket.sent.at(-1)!);
+    activeSocket.emit('message', { data: JSON.stringify({
+      id: request.id,
+      payload: JSON.stringify({ status: 'success', payload: { text: 'Audio QA' } }),
+    }) });
+    await expect(invocation).resolves.toEqual({ text: 'Audio QA' });
+    expect(request.args).toEqual([0, 128, 255]);
+    expect(request.option).toEqual(options);
+  }
+});
+
 test('arrête définitivement la reconnexion quand un autre onglet prend la session', async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const dispatched: string[] = [];
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    dispatchEvent: (event: Event) => { dispatched.push(event.type); return true; },
+  } });
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;
   let nextTimerId = 0;
@@ -249,12 +275,38 @@ test('arrête définitivement la reconnexion quand un autre onglet prend la sess
     await expect(transport.invokeBrowserRuntime('git_status')).rejects.toMatchObject({
       code: 'BROWSER_RUNTIME_SESSION_REPLACED',
     });
+    expect(dispatched).toEqual([BROWSER_RUNTIME_SESSION_REPLACED_EVENT]);
     expect(scheduled).toHaveLength(0);
     for (const callback of scheduled.values()) callback();
     expect(FakeWebSocket.instances).toHaveLength(connectionCount);
     unlisten();
   } finally {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
     globalThis.setTimeout = originalSetTimeout;
     globalThis.clearTimeout = originalClearTimeout;
   }
+});
+
+// Exercise the exact JavaScript embedded by the native remote UI plugin.
+const hydrateRpcArgs = new Function(`return (${readFileSync(
+  new URL('../../src-tauri/vendor/tauri-remote-ui/src/remote_ui/rpc-args.js', import.meta.url),
+  'utf8',
+)})`)() as (args: unknown) => unknown;
+
+test('preserves binary RPC bytes through the native fetch body', async () => {
+  const bytes = new Uint8Array([82, 73, 70, 70, 0, 128, 255, 87, 65, 86, 69]);
+  const wireArgs: unknown = JSON.parse(JSON.stringify(Array.from(bytes)));
+  const request = new Request('http://localhost/not-sent', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: hydrateRpcArgs(wireArgs) as Uint8Array<ArrayBuffer>,
+  });
+  expect(Array.from(new Uint8Array(await request.arrayBuffer()))).toEqual(Array.from(bytes));
+});
+
+test('preserves structured RPC arguments and absent arguments', () => {
+  const args = { query: 'test', ids: [1, 2] };
+  expect(hydrateRpcArgs(args)).toBe(args);
+  expect(hydrateRpcArgs(null)).toBeNull();
 });

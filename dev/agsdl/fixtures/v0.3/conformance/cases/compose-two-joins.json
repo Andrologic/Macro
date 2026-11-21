@@ -1,0 +1,73 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "compose-two-joins",
+  "agents": {},
+  "compositions": {
+    "c": {
+      "parameters": [],
+      "entry": "s",
+      "steps": {
+        "s": {
+          "type": "call",
+          "command": "true",
+          "next": [
+            "a",
+            "b",
+            "c",
+            "d"
+          ]
+        },
+        "a": {
+          "type": "call",
+          "command": "true",
+          "next": "j1"
+        },
+        "b": {
+          "type": "call",
+          "command": "true",
+          "next": "j1"
+        },
+        "c": {
+          "type": "call",
+          "command": "true",
+          "next": "j2"
+        },
+        "d": {
+          "type": "call",
+          "command": "true",
+          "next": "j2"
+        },
+        "j1": {
+          "type": "join",
+          "next": {
+            "output": "x"
+          }
+        },
+        "j2": {
+          "type": "join",
+          "next": {
+            "output": "y"
+          }
+        }
+      },
+      "outputs": [
+        "x",
+        "y"
+      ]
+    }
+  },
+  "flow": {
+    "entry": "go",
+    "steps": {
+      "go": {
+        "type": "compose",
+        "composition": "c",
+        "agents": {},
+        "next": {
+          "x": [],
+          "y": []
+        }
+      }
+    }
+  }
+}

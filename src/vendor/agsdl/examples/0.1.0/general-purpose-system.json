@@ -1,0 +1,1084 @@
+{
+  "contract": "agsdl-0.1.0",
+  "root": {
+    "key": {
+      "scope": "mvp",
+      "id": "system",
+      "version": "1"
+    },
+    "kind": "System"
+  },
+  "definitions": [
+    {
+      "key": {
+        "scope": "mvp",
+        "id": "agent-a",
+        "version": "1"
+      },
+      "kind": "Agent",
+      "owner": {
+        "scope": "mvp",
+        "id": "system",
+        "version": "1"
+      },
+      "payload": {}
+    },
+    {
+      "key": {
+        "scope": "mvp",
+        "id": "agent-b",
+        "version": "1"
+      },
+      "kind": "Agent",
+      "owner": {
+        "scope": "mvp",
+        "id": "system",
+        "version": "1"
+      },
+      "payload": {}
+    },
+    {
+      "key": {
+        "scope": "mvp",
+        "id": "principal-a",
+        "version": "1"
+      },
+      "kind": "Principal",
+      "owner": {
+        "scope": "mvp",
+        "id": "system",
+        "version": "1"
+      },
+      "payload": {}
+    },
+    {
+      "key": {
+        "scope": "mvp",
+        "id": "principal-b",
+        "version": "1"
+      },
+      "kind": "Principal",
+      "owner": {
+        "scope": "mvp",
+        "id": "system",
+        "version": "1"
+      },
+      "payload": {}
+    },
+    {
+      "key": {
+        "scope": "mvp",
+        "id": "work-interface",
+        "version": "1"
+      },
+      "kind": "Interface",
+      "owner": {
+        "scope": "mvp",
+        "id": "system",
+        "version": "1"
+      },
+      "payload": {
+        "operations": [
+          {
+            "id": "ask",
+            "direction": "inbound",
+            "mode": "request-response",
+            "action": {
+              "scope": "mvp",
+              "id": "ask-action",
+              "version": "1"
+            },
+            "inputs": {
+              "x": "string"
+            },
+            "outputs": {
+              "y": "string"
+            }
+          },
+          {
+            "id": "notify",
+            "direction": "bidirectional",
+            "mode": "request-response",
+            "action": {
+              "scope": "mvp",
+              "id": "notify-action",
+              "version": "1"
+            },
+            "inputs": {
+              "x": "string"
+            },
+            "outputs": {
+              "y": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": {
+        "scope": "mvp",
+        "id": "ask-action",
+        "version": "1"
+      },
+      "kind": "Action",
+      "owner": {
+        "scope": "mvp",
+        "id": "system",
+        "version": "1"
+      },
+      "payload": {}
+    },
+    {
+      "key": {
+        "scope": "mvp",
+        "id": "notify-action",
+        "version": "1"
+      },
+      "kind": "Action",
+      "owner": {
+        "scope": "mvp",
+        "id": "system",
+        "version": "1"
+      },
+      "payload": {}
+    },
+    {
+      "key": {
+        "scope": "mvp",
+        "id": "resource",
+        "version": "1"
+      },
+      "kind": "Resource",
+      "owner": {
+        "scope": "mvp",
+        "id": "system",
+        "version": "1"
+      },
+      "payload": {}
+    },
+    {
+      "key": {
+        "scope": "mvp",
+        "id": "flow",
+        "version": "1"
+      },
+      "kind": "ControlFlow",
+      "owner": {
+        "scope": "mvp",
+        "id": "system",
+        "version": "1"
+      },
+      "payload": {}
+    },
+    {
+      "key": {
+        "scope": "mvp",
+        "id": "search-tool",
+        "version": "1"
+      },
+      "kind": "Tool",
+      "owner": {
+        "scope": "mvp",
+        "id": "system",
+        "version": "1"
+      },
+      "payload": {
+        "action": {
+          "scope": "mvp",
+          "id": "tool-action",
+          "version": "1"
+        },
+        "inputs": {
+          "query": "string"
+        },
+        "outputs": {
+          "items": "json"
+        },
+        "effects": "external",
+        "failures": [
+          "unavailable"
+        ],
+        "requires": [
+          {
+            "identity": "example/tool-api",
+            "version": "1"
+          }
+        ]
+      }
+    },
+    {
+      "key": {
+        "scope": "mvp",
+        "id": "tool-action",
+        "version": "1"
+      },
+      "kind": "Action",
+      "owner": {
+        "scope": "mvp",
+        "id": "system",
+        "version": "1"
+      },
+      "payload": {}
+    },
+    {
+      "key": {
+        "scope": "mvp",
+        "id": "common-instructions",
+        "version": "1"
+      },
+      "kind": "Instructions",
+      "owner": {
+        "scope": "mvp",
+        "id": "system",
+        "version": "1"
+      },
+      "payload": {
+        "target": "Agent",
+        "at": "before-invoke",
+        "format": {
+          "identity": "example/text",
+          "version": "1"
+        },
+        "body": "Answer from cited material.",
+        "requires": []
+      }
+    },
+    {
+      "key": {
+        "scope": "mvp",
+        "id": "research-skill",
+        "version": "1"
+      },
+      "kind": "Skill",
+      "owner": {
+        "scope": "mvp",
+        "id": "system",
+        "version": "1"
+      },
+      "payload": {
+        "inputs": {
+          "query": "string"
+        },
+        "outputs": {
+          "answer": "string"
+        },
+        "preconditions": "A query is available.",
+        "completion": "A cited answer is produced.",
+        "dependencies": [
+          {
+            "scope": "mvp",
+            "id": "common-instructions",
+            "version": "1"
+          }
+        ],
+        "tools": [
+          {
+            "scope": "mvp",
+            "id": "search-tool",
+            "version": "1"
+          }
+        ],
+        "requires": [
+          {
+            "identity": "example/skill",
+            "version": "1"
+          }
+        ]
+      }
+    },
+    {
+      "key": {
+        "scope": "mvp",
+        "id": "approval-requirement",
+        "version": "1"
+      },
+      "kind": "ApprovalRequirement",
+      "owner": {
+        "scope": "mvp",
+        "id": "system",
+        "version": "1"
+      },
+      "payload": {
+        "approvers": [
+          {
+            "scope": "mvp",
+            "id": "principal-a",
+            "version": "1"
+          }
+        ],
+        "validForMs": 60000
+      }
+    }
+  ],
+  "relations": [
+    {
+      "source": {
+        "scope": "mvp",
+        "id": "agent-a",
+        "version": "1"
+      },
+      "relation": "actsAs",
+      "target": {
+        "scope": "mvp",
+        "id": "principal-a",
+        "version": "1"
+      },
+      "expectedKind": "Principal"
+    },
+    {
+      "source": {
+        "scope": "mvp",
+        "id": "agent-a",
+        "version": "1"
+      },
+      "relation": "exposes",
+      "target": {
+        "scope": "mvp",
+        "id": "work-interface",
+        "version": "1"
+      },
+      "expectedKind": "Interface"
+    },
+    {
+      "source": {
+        "scope": "mvp",
+        "id": "agent-a",
+        "version": "1"
+      },
+      "relation": "directedBy",
+      "target": {
+        "scope": "mvp",
+        "id": "research-skill",
+        "version": "1"
+      },
+      "expectedKind": "Skill"
+    },
+    {
+      "source": {
+        "scope": "mvp",
+        "id": "agent-a",
+        "version": "1"
+      },
+      "relation": "uses",
+      "target": {
+        "scope": "mvp",
+        "id": "search-tool",
+        "version": "1"
+      },
+      "expectedKind": "Tool"
+    },
+    {
+      "source": {
+        "scope": "mvp",
+        "id": "agent-b",
+        "version": "1"
+      },
+      "relation": "actsAs",
+      "target": {
+        "scope": "mvp",
+        "id": "principal-b",
+        "version": "1"
+      },
+      "expectedKind": "Principal"
+    },
+    {
+      "source": {
+        "scope": "mvp",
+        "id": "agent-b",
+        "version": "1"
+      },
+      "relation": "exposes",
+      "target": {
+        "scope": "mvp",
+        "id": "work-interface",
+        "version": "1"
+      },
+      "expectedKind": "Interface"
+    },
+    {
+      "source": {
+        "scope": "mvp",
+        "id": "agent-b",
+        "version": "1"
+      },
+      "relation": "directedBy",
+      "target": {
+        "scope": "mvp",
+        "id": "research-skill",
+        "version": "1"
+      },
+      "expectedKind": "Skill"
+    },
+    {
+      "source": {
+        "scope": "mvp",
+        "id": "agent-b",
+        "version": "1"
+      },
+      "relation": "uses",
+      "target": {
+        "scope": "mvp",
+        "id": "search-tool",
+        "version": "1"
+      },
+      "expectedKind": "Tool"
+    }
+  ],
+  "exports": [],
+  "dependencies": [],
+  "unresolved": [],
+  "extensions": [],
+  "graphs": [
+    {
+      "definition": {
+        "scope": "mvp",
+        "id": "flow",
+        "version": "1"
+      },
+      "entry": "call-a",
+      "inputs": {
+        "x": "string",
+        "context": "json"
+      },
+      "outputs": {
+        "y": "string"
+      },
+      "steps": [
+        {
+          "id": "call-a",
+          "kind": "invoke",
+          "agent": {
+            "scope": "mvp",
+            "id": "agent-a",
+            "version": "1"
+          },
+          "interface": {
+            "scope": "mvp",
+            "id": "work-interface",
+            "version": "1"
+          },
+          "action": {
+            "scope": "mvp",
+            "id": "ask-action",
+            "version": "1"
+          },
+          "resources": [
+            {
+              "scope": "mvp",
+              "id": "resource",
+              "version": "1"
+            }
+          ],
+          "principal": {
+            "scope": "mvp",
+            "id": "principal-a",
+            "version": "1"
+          },
+          "context": {
+            "input": "context"
+          },
+          "inputs": {
+            "x": "string"
+          },
+          "outputs": {
+            "y": "string"
+          },
+          "bindings": {
+            "x": {
+              "input": "x"
+            }
+          },
+          "success": "call-b",
+          "failure": "bad",
+          "operation": "ask"
+        },
+        {
+          "id": "call-b",
+          "kind": "invoke",
+          "agent": {
+            "scope": "mvp",
+            "id": "agent-b",
+            "version": "1"
+          },
+          "interface": {
+            "scope": "mvp",
+            "id": "work-interface",
+            "version": "1"
+          },
+          "action": {
+            "scope": "mvp",
+            "id": "notify-action",
+            "version": "1"
+          },
+          "resources": [
+            {
+              "scope": "mvp",
+              "id": "resource",
+              "version": "1"
+            }
+          ],
+          "principal": {
+            "scope": "mvp",
+            "id": "principal-b",
+            "version": "1"
+          },
+          "context": {
+            "input": "context"
+          },
+          "inputs": {
+            "x": "string"
+          },
+          "outputs": {
+            "y": "string"
+          },
+          "bindings": {
+            "x": {
+              "input": "x"
+            }
+          },
+          "success": "ok",
+          "failure": "bad",
+          "operation": "notify"
+        },
+        {
+          "id": "ok",
+          "kind": "end",
+          "outcome": "success",
+          "bindings": {
+            "y": {
+              "step": "call-b",
+              "port": "y"
+            }
+          }
+        },
+        {
+          "id": "bad",
+          "kind": "end",
+          "outcome": "failure",
+          "reason": "call failed"
+        }
+      ]
+    }
+  ],
+  "runtime": {
+    "configurations": [
+      {
+        "id": "portable",
+        "graph": {
+          "scope": "mvp",
+          "id": "flow",
+          "version": "1"
+        },
+        "agents": [
+          {
+            "agent": {
+              "scope": "mvp",
+              "id": "agent-a",
+              "version": "1"
+            },
+            "engine": {
+              "identity": "example/engine-a",
+              "version": "1"
+            },
+            "parameters": {
+              "temperature": 0,
+              "engineOptions": {
+                "trace": false
+              }
+            },
+            "requires": [
+              {
+                "identity": "example/base",
+                "version": "1"
+              }
+            ],
+            "claims": [
+              {
+                "capability": {
+                  "identity": "example/base",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "capability": {
+                  "identity": "example/text",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "capability": {
+                  "identity": "example/skill",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "capability": {
+                  "identity": "example/plain-adapter",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              }
+            ],
+            "tools": [
+              {
+                "tool": {
+                  "scope": "mvp",
+                  "id": "search-tool",
+                  "version": "1"
+                },
+                "choices": [
+                  {
+                    "id": "search-a",
+                    "implementation": {
+                      "identity": "example/search-adapter",
+                      "version": "1"
+                    },
+                    "parameters": {
+                      "endpoint": "local",
+                      "retries": 2,
+                      "vendor": {
+                        "mode": "strict"
+                      }
+                    },
+                    "claims": [
+                      {
+                        "capability": {
+                          "identity": "example/tool-api",
+                          "version": "1"
+                        },
+                        "status": "supported",
+                        "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+                      }
+                    ]
+                  }
+                ],
+                "selected": "search-a"
+              }
+            ],
+            "applications": [
+              {
+                "content": {
+                  "scope": "mvp",
+                  "id": "common-instructions",
+                  "version": "1"
+                },
+                "adapter": {
+                  "identity": "example/plain-adapter",
+                  "version": "1"
+                },
+                "parameters": {
+                  "channel": "system"
+                }
+              },
+              {
+                "content": {
+                  "scope": "mvp",
+                  "id": "research-skill",
+                  "version": "1"
+                },
+                "adapter": {
+                  "identity": "example/plain-adapter",
+                  "version": "1"
+                },
+                "parameters": {
+                  "channel": "skill",
+                  "priority": 2
+                }
+              }
+            ]
+          },
+          {
+            "agent": {
+              "scope": "mvp",
+              "id": "agent-b",
+              "version": "1"
+            },
+            "engine": {
+              "identity": "example/engine-b",
+              "version": "1"
+            },
+            "parameters": {
+              "temperature": 0,
+              "engineOptions": {
+                "trace": false
+              }
+            },
+            "requires": [
+              {
+                "identity": "example/base",
+                "version": "1"
+              }
+            ],
+            "claims": [
+              {
+                "capability": {
+                  "identity": "example/base",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "capability": {
+                  "identity": "example/text",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "capability": {
+                  "identity": "example/skill",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "capability": {
+                  "identity": "example/plain-adapter",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              }
+            ],
+            "tools": [
+              {
+                "tool": {
+                  "scope": "mvp",
+                  "id": "search-tool",
+                  "version": "1"
+                },
+                "choices": [
+                  {
+                    "id": "search-b",
+                    "implementation": {
+                      "identity": "example/search-adapter",
+                      "version": "1"
+                    },
+                    "parameters": {
+                      "endpoint": "local",
+                      "retries": 2,
+                      "vendor": {
+                        "mode": "strict"
+                      }
+                    },
+                    "claims": [
+                      {
+                        "capability": {
+                          "identity": "example/tool-api",
+                          "version": "1"
+                        },
+                        "status": "supported",
+                        "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+                      }
+                    ]
+                  }
+                ],
+                "selected": "search-b"
+              }
+            ],
+            "applications": [
+              {
+                "content": {
+                  "scope": "mvp",
+                  "id": "common-instructions",
+                  "version": "1"
+                },
+                "adapter": {
+                  "identity": "example/plain-adapter",
+                  "version": "1"
+                },
+                "parameters": {
+                  "channel": "system"
+                }
+              },
+              {
+                "content": {
+                  "scope": "mvp",
+                  "id": "research-skill",
+                  "version": "1"
+                },
+                "adapter": {
+                  "identity": "example/plain-adapter",
+                  "version": "1"
+                },
+                "parameters": {
+                  "channel": "skill",
+                  "priority": 2
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "alternate",
+        "graph": {
+          "scope": "mvp",
+          "id": "flow",
+          "version": "1"
+        },
+        "agents": [
+          {
+            "agent": {
+              "scope": "mvp",
+              "id": "agent-a",
+              "version": "1"
+            },
+            "engine": {
+              "identity": "example/engine-b",
+              "version": "1"
+            },
+            "parameters": {
+              "temperature": 0,
+              "engineOptions": {
+                "trace": false
+              }
+            },
+            "requires": [
+              {
+                "identity": "example/base",
+                "version": "1"
+              }
+            ],
+            "claims": [
+              {
+                "capability": {
+                  "identity": "example/base",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "capability": {
+                  "identity": "example/text",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "capability": {
+                  "identity": "example/skill",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "capability": {
+                  "identity": "example/plain-adapter",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              }
+            ],
+            "tools": [
+              {
+                "tool": {
+                  "scope": "mvp",
+                  "id": "search-tool",
+                  "version": "1"
+                },
+                "choices": [
+                  {
+                    "id": "search-b",
+                    "implementation": {
+                      "identity": "example/search-adapter",
+                      "version": "1"
+                    },
+                    "parameters": {
+                      "endpoint": "local",
+                      "retries": 2,
+                      "vendor": {
+                        "mode": "strict"
+                      }
+                    },
+                    "claims": [
+                      {
+                        "capability": {
+                          "identity": "example/tool-api",
+                          "version": "1"
+                        },
+                        "status": "supported",
+                        "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+                      }
+                    ]
+                  }
+                ],
+                "selected": "search-b"
+              }
+            ],
+            "applications": [
+              {
+                "content": {
+                  "scope": "mvp",
+                  "id": "common-instructions",
+                  "version": "1"
+                },
+                "adapter": {
+                  "identity": "example/plain-adapter",
+                  "version": "1"
+                },
+                "parameters": {
+                  "channel": "system"
+                }
+              },
+              {
+                "content": {
+                  "scope": "mvp",
+                  "id": "research-skill",
+                  "version": "1"
+                },
+                "adapter": {
+                  "identity": "example/plain-adapter",
+                  "version": "1"
+                },
+                "parameters": {
+                  "channel": "skill",
+                  "priority": 2
+                }
+              }
+            ]
+          },
+          {
+            "agent": {
+              "scope": "mvp",
+              "id": "agent-b",
+              "version": "1"
+            },
+            "engine": {
+              "identity": "example/engine-a",
+              "version": "1"
+            },
+            "parameters": {
+              "temperature": 0,
+              "engineOptions": {
+                "trace": false
+              }
+            },
+            "requires": [
+              {
+                "identity": "example/base",
+                "version": "1"
+              }
+            ],
+            "claims": [
+              {
+                "capability": {
+                  "identity": "example/base",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "capability": {
+                  "identity": "example/text",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "capability": {
+                  "identity": "example/skill",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "capability": {
+                  "identity": "example/plain-adapter",
+                  "version": "1"
+                },
+                "status": "supported",
+                "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+              }
+            ],
+            "tools": [
+              {
+                "tool": {
+                  "scope": "mvp",
+                  "id": "search-tool",
+                  "version": "1"
+                },
+                "choices": [
+                  {
+                    "id": "search-a",
+                    "implementation": {
+                      "identity": "example/search-adapter",
+                      "version": "1"
+                    },
+                    "parameters": {
+                      "endpoint": "local",
+                      "retries": 2,
+                      "vendor": {
+                        "mode": "strict"
+                      }
+                    },
+                    "claims": [
+                      {
+                        "capability": {
+                          "identity": "example/tool-api",
+                          "version": "1"
+                        },
+                        "status": "supported",
+                        "evidence": "1111111111111111111111111111111111111111111111111111111111111111"
+                      }
+                    ]
+                  }
+                ],
+                "selected": "search-a"
+              }
+            ],
+            "applications": [
+              {
+                "content": {
+                  "scope": "mvp",
+                  "id": "common-instructions",
+                  "version": "1"
+                },
+                "adapter": {
+                  "identity": "example/plain-adapter",
+                  "version": "1"
+                },
+                "parameters": {
+                  "channel": "system"
+                }
+              },
+              {
+                "content": {
+                  "scope": "mvp",
+                  "id": "research-skill",
+                  "version": "1"
+                },
+                "adapter": {
+                  "identity": "example/plain-adapter",
+                  "version": "1"
+                },
+                "parameters": {
+                  "channel": "skill",
+                  "priority": 2
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "selected": "portable"
+  }
+}

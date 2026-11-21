@@ -65,6 +65,7 @@ import {
   type MergeWorkflowStrategy,
 } from './mergeWorkflow';
 import { resolvePlanProjectExecutionMode } from './planExecutionModes';
+import { derivePlanFinalizationDependencyState } from './planFinalization';
 
 const BRANCH_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
 
@@ -885,7 +886,10 @@ const buildPlanReviewTasks = (plan: ArchitectPlanRecord): PlanReviewTaskSummary[
 };
 
 const assertPlanReadyForFinalization = (plan: ArchitectPlanRecord): void => {
-  const incompleteNodes = (plan.nodes || []).filter((node) => node.status !== 'completed');
+  const nodes = plan.nodes || [];
+  const { incompleteNodeIds } = derivePlanFinalizationDependencyState(nodes);
+  const incompleteNodeIdSet = new Set(incompleteNodeIds);
+  const incompleteNodes = nodes.filter((node) => incompleteNodeIdSet.has(node.id));
   if (incompleteNodes.length === 0) {
     return;
   }

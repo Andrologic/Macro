@@ -207,6 +207,59 @@ describe('ProjectNavigator', () => {
     });
   };
 
+  it('closes only the settings dialog and returns focus to the project menu trigger', async () => {
+    const { ProjectNavigator } = await import('./ProjectNavigator');
+    const { ProjectGitFlowModal } = await import('./ProjectGitFlowModal');
+    const project = { ...makeProject('project-api', 'API'), gitSetupState: 'ready' as const };
+    const originalActions = { getProjectById: useAppStore.getState().getProjectById, openProjectGitFlowModal: useAppStore.getState().openProjectGitFlowModal, closeProjectGitFlowModal: useAppStore.getState().closeProjectGitFlowModal };
+    const closeSettings = mock(() => useAppStore.setState({ projectGitFlowModalProjectId: null }));
+    useAppStore.setState({
+      projectGitFlowModalProjectId: null,
+      getProjectById: id => id === project.id ? project : undefined,
+      openProjectGitFlowModal: id => useAppStore.setState({ projectGitFlowModalProjectId: id }),
+      closeProjectGitFlowModal: closeSettings,
+    });
+    await act(async () => root?.render(<><ProjectNavigator isOpen onClose={closeMock} /><ProjectGitFlowModal /></>));
+    await openProjectMenu(project.id);
+    const trigger = document.body.querySelector(`[data-project-id="${project.id}"] [data-project-nav-menu="true"]`)!;
+    await act(async () => findButton('Project settings').click());
+    const dialogs = document.body.querySelectorAll('[role="dialog"]');
+    expect(dialogs).toHaveLength(2);
+    expect(dialogs[1].contains(document.activeElement)).toBe(true);
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(closeSettings).toHaveBeenCalledTimes(1);
+    expect(closeMock).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(trigger);
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    useAppStore.setState(originalActions);
+  });
+
+  it('keeps focus in the manager, dismisses menus first and restores the opener', async () => {
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    const { ProjectNavigator } = await import('./ProjectNavigator');
+    await act(async () => root?.render(<ProjectNavigator isOpen onClose={closeMock} />));
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    const buttons = dialog.querySelectorAll<HTMLButtonElement>('button:not([disabled])');
+    buttons[buttons.length - 1].focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(buttons[0]);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(buttons[buttons.length - 1]);
+    await openProjectMenu('project-api');
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(closeMock).not.toHaveBeenCalled();
+    expect((document.activeElement as HTMLElement).getAttribute('aria-label')).toContain('API');
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(closeMock).toHaveBeenCalledTimes(1);
+    await act(async () => root?.render(null));
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
   it('renders standalone projects at the root before groups', async () => {
     await renderNavigator();
 

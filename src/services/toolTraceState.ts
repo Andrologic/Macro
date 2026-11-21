@@ -34,6 +34,7 @@ export const classifyToolTraceRecovery = (
   trace: ToolTrace,
   evidence: { live?: boolean; approvalRecovered?: boolean } = {},
 ): NonNullable<ToolTrace['recovery_state']> => {
+  if (trace.recovery_state === 'unknown') return 'unknown';
   if (trace.status === 'done' || trace.status === 'denied') return 'completed';
   if (evidence.live) return 'live';
   if (trace.status === 'pending_approval' && evidence.approvalRecovered) return 'replayable';
@@ -78,6 +79,9 @@ export const mergeToolTracesPreservingDeniedStatus = (
     if (!existingTrace) return trace;
 
     const status = mergeToolTraceStatus(existingTrace.status, trace.status);
+    if (existingTrace.status === 'done' && existingTrace.recovery_state === 'unknown') {
+      return { ...trace, status, recovery_state: 'unknown', completed_at_ms: existingTrace.completed_at_ms ?? trace.completed_at_ms };
+    }
     if (isProtectedToolTraceStatus(existingTrace.status) || status !== trace.status) {
       return {
         ...trace,

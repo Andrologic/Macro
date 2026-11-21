@@ -1,5 +1,6 @@
 # =============================================================================
-# BUN CONFIGURATION - Macro Project (Performance Optimized)
+# Bun configuration for Macro
+# Supported options: https://bun.sh/docs/runtime/bunfig
 # =============================================================================
 
 [install]
@@ -31,9 +32,6 @@ auto = "auto"
 # For CI/CD: set to true to fail if lockfile is out of sync
 frozenLockfile = false
 
-# Concurrent network requests for faster downloads
-concurrency = 64
-
 # Cache configuration - Optimized for performance
 [install.cache]
 
@@ -51,42 +49,16 @@ disableManifest = false
 # 'bun' = use Bun's shell (faster), 'system' = use system shell
 shell = "bun"
 
-# Parallel script execution
+# Print each script command before running it
 silent = false
-
-# Environment variables shared by Bun scripts
-[run.env]
-# Keep enough memory available for builds and the full test suite
-NODE_OPTIONS = "--max-old-space-size=4096"
 
 [test]
 # Test runner configuration
 # Coverage is opt-in (bun run test:coverage); enabling it here would instrument
 # every spawned bun test process and write a report for each.
 preload = ["./test-setup.ts"]
-# Parallel test execution
+# Per-test timeout in milliseconds
 timeout = 30000
-
-[build]
-# Build configuration - Maximum optimization
-minify = true
-sourcemap = false
-# Target modern browsers
-target = "browser"
-# Enable tree-shaking
-external = []
-
-# =============================================================================
-# TAURI INTEGRATION
-# =============================================================================
-
-[tauri]
-# Tauri CLI path (installed via devDependencies)
-cli = "./node_modules/.bin/tauri"
-
-# =============================================================================
-# PERFORMANCE SETTINGS
-# =============================================================================
 
 [install.lockfile]
 # Use text-based lockfile for better diffing (disabled to avoid yarn.lock generation)
@@ -94,11 +66,3 @@ cli = "./node_modules/.bin/tauri"
 
 # Always save the lockfile
 save = true
-
-# =============================================================================
-# LOGGING
-# =============================================================================
-
-[log]
-# Log level
-level = "info"

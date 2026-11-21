@@ -1,0 +1,27 @@
+{
+  "contract_version": "1.0",
+  "dialect": "https://json-schema.org/draft/2020-12/schema",
+  "root": "https://schemas.macro.andrologic.ai/macro-pilot/v1/schema.json",
+  "resources": [
+    {
+      "path": "common.schema.json",
+      "id": "https://schemas.macro.andrologic.ai/macro-pilot/v1/common.schema.json"
+    },
+    {
+      "path": "identity.schema.json",
+      "id": "https://schemas.macro.andrologic.ai/macro-pilot/v1/identity.schema.json"
+    },
+    {
+      "path": "supervision.schema.json",
+      "id": "https://schemas.macro.andrologic.ai/macro-pilot/v1/supervision.schema.json"
+    },
+    {
+      "path": "protocol.schema.json",
+      "id": "https://schemas.macro.andrologic.ai/macro-pilot/v1/protocol.schema.json"
+    },
+    {
+      "path": "schema.json",
+      "id": "https://schemas.macro.andrologic.ai/macro-pilot/v1/schema.json"
+    }
+  ]
+}

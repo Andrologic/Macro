@@ -1,0 +1,28 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "schema-item-bounds",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only",
+      "results": {
+        "list": {
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 3,
+            "maxItems": 2
+          }
+        },
+        "name": {
+          "schema": {
+            "type": "string",
+            "minItems": 1
+          }
+        }
+      }
+    }
+  }
+}

@@ -18,6 +18,7 @@ interface ConfirmPromptModalProps {
   requireInput?: boolean;
   isSubmitting?: boolean;
   showConfirmButton?: boolean;
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
   onCancel: () => void;
   onSecondary?: () => void;
   onConfirm: (value?: string) => void;
@@ -37,6 +38,7 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
   requireInput = false,
   isSubmitting = false,
   showConfirmButton = true,
+  returnFocusRef,
   onCancel,
   onSecondary,
   onConfirm,
@@ -58,6 +60,7 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
   return (
     <Dialog
       title={title}
+      returnFocusRef={returnFocusRef}
       onClose={isSubmitting ? () => undefined : onCancel}
       closeOnBackdropClick={!isSubmitting}
       ariaDescribedBy={description ? descriptionId : undefined}

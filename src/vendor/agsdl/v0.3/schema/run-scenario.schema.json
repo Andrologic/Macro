@@ -1,0 +1,402 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Andrologic/AgSDL/v0.3.0/schema/run-scenario.schema.json",
+  "title": "AgSDL 0.3.0 run scenario",
+  "description": "A scripted run of a document and what a host must do in it. See conformance/README.md.",
+  "type": "object",
+  "required": [
+    "description",
+    "document",
+    "timeline",
+    "expect"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "document": {
+      "description": "A path relative to conformance/, or the document itself.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object"
+        }
+      ]
+    },
+    "entry": {
+      "description": "The message the host delivers to the entry step.",
+      "$ref": "#/$defs/message"
+    },
+    "timeline": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/event"
+      }
+    },
+    "expect": {
+      "$ref": "#/$defs/expect"
+    }
+  },
+  "$defs": {
+    "address": {
+      "description": "A step name, or the names leading to a composition body step, separated by '/'.",
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}(/[A-Za-z][A-Za-z0-9_-]{0,63})*$"
+    },
+    "item": {
+      "description": "The index of the element whose path runs the work, in the nearest fan-out.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "nth": {
+      "description": "Which start of the step, counting from 1, in timeline order.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "code": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z_]*$"
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resources": {
+          "type": "object"
+        }
+      }
+    },
+    "event": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "elapse"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "elapse": {
+              "description": "Milliseconds pass, for every work running or waiting for a person. Each time limit counts them as the specification says.",
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "running"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "running": {
+              "description": "A check: exactly these works are running or waiting for a person now.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/workRef"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "work"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "work": {
+              "$ref": "#/$defs/address"
+            },
+            "item": {
+              "$ref": "#/$defs/item"
+            },
+            "returns": {
+              "description": "The work ends with this output: an agent's or an approval's.",
+              "type": "object"
+            },
+            "command": {
+              "description": "The command a call ran ended so.",
+              "type": "object",
+              "required": [
+                "exitCode"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "exitCode": {
+                  "type": "integer"
+                },
+                "stdout": {
+                  "type": "string"
+                },
+                "stderr": {
+                  "type": "string"
+                }
+              }
+            },
+            "tool": {
+              "description": "The MCP tool a call used returned this result.",
+              "type": "object",
+              "required": [
+                "content"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "content": {},
+                "isError": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "fails": {
+              "description": "The work fails with this code.",
+              "$ref": "#/$defs/code"
+            },
+            "request": {
+              "description": "The work opens a request that the host puts to a person.",
+              "enum": [
+                "ask",
+                "plan",
+                "question"
+              ]
+            },
+            "answer": {
+              "description": "A person answers the work's oldest open request.",
+              "enum": [
+                "yes",
+                "no"
+              ]
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "returns"
+              ]
+            },
+            {
+              "required": [
+                "command"
+              ]
+            },
+            {
+              "required": [
+                "tool"
+              ]
+            },
+            {
+              "required": [
+                "fails"
+              ]
+            },
+            {
+              "required": [
+                "request"
+              ]
+            },
+            {
+              "required": [
+                "answer"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "expect": {
+      "type": "object",
+      "required": [
+        "run"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "enum": [
+            "succeeded",
+            "failed"
+          ]
+        },
+        "starts": {
+          "description": "How many works each step starts. A step not listed starts none.",
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/address"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "messages": {
+          "description": "Messages the host delivers. Only the fields given are compared.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "to"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "to": {
+                "$ref": "#/$defs/address"
+              },
+              "item": {
+                "$ref": "#/$defs/item"
+              },
+              "nth": {
+                "$ref": "#/$defs/nth"
+              },
+              "prompt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resources": {
+                "description": "Resources by name, each compared as a pattern: an object matches when every key given matches; other values match exactly. Resources not given are not compared.",
+                "type": "object"
+              },
+              "element": {
+                "description": "The message's item, the element of its fan-out, compared as a pattern."
+              },
+              "comments": {
+                "description": "The message's comments, compared as a pattern: the whole list, in order.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "step",
+                    "comment"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "step": {
+                      "$ref": "#/$defs/address"
+                    },
+                    "comment": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "joins": {
+          "description": "Every join decision, in timeline order. Branches given are compared as patterns, as message resources are; others are not compared.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "join",
+              "outcome"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "join": {
+                "$ref": "#/$defs/address"
+              },
+              "nth": {
+                "$ref": "#/$defs/nth"
+              },
+              "outcome": {
+                "enum": [
+                  "done",
+                  "incomplete",
+                  "reached",
+                  "missed"
+                ]
+              },
+              "branches": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "failures": {
+          "description": "Every failure the host reports, in any order.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "step",
+              "code"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "step": {
+                "$ref": "#/$defs/address"
+              },
+              "item": {
+                "$ref": "#/$defs/item"
+              },
+              "code": {
+                "$ref": "#/$defs/code"
+              }
+            }
+          }
+        },
+        "cancelled": {
+          "description": "Every work the host cancels for a group that decided, closed or failed, in any order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/workRef"
+          }
+        },
+        "answers": {
+          "description": "Every request the host answers itself, in any order.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "work",
+              "answer"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "work": {
+                "$ref": "#/$defs/address"
+              },
+              "item": {
+                "$ref": "#/$defs/item"
+              },
+              "answer": {
+                "enum": [
+                  "no"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "workRef": {
+      "description": "A work: its step, and its element in a fan-out.",
+      "type": "object",
+      "required": [
+        "step"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "step": {
+          "$ref": "#/$defs/address"
+        },
+        "item": {
+          "$ref": "#/$defs/item"
+        }
+      }
+    }
+  }
+}

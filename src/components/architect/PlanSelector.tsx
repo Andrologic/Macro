@@ -706,6 +706,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         throw new Error(t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.'));
       }
 
+      await useChatStore.getState().ensureConversationForCurrentMode();
+      if (!isCurrentActivationRequest(requestId, requestContext)) return;
       setActivePlanId(planId);
       setIsOpen(false);
       setShowCreateKinds(false);
@@ -1084,6 +1086,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       const cleanup = archiveResult.cleanup;
       taskStore.clearPlanRuntimeState({
         planId: plan.id,
+        branchName: storageBranch,
         deletedWorktreeKeys: cleanup.flatMap((repository) =>
           repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
         ),
@@ -1193,6 +1196,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       });
       useTaskStore.getState().clearPlanRuntimeState({
         planId: deletedPlanId,
+        branchName: storageBranch,
         deletedWorktreeKeys: cleanup.deletedWorktreeKeys,
       });
       if (currentPlan.conversationId) {
@@ -1244,6 +1248,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         if (verification.mutationApplied) {
           useTaskStore.getState().clearPlanRuntimeState({
             planId: planToDelete.id,
+            branchName: planToDelete.targetBranch || targetBranch,
             deletedWorktreeKeys: [],
           });
           if (resolveVerifiedPlanDeletionRecovery({

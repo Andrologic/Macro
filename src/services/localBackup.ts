@@ -1,6 +1,14 @@
 import * as ipc from './tauriIpc';
 
-const CLIENT_KEYS = new Set(['macro_chat_message_images', 'macro_chat_composer_drafts_v1', 'macro_chat_questionnaire_drafts']);
+// Keep aligned with CLIENT_KEYS in src-tauri/src/local_backup.rs. Missing keys
+// in historical archives are removed as part of whole-profile replacement.
+const CLIENT_KEYS = new Set([
+  'macro_chat_message_images',
+  'macro_chat_composer_drafts_v1',
+  'macro_chat_questionnaire_drafts',
+  'macro_chat_queued_submissions_v1',
+  'macro_chat_unsaved_assistant_responses_v1',
+]);
 const included = (key: string): boolean => CLIENT_KEYS.has(key) || key.startsWith('agentCodeCheckpoints:') || key.startsWith('agentCodeReplayRecovery:');
 export const captureBackupBrowserState = (): Record<string, string> => {
   const entries: Array<[string, string]> = [];

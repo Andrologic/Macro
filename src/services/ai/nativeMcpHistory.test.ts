@@ -90,6 +90,7 @@ test('native requests expose discovery tools and reject direct hidden MCP calls'
   }));
   const handler = mock(async () => 'unexpected');
   const options: StreamingChatOptions = {
+    providerAdmission: { kind: 'utility' },
     providerId: 'copilot', providerType: 'copilot', baseUrl: 'copilot://cli', modelId: 'fixture',
     messages: [], allowedToolIds: tools.map(tool => tool.id), mcpTools: tools,
     onToken() {}, onComplete() {}, onError(error) { throw error; }, onToolCall: handler,
@@ -109,6 +110,7 @@ test('native cancellation from a live context observer emits no later provider u
   const live: LiveStreamContextSnapshot[] = [];
   let lateSnapshots = 0;
   const options: StreamingChatOptions = {
+    providerAdmission: { kind: 'utility' },
     providerId: 'copilot', providerType: 'copilot', baseUrl: 'copilot://cli', modelId: 'fixture',
     messages: [], signal: controller.signal, allowedToolIds: ['mcp__fixture__read'],
     mcpTools: [{ id: 'mcp__fixture__read', name: 'read', serverId: 'fixture', inputSchema: { type: 'object', properties: {} } }],
@@ -140,6 +142,7 @@ for (const mode of scenarios) {
       buildFunctionCallOutputProviderInputItem('old-call', 'previous message', blocks),
     ];
     const options: StreamingChatOptions = {
+    providerAdmission: { kind: 'utility' },
       providerId: 'copilot', providerType: 'copilot', baseUrl: 'copilot://cli', modelId: 'fixture', signal: controller.signal,
       messages: [{ role: 'assistant', content: 'Previous message', provider_input_items: oldItems }],
       allowedToolIds: ['mcp__fixture__read', ...(isGuided() ? ['read_file'] : [])],

@@ -23,6 +23,7 @@ interface CreateImplementTaskDialogProps {
   projects: TaskProjectFilterOption[];
   initialProjectId: string | null;
   isCreating: boolean;
+  creationError?: string | null;
   onClose: () => void;
   onCreate: (input: {
     projectId: string;
@@ -103,6 +104,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
   projects,
   initialProjectId,
   isCreating,
+  creationError,
   onClose,
   onCreate,
 }) => {
@@ -377,6 +379,8 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
     }
   }, [creatableTaskKinds, isDirectEditProject, selectedTaskKind]);
 
+  const selectedProjectPath = selectedProject?.path;
+  const canLoadWorktrees = selectedCapabilities?.worktrees;
   useEffect(() => {
     let cancelled = false;
     setWorkspaceChoice('new');
@@ -388,11 +392,11 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
     setCurrentHeadCommitHash(null);
     setIsCurrentRepositoryClean(null);
     setStartPointLoadFailed(false);
-    if (!selectedProject || !getProjectCapabilities(selectedProject).worktrees || isDirectEditProject) return () => { cancelled = true; };
+    if (!selectedProjectPath || !canLoadWorktrees || isDirectEditProject) return () => { cancelled = true; };
     setIsLoadingWorktrees(true);
     void Promise.all([
-      gitTaskStartPoints({ repoPath: selectedProject.path }),
-      gitStatus(selectedProject.path),
+      gitTaskStartPoints({ repoPath: selectedProjectPath }),
+      gitStatus(selectedProjectPath),
     ])
       .then(([startPoints, status]) => {
         if (!cancelled) {
@@ -417,7 +421,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
         if (!cancelled) setIsLoadingWorktrees(false);
       });
     return () => { cancelled = true; };
-  }, [isDirectEditProject, selectedProject, startPointLoadRequest]);
+  }, [isDirectEditProject, selectedProjectPath, canLoadWorktrees, startPointLoadRequest]);
 
   return (
     <Dialog
@@ -672,6 +676,12 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           {getTaskKindDescription(tooltipAnchor.kind)}
         </div>,
         document.body
+      )}
+
+      {creationError && (
+        <div role="alert" className="mx-5 mb-3 max-h-32 shrink-0 overflow-y-auto rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {creationError}
+        </div>
       )}
 
       <div className="flex shrink-0 justify-end gap-2 border-t border-border bg-muted/20 px-5 py-3">

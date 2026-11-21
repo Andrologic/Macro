@@ -1,0 +1,92 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "ci-watcher",
+  "title": "Developer with a CI watcher",
+  "description": "While the developer works, a watcher follows CI and steers the developer when a build fails.",
+  "mcpServers": {
+    "ci": {
+      "url": "https://mcp.example.com/ci"
+    }
+  },
+  "agents": {
+    "lead": {
+      "harness": "claude-code",
+      "instructions": "Turn the request into a clear task for the developer, given as instructions, then judge the result.",
+      "permissions": "read-only",
+      "instructs": true
+    },
+    "developer": {
+      "harness": "codex",
+      "instructions": "Implement the task. Take CI failure reports into account as soon as they arrive.",
+      "permissions": "workspace"
+    },
+    "watcher": {
+      "harness": "claude-code",
+      "instructions": "Watch the CI runs of the current branch. Choose failure when a run fails, green when the work is done and CI passes.",
+      "mcpServers": [
+        "ci"
+      ],
+      "permissions": {
+        "preset": "read-only",
+        "rules": [
+          {
+            "action": "mcp",
+            "match": "ci",
+            "effect": "allow"
+          }
+        ]
+      }
+    }
+  },
+  "flow": {
+    "entry": "plan",
+    "steps": {
+      "plan": {
+        "type": "agent",
+        "agent": "lead",
+        "next": [
+          "code",
+          {
+            "step": "watch",
+            "message": {
+              "prompt": "Watch CI for the branch the developer works on."
+            }
+          }
+        ]
+      },
+      "code": {
+        "type": "agent",
+        "agent": "developer",
+        "next": "merge"
+      },
+      "watch": {
+        "type": "agent",
+        "agent": "watcher",
+        "next": {
+          "failure": "signal",
+          "green": "merge"
+        }
+      },
+      "signal": {
+        "type": "agent",
+        "agent": "developer",
+        "delivery": "steer",
+        "description": "Joins the developer's current work if there is one.",
+        "next": "merge"
+      },
+      "merge": {
+        "type": "join",
+        "next": "judge"
+      },
+      "judge": {
+        "type": "agent",
+        "agent": "lead",
+        "instance": "judge",
+        "next": {
+          "done": [],
+          "revise": "plan"
+        }
+      }
+    }
+  }
+}

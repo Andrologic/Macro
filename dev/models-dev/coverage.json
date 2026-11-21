@@ -1,0 +1,142 @@
+{
+  "legacyFetchedAt": "2026-05-11T00:00:00.000Z",
+  "providers": {
+    "openai": {
+      "id": "openai",
+      "models": {
+        "gpt-4o": {
+          "id": "gpt-4o",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        },
+        "gpt-4.1": {
+          "id": "gpt-4.1",
+          "limit": {
+            "context": 1047576,
+            "output": 32768
+          }
+        },
+        "gpt-5": {
+          "id": "gpt-5",
+          "limit": {
+            "context": 400000,
+            "output": 128000
+          }
+        }
+      }
+    },
+    "anthropic": {
+      "id": "anthropic",
+      "models": {
+        "claude-3-5-sonnet-latest": {
+          "id": "claude-3-5-sonnet-latest",
+          "limit": {
+            "context": 200000,
+            "output": 8192
+          }
+        },
+        "claude-sonnet-4-5": {
+          "id": "claude-sonnet-4-5",
+          "limit": {
+            "context": 200000,
+            "output": 64000
+          }
+        }
+      }
+    },
+    "openrouter": {
+      "id": "openrouter",
+      "models": {
+        "moonshotai/kimi-k2": {
+          "id": "moonshotai/kimi-k2",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
+        },
+        "anthropic/claude-sonnet-4.5": {
+          "id": "anthropic/claude-sonnet-4.5",
+          "limit": {
+            "context": 200000,
+            "output": 64000
+          }
+        },
+        "qwen/qwen3.6-plus": {
+          "id": "qwen/qwen3.6-plus",
+          "limit": {
+            "context": 1000000,
+            "output": 66000
+          }
+        },
+        "qwen3.6-plus": {
+          "id": "qwen3.6-plus",
+          "limit": {
+            "context": 1000000,
+            "output": 66000
+          }
+        }
+      }
+    },
+    "github-copilot": {
+      "id": "github-copilot",
+      "models": {
+        "gpt-4o": {
+          "id": "gpt-4o",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        },
+        "claude-sonnet-4.5": {
+          "id": "claude-sonnet-4.5",
+          "limit": {
+            "context": 200000,
+            "output": 64000
+          }
+        }
+      }
+    },
+    "opencode-go": {
+      "id": "opencode-go",
+      "models": {
+        "kimi-k2.6": {
+          "id": "kimi-k2.6",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
+        },
+        "kimi-k2": {
+          "id": "kimi-k2",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
+        },
+        "qwen3.6-plus": {
+          "id": "qwen3.6-plus",
+          "limit": {
+            "context": 262144,
+            "output": 66000
+          }
+        },
+        "qwen3-6-plus": {
+          "id": "qwen3-6-plus",
+          "limit": {
+            "context": 262144,
+            "output": 66000
+          }
+        },
+        "qwen/qwen3.6-plus": {
+          "id": "qwen/qwen3.6-plus",
+          "limit": {
+            "context": 262144,
+            "output": 66000
+          }
+        }
+      }
+    }
+  }
+}

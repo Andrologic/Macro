@@ -26,6 +26,7 @@ export const prepareTaskWorkspaces = async <TCommands>(
     commands?: TCommands;
     onWorkspacesPrepared?: () => void;
     skipIntegratedTargets?: Set<string>;
+    strictSetup?: boolean;
   },
   ports: TaskWorkspacePreparationPorts<TCommands>,
 ): Promise<TaskWorkspacePreparation> => {
@@ -57,6 +58,7 @@ export const prepareTaskWorkspaces = async <TCommands>(
       try {
         if ((await ports.runSetup(task, target, command)).failed) ports.setupFailed(target);
       } catch (error) {
+        if (input.strictSetup) throw error;
         ports.setupFailed(target, error);
       }
     }

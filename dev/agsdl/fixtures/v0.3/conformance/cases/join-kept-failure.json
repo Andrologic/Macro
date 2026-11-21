@@ -1,0 +1,58 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "join-kept-failure",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": [
+          "x",
+          "y"
+        ]
+      },
+      "x": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "j"
+      },
+      "y": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "j"
+      },
+      "j": {
+        "type": "join",
+        "failures": "keep",
+        "next": {
+          "step": "t",
+          "message": {
+            "resources": {
+              "e": {
+                "from": [
+                  "branches",
+                  "x",
+                  "error",
+                  "code"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "t": {
+        "type": "agent",
+        "agent": "a"
+      }
+    }
+  }
+}

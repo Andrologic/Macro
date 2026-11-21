@@ -18,6 +18,7 @@ export const createStreamAccumulator = (
   options: Pick<StreamingChatOptions, 'onToken' | 'onToolTracesUpdate' | 'onLiveContextUpdate' | 'signal'>
 ) => {
   let visibleContent = '';
+  let providerDeltaText = '';
   const toolTraces = new Map<string, ToolTrace>();
   const toolTraceOrder: string[] = [];
   const hiddenContextBlocks: string[] = [];
@@ -46,6 +47,7 @@ export const createStreamAccumulator = (
     version: liveContextVersion,
     visibleContent,
     visibleContentLength: visibleContent.length,
+    providerDeltaText: providerDeltaText || undefined,
     toolTraces: snapshotToolTraces(),
     hiddenContext: buildHiddenContext(true),
     providerInputItems: cloneProviderInputItems(providerInputItems),
@@ -76,7 +78,9 @@ export const createStreamAccumulator = (
       tool_name: trace.tool_name || existingTrace?.tool_name || trace.tool_call_id,
       detail: trace.detail ?? existingTrace?.detail,
       status,
-      recovery_state: status === 'done' || status === 'denied'
+      recovery_state: trace.recovery_state === 'unknown' || (existingTrace?.status === 'done' && existingTrace.recovery_state === 'unknown')
+        ? 'unknown'
+        : status === 'done' || status === 'denied'
         ? 'completed'
         : trace.recovery_state ?? existingTrace?.recovery_state,
       visible_offset:
@@ -122,12 +126,14 @@ export const createStreamAccumulator = (
 
   return {
     appendProviderDelta(chunk: string) {
+      providerDeltaText += chunk;
       appendVisibleChunk(chunk, false);
     },
     flushProviderDelta() {
       // Provider deltas are appended directly.
     },
     appendSystemChunk(chunk: string, markToolsDone = false) {
+      if (chunk) providerDeltaText = "";
       appendVisibleChunk(chunk, markToolsDone);
     },
     settleRunningToolTracesUnknown,
@@ -154,12 +160,13 @@ export const createStreamAccumulator = (
         started_at_ms: existingTrace?.started_at_ms ?? Date.now(),
       });
     },
-    completeToolTrace(toolCallId: string) {
+    completeToolTrace(toolCallId: string, recoveryState?: 'unknown') {
       const existingTrace = toolTraces.get(toolCallId);
       if (!existingTrace || isProtectedToolTraceStatus(existingTrace.status)) return;
       upsertToolTrace({
         ...existingTrace,
         status: 'done',
+        recovery_state: recoveryState,
         completed_at_ms: Date.now(),
       });
     },
@@ -226,6 +233,7 @@ export const createStreamAccumulator = (
       publishLiveContext();
     },
     replaceVisibleContent(content: string) {
+      providerDeltaText = "";
       visibleContent = content;
       publishLiveContext();
     },

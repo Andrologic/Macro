@@ -1,3 +1,9 @@
+mod agsdl_host_action_approval030;
+mod agsdl_host_codex_adapter;
+mod agsdl_host_qualification030;
+mod agsdl_host_start_adapter030;
+#[cfg(any(test, all(debug_assertions, feature = "browser-runtime-debug")))]
+mod browser_runtime_port;
 // AppKit's standard Quit item and Dock Quit call terminate:, bypassing
 // Tauri CloseRequested. Cancel that termination and request the same guarded
 // window close as the title bar. Approved exits use AppHandle::exit directly.
@@ -13,6 +19,7 @@ mod native_quit_consent {
     static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
     extern "C" fn should_terminate(_: *mut AnyObject, _: Sel, _: *mut AnyObject) -> usize {
+        let phase = crate::app_shutdown::Phase::begin("appkit_quit_request");
         if let Some(app) = APP.get() {
             if let Some(window) = app.get_webview_window("main") {
                 if let Err(error) = window.close() {
@@ -20,6 +27,7 @@ mod native_quit_consent {
                 }
             }
         }
+        phase.finish(true);
         0 // NSTerminateCancel: the frontend will explicitly exit after flushing.
     }
 
@@ -89,14 +97,64 @@ mod native_quit_consent {
     }
 }
 
+pub(crate) mod agsdl_content;
+mod agsdl_host;
+mod agsdl_host_capture;
+mod agsdl_host_catalogue;
+mod agsdl_host_claude;
+mod agsdl_host_codex;
+mod agsdl_host_flow030;
+mod agsdl_host_projection030;
+mod agsdl_host_tasks;
+mod agsdl_host_tools;
+mod agsdl_host_work_admission030;
+mod agsdl_intent_coordinator;
+pub(crate) mod agsdl_permissions;
+mod agsdl_runtime_adapter;
 mod app_quit_state;
+mod app_shutdown;
 mod app_updates;
+// The editor parity suite exercises Argentic internals at the Cargo-locked revision.
+#[cfg(all(test, argentic_editor_parity))]
+mod argentic_clock_conformance030_tests;
+#[cfg(all(test, argentic_editor_parity))]
+mod argentic_compile_conformance030_tests;
+#[cfg(all(test, argentic_editor_parity))]
+include!(concat!(env!("OUT_DIR"), "/argentic_editor_core.rs"));
+#[cfg(all(test, argentic_editor_parity))]
+mod argentic_reader_conformance030_tests;
+#[cfg(all(test, argentic_editor_parity))]
+mod argentic_route_data_conformance030_tests;
+#[cfg(all(test, argentic_editor_parity))]
+mod argentic_routes_conformance030_tests;
+#[cfg(all(test, argentic_editor_parity))]
+mod argentic_runtime;
+#[cfg(all(test, argentic_editor_parity))]
+mod argentic_values_conformance030_tests;
+#[cfg(all(test, argentic_editor_parity))]
+mod argentic_work_conformance030_tests;
 pub mod commands;
 pub mod config;
 pub mod core;
 mod db;
+#[cfg(feature = "performance-sqlite")]
+#[doc(hidden)]
+#[path = "../examples/performance-sqlite.rs"]
+pub mod performance_sqlite;
+/// Native file DTOs exposed for the checked IPC generator.
+pub mod pilot_file_contracts {
+    pub use crate::db::pilot_files::{
+        PilotAttachmentMetadata, PilotFileAuthorizeInput, PilotFileBeginInput, PilotFileChunkInput,
+        PilotFileGuard, PilotFileRead, PilotFileReadInput, PilotFileReceipt, PilotFileSource,
+        PilotFileTransferInput, PilotInspectAttachmentsInput, PilotPrepareSendInput,
+        PilotPreparedSend, PilotSendMarkInput, PilotSendReadInput, PilotSendReceipt,
+    };
+}
+mod connect;
+mod connect_resources;
 mod dev_overrides;
 mod diagnostics;
+pub mod host_telemetry;
 pub mod ipc_contracts;
 mod local_backup;
 #[cfg(target_os = "macos")]
@@ -125,16 +183,16 @@ use core::{
     apply_runtime_workspace, finalize_desktop_workspace_path, init_logging,
     init_process_environment, load_config,
 };
-use fs::watcher::init_watcher;
 use git::GitState;
 use serde::Serialize;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 #[cfg(target_os = "macos")]
 use tauri::utils::config::Color;
 #[cfg(all(feature = "browser-runtime-debug", not(debug_assertions)))]
-compile_error!(
-    "La fonctionnalité browser-runtime-debug est strictement réservée aux builds debug."
-);
+compile_error!("The browser-runtime-debug feature is only available in debug builds.");
 
 #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
 use tauri::Listener;
@@ -150,6 +208,7 @@ pub type WorkspaceRoot = Arc<RwLock<std::path::PathBuf>>;
 #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
 fn install_browser_runtime_event_relays(app: &tauri::AppHandle) {
     const EVENTS: &[&str] = &[
+        "app-update://download-progress",
         "ai:auth-success",
         "ai:auth-cancelled",
         "ai:auth-error",
@@ -195,12 +254,31 @@ fn install_browser_runtime_event_relays(app: &tauri::AppHandle) {
 
 fn shutdown_mcp_runtime(app_handle: &tauri::AppHandle) {
     let runtime = app_handle.state::<commands::mcp::McpRuntimeManager>();
-    let result = tauri::async_runtime::block_on(tokio::time::timeout(
-        std::time::Duration::from_secs(12),
-        runtime.shutdown_all(),
-    ));
+    let result = block_on_mcp_shutdown(runtime.shutdown_all());
     if result.is_err() {
         tracing::warn!("MCP runtime shutdown exceeded its 12-second budget");
+    }
+}
+
+// Construct the timer while polling inside Tauri's runtime, not on the native
+// event-loop thread that invokes the exit callback.
+fn block_on_mcp_shutdown(
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<(), tokio::time::error::Elapsed> {
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(12), shutdown).await
+    })
+}
+
+#[cfg(test)]
+mod mcp_shutdown_tests {
+    #[test]
+    fn shutdown_can_start_from_a_thread_without_a_tokio_runtime() {
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        let result = super::block_on_mcp_shutdown(async {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        });
+        assert!(result.is_ok());
     }
 }
 
@@ -360,12 +438,6 @@ async fn frontend_log(level: String, scope: String, message: String) -> Result<(
 }
 
 #[tauri::command]
-fn updater_target() -> Result<String, String> {
-    tauri_plugin_updater::target()
-        .ok_or_else(|| "Automatic updates are not supported on this platform.".to_string())
-}
-
-#[tauri::command]
 async fn window_close(window: tauri::WebviewWindow) -> Result<(), String> {
     window.close().map_err(|error| error.to_string())
 }
@@ -465,6 +537,22 @@ async fn window_set_traffic_light_position(
     }
 }
 
+/// Dispatch the internal content helper before initializing Tauri.
+pub fn initialize_agsdl_content_helper() -> std::io::Result<Option<i32>> {
+    agsdl_content::file_helper::initialize()
+}
+
+/// Dedicated local QA entry; never exposed through IPC or release builds.
+#[cfg(all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions))]
+pub async fn run_agsdl_content_qa(root: &std::path::Path) -> Result<(), String> {
+    agsdl_content::qa::run(root).await
+}
+
+#[cfg(all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions))]
+pub async fn run_agsdl_content_cases(selection: &str) -> Result<String, String> {
+    agsdl_content::qa::run_cases(selection).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_process_environment();
@@ -474,6 +562,8 @@ pub fn run() {
 
     tracing::info!("Starting Macro application");
 
+    let pending_downgrade_activation = Arc::new(AtomicBool::new(false));
+    let setup_pending_downgrade_activation = pending_downgrade_activation.clone();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -487,41 +577,92 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_store::Builder::default().build());
+        .plugin(tauri_plugin_updater::Builder::new().build());
 
     #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
     let builder = builder.plugin(tauri_remote_ui::init());
 
     let app = builder
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                commands::chat_admission::retire_browser_from_native(
+                    webview.app_handle(),
+                    webview.window().label(),
+                );
+            }
+        })
         .manage(AppQuitState::default())
         .manage(DbPool::default())
         .manage(diagnostics::DiagnosticReportStore::default())
         .manage(AiState::default())
+        .manage(agsdl_host::HostState::default())
+        .manage(agsdl_intent_coordinator::IntentCoordinator::default())
+        .manage(ai::admitted_http::AdmittedHttp::default())
+        .manage(connect::TransferRuntime::default())
+        .manage(db::chat_admission::runtime::ChatAdmissionRuntime::default())
         .manage(GitState::new())
         .manage(commands::mcp::McpRuntimeManager::production())
         .manage(commands::workspace::ProjectOperationStore::default())
         .manage(commands::terminal::TerminalSessionStore::default())
         .setup(move |app| {
-            if let Err(error) = app_updates::activate_staged_update(app.handle(), false) {
-                tracing::error!(%error, "Failed to activate staged application update");
+            commands::pilot_secrets::setup(app.handle());
+            match app_updates::staged_update_requires_native_confirmation(app.handle()) {
+                Ok(true) => {
+                    // Wait for RunEvent::Ready, after setup has finished its migrations.
+                    setup_pending_downgrade_activation.store(true, Ordering::Release);
+                }
+                Ok(false) => {
+                    if let Err(error) = app_updates::activate_staged_update(app.handle(), false) {
+                        tracing::error!(%error, "Failed to activate staged application update");
+                    }
+                }
+                Err(error) => {
+                    tracing::error!(%error, "Failed to inspect staged application update");
+                }
             }
             #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
             if std::env::var("MACRO_TAURI_BROWSER_BRIDGE").as_deref() == Ok("1") {
+                let bridge_port = browser_runtime_port::parse(
+                    std::env::var("MACRO_TAURI_BROWSER_BRIDGE_PORT")
+                        .ok()
+                        .as_deref(),
+                )
+                .expect("Invalid QA browser bridge port");
                 let bridge_token = std::env::var("MACRO_TAURI_BROWSER_BRIDGE_TOKEN").expect(
                     "MACRO_TAURI_BROWSER_BRIDGE_TOKEN doit être défini par le lanceur debug",
+                );
+                let browser_origin = std::env::var("MACRO_TAURI_BROWSER_ORIGIN")
+                    .unwrap_or_else(|_| "http://127.0.0.1:1422".into());
+                let origin = url::Url::parse(&browser_origin).expect("Invalid QA browser origin");
+                assert!(
+                    origin.scheme() == "http"
+                        && origin.host_str() == Some("127.0.0.1")
+                        && origin.username().is_empty()
+                        && origin.password().is_none()
+                        && origin.path() == "/"
+                        && origin.query().is_none()
+                        && origin.fragment().is_none(),
+                    "QA browser origin must remain on loopback"
+                );
+                let bridge_port = std::env::var("MACRO_TAURI_BROWSER_BRIDGE_PORT")
+                    .unwrap_or_else(|_| "1430".into())
+                    .parse::<u16>()
+                    .expect("Invalid QA bridge port");
+                assert!(
+                    bridge_port >= 1024,
+                    "QA bridge requires an unprivileged port"
                 );
                 install_browser_runtime_event_relays(app.handle());
                 let browser_bridge_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let bridge_config = RemoteUiConfig::default()
-                        .set_port(Some(1430))
-                        .set_websocket_origin("http://127.0.0.1:1422")
+                        .set_port(Some(bridge_port))
+                        .set_websocket_origin(&browser_origin)
                         .set_websocket_token(bridge_token);
                     match browser_bridge_handle.start_remote_ui(bridge_config).await {
-                        Ok(()) => tracing::info!(
-                            "Debug browser runtime bridge ready at http://127.0.0.1:1422"
-                        ),
+                        Ok(()) => {
+                            tracing::info!("Debug browser runtime bridge ready at {browser_origin}")
+                        }
                         Err(error) => {
                             tracing::error!("Failed to start debug browser runtime bridge: {error}")
                         }
@@ -616,12 +757,6 @@ pub fn run() {
             })?;
             app.manage(config_manager);
             app.manage(config_watcher);
-            secrets::init(&app_data_dir).map_err(|error| {
-                std::io::Error::other(format!(
-                    "Failed to initialize provider secret storage: {}",
-                    error
-                ))
-            })?;
             finalize_desktop_workspace_path(&mut config, &app_data_dir).map_err(|error| {
                 std::io::Error::other(format!(
                     "Failed to resolve desktop workspace path: {}",
@@ -660,28 +795,38 @@ pub fn run() {
             )?;
             app.manage(tool_host_config);
 
-            // Initialize file system watcher
-            if let Err(e) = init_watcher(app, workspace_path) {
-                tracing::warn!("Failed to initialize file system watcher: {}", e);
-            }
+            // No frontend consumer subscribes to fs:change. Keep the watcher
+            // dormant until a consumer and workspace-root retargeting exist.
 
             // Initialize database asynchronously
             tauri::async_runtime::spawn(async move {
                 match db::init_db(&app_handle).await {
-                    Ok(pool) => match ai::chatgpt::recover_auth_mutations(&pool).await {
-                        Ok(()) => {
-                            pool_state.set_ready(pool);
-                            tracing::info!("Database initialized successfully");
-                        }
+                    Ok(pool) => match agsdl_host_flow030::interrupt_previous_runs030(&pool).await {
+                        Ok(()) => match ai::chatgpt::recover_auth_mutations(&pool).await {
+                            Ok(()) => match pool_state.set_ready(pool).await {
+                                Ok(()) => tracing::info!("Database initialized successfully"),
+                                Err(error) => tracing::error!(
+                                    "Failed to validate database opening: {}",
+                                    error.message
+                                ),
+                            },
+                            Err(error) => {
+                                pool_state.set_failed(error.clone()).await;
+                                tracing::error!(
+                                    "Failed to recover durable authentication mutations: {error}"
+                                );
+                            }
+                        },
                         Err(error) => {
-                            pool_state.set_failed(error.clone());
+                            pool_state.set_failed(error.message.clone()).await;
                             tracing::error!(
-                                "Failed to recover durable authentication mutations: {error}"
+                                "Failed to mark interrupted executions: {}",
+                                error.message
                             );
                         }
                     },
                     Err(e) => {
-                        pool_state.set_failed(e.to_string());
+                        pool_state.set_failed(e.to_string()).await;
                         tracing::error!("Failed to initialize database: {}", e);
                     }
                 }
@@ -690,6 +835,14 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            host_telemetry::host_telemetry_read,
+            commands::pilot_device::pilot_device_name,
+            commands::pilot_secrets::pilot_vault_activate,
+            commands::pilot_secrets::pilot_vault_invalidate,
+            commands::pilot_secrets::pilot_vault_resume,
+            commands::pilot_secrets::pilot_secret_read,
+            commands::pilot_secrets::pilot_secret_write,
+            commands::pilot_secrets::pilot_secret_delete,
             // Database commands
             commands::db_get_initialization_status,
             commands::db_retry_initialize,
@@ -717,11 +870,12 @@ pub fn run() {
             state_manager::state_set_value,
             state_manager::state_delete_value,
             state_manager::state_clear,
-            updater_target,
             app_updates::app_update_status,
             app_updates::app_update_check_and_stage,
             app_updates::app_update_exit_after_clean_shutdown,
             app_updates::app_exit_cleanly,
+            app_shutdown::app_shutdown_active_runs,
+            app_shutdown::app_shutdown_prepare,
             app_updates::app_update_discard,
             app_updates::app_update_install_now,
             app_updates::app_installer_close_request_pending,
@@ -744,6 +898,20 @@ pub fn run() {
             window_set_zoom,
             window_set_traffic_light_position,
             commands::db_list_conversations,
+            commands::conversation_catalog::db_conversation_catalog_version,
+            commands::conversation_catalog::db_conversation_catalog_page,
+            commands::conversation_content::db_conversation_content_version,
+            commands::conversation_content::db_conversation_content_metadata,
+            commands::conversation_content::db_conversation_content_window,
+            commands::conversation_management::db_conversation_metadata,
+            commands::conversation_management::db_conversation_set_archives,
+            commands::conversation_management::db_conversation_response_version,
+            commands::conversation_management::db_conversation_acknowledge,
+            commands::conversation_management::db_conversation_action,
+            commands::conversation_management::db_conversation_import_archives,
+            commands::conversation_management::db_get_message,
+            commands::conversation_management::db_get_pilot_reflection_message,
+            commands::conversation_management::db_list_messages_bounded,
             commands::db_get_chat_snapshot,
             commands::db_get_chat_bootstrap_snapshot,
             commands::db_get_conversation,
@@ -754,6 +922,27 @@ pub fn run() {
             commands::db_update_conversation_ai_selection,
             commands::db_delete_conversation_by_id,
             commands::db_delete_conversations_by_ids,
+            agsdl_host_codex_adapter::execution_codex_status,
+            agsdl_host_claude::execution_claude_status,
+            agsdl_host_claude::execution_claude_set_api_key,
+            commands::agsdl_execution::execution_model_choices,
+            commands::agsdl_execution::execution_preflight,
+            commands::agsdl_execution::execution_list_runs030,
+            commands::agsdl_execution::execution_read_humans030,
+            commands::agsdl_execution::execution_submit_human030,
+            commands::agsdl_execution::execution_start,
+            commands::agsdl_execution::execution_read_runtime_projection030,
+            commands::agsdl_execution::execution_submit_human030,
+            commands::agsdl_execution::execution_stage_intent,
+            commands::agsdl_execution::execution_read_intents,
+            commands::agsdl_execution::execution_read_run_correlation030,
+            commands::agsdl_execution::execution_read_intent,
+            commands::agsdl_execution::execution_submit_intent,
+            commands::agsdl_execution::execution_close_intent,
+            commands::agsdl_execution::execution_deliver030,
+            commands::agsdl_execution::execution_stop,
+            commands::agsdl_execution::execution_ensure_stop,
+            commands::agsdl_execution::execution_read_snapshot,
             commands::tool_invocations::db_record_tool_invocation,
             commands::tool_invocations::db_complete_tool_invocation,
             commands::tool_invocations::db_mark_tool_invocation_unknown,
@@ -772,6 +961,21 @@ pub fn run() {
             commands::goal_audit::db_apply_conversation_goal_verdict,
             commands::db_toggle_pin_conversation,
             commands::db_list_messages,
+            commands::pilot_files::pilot_files_inspect_attachments,
+            commands::pilot_files::db_pilot_message_images,
+            commands::pilot_files::pilot_files_authorize,
+            commands::pilot_files::pilot_files_begin,
+            commands::pilot_files::pilot_files_chunk,
+            commands::pilot_files::pilot_files_status,
+            commands::pilot_files::pilot_files_finalize,
+            commands::pilot_files::pilot_files_abort,
+            commands::pilot_files::pilot_files_prepare_send,
+            commands::pilot_files::pilot_files_send_read,
+            commands::pilot_files::pilot_files_send_mark,
+            commands::pilot_files::pilot_files_list,
+            commands::pilot_files::pilot_files_read,
+            commands::pilot_tools::pilot_tool_traces_list,
+            commands::pilot_tools::pilot_tool_trace_read,
             commands::db_get_conversation_source_snapshot,
             commands::db_search_messages,
             commands::db_create_message,
@@ -819,8 +1023,30 @@ pub fn run() {
             commands::ai::ai_cancel_chatgpt_auth,
             commands::ai::ai_disconnect_provider_auth,
             commands::ai::ai_sync_provider_models,
+            commands::chat_admission::chat_admission_open_browser,
+            commands::chat_admission::chat_admission_begin_reconciliation,
+            commands::chat_admission::chat_admission_complete_reconciliation,
+            commands::chat_admission::chat_admission_begin_intent,
+            commands::chat_admission::chat_admission_finish_intent,
+            commands::chat_admission::chat_admission_write_approval_registry,
+            commands::chat_admission::chat_admission_complete_steer_handoff,
+            commands::chat_admission::chat_admission_complete_question_handoff,
+            commands::chat_admission::chat_admission_reserve_response,
+            commands::chat_admission::chat_admission_prepare_response_recovery,
+            commands::chat_admission::chat_admission_recover_response,
+            commands::chat_admission::chat_admission_close_browser,
+            commands::chat_admission::chat_admission_begin,
+            commands::chat_admission::chat_admission_close_preparation,
+            commands::chat_admission::chat_admission_join_provider,
+            commands::chat_admission::chat_admission_finish_response,
+            commands::chat_admission::chat_admission_acknowledge_completion,
+            commands::chat_admission::chat_admission_finish_compaction,
+            commands::chat_admission::chat_admission_http_start,
+            commands::chat_admission::chat_admission_http_read,
+            commands::chat_admission::chat_admission_http_finish,
             commands::ai::ai_stream_chat,
             commands::ai::ai_cancel_stream,
+            commands::http_resources::http_release_webview_resource,
             commands::ai::ai_submit_tool_result,
             // Git metadata commands
             commands::db_upsert_git_repository,
@@ -873,6 +1099,7 @@ pub fn run() {
             commands::workspace::workspace_quarantine_legacy_state_lock,
             commands::workspace::workspace_create_manual_feature_draft,
             commands::workspace::workspace_finalize_manual_feature,
+            commands::workspace::workspace_pilot_mutate_manual_task,
             commands::workspace::workspace_bind_manual_feature_direct_checkpoint,
             commands::workspace::workspace_revert_manual_feature_to_draft,
             commands::workspace::workspace_delete_manual_feature_draft,
@@ -887,8 +1114,6 @@ pub fn run() {
             commands::tool_validate_execution,
             commands::tool_execute_workspace,
             commands::tool_cancel_workspace,
-            commands::mcp::mcp_discover_tools,
-            commands::mcp::mcp_call_tool,
             commands::mcp::mcp_store_env_secret,
             commands::mcp::mcp_delete_env_secret,
             commands::mcp::mcp_store_oauth_client_secret,
@@ -973,6 +1198,13 @@ pub fn run() {
             commands::git::git_diff,
             commands::git::git_read_file_pair,
             commands::git::git_review_snapshot,
+            commands::git::pilot_review_commit,
+            commands::git::pilot_content_policy,
+            commands::git::pilot_review_capture,
+            commands::git::pilot_review_files,
+            commands::git::pilot_review_read,
+            commands::git::pilot_review_fresh,
+            commands::git::pilot_review_release,
             commands::git::git_review_file,
             commands::git::git_cancel_review,
             commands::git::direct_checkpoint_ensure,
@@ -1037,8 +1269,33 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|app_handle, event| match event {
+    app.run(move |app_handle, event| match event {
+        tauri::RunEvent::Ready => {
+            if pending_downgrade_activation.swap(false, Ordering::AcqRel) {
+                // The native dialog's blocking API must run off Tauri's main thread.
+                let update_app = app_handle.clone();
+                std::thread::spawn(move || {
+                    if let Err(error) = app_updates::activate_staged_update(&update_app, false) {
+                        tracing::error!(%error, "Failed to activate staged application update");
+                    }
+                });
+            }
+        }
+        tauri::RunEvent::WindowEvent {
+            event: tauri::WindowEvent::Destroyed,
+            label,
+            ..
+        } => {
+            tracing::info!(
+                event = "app_shutdown_window_destroyed",
+                main = label == "main"
+            );
+            commands::chat_admission::retire_browser_from_native(app_handle, &label);
+            commands::pilot_secrets::suspend("window_destroyed");
+            app_handle.state::<connect::TransferRuntime>().revoke();
+        }
         tauri::RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
+            tracing::info!(event = "app_shutdown_exit_request", explicit = false);
             api.prevent_exit();
             if let Some(window) = app_handle.get_webview_window("main") {
                 if let Err(error) = window.close() {
@@ -1047,18 +1304,56 @@ pub fn run() {
             }
         }
         tauri::RunEvent::ExitRequested { .. } => {
+            let phase = app_shutdown::Phase::begin("exit_requested");
+            commands::pilot_secrets::suspend("exit_requested");
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit-requested");
-            commands::git::cancel_all_git_reviews();
-            shutdown_mcp_runtime(app_handle);
-            fs::watcher::shutdown_watcher(app_handle);
+            app_shutdown::run_phase("git_reviews", commands::git::cancel_all_git_reviews);
+            app_shutdown::run_phase("mcp_runtime", || shutdown_mcp_runtime(app_handle));
+            if !app_shutdown::run_phase("connect_runtime", || {
+                tauri::async_runtime::block_on(
+                    app_handle.state::<connect::TransferRuntime>().shutdown(),
+                )
+            }) {
+                tracing::warn!("Connect transport cleanup remains unreconciled");
+            }
+            if app_shutdown::run_phase("owned_secret_operations", || {
+                tauri::async_runtime::block_on(secrets::blocking::shutdown())
+            })
+            .is_err()
+            {
+                tracing::warn!("Secret operation owner did not finish cleanly");
+            }
+            app_shutdown::run_phase("filesystem_watcher", || {
+                fs::watcher::shutdown_watcher(app_handle)
+            });
+            phase.finish(true);
         }
         tauri::RunEvent::Exit => {
+            let phase = app_shutdown::Phase::begin("exit");
+            commands::pilot_secrets::suspend("process_exit");
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit");
-            commands::git::cancel_all_git_reviews();
-            shutdown_mcp_runtime(app_handle);
-            fs::watcher::shutdown_watcher(app_handle);
+            app_shutdown::run_phase("git_reviews", commands::git::cancel_all_git_reviews);
+            app_shutdown::run_phase("mcp_runtime", || shutdown_mcp_runtime(app_handle));
+            if !app_shutdown::run_phase("connect_runtime", || {
+                tauri::async_runtime::block_on(
+                    app_handle.state::<connect::TransferRuntime>().shutdown(),
+                )
+            }) {
+                tracing::warn!("Connect transport cleanup remains unreconciled");
+            }
+            if app_shutdown::run_phase("owned_secret_operations", || {
+                tauri::async_runtime::block_on(secrets::blocking::shutdown())
+            })
+            .is_err()
+            {
+                tracing::warn!("Secret operation owner did not finish cleanly");
+            }
+            app_shutdown::run_phase("filesystem_watcher", || {
+                fs::watcher::shutdown_watcher(app_handle)
+            });
+            phase.finish(true);
         }
         _ => {}
     });
@@ -1132,3 +1427,51 @@ mod frontend_log_tests {
         assert!(!source.contains(removed_command));
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod process_recovery_transport;
+
+// Reuse the canonical generator in the existing test target when disk space
+// cannot accommodate the additional static library and desktop bundle link.
+#[cfg(test)]
+extern crate self as macro_lib;
+#[cfg(test)]
+mod ipc_artifact_generation {
+    mod artifacts {
+        include!("../examples/generate_config/artifacts.rs");
+    }
+    mod registry {
+        include!("../examples/generate_config/registry.rs");
+    }
+    mod register_ipc {
+        include!("../examples/generate_config/register_ipc.rs");
+    }
+
+    fn run(check: bool) {
+        let mut registry = registry::Registry::new(true);
+        register_ipc::register(&mut registry).expect("IPC roots");
+        let files = registry.artifacts(true).expect("IPC artifacts");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("Repository root")
+            .join("src/types/generated/ipc");
+        artifacts::validate(&root, &files, check).expect("IPC artifact validation");
+        if !check {
+            artifacts::write(&root, &files).expect("IPC artifact generation");
+        }
+    }
+
+    #[test]
+    #[ignore = "Explicit generation writes the canonical IPC artifacts"]
+    fn generate_ipc_artifacts() {
+        run(false);
+    }
+
+    #[test]
+    fn check_ipc_artifacts() {
+        run(true);
+    }
+}
+
+#[cfg(test)]
+mod agsdl_host_command_boundary_tests;

@@ -1,0 +1,60 @@
+{
+  "title": "Équipe support permanente",
+  "description": "Trois agents persistants reçoivent des messages à la demande. Ce système n’impose aucun ordre d’exécution.",
+  "projectId": "demo-meridian",
+  "planKind": "feature",
+  "icon": "network",
+  "design": {
+    "version": 1,
+    "kind": "blueprint",
+    "purpose": "Trois agents persistants reçoivent des messages à la demande. Ce système n’impose aucun ordre d’exécution.",
+    "context": "Projet fictif : les services, données et résultats sont simulés.",
+    "rules": [],
+    "requirements": [
+      {
+        "id": "model",
+        "label": "Modèle des agents",
+        "description": "Choix pour cette utilisation simulée",
+        "value": "Macro AI · Démo"
+      }
+    ]
+  },
+  "display": {
+    "title": "Équipe support permanente",
+    "cards": {
+      "/agents/concierge": {
+        "title": "Accueil client"
+      },
+      "/agents/orders": {
+        "title": "Spécialiste commandes"
+      },
+      "/agents/policy": {
+        "title": "Référent politique commerciale"
+      },
+      "/flow/steps/concierge": {
+        "title": "Accueil client"
+      },
+      "/flow": {
+        "title": "Équipe support permanente"
+      },
+      "/bindings/engine": {
+        "title": "Macro"
+      },
+      "/configurations/conseil": {
+        "title": "Relation client"
+      },
+      "/configurations/commandes": {
+        "title": "Commandes"
+      },
+      "/bindings/ordersLookup": {
+        "title": "Commandes Meridian"
+      },
+      "/bindings/crm": {
+        "title": "CRM client"
+      },
+      "/content/commercialPolicy": {
+        "title": "Politique commerciale"
+      }
+    }
+  }
+}

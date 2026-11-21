@@ -1,19 +1,40 @@
+#[cfg(test)]
+mod portable_normalization_io;
 // Durable agent-run persistence is implemented and tested ahead of its runtime
 // orchestration wiring. Keep the dormant internal API warning-free until that
 // integration makes the entry points reachable from the application.
 #[allow(dead_code)]
 pub mod agent_runs;
+#[allow(dead_code)]
+pub(crate) mod agsdl_execution;
+pub(crate) mod chat_admission;
+pub(crate) mod connect_transfer;
+pub(crate) mod conversation_catalog;
+#[allow(dead_code)]
+pub(crate) mod conversation_content;
 pub mod conversation_goals;
+pub mod conversation_management;
+pub(crate) mod exact_json;
 pub mod goal_audit_children;
 pub mod goal_audit_transitions;
+mod inactive_budget;
+pub(crate) mod inactive_storage;
+pub(crate) mod migration_history;
 #[allow(dead_code)]
 pub mod models;
+pub mod pilot_files;
+pub mod pilot_reflections;
+pub mod pilot_tools;
+#[cfg(test)]
+mod portable_history_proof;
+mod preparation_lease;
 pub mod repository;
+pub(crate) mod source_capture;
 pub mod tool_invocations;
 
 use crate::ai::macro_ai;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions};
-use sqlx::Row;
+use sqlx::{Connection, Row};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -34,6 +55,53 @@ pub enum DbError {
 
 pub type DbResult<T> = Result<T, DbError>;
 
+/// Native proof of one validated opening, never reconstructed from a receipt.
+#[derive(Clone, Debug)]
+pub(crate) struct ValidatedSourceOpening {
+    schema_cookie: i64,
+}
+
+impl ValidatedSourceOpening {
+    pub(crate) async fn check(&self, db: &mut SqliteConnection) -> DbResult<()> {
+        let current: i64 = sqlx::query_scalar("PRAGMA schema_version")
+            .fetch_one(db)
+            .await?;
+        if current != self.schema_cookie {
+            return Err(DbError::Validation("stale_revision".into()));
+        }
+        Ok(())
+    }
+}
+
+pub(crate) async fn validate_source_opening(
+    pool: &SqlitePool,
+    #[cfg(test)] cleanup_started: Option<std::sync::mpsc::Sender<()>>,
+) -> DbResult<ValidatedSourceOpening> {
+    let mut lease = preparation_lease::Lease::new(pool.acquire().await?);
+    #[cfg(test)]
+    {
+        lease.cleanup_started = cleanup_started;
+    }
+    let mut tx = lease.begin().await?;
+    // Establish the read snapshot before checking every relevant namespace.
+    let schema_cookie: i64 = sqlx::query_scalar("PRAGMA schema_version")
+        .fetch_one(&mut *tx)
+        .await?;
+    conversation_content::validate_schema(&mut tx).await?;
+    conversation_catalog::validate_schema(&mut tx).await?;
+    source_capture::validate_schema(&mut tx).await?;
+    chat_admission::validate_schema(&mut tx).await?;
+    connect_transfer::validate_schema(&mut tx).await?;
+    let stamps: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE (version=13 AND name='013_conversation_content_versions') OR (version=14 AND name='014_conversation_catalog_version') OR (version=15 AND name='015_inactive_storage') OR (version=16 AND name='016_source_capture') OR (version=17 AND name='017_chat_admission') OR (version=18 AND name='018_connect_transfer') OR (version=19 AND name='019_connect_publication')")
+        .fetch_one(&mut *tx).await?;
+    if stamps != 7 {
+        return Err(DbError::Migration("Invalid source opening stamps".into()));
+    }
+    tx.commit().await?;
+    lease.committed = true;
+    Ok(ValidatedSourceOpening { schema_cookie })
+}
+
 const MIGRATION_001_VERSION: i64 = 1;
 const MIGRATION_001_NAME: &str = "001_initial";
 const MIGRATION_001_SQL: &str = include_str!("migrations/001_initial.sql");
@@ -46,7 +114,10 @@ const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
-pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7, 8, 9];
+pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42,
+];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
@@ -54,6 +125,7 @@ const MIGRATION_006_SQL: &str = include_str!("migrations/006_generation_attempts
 const MIGRATION_007_SQL: &str = include_str!("migrations/007_tool_invocations.sql");
 const MIGRATION_008_SQL: &str = include_str!("migrations/008_agent_run_transitions.sql");
 const MIGRATION_009_SQL: &str = include_str!("migrations/009_conversation_goals.sql");
+const MIGRATION_010_SQL: &str = include_str!("migrations/010_visible_message_search.sql");
 
 fn app_db_path(app_dir: &Path) -> PathBuf {
     app_dir.join("macro.db")
@@ -72,31 +144,76 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
     let db_path = app_db_path(&app_dir);
 
     let pool = create_pool(&db_path).await?;
-    agent_runs::reconcile_active_agent_runs_after_restart(&pool).await?;
-    conversation_goals::reconcile_audits_after_restart(&pool).await?;
-    tool_invocations::reconcile_pending_after_restart(&pool).await?;
+    // A restarted producer must install a fresh authority generation locally.
+    sqlx::query("UPDATE pilot_file_authorities SET active = 0")
+        .execute(&pool)
+        .await?;
+    pilot_files::expire_staging(&pool, &pilot_files::system_now)
+        .await
+        .map_err(DbError::Validation)?;
+    let file_cleanup_pool = pool.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        loop {
+            interval.tick().await;
+            if file_cleanup_pool.is_closed() {
+                break;
+            }
+            if let Err(error) =
+                pilot_files::expire_staging(&file_cleanup_pool, &pilot_files::system_now).await
+            {
+                tracing::warn!(%error,"Pilot staging expiry maintenance failed");
+            }
+        }
+    });
+    reconcile_runtime_after_restart(&pool).await?;
 
     Ok(pool)
 }
 
+/// The startup path used by init_db, exercised with real reopened SQLite pools.
+pub(crate) async fn reconcile_runtime_after_restart(pool: &SqlitePool) -> DbResult<()> {
+    agent_runs::reconcile_active_agent_runs_after_restart(pool).await?;
+    conversation_goals::reconcile_audits_after_restart(pool).await?;
+    tool_invocations::reconcile_pending_after_restart(pool).await?;
+    chat_admission::reconcile_after_restart(pool).await?;
+
+    Ok(())
+}
+
 /// Create a pool for the given database path.
 pub(crate) async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
+    let pool = open_pool(db_path).await?;
+    run_migrations(&pool).await?;
+    Ok(pool)
+}
+
+/// Startup restore changes schema/ownership only, not provider defaults or auth.
+pub(crate) async fn restore_admission_hold(db_path: &Path) -> DbResult<()> {
+    let pool = open_pool(db_path).await?;
+    let result = chat_admission::hold_restored_profile(&pool).await;
+    pool.close().await;
+    result
+}
+
+async fn open_pool(db_path: &Path) -> DbResult<SqlitePool> {
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
 
     let options = SqliteConnectOptions::from_str(&db_url)?
         .create_if_missing(true)
         .foreign_keys(true)
+        .pragma("recursive_triggers", "ON")
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        // Preserve the defaults required by E's abandoned-lease shutdown.
+        .optimize_on_close(false, None::<u32>)
         .busy_timeout(std::time::Duration::from_secs(30));
 
     let pool = SqlitePoolOptions::new()
+        .min_connections(0)
         .max_connections(5)
         .connect_with(options)
         .await?;
-
-    // Run migrations
-    run_migrations(&pool).await?;
 
     Ok(pool)
 }
@@ -121,7 +238,12 @@ async fn run_migrations_local(pool: SqlitePool) -> DbResult<()> {
         .execute(&mut *connection)
         .await?;
 
-    let migration_result = run_migrations_on_connection(&mut connection).await;
+    let migration_result = async {
+        run_migrations_on_connection(&mut connection).await?;
+        insert_default_providers(&mut connection).await?;
+        insert_default_speech_provider(&mut connection).await
+    }
+    .await;
     match migration_result {
         Ok(()) => {
             sqlx::query("COMMIT").execute(&mut *connection).await?;
@@ -140,6 +262,7 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
     }
 
     let user_tables = list_user_tables(connection).await?;
+    migration_history::normalize(connection).await?;
     let applied_migrations = list_applied_migrations(connection).await?;
     validate_migration_history(&applied_migrations)?;
     let is_legacy_database = !user_tables.is_empty() && applied_migrations.is_empty();
@@ -167,7 +290,14 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
     // Older stamped databases can still lack runtime columns. Reconcile them once,
     // before migrations 3/4 which depend on those tables, then stamp 5 only after
     // the entire transition has succeeded in the surrounding transaction.
-    let needs_runtime_schema = !applied_migrations.contains(&MIGRATION_005_VERSION);
+    // Local Pilot builds also stamped version 5, with a different migration.
+    // Preserve those databases and complete the published runtime schema first.
+    let version_five_name =
+        sqlx::query_scalar::<_, String>("SELECT name FROM schema_migrations WHERE version = 5")
+            .fetch_optional(&mut *connection)
+            .await?;
+    let needs_runtime_schema = !applied_migrations.contains(&MIGRATION_005_VERSION)
+        || version_five_name.as_deref() == Some("005_pilot_tool_trace_revisions");
     if needs_runtime_schema && !is_legacy_database {
         reconcile_runtime_schema_v5(connection).await?;
     }
@@ -229,6 +359,20 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             MIGRATION_005_NAME.to_string(),
         )
         .await?;
+        if version_five_name.as_deref() == Some("005_pilot_tool_trace_revisions") {
+            let updated =
+                sqlx::query("UPDATE schema_migrations SET name = ? WHERE version = ? AND name = ?")
+                    .bind(MIGRATION_005_NAME)
+                    .bind(MIGRATION_005_VERSION)
+                    .bind("005_pilot_tool_trace_revisions")
+                    .execute(&mut *connection)
+                    .await?;
+            if updated.rows_affected() != 1 {
+                return Err(DbError::Migration(
+                    "Failed to normalize the local Pilot version-5 migration record".to_string(),
+                ));
+            }
+        }
     }
 
     if !list_applied_migrations(connection).await?.contains(&6) {
@@ -271,9 +415,223 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
         .await?;
     }
 
-    // Insert default providers if they don't exist
-    insert_default_providers(connection).await?;
-    insert_default_speech_provider(connection).await?;
+    for (version, name, sql) in [
+        (
+            10,
+            "010_pilot_tool_trace_revisions",
+            include_str!("migrations/006_pilot_tool_trace_revisions.sql"),
+        ),
+        (
+            11,
+            "011_conversation_management",
+            include_str!("migrations/007_conversation_management.sql"),
+        ),
+        (
+            12,
+            "012_pilot_files",
+            include_str!("migrations/012_pilot_files.sql"),
+        ),
+        (
+            13,
+            "013_conversation_content_versions",
+            include_str!("migrations/013_conversation_content_versions.sql"),
+        ),
+        (
+            14,
+            "014_conversation_catalog_version",
+            include_str!("migrations/014_conversation_catalog_version.sql"),
+        ),
+        (
+            15,
+            "015_inactive_storage",
+            include_str!("migrations/015_inactive_storage.sql"),
+        ),
+        (
+            16,
+            "016_source_capture",
+            include_str!("migrations/016_source_capture.sql"),
+        ),
+        (
+            17,
+            "017_chat_admission",
+            include_str!("migrations/017_chat_admission.sql"),
+        ),
+        (
+            18,
+            "018_connect_transfer",
+            include_str!("migrations/018_connect_transfer.sql"),
+        ),
+        (
+            19,
+            "019_connect_publication",
+            include_str!("migrations/019_connect_publication.sql"),
+        ),
+    ] {
+        if !list_applied_migrations(connection)
+            .await?
+            .contains(&version)
+        {
+            apply_migration(connection, version, name.to_string(), sql.to_string()).await?;
+        }
+    }
+
+    if !list_applied_migrations(connection).await?.contains(&20) {
+        apply_migration(
+            connection,
+            20,
+            "020_tool_results".into(),
+            include_str!("migrations/010_tool_results.sql").into(),
+        )
+        .await?;
+    }
+    if !list_applied_migrations(connection).await?.contains(&21) {
+        apply_migration(
+            connection,
+            21,
+            "021_agsdl_execution".into(),
+            include_str!("migrations/011_agsdl_execution.sql").into(),
+        )
+        .await?;
+    }
+    if !list_applied_migrations(connection).await?.contains(&22) {
+        apply_migration(
+            connection,
+            22,
+            "022_execution_host".into(),
+            include_str!("migrations/012_execution_host.sql").into(),
+        )
+        .await?;
+    }
+    if !list_applied_migrations(connection).await?.contains(&23) {
+        apply_migration(
+            connection,
+            23,
+            "023_execution_ui_intents".into(),
+            include_str!("migrations/013_execution_ui_intents.sql").into(),
+        )
+        .await?;
+    }
+    if !list_applied_migrations(connection).await?.contains(&24) {
+        apply_migration(
+            connection,
+            24,
+            "024_execution_process_receipts".into(),
+            include_str!("migrations/014_execution_process_receipts.sql").into(),
+        )
+        .await?;
+    }
+    if !list_applied_migrations(connection).await?.contains(&25) {
+        apply_migration(
+            connection,
+            25,
+            "025_visible_message_search".into(),
+            include_str!("migrations/010_visible_message_search.sql").into(),
+        )
+        .await?;
+    }
+    if !list_applied_migrations(connection).await?.contains(&26) {
+        apply_migration(
+            connection,
+            26,
+            "026_execution_native_operations".into(),
+            include_str!("migrations/016_execution_native_operations.sql").into(),
+        )
+        .await?;
+    }
+    for (version, name, sql) in [
+        (
+            27,
+            "027_execution_work_protocol",
+            include_str!("migrations/017_execution_work_protocol.sql"),
+        ),
+        (
+            28,
+            "028_execution_work_admission",
+            include_str!("migrations/018_execution_work_admission.sql"),
+        ),
+        (
+            29,
+            "029_execution_human_public",
+            include_str!("migrations/029_execution_human_public.sql"),
+        ),
+        (
+            30,
+            "030_execution_flow",
+            include_str!("migrations/030_execution_flow.sql"),
+        ),
+        (
+            31,
+            "031_execution_start_entry",
+            include_str!("migrations/031_execution_start_entry.sql"),
+        ),
+        (
+            32,
+            "032_execution_ui_intent_start030",
+            include_str!("migrations/032_execution_ui_intent_start030.sql"),
+        ),
+        (
+            33,
+            "033_execution_flow_owner030",
+            include_str!("migrations/033_execution_flow_owner030.sql"),
+        ),
+        (
+            34,
+            "034_execution_flow_preparations030",
+            include_str!("migrations/034_execution_flow_preparations030.sql"),
+        ),
+        (
+            35,
+            "035_execution_flow_no_admission030",
+            include_str!("migrations/035_execution_flow_no_admission030.sql"),
+        ),
+        (
+            36,
+            "036_execution_flow_work_protocol030",
+            include_str!("migrations/036_execution_flow_work_protocol030.sql"),
+        ),
+        (
+            37,
+            "037_execution_route_attestations030",
+            include_str!("migrations/037_execution_route_attestations030.sql"),
+        ),
+        (
+            38,
+            "038_execution_system_stop030",
+            include_str!("migrations/038_execution_system_stop030.sql"),
+        ),
+        (
+            39,
+            "039_execution_call_protocol030",
+            include_str!("migrations/039_execution_call_protocol030.sql"),
+        ),
+        (
+            40,
+            "040_execution_flow_human_clock030",
+            include_str!("migrations/040_execution_flow_human_clock030.sql"),
+        ),
+        (
+            41,
+            "041_execution_flow_interrupted030",
+            include_str!("migrations/041_execution_flow_interrupted030.sql"),
+        ),
+        (
+            42,
+            "042_retire_execution020",
+            include_str!("migrations/042_retire_execution020.sql"),
+        ),
+    ] {
+        if !list_applied_migrations(connection)
+            .await?
+            .contains(&version)
+        {
+            apply_migration(connection, version, name.to_string(), sql.to_string()).await?;
+        }
+    }
+    conversation_content::validate_schema(connection).await?;
+    conversation_catalog::validate_schema(connection).await?;
+    source_capture::validate_schema(connection).await?;
+    chat_admission::validate_schema(connection).await?;
+    connect_transfer::validate_schema(connection).await?;
 
     Ok(())
 }
@@ -290,6 +648,16 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&7) && !applied.contains(&6))
         || (applied.contains(&8) && !applied.contains(&7))
         || (applied.contains(&9) && !applied.contains(&8))
+        || (applied.contains(&10) && !applied.contains(&5))
+        || (applied.contains(&11) && !applied.contains(&10))
+        || (applied.contains(&12) && !applied.contains(&11))
+        || (applied.contains(&13) && !applied.contains(&12))
+        || (applied.contains(&14) && !applied.contains(&13))
+        || (applied.contains(&15) && !applied.contains(&14))
+        || (applied.contains(&16) && !applied.contains(&15))
+        || (applied.contains(&17) && !applied.contains(&16))
+        || (applied.contains(&18) && !applied.contains(&17))
+        || (applied.contains(&19) && !applied.contains(&18))
     {
         return Err(DbError::Migration(
             "Unsupported or inconsistent migration history; database left unchanged".to_string(),
@@ -1688,7 +2056,7 @@ async fn insert_default_speech_provider(connection: &mut SqliteConnection) -> Db
 }
 
 #[cfg(test)]
-mod migration_tests;
+pub(crate) mod migration_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1915,6 +2283,10 @@ mod tests {
                 'agent_runs',
                 'agent_run_transitions',
                 'conversation_citations',
+                'conversation_action_receipts',
+                'conversation_management',
+                'conversation_response_versions',
+                'conversation_tool_trace_revisions',
                 'conversation_toolbox_state',
                 'schema_migrations',
                 'conversations',
@@ -1949,7 +2321,11 @@ mod tests {
                 "ai_models".to_string(),
                 "app_settings".to_string(),
                 "architect_plan_conversation_sync".to_string(),
+                "conversation_action_receipts".to_string(),
                 "conversation_citations".to_string(),
+                "conversation_management".to_string(),
+                "conversation_response_versions".to_string(),
+                "conversation_tool_trace_revisions".to_string(),
                 "conversation_toolbox_state".to_string(),
                 "conversations".to_string(),
                 "git_repositories".to_string(),
@@ -1969,6 +2345,67 @@ mod tests {
         assert_migration_001_applied(&pool).await;
         assert_agent_runs_migration_applied(&pool).await;
         assert_message_search_migration_applied(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn create_pool_upgrades_local_pilot_version_five_without_losing_its_trace_schema() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let pool = create_pool(&db_path).await.expect("initial pool");
+        sqlx::query(
+            "UPDATE schema_migrations SET name = '005_pilot_tool_trace_revisions' WHERE version = 5",
+        )
+        .execute(&pool)
+        .await
+        .expect("emulate local Pilot version five");
+        super::migration_tests::drop_agsdl(&mut *pool.acquire().await.unwrap()).await;
+        super::inactive_storage::tests::remove_reference_schema_in(
+            &mut *pool.acquire().await.unwrap(),
+        )
+        .await;
+        super::conversation_catalog::remove_reference_schema(&pool)
+            .await
+            .unwrap();
+        super::conversation_content::remove_reference_schema(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version >= 10")
+            .execute(&pool)
+            .await
+            .expect("emulate a version-five migration history");
+        sqlx::query("DROP INDEX idx_messages_created_at_id")
+            .execute(&pool)
+            .await
+            .expect("emulate missing runtime index");
+        pool.close().await;
+
+        let upgraded = create_pool(&db_path).await.expect("upgrade Pilot database");
+        let runtime_name: String =
+            sqlx::query_scalar("SELECT name FROM schema_migrations WHERE version = 5")
+                .fetch_one(&upgraded)
+                .await
+                .expect("normalized runtime migration stamp");
+        assert_eq!(runtime_name, "005_runtime_schema");
+        let pilot_name: String =
+            sqlx::query_scalar("SELECT name FROM schema_migrations WHERE version = 10")
+                .fetch_one(&upgraded)
+                .await
+                .expect("Pilot migration stamp");
+        assert_eq!(pilot_name, "010_pilot_tool_trace_revisions");
+        let index_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_created_at_id'",
+        )
+        .fetch_one(&upgraded)
+        .await
+        .expect("runtime index");
+        assert_eq!(index_count, 1);
+        let trace_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'conversation_tool_trace_revisions'",
+        )
+        .fetch_one(&upgraded)
+        .await
+        .expect("Pilot trace table");
+        assert_eq!(trace_count, 1);
     }
 
     #[tokio::test]
@@ -2350,6 +2787,17 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("initial pool");
+        super::migration_tests::drop_agsdl(&mut *pool.acquire().await.unwrap()).await;
+        super::inactive_storage::tests::remove_reference_schema_in(
+            &mut *pool.acquire().await.unwrap(),
+        )
+        .await;
+        super::conversation_catalog::remove_reference_schema(&pool)
+            .await
+            .unwrap();
+        super::conversation_content::remove_reference_schema(&pool)
+            .await
+            .unwrap();
         // Reproduce the historical agent-run schema before the later, non-idempotent
         // additive migrations. The missing metadata belongs to that schema.
         for statement in [
@@ -2703,3 +3151,6 @@ mod tests {
         .await;
     }
 }
+
+#[cfg(test)]
+mod argentic_schema_tests;

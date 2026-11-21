@@ -1,0 +1,119 @@
+{
+  "description": "A command with parse lines gives the non-empty lines of standard output as data.value, and a route fans out over them.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "command-lines",
+    "agents": {
+      "reviewer": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "changed",
+      "steps": {
+        "changed": {
+          "type": "call",
+          "command": "git diff --name-only main",
+          "parse": "lines",
+          "next": {
+            "passed": {
+              "step": "review",
+              "each": [
+                "data",
+                "value"
+              ],
+              "max": 100,
+              "message": {
+                "prompt": "Review this changed file.",
+                "resources": {
+                  "file": {
+                    "from": [
+                      "item"
+                    ]
+                  }
+                }
+              }
+            },
+            "failed": []
+          }
+        },
+        "review": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "next": "gather"
+        },
+        "gather": {
+          "type": "join",
+          "next": "summary"
+        },
+        "summary": {
+          "type": "agent",
+          "agent": "reviewer",
+          "prompt": "Summarize the reviews."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "changed",
+      "command": {
+        "exitCode": 0,
+        "stdout": "src/a.ts\n\nsrc/b.ts\r\n",
+        "stderr": ""
+      }
+    },
+    {
+      "work": "review",
+      "item": 0,
+      "returns": {
+        "text": "Fine."
+      }
+    },
+    {
+      "work": "review",
+      "item": 1,
+      "returns": {
+        "text": "Fine too."
+      }
+    },
+    {
+      "work": "summary",
+      "returns": {
+        "text": "All good."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "changed": 1,
+      "review": 2,
+      "summary": 1
+    },
+    "messages": [
+      {
+        "to": "review",
+        "item": 0,
+        "prompt": "Review this changed file.",
+        "element": "src/a.ts",
+        "resources": {
+          "file": "src/a.ts"
+        }
+      },
+      {
+        "to": "review",
+        "item": 1,
+        "resources": {
+          "file": "src/b.ts"
+        }
+      }
+    ],
+    "failures": []
+  }
+}

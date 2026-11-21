@@ -32,7 +32,8 @@ import { summarizePersistedMergeWorkflowSession } from './mergeWorkflowPersisten
 import { getTaskBusinessId, toPlanLocatorKey, toTaskRuntimeId } from './durableIdentity';
 import { getPlanExecutionModesByProjectId } from './planExecutionModes';
 
-export type ImplementTaskSource = 'architect' | 'plan_finalization' | 'standalone';
+export type { ImplementTaskSource } from '../types';
+import type { ImplementTaskSource } from '../types';
 export type ImplementTaskCatalogSource = 'architect' | 'mixed' | 'fallback' | 'empty';
 
 export interface ImplementTaskPlanSummary {
@@ -437,6 +438,7 @@ const sortCatalogTasks = (tasks: CatalogedImplementTask[]): CatalogedImplementTa
   return [...tasks].sort((left, right) => {
     if (left.task_source !== right.task_source) {
       const taskSourceOrder: Record<ImplementTaskSource, number> = {
+        agsdl: 0,
         architect: 0,
         plan_finalization: 1,
         standalone: 2,
@@ -534,7 +536,8 @@ export const buildImplementTaskCatalog = (params: {
           planId: task.plan_id,
         }) === planLocatorKey
       );
-      const actionablePlanTasks = planTasks.filter((task) => !task.archived_at);
+      const contributingNodeIds = new Set(derivePlanFinalizationDependencyState(plan.nodes || []).actionableNodeIds);
+      const actionablePlanTasks = planTasks.filter((task) => contributingNodeIds.has(getTaskBusinessId(task)));
       const taskCount = actionablePlanTasks.length;
       const completedTaskCount = actionablePlanTasks.filter((task) => task.status === 'Completed').length;
       const activeTaskCount = actionablePlanTasks.filter(

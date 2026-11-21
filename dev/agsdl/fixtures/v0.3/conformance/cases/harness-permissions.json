@@ -1,0 +1,10 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "harness-permissions",
+  "agents": {
+    "a": {
+      "harness": "limited",
+      "permissions": "read-only"
+    }
+  }
+}

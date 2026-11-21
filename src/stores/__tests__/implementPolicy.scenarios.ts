@@ -1,3 +1,5 @@
+import { createGitCommitDto } from '../../test-utils/gitCommit';
+import { registerConflictAssistantContext, clearConflictAssistantContext } from '../../services/conflictAssistantContext';
 import { describe, expect, it } from 'bun:test';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
 
@@ -177,6 +179,11 @@ export const registerImplementPolicyScenarios = (
         composerContextRefs: [],
       });
 
+      registerConflictAssistantContext({
+        conversationId: 'debug-conv', projectId: 'project-1', groupId: 'group-1', kind: 'code',
+        repositories: [{ projectId: 'project-1', projectPath: '/repos/web', repoPath: '/repos/web', branch: 'feature/api',
+          head: createGitCommitDto().id, conflictFiles: ['src/api.ts'], mergeInProgress: true }],
+      });
       await useChatStore.getState().sendMessage({
         conversationId: 'debug-conv',
         content: 'Diagnose the git conflict safely.',
@@ -199,6 +206,7 @@ export const registerImplementPolicyScenarios = (
       expect(String(streamOptions.messages[0]?.content)).toContain(
         'Custom REPO_AUDITOR prompt for tests.'
       );
+      clearConflictAssistantContext('debug-conv');
     });
 
     it('rejects Implement sends when task preflight does not move the task into progress', async () => {
@@ -357,8 +365,8 @@ export const registerImplementPolicyScenarios = (
       expect(parsed).not.toHaveProperty('workspace_path');
     });
 
-    it('challenges git_commit once before allowing the same assistant turn to commit', async () => {
-      const { onToolCall } = await startImplementToolConversation(
+    it('challenges git_commit and requires user approval before committing', async () => {
+      const { useChatStore, onToolCall } = await startImplementToolConversation(
         'Corrige le code, mais ne commit rien.',
       );
 
@@ -377,11 +385,21 @@ export const registerImplementPolicyScenarios = (
         (async () => 'Commit confirmed') as unknown as () => Promise<undefined>,
       );
 
-      const secondResult = await onToolCall(
+      const secondCall = onToolCall(
         'git_commit',
         { message: 'fix: update checkout flow' },
         'call-commit-2',
       );
+
+      await flushAsyncWork();
+      expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toMatchObject({
+        toolId: 'git_commit',
+        canApproveForConversation: false,
+        summary: expect.stringContaining('filters'),
+      });
+      expect(executeWorkspaceToolMock).not.toHaveBeenCalled();
+      useChatStore.getState().approvePendingToolApprovalForConversation('implement-conv');
+      const secondResult = await secondCall;
 
       expect(String(secondResult)).toBe('Commit confirmed');
       expect(executeWorkspaceToolMock).toHaveBeenCalledTimes(1);
@@ -880,8 +898,8 @@ export const registerImplementPolicyScenarios = (
       expect(executeWorkspaceToolMock).not.toHaveBeenCalled();
     });
 
-    it('challenges git_add once before allowing the same assistant turn to stage', async () => {
-      const { onToolCall } = await startImplementToolConversation(
+    it('challenges git_add and requires a fresh user approval before staging', async () => {
+      const { useChatStore, onToolCall } = await startImplementToolConversation(
         'Corrige le code, mais ne stage rien.',
       );
 
@@ -896,7 +914,24 @@ export const registerImplementPolicyScenarios = (
       );
       expect(executeWorkspaceToolMock).not.toHaveBeenCalled();
 
-      await onToolCall('git_add', { paths: ['src/App.tsx'] }, 'call-add-2');
+      const secondCall = onToolCall('git_add', { paths: ['src/App.tsx'] }, 'call-add-2');
+      await flushAsyncWork();
+      expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toMatchObject({
+        toolId: 'git_add',
+        canApproveForConversation: false,
+        summary: expect.stringContaining('filters may run commands'),
+      });
+      expect(executeWorkspaceToolMock).not.toHaveBeenCalled();
+
+      useChatStore.getState().denyPendingToolApproval('implement-conv');
+      expect(String(await secondCall)).toBe('Tool git_add was denied by the user.');
+      expect(executeWorkspaceToolMock).not.toHaveBeenCalled();
+
+      const thirdCall = onToolCall('git_add', { paths: ['src/App.tsx'] }, 'call-add-3');
+      await flushAsyncWork();
+      expect(useChatStore.getState().getPendingToolApproval('implement-conv')?.toolCallId).toBe('call-add-3');
+      useChatStore.getState().approvePendingToolApprovalForConversation('implement-conv');
+      await thirdCall;
 
       expect(executeWorkspaceToolMock).toHaveBeenCalledTimes(1);
       expect(
@@ -955,11 +990,17 @@ export const registerImplementPolicyScenarios = (
         { message: 'fix: update checkout flow' },
         'call-commit-first-challenge',
       );
-      await onToolCall(
+      const firstCommit = onToolCall(
         'git_commit',
         { message: 'fix: update checkout flow' },
         'call-commit-first-execute',
       );
+      await flushAsyncWork();
+      expect(useChatStore.getState().getPendingToolApproval('implement-conv')?.toolCallId).toBe(
+        'call-commit-first-execute',
+      );
+      useChatStore.getState().approvePendingToolApprovalOnce('implement-conv');
+      await firstCommit;
       expect(executeWorkspaceToolMock).toHaveBeenCalledTimes(1);
 
       firstStreamCompletion.resolve();
@@ -1571,8 +1612,8 @@ export const registerImplementPolicyScenarios = (
 
       useChatStore.getState().stopConversationStream('implement-conv');
 
-      expect(String(await toolCallPromise)).toBe('Tool execution aborted');
-      expect(String(await queuedToolCallPromise)).toBe('Tool execution aborted');
+      expect(await toolCallPromise).toMatchObject({ kind: 'result', isError: true, errorKind: 'permission' });
+      expect(await queuedToolCallPromise).toMatchObject({ kind: 'result', isError: true, errorKind: 'uncertain' });
       expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toBeNull();
       expect(terminalRunCommandFromChatMock).not.toHaveBeenCalled();
       expect(

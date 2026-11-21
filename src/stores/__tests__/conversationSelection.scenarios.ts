@@ -1,3 +1,4 @@
+import { createLifecycleScope } from "../../services/lifecycleScope";
 import { describe, expect, it, mock } from 'bun:test';
 import { createDeferred } from '../../test-utils/deferred';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
@@ -352,6 +353,74 @@ export const registerConversationSelectionScenarios = (
       expect(providerState.selectedProviderId).toBe('provider-2');
       expect(providerState.selectedModelId).toBe('model-2a');
       expect(providerState.selectedReasoningEffort).toBe('high');
+    });
+
+    it('resets message loading after its lifecycle stops so a later selection can retry', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [{ ...createConversation('load-aborted', ''), message_count: 1 }],
+        selectedConversationId: 'load-aborted', selectedConversationIdsByMode: { Chat: 'load-aborted' },
+      }));
+      const gate = createDeferred<[]>();
+      context.listMessagesMock.mockImplementationOnce(() => gate.promise);
+      const lifecycle = createLifecycleScope();
+      const pending = useChatStore.getState().ensureConversationForCurrentMode(lifecycle);
+      await flushAsyncWork();
+      expect(useChatStore.getState().messageLoadStatusByConversationId['load-aborted']).toBe('loading');
+      lifecycle.stop();
+      gate.resolve([]);
+      await pending.catch(() => undefined);
+      expect(useChatStore.getState().messageLoadStatusByConversationId['load-aborted']).toBe('idle');
+      expect(useChatStore.getState().lastError).toBeNull();
+      await useChatStore.getState().ensureMessagesLoaded('load-aborted');
+      expect(useChatStore.getState().messageLoadStatusByConversationId['load-aborted']).toBe('ready');
+    });
+
+    it('isolates source additions made while another conversation is loading', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const { useChatStore } = await loadChatStore();
+      const refs = ['source-c', 'source-d'].map((id) => ({
+        id, kind: 'conversation' as const, title: id, data: { conversationId: id },
+      }));
+      context.chatSnapshotConversations = ['conv-a', 'conv-b', 'source-c', 'source-d'].map((id) =>
+        createChatSnapshotConversation(id, { project_id: null, group_id: null, scope_mode: 'Chat' }));
+      context.chatSnapshotMessages = ['source-c', 'source-d'].map((id) => ({
+        id: `message-${id}`, conversation_id: id, role: 'user',
+        content: `Context marker ${id}`, created_at: '2026-10-14T10:00:00Z',
+      }));
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: ['conv-a', 'conv-b', 'source-c', 'source-d'].map((id) => ({
+          ...createConversation(id, ''), project_id: null, group_id: null,
+          message_count: id === 'conv-b' ? 1 : 0,
+        })),
+        selectedConversationId: 'conv-a', selectedConversationIdsByMode: { Chat: 'conv-a' },
+      }));
+      useChatStore.getState().addComposerContextRef(refs[0]);
+      await waitForToolboxPersistence();
+      const messagesGate = createDeferred<[]>();
+      context.listMessagesMock.mockImplementationOnce(() => messagesGate.promise);
+      const pendingSelection = useChatStore.getState().selectConversation('conv-b');
+      expect(useChatStore.getState().selectedConversationId).toBe('conv-b');
+      useChatStore.getState().addComposerContextRef(refs[1]);
+      await waitForToolboxPersistence();
+      expect(context.listMessagesMock).toHaveBeenCalledWith('conv-b');
+      messagesGate.resolve([]);
+      await pendingSelection;
+      expect(useChatStore.getState().composerContextRefs).toEqual([expect.objectContaining({ id: 'source-d' })]);
+      expect(JSON.parse(toolboxStateByConversationId.get('conv-b')!.composer_context_refs_json)
+        .map((ref: { id: string }) => ref.id)).toEqual(['source-d']);
+      expect(JSON.parse(toolboxStateByConversationId.get('conv-a')!.composer_context_refs_json)
+        .map((ref: { id: string }) => ref.id)).toEqual(['source-c']);
+      await useChatStore.getState().selectConversation('conv-a');
+      expect(useChatStore.getState().composerContextRefs).toEqual([expect.objectContaining({ id: 'source-c' })]);
+      await useChatStore.getState().selectConversation('conv-b');
+      await useChatStore.getState().sendMessage({ conversationId: 'conv-b', content: 'Use the context marker.' });
+      const request = context.getLatestStreamOptions<{ messages: Array<{ content: unknown }> }>();
+      expect(JSON.stringify(request.messages)).toContain('Context marker source-d');
+      expect(JSON.stringify(request.messages)).not.toContain('Context marker source-c');
     });
 
     it('restores persisted toolbox composer source refs after selecting a conversation', async () => {

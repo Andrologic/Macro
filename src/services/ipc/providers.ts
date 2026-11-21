@@ -168,7 +168,12 @@ export async function updateProviderSettings(params: {
     payload.filterFreeModels = params.filterFreeModels;
   }
   if (Object.prototype.hasOwnProperty.call(params, "copilotSendTimeoutMs")) {
-    payload.copilotSendTimeoutMs = params.copilotSendTimeoutMs ?? null;
+    // Tauri maps JSON null to None, so clearing needs an explicit flag.
+    if (params.copilotSendTimeoutMs == null) {
+      payload.clearCopilotSendTimeout = true;
+    } else {
+      payload.copilotSendTimeoutMs = params.copilotSendTimeoutMs;
+    }
   }
   return invoke("db_update_provider_settings", payload);
 }

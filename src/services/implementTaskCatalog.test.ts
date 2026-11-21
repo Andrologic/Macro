@@ -630,3 +630,48 @@ describe('taskMatchesProjectId', () => {
     expect(taskMatchesProjectId(tasks[0], 'mobile')).toBe(false);
   });
 });
+
+
+describe('plan finalization after automatic task archival', () => {
+  it('keeps finalization and plan scope through the A/B completion cycle and reload', () => {
+    const plan = makePlan({
+      id: 'cycle', title: 'Completion cycle', status: 'in_progress',
+      nodes: [
+        { id: 'a', title: 'A', type: 'task', status: 'pending', dependencies: [], projectId: 'web' },
+        { id: 'b', title: 'B', type: 'task', status: 'pending', dependencies: ['a'], projectId: 'web' },
+        { id: 'removed', title: 'Removed', type: 'task', status: 'pending', dependencies: ['b'],
+          projectId: 'web', archivedAt: '2026-01-01', archiveReason: 'removed' },
+        { id: 'cancelled', title: 'Cancelled', type: 'task', status: 'completed', dependencies: [],
+          projectId: 'web', archivedAt: '2026-01-01', archiveReason: 'cancelled', mergedAt: '2026-01-01' },
+      ],
+    });
+    const catalog = () => buildImplementTaskCatalog({ plans: [JSON.parse(JSON.stringify(plan))], fallbackTasks: [] });
+    expect(catalog().tasks.find((task) => task.task_source === 'plan_finalization')?.is_blocked).toBe(true);
+    for (const id of ['a', 'b']) {
+      const node = plan.nodes.find((node) => node.id === id)!;
+      Object.assign(node, { status: 'completed', archivedAt: '2026-01-02', archiveReason: 'merged', mergedAt: '2026-01-02' });
+      const snapshot = catalog();
+      expect(snapshot.tasks.find((task) => task.task_source === 'plan_finalization')?.is_blocked).toBe(id !== 'b');
+    }
+    const reloaded = catalog();
+    const finalization = reloaded.tasks.find((task) => task.task_source === 'plan_finalization')!;
+    expect(finalization).toMatchObject({ status: 'Pending', is_ready: true, archived_at: null });
+    expect(finalization.dependencies).toEqual([reloaded.tasks.find((task) => task.node_id === 'b')!.id]);
+    expect(reloaded.tasks.filter((task) => !task.archived_at)).toEqual([finalization]);
+    expect(reloaded.plans).toEqual([expect.objectContaining({ id: 'cycle', taskCount: 2, completedTaskCount: 2 })]);
+    plan.status = 'archived';
+    expect(catalog().tasks.some((task) => task.task_source === 'plan_finalization')).toBe(false);
+  });
+
+  it('does not create finalization for an entirely removed or cancelled plan', () => {
+    for (const archiveReason of ['removed', 'cancelled']) {
+      const plan = makePlan({ id: 'removed', title: 'Removed plan', status: 'validated', nodes: [
+        { id: 'a', title: 'A', type: 'task', status: 'completed', dependencies: [], projectId: 'web',
+          archivedAt: '2026-01-01', archiveReason, mergedAt: '2026-01-01' },
+      ] });
+      const catalog = buildImplementTaskCatalog({ plans: [plan], fallbackTasks: [] });
+      expect(catalog.tasks.some((task) => task.task_source === 'plan_finalization')).toBe(false);
+      expect(catalog.plans).toEqual([]);
+    }
+  });
+});

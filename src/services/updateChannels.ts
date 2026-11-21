@@ -14,13 +14,3 @@ export const loadUpdateChannel = async (): Promise<UpdateChannel> =>
 
 export const saveUpdateChannel = async (channel: UpdateChannel): Promise<void> =>
   savePreference(PREF_KEYS.UPDATE_CHANNEL, channel);
-
-export const updaterTargetForChannel = (
-  channel: UpdateChannel,
-  nativeTarget: string,
-): string => `${channel}-${nativeTarget}`;
-
-export const shouldAllowChannelDowngrade = (
-  channel: UpdateChannel,
-  currentVersion: string,
-): boolean => channel === 'stable' && currentVersion.includes('-');

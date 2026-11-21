@@ -5,15 +5,22 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, normalize, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import ts from 'typescript';
-import { chatBoundaryViolations, isExtractedNativeFile, nativeBoundaryViolations } from './extracted-boundaries.mjs';
+import { argenticCounts, compareArgentic, isArgenticFile, tightenArgentic, validateArgenticBaseline, chatBoundaryViolations, isExtractedNativeFile, nativeBoundaryViolations } from './extracted-boundaries.mjs';
 
 export const BASELINE_PATH = 'dev/architecture/import-boundaries.baseline.json';
-export const SOURCE_EXTENSIONS = Object.freeze(['.ts', '.tsx']);
-export const EXCLUDED_SUFFIXES = Object.freeze(['.d.ts', '.test.ts', '.test.tsx']);
+export const SOURCE_EXTENSIONS = Object.freeze(['.ts', '.tsx', '.js', '.mjs']);
+export const EXCLUDED_SUFFIXES = Object.freeze(['.d.ts', '.d.mts', '.test.ts', '.test.tsx', '.scenarios.ts', '.scenarios.tsx']);
 
 export const OWNERS = Object.freeze(['Chat', 'Tasks/Plans', 'Providers', 'Shell']);
 
 export const EXPLICITLY_FORBIDDEN_EDGES = Object.freeze([
+  Object.freeze({
+    id: 'plan-artifacts-to-app-store',
+    from: 'src/services/architectPlanArtifactService.ts',
+    to: 'src/stores/useAppStore.ts',
+    owner: 'Tasks/Plans',
+    reason: 'Artifact operations use the project registry installed by Plans composition.',
+  }),
   Object.freeze({
     id: 'streaming-chat-to-architect-chat',
     from: 'src/services/streamingChat.ts',
@@ -80,7 +87,7 @@ function sorted(values) {
 
 function isSourceFile(path) {
   const normalized = normalizePath(path);
-  return SOURCE_EXTENSIONS.includes(extname(normalized)) && !EXCLUDED_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+  return !normalized.startsWith('src/test-utils/') && SOURCE_EXTENSIONS.includes(extname(normalized)) && !EXCLUDED_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
 }
 
 function sourceFileNames(rootDirectory, sourceDirectory = 'src') {
@@ -104,7 +111,7 @@ function sourceFileNames(rootDirectory, sourceDirectory = 'src') {
 }
 
 function gitSourceFileNames(rootDirectory, ref) {
-  const output = execFileSync('git', ['-C', rootDirectory, 'ls-tree', '-rz', ref, '--', 'src', 'src-tauri/src'], {
+  const output = execFileSync('git', ['-C', rootDirectory, 'ls-tree', '-rz', ref, '--', 'src', 'src-tauri/src', 'crates/argentic-core', 'crates/argentic-runtime', 'contracts/macro-pilot/v2'], {
     encoding: 'utf8',
   });
   return sorted(output.split('\0').filter(Boolean).map((entry) => {
@@ -119,11 +126,12 @@ function readGitFile(rootDirectory, ref, path) {
 }
 
 function createFilesystemReader(rootDirectory) {
-  const resolutionFiles = sourceFileNames(rootDirectory);
+  const resolutionFiles = [...sourceFileNames(rootDirectory), ...sourceFileNames(rootDirectory, 'contracts/macro-pilot/v2')];
   return {
     resolutionFiles,
-    files: resolutionFiles.filter(isSourceFile),
+    files: resolutionFiles.filter((path) => path.startsWith('src/') && isSourceFile(path)),
     nativeFiles: sourceFileNames(rootDirectory, 'src-tauri/src').filter(isExtractedNativeFile),
+    argenticFiles: [...sourceFileNames(rootDirectory, 'src-tauri/src'), ...sourceFileNames(rootDirectory, 'crates/argentic-core'), ...sourceFileNames(rootDirectory, 'crates/argentic-runtime')].filter(isArgenticFile),
     read(path) {
       return readFileSync(join(rootDirectory, path), 'utf8');
     },
@@ -132,11 +140,12 @@ function createFilesystemReader(rootDirectory) {
 
 function createGitReader(rootDirectory, ref) {
   const allFiles = gitSourceFileNames(rootDirectory, ref);
-  const resolutionFiles = allFiles.filter((path) => path.startsWith('src/'));
+  const resolutionFiles = allFiles.filter((path) => path.startsWith('src/') || path.startsWith('contracts/macro-pilot/v2/'));
   return {
     resolutionFiles,
-    files: resolutionFiles.filter(isSourceFile),
+    files: resolutionFiles.filter((path) => path.startsWith('src/') && isSourceFile(path)),
     nativeFiles: allFiles.filter(isExtractedNativeFile),
+    argenticFiles: allFiles.filter(isArgenticFile),
     read(path) {
       return readGitFile(rootDirectory, ref, path);
     },
@@ -146,9 +155,10 @@ function createGitReader(rootDirectory, ref) {
 export function createVirtualReader(sources) {
   const normalizedSources = new Map(Object.entries(sources).map(([path, text]) => [normalizePath(path), text]));
   return {
-    resolutionFiles: sorted([...normalizedSources.keys()].filter((path) => path.startsWith('src/'))),
+    resolutionFiles: sorted([...normalizedSources.keys()].filter((path) => path.startsWith('src/') || path.startsWith('contracts/macro-pilot/v2/'))),
     files: sorted([...normalizedSources.keys()].filter((path) => path.startsWith('src/') && isSourceFile(path))),
     nativeFiles: sorted([...normalizedSources.keys()].filter(isExtractedNativeFile)),
+    argenticFiles: sorted([...normalizedSources.keys()].filter(isArgenticFile)),
     read(path) {
       const text = normalizedSources.get(normalizePath(path));
       if (text === undefined && path === 'package.json') return '{}';
@@ -162,7 +172,8 @@ export function createVirtualReader(sources) {
 }
 
 function scriptKindFor(path) {
-  return path.endsWith('.tsx') ? TSX_SCRIPT_KIND : ts.ScriptKind.TS;
+  if (path.endsWith('.tsx')) return TSX_SCRIPT_KIND;
+  return path.endsWith('.js') || path.endsWith('.mjs') ? ts.ScriptKind.JS : ts.ScriptKind.TS;
 }
 
 function diagnosticMessage(diagnostic) {
@@ -435,10 +446,10 @@ function localModulePath(from, specifier, aliases) {
 // Vite's default extension order, checked differentially against the installed resolver.
 const VITE_EXTENSIONS = ['.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json'];
 
-function resolveLocalImport(from, specifier, available, aliases) {
+function resolveLocalImport(from, specifier, available, aliases, kinds) {
   const base = localModulePath(from, specifier, aliases);
   if (base === undefined) return undefined;
-  if (base !== 'src' && !base.startsWith('src/')) throw new Error(`Import guard cannot resolve a source import outside src/: ${specifier}`);
+  if (base !== 'src' && !base.startsWith('src/') && !base.startsWith('contracts/macro-pilot/v2/')) throw new Error(`Import guard cannot resolve a source import outside src/: ${specifier}`);
   const candidates = [base];
   // Exact files precede JS-output remapping; appended extensions keep the original suffix.
   if (/\.(?:js|mjs|cjs|jsx)$/.test(base)) {
@@ -448,6 +459,10 @@ function resolveLocalImport(from, specifier, available, aliases) {
   candidates.push(...VITE_EXTENSIONS.map((extension) => base + extension));
   for (const candidate of candidates) {
     if (available.has(candidate)) return candidate;
+  }
+  if (kinds.every((kind) => kind === 'type')) {
+    const declaration = base.replace(/\.(js|mjs)$/, (_, extension) => extension === 'mjs' ? '.d.mts' : '.d.ts');
+    if (available.has(declaration)) return declaration;
   }
   if (available.has(`${base}/package.json`)) {
     throw new Error(`Import guard requires explicit file imports for source directories with package.json: ${specifier}`);
@@ -482,13 +497,19 @@ function collectGraph(reader) {
   const diagnostics = [];
   const unresolved = [];
   const externalImports = [];
-  for (const from of reader.files) {
+  const files = [...reader.files];
+  const scheduled = new Set(files);
+  for (const from of files) {
     const result = collectImports(from, reader.read(from));
     diagnostics.push(...result.diagnostics.map((message) => ({ file: from, message })));
     for (const importEntry of result.imports) {
+      // JSON contracts are data, not executable modules in the dependency graph.
+      if (extname(importEntry.source.split(/[?#]/, 1)[0]).toLowerCase() === '.json') continue;
       let to;
       try {
-        to = resolveLocalImport(from, importEntry.source, available, aliases);
+        to = resolveLocalImport(from, importEntry.source, available, aliases, importEntry.kinds);
+        if (to?.startsWith('src/test-utils/')) throw new Error(`Production sources cannot import test utilities: ${to}`);
+        if (to && /\.(?:scenarios|test)\.tsx?$/.test(to)) throw new Error(`Production sources cannot import test modules: ${to}`);
         if (to && !isSourceFile(to)) {
           if (!EXCLUDED_SUFFIXES.some((suffix) => to.endsWith(suffix)) && isTargetedModuleSpecifier(to)) throw new Error(`Import guard resolved an unsupported source module: ${to}`);
           continue;
@@ -506,6 +527,10 @@ function collectGraph(reader) {
         continue;
       }
       const key = pairKey(from, to);
+      if (!scheduled.has(to)) {
+        scheduled.add(to);
+        files.push(to);
+      }
       const edge = edges.get(key) ?? { from, to, kinds: new Set(), lines: [], hasEagerRuntime: false, hasLazyRuntime: false };
       for (const kind of importEntry.kinds) edge.kinds.add(kind);
       if (importEntry.kinds.includes('runtime')) {
@@ -525,7 +550,7 @@ function collectGraph(reader) {
     hasLazyRuntime: edge.hasLazyRuntime,
     lines: edge.lines.sort((left, right) => left.line - right.line),
   })).sort((left, right) => `${left.from}|${left.to}`.localeCompare(`${right.from}|${right.to}`));
-  return { edges: serializedEdges, externalImports, diagnostics, unresolved };
+  return { files, edges: serializedEdges, externalImports, diagnostics, unresolved };
 }
 
 function edgeHasKind(edge, kind) {
@@ -661,8 +686,8 @@ function exceptionsForReport(violations) {
 
 export function analyzeReader(reader, sourceRef = 'worktree') {
   const graph = collectGraph(reader);
-  const sccs = stronglyConnectedComponents(reader.files, graph.edges);
-  const eagerSccs = stronglyConnectedComponents(reader.files, graph.edges, true);
+  const sccs = stronglyConnectedComponents(graph.files, graph.edges);
+  const eagerSccs = stronglyConnectedComponents(graph.files, graph.edges, true);
   const dynamicSccs = sccs.filter((component) => graph.edges.some((edge) =>
     edge.hasLazyRuntime && component.includes(edge.from) && component.includes(edge.to)));
   const violations = ruleViolations(graph.edges);
@@ -674,7 +699,7 @@ export function analyzeReader(reader, sourceRef = 'worktree') {
   return {
     schemaVersion: 1,
     sourceRef,
-    fileCount: reader.files.length,
+    fileCount: graph.files.length,
     edgeCount: graph.edges.length,
     runtimeEdgeCount: edgeCounts.runtime,
     typeEdgeCount: edgeCounts.type,
@@ -692,6 +717,7 @@ export function analyzeReader(reader, sourceRef = 'worktree') {
       native: nativeBoundaryViolations(reader),
       nativeFiles: reader.nativeFiles ?? [],
     },
+    argentic: argenticCounts(reader, graph.edges),
     exceptions: exceptionsForReport(violations),
     diagnostics: graph.diagnostics.sort((left, right) => `${left.file}|${left.message}`.localeCompare(`${right.file}|${right.message}`)),
     unresolved: graph.unresolved.sort((left, right) => `${left.from}|${left.specifier}|${left.line}`.localeCompare(`${right.from}|${right.specifier}|${right.line}`)),
@@ -784,7 +810,7 @@ export function buildReport(current, comparison) {
 }
 
 function parseArguments(argv) {
-  const options = { check: false, format: 'text', root: process.cwd(), baseline: BASELINE_PATH, report: undefined, base: undefined, writeBaseline: undefined };
+  const options = { check: false, format: 'text', root: process.cwd(), baseline: BASELINE_PATH, report: undefined, base: undefined, writeBaseline: undefined, argenticBaseline: 'dev/architecture/argentic-boundaries.baseline.json', captureArgentic: false, tightenArgentic: false };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--check') options.check = true;
@@ -794,6 +820,9 @@ function parseArguments(argv) {
     else if (argument === '--report') options.report = argv[++index];
     else if (argument === '--base') options.base = argv[++index];
     else if (argument === '--write-baseline') options.writeBaseline = argv[++index];
+    else if (argument === '--argentic-baseline') options.argenticBaseline = argv[++index];
+    else if (argument === '--capture-argentic') options.captureArgentic = true;
+    else if (argument === '--tighten-argentic') options.tightenArgentic = true;
     else if (argument === '--help') options.help = true;
     else throw new Error(`Unknown argument: ${argument}`);
   }
@@ -812,6 +841,9 @@ function usage() {
     '  --report <path>                 Write the current JSON report.',
     '  --format <text|json>            Select stdout format.',
     '  --root <path>                   Repository root. Defaults to cwd.',
+    '  --argentic-baseline <path>      Argentic baseline path.',
+    '  --capture-argentic              Capture initial baseline from the fixed base only.',
+    '  --tighten-argentic              Lower existing Argentic limits only.',
   ].join('\n');
 }
 
@@ -876,16 +908,40 @@ function main(argv = process.argv.slice(2)) {
     if (!options.base) throw new Error('--write-baseline requires --base <git-ref>.');
     writeFileSync(resolve(root, options.writeBaseline), `${JSON.stringify(baselineFromReport(current, options.base), null, 2)}\n`);
   }
+  const argenticPath = resolve(root, options.argenticBaseline);
+  const fixedBase = '627ea641d8ab1439ca41e9cd68bb07454ea33c49';
+  if (options.captureArgentic) {
+    if (options.base !== fixedBase || existsSync(argenticPath) || options.tightenArgentic || options.check) throw new Error('Initial Argentic capture requires the exact base, a nonexistent output and no check or tightening.');
+    const captured = { schemaVersion: 1, baseRef: fixedBase, counts: current.argentic };
+    validateArgenticBaseline(captured);
+    writeFileSync(argenticPath, `${JSON.stringify(captured, null, 2)}\n`, { flag: 'wx' });
+  }
+  let argenticIssues = [];
+  if (options.check || options.tightenArgentic) {
+    if (!existsSync(argenticPath)) throw new Error(`Argentic baseline not found: ${argenticPath}`);
+    let argenticBaseline;
+    try { argenticBaseline = JSON.parse(readFileSync(argenticPath, 'utf8')); validateArgenticBaseline(argenticBaseline); }
+    catch (error) { throw new Error(`Invalid Argentic baseline: ${error.message}`); }
+    argenticIssues = compareArgentic(argenticBaseline, current.argentic);
+    if (options.tightenArgentic) {
+      if (options.base || options.check) throw new Error('Tightening requires the worktree and cannot be combined with --check.');
+      writeFileSync(argenticPath, `${JSON.stringify(tightenArgentic(argenticBaseline, current.argentic), null, 2)}\n`);
+      argenticIssues = compareArgentic(tightenArgentic(argenticBaseline, current.argentic), current.argentic);
+    }
+  }
   let report = current;
   if (options.check) {
     const baselinePath = resolve(root, options.baseline);
     if (!existsSync(baselinePath)) throw new Error(`Baseline not found: ${baselinePath}`);
     const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
     report = buildReport(current, compareReports(baseline, current));
+    report.comparison.argenticIssues = argenticIssues;
+    report.comparison.passed &&= argenticIssues.length === 0;
   }
   if (options.report) writeFileSync(resolve(root, options.report), `${JSON.stringify(report, null, 2)}\n`);
   console.log(options.format === 'json' ? JSON.stringify(report, null, 2) : formatText(report));
-  return options.check && !report.comparison.passed ? 1 : 0;
+  if (options.format === 'text') for (const issue of argenticIssues) console.log(`Argentic ${issue.file} [${issue.rule}]: ${issue.count}/${issue.limit} (${issue.direction}); ${issue.direction === 'increase' ? 'remove the coupling' : 'run --tighten-argentic and review the baseline'}.`);
+  return (options.check && !report.comparison.passed) || (options.tightenArgentic && argenticIssues.length > 0) ? 1 : 0;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

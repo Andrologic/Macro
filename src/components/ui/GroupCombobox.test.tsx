@@ -3,6 +3,8 @@ import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { GroupCombobox } from './GroupCombobox';
 import { Dialog } from './Dialog';
+import i18n from '../../i18n';
+import { loadTranslation } from '../../i18n/resources';
 
 describe('GroupCombobox', () => {
   let container: HTMLDivElement | null = null;
@@ -11,7 +13,10 @@ describe('GroupCombobox', () => {
   let originalGetComputedStyle: typeof window.getComputedStyle;
   let originalInnerHeight: number;
 
+  const initialLanguage = i18n.language;
+
   afterEach(async () => {
+    await i18n.changeLanguage(initialLanguage);
     await act(async () => {
       root?.unmount();
       await Promise.resolve();
@@ -35,6 +40,36 @@ describe('GroupCombobox', () => {
       });
     }
     document.body.innerHTML = '';
+  });
+
+  it.each(['en', 'fr'] as const)('names the toggle in %s and links only its own open dropdown', async (language) => {
+    i18n.addResourceBundle(language, 'translation', await loadTranslation(language), true, true);
+    await i18n.changeLanguage(language);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(<>
+        <GroupCombobox projectGroups={[{ id: 'alpha', name: 'Alpha' }]} selectedGroupId="alpha" onSelect={() => undefined} />
+        <GroupCombobox projectGroups={[]} selectedGroupId={null} onSelect={() => undefined} />
+      </>);
+    });
+    const toggles = container.querySelectorAll('button');
+    const toggle = toggles[0];
+    expect(toggle.getAttribute('aria-label')).toBe(language === 'fr' ? 'Sélectionnez un groupe...' : 'Select a group...');
+    expect(toggle.type).toBe('button');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.hasAttribute('aria-controls')).toBe(false);
+    await act(async () => { toggle.click(); });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const id = toggle.getAttribute('aria-controls')!;
+    expect(document.getElementById(id)?.textContent).toContain('Alpha');
+    expect(toggles[1].hasAttribute('aria-controls')).toBe(false);
+    await act(async () => { toggle.click(); });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.hasAttribute('aria-controls')).toBe(false);
+    expect(document.getElementById(id)).toBeNull();
+    expect(container.querySelector('input')?.value).toBe('Alpha');
   });
 
   it('renders the dropdown above scroll containers when there is not enough space below', async () => {

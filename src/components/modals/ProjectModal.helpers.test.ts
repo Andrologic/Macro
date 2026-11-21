@@ -19,6 +19,7 @@ import {
   buildPendingProjectSetupPrompt,
   buildProjectWithGitSetupPayload,
   findProjectByPath,
+  getProjectCreationErrorMessage,
   getAcceptedActionsAfterConfirmingPrompt,
   getAcceptedActionsAfterDecliningPrompt,
   hasDuplicateSubProjectName,
@@ -96,6 +97,27 @@ const createPayload: PendingProjectCreation = {
 };
 
 describe('ProjectModal helpers', () => {
+  it('translates only the exact typed canonical project duplicate refusal', () => {
+    const message = 'A project with this folder already exists in the workspace.';
+    const translate = (_key: string, fallback: string) => fallback;
+    const duplicate = Object.freeze({ code: 'Validation', message });
+    expect(getProjectCreationErrorMessage(duplicate, translate))
+      .toBe('This folder is already attached to a project in this workspace.');
+    expect(getProjectCreationErrorMessage({ code: 'Validation', 0: message }, translate))
+      .toBe('This folder is already attached to a project in this workspace.');
+    for (const failure of [
+      { code: 'Validation', message: 'Unknown project group id: group-123' },
+      { code: 'Git', message },
+      { code: 'FilesystemPermissionDenied', message },
+      { code: 'Validation', message: `${message} Retry later.` },
+      { code: 'Validation', message: message.toLowerCase() },
+    ]) {
+      expect(getProjectCreationErrorMessage(failure, translate)).toBe(failure.message);
+    }
+    expect(getProjectCreationErrorMessage(message, translate)).toBe(message);
+    expect(getProjectCreationErrorMessage(new Error(message), translate)).toBe(message);
+  });
+
   it('preserves Unix and WSL Linux path case while matching Windows path case', () => {
     expect(normalizeProjectPath('/synthetic/App')).not.toBe(normalizeProjectPath('/synthetic/app'));
     expect(normalizeProjectPath('//wsl$/Ubuntu/home/App')).not.toBe(normalizeProjectPath('//wsl$/Ubuntu/home/app'));

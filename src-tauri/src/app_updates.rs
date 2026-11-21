@@ -3,6 +3,7 @@ use crate::core::process::background_command;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use fs2::FileExt;
 use minisign_verify::{PublicKey, Signature};
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "windows")]
@@ -15,6 +16,7 @@ use std::{
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_updater::UpdaterExt;
 use tempfile::{Builder as TempFileBuilder, NamedTempFile};
 
@@ -59,15 +61,15 @@ fn lock_update_state() -> std::sync::MutexGuard<'static, ()> {
 
 fn lock_update_directory(directory: &Path) -> Result<fs::File, String> {
     fs::create_dir_all(directory)
-        .map_err(|error| format!("Impossible de préparer le verrou des mises à jour : {error}"))?;
+        .map_err(|error| format!("Failed to prepare update lock: {error}"))?;
     let file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(directory.join(UPDATE_LOCK_FILE))
-        .map_err(|error| format!("Impossible d'ouvrir le verrou des mises à jour : {error}"))?;
+        .map_err(|error| format!("Failed to open update lock: {error}"))?;
     file.lock_exclusive()
-        .map_err(|error| format!("Impossible de verrouiller les mises à jour : {error}"))?;
+        .map_err(|error| format!("Failed to lock updates: {error}"))?;
     Ok(file)
 }
 
@@ -227,26 +229,29 @@ fn update_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_cache_dir()
         .map(|path| path.join(UPDATE_DIRECTORY))
-        .map_err(|error| format!("Impossible d'ouvrir le cache des mises à jour : {error}"))
+        .map_err(|error| format!("Failed to open update cache: {error}"))
+}
+
+fn persisted_update_channel(app_data_dir: &Path) -> Result<Option<&'static str>, String> {
+    if crate::local_backup::has_pending_startup_work(app_data_dir)? {
+        return Ok(None);
+    }
+    let value = crate::state_manager::read_persisted_value(app_data_dir, "updateChannel")?;
+    match value {
+        None => Ok(Some("stable")),
+        Some(serde_json::Value::String(channel)) if channel == "stable" => Ok(Some("stable")),
+        Some(serde_json::Value::String(channel)) if channel == "preview" => Ok(Some("preview")),
+        _ => Err("UPDATE_CHANNEL_INVALID".to_string()),
+    }
 }
 
 pub(crate) fn target_matches_persisted_channel(
     app_data_dir: &Path,
     target: &str,
+    native_target: &str,
 ) -> Result<bool, String> {
-    if crate::local_backup::has_pending_startup_work(app_data_dir)? {
-        return Ok(false);
-    }
-    let value = crate::state_manager::read_persisted_value(app_data_dir, "updateChannel")?;
-    let channel = match value {
-        None => "stable",
-        Some(serde_json::Value::String(channel)) if channel == "stable" => "stable",
-        Some(serde_json::Value::String(channel)) if channel == "preview" => "preview",
-        _ => return Err("UPDATE_CHANNEL_INVALID".to_string()),
-    };
-    Ok(target
-        .strip_prefix(channel)
-        .is_some_and(|suffix| suffix.starts_with('-')))
+    Ok(persisted_update_channel(app_data_dir)?
+        .is_some_and(|channel| target == format!("{channel}-{native_target}")))
 }
 
 fn update_target_matches_channel(app: &AppHandle, target: &str) -> Result<bool, String> {
@@ -254,7 +259,9 @@ fn update_target_matches_channel(app: &AppHandle, target: &str) -> Result<bool, 
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    target_matches_persisted_channel(&app_data_dir, target)
+    let native_target =
+        tauri_plugin_updater::target().ok_or_else(|| "UPDATE_TARGET_UNSUPPORTED".to_string())?;
+    target_matches_persisted_channel(&app_data_dir, target, &native_target)
 }
 
 fn manifest_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -279,10 +286,10 @@ fn read_manifest_file(path: &Path) -> Result<Option<StagedUpdateManifest>, Strin
         return Ok(None);
     }
     let contents = fs::read_to_string(&path)
-        .map_err(|error| format!("Impossible de lire l'état de la mise à jour : {error}"))?;
+        .map_err(|error| format!("Failed to read update state: {error}"))?;
     serde_json::from_str(&contents)
         .map(Some)
-        .map_err(|error| format!("L'état de la mise à jour est illisible : {error}"))
+        .map_err(|error| format!("Update state is unreadable: {error}"))
 }
 
 fn read_manifest(app: &AppHandle) -> Result<Option<StagedUpdateManifest>, String> {
@@ -312,17 +319,17 @@ where
 {
     let parent = path
         .parent()
-        .ok_or_else(|| "Le chemin de mise à jour est invalide.".to_string())?;
+        .ok_or_else(|| "Invalid update path.".to_string())?;
     fs::create_dir_all(parent)
-        .map_err(|error| format!("Impossible de créer le cache des mises à jour : {error}"))?;
+        .map_err(|error| format!("Failed to create update cache: {error}"))?;
     let mut temporary = TempFileBuilder::new()
         .prefix(".macro-update-")
         .tempfile_in(parent)
-        .map_err(|error| format!("Impossible de préparer la mise à jour : {error}"))?;
+        .map_err(|error| format!("Failed to prepare update: {error}"))?;
     temporary
         .write_all(bytes)
         .and_then(|_| temporary.as_file().sync_all())
-        .map_err(|error| format!("Impossible d'enregistrer la mise à jour : {error}"))?;
+        .map_err(|error| format!("Failed to save update: {error}"))?;
     persist(temporary, path)?;
     if let Err(error) = sync_parent(parent) {
         // The rename is the commit point: returning an ordinary error here
@@ -342,14 +349,14 @@ fn persist_temporary_file(temporary: NamedTempFile, path: &Path) -> Result<(), S
     temporary
         .persist(path)
         .map(|_| ())
-        .map_err(|error| format!("Impossible de finaliser la mise à jour : {}", error.error))
+        .map_err(|error| format!("Failed to finalize update: {}", error.error))
 }
 
 #[cfg(unix)]
 fn sync_parent_directory(parent: &Path) -> Result<(), String> {
     fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
-        .map_err(|error| format!("Impossible de synchroniser le cache des mises à jour : {error}"))
+        .map_err(|error| format!("Failed to sync update cache: {error}"))
 }
 
 #[cfg(not(unix))]
@@ -359,7 +366,7 @@ fn sync_parent_directory(_parent: &Path) -> Result<(), String> {
 
 fn write_manifest_file(path: &Path, manifest: &StagedUpdateManifest) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(manifest)
-        .map_err(|error| format!("Impossible d'enregistrer l'état de la mise à jour : {error}"))?;
+        .map_err(|error| format!("Failed to save update state: {error}"))?;
     atomic_write(path, &bytes)
 }
 
@@ -411,7 +418,12 @@ fn updater_public_key(app: &AppHandle) -> Result<&str, String> {
         .ok_or_else(|| "UPDATE_SIGNATURE_CONFIG_MISSING".to_string())
 }
 
-fn verify_update_signature(bytes: &[u8], signature: &str, public_key: &str) -> Result<(), String> {
+fn verify_update_signature(
+    bytes: &[u8],
+    signature: &str,
+    public_key: &str,
+    expected_version: &str,
+) -> Result<(), String> {
     let decoded_key = BASE64
         .decode(public_key)
         .ok()
@@ -428,7 +440,24 @@ fn verify_update_signature(bytes: &[u8], signature: &str, public_key: &str) -> R
         .map_err(|_| "UPDATE_SIGNATURE_INVALID".to_string())?;
     public_key
         .verify(bytes, &signature, true)
-        .map_err(|_| "UPDATE_SIGNATURE_INVALID".to_string())
+        .map_err(|_| "UPDATE_SIGNATURE_INVALID".to_string())?;
+    verify_signed_version(signature.trusted_comment(), expected_version)
+}
+
+fn verify_signed_version(trusted_comment: &str, expected_version: &str) -> Result<(), String> {
+    let signed_version = trusted_comment
+        .split('\t')
+        .find_map(|field| field.strip_prefix("version:"))
+        .filter(|version| !version.is_empty())
+        .ok_or_else(|| "UPDATE_SIGNED_VERSION_MISSING".to_string())?;
+    let signed = Version::parse(signed_version.trim_start_matches('v'))
+        .map_err(|_| "UPDATE_SIGNED_VERSION_MISMATCH".to_string())?;
+    let expected = Version::parse(expected_version.trim_start_matches('v'))
+        .map_err(|_| "UPDATE_SIGNED_VERSION_MISMATCH".to_string())?;
+    if signed != expected {
+        return Err("UPDATE_SIGNED_VERSION_MISMATCH".to_string());
+    }
+    Ok(())
 }
 
 fn remove_file_if_present(path: &Path) -> Result<(), String> {
@@ -476,9 +505,7 @@ fn read_update_generation_directory(directory: &Path) -> Result<String, String> 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Ok("initial-generation".to_string())
         }
-        Err(error) => Err(format!(
-            "Impossible de lire la génération des mises à jour : {error}"
-        )),
+        Err(error) => Err(format!("Failed to read update generation: {error}")),
     }
 }
 
@@ -519,19 +546,18 @@ fn read_publication_backup(
         return Ok(None);
     }
     let contents = fs::read_to_string(&path)
-        .map_err(|error| format!("Impossible de lire la transaction de mise à jour : {error}"))?;
+        .map_err(|error| format!("Failed to read update transaction: {error}"))?;
     serde_json::from_str(&contents)
         .map(Some)
-        .map_err(|error| format!("La transaction de mise à jour est illisible : {error}"))
+        .map_err(|error| format!("Update transaction is unreadable: {error}"))
 }
 
 fn write_publication_backup(
     directory: &Path,
     backup: &StagedUpdatePublicationBackup,
 ) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(backup).map_err(|error| {
-        format!("Impossible d'enregistrer la transaction de mise à jour : {error}")
-    })?;
+    let bytes = serde_json::to_vec_pretty(backup)
+        .map_err(|error| format!("Failed to save update transaction: {error}"))?;
     atomic_write(&directory.join(PUBLICATION_BACKUP_FILE), &bytes)
 }
 
@@ -722,7 +748,104 @@ fn read_manifest_directory_recovering(
 fn read_manifest_recovering_unlocked(
     app: &AppHandle,
 ) -> Result<Option<StagedUpdateManifest>, String> {
-    read_manifest_directory_recovering_unlocked(&update_dir(app)?)
+    let directory = update_dir(app)?;
+    let manifest = read_manifest_directory_recovering_unlocked(&directory)?;
+    if let Some(manifest) = manifest.as_ref() {
+        let channel = manifest
+            .target
+            .split_once('-')
+            .map(|(channel, _)| channel)
+            .unwrap_or_default();
+        if !cached_manifest_has_signed_version(manifest)
+            || !update_target_matches_channel(app, &manifest.target)?
+            || !cached_update_version_allowed(
+                channel,
+                &app.package_info().version,
+                &manifest.version,
+            )
+        {
+            invalidate_and_clear_staged_update_directory(&directory)?;
+            return Ok(None);
+        }
+    }
+    Ok(manifest)
+}
+
+fn cached_manifest_has_signed_version(manifest: &StagedUpdateManifest) -> bool {
+    // This only rejects stale cache metadata. Cryptographic verification still
+    // happens on every installation before any cached bytes are executed.
+    BASE64
+        .decode(&manifest.signature)
+        .ok()
+        .and_then(|text| String::from_utf8(text).ok())
+        .and_then(|text| Signature::decode(&text).ok())
+        .is_some_and(|signature| {
+            verify_signed_version(signature.trusted_comment(), &manifest.version).is_ok()
+        })
+}
+
+fn should_allow_stable_transition(channel: &str, current_version: &Version) -> bool {
+    channel == "stable" && !current_version.pre.is_empty()
+}
+
+fn should_offer_stable_release(current_version: Version, release_version: Version) -> bool {
+    release_version != current_version && release_version.pre.is_empty()
+}
+
+fn cached_update_version_allowed(
+    channel: &str,
+    current_version: &Version,
+    candidate_version: &str,
+) -> bool {
+    let Ok(candidate) = Version::parse(candidate_version.trim_start_matches('v')) else {
+        return false;
+    };
+    candidate > *current_version
+        || (should_allow_stable_transition(channel, current_version)
+            && should_offer_stable_release(current_version.clone(), candidate))
+}
+
+fn cached_update_is_downgrade(current_version: &Version, candidate_version: &str) -> bool {
+    Version::parse(candidate_version.trim_start_matches('v'))
+        .is_ok_and(|candidate| candidate < *current_version)
+}
+
+fn native_downgrade_approved(
+    current_version: &Version,
+    candidate_version: &str,
+    confirm: impl FnOnce() -> bool,
+) -> bool {
+    !cached_update_is_downgrade(current_version, candidate_version) || confirm()
+}
+
+fn confirm_without_update_locks(
+    file_guard: fs::File,
+    state_guard: std::sync::MutexGuard<'static, ()>,
+    confirm: impl FnOnce() -> bool,
+) -> bool {
+    drop(file_guard);
+    drop(state_guard);
+    confirm()
+}
+
+fn confirmed_manifest_matches(
+    expected: Option<&StagedUpdateManifest>,
+    current: &StagedUpdateManifest,
+) -> bool {
+    expected.is_none_or(|before| before == current)
+}
+
+pub fn staged_update_requires_native_confirmation(app: &AppHandle) -> Result<bool, String> {
+    let _state_guard = lock_update_state();
+    let _file_guard = lock_update_directory(&update_dir(app)?)?;
+    Ok(
+        read_manifest_recovering_unlocked(app)?.is_some_and(|manifest| {
+            staged_update_belongs_to_current_install(
+                &manifest,
+                &app.package_info().version.to_string(),
+            ) && cached_update_is_downgrade(&app.package_info().version, &manifest.version)
+        }),
+    )
 }
 
 fn installer_marker(name: &str) -> PathBuf {
@@ -742,11 +865,11 @@ pub fn app_installer_close_respond(accepted: bool) -> Result<(), String> {
         INSTALLER_CLOSE_CANCELLED_FILE
     });
     fs::write(&response, if accepted { "accepted" } else { "cancelled" })
-        .map_err(|error| format!("Impossible de répondre à l'installateur : {error}"))?;
+        .map_err(|error| format!("Failed to reply to installer: {error}"))?;
     let request = installer_marker(INSTALLER_CLOSE_REQUEST_FILE);
     if request.exists() {
         fs::remove_file(request)
-            .map_err(|error| format!("Impossible de terminer la demande de fermeture : {error}"))?;
+            .map_err(|error| format!("Failed to complete shutdown request: {error}"))?;
     }
     Ok(())
 }
@@ -757,7 +880,12 @@ fn verified_package(app: &AppHandle, manifest: &StagedUpdateManifest) -> Result<
     if bytes.len() as u64 != manifest.package_size || package_digest(&bytes) != manifest.sha256 {
         return Err("UPDATE_PACKAGE_INVALID".to_string());
     }
-    verify_update_signature(&bytes, &manifest.signature, updater_public_key(app)?)?;
+    verify_update_signature(
+        &bytes,
+        &manifest.signature,
+        updater_public_key(app)?,
+        &manifest.version,
+    )?;
     Ok(bytes)
 }
 
@@ -788,7 +916,7 @@ pub fn app_update_exit_after_clean_shutdown(app: AppHandle) -> Result<(), String
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_exit_cleanly(app: AppHandle) -> Result<(), String> {
     let _state_guard = lock_update_state();
     let _file_guard = lock_update_directory(&update_dir(&app)?)?;
@@ -817,7 +945,7 @@ fn consume_matching_clean_shutdown(
     Ok(clean_shutdown_matches(&marker, manifest, current_version))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_update_status(app: AppHandle) -> Result<AppUpdateSnapshot, String> {
     let _state_guard = lock_update_state();
     let _file_guard = lock_update_directory(&update_dir(&app)?)?;
@@ -839,15 +967,19 @@ pub fn app_update_status(app: AppHandle) -> Result<AppUpdateSnapshot, String> {
 }
 
 #[tauri::command]
-pub async fn app_update_check_and_stage(
-    app: AppHandle,
-    target: String,
-    allow_downgrades: bool,
-) -> Result<AppUpdateSnapshot, String> {
+pub async fn app_update_check_and_stage(app: AppHandle) -> Result<AppUpdateSnapshot, String> {
     let current_version = app.package_info().version.to_string();
-    if !update_target_matches_channel(&app, &target)? {
-        return Err("UPDATE_CHANNEL_CHANGED".to_string());
-    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let channel = persisted_update_channel(&app_data_dir)?
+        .ok_or_else(|| "UPDATE_CHANNEL_CHANGED".to_string())?;
+    let native_target =
+        tauri_plugin_updater::target().ok_or_else(|| "UPDATE_TARGET_UNSUPPORTED".to_string())?;
+    let target = format!("{channel}-{native_target}");
+    let allow_stable_transition =
+        should_allow_stable_transition(channel, &app.package_info().version);
     let update_directory = update_dir(&app)?;
     let stage_generation = {
         let _state_guard = lock_update_state();
@@ -858,8 +990,10 @@ pub async fn app_update_check_and_stage(
         .updater_builder()
         .target(target.clone())
         .timeout(CHECK_TIMEOUT);
-    if allow_downgrades {
-        builder = builder.version_comparator(|current, release| release.version != current);
+    if allow_stable_transition {
+        builder = builder.version_comparator(|current, release| {
+            should_offer_stable_release(current, release.version)
+        });
     }
     let updater = builder.build().map_err(|error| error.to_string())?;
     let Some(update) = updater.check().await.map_err(|error| error.to_string())? else {
@@ -937,7 +1071,7 @@ pub async fn app_update_check_and_stage(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_update_discard(app: AppHandle) -> Result<(), String> {
     let _state_guard = lock_update_state();
     let _file_guard = lock_update_directory(&update_dir(&app)?)?;
@@ -945,8 +1079,19 @@ pub fn app_update_discard(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn app_update_install_now(app: AppHandle) -> Result<(), String> {
-    require_activation_started(activate_staged_update(&app, true)?)
+pub async fn app_update_install_now(app: AppHandle) -> Result<bool, String> {
+    let activation_app = app.clone();
+    let started =
+        tauri::async_runtime::spawn_blocking(move || activate_staged_update(&activation_app, true))
+            .await
+            .map_err(|error| format!("UPDATE_ACTIVATION_FAILED: {error}"))??;
+    if started {
+        Ok(true)
+    } else if staged_update_requires_native_confirmation(&app)? {
+        Ok(false)
+    } else {
+        require_activation_started(false).map(|_| true)
+    }
 }
 
 fn require_activation_started(started: bool) -> Result<(), String> {
@@ -961,29 +1106,80 @@ pub fn activate_staged_update(app: &AppHandle, force: bool) -> Result<bool, Stri
     if cfg!(debug_assertions) && !force {
         return Ok(false);
     }
+    let state_guard = lock_update_state();
+    let file_guard = lock_update_directory(&update_dir(app)?)?;
+    let Some((manifest, bytes)) = load_staged_update_for_activation(app, force, true, None)? else {
+        return Ok(false);
+    };
+    if !cached_update_is_downgrade(&app.package_info().version, &manifest.version) {
+        return install_verified_staged_update(app, manifest, &bytes);
+    }
+
+    let current_version = app.package_info().version.to_string();
+    let approved = confirm_without_update_locks(file_guard, state_guard, || {
+        native_downgrade_approved(&app.package_info().version, &manifest.version, || {
+            app.dialog()
+                .message(format!(
+                    "This will replace Macro {} with the older Stable release {}. Continue?",
+                    current_version, manifest.version
+                ))
+                .title("Install older Macro release")
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Install older release".to_string(),
+                    "Cancel".to_string(),
+                ))
+                .blocking_show()
+        })
+    });
+    if !approved {
+        return Ok(false);
+    }
+
+    // The cache and persisted channel can change while the native dialog is open.
+    // Reacquire both locks and repeat policy, signature and package verification.
     let _state_guard = lock_update_state();
     let _file_guard = lock_update_directory(&update_dir(app)?)?;
-    let Some(mut manifest) = read_manifest_recovering_unlocked(app)? else {
+    let Some((manifest, bytes)) =
+        load_staged_update_for_activation(app, force, false, Some(&manifest))?
+    else {
         return Ok(false);
+    };
+    install_verified_staged_update(app, manifest, &bytes)
+}
+
+fn load_staged_update_for_activation(
+    app: &AppHandle,
+    force: bool,
+    consume_clean_shutdown: bool,
+    expected: Option<&StagedUpdateManifest>,
+) -> Result<Option<(StagedUpdateManifest, Vec<u8>)>, String> {
+    let Some(mut manifest) = read_manifest_recovering_unlocked(app)? else {
+        return Ok(None);
     };
     // A failed discard must not reactivate a package from the previous channel,
     // including startup activation before the frontend store exists.
     if !update_target_matches_channel(app, &manifest.target)? {
-        return Ok(false);
+        return Ok(None);
     }
     let current_version = app.package_info().version.to_string();
     if !staged_update_belongs_to_current_install(&manifest, &current_version) {
         clear_staged_update(app)?;
-        return Ok(false);
+        return Ok(None);
     }
-    if !force && !consume_matching_clean_shutdown(app, &manifest, &current_version)? {
-        return Ok(false);
+    if !confirmed_manifest_matches(expected, &manifest) {
+        return Ok(None);
+    }
+    if consume_clean_shutdown
+        && !force
+        && !consume_matching_clean_shutdown(app, &manifest, &current_version)?
+    {
+        return Ok(None);
     }
     if manifest.activation_attempts >= MAX_ACTIVATION_ATTEMPTS && !force {
         manifest.phase = StagedUpdatePhase::Failed;
-        manifest.error = Some("L'installation a échoué à deux reprises.".to_string());
+        manifest.error = Some("Installation failed twice.".to_string());
         write_manifest(app, &manifest)?;
-        return Ok(false);
+        return Ok(None);
     }
 
     let bytes = match verified_package(app, &manifest) {
@@ -995,12 +1191,20 @@ pub fn activate_staged_update(app: &AppHandle, force: bool) -> Result<bool, Stri
             return Err(error);
         }
     };
+    Ok(Some((manifest, bytes)))
+}
+
+fn install_verified_staged_update(
+    app: &AppHandle,
+    mut manifest: StagedUpdateManifest,
+    bytes: &[u8],
+) -> Result<bool, String> {
     manifest.phase = StagedUpdatePhase::Activating;
     manifest.activation_attempts = manifest.activation_attempts.saturating_add(1);
     manifest.error = None;
     write_manifest(app, &manifest)?;
 
-    match install_package(app, &manifest, &bytes) {
+    match install_package(app, &manifest, bytes) {
         Ok(()) => Ok(true),
         Err(error) => {
             manifest.phase = StagedUpdatePhase::Failed;
@@ -1096,12 +1300,12 @@ fn install_package(
 ) -> Result<(), String> {
     let directory = update_dir(app)?;
     fs::create_dir_all(&directory)
-        .map_err(|error| format!("Impossible de préparer l'installateur : {error}"))?;
+        .map_err(|error| format!("Failed to prepare installer: {error}"))?;
     let installer_path = directory.join(format!("Macro-{}-setup.exe", manifest.version));
 
     if bytes.starts_with(b"PK\x03\x04") {
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-            .map_err(|error| format!("L'archive de mise à jour est illisible : {error}"))?;
+            .map_err(|error| format!("Update archive is unreadable: {error}"))?;
         let mut found = false;
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
@@ -1112,20 +1316,20 @@ fn install_package(
                 continue;
             }
             let mut output = fs::File::create(&installer_path)
-                .map_err(|error| format!("Impossible d'extraire l'installateur : {error}"))?;
+                .map_err(|error| format!("Failed to extract installer: {error}"))?;
             std::io::copy(&mut entry, &mut output)
-                .map_err(|error| format!("Impossible d'extraire l'installateur : {error}"))?;
+                .map_err(|error| format!("Failed to extract installer: {error}"))?;
             output.sync_all().map_err(|error| error.to_string())?;
             found = true;
             break;
         }
         if !found {
-            return Err("L'archive ne contient aucun installateur Macro.".to_string());
+            return Err("The archive contains no Macro installer.".to_string());
         }
     } else if bytes.starts_with(b"MZ") {
         atomic_write(&installer_path, bytes)?;
     } else {
-        return Err("Le format du paquet de mise à jour n'est pas pris en charge.".to_string());
+        return Err("Unsupported update package format.".to_string());
     }
 
     let embedded_version = windows_product_version(&installer_path)?;
@@ -1137,7 +1341,7 @@ fn install_package(
     background_command(&installer_path)
         .args(["/S", "/R", "/UPDATE"])
         .spawn()
-        .map_err(|error| format!("Impossible de lancer l'installation silencieuse : {error}"))?;
+        .map_err(|error| format!("Failed to launch silent installation: {error}"))?;
     app.exit(0);
     Ok(())
 }
@@ -1199,13 +1403,24 @@ mod tests {
     fn persisted_channel_blocks_old_packages_after_failed_invalidation_and_restart() {
         let profile = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
-        assert!(
-            super::target_matches_persisted_channel(profile.path(), "stable-windows-x86_64")
-                .unwrap()
-        );
-        assert!(
-            !super::target_matches_persisted_channel(profile.path(), "windows-x86_64").unwrap()
-        );
+        assert!(super::target_matches_persisted_channel(
+            profile.path(),
+            "stable-windows-x86_64",
+            "windows-x86_64"
+        )
+        .unwrap());
+        assert!(!super::target_matches_persisted_channel(
+            profile.path(),
+            "stable-darwin-aarch64",
+            "windows-x86_64"
+        )
+        .unwrap());
+        assert!(!super::target_matches_persisted_channel(
+            profile.path(),
+            "windows-x86_64",
+            "windows-x86_64"
+        )
+        .unwrap());
         let mut old_manifest = manifest("0.1.0", "0.1.1");
         old_manifest.target = "stable-windows-x86_64".to_string();
         std::fs::write(
@@ -1224,32 +1439,43 @@ mod tests {
         let recovered = read_manifest_file(&cache.path().join(super::MANIFEST_FILE))
             .unwrap()
             .unwrap();
-        assert!(
-            !super::target_matches_persisted_channel(profile.path(), &recovered.target).unwrap()
-        );
+        assert!(!super::target_matches_persisted_channel(
+            profile.path(),
+            &recovered.target,
+            "windows-x86_64"
+        )
+        .unwrap());
         // Fresh reads use durable state, with no frontend or in-memory blocker.
-        assert!(
-            !super::target_matches_persisted_channel(profile.path(), "stable-windows-x86_64")
-                .unwrap()
-        );
-        assert!(
-            super::target_matches_persisted_channel(profile.path(), "preview-windows-x86_64")
-                .unwrap()
-        );
+        assert!(!super::target_matches_persisted_channel(
+            profile.path(),
+            "stable-windows-x86_64",
+            "windows-x86_64"
+        )
+        .unwrap());
+        assert!(super::target_matches_persisted_channel(
+            profile.path(),
+            "preview-windows-x86_64",
+            "windows-x86_64"
+        )
+        .unwrap());
         std::fs::write(profile.path().join("state.json"), b"corrupt").unwrap();
-        assert!(
-            super::target_matches_persisted_channel(profile.path(), "stable-windows-x86_64")
-                .is_err()
-        );
+        assert!(super::target_matches_persisted_channel(
+            profile.path(),
+            "stable-windows-x86_64",
+            "windows-x86_64"
+        )
+        .is_err());
         std::fs::write(
             profile.path().join("state.json"),
             br#"{"schemaVersion":2,"values":{"updateChannel":"stable"}}"#,
         )
         .unwrap();
-        assert!(
-            super::target_matches_persisted_channel(profile.path(), "stable-windows-x86_64")
-                .is_err()
-        );
+        assert!(super::target_matches_persisted_channel(
+            profile.path(),
+            "stable-windows-x86_64",
+            "windows-x86_64"
+        )
+        .is_err());
     }
 
     #[test]
@@ -1356,19 +1582,23 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        atomic_write, atomic_write_with, clean_shutdown_matches, clear_staged_update_directory,
+        atomic_write, atomic_write_with, cached_manifest_has_signed_version,
+        cached_update_is_downgrade, cached_update_version_allowed, clean_shutdown_matches,
+        clear_staged_update_directory, confirm_without_update_locks, confirmed_manifest_matches,
         install_fail_after_manifest_publication, install_fail_after_package_publication,
         install_publication_after_manifest_hook, invalidate_and_clear_staged_update_directory,
-        lock_update_directory, package_digest, package_file_name, persist_temporary_file,
-        publish_staged_update_directory, publish_staged_update_directory_with_generation,
-        read_manifest_directory_recovering, read_manifest_file, read_update_generation_directory,
-        staged_update_belongs_to_current_install, sync_parent_directory, verify_update_signature,
+        lock_update_directory, lock_update_state, native_downgrade_approved, package_digest,
+        package_file_name, persist_temporary_file, publish_staged_update_directory,
+        publish_staged_update_directory_with_generation, read_manifest_directory_recovering,
+        read_manifest_file, read_update_generation_directory, should_allow_stable_transition,
+        should_offer_stable_release, staged_update_belongs_to_current_install,
+        sync_parent_directory, verify_signed_version, verify_update_signature,
         write_update_generation_directory, CleanShutdownMarker, DownloadProgressEvent,
         StagedUpdateManifest, StagedUpdatePhase,
     };
 
-    const TEST_PUBLIC_KEY: &str = "untrusted comment: minisign public key E7620F1842B4E81F\nRWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
-    const TEST_SIGNATURE: &str = "untrusted comment: signature from minisign secret key\nRUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\ntrusted comment: timestamp:1556193335\tfile:test\ny/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+bHwhEBg==";
+    const TEST_PUBLIC_KEY: &str = "untrusted comment: minisign public key: EFCDAB9078563412\nRWQSNFZ4kKvN7wOhB7/zzhC+HXDdGOdLwJln5NYwm6UNXx3chmQSVTG4";
+    const TEST_SIGNATURE: &str = "untrusted comment: signature from minisign secret key\nRWQSNFZ4kKvN76VXp6pguhWceWrRkO1fvuc88dyHDQ5ampsF9laj0O5bSvJ6m1nBrK8ZEpl5M50JqGgPmEJsV9DTs+MuMKH5/gk=\ntrusted comment: timestamp:1700000000\tfile:test\tversion:0.2.0\nSk5KTYbaWPlb6UrKJBVE1lfN5nyRv2NTBNEV91d2feNfbppEktBjsS34CPnTnW6IS4PFvFJyC9xPbhfT80yIBQ==";
 
     fn manifest(from: &str, to: &str) -> StagedUpdateManifest {
         StagedUpdateManifest {
@@ -1463,8 +1693,7 @@ mod tests {
                                 std::fs::Permissions::from_mode(original_mode),
                             )
                             .unwrap();
-                            let message =
-                                format!("Impossible de finaliser la mise à jour : {}", error.error);
+                            let message = format!("Failed to finalize update: {}", error.error);
                             drop(error);
                             Err(message)
                         }
@@ -1530,11 +1759,116 @@ mod tests {
     fn signature_is_rechecked_and_rejects_tampering() {
         let public_key = BASE64.encode(TEST_PUBLIC_KEY);
         let signature = BASE64.encode(TEST_SIGNATURE);
-        assert!(verify_update_signature(b"test", &signature, &public_key).is_ok());
+        assert!(verify_update_signature(b"test", &signature, &public_key, "0.2.0").is_ok());
         assert_eq!(
-            verify_update_signature(b"tampered", &signature, &public_key),
+            verify_update_signature(b"tampered", &signature, &public_key, "0.2.0"),
             Err("UPDATE_SIGNATURE_INVALID".to_string())
         );
+        assert_eq!(
+            verify_update_signature(b"test", &signature, &public_key, "0.3.0"),
+            Err("UPDATE_SIGNED_VERSION_MISMATCH".to_string())
+        );
+    }
+
+    #[test]
+    fn cached_update_requires_a_signed_version() {
+        assert_eq!(
+            verify_signed_version("timestamp:1556193335\tfile:test", "0.2.0"),
+            Err("UPDATE_SIGNED_VERSION_MISSING".to_string())
+        );
+        assert_eq!(
+            verify_signed_version("timestamp:1700000000\tfile:test\tversion:0.2.0", "0.2.0"),
+            Ok(())
+        );
+        let mut staged = manifest("0.1.0", "0.2.0");
+        staged.signature = BASE64.encode(TEST_SIGNATURE);
+        assert!(cached_manifest_has_signed_version(&staged));
+        staged.version = "0.3.0".to_string();
+        assert!(!cached_manifest_has_signed_version(&staged));
+        staged.signature.clear();
+        assert!(!cached_manifest_has_signed_version(&staged));
+    }
+
+    #[test]
+    fn only_stable_from_a_native_prerelease_can_offer_an_older_stable_version() {
+        let preview = "0.2.0-nightly.20260916.42".parse().unwrap();
+        let stable = "0.1.8".parse().unwrap();
+        assert!(should_allow_stable_transition("stable", &preview));
+        assert!(!should_allow_stable_transition("preview", &preview));
+        assert!(!should_allow_stable_transition("stable", &stable));
+        assert!(should_offer_stable_release(preview.clone(), stable.clone()));
+        assert!(!should_offer_stable_release(stable.clone(), stable.clone()));
+        assert!(!should_offer_stable_release(stable, preview));
+    }
+
+    #[test]
+    fn cached_release_reapplies_native_version_policy_before_activation() {
+        let stable = "0.2.0".parse().unwrap();
+        let preview = "0.3.0-nightly.20260916.42".parse().unwrap();
+        assert!(cached_update_version_allowed("stable", &stable, "0.3.0"));
+        assert!(!cached_update_version_allowed("stable", &stable, "0.1.8"));
+        assert!(!cached_update_version_allowed("stable", &stable, "0.2.0"));
+        assert!(!cached_update_version_allowed(
+            "stable",
+            &stable,
+            "not-a-version"
+        ));
+        assert!(cached_update_version_allowed("stable", &preview, "0.2.0"));
+        assert!(!cached_update_version_allowed("preview", &preview, "0.2.0"));
+        assert!(!cached_update_version_allowed(
+            "stable",
+            &preview,
+            "0.2.0-rc.1"
+        ));
+        assert!(cached_update_is_downgrade(&preview, "0.2.0"));
+        assert!(!cached_update_is_downgrade(&stable, "0.3.0"));
+    }
+
+    #[test]
+    fn native_confirmation_is_required_for_a_downgrade_and_refusal_blocks_activation() {
+        let preview = "0.3.0-nightly.20260916.42".parse().unwrap();
+        let prompts = std::cell::Cell::new(0);
+        assert!(!native_downgrade_approved(&preview, "0.2.0", || {
+            prompts.set(prompts.get() + 1);
+            false
+        }));
+        assert_eq!(prompts.get(), 1);
+        assert!(native_downgrade_approved(&preview, "0.3.0", || {
+            prompts.set(prompts.get() + 1);
+            false
+        }));
+        assert_eq!(prompts.get(), 1);
+    }
+
+    #[test]
+    fn native_confirmation_releases_update_locks_and_detects_a_replaced_manifest() {
+        use fs2::FileExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let before = manifest("0.3.0-nightly.1", "0.2.0");
+        let state_guard = lock_update_state();
+        let file_guard = lock_update_directory(directory.path()).unwrap();
+        let mut replacement = before.clone();
+
+        let approved = confirm_without_update_locks(file_guard, state_guard, || {
+            let _unlocked_state = super::UPDATE_STATE_LOCK
+                .try_lock()
+                .expect("state lock must be released before dialog");
+            let second_file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(directory.path().join(super::UPDATE_LOCK_FILE))
+                .unwrap();
+            second_file
+                .try_lock_exclusive()
+                .expect("directory lock must be released before dialog");
+            replacement.generation = "replacement-generation".to_string();
+            true
+        });
+
+        assert!(approved);
+        assert!(!confirmed_manifest_matches(Some(&before), &replacement));
+        assert!(confirmed_manifest_matches(Some(&before), &before));
     }
 
     #[test]
@@ -1858,7 +2192,7 @@ mod tests {
         publish_staged_update_directory(temp.path(), &old_manifest, &old_bytes)
             .expect("publish old update");
 
-        let new_bytes = b"new package".to_vec();
+        let new_bytes = b"failed-package-publication test package".to_vec();
         let new_digest = package_digest(&new_bytes);
         let mut new_manifest = manifest("1.0.0", "1.2.0");
         new_manifest.package_file = package_file_name("1.2.0", &new_digest);
@@ -1903,7 +2237,7 @@ mod tests {
         let published_old = publish_staged_update_directory(temp.path(), &old_manifest, &old_bytes)
             .expect("publish old update");
 
-        let new_bytes = b"new package".to_vec();
+        let new_bytes = b"interrupted-manifest-publication test package".to_vec();
         let new_digest = package_digest(&new_bytes);
         let mut new_manifest = manifest("1.0.0", "1.2.0");
         new_manifest.package_file = package_file_name("1.2.0", &new_digest);

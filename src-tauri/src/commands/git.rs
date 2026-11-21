@@ -6,8 +6,11 @@ pub use crate::git::operations::{
 };
 // Git Commands
 
+#[path = "git/pilot_capture.rs"]
+mod pilot_capture;
 #[path = "git/review.rs"]
 mod review;
+pub use pilot_capture::*;
 #[path = "git/workflow.rs"]
 pub(crate) mod workflow;
 
@@ -1318,6 +1321,146 @@ fn resolve_macro_worktree(
     Ok((worktree_path, worktree_repo, repaired_after_move))
 }
 
+// Pilot may commit an existing metadata worktree, but must not initialize,
+// repair, migrate, or change a code branch while resolving it.
+fn resolve_existing_macro_worktree(workspace_root: &Path) -> Result<(PathBuf, Repository)> {
+    let path = crate::git::find_existing_macro_metadata_worktree_root(workspace_root).ok_or_else(
+        || BackendError::FilesystemNotFound {
+            message: "Existing Macro metadata worktree is unavailable.".to_string(),
+        },
+    )?;
+    let repo = Repository::open(&path)?;
+    let head = repo.head()?;
+    if !head.is_branch() || head.shorthand()? != MACRO_BRANCH_NAME {
+        return Err(BackendError::Validation(
+            "Existing metadata worktree is not on the Macro metadata branch.".to_string(),
+        ));
+    }
+    drop(head);
+    Ok((path, repo))
+}
+
+fn commit_existing_pilot_metadata(
+    workspace: &Path,
+    message: &str,
+    paths: &[String],
+) -> Result<MacroBranchSyncDto> {
+    if paths.is_empty()
+        || paths.iter().any(|path| {
+            path.is_empty()
+                || path.contains('\\')
+                || Path::new(path).is_absolute()
+                || Path::new(path)
+                    .components()
+                    .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        })
+    {
+        return Err(BackendError::Validation(
+            "Pilot metadata commit requires explicit relative paths.".to_string(),
+        ));
+    }
+    let (root, repo) = resolve_existing_macro_worktree(workspace)?;
+    let mut status_options = get_status_options();
+    status_options
+        .renames_head_to_index(false)
+        .renames_index_to_workdir(false)
+        .renames_from_rewrites(false);
+    let statuses = repo.statuses(Some(&mut status_options))?;
+    let selected: Vec<String> = statuses
+        .iter()
+        .filter_map(|entry| entry.path().ok().map(str::to_string))
+        .filter(|path| {
+            paths
+                .iter()
+                .any(|allowed| path == allowed || path.starts_with(&format!("{allowed}/")))
+        })
+        .collect();
+    if selected.is_empty() {
+        return build_macro_sync_dto(
+            &repo,
+            &root,
+            false,
+            None,
+            Some("Selected metadata is unchanged".to_string()),
+            None,
+        );
+    }
+    let parent = repo.head()?.peel_to_commit()?;
+    let mut commit_index = git2::Index::new()?;
+    commit_index.read_tree(&parent.tree()?)?;
+    let mut live_index = repo.index()?;
+    for relative in &selected {
+        let path = root.join(relative);
+        let change = match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {
+                let bytes = fs::read(&path)?;
+                #[cfg(unix)]
+                let executable = {
+                    use std::os::unix::fs::PermissionsExt;
+                    metadata.permissions().mode() & 0o111 != 0
+                };
+                #[cfg(not(unix))]
+                let executable = false;
+                Some((bytes, if executable { 0o100755 } else { 0o100644 }))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Ok(_) => {
+                return Err(BackendError::Validation(
+                    "Pilot metadata commits require regular files.".to_string(),
+                ))
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if let Some((bytes, mode)) = change {
+            let oid = repo.odb()?.write(git2::ObjectType::Blob, &bytes)?;
+            let entry = git2::IndexEntry {
+                ctime: git2::IndexTime::new(0, 0),
+                mtime: git2::IndexTime::new(0, 0),
+                dev: 0,
+                ino: 0,
+                mode,
+                uid: 0,
+                gid: 0,
+                file_size: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+                id: oid,
+                flags: 0,
+                flags_extended: 0,
+                path: relative.as_bytes().to_vec(),
+            };
+            commit_index.add(&entry)?;
+            live_index.add(&entry)?;
+        } else {
+            commit_index.remove_path(Path::new(relative))?;
+            live_index.remove_path(Path::new(relative))?;
+        }
+    }
+    let tree_id = commit_index.write_tree_to(&repo)?;
+    if tree_id == parent.tree_id() {
+        return build_macro_sync_dto(
+            &repo,
+            &root,
+            false,
+            None,
+            Some("Selected metadata is unchanged".to_string()),
+            None,
+        );
+    }
+    let tree = repo.find_tree(tree_id)?;
+    let signature = git2::Signature::now("Macro", "macro@local")?;
+    // Raw object/index APIs run no hooks, clean filters, signing commands or shell.
+    // libgit2 checks that the updated ref still points to the supplied parent.
+    let commit = repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        message,
+        &tree,
+        &[&parent],
+    )?;
+    live_index.write()?;
+    build_macro_sync_dto(&repo, &root, true, Some(short_hash(commit)), None, None)
+}
+
 fn resolve_macro_workspace_path(
     default_workspace_root: &Path,
     workspace_path: Option<String>,
@@ -1539,7 +1682,13 @@ fn build_macro_sync_dto(
 ) -> Result<MacroBranchSyncDto> {
     let statuses = repo.statuses(Some(&mut get_status_options()))?;
     let conflicted_files = gather_macro_conflicted_files(repo)?;
-    let is_dirty = !statuses.is_empty();
+    // Match workspace metadata diagnostics: the root lock is operational state.
+    let is_dirty = statuses.iter().any(|entry| {
+        entry
+            .path()
+            .map(|path| path.trim_start_matches("./") != ".workspace.json.lock")
+            .unwrap_or(true)
+    });
     let has_origin = repo.find_remote(DEFAULT_REMOTE_NAME).is_ok();
 
     let mut has_upstream = false;
@@ -3001,10 +3150,14 @@ pub async fn git_branch_delete(
     repo_path: String,
     branch_name: String,
     force: Option<bool>,
+    pilot_only: Option<bool>,
     archive_task_id: Option<String>,
     archive_token: Option<String>,
     expected_commit: Option<String>,
 ) -> Result<()> {
+    if pilot_only.unwrap_or(false) && parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("Pilot branch cleanup"));
+    }
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
     let _cleanup_guard = acquire_archived_task_cleanup_guard(
@@ -3034,10 +3187,26 @@ pub async fn git_branch_delete(
             message: "Failed to lock repository".to_string(),
         })?;
 
+        if pilot_only.unwrap_or(false) {
+            let head = repo.head()?.peel_to_commit()?;
+            let branch = repo
+                .find_branch(&branch_name, BranchType::Local)?
+                .get()
+                .peel_to_commit()?;
+            if head.id() != branch.id() && !repo.graph_descendant_of(head.id(), branch.id())? {
+                return Err(BackendError::Validation(
+                    "Pilot cleanup cannot delete an unmerged task branch.".to_string(),
+                ));
+            }
+        }
         delete_local_branch(
             &repo,
             &branch_name,
-            force.unwrap_or(false),
+            if pilot_only.unwrap_or(false) {
+                false
+            } else {
+                force.unwrap_or(false)
+            },
             expected_commit.as_deref(),
         )
     })
@@ -4814,8 +4983,6 @@ fn open_direct_checkpoint_at_locked(
             }
             ensure_direct_checkpoint_exclusions(&checkpoint_path, &checkpoint_id)
         })?;
-    } else if create {
-        ensure_direct_checkpoint_exclusions(&checkpoint_path, &checkpoint_id)?;
     }
 
     let repo = match Repository::open(&checkpoint_path) {
@@ -4927,6 +5094,9 @@ fn open_direct_checkpoint_at_locked(
             }
             Ok(_) => {}
         }
+    }
+    if create && !checkpoint_created {
+        ensure_direct_checkpoint_exclusions(&checkpoint_path, &checkpoint_id)?;
     }
     if create && !direct_checkpoint_known_marker_exists(&marker_path, &checkpoint_id)? {
         fs::OpenOptions::new()
@@ -8871,6 +9041,7 @@ pub async fn git_worktree_create(
     from_ref: Option<String>,
     preferred_commit_branch: Option<String>,
     fallback_branches: Option<Vec<String>>,
+    pilot_only: Option<bool>,
 ) -> Result<GitWorktreeEnsureDto> {
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_worktree_create"));
@@ -8895,14 +9066,23 @@ pub async fn git_worktree_create(
                 .collect::<Vec<_>>()
         });
 
-        let ensured = git_state.ensure_task_worktree(
-            &repo,
-            &task_id,
-            &branch_name,
-            from_ref.as_deref(),
-            preferred_commit_branch.as_deref(),
-            &fallback_branches,
-        )?;
+        let ensured = if pilot_only.unwrap_or(false) {
+            git_state.ensure_pilot_task_worktree(
+                &repo,
+                &task_id,
+                &branch_name,
+                from_ref.as_deref(),
+            )?
+        } else {
+            git_state.ensure_task_worktree(
+                &repo,
+                &task_id,
+                &branch_name,
+                from_ref.as_deref(),
+                preferred_commit_branch.as_deref(),
+                &fallback_branches,
+            )?
+        };
         Ok(GitWorktreeEnsureDto {
             created_by_this_call: ensured.created_by_this_call,
             task_id: ensured.task_id,
@@ -9084,6 +9264,7 @@ pub async fn git_worktree_remove(
     task_id: String,
     force: Option<bool>,
     branch_name: Option<String>,
+    pilot_only: Option<bool>,
     archive_task_id: Option<String>,
     archive_token: Option<String>,
     expected_commit: Option<String>,
@@ -9111,6 +9292,21 @@ pub async fn git_worktree_remove(
             message: "Failed to lock repository".to_string(),
         })?;
 
+        let pilot_branch = if pilot_only.unwrap_or(false) {
+            Some(
+                branch_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        BackendError::Validation(
+                            "Pilot cleanup requires an expected branch.".to_string(),
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
         let inspection = if let Some(branch_name) = branch_name.as_deref() {
             git_state.inspect_task_worktree_for_branch(&repo, &task_id, branch_name)?
         } else {
@@ -9125,15 +9321,19 @@ pub async fn git_worktree_remove(
             expected_worktree_path.as_deref(),
         )?;
 
-        let removed = git_state.remove_task_worktree(
-            &repo,
-            &task_id,
-            force.unwrap_or(false),
-            branch_name
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty()),
-        )?;
+        let removed = if let Some(expected) = pilot_branch {
+            git_state.remove_pilot_task_worktree(&repo, &task_id, expected)?
+        } else {
+            git_state.remove_task_worktree(
+                &repo,
+                &task_id,
+                force.unwrap_or(false),
+                branch_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty()),
+            )?
+        };
         Ok(GitWorktreeRemoveDto {
             task_id: removed.task_id,
             worktree_path: removed.worktree_path.to_string_lossy().into_owned(),
@@ -9579,6 +9779,8 @@ pub async fn macro_branch_commit_if_dirty(
     git_state: State<'_, GitState>,
     message: Option<String>,
     workspace_path: Option<String>,
+    pilot_only: Option<bool>,
+    metadata_paths: Option<Vec<String>>,
 ) -> Result<MacroBranchSyncDto> {
     let workspace = resolve_macro_workspace_path(
         &workspace_root.inner().0.read().await.clone(),
@@ -9593,6 +9795,13 @@ pub async fn macro_branch_commit_if_dirty(
         .to_string();
 
     tokio::task::spawn_blocking(move || {
+        if pilot_only.unwrap_or(false) {
+            return commit_existing_pilot_metadata(
+                &workspace,
+                &commit_message,
+                &metadata_paths.unwrap_or_default(),
+            );
+        }
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
         let _file_guard = workspace::lock_workspace_state_file(&worktree_path)?;
 
@@ -14306,6 +14515,88 @@ mod tests {
         assert!(!project_path.join(".git").exists());
     }
 
+    #[test]
+    fn pilot_metadata_resolution_never_migrates_or_changes_code_branch() {
+        let (temp, repo) = init_repo();
+        let git_state = GitState::new();
+        let metadata = git_state.resolve_macro_metadata_root(temp.path()).unwrap();
+        let legacy = metadata.join(".macro/branches/develop/manual-features/unrelated");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("feature.json"), b"unrelated").unwrap();
+        fs::write(temp.path().join(".gitignore"), b"# external edit\n").unwrap();
+        let head_before = repo.head().unwrap().target();
+        let (resolved, _) = resolve_existing_macro_worktree(temp.path()).unwrap();
+        assert_eq!(resolved, metadata);
+        assert!(legacy.join("feature.json").exists());
+        assert!(!metadata
+            .join("branches/develop/manual-features/unrelated")
+            .exists());
+        assert_eq!(repo.head().unwrap().target(), head_before);
+        assert_eq!(
+            fs::read(temp.path().join(".gitignore")).unwrap(),
+            b"# external edit\n"
+        );
+        fs::create_dir_all(metadata.join("manual-features/target")).unwrap();
+        fs::write(
+            metadata.join("manual-features/target/feature.json"),
+            b"target",
+        )
+        .unwrap();
+        fs::write(metadata.join("unrelated.txt"), b"unrelated staged").unwrap();
+        let metadata_repo = Repository::open(&metadata).unwrap();
+        let mut index = metadata_repo.index().unwrap();
+        index.add_path(Path::new("unrelated.txt")).unwrap();
+        index.write().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let hook = repo.path().join("hooks/pre-commit");
+            fs::create_dir_all(hook.parent().unwrap()).unwrap();
+            fs::write(&hook, b"#!/bin/sh\nexit 1\n").unwrap();
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let result = commit_existing_pilot_metadata(
+            temp.path(),
+            "target only",
+            &["manual-features/target".to_string()],
+        )
+        .unwrap();
+        assert!(result.committed);
+        let tree = metadata_repo.head().unwrap().peel_to_tree().unwrap();
+        assert!(tree
+            .get_path(Path::new("manual-features/target/feature.json"))
+            .is_ok());
+        assert!(tree.get_path(Path::new("unrelated.txt")).is_err());
+        assert!(metadata_repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("unrelated.txt"), 0)
+            .is_some());
+        assert!(legacy.join("feature.json").exists());
+        assert_eq!(repo.head().unwrap().target(), head_before);
+        fs::remove_dir_all(metadata.join("manual-features/target")).unwrap();
+        assert!(
+            commit_existing_pilot_metadata(
+                temp.path(),
+                "delete target",
+                &["manual-features/target".to_string()]
+            )
+            .unwrap()
+            .committed
+        );
+        assert!(metadata_repo
+            .head()
+            .unwrap()
+            .peel_to_tree()
+            .unwrap()
+            .get_path(Path::new("manual-features/target"))
+            .is_err());
+        let missing = TempDir::new().unwrap();
+        Repository::init(missing.path()).unwrap();
+        assert!(resolve_existing_macro_worktree(missing.path()).is_err());
+        assert!(!missing.path().join(".macro").exists());
+    }
+
     fn init_macro_repo() -> (TempDir, Repository) {
         let (temp, repo) = init_repo();
         let head_oid = repo.head().unwrap().target().unwrap();
@@ -15934,7 +16225,7 @@ mod tests {
                 paths: None,
                 mode: GitDiffMode::Stat,
                 max_bytes: Some(8_192),
-                require_complete: false,
+                require_complete: true,
             },
         )
         .unwrap();
@@ -15951,7 +16242,7 @@ mod tests {
                 paths: None,
                 mode: GitDiffMode::NameOnly,
                 max_bytes: Some(8_192),
-                require_complete: false,
+                require_complete: true,
             },
         )
         .unwrap();
@@ -15963,7 +16254,7 @@ mod tests {
         let (temp, repo) = init_repo();
         fs::write(
             temp.path().join("new-untracked.txt"),
-            "first untracked line\nsecond untracked line\n",
+            "first untracked line\r\nsecond untracked line\r\nété",
         )
         .unwrap();
 
@@ -15985,6 +16276,131 @@ mod tests {
         assert!(patch.contains("diff --git a/new-untracked.txt b/new-untracked.txt"));
         assert!(patch.contains("+first untracked line"));
         assert!(patch.contains("+second untracked line"));
+        assert!(patch.ends_with(
+            "+first untracked line\r\n+second untracked line\r\n+été\n\\ No newline at end of file\n"
+        ));
+    }
+
+    fn complete_patch(repo: &Repository) -> Result<String> {
+        diff_repo(
+            repo,
+            None,
+            None,
+            DiffRequestOptions {
+                context_lines: Some(3),
+                ignore_whitespace: false,
+                paths: None,
+                mode: GitDiffMode::Patch,
+                max_bytes: Some(256 * 1024),
+                require_complete: true,
+            },
+        )
+    }
+
+    #[test]
+    fn test_git_diff_complete_preserves_text_bytes() {
+        let (temp, repo) = init_repo();
+        let before = "été\r\nancien";
+        let after = "été\r\nrévisé";
+        fs::write(temp.path().join("README.md"), before).unwrap();
+        commit_repo(&repo, "test: text baseline", true).unwrap();
+        fs::write(temp.path().join("README.md"), after).unwrap();
+
+        let old_oid = git2::Oid::hash_object(git2::ObjectType::Blob, before.as_bytes()).unwrap();
+        let new_oid = git2::Oid::hash_object(git2::ObjectType::Blob, after.as_bytes()).unwrap();
+        let expected = format!(
+            "diff --git a/README.md b/README.md\nindex {}..{} 100644\n--- a/README.md\n+++ b/README.md\n@@ -1,2 +1,2 @@\n été\r\n-ancien\n\\ No newline at end of file\n+révisé\n\\ No newline at end of file\n",
+            &old_oid.to_string()[..7], &new_oid.to_string()[..7],
+        );
+        assert_eq!(
+            complete_patch(&repo).unwrap().as_bytes(),
+            expected.as_bytes()
+        );
+    }
+
+    #[test]
+    fn test_git_diff_complete_preserves_multibyte_collector_boundary() {
+        let (temp, repo) = init_repo();
+        fs::write(temp.path().join("README.md"), "a".repeat(1_024) + "é\n").unwrap();
+        let expected = complete_patch(&repo).unwrap();
+        let accent = expected.find('é').expect("accent in patch");
+        // Place the head/tail split between the two bytes of the accent.
+        let max_bytes = (accent + 1) * 4 / 3;
+        assert_eq!(max_bytes - max_bytes / 4, accent + 1);
+        assert!(expected.len() <= max_bytes);
+        let patch = diff_repo(
+            &repo,
+            None,
+            None,
+            DiffRequestOptions {
+                context_lines: Some(3),
+                ignore_whitespace: false,
+                paths: None,
+                mode: GitDiffMode::Patch,
+                max_bytes: Some(max_bytes),
+                require_complete: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(patch.as_bytes(), expected.as_bytes());
+    }
+
+    #[test]
+    fn test_git_diff_complete_rejects_binary_patches() {
+        for untracked in [false, true] {
+            let (temp, repo) = init_repo();
+            let path = if untracked { "new.bin" } else { "README.md" };
+            if !untracked {
+                fs::write(temp.path().join(path), b"binary\0before\n").unwrap();
+                commit_repo(&repo, "test: binary baseline", true).unwrap();
+            }
+            fs::write(temp.path().join(path), b"binary\0content\n").unwrap();
+            let error = complete_patch(&repo).expect_err("binary patch must fail");
+            assert!(
+                matches!(error, BackendError::Git { message } if message.contains("binary differences"))
+            );
+        }
+
+        // Attributes can classify UTF-8 content as binary without a NUL byte.
+        let (temp, repo) = init_repo();
+        fs::write(temp.path().join(".gitattributes"), "README.md -diff\n").unwrap();
+        commit_repo(&repo, "test: binary attribute", true).unwrap();
+        fs::write(temp.path().join("README.md"), "plain text\n").unwrap();
+        assert!(complete_patch(&repo)
+            .unwrap_err()
+            .to_string()
+            .contains("binary differences"));
+    }
+
+    #[test]
+    fn test_git_diff_complete_rejects_nul_forced_as_text() {
+        let (temp, repo) = init_repo();
+        fs::write(temp.path().join(".gitattributes"), "README.md diff\n").unwrap();
+        commit_repo(&repo, "test: text attribute", true).unwrap();
+        fs::write(temp.path().join("README.md"), b"forced\0text\n").unwrap();
+        let error = complete_patch(&repo).expect_err("NUL in text patch must fail");
+        assert!(matches!(error, BackendError::Git { message } if message.contains("NUL bytes")));
+    }
+
+    #[test]
+    fn test_git_diff_complete_rejects_invalid_utf8_without_partial_patch() {
+        let cases: [(&[u8], &[u8]); 3] = [
+            (b"old\n", b"new\xff\n"),
+            (b"old\xff\n", b"new\n"),
+            (b"context\xff\nold\n", b"context\xff\nnew\n"),
+        ];
+        for (before, after) in cases {
+            let (temp, repo) = init_repo();
+            fs::write(temp.path().join("z-invalid.txt"), before).unwrap();
+            commit_repo(&repo, "test: encoding baseline", true).unwrap();
+            fs::write(temp.path().join("README.md"), "valid change first\n").unwrap();
+            fs::write(temp.path().join("z-invalid.txt"), after).unwrap();
+            let error =
+                complete_patch(&repo).expect_err("invalid UTF-8 must reject the whole patch");
+            assert!(
+                matches!(error, BackendError::Git { message } if message.contains("invalid UTF-8"))
+            );
+        }
     }
 
     #[test]
@@ -16924,6 +17340,36 @@ mod tests {
         assert_eq!(diagnostic.state, "failed");
         assert_eq!(diagnostic.reason, Some("missing_origin"));
         assert_eq!(diagnostic.next_action, Some("configure_remote"));
+    }
+
+    #[test]
+    fn macro_sync_ignores_only_the_internal_workspace_lock() {
+        let (temp, repo) = init_macro_repo();
+        repo.remote(DEFAULT_REMOTE_NAME, "https://example.invalid/repo.git")
+            .unwrap();
+        fs::write(temp.path().join(".workspace.json.lock"), "").unwrap();
+
+        let dto = build_macro_sync_dto(&repo, temp.path(), false, None, None, None).unwrap();
+        assert!(!dto.is_dirty);
+        assert_eq!(dto.reason.as_deref(), Some("missing_upstream"));
+        assert_eq!(dto.next_action.as_deref(), Some("push"));
+
+        fs::write(temp.path().join("workspace.json"), "{}\n").unwrap();
+        let dto = build_macro_sync_dto(&repo, temp.path(), false, None, None, None).unwrap();
+        assert!(dto.is_dirty);
+        assert_eq!(dto.reason.as_deref(), Some("dirty"));
+        assert_eq!(dto.next_action.as_deref(), Some("commit"));
+    }
+
+    #[test]
+    fn macro_sync_preserves_nested_lock_names() {
+        let (temp, repo) = init_macro_repo();
+        repo.remote(DEFAULT_REMOTE_NAME, "https://example.invalid/repo.git")
+            .unwrap();
+        fs::create_dir(temp.path().join("nested")).unwrap();
+        fs::write(temp.path().join("nested/.workspace.json.lock"), "data").unwrap();
+        let dto = build_macro_sync_dto(&repo, temp.path(), false, None, None, None).unwrap();
+        assert!(dto.is_dirty);
     }
 
     #[test]

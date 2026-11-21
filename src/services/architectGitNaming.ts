@@ -251,9 +251,9 @@ const hasDisallowedGitBranchCharacter = (branchName: string): boolean =>
   });
 
 export const isValidGitBranchName = (branchName: string): boolean => {
-  const normalized = normalizeGitBranchName(branchName);
-  if (!normalized) return false;
-  if (normalized === '@') return false;
+  const normalized = branchName;
+  if (!normalized || normalized.startsWith('-') || normalized.startsWith('/') || normalized.endsWith('/')) return false;
+  if (normalized === 'HEAD') return false;
   if (normalized.endsWith('.')) return false;
   if (normalized.endsWith('.lock')) return false;
   if (hasDisallowedGitBranchCharacter(normalized)) return false;
@@ -356,17 +356,18 @@ export const getArchitectGitNamingSettings = (): ArchitectGitNamingSettings => (
     readStoredBoolean(PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH) ?? DEFAULT_SETTINGS.syncTargetBeforeFinish,
 });
 
+export const validateProjectGitFlowBranches = (
+  settings: Pick<ProjectGitFlowSettings, 'baseBranch' | 'mainBranch'>,
+): Partial<Record<'baseBranch' | 'mainBranch', string>> => ({
+  ...(!isValidGitBranchName(settings.baseBranch) ? { baseBranch: 'Base branch must be a valid Git branch name.' } : {}),
+  ...(!isValidGitBranchName(settings.mainBranch) ? { mainBranch: 'Main branch must be a valid Git branch name.' } : {}),
+});
+
 export const validateProjectGitFlowSettings = (settings: ProjectGitFlowSettings): string[] => {
   const errors: string[] = [];
   const normalized = normalizeProjectGitFlowSettings(settings);
 
-  if (!normalized.baseBranch) {
-    errors.push('Base branch cannot be empty.');
-  }
-
-  if (!normalized.mainBranch) {
-    errors.push('Main branch cannot be empty.');
-  }
+  errors.push(...Object.values(validateProjectGitFlowBranches(settings)));
 
   (Object.keys(TEMPLATE_KEY_BY_BRANCH_TYPE) as GitFlowBranchType[]).forEach((branchType) => {
     const template = getTemplateForBranchType(branchType, normalized);

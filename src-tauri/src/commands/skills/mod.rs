@@ -55,15 +55,6 @@ impl Drop for SkillRunTempDir {
     }
 }
 
-const FRONTMATTER_FIELDS: &[&str] = &[
-    "name",
-    "description",
-    "license",
-    "compatibility",
-    "metadata",
-    "allowed-tools",
-];
-
 #[derive(Debug)]
 struct ParsedSkillFile {
     name: String,
@@ -483,259 +474,17 @@ fn normalize_nfkc(value: &str) -> String {
     value.nfkc().collect::<String>()
 }
 
-fn validate_frontmatter_fields(mapping: &Mapping, diagnostics: &mut Vec<SkillDiagnosticDto>) {
-    for key in mapping.keys() {
-        let key_string = yaml_value_to_string(key).trim().to_string();
-        if key_string.is_empty() {
-            diagnostics.push(skill_diagnostic(
-                "warning",
-                "unexpected_frontmatter_field",
-                "SKILL.md frontmatter contains an empty or non-string field name.",
-            ));
-            continue;
-        }
-        if !FRONTMATTER_FIELDS.contains(&key_string.as_str()) {
-            diagnostics.push(skill_diagnostic(
-                "warning",
-                "unexpected_frontmatter_field",
-                format!(
-                    "Unexpected field in SKILL.md frontmatter: {}. Only {} are defined by AgentSkills.",
-                    key_string,
-                    FRONTMATTER_FIELDS.join(", ")
-                ),
-            ));
-        }
-    }
-}
-
-fn required_string_field(
-    mapping: &Mapping,
-    key: &str,
-    diagnostics: &mut Vec<SkillDiagnosticDto>,
-) -> Option<String> {
-    match mapping_get(mapping, key) {
-        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.trim().to_string()),
-        Some(Value::String(_)) | None => {
-            diagnostics.push(skill_diagnostic(
-                "error",
-                "missing_required_field",
-                format!("SKILL.md frontmatter must include non-empty {}.", key),
-            ));
-            None
-        }
-        Some(_) => {
-            diagnostics.push(skill_diagnostic(
-                "error",
-                "invalid_required_field",
-                format!("SKILL.md frontmatter field '{}' must be a string.", key),
-            ));
-            None
-        }
-    }
-}
-
-fn optional_string_field(
-    mapping: &Mapping,
-    key: &str,
-    diagnostics: &mut Vec<SkillDiagnosticDto>,
-) -> Option<String> {
-    match mapping_get(mapping, key) {
-        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.trim().to_string()),
-        Some(Value::String(_)) | None => None,
-        Some(_) => {
-            diagnostics.push(skill_diagnostic(
-                "warning",
-                "invalid_optional_field",
-                format!("SKILL.md frontmatter field '{}' should be a string.", key),
-            ));
-            None
-        }
-    }
-}
-
-fn parse_metadata_field(
-    mapping: &Mapping,
-    diagnostics: &mut Vec<SkillDiagnosticDto>,
-) -> BTreeMap<String, String> {
-    let Some(value) = mapping_get(mapping, "metadata") else {
-        return BTreeMap::new();
-    };
-
-    let Value::Mapping(metadata) = value else {
-        diagnostics.push(skill_diagnostic(
-            "warning",
-            "invalid_metadata",
-            "SKILL.md frontmatter field 'metadata' should be a mapping.",
-        ));
-        return BTreeMap::new();
-    };
-
-    let mut result = BTreeMap::new();
-    for (key, value) in metadata {
-        let key = yaml_value_to_string(key).trim().to_string();
-        if key.is_empty() {
-            diagnostics.push(skill_diagnostic(
-                "warning",
-                "invalid_metadata_key",
-                "SKILL.md metadata contains an empty key.",
-            ));
-            continue;
-        }
-        result.insert(key, yaml_value_to_string(value));
-    }
-    result
-}
-
-fn value_looks_quoted(value: &str) -> bool {
-    let trimmed = value.trim();
-    trimmed.starts_with('"')
-        || trimmed.starts_with('\'')
-        || trimmed.starts_with('|')
-        || trimmed.starts_with('>')
-}
-
-fn repair_unquoted_colon_values(frontmatter: &str) -> Option<String> {
-    let mut changed = false;
-    let mut repaired = Vec::new();
-
-    for line in frontmatter.lines() {
-        let trimmed = line.trim_start();
-        let is_top_level = line.len() == trimmed.len();
-        let Some((key, value)) = trimmed.split_once(':') else {
-            repaired.push(line.to_string());
-            continue;
-        };
-        let key = key.trim();
-        let value = value.trim_start();
-        let can_repair = is_top_level
-            && FRONTMATTER_FIELDS.contains(&key)
-            && !value.is_empty()
-            && value.contains(": ")
-            && !value_looks_quoted(value);
-        if can_repair {
-            repaired.push(format!("{}: |-", key));
-            repaired.push(format!("  {}", value));
-            changed = true;
-        } else {
-            repaired.push(line.to_string());
-        }
-    }
-
-    changed.then(|| repaired.join("\n"))
-}
-
-fn parse_frontmatter_mapping(
-    frontmatter: &str,
-    diagnostics: &mut Vec<SkillDiagnosticDto>,
-) -> Option<Mapping> {
-    match serde_yaml::from_str::<Mapping>(frontmatter) {
-        Ok(mapping) => Some(mapping),
-        Err(first_error) => {
-            if let Some(repaired) = repair_unquoted_colon_values(frontmatter) {
-                if let Ok(mapping) = serde_yaml::from_str::<Mapping>(&repaired) {
-                    diagnostics.push(skill_diagnostic(
-                        "warning",
-                        "frontmatter_repaired",
-                        "SKILL.md frontmatter used an unquoted colon value; Macro repaired it for compatibility.",
-                    ));
-                    return Some(mapping);
-                }
-            }
-            diagnostics.push(skill_diagnostic(
-                "error",
-                "invalid_frontmatter",
-                format!("Invalid SKILL.md frontmatter: {}", first_error),
-            ));
-            None
-        }
-    }
-}
-
-fn validate_skill_name(name: &str, skill_dir: &Path, diagnostics: &mut Vec<SkillDiagnosticDto>) {
-    let normalized_name = normalize_nfkc(name.trim());
-    if normalized_name.chars().count() > MAX_SKILL_NAME_LENGTH {
-        diagnostics.push(skill_diagnostic(
-            "warning",
-            "invalid_name",
-            format!(
-                "Skill name '{}' exceeds the {} character limit.",
-                name, MAX_SKILL_NAME_LENGTH
-            ),
-        ));
-    }
-    if normalized_name != normalized_name.to_lowercase() {
-        diagnostics.push(skill_diagnostic(
-            "warning",
-            "invalid_name",
-            format!("Skill name '{}' must be lowercase.", name),
-        ));
-    }
-    if normalized_name.starts_with('-') || normalized_name.ends_with('-') {
-        diagnostics.push(skill_diagnostic(
-            "warning",
-            "invalid_name",
-            "Skill name cannot start or end with a hyphen.",
-        ));
-    }
-    if normalized_name.contains("--") {
-        diagnostics.push(skill_diagnostic(
-            "warning",
-            "invalid_name",
-            "Skill name cannot contain consecutive hyphens.",
-        ));
-    }
-    if !normalized_name
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '-')
-    {
-        diagnostics.push(skill_diagnostic(
-            "warning",
-            "invalid_name",
-            format!(
-                "Skill name '{}' contains invalid characters. Only lowercase Unicode letters, digits, and hyphens are allowed.",
-                name
-            ),
-        ));
-    }
-    let dir_name = skill_dir
-        .file_name()
-        .and_then(OsStr::to_str)
-        .unwrap_or_default();
-    let normalized_dir_name = normalize_nfkc(dir_name);
-    if !normalized_dir_name.is_empty() && normalized_dir_name != normalized_name {
-        diagnostics.push(skill_diagnostic(
-            "warning",
-            "directory_name_mismatch",
-            format!(
-                "Directory name '{}' should match skill name '{}'.",
-                dir_name, name
-            ),
-        ));
-    }
-}
-
 fn parse_skill_file(skill_file: &Path) -> ParsedSkillFile {
-    let used_lowercase_file = skill_file
-        .file_name()
-        .and_then(OsStr::to_str)
-        .map(|name| name == LOWERCASE_SKILL_FILE)
-        .unwrap_or(false);
-    let fallback_name = skill_file
-        .parent()
-        .and_then(Path::file_name)
-        .and_then(OsStr::to_str)
-        .unwrap_or("skill")
-        .to_string();
-    let mut diagnostics = Vec::new();
-    let raw = match fs::read_to_string(skill_file) {
-        Ok(value) => value,
+    match fs::read_to_string(skill_file) {
+        Ok(raw) => parse_skill_text(skill_file, &raw),
         Err(error) => {
-            diagnostics.push(skill_diagnostic(
-                "error",
-                "skill_file_read_failed",
-                format!("Failed to read SKILL.md: {}", error),
-            ));
-            return ParsedSkillFile {
+            let fallback_name = skill_file
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(OsStr::to_str)
+                .unwrap_or("skill")
+                .to_string();
+            ParsedSkillFile {
                 name: fallback_name,
                 description: String::new(),
                 license: None,
@@ -743,136 +492,47 @@ fn parse_skill_file(skill_file: &Path) -> ParsedSkillFile {
                 allowed_tools: None,
                 metadata: BTreeMap::new(),
                 body: String::new(),
-                diagnostics,
+                diagnostics: vec![skill_diagnostic(
+                    "error",
+                    "skill_file_read_failed",
+                    format!("Failed to read SKILL.md: {}", error),
+                )],
                 spec_compliant: false,
                 is_valid: false,
-            };
-        }
-    };
-
-    let mut name = String::new();
-    let mut description = String::new();
-    let mut license = None;
-    let mut compatibility = None;
-    let mut allowed_tools = None;
-    let mut metadata = BTreeMap::new();
-    let normalized = raw.replace("\r\n", "\n");
-    let mut body = normalized.clone();
-
-    if normalized.starts_with("---\n") {
-        let frontmatter_range = normalized[4..]
-            .find("\n---\n")
-            .map(|end_index| (4 + end_index, 4 + end_index + "\n---\n".len()))
-            .or_else(|| {
-                normalized
-                    .ends_with("\n---")
-                    .then_some((normalized.len() - "\n---".len(), normalized.len()))
-            });
-        if let Some((frontmatter_end, body_start)) = frontmatter_range {
-            let frontmatter = &normalized[4..frontmatter_end];
-            body = normalized[body_start..].to_string();
-            if let Some(mapping) = parse_frontmatter_mapping(frontmatter, &mut diagnostics) {
-                validate_frontmatter_fields(&mapping, &mut diagnostics);
-                name = required_string_field(&mapping, "name", &mut diagnostics)
-                    .unwrap_or_else(|| fallback_name.clone());
-                description = required_string_field(&mapping, "description", &mut diagnostics)
-                    .unwrap_or_default();
-                license = optional_string_field(&mapping, "license", &mut diagnostics);
-                compatibility = optional_string_field(&mapping, "compatibility", &mut diagnostics);
-                allowed_tools = optional_string_field(&mapping, "allowed-tools", &mut diagnostics);
-                metadata = parse_metadata_field(&mapping, &mut diagnostics);
             }
-        } else {
-            diagnostics.push(skill_diagnostic(
-                "error",
-                "frontmatter_not_closed",
-                "SKILL.md frontmatter is not closed.",
-            ));
-        }
-    } else {
-        diagnostics.push(skill_diagnostic(
-            "error",
-            "frontmatter_missing",
-            "SKILL.md must start with YAML frontmatter.",
-        ));
-    }
-
-    if name.is_empty() {
-        diagnostics.push(skill_diagnostic(
-            "error",
-            "missing_required_field",
-            "SKILL.md frontmatter must include non-empty name.",
-        ));
-        name = fallback_name.clone();
-    }
-    if description.is_empty() {
-        let already_reported = diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == "missing_required_field"
-                && diagnostic.message.contains("description")
-        });
-        if !already_reported {
-            diagnostics.push(skill_diagnostic(
-                "error",
-                "missing_required_field",
-                "SKILL.md frontmatter must include non-empty description.",
-            ));
         }
     }
+}
 
-    if used_lowercase_file {
-        diagnostics.push(skill_diagnostic(
-            "warning",
-            "lowercase_skill_file",
-            "Found skill.md. Use SKILL.md for AgentSkills spec compliance.",
-        ));
-    }
-    validate_skill_name(
-        &name,
-        skill_file.parent().unwrap_or_else(|| Path::new("")),
-        &mut diagnostics,
-    );
-    if description.len() > MAX_DESCRIPTION_LENGTH {
-        diagnostics.push(skill_diagnostic(
-            "warning",
-            "description_too_long",
-            format!(
-                "Skill description exceeds the {} character limit.",
-                MAX_DESCRIPTION_LENGTH
-            ),
-        ));
-    }
-    if compatibility
-        .as_ref()
-        .map(|value| value.len() > MAX_COMPATIBILITY_LENGTH)
-        .unwrap_or(false)
-    {
-        diagnostics.push(skill_diagnostic(
-            "warning",
-            "compatibility_too_long",
-            format!(
-                "Skill compatibility exceeds the {} character limit.",
-                MAX_COMPATIBILITY_LENGTH
-            ),
-        ));
-    }
-    let is_valid = diagnostics
-        .iter()
-        .all(|diagnostic| diagnostic.severity != "error");
-    let spec_compliant = diagnostics
-        .iter()
-        .all(|diagnostic| diagnostic.severity != "error" && diagnostic.severity != "warning");
+/// Shared parser for bytes already read under native authority. No file access.
+pub(crate) fn parse_admitted_skill_text(
+    skill_file: &Path,
+    raw: &str,
+) -> CommandResult<(String, String, String)> {
+    argentic_runtime::skill_text::parse_admitted_skill_text(skill_file, raw).map_err(command_error)
+}
 
+fn parse_skill_text(skill_file: &Path, raw: &str) -> ParsedSkillFile {
+    let p = argentic_runtime::skill_text::parse_skill_text(skill_file, raw);
     ParsedSkillFile {
-        name,
-        description,
-        license,
-        compatibility,
-        allowed_tools,
-        metadata,
-        body,
-        diagnostics,
-        spec_compliant,
-        is_valid,
+        name: p.name,
+        description: p.description,
+        license: p.license,
+        compatibility: p.compatibility,
+        allowed_tools: p.allowed_tools,
+        metadata: p.metadata,
+        body: p.body,
+        diagnostics: p
+            .diagnostics
+            .into_iter()
+            .map(|d| SkillDiagnosticDto {
+                severity: d.severity,
+                code: d.code,
+                message: d.message,
+            })
+            .collect(),
+        spec_compliant: p.spec_compliant,
+        is_valid: p.is_valid,
     }
 }
 
@@ -1742,15 +1402,15 @@ where
 }
 
 async fn finish_skill_output_tasks(
-    mut stdout_task: tokio::task::JoinHandle<std::io::Result<(String, bool)>>,
-    mut stderr_task: tokio::task::JoinHandle<std::io::Result<(String, bool)>>,
+    stdout_task: tokio::task::JoinHandle<std::io::Result<(String, bool)>>,
+    stderr_task: tokio::task::JoinHandle<std::io::Result<(String, bool)>>,
     drain_timeout: Duration,
 ) -> CommandResult<((String, bool), (String, bool))> {
-    let joined = timeout(drain_timeout, async {
-        tokio::join!(&mut stdout_task, &mut stderr_task)
-    })
-    .await;
-    match joined {
+    let abort_stdout = stdout_task.abort_handle();
+    let abort_stderr = stderr_task.abort_handle();
+    let drain = async move { tokio::join!(stdout_task, stderr_task) };
+    tokio::pin!(drain);
+    match timeout(drain_timeout, &mut drain).await {
         Ok((stdout, stderr)) => {
             let stdout = stdout
                 .map_err(|error| command_error(format!("Failed to join skill stdout: {error}")))?
@@ -1761,8 +1421,9 @@ async fn finish_skill_output_tasks(
             Ok((stdout, stderr))
         }
         Err(_) => {
-            stdout_task.abort();
-            stderr_task.abort();
+            abort_stdout.abort();
+            abort_stderr.abort();
+            let _ = drain.await;
             let marker = SCRIPT_OUTPUT_TRUNCATION_MARKER
                 .trim_start_matches('\n')
                 .to_string();
@@ -2420,6 +2081,10 @@ pub async fn skills_open_location(
 #[tauri::command]
 pub async fn skills_run_script(
     manager: tauri::State<'_, ConfigManager>,
+    admission_runtime: tauri::State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: tauri::State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     skill_id: String,
     script_path: String,
     args: Vec<String>,
@@ -2429,6 +2094,39 @@ pub async fn skills_run_script(
     project_roots: Vec<SkillProjectRootDto>,
     workspace_root: Option<SkillScriptWorkspaceDto>,
 ) -> CommandResult<SkillScriptRunResponse> {
+    if let Some(admission) = chat_admission {
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let manager = manager.inner().clone();
+        let owner = work.clone();
+        let received = reservation
+            .spawn_tool(work, move |cancel| async move {
+                let result = run_configured_skill_script(
+                    &manager,
+                    skill_id,
+                    script_path,
+                    args,
+                    timeout_ms,
+                    allow_workspace,
+                    workspace_path,
+                    project_roots,
+                    workspace_root,
+                    Some(cancel),
+                )
+                .await;
+                if result.is_err() {
+                    let _ = owner.unknown().await;
+                }
+                result
+            })
+            .map_err(command_error)?;
+        return received.await.map_err(command_error)?;
+    }
     run_configured_skill_script(
         manager.inner(),
         skill_id,
@@ -2439,6 +2137,7 @@ pub async fn skills_run_script(
         workspace_path,
         project_roots,
         workspace_root,
+        None,
     )
     .await
 }
@@ -2453,6 +2152,7 @@ async fn run_configured_skill_script(
     workspace_path: Option<String>,
     project_roots: Vec<SkillProjectRootDto>,
     workspace_root: Option<SkillScriptWorkspaceDto>,
+    native_cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> CommandResult<SkillScriptRunResponse> {
     // Source resolution and its permission record use discovery roots only.
     let skill = resolve_configured_skill(manager, &skill_id, &project_roots).await?;
@@ -2502,6 +2202,7 @@ async fn run_configured_skill_script(
         allow_workspace,
         workspace_path,
         workspace_roots,
+        native_cancel,
     )
     .await
 }
@@ -2515,7 +2216,12 @@ async fn run_skill_script_with_manifest(
     allow_workspace: bool,
     workspace_path: Option<String>,
     workspace_roots: Vec<SkillProjectRootDto>,
+    native_cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> CommandResult<SkillScriptRunResponse> {
+    let native_cancel = native_cancel.unwrap_or_default();
+    if native_cancel.is_cancelled() {
+        return Err(command_error("Skill script cancelled before launch."));
+    }
     let script = resolve_resource_path(&skill, &script_path, &["scripts"])?;
     let timeout_ms = timeout_ms
         .unwrap_or(DEFAULT_SCRIPT_TIMEOUT_MS)
@@ -2579,6 +2285,9 @@ async fn run_skill_script_with_manifest(
         }
     }
 
+    if native_cancel.is_cancelled() {
+        return Err(command_error("Skill script cancelled before launch."));
+    }
     let mut process = ContainedBackgroundProcess::spawn(command)
         .map_err(|error| command_error(format!("Failed to run skill script: {}", error)))?;
     let stdout_pipe = process
@@ -2589,40 +2298,33 @@ async fn run_skill_script_with_manifest(
         .ok_or_else(|| command_error("Failed to capture skill script stderr."))?;
     let stdout_task = tokio::spawn(read_bounded_skill_output(stdout_pipe));
     let stderr_task = tokio::spawn(read_bounded_skill_output(stderr_pipe));
-    let wait_result = timeout(Duration::from_millis(timeout_ms), process.wait()).await;
-    let timed_out = wait_result.is_err();
-    let status = match wait_result {
-        Ok(Ok(status)) => Some(status),
-        Ok(Err(error)) => {
-            let _ = process.terminate_with_grace(Duration::ZERO).await;
-            return Err(command_error(format!(
-                "Failed to wait for skill script: {}",
-                error
-            )));
-        }
-        Err(_) => {
-            process
-                .terminate_with_grace(Duration::ZERO)
-                .await
-                .map_err(|error| {
-                    command_error(format!("Failed to stop timed out skill script: {}", error))
-                })?;
-            None
-        }
+    let wait_result = tokio::select! {
+        biased;
+        _ = native_cancel.cancelled() => None,
+        result = timeout(Duration::from_millis(timeout_ms), process.wait()) => Some(result),
     };
-    if status.is_some() {
-        process
-            .terminate_with_grace(Duration::ZERO)
-            .await
-            .map_err(|error| {
-                command_error(format!(
-                    "Failed to reap skill script descendants: {}",
-                    error
-                ))
-            })?;
+    let cancelled = wait_result.is_none();
+    let timed_out = matches!(wait_result, Some(Err(_)));
+    // Always close descendants and join both readers, including wait/kill errors.
+    let terminated = process.terminate_with_grace(Duration::ZERO).await;
+    let output =
+        finish_skill_output_tasks(stdout_task, stderr_task, SCRIPT_OUTPUT_DRAIN_TIMEOUT).await;
+    let status = match wait_result {
+        Some(Ok(Ok(status))) => Some(status),
+        Some(Ok(Err(error))) => {
+            return Err(command_error(format!(
+                "Failed to wait for skill script: {error}"
+            )))
+        }
+        _ => None,
+    };
+    terminated.map_err(|error| {
+        command_error(format!("Failed to stop skill script descendants: {error}"))
+    })?;
+    let ((stdout, stdout_truncated), (stderr, stderr_truncated)) = output?;
+    if cancelled {
+        return Err(command_error("Skill script cancelled."));
     }
-    let ((stdout, stdout_truncated), (stderr, stderr_truncated)) =
-        finish_skill_output_tasks(stdout_task, stderr_task, SCRIPT_OUTPUT_DRAIN_TIMEOUT).await?;
 
     let response = if timed_out {
         let (stderr, timeout_message_truncated) = append_skill_timeout_message(stderr, timeout_ms);
@@ -2780,8 +2482,86 @@ mod tests {
             allow_workspace,
             workspace_path,
             project_roots,
+            None,
         )
         .await
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn admitted_skill_cancellation_joins_real_child_and_readers() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("synthetic-skill");
+        write_skill(&root, "synthetic-owner");
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::write(
+            root.join("scripts/owned.sh"),
+            "printf '%s' \"$$\" > \"$1\"\nprintf synthetic-ready >&2\nexec sleep 30\n",
+        )
+        .unwrap();
+        let manifest = build_manifest_uncached(&root, local_install_source(&root)).unwrap();
+        let pid_file = temp.path().join("child.pid");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let child_cancel = cancel.clone();
+        let id = manifest.id.clone();
+        let arg = pid_file.to_string_lossy().into_owned();
+        let run = tokio::spawn(async move {
+            run_skill_script_with_manifest(
+                manifest,
+                id,
+                "scripts/owned.sh".into(),
+                vec![arg],
+                Some(30_000),
+                false,
+                None,
+                Vec::new(),
+                Some(child_cancel),
+            )
+            .await
+        });
+        let pid: i32 = timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(value) = tokio::fs::read_to_string(&pid_file).await {
+                    if let Ok(pid) = value.parse() {
+                        break pid;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        cancel.cancel();
+        let error = timeout(Duration::from_secs(5), run)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.message.contains("cancelled"));
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_skill_reader_does_not_detach_its_sibling() {
+        let (release, pending) = tokio::sync::oneshot::channel();
+        let stdout = tokio::spawn(async { Err(std::io::Error::other("synthetic reader failure")) });
+        let stderr = tokio::spawn(async move {
+            let _ = pending.await;
+            Ok((String::new(), false))
+        });
+        let finished = tokio::spawn(finish_skill_output_tasks(
+            stdout,
+            stderr,
+            Duration::from_secs(5),
+        ));
+        tokio::task::yield_now().await;
+        assert!(!finished.is_finished());
+        release.send(()).unwrap();
+        assert!(finished.await.unwrap().is_err());
     }
 
     fn write_skill(root: &Path, name: &str) {

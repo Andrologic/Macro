@@ -1,0 +1,127 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "demo-quality",
+  "title": "Revue avant livraison",
+  "agents": {
+    "scope": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Identifier les pages modifiées et les critères de livraison."
+    },
+    "security": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Examiner les accès, les formulaires et l’exposition des données. Classer les constats par gravité."
+    },
+    "accessibility": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Contrôler le clavier, les libellés, les contrastes et les messages d’erreur."
+    },
+    "content": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier les textes, les liens et les informations du portail client."
+    },
+    "synthesize": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Rassembler les trois rapports. Distinguer les blocages des améliorations facultatives."
+    },
+    "scene-main-fork": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Distribuer les contrôles"
+    },
+    "scene-main-join": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Rassembler les rapports"
+    },
+    "scene-main-approval": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Valider la livraison"
+    },
+    "scene-main-deliver": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Livrer le dossier"
+    },
+    "scene-main-corrections": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre les corrections"
+    }
+  },
+  "flow": {
+    "entry": "scope",
+    "steps": {
+      "scope": {
+        "type": "agent",
+        "agent": "scope",
+        "title": "Définir le périmètre",
+        "next": "fork"
+      },
+      "fork": {
+        "type": "agent",
+        "agent": "scene-main-fork",
+        "title": "Distribuer les contrôles",
+        "next": "security"
+      },
+      "security": {
+        "type": "agent",
+        "agent": "security",
+        "title": "Auditer la sécurité",
+        "next": "accessibility"
+      },
+      "accessibility": {
+        "type": "agent",
+        "agent": "accessibility",
+        "title": "Tester l’accessibilité",
+        "next": "content"
+      },
+      "content": {
+        "type": "agent",
+        "agent": "content",
+        "title": "Relire le contenu",
+        "next": "join"
+      },
+      "join": {
+        "type": "agent",
+        "agent": "scene-main-join",
+        "title": "Rassembler les rapports",
+        "next": "synthesize"
+      },
+      "synthesize": {
+        "type": "agent",
+        "agent": "synthesize",
+        "title": "Synthétiser les contrôles",
+        "next": "approval"
+      },
+      "approval": {
+        "type": "agent",
+        "agent": "scene-main-approval",
+        "title": "Valider la livraison",
+        "next": "deliver"
+      },
+      "deliver": {
+        "type": "agent",
+        "agent": "scene-main-deliver",
+        "title": "Livrer le dossier",
+        "next": "corrections"
+      },
+      "corrections": {
+        "type": "agent",
+        "agent": "scene-main-corrections",
+        "title": "Transmettre les corrections",
+        "next": "revise"
+      },
+      "revise": {
+        "type": "agent",
+        "agent": "synthesize",
+        "title": "Réviser la synthèse"
+      }
+    }
+  }
+}

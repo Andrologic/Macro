@@ -30,13 +30,17 @@ The repo uses:
 | Script | Description |
 | --- | --- |
 | `bun run dev` | Start the Vite frontend dev server only. |
+| `bun run dev:demo` | Explore the real UI with isolated synthetic data. See [Demo mode](docs/demo-mode.md). |
 | `bun run tauri:dev` | Run Macro as a desktop app in development mode. |
 | `bun run tauri:dev:browser` | Run the Tauri backend and expose its UI to a local browser for debugging. |
 | `bun run build` | Build the frontend for production. |
 | `bun run tauri:build` | Build the Tauri desktop app. |
 | `bun run tauri:build:dmg` | Build a native macOS DMG. |
 | `bun run tauri:build:dmg:mac-universal:test` | Build a universal macOS DMG for Apple Silicon and Intel Macs. |
-| `bun run typecheck` | Run TypeScript type checking. |
+| `bun run tauri:build:macos:qa` | Build an isolated Pilot QA app with an explicit stable macOS signing identity. |
+| `bun run tauri:verify:macos:qa-signing` | Compare the designated signing requirements of two Pilot QA app bundles. |
+| `bun run typecheck` | Type-check the frontend and Vite configuration. |
+| `bun run typecheck:node` | Type-check the Vite configuration and its tests only. |
 | `bun run lint` | Run ESLint. |
 | `bun run i18n:audit` | Audit locale coverage. |
 | `bun run test` | Run frontend and service tests with bounded parallelism. |
@@ -57,10 +61,9 @@ Create a local `.env` file only when you need to override defaults.
 VITE_BACKEND_TRANSPORT=desktop
 
 # Remote backend, used when VITE_BACKEND_TRANSPORT=remote
-VITE_REMOTE_API_BASE_URL=http://localhost:8787
+VITE_REMOTE_API_BASE_URL=http://localhost:43117
 VITE_REMOTE_API_PREFIX=/api/v1
 VITE_REMOTE_WORKSPACE_ID=
-VITE_REMOTE_AUTH_TOKEN=
 VITE_REMOTE_TIMEOUT_MS=15000
 ```
 
@@ -69,8 +72,17 @@ Transport notes:
 - `desktop` is the default and requires the Tauri IPC runtime.
 - `remote` switches the frontend service layer to the remote provider.
 - Remote mode is intentionally minimal in the 0.1 line.
+- The remote bearer is entered at runtime on the first request and held only in
+  memory for that session. Do not put it in a `VITE_` variable: Vite exposes
+  those variables to the frontend. Remove any old `VITE_REMOTE_AUTH_TOKEN`
+  value from local `.env` files and rotate that token before reuse.
 
 ## Browser UI with the Tauri runtime
+
+macOS builds compile the native content reader bridge with Swift and require an
+Xcode SDK containing the macOS 14.4 APIs. The bridge weak-links the newer
+framework and checks availability at runtime. Macro's macOS 13 deployment target
+stays unchanged; native file-content features require macOS 14.4 or later.
 
 Use the browser runtime bridge when UI inspection or browser automation needs
 the real local database, workspace, terminal, Git, and AI command handlers:
@@ -84,15 +96,24 @@ while Tauri runs as a hidden host and executes IPC commands for the browser.
 Backend events used by configuration, terminals, authentication, downloads, and
 streaming chat are relayed to the browser as well.
 
+The bridge has a single browser owner. Connecting another tab or a Playwright
+browser replaces the previous connection with WebSocket close code `4009`.
+Do not open an automation browser on a runtime currently being tested by a person.
+Finish and close automation before handing over the demo. A replaced tab does
+not reconnect automatically, which prevents competing tabs from repeatedly
+stealing the session. Reload that tab explicitly to reclaim it; the startup
+error screen's Retry button also reloads the page in browser runtime mode.
+
 This bridge is intentionally unavailable in production builds: enabling its
 Cargo feature in a release build is a compile-time error. The dedicated launcher
 creates a new 256-bit token for every run and gives it to the Tauri host and Vite,
 which injects it into the local browser page. The token is therefore visible in
 that page's DevTools; it protects against unrelated browser origins, not against
 a hostile process already running on the machine. The WebSocket server also
-requires the exact `http://127.0.0.1:1422` browser origin and binds only to
-`127.0.0.1:1430`. Always use `bun run tauri:dev:browser`; do not expose either
-local port through a proxy.
+requires the exact configured loopback browser origin and binds only to
+`127.0.0.1` on `MACRO_TAURI_BROWSER_BRIDGE_PORT`, defaulting to `1430`.
+Always use `bun run tauri:dev:browser`; do not expose either local port through
+a proxy.
 
 Automated checks that exercise mutable state must use a separate Tauri identifier,
 not only a temporary `MACRO_CONFIG_DIR`. Set `MACRO_TAURI_BROWSER_CONFIG` to an
@@ -100,6 +121,10 @@ absolute merged browser-runtime config whose identifier matches
 `com.macro.desktop.qa.*`. The launcher rejects the ordinary production identifier.
 It also derives a dedicated log directory under the operating system's temporary
 directory; the QA host therefore neither reads nor writes Macro's production logs.
+If port 1422 is occupied, set `build.devUrl` in the merged QA config to another
+`http://127.0.0.1:<port>` origin. The launcher uses that port for Vite and the
+bridge origin check. Set `MACRO_TAURI_BROWSER_BRIDGE_PORT` to choose a separate
+authenticated WebSocket port; it defaults to `1430`.
 Before creating fixtures, inspect the native process's open SQLite files and call
 `workspace_get_bootstrap`; continue only when both point to the intended isolated
 profile and synthetic workspace.
@@ -193,6 +218,11 @@ bun run test
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+To include the Rust comparisons against the AgSDL editor, run
+`bun dev/ci/argentic.mjs macro test --locked --lib`. The script gets the
+Argentic source location from Cargo's locked dependency graph. The `argentic`
+CI profile uses the same graph to test the standalone engine and host.
+
 The pull request workflow runs the required exhaustive profiles before merge.
 When the risk justifies reproducing those profiles locally, the full local CI
 command also builds the frontend and checks bundle size:
@@ -204,9 +234,9 @@ bun run ci
 Notes on validation cost and behavior:
 
 - Tests run one `bun test` process per file for isolation, with a bounded
-  concurrency (6 by default, overridable with `--concurrency=<n>` or
-  `MACRO_TEST_CONCURRENCY`). Pass a filter such as `bun run test composer` to
-  run a subset, or `--list` to print the selected files.
+  concurrency of `max(1, min(available cores - 1, 6))` by default. Override it
+  with `--concurrency=<n>` or `MACRO_TEST_CONCURRENCY`. Pass a filter such as
+  `bun run test composer` to run a subset, or `--list` to print the selected files.
 - Coverage is opt-in through `bun run test:coverage`; plain runs skip
   instrumentation entirely. Each run clears stale data, keeps isolated raw
   reports in `coverage/tests/<file>/`, and writes the merged application-line
@@ -250,3 +280,11 @@ explicitly authorized emergency.
 - `src-tauri/` - Rust/Tauri backend.
 - `public/` - static assets and themes.
 - `docs/` - product, architecture, and roadmap references.
+
+The QA browser bridge defaults to port 1430. Set
+`MACRO_TAURI_BROWSER_BRIDGE_PORT` to an unused loopback port when another QA
+session owns that port. The launcher passes the same validated port to the native
+bridge and browser client. Values must be canonical decimal integers from 1 to
+65535. The UI port remains controlled by the QA config's `build.devUrl`.
+Use a separate `com.macro.desktop.qa.*` identifier and data directory; leave
+other sessions running.

@@ -1,6 +1,38 @@
 //! Authoritative native wire contracts grouped by domain.
 //! These reexports expose data shapes, not application execution or transport authority.
 
+pub mod execution {
+    pub use crate::agsdl_host_capture::{ExecutionPreflight, ExecutionPreflightRequest};
+    pub use crate::agsdl_host_catalogue::{
+        NativeModelCatalogue, NativeModelChoice, NativeModelEdition, UnavailableProvider,
+    };
+    pub use crate::agsdl_host_claude::ClaudeStatus;
+    pub use crate::agsdl_host_codex_adapter::CodexStatus;
+    pub use crate::agsdl_host_flow030::delivery_ipc::{DeliveryReceipt030, DeliveryRequest030};
+    pub use crate::agsdl_host_projection030::ipc::{
+        RuntimeProjectionContinuation030, RuntimeProjectionItem030, RuntimeProjectionPage030,
+        RuntimeProjectionQuery030, RuntimeProjectionScope030,
+    };
+    pub use crate::agsdl_host_tasks::{PublicTaskTarget, ResolveCardTask, ResolvedCardTask};
+    pub use crate::db::agsdl_execution::approvals::{
+        ApprovalDecision, ApprovalPage, ApprovalScope, PublicApproval,
+    };
+    pub use crate::db::agsdl_execution::diagnostics::{
+        DiagnosticRequest, PublicExecutionDiagnostic,
+    };
+    pub use crate::db::agsdl_execution::discovery::{RunListRequest, RunPage};
+    pub use crate::db::agsdl_execution::discovery030::{
+        PhaseCount030, PublicRunSummary030, RunListRequest030, RunPage030,
+    };
+    pub use crate::db::agsdl_execution::dto::ipc::*;
+    pub use crate::db::agsdl_execution::intents::*;
+    pub use crate::db::agsdl_execution::public::ipc::*;
+    pub use crate::db::agsdl_execution::public030::ipc::{
+        HumanAnswer030, HumanContent030, HumanContinuation030, HumanDecision030, HumanPage030,
+        HumanScope030, PublicHumanRequest030,
+    };
+}
+
 pub mod db {
     pub use crate::commands::goal_auditor_read::GoalAuditorReadInput;
     pub use crate::db::conversation_goals::{
@@ -10,6 +42,9 @@ pub mod db {
         GoalCriterionStatus, GoalEvidence, GoalStatus, GoalVerdict, GoalVerdictKind,
         ResumeConversationGoalAuditInput, UpdateConversationGoalInput,
     };
+    pub use crate::db::conversation_management::{
+        ConversationActionInput, ConversationActionResult, ConversationMetadata,
+    };
     pub use crate::db::goal_audit_children::ReserveGoalAuditChildSelection;
     pub use crate::db::goal_audit_transitions::{
         GoalAuditTransition, RecordGoalAuditTransitionInput,
@@ -18,18 +53,25 @@ pub mod db {
         AgentRun, AgentRunStatus, AgentRunUsageInput, AiModel, AppSettingRecord,
         ArchitectPlanConversationSyncRecord, CancelAgentRunInput, ChatBootstrapSnapshot,
         ChatSnapshot, CompareAndSwapAppSettingResult, CompleteAgentRunInput, Conversation,
-        ConversationCitation, ConversationCompactionStateRecord, ConversationSourceSnapshot,
-        ConversationToolboxStateRecord, CreateAgentRunInput, CreateConversationInput,
-        CreateGitRepositoryInput, CreateGitWorktreeInput, CreateMessageInput, FailAgentRunInput,
-        GitRepositoryRecord, GitWorktreeRecord, ImportMessageInput,
-        InsertConversationCompactionEventInput, Message, MessageSearchPage, MessageSearchResult,
-        ProjectContextStateRecord, ProjectRegistryDbRepairReport, ProviderAuthMetadata,
-        ProviderConfig, ProviderModelInput, ProviderSettings, ReconcileProjectRegistryInput,
-        SessionContextStateRecord, SpeechProviderConfig, TerminalTabRecord, TimeOutAgentRunInput,
-        UpdateProviderConfigInput, UpsertArchitectPlanConversationSyncInput,
-        UpsertConversationCitationInput, UpsertConversationCompactionStateInput,
-        UpsertConversationToolboxStateInput, UpsertProjectContextStateInput,
-        UpsertSessionContextStateInput,
+        ConversationCatalogPage, ConversationCatalogPageInput, ConversationCatalogToken,
+        ConversationCatalogVersionInput, ConversationCitation, ConversationCompactionStateRecord,
+        ConversationContentMetadataInput, ConversationContentMetadataPage,
+        ConversationContentToken, ConversationContentWindow, ConversationContentWindowInput,
+        ConversationSourceSnapshot, ConversationToolboxStateRecord, CreateAgentRunInput,
+        CreateConversationInput, CreateGitRepositoryInput, CreateGitWorktreeInput,
+        CreateMessageInput, FailAgentRunInput, GitRepositoryRecord, GitWorktreeRecord,
+        ImportMessageInput, InsertConversationCompactionEventInput, Message, MessageSearchPage,
+        MessageSearchResult, ProjectContextStateRecord, ProjectRegistryDbRepairReport,
+        ProviderAuthMetadata, ProviderConfig, ProviderModelInput, ProviderSettings,
+        ReconcileProjectRegistryInput, SessionContextStateRecord, SpeechProviderConfig,
+        TerminalTabRecord, TimeOutAgentRunInput, UpdateProviderConfigInput,
+        UpsertArchitectPlanConversationSyncInput, UpsertConversationCitationInput,
+        UpsertConversationCompactionStateInput, UpsertConversationToolboxStateInput,
+        UpsertProjectContextStateInput, UpsertSessionContextStateInput,
+    };
+    pub use crate::db::pilot_reflections::{
+        PilotReflectionMessage, PilotReflectionMessageRead, PilotReflectionToolAnchor,
+        PilotReflectionToolStatus,
     };
     pub use crate::db::tool_invocations::{
         CompleteToolInvocationInput, RecordToolInvocationInput, RecordToolInvocationResult,
@@ -76,6 +118,7 @@ pub mod chat {
         AiProjectMount, AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent,
         AiStreamTimelineEvent, AiStreamToolTraceEvent, AiToolCall, AiToolCallFunction, AiToolTrace,
     };
+    pub use crate::commands::http_resources::WebviewResourceRelease;
 }
 
 pub mod copilot {
@@ -105,11 +148,10 @@ pub mod skills {
 
 pub mod mcp {
     pub use crate::commands::mcp::{
-        McpCallToolResponse, McpCatalogDto, McpDiscoverToolsResponse, McpElicitationAction,
-        McpElicitationAnswer, McpElicitationPrompt, McpInteractionRequest, McpInteractionResponse,
-        McpProtocolEra, McpProtocolMode, McpRuntimeKey, McpRuntimeSelector,
-        McpRuntimeServerSnapshot, McpRuntimeSnapshotDto, McpRuntimeStatus, McpServerDto,
-        McpToolDto, McpTransportDto,
+        McpCallToolResponse, McpCatalogDto, McpElicitationAction, McpElicitationAnswer,
+        McpElicitationPrompt, McpInteractionRequest, McpInteractionResponse, McpProtocolEra,
+        McpProtocolMode, McpRuntimeKey, McpRuntimeSelector, McpRuntimeServerSnapshot,
+        McpRuntimeSnapshotDto, McpRuntimeStatus, McpServerDto, McpToolDto, McpTransportDto,
     };
 }
 

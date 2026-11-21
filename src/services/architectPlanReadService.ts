@@ -66,6 +66,7 @@ import {
   architectPlanActivationCache,
   architectPlanIndexCache,
   dedupeScopes,
+  existingMetadataScope,
   getProjectMetadataScopes,
   getScopeWorkspaceScope,
   loadArchitectPlanRegistrySnapshot,
@@ -348,6 +349,8 @@ export const loadPlanReplicaSet = async (
   options?: {
     allowDivergence?: boolean;
     disableAutoHeal?: boolean;
+    metadataOnly?: boolean;
+    existingMetadataOnly?: boolean;
     registrySnapshot?: ValidProjectRegistrySnapshot | null;
   },
   deps?: ResolvedArchitectPlanServiceDependencies
@@ -366,12 +369,14 @@ export const loadPlanReplicaSet = async (
     registrySnapshot: resolvedRegistrySnapshot,
     deps: resolvedDeps,
   });
-  const scopes = persistedDirectPlan?.scopes ?? await resolveMetadataScopes(
+  const resolvedScopes = persistedDirectPlan?.scopes ?? await resolveMetadataScopes(
     undefined,
     { includeAllKnown: true },
     resolvedRegistrySnapshot,
     resolvedDeps
   );
+  const scopes = resolvedScopes.map(scope => options?.metadataOnly || options?.existingMetadataOnly
+    ? existingMetadataScope(scope) : scope);
   const snapshotDiagnosticsRaw: Array<ArchitectPlanReplicaSnapshotDiagnostics | null> = await Promise.all(
     scopes.map(async (scope) => {
       const planResult = await readPlanAtScopeWithDiagnostics(
@@ -384,7 +389,7 @@ export const loadPlanReplicaSet = async (
         return null;
       }
 
-      const chatMessages = await readPlanChatAtScope(scope, normalizedBranch, safeId);
+      const chatMessages = options?.metadataOnly ? [] : await readPlanChatAtScope(scope, normalizedBranch, safeId);
       const manifest = await readPlanManifestAtScope({
         scope,
         branchName: normalizedBranch,
@@ -392,7 +397,7 @@ export const loadPlanReplicaSet = async (
         chatMessages,
         registrySnapshot: resolvedRegistrySnapshot,
       });
-      const files = await readPlanFilesAtScope(scope, normalizedBranch, safeId);
+      const files = options?.metadataOnly ? {} : await readPlanFilesAtScope(scope, normalizedBranch, safeId);
 
       return {
         scope,
@@ -670,6 +675,26 @@ export const loadArchitectPlanActivationPayloadFromRuntime = async (
     sharedConversation: head.sharedConversation,
     targetBranch: normalizeBranchName(head.targetBranch || branchName),
     resolutionMode,
+  };
+};
+
+/** Keep transcript hints tied to the activation head that selected their replica. */
+export const buildArchitectPlanConversationTranscriptParams = (
+  payload: ArchitectPlanActivationPayload,
+) => {
+  if (payload.chatMessagesLoaded === false && !payload.replicaScopeKey?.trim()) {
+    throw new Error(
+      `Architect transcript replica identity is incomplete for branch ${payload.targetBranch} and plan ${payload.plan.id}.`,
+    );
+  }
+  return {
+    conversationIdHint: payload.conversationId,
+    chatMessagesHint: payload.chatMessages,
+    chatMessagesLoaded: payload.chatMessagesLoaded ?? true,
+    chatTranscriptRevision: payload.chatTranscriptRevision ?? null,
+    chatMessageCount: payload.chatMessageCount ?? payload.chatMessages.length,
+    replicaScopeKey: payload.replicaScopeKey ?? null,
+    replicaProjectId: payload.replicaProjectId ?? null,
   };
 };
 
@@ -1283,6 +1308,20 @@ export const isArchitectPlanSlugAvailable = async (params: {
   );
 };
 
+/** Read existing plan replicas without recovery or automatic metadata repair. */
+export const readArchitectPlanSnapshot = async (
+  branchName: string, planId: string,
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies(),
+): Promise<ArchitectPlanRecord | null> => {
+  const normalizedBranch = normalizeBranchName(branchName);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+  const replicaSet = await loadPlanReplicaSet(normalizedBranch, planId, {
+    registrySnapshot, disableAutoHeal: true, metadataOnly: true,
+  }, deps);
+  return replicaSet?.canonical.plan || null;
+};
+
 export const getArchitectPlan = async (
   branchName: string,
   planId: string,
@@ -1299,6 +1338,7 @@ export const getArchitectPlan = async (
 };
 
 export type CreateArchitectPlanInput = {
+  agsdl?: Omit<import('../types/agsdl').AgsdlEditorDocument, 'revision'>;
   branchName: string;
   title?: string;
   label?: string;

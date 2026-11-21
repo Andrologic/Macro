@@ -555,7 +555,9 @@ async fn exchange_authorization_code(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = super::types::read_error_response(response)
+            .await
+            .unwrap_or_default();
         warn!(
             status = status.as_u16(),
             "ChatGPT authorization code exchange returned non-success status"

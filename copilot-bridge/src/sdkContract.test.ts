@@ -134,6 +134,37 @@ describe('installed Copilot SDK contract', () => {
     }
   });
 
+  it('routes native AgSDL tools through the frontend relay with their scoped arguments', async () => {
+    const ids = ['agsdl_get', 'agsdl_update'];
+    const tools = collectAllowedTools({
+      allowedTools: new Set(ids), enableWebFetch: false, enableWebSearch: false,
+    });
+    const requestTool = mock(async (request: { toolName: string }) => request.toolName === 'agsdl_update'
+      ? { result: 'Draft is locked', isError: true, errorKind: 'permission', interrupt: false }
+      : { result: '{"revision":"revision-1"}', interrupt: false });
+    const config = __testables.buildSessionToolConfig({
+      request_id: 'request-agsdl', model_id: 'model', messages: [],
+      allowed_tool_ids: ids, tools,
+    }, { controlChannel: { requestTool } as unknown as BridgeControlChannel });
+    expect(config.tools!.map(tool => tool.name)).toEqual(ids);
+    expect([...config.availableTools!]).toEqual(ids);
+
+    const readArgs = { plan_id: 'plan-1', target_branch: 'develop' };
+    const updateArgs = { ...readArgs, expected_revision: 'revision-1', source: '{}' };
+    await expect(config.tools![0].handler(readArgs, invocation('agsdl_get', readArgs)))
+      .resolves.toBe('{"revision":"revision-1"}');
+    await expect(config.tools![1].handler(updateArgs, invocation('agsdl_update', updateArgs)))
+      .resolves.toMatchObject({ resultType: 'denied', textResultForLlm: 'Draft is locked' });
+    expect(requestTool.mock.calls.map(([request]) => request)).toEqual([
+      expect.objectContaining({ toolName: 'agsdl_get', args: readArgs, requestId: 'request-agsdl' }),
+      expect.objectContaining({ toolName: 'agsdl_update', args: updateArgs, requestId: 'request-agsdl' }),
+    ]);
+    expect(await config.onPermissionRequest!({ kind: 'custom-tool', toolName: 'agsdl_get' } as PermissionRequest, { sessionId: 'session' }))
+      .toEqual({ kind: 'approved' });
+    expect(await config.onPermissionRequest!({ kind: 'custom-tool', toolName: 'agsdl_update' } as PermissionRequest, { sessionId: 'session' }))
+      .toEqual({ kind: 'approved' });
+  });
+
   it('relays discovery tools while withholding the large catalog from the SDK session', async () => {
     const requestTool = mock(async () => ({ result: 'found', interrupt: false }));
     const hidden = 'mcp__fixture__hidden';

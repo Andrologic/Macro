@@ -14,6 +14,7 @@ export default tseslint.config(
       '.vite/**',
       '*.bun-build',
       'coverage/**',
+      'tmp/**',
       'src-tauri/target/**',
       'src-tauri/gen/**',
     ],

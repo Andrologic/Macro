@@ -1,0 +1,38 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "approval-output-path",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": "ok"
+      },
+      "ok": {
+        "type": "approval",
+        "next": {
+          "go": {
+            "step": "s",
+            "message": {
+              "resources": {
+                "notes": {
+                  "from": [
+                    "results",
+                    "notes"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

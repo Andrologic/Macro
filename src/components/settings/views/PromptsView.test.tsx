@@ -53,7 +53,7 @@ const promptDefinitions = [
 ] as const;
 
 let promptValues: Record<string, string>;
-const loadPreferencesMock = mock(async (_keys: string[]) => ({}));
+const loadPreferencesMock = mock(async (_keys: string[]): Promise<Record<string, string>> => ({}));
 const savePreferencesMock = mock(async (_preferences: Record<string, string>) => undefined);
 let importCounter = 0;
 
@@ -76,7 +76,7 @@ const loadPromptsView = async () => {
     DEFAULT_SMART_COMMIT_PROMPT: promptDefaults.smartCommitPrompt,
     getDefaultPromptForPreferenceKey: (key: keyof typeof promptDefaults) =>
       promptDefaults[key],
-    loadPreferences: (keys: string[]) => loadPreferencesMock(keys),
+    loadPersistedPreference: async (key: string) => (await loadPreferencesMock([key]))[key],
     savePreferences: (preferences: Record<string, string>) =>
       savePreferencesMock(preferences),
   }));

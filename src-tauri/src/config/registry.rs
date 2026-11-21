@@ -69,6 +69,7 @@ pub fn default_document(kind: ConfigDocumentKind) -> Value {
         ConfigDocumentKind::Settings => json!({
             "schemaVersion": CURRENT_SCHEMA_VERSION,
             "language": "en",
+            "connectTransferResources": ConnectTransferResources::default(),
             "appearance": {
                 "theme": "macro-dark",
                 "zoomMode": "auto",
@@ -148,6 +149,7 @@ pub fn default_document(kind: ConfigDocumentKind) -> Value {
         ConfigDocumentKind::Tools => json!({
             "schemaVersion": CURRENT_SCHEMA_VERSION,
             "riskLevel": "balanced",
+            "agsdlHostPermissions": "read-only",
             "builtIn": {},
             "modes": {},
             "webSearch": { "enabled": false, "fetchEnabled": true, "provider": "tavily", "secretRef": null, "maxResults": 5 },
@@ -631,6 +633,30 @@ pub fn validate_document(
         }
     }
 
+    if kind == ConfigDocumentKind::Settings && !read_only {
+        if let Some(resources) = value.get("connectTransferResources") {
+            if !resources.is_null() && !resources.is_object() {
+                diagnostics.push(diagnostic(
+                    kind,
+                    scope,
+                    Some("/connectTransferResources".to_string()),
+                    "config.schema.invalid",
+                    "La politique de ressources Connect doit être un objet ou null.",
+                ));
+            } else if serde_json::from_value::<ConnectTransferResources>(resources.clone())
+                .is_ok_and(|policy| !policy.valid())
+            {
+                diagnostics.push(diagnostic(
+                    kind,
+                    scope,
+                    Some("/connectTransferResources".to_string()),
+                    "config.settings.connect_resources_out_of_range",
+                    "La politique de ressources Connect doit respecter la version 1 et ses bornes.",
+                ));
+            }
+        }
+    }
+
     if kind == ConfigDocumentKind::Providers && matches!(scope, ConfigScope::User) {
         let defaults = default_document(ConfigDocumentKind::Providers);
         let default_providers = defaults.get("providers").and_then(Value::as_object);
@@ -654,6 +680,69 @@ pub fn validate_document(
                         Some(format!("/providers/{escaped}/providerType")),
                         "config.provider.type_missing",
                         "providerType est obligatoire pour un provider personnalisé.",
+                    ));
+                }
+                if is_deleted {
+                    continue;
+                }
+                let default = default_providers.and_then(|entries| entries.get(provider_id));
+                let base_url = definition
+                    .get("baseUrl")
+                    .or_else(|| default.and_then(|entry| entry.get("baseUrl")))
+                    .and_then(Value::as_str);
+                let is_local = definition
+                    .get("isLocal")
+                    .or_else(|| default.and_then(|entry| entry.get("isLocal")))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if let Some(base_url) = base_url.filter(|url| !url.trim().is_empty()) {
+                    let provider_type = definition
+                        .get("providerType")
+                        .or_else(|| default.and_then(|entry| entry.get("providerType")))
+                        .and_then(Value::as_str);
+                    let endpoint_result = if provider_type == Some("copilot") {
+                        if base_url == "copilot://cli" {
+                            Ok(())
+                        } else {
+                            Err("Copilot provider base URL must use copilot://cli.")
+                        }
+                    } else {
+                        crate::core::provider_endpoint::validate_provider_endpoint(
+                            base_url, is_local,
+                        )
+                    };
+                    if let Err(message) = endpoint_result {
+                        let escaped = provider_id.replace('~', "~0").replace('/', "~1");
+                        diagnostics.push(diagnostic(
+                            kind,
+                            scope,
+                            Some(format!("/providers/{escaped}/baseUrl")),
+                            "config.provider.endpoint_unsafe",
+                            message,
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(providers) = value.get("speechProviders").and_then(Value::as_object) {
+            for (provider_id, definition) in providers {
+                let Some(base_url) = definition.get("baseUrl").and_then(Value::as_str) else {
+                    continue;
+                };
+                let is_local = definition
+                    .get("isLocal")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if let Err(message) =
+                    crate::core::provider_endpoint::validate_provider_endpoint(base_url, is_local)
+                {
+                    let escaped = provider_id.replace('~', "~0").replace('/', "~1");
+                    diagnostics.push(diagnostic(
+                        kind,
+                        scope,
+                        Some(format!("/speechProviders/{escaped}/baseUrl")),
+                        "config.speech_provider.endpoint_unsafe",
+                        message,
                     ));
                 }
             }
@@ -689,6 +778,15 @@ pub fn validate_document(
                 "La confiance et les permissions des skills sont locales à l’utilisateur.",
             ));
         }
+        if kind == ConfigDocumentKind::Tools && value.get("agsdlHostPermissions").is_some() {
+            diagnostics.push(diagnostic(
+                kind,
+                scope,
+                Some("/agsdlHostPermissions".to_string()),
+                "config.project.agsdl_host_permissions_forbidden",
+                "Les permissions AgSDL de l’hôte sont réservées à l’utilisateur.",
+            ));
+        }
         if kind == ConfigDocumentKind::Tools && value.get("projectMcpApprovals").is_some() {
             diagnostics.push(diagnostic(
                 kind,
@@ -713,6 +811,18 @@ pub fn validate_document(
     }));
 
     if kind == ConfigDocumentKind::Tools {
+        if value
+            .get("agsdlHostPermissions")
+            .is_some_and(Value::is_null)
+        {
+            diagnostics.push(diagnostic(
+                kind,
+                scope,
+                Some("/agsdlHostPermissions".to_string()),
+                "config.tools.agsdl_host_permissions_invalid",
+                "Les permissions AgSDL de l’hôte ne peuvent pas être nulles.",
+            ));
+        }
         if let Some(server) = value.get("languageServer") {
             if matches!(scope, ConfigScope::Project { .. }) {
                 diagnostics.push(diagnostic(
@@ -883,6 +993,14 @@ pub fn descriptors() -> Vec<ConfigDescriptor> {
             ApprovalRequired,
             Restart,
         ),
+        descriptor(
+            Settings,
+            "/connectTransferResources",
+            &["user"],
+            Replace,
+            ApprovalRequired,
+            Live,
+        ),
         descriptor(Settings, "/language", &["user"], Replace, Normal, Live),
         descriptor(Settings, "/appearance", &["user"], Deep, Normal, Live),
         descriptor(Settings, "/code", &["user"], Deep, Normal, Live),
@@ -904,7 +1022,7 @@ pub fn descriptors() -> Vec<ConfigDescriptor> {
             ApprovalRequired,
             Live,
         ),
-        descriptor(Agents, "/prompts", &["user"], Deep, Normal, Live),
+        descriptor(Agents, "/prompts", &["user"], Deep, ApprovalRequired, Live),
         descriptor(
             Agents,
             "/maxTurns",
@@ -996,6 +1114,14 @@ pub fn descriptors() -> Vec<ConfigDescriptor> {
         ),
         descriptor(
             Tools,
+            "/agsdlHostPermissions",
+            &["user"],
+            Replace,
+            ApprovalRequired,
+            Live,
+        ),
+        descriptor(
+            Tools,
             "/riskLevel",
             &["user", "project"],
             Restrictive,
@@ -1007,7 +1133,7 @@ pub fn descriptors() -> Vec<ConfigDescriptor> {
             "/builtIn",
             &["user", "project"],
             Restrictive,
-            Normal,
+            ApprovalRequired,
             Live,
         ),
         descriptor(
@@ -1015,7 +1141,7 @@ pub fn descriptors() -> Vec<ConfigDescriptor> {
             "/modes",
             &["user", "project"],
             Restrictive,
-            Normal,
+            ApprovalRequired,
             Live,
         ),
         descriptor(
@@ -1605,8 +1731,14 @@ pub fn effective_documents(
 
         for (project_id, project_documents) in project_documents {
             if let Some(project) = project_documents.get(&kind) {
-                merge_values(&mut value, project);
-                for pointer in collect_leaf_pointers(project) {
+                let mut restricted_project = project.clone();
+                if kind == ConfigDocumentKind::Tools {
+                    if let Some(map) = restricted_project.as_object_mut() {
+                        map.remove("agsdlHostPermissions");
+                    }
+                }
+                merge_values(&mut value, &restricted_project);
+                for pointer in collect_leaf_pointers(&restricted_project) {
                     provenance.insert(
                         (kind, pointer.clone()),
                         ConfigProvenance {
@@ -1627,8 +1759,14 @@ pub fn effective_documents(
         );
 
         if let Some(session) = session_documents.get(&kind) {
-            merge_values(&mut value, session);
-            for pointer in collect_leaf_pointers(session) {
+            let mut restricted_session = session.clone();
+            if kind == ConfigDocumentKind::Tools {
+                if let Some(map) = restricted_session.as_object_mut() {
+                    map.remove("agsdlHostPermissions");
+                }
+            }
+            merge_values(&mut value, &restricted_session);
+            for pointer in collect_leaf_pointers(&restricted_session) {
                 provenance.insert(
                     (kind, pointer.clone()),
                     ConfigProvenance {
@@ -1693,6 +1831,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn agsdl_host_permissions_are_user_only_and_typed() {
+        let kind = ConfigDocumentKind::Tools;
+        let user = ConfigScope::User;
+        let project = ConfigScope::Project {
+            project_id: "project".into(),
+        };
+        let doc = |permissions: Value| json!({"$schema":"./schemas/v1/tools.schema.json", "schemaVersion":1, "agsdlHostPermissions":permissions});
+        assert_eq!(
+            default_document(kind)["agsdlHostPermissions"],
+            json!("read-only")
+        );
+        let schema = serde_json::to_value(schema_for_kind(kind)).unwrap();
+        assert_eq!(
+            schema.pointer("/properties/agsdlHostPermissions/default"),
+            Some(&json!("read-only"))
+        );
+        assert!(validate_document(kind, &user, &doc(json!({"preset":"workspace", "rules":[{"action":"network", "effect":"ask"}], "reviewer":"person"}))).valid);
+        assert!(!validate_document(kind, &project, &doc(json!("read-only"))).valid);
+        for invalid in [
+            json!(null),
+            json!("unknown"),
+            json!({"preset":"full", "unknown":true}),
+            json!({"rules":[{"action":"bogus", "effect":"allow"}]}),
+        ] {
+            assert!(!validate_document(kind, &user, &doc(invalid)).valid);
+        }
+        let descriptor = descriptors()
+            .into_iter()
+            .find(|d| d.document == kind && d.json_pointer == "/agsdlHostPermissions")
+            .unwrap();
+        assert_eq!(descriptor.scopes, vec!["user"]);
+        assert_eq!(descriptor.merge_strategy, ConfigMergeStrategy::Replace);
+        assert_eq!(descriptor.sensitivity, ConfigSensitivity::ApprovalRequired);
+        assert_eq!(descriptor.apply_mode, ConfigApplyMode::Live);
+        assert!(
+            !classify_sensitive_paths(kind, &["/agsdlHostPermissions/rules/0/effect".into()])
+                .0
+                .is_empty()
+        );
+
+        // Session currently has no setter; projection must reject this field
+        // defensively if a future producer puts it in an overlay.
+        let mut user_docs = BTreeMap::new();
+        user_docs.insert(kind, doc(json!({"preset":"workspace", "outside":"deny"})));
+        let mut project_docs = BTreeMap::new();
+        project_docs.insert(kind, doc(json!("full")));
+        let mut session = BTreeMap::new();
+        session.insert(kind, doc(json!("full")));
+        let (effective, _) =
+            effective_documents(&user_docs, &[("project", &project_docs)], &session);
+        assert_eq!(
+            effective["tools"]["agsdlHostPermissions"],
+            json!({"preset":"workspace", "outside":"deny"})
+        );
+    }
+
+    #[test]
     fn every_default_document_validates_when_persisted() {
         for kind in ConfigDocumentKind::ALL {
             let mut document = default_document(kind);
@@ -1733,6 +1928,34 @@ mod tests {
     }
 
     #[test]
+    fn manual_model_reasoning_survives_document_validation_and_reload() {
+        let mut document = sparse_document(ConfigDocumentKind::Providers);
+        document["manualModels"] = json!({
+            "local:model": {
+                "providerId": "local",
+                "modelId": "local-reasoner",
+                "displayName": "Local reasoner",
+                "enabled": true,
+                "reasoningEfforts": ["low", "medium", "high"],
+                "defaultReasoningEffort": "medium"
+            }
+        });
+        let result =
+            validate_document(ConfigDocumentKind::Providers, &ConfigScope::User, &document);
+        assert!(result.valid, "{:?}", result.diagnostics);
+        let parsed: ProvidersDocument = serde_json::from_value(document).unwrap();
+        let reloaded = serde_json::to_value(parsed).unwrap();
+        assert_eq!(
+            reloaded["manualModels"]["local:model"]["reasoningEfforts"],
+            json!(["low", "medium", "high"])
+        );
+        assert_eq!(
+            reloaded["manualModels"]["local:model"]["defaultReasoningEffort"],
+            "medium"
+        );
+    }
+
+    #[test]
     fn accepts_sparse_builtin_providers_but_requires_a_type_for_custom_providers() {
         let mut builtin = sparse_document(ConfigDocumentKind::Providers);
         builtin["providers"] = json!({ "openai": { "enabled": true } });
@@ -1748,6 +1971,27 @@ mod tests {
             .diagnostics
             .iter()
             .any(|entry| entry.code == "config.provider.type_missing"));
+    }
+
+    #[test]
+    fn rejects_remote_http_disguised_as_local_in_provider_documents() {
+        let mut document = sparse_document(ConfigDocumentKind::Providers);
+        document["providers"] = json!({
+            "custom": {"providerType": "openai-compatible", "baseUrl": "http://example.test/v1", "isLocal": true}
+        });
+        document["speechProviders"] = json!({
+            "speech": {"providerType": "openai-compatible", "name": "Speech", "baseUrl": "http://example.test/v1", "model": "test", "isLocal": true}
+        });
+        let result =
+            validate_document(ConfigDocumentKind::Providers, &ConfigScope::User, &document);
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|item| item.code == "config.provider.endpoint_unsafe"));
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|item| item.code == "config.speech_provider.endpoint_unsafe"));
     }
 
     #[test]

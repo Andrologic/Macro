@@ -1,0 +1,40 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "shared-instance-parallel",
+  "agents": {
+    "lead": {
+      "harness": "example",
+      "permissions": "read-only"
+    },
+    "reviewer": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "start",
+    "steps": {
+      "start": {
+        "type": "agent",
+        "agent": "lead",
+        "next": [
+          "a",
+          "b"
+        ]
+      },
+      "a": {
+        "type": "agent",
+        "agent": "reviewer",
+        "next": "merge"
+      },
+      "b": {
+        "type": "agent",
+        "agent": "reviewer",
+        "next": "merge"
+      },
+      "merge": {
+        "type": "join"
+      }
+    }
+  }
+}

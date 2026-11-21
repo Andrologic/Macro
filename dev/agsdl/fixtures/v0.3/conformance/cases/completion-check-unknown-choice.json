@@ -1,0 +1,28 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "completion-check-unknown-choice",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "workspace",
+      "completionCheck": {
+        "command": "npm test",
+        "choices": [
+          "finished"
+        ]
+      }
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": {
+          "done": []
+        }
+      }
+    }
+  }
+}

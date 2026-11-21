@@ -1,0 +1,99 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "demo-refund",
+  "title": "Remboursement accompagné",
+  "agents": {
+    "understand": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Identifier la commande, le motif et la solution souhaitée. Demander les informations manquantes."
+    },
+    "eligibility": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Comparer la commande à la politique de remboursement. Expliquer les exceptions."
+    },
+    "alternative": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Proposer un échange ou une prise en charge adaptée, sans promettre une action non autorisée."
+    },
+    "notify": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Présenter la décision avec empathie, le délai attendu et les prochaines étapes."
+    },
+    "scene-main-lookup": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Consulter la commande"
+    },
+    "scene-main-eligible": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Remboursement possible ?"
+    },
+    "scene-main-approval": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Accord du responsable"
+    },
+    "scene-main-refund": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Effectuer le remboursement"
+    }
+  },
+  "flow": {
+    "entry": "understand",
+    "steps": {
+      "understand": {
+        "type": "agent",
+        "agent": "understand",
+        "title": "Comprendre la demande",
+        "next": "lookup"
+      },
+      "lookup": {
+        "type": "agent",
+        "agent": "scene-main-lookup",
+        "title": "Consulter la commande",
+        "next": "eligibility"
+      },
+      "eligibility": {
+        "type": "agent",
+        "agent": "eligibility",
+        "title": "Vérifier l’éligibilité",
+        "next": "eligible"
+      },
+      "eligible": {
+        "type": "agent",
+        "agent": "scene-main-eligible",
+        "title": "Remboursement possible ?",
+        "next": "approval"
+      },
+      "approval": {
+        "type": "agent",
+        "agent": "scene-main-approval",
+        "title": "Accord du responsable",
+        "next": "refund"
+      },
+      "refund": {
+        "type": "agent",
+        "agent": "scene-main-refund",
+        "title": "Effectuer le remboursement",
+        "next": "alternative"
+      },
+      "alternative": {
+        "type": "agent",
+        "agent": "alternative",
+        "title": "Proposer une alternative",
+        "next": "notify"
+      },
+      "notify": {
+        "type": "agent",
+        "agent": "notify",
+        "title": "Informer le client"
+      }
+    }
+  }
+}

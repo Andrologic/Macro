@@ -1,0 +1,32 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "schema-inconsistent",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only",
+      "results": {
+        "r": {
+          "schema": {
+            "type": "string",
+            "items": {
+              "type": "string"
+            },
+            "enum": [
+              "a",
+              1
+            ]
+          }
+        },
+        "o": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "x"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

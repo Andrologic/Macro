@@ -86,6 +86,7 @@ type SettingsCollectionHeaderProps = {
   description?: string;
   searchPlaceholder?: string;
   action?: React.ReactNode;
+  wrapActions?: boolean;
   className?: string;
 };
 
@@ -94,11 +95,14 @@ export const SettingsCollectionHeader: React.FC<SettingsCollectionHeaderProps> =
   description,
   searchPlaceholder,
   action,
+  wrapActions = false,
   className,
 }) => (
   <div
     className={[
-      'flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between',
+      wrapActions
+        ? 'flex min-w-0 flex-wrap items-center justify-between gap-3'
+        : 'flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between',
       className,
     ].filter(Boolean).join(' ')}
   >
@@ -109,11 +113,15 @@ export const SettingsCollectionHeader: React.FC<SettingsCollectionHeaderProps> =
       )}
     </div>
     {(searchPlaceholder || action) && (
-      <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto">
+      <div className={wrapActions
+        ? 'flex min-w-0 flex-1 basis-80 flex-wrap items-center gap-2'
+        : 'flex w-full shrink-0 items-center gap-2 sm:w-auto'}>
         {searchPlaceholder && (
           <SettingsSearchBar
             placeholder={searchPlaceholder}
-            className="h-9 min-w-0 flex-1 bg-background sm:w-72 sm:flex-none"
+            className={wrapActions
+              ? 'h-9 min-w-0 flex-1 basis-40 bg-background'
+              : 'h-9 min-w-0 flex-1 bg-background sm:w-72 sm:flex-none'}
           />
         )}
         {action}

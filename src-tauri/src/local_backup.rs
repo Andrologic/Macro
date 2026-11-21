@@ -17,6 +17,7 @@ const PROVIDER_SECRETS_RECOVERY_FILES: &[&str] = &[
     PROVIDER_SECRETS_FILE,
     "provider-secrets.migration-pending.json",
     "provider-secrets.json.v1.bak",
+    "provider-secrets.json.v0.bak",
 ];
 const CONFIG_FILES: &[&str] = &[
     "settings.json",
@@ -31,6 +32,8 @@ const CLIENT_KEYS: &[&str] = &[
     "macro_chat_message_images",
     "macro_chat_composer_drafts_v1",
     "macro_chat_questionnaire_drafts",
+    "macro_chat_queued_submissions_v1",
+    "macro_chat_unsaved_assistant_responses_v1",
 ];
 type Result<T> = std::result::Result<T, String>;
 
@@ -258,14 +261,46 @@ async fn connection(path: &Path) -> Result<SqliteConnection> {
     SqliteConnection::connect_with(
         &SqliteConnectOptions::new()
             .filename(path)
+            .pragma("recursive_triggers", "ON")
             .read_only(false)
             .create_if_missing(false),
     )
     .await
     .map_err(|e| e.to_string())
 }
+// Only remove objects from our freshly built reference, never from an archive.
+pub(crate) async fn remove_reference_e_schema(
+    db: &mut SqliteConnection,
+    versions: &[i64],
+) -> Result<()> {
+    if !versions.contains(&16) {
+        let triggers: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'e_source_version_*'")
+            .fetch_all(&mut *db).await.map_err(|e| e.to_string())?;
+        for name in triggers {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER {name}")))
+                .execute(&mut *db)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        sqlx::raw_sql("DROP TABLE e_source_relations; DROP TABLE e_source_fragments; DROP TABLE e_source_fields; DROP TABLE e_source_captures; DROP TABLE e_source_version;")
+            .execute(&mut *db).await.map_err(|e| e.to_string())?;
+    }
+    if !versions.contains(&15) {
+        sqlx::raw_sql("DROP TABLE e_inactive_mapping; DROP TABLE e_inactive_fragments; DROP TABLE e_inactive_records; DROP TABLE e_inactive_imports; DROP TABLE e_inactive_domain;")
+            .execute(db).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 async fn check_database(path: &Path) -> Result<()> {
-    let mut db = connection(path).await?;
+    let mut db = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(path)
+            .read_only(true)
+            .pragma("recursive_triggers", "ON"),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let check: String = sqlx::query_scalar("PRAGMA integrity_check")
         .fetch_one(&mut db)
         .await
@@ -273,27 +308,126 @@ async fn check_database(path: &Path) -> Result<()> {
     if check != "ok" {
         return Err("SQLite integrity check failed".into());
     }
-    let versions: Vec<i64> =
-        sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
-            .fetch_all(&mut db)
-            .await
-            .map_err(|e| e.to_string())?;
-    if versions
-        .iter()
-        .any(|v| !crate::db::SUPPORTED_MIGRATION_VERSIONS.contains(v))
-        || !versions.contains(&1)
-        || !versions.contains(&3)
-        || !versions.contains(&4)
-    {
+    let versions = crate::db::migration_history::canonical_versions(&mut db)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !versions.contains(&1) || !versions.contains(&3) || !versions.contains(&4) {
         return Err("Incompatible database schema".into());
     }
+    let has_trace = versions.contains(&10);
+    let has_management = versions.contains(&11);
+    let legacy_trace: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=6 AND name='006_pilot_tool_trace_revisions')").fetch_one(&mut db).await.map_err(|e|e.to_string())?;
+    let legacy_management: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=7 AND name='007_conversation_management')").fetch_one(&mut db).await.map_err(|e|e.to_string())?;
     let reference_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     let reference = crate::db::create_pool(&reference_dir.path().join("reference.db"))
         .await
         .map_err(|e| e.to_string())?;
+    let has_ledger: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='migration_identity_history')").fetch_one(&mut db).await.map_err(|e|e.to_string())?;
+    if !has_ledger {
+        let unified: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version>=20)")
+                .fetch_one(&mut db)
+                .await
+                .map_err(|e| e.to_string())?;
+        if unified {
+            return Err("Unified migration history is missing its identity ledger".into());
+        }
+        sqlx::query("DROP TABLE migration_identity_history")
+            .execute(&reference)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    crate::db::migration_history::remove_reference_schema(
+        &mut *reference.acquire().await.map_err(|e| e.to_string())?,
+        &versions,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if !versions.contains(&19) {
+        crate::db::connect_transfer::remove_publication_reference_in(
+            &mut *reference.acquire().await.map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    if !versions.contains(&18) {
+        crate::db::connect_transfer::remove_reference_schema_in(
+            &mut *reference.acquire().await.map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    if !versions.contains(&17) {
+        crate::db::chat_admission::remove_reference_schema(&reference)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    remove_reference_e_schema(
+        &mut *reference.acquire().await.map_err(|e| e.to_string())?,
+        &versions,
+    )
+    .await?;
+    if !versions.contains(&14) {
+        crate::db::conversation_catalog::remove_reference_schema(&reference)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    if !versions.contains(&13) {
+        crate::db::conversation_content::remove_reference_schema(&reference)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    if !versions.contains(&12) {
+        // Version 12 added these tables. An older archive must match its own
+        // schema, without accepting newer undeclared tables as extra objects.
+        for statement in [
+            "DROP TABLE pilot_file_chunks",
+            "DROP TABLE pilot_file_sends",
+            "DROP TABLE pilot_message_attachments",
+            "DROP TABLE pilot_file_transfers",
+            "DROP TABLE pilot_file_sources",
+            "DROP TABLE pilot_file_binding_history",
+            "DROP TABLE pilot_file_authorities",
+        ] {
+            sqlx::query(statement)
+                .execute(&reference)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    if !has_management {
+        for statement in [
+            "DROP TRIGGER conversation_management_insert",
+            "DROP TRIGGER conversation_management_update",
+            "DROP TRIGGER conversation_response_insert",
+            "DROP TRIGGER conversation_response_update",
+            "DROP TABLE conversation_response_versions",
+            "DROP TABLE conversation_action_receipts",
+            "DROP TABLE conversation_management",
+        ] {
+            sqlx::query(statement)
+                .execute(&reference)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    if !has_trace {
+        for statement in [
+            "DROP TRIGGER messages_tool_trace_revision_insert",
+            "DROP TRIGGER messages_tool_trace_revision_delete",
+            "DROP TRIGGER messages_tool_trace_revision_update_same_conversation",
+            "DROP TRIGGER messages_tool_trace_revision_update_conversation",
+            "DROP TABLE conversation_tool_trace_revisions",
+        ] {
+            sqlx::query(statement)
+                .execute(&reference)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
     if !versions.contains(&9) {
         sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
             .execute(&reference)
@@ -316,13 +450,13 @@ async fn check_database(path: &Path) -> Result<()> {
             .await
             .map_err(|e| e.to_string())?;
     }
-    if !versions.contains(&7) {
+    if !versions.contains(&7) || legacy_management {
         sqlx::query("DROP TABLE tool_invocations")
             .execute(&reference)
             .await
             .map_err(|e| e.to_string())?;
     }
-    if !versions.contains(&6) {
+    if !versions.contains(&6) || legacy_trace {
         sqlx::query("ALTER TABLE messages DROP COLUMN generation_attempts_json")
             .execute(&reference)
             .await
@@ -334,7 +468,15 @@ async fn check_database(path: &Path) -> Result<()> {
         return Err("Backup database tables do not match this Macro version".into());
     }
     for table in tables {
-        if table == "tool_invocations"
+        if table.starts_with("engine_")
+            || table == "migration_identity_history"
+            || table.starts_with("connect_")
+            || table.starts_with("chat_admission_")
+            || table.starts_with("e_inactive_")
+            || table.starts_with("e_source_")
+            || table == "conversation_catalog_version"
+            || table == "conversation_content_versions"
+            || table == "tool_invocations"
             || table == "agent_run_transitions"
             || table == "conversation_goals"
             || table.starts_with("conversation_goal_")
@@ -409,6 +551,11 @@ async fn check_database(path: &Path) -> Result<()> {
         .map_err(|e| e.to_string())?;
     if actual_schema != expected_schema {
         return Err("Backup database schema objects do not match this Macro version".into());
+    }
+    if versions.contains(&14) {
+        crate::db::conversation_catalog::validate_schema(&mut db)
+            .await
+            .map_err(|e| e.to_string())?;
     }
     reference.close().await;
     let violations = sqlx::query("PRAGMA foreign_key_check")
@@ -567,6 +714,36 @@ fn make_config_files_portable(files: &mut BTreeMap<String, Entry>) -> Result<()>
     }
     Ok(())
 }
+// Native authentication identities must not reconnect to an existing OS vault.
+// Keep the relay address and display label, but allocate a new configuration context.
+fn make_state_file_portable(files: &mut BTreeMap<String, Entry>) -> Result<()> {
+    let Some(entry) = files.get_mut("data/state.json") else {
+        return Ok(());
+    };
+    let bytes = STANDARD
+        .decode(&entry.data)
+        .map_err(|error| error.to_string())?;
+    crate::state_manager::validate_backup_state(&bytes)?;
+    let mut snapshot: crate::state_manager::StateSnapshot =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    if let Some(pilot) = snapshot.values.get_mut("macro_pilot_native_v1") {
+        let mut detached = serde_json::json!({
+            "configurationId": format!("config:{}", uuid::Uuid::new_v4().simple()),
+            "relayOrigin": pilot.get("relayOrigin").filter(|value| value.is_string()).cloned(),
+        });
+        if let Some(label) = pilot
+            .get("pendingInstanceLabel")
+            .filter(|value| value.is_string())
+        {
+            detached["pendingInstanceLabel"] = label.clone();
+        }
+        *pilot = detached;
+    }
+    let bytes = serde_json::to_vec(&snapshot).map_err(|error| error.to_string())?;
+    entry.sha256 = hash(&bytes);
+    entry.data = STANDARD.encode(bytes);
+    Ok(())
+}
 async fn capture(
     data: &Path,
     config: &Path,
@@ -614,6 +791,7 @@ async fn capture(
     }
     if portable {
         make_config_files_portable(&mut files)?;
+        make_state_file_portable(&mut files)?;
     }
     Ok(Archive {
         format: "macro-local-profile".into(),
@@ -786,6 +964,27 @@ fn preserve_raw(archive: &Archive, path: &Path) -> Result<()> {
 #[serde(deny_unknown_fields)]
 struct RestoreJournal {
     preserved: String,
+    #[serde(default)]
+    phase: RestorePhase,
+}
+#[derive(Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum RestorePhase {
+    #[default]
+    Rollback,
+    InstallHold,
+}
+
+async fn install_restore_hold(data: &Path) -> Result<()> {
+    let path = data.join("macro.db");
+    if !path.exists() {
+        return Ok(());
+    }
+    // No runtime is alive here. Validate/migrate before making the restored
+    // profile available; retain restoring.json if any step fails.
+    crate::db::restore_admission_hold(&path)
+        .await
+        .map_err(|e| e.to_string())
 }
 fn preserved_path(dir: &Path, journal: &RestoreJournal) -> Result<PathBuf> {
     let id = journal
@@ -971,7 +1170,11 @@ async fn load_restore_archive(path: &Path) -> Result<Archive> {
         )?;
         make_config_files_portable(&mut archive.files)?;
         archive.format = "macro-local-profile".into();
+    } else {
+        // Verify original checksums before detaching identities in older portable archives.
+        validate(&archive).await?;
     }
+    make_state_file_portable(&mut archive.files)?;
     validate(&archive).await?;
     Ok(archive)
 }
@@ -1001,30 +1204,63 @@ async fn process_startup_with_preserver(
     config: &Path,
     preserve: fn(&Archive, &Path) -> Result<()>,
 ) -> Result<()> {
+    let data = data.to_owned();
+    let config = config.to_owned();
+    let runtime = tokio::runtime::Handle::current();
+    #[cfg(not(test))]
+    let owner = crate::secrets::policy::POLICY.clone();
+    #[cfg(test)]
+    let owner = std::sync::Arc::new(crate::secrets::policy::PolicyOwner::for_test(&data));
+    crate::secrets::blocking::run(move || {
+        owner.startup(&data, |rotate| {
+            runtime.block_on(process_startup_locked(&data, &config, preserve, rotate))
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+async fn process_startup_locked(
+    data: &Path,
+    config: &Path,
+    preserve: fn(&Archive, &Path) -> Result<()>,
+    rotate_before_journal_removal: &dyn Fn()
+        -> std::result::Result<(), crate::secrets::SecretError>,
+) -> Result<()> {
     let dir = data.join("local-backup");
     safe_parent(&dir, dir.parent().ok_or("Missing profile root")?)?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let journal = dir.join("restoring.json");
     if journal.exists() {
-        let marker: RestoreJournal =
+        let mut marker: RestoreJournal =
             serde_json::from_slice(&read_bounded(&journal)?).map_err(|e| e.to_string())?;
-        let original = load_archive(&preserved_path(&dir, &marker)?)?;
-        validate_raw(&original)?;
-        apply_files(&original, data, config, true)?;
-        let status = BackupStatus {
-            message: String::new(),
-            code: Some(BackupStatusCode::RolledBack),
-            path: None,
-            browser: Some(original.browser),
-        };
-        atomic(
-            &dir.join("status.json"),
-            &serde_json::to_vec(&status).map_err(|e| e.to_string())?,
-        )?;
+        if marker.phase == RestorePhase::Rollback {
+            let original = load_archive(&preserved_path(&dir, &marker)?)?;
+            validate_raw(&original)?;
+            apply_files(&original, data, config, true)?;
+            let status = BackupStatus {
+                message: String::new(),
+                code: Some(BackupStatusCode::RolledBack),
+                path: None,
+                browser: Some(original.browser),
+            };
+            atomic(
+                &dir.join("status.json"),
+                &serde_json::to_vec(&status).map_err(|e| e.to_string())?,
+            )?;
+            // Raw rollback is complete. A failed nonce rotation must not apply it again.
+            marker.phase = RestorePhase::InstallHold;
+            atomic(
+                &journal,
+                &serde_json::to_vec(&marker).map_err(|e| e.to_string())?,
+            )?;
+        }
+        install_restore_hold(data).await?;
         // A recovered request must not replay the failed restore on this launch.
         if dir.join("request.json").exists() {
             remove_durable(&dir.join("request.json"))?;
         }
+        rotate_before_journal_removal().map_err(|error| error.to_string())?;
         remove_durable(&journal)?;
     }
     let request_path = dir.join("request.json");
@@ -1063,18 +1299,28 @@ async fn process_startup_with_preserver(
         } else if request.operation == "restore" {
             let archive = load_restore_archive(&dir.join("incoming.json")).await?;
             let original = capture_raw(data, config, request.browser)?;
-            let marker = RestoreJournal { preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()) };
+            let mut marker = RestoreJournal { preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()), phase: RestorePhase::Rollback };
             let preservation = preserved_path(&dir, &marker)?;
             preserve(&original, &preservation)?;
             atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
             if let Err(error) = apply(&archive, data, config) {
                 apply_files(&original, data, config, true).map_err(|rollback| format!("Restore failed: {error}. Rollback failed: {rollback}. Original preserved in {}", dir.display()))?;
+                let status = BackupStatus { message: error.clone(), code: Some(BackupStatusCode::Failed), path: None, browser: None };
+                atomic(&dir.join("status.json"), &serde_json::to_vec(&status).map_err(|e| e.to_string())?)?;
+                marker.phase = RestorePhase::InstallHold;
+                atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
+                install_restore_hold(data).await?;
+                rotate_before_journal_removal().map_err(|error| error.to_string())?;
                 remove_durable(&journal)?;
                 return Err(error);
             }
             let status = BackupStatus { message: String::new(), code: Some(BackupStatusCode::Restored), path: Some(preservation.to_string_lossy().into()), browser: Some(archive.browser) };
             atomic(&dir.join("status.json"), &serde_json::to_vec(&status).map_err(|e| e.to_string())?)?;
+            marker.phase = RestorePhase::InstallHold;
+            atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
+            install_restore_hold(data).await?;
             remove_durable(&request_path)?;
+            rotate_before_journal_removal().map_err(|error| error.to_string())?;
             remove_durable(&journal)?;
             Ok(status)
         } else { Err("Unknown backup operation".into()) }
@@ -1185,7 +1431,168 @@ pub fn local_backup_acknowledge(app: tauri::AppHandle) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    async fn profile() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    fn assert_empty_policy(data: &Path) {
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(data.join(PROVIDER_SECRETS_FILE)).unwrap()).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 4);
+        assert_eq!(value["version"], 2);
+        let epoch = uuid::Uuid::parse_str(value["policyEpoch"].as_str().unwrap()).unwrap();
+        assert!(!epoch.is_nil());
+        assert_eq!(value["namespaces"].as_object().unwrap().len(), 5);
+        assert!(value["namespaces"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|map| map.as_object().unwrap().is_empty()));
+        assert!(value["chatgpt_sessions"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn policy_restore_crash_child() {
+        use std::io::{BufRead, Write};
+        let Some(data) = std::env::var_os("MACRO_POLICY_RESTORE_CRASH_DATA") else {
+            return;
+        };
+        let config = PathBuf::from(std::env::var_os("MACRO_POLICY_RESTORE_CRASH_CONFIG").unwrap());
+        let data = PathBuf::from(data);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let handle = tokio::runtime::Handle::current();
+            let owner = crate::secrets::policy::PolicyOwner::for_test(&data);
+            crate::secrets::blocking::run(move || {
+                owner.startup(&data, |_| {
+                    handle.block_on(process_startup_locked(
+                        &data,
+                        &config,
+                        preserve_raw,
+                        &|| {
+                            println!("synthetic-restore-lock-held");
+                            std::io::stdout().flush().unwrap();
+                            let mut command = String::new();
+                            std::io::stdin().lock().read_line(&mut command).unwrap();
+                            std::process::exit(73);
+                        },
+                    ))
+                })
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        });
+        panic!("crash hook was not reached");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn interrupted_raw_restore_never_revalidates_an_old_policy_stamp() {
+        use std::io::{BufRead, Write};
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let (_temp, data, config) = profile().await;
+        let owner = Arc::new(crate::secrets::policy::PolicyOwner::for_test(&data));
+        owner.startup(&data, |_| Ok(())).unwrap();
+        let old_stamp = owner.qualification_stamp().unwrap();
+        let old_bytes = fs::read(data.join(PROVIDER_SECRETS_FILE)).unwrap();
+        let original = capture_raw(&data, &config, BTreeMap::new()).unwrap();
+        let directory = data.join("local-backup");
+        fs::create_dir_all(&directory).unwrap();
+        let preserved_name = format!("preserved-{}.json", uuid::Uuid::new_v4());
+        let preserved = directory.join(&preserved_name);
+        preserve_raw(&original, &preserved).unwrap();
+        let archive_bytes = fs::read(&preserved).unwrap();
+        let writer = crate::secrets::policy::PolicyOwner::for_test(&data);
+        writer.startup(&data, |_| Ok(())).unwrap();
+        assert!(owner.qualification_stamp().unwrap() != old_stamp);
+        let marker = RestoreJournal {
+            preserved: preserved_name,
+            phase: RestorePhase::Rollback,
+        };
+        atomic(
+            &directory.join("restoring.json"),
+            &serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        let mut child = Child(
+            crate::core::process::background_command(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "local_backup::tests::policy_restore_crash_child",
+                    "--nocapture",
+                ])
+                .env("MACRO_POLICY_RESTORE_CRASH_DATA", &data)
+                .env("MACRO_POLICY_RESTORE_CRASH_CONFIG", &config)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .unwrap(),
+        );
+        let stdout = child.0.stdout.take().unwrap();
+        let (held_tx, held_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines() {
+                if line.unwrap().contains("synthetic-restore-lock-held") {
+                    held_tx.send(()).unwrap();
+                    break;
+                }
+            }
+        });
+        held_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        reader.join().unwrap();
+        let (captured_tx, captured_rx) = mpsc::channel();
+        let capture_owner = owner.clone();
+        let capture = std::thread::spawn(move || {
+            captured_tx
+                .send(capture_owner.qualification_stamp().is_ok())
+                .unwrap();
+        });
+        let excluded = captured_rx.recv_timeout(Duration::from_millis(50)).is_err();
+        child.0.stdin.take().unwrap().write_all(b"crash\n").unwrap();
+        let status = child.0.wait().unwrap();
+        let refused = !captured_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        capture.join().unwrap();
+        assert!(excluded);
+        assert_eq!(status.code(), Some(73));
+        assert!(refused);
+        assert_eq!(
+            fs::read(data.join(PROVIDER_SECRETS_FILE)).unwrap(),
+            old_bytes
+        );
+        assert_eq!(fs::read(&preserved).unwrap(), archive_bytes);
+        let pending: RestoreJournal =
+            serde_json::from_slice(&fs::read(directory.join("restoring.json")).unwrap()).unwrap();
+        assert!(pending.phase == RestorePhase::InstallHold);
+        assert!(owner.qualification_stamp().is_err());
+        // A closed-profile repair must survive retry: the raw archive is not applied twice.
+        let mut repaired: serde_json::Value = serde_json::from_slice(&old_bytes).unwrap();
+        repaired["namespaces"]["providers"]["synthetic"] = serde_json::json!("repair-before-retry");
+        fs::write(
+            data.join(PROVIDER_SECRETS_FILE),
+            serde_json::to_vec(&repaired).unwrap(),
+        )
+        .unwrap();
+        process_startup(&data, &config).await.unwrap();
+        let after: serde_json::Value =
+            serde_json::from_slice(&fs::read(data.join(PROVIDER_SECRETS_FILE)).unwrap()).unwrap();
+        assert_eq!(
+            after["namespaces"]["providers"]["synthetic"],
+            "repair-before-retry"
+        );
+        assert!(owner.qualification_stamp().unwrap() != old_stamp);
+        assert_eq!(fs::read(&preserved).unwrap(), archive_bytes);
+        assert!(!directory.join("restoring.json").exists());
+    }
+
+    pub(super) async fn profile() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let data = temp.path().join("data");
         let config = temp.path().join("config");
@@ -1206,6 +1613,36 @@ mod tests {
         assert_eq!(busy, 0);
         pool.close().await;
         (temp, data, config)
+    }
+
+    pub(super) async fn remove_post_catalog_schema(db: &mut SqliteConnection) {
+        crate::db::migration_tests::drop_agsdl(db).await;
+        crate::db::chat_admission::remove_reference_schema_in(db)
+            .await
+            .unwrap();
+        remove_reference_e_schema(db, &[]).await.unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version>14")
+            .execute(db)
+            .await
+            .unwrap();
+    }
+    async fn remove_content_schema(db: &mut SqliteConnection) {
+        remove_post_catalog_schema(db).await;
+        crate::db::conversation_catalog::remove_reference_schema_in(db)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version=14")
+            .execute(&mut *db)
+            .await
+            .unwrap();
+        let names: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'content_versions_*'").fetch_all(&mut *db).await.unwrap();
+        for name in names {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER {name}")))
+                .execute(&mut *db)
+                .await
+                .unwrap();
+        }
+        sqlx::raw_sql("DROP TABLE conversation_content_versions; DELETE FROM schema_migrations WHERE version=13;").execute(&mut *db).await.unwrap();
     }
 
     async fn remove_post_v4_schema(db: &mut SqliteConnection) {
@@ -1229,6 +1666,35 @@ mod tests {
     }
 
     async fn remove_v9_schema(db: &mut SqliteConnection) {
+        remove_content_schema(db).await;
+        for statement in [
+            "DROP TABLE pilot_file_chunks",
+            "DROP TABLE pilot_file_sends",
+            "DROP TABLE pilot_message_attachments",
+            "DROP TABLE pilot_file_transfers",
+            "DROP TABLE pilot_file_sources",
+            "DROP TABLE pilot_file_binding_history",
+            "DROP TABLE pilot_file_authorities",
+        ] {
+            sqlx::query(statement).execute(&mut *db).await.unwrap();
+        }
+        for statement in [
+            "DROP TRIGGER conversation_management_insert",
+            "DROP TRIGGER conversation_management_update",
+            "DROP TRIGGER conversation_response_insert",
+            "DROP TRIGGER conversation_response_update",
+            "DROP TABLE conversation_response_versions",
+            "DROP TABLE conversation_action_receipts",
+            "DROP TABLE conversation_management",
+            "DROP TRIGGER messages_tool_trace_revision_insert",
+            "DROP TRIGGER messages_tool_trace_revision_delete",
+            "DROP TRIGGER messages_tool_trace_revision_update_same_conversation",
+            "DROP TRIGGER messages_tool_trace_revision_update_conversation",
+            "DROP TABLE conversation_tool_trace_revisions",
+            "DELETE FROM schema_migrations WHERE version >= 10",
+        ] {
+            sqlx::query(statement).execute(&mut *db).await.unwrap();
+        }
         sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
             .execute(&mut *db)
             .await
@@ -1398,18 +1864,18 @@ mod tests {
                 .fetch_one(&mut restored)
                 .await
                 .unwrap(),
-            4
+            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
         );
         restored.close().await.unwrap();
 
-        // Normal application startup migrates the restored database, not the archive.
+        // Restore installs the current schema and read-only ownership before startup.
         let pool = crate::db::create_pool(&database).await.unwrap();
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_migrations")
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            9
+            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1433,6 +1899,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn historical_archives_validate_before_and_after_migration_without_loss() {
+        for variant in 0..6 {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("archive.db");
+            let mut c = crate::db::migration_tests::historical_database(&path, variant).await;
+            sqlx::raw_sql("INSERT INTO conversations(id,title,created_at,updated_at) VALUES('preserved','Synthetic','original','original'); INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES('preserved-message','preserved','user','Keep café transcript','original');").execute(&mut c).await.unwrap();
+            if variant >= 2 {
+                sqlx::query("INSERT INTO engine_systems VALUES('preserved-system','request','{}','{}','{}','{}')").execute(&mut c).await.unwrap();
+            }
+            c.close().await.unwrap();
+            let original = fs::read(&path).unwrap();
+            check_database(&path)
+                .await
+                .unwrap_or_else(|e| panic!("historical variant {variant}: {e}"));
+            assert_eq!(fs::read(&path).unwrap(), original);
+            let pool = crate::db::create_pool(&path).await.unwrap();
+            assert_eq!(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT content FROM messages WHERE id='preserved-message'"
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                "Keep café transcript"
+            );
+            if variant >= 2 {
+                assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='engine_systems'").fetch_one(&pool).await.unwrap(), 0);
+            }
+            pool.close().await;
+            check_database(&path).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn validates_both_published_v10_archive_schemas_without_migrating_them() {
+        for visible_search in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let database = temp.path().join("published.db");
+            let mut old =
+                crate::db::migration_tests::published_branch_database(&database, visible_search)
+                    .await;
+            let stamps: Vec<(i64, String, String)> = sqlx::query_as(
+                "SELECT version,name,applied_at FROM schema_migrations ORDER BY version",
+            )
+            .fetch_all(&mut old)
+            .await
+            .unwrap();
+            check_database(&database).await.unwrap();
+            assert_eq!(
+                sqlx::query_as::<_, (i64, String, String)>(
+                    "SELECT version,name,applied_at FROM schema_migrations ORDER BY version"
+                )
+                .fetch_all(&mut old)
+                .await
+                .unwrap(),
+                stamps
+            );
+            sqlx::query("UPDATE schema_migrations SET name='unknown_010' WHERE version=10")
+                .execute(&mut old)
+                .await
+                .unwrap();
+            assert!(check_database(&database).await.is_err());
+        }
+    }
+
+    #[tokio::test]
     async fn database_validation_accepts_current_and_rejects_unknown_migration_versions() {
         let (_temp, data, _config) = profile().await;
         let database = data.join("macro.db");
@@ -1442,16 +1974,19 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(
+            version,
+            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
+        );
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
             .unwrap();
         db.close().await.unwrap();
-        assert_eq!(
-            check_database(&database).await.unwrap_err(),
-            "Incompatible database schema"
-        );
+        assert!(check_database(&database)
+            .await
+            .unwrap_err()
+            .contains("Unknown migration identity 99/future"));
     }
 
     #[tokio::test]
@@ -1735,13 +2270,10 @@ mod tests {
         assert!(!dir.join("restoring.json").exists());
         assert!(!dir.join("request.json").exists());
         let recovered = capture_raw(&data, &config, BTreeMap::new()).unwrap();
-        assert_eq!(
-            recovered.files.keys().collect::<Vec<_>>(),
-            original.files.keys().collect::<Vec<_>>()
-        );
-        for (name, entry) in original.files {
-            assert_eq!(recovered.files[&name].sha256, entry.sha256);
-        }
+        // Startup creates the empty policy document; all archived files remain checked below.
+        assert_empty_policy(&data);
+        assert!(!original.files.contains_key("data/provider-secrets.json"));
+        super::qualification::assert_held_files(&recovered, &original).await;
         process_startup(&data, &config).await.unwrap();
         assert_eq!(fs::read(object).unwrap(), b"original leaf");
     }
@@ -2042,6 +2574,75 @@ mod tests {
         );
     }
     #[tokio::test]
+    async fn recovery_browser_state_round_trips_and_historical_restore_preserves_replaced_values() {
+        let (temp, data, config) = profile().await;
+        let browser = BTreeMap::from([
+            (
+                "macro_chat_queued_submissions_v1".into(),
+                r#"[{"id":"accepted-turn","input":{"content":"Queued instruction"}}]"#.into(),
+            ),
+            (
+                "macro_chat_unsaved_assistant_responses_v1".into(),
+                r#"{"fallback":{"id":"fallback","content":"Recovered answer"}}"#.into(),
+            ),
+        ]);
+        let archive = capture(&data, &config, browser.clone(), true)
+            .await
+            .unwrap();
+        validate(&archive).await.unwrap();
+        let path = temp.path().join("recovery.json");
+        write_new(&path, &serde_json::to_vec(&archive).unwrap()).unwrap();
+        assert_eq!(load_restore_archive(&path).await.unwrap().browser, browser);
+
+        // Version 1 archives predating recovery keys remain valid and replace the whole browser profile.
+        let historical = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        let dir = data.join("local-backup");
+        fs::create_dir_all(&dir).unwrap();
+        atomic(
+            &dir.join("incoming.json"),
+            &serde_json::to_vec(&historical).unwrap(),
+        )
+        .unwrap();
+        atomic(
+            &dir.join("request.json"),
+            &serde_json::to_vec(&Request {
+                operation: "restore".into(),
+                path: path.to_string_lossy().into(),
+                browser: browser.clone(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        process_startup(&data, &config).await.unwrap();
+        let status: BackupStatus =
+            serde_json::from_slice(&fs::read(dir.join("status.json")).unwrap()).unwrap();
+        assert_eq!(status.browser, Some(BTreeMap::new()));
+        let preserved = PathBuf::from(status.path.unwrap());
+        let original = load_archive(&preserved).unwrap();
+        validate_raw(&original).unwrap();
+        assert_eq!(original.browser, browser);
+
+        // An interrupted native replacement recovers the same complete browser snapshot.
+        atomic(
+            &dir.join("restoring.json"),
+            &serde_json::to_vec(&RestoreJournal {
+                phase: RestorePhase::Rollback,
+                preserved: preserved.file_name().unwrap().to_string_lossy().into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(data.join("macro.db"), b"partial replacement").unwrap();
+        process_startup(&data, &config).await.unwrap();
+        check_database(&data.join("macro.db")).await.unwrap();
+        let recovered: BackupStatus =
+            serde_json::from_slice(&fs::read(dir.join("status.json")).unwrap()).unwrap();
+        assert_eq!(recovered.browser, Some(browser));
+        assert!(preserved.exists());
+    }
+    #[tokio::test]
     async fn rejects_tampering_and_future_versions_without_touching_original() {
         let (_temp, data, config) = profile().await;
         let original = fs::read(data.join("macro.db")).unwrap();
@@ -2062,6 +2663,7 @@ mod tests {
         let dir = data.join("local-backup");
         fs::create_dir_all(&dir).unwrap();
         let marker = RestoreJournal {
+            phase: RestorePhase::Rollback,
             preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()),
         };
         let preserved = preserved_path(&dir, &marker).unwrap();
@@ -2077,6 +2679,69 @@ mod tests {
         assert!(preserved.exists());
         assert!(!dir.join("restoring.json").exists());
     }
+    #[tokio::test]
+    async fn chat_admission_restore_hold_phase_does_not_reapply_rollback() {
+        let (_temp, data, config) = profile().await;
+        let original = capture_raw(&data, &config, BTreeMap::new()).unwrap();
+        let dir = data.join("local-backup");
+        fs::create_dir_all(&dir).unwrap();
+        let marker = RestoreJournal {
+            phase: RestorePhase::InstallHold,
+            preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()),
+        };
+        preserve_raw(&original, &preserved_path(&dir, &marker).unwrap()).unwrap();
+        let mut db = connection(&data.join("macro.db")).await.unwrap();
+        sqlx::query("UPDATE messages SET content='installed replacement' WHERE id='message'")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        atomic(
+            &dir.join("restoring.json"),
+            &serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        process_startup(&data, &config).await.unwrap();
+        let mut db = connection(&data.join("macro.db")).await.unwrap();
+        let value: (String, String) = sqlx::query_as("SELECT m.content,o.mode FROM messages m JOIN chat_admission_owners o ON o.conversation_id=m.conversation_id WHERE m.id='message'")
+            .fetch_one(&mut db).await.unwrap();
+        assert_eq!(
+            value,
+            ("installed replacement".into(), "restore_hold".into())
+        );
+        assert!(
+            sqlx::query("UPDATE messages SET content='late' WHERE id='message'")
+                .execute(&mut db)
+                .await
+                .is_err()
+        );
+        assert!(!dir.join("restoring.json").exists());
+    }
+
+    #[tokio::test]
+    async fn chat_admission_restore_invalid_schema_retains_the_hold_journal() {
+        let (_temp, data, config) = profile().await;
+        let dir = data.join("local-backup");
+        fs::create_dir_all(&dir).unwrap();
+        let marker = RestoreJournal {
+            phase: RestorePhase::InstallHold,
+            preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()),
+        };
+        let mut db = connection(&data.join("macro.db")).await.unwrap();
+        sqlx::query("DROP TRIGGER chat_admission_messages_update")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        atomic(
+            &dir.join("restoring.json"),
+            &serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        assert!(process_startup(&data, &config).await.is_err());
+        assert!(dir.join("restoring.json").exists());
+    }
+
     #[tokio::test]
     async fn portable_restore_detaches_provider_secrets_and_keeps_them_in_rollback() {
         let (_temp, data, config) = profile().await;
@@ -2146,8 +2811,11 @@ mod tests {
             status.message
         );
 
+        assert_empty_policy(&data);
         for file in PROVIDER_SECRETS_RECOVERY_FILES {
-            assert!(!data.join(file).exists(), "{file} must be detached");
+            if *file != PROVIDER_SECRETS_FILE {
+                assert!(!data.join(file).exists(), "{file} must be detached");
+            }
         }
         let _secret_store_guard = crate::secrets::lock_test_store();
         crate::secrets::init(&data).expect("initialize detached secret store");
@@ -2219,7 +2887,7 @@ mod tests {
             Some(&serde_json::json!("https://current.invalid/v1"))
         );
     }
-    fn queue_restore(data: &Path, archive: &Archive) {
+    pub(super) fn queue_restore(data: &Path, archive: &Archive) {
         let dir = data.join("local-backup");
         fs::create_dir_all(&dir).unwrap();
         atomic(
@@ -2256,7 +2924,8 @@ mod tests {
         .unwrap();
         assert!(crate::app_updates::target_matches_persisted_channel(
             &data,
-            "stable-windows-x86_64"
+            "stable-windows-x86_64",
+            "windows-x86_64"
         )
         .unwrap());
         queue_restore(&data, &archive);
@@ -2264,26 +2933,30 @@ mod tests {
         // preference must not authorize activation before restore validation.
         assert!(!crate::app_updates::target_matches_persisted_channel(
             &data,
-            "stable-windows-x86_64"
+            "stable-windows-x86_64",
+            "windows-x86_64"
         )
         .unwrap());
         process_startup(&data, &config).await.unwrap();
         assert!(!has_pending_startup_work(&data).unwrap());
         assert!(!crate::app_updates::target_matches_persisted_channel(
             &data,
-            "stable-windows-x86_64"
+            "stable-windows-x86_64",
+            "windows-x86_64"
         )
         .unwrap());
         assert!(crate::app_updates::target_matches_persisted_channel(
             &data,
-            "preview-windows-x86_64"
+            "preview-windows-x86_64",
+            "windows-x86_64"
         )
         .unwrap());
         // An interrupted restoration also blocks even without a request file.
         fs::write(data.join("local-backup/restoring.json"), b"interrupted").unwrap();
         assert!(!crate::app_updates::target_matches_persisted_channel(
             &data,
-            "preview-windows-x86_64"
+            "preview-windows-x86_64",
+            "windows-x86_64"
         )
         .unwrap());
     }
@@ -2717,5 +3390,797 @@ mod tests {
                 Some(&serde_json::json!(expected_secret))
             );
         }
+    }
+
+    #[tokio::test]
+    async fn connect_transfer_restore_preserves_raw_prefix_and_import_lease_before_ready() {
+        let (_temp, data, config) = profile().await;
+        let path = data.join("macro.db");
+        let mut db = connection(&path).await.unwrap();
+        // Incomplete opaque storage is preserved; no ready/pin or producer
+        // authority is claimed by this synthetic backup fixture.
+        sqlx::raw_sql("INSERT INTO e_inactive_domain VALUES(1,1048576,64);
+            INSERT INTO e_inactive_imports VALUES(1,printf('%064d',1),'{}',0,0,0,2,512,0,0,1,1,0,NULL);
+            INSERT INTO e_inactive_records VALUES(1,0,'{}',0,NULL,NULL,NULL,NULL,2,1,x'',x'');
+            INSERT INTO e_inactive_fragments VALUES(1,0,0,zeroblob(32),x'6162',2,2,1);
+            INSERT INTO connect_transfers(transfer_id,local_role,relay_origin,account_id,source_instance_id,source_conversation_id,source_epoch,target_instance_id,source_generation,target_generation,binding_digest,binding_json,expectation_json,reserve_request,fingerprint,inactive_import_id,phase,charge_bytes)
+              VALUES('00000000-0000-4000-8000-000000000001','target','https://relay.invalid','account','source','conversation',1,'target','sg','tg',zeroblob(32),x'7b7d',x'7b7d',x'7b7d',zeroblob(32),1,'receiving',512);
+            INSERT INTO connect_raw_prefix VALUES('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002','tg',x'7b7d',zeroblob(32),4,1,2,0,512);
+            INSERT INTO connect_raw_chunks VALUES('00000000-0000-4000-8000-000000000001',0,0,zeroblob(32),x'6162',0,256);")
+            .execute(&mut db).await.unwrap();
+        db.close().await.unwrap();
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        validate(&archive).await.unwrap();
+        queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+        let mut db = connection(&path).await.unwrap();
+        let held: (i64, String, i64) =
+            sqlx::query_as("SELECT restore_hold,phase,inactive_import_id FROM connect_transfers")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        assert_eq!(held, (1, "reconciliation_required".into(), 1));
+        let prefix: (i64, i64, i64) =
+            sqlx::query_as("SELECT next_sequence,next_offset,eof FROM connect_raw_prefix")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        assert_eq!(prefix, (1, 2, 0));
+        assert_eq!(
+            sqlx::query_scalar::<_, Vec<u8>>("SELECT data FROM connect_raw_chunks")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            b"ab"
+        );
+        assert!(sqlx::query("DELETE FROM e_inactive_fragments")
+            .execute(&mut db)
+            .await
+            .is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT mode FROM chat_admission_owners WHERE conversation_id='conversation'"
+            )
+            .fetch_one(&mut db)
+            .await
+            .unwrap(),
+            "restore_hold"
+        );
+        db.close().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+#[path = "local_backup_qualification.rs"]
+mod qualification;
+
+#[cfg(test)]
+#[path = "local_backup_secrets_qualification.rs"]
+mod secrets_qualification;
+
+#[cfg(test)]
+mod content_backup_tests {
+    use super::*;
+    async fn strip_content(db: &mut SqliteConnection) {
+        tests::remove_post_catalog_schema(db).await;
+        crate::db::conversation_catalog::remove_reference_schema_in(db)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version=14")
+            .execute(&mut *db)
+            .await
+            .unwrap();
+        let names:Vec<String>=sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'content_versions_*'").fetch_all(&mut *db).await.unwrap();
+        for name in names {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER {name}")))
+                .execute(&mut *db)
+                .await
+                .unwrap();
+        }
+        sqlx::raw_sql("DROP TABLE conversation_content_versions; DELETE FROM schema_migrations WHERE version=13").execute(db).await.unwrap();
+    }
+    #[tokio::test]
+    async fn pre13_archive_validation_preserves_original_then_migrates_only_copy() {
+        let (temp, data, _config) = tests::profile().await;
+        let original = data.join("macro.db");
+        let mut db = connection(&original).await.unwrap();
+        strip_content(&mut db).await;
+        db.close().await.unwrap();
+        let before = fs::read(&original).unwrap();
+        check_database(&original).await.unwrap();
+        assert_eq!(fs::read(&original).unwrap(), before);
+        let copy = temp.path().join("migration-copy.db");
+        fs::copy(&original, &copy).unwrap();
+        check_database_startup(&copy).await.unwrap();
+        check_database(&copy).await.unwrap();
+        let mut db = connection(&copy).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_migrations")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM conversation_content_versions")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            1
+        );
+        db.close().await.unwrap();
+        assert_eq!(fs::read(&original).unwrap(), before);
+    }
+    #[tokio::test]
+    async fn schema13_rejects_missing_unknown_and_modified_objects() {
+        for mutation in [
+            "DROP TRIGGER content_versions_messages_insert",
+            "DROP TABLE conversation_content_versions",
+            "CREATE TRIGGER content_versions_unexpected AFTER INSERT ON settings BEGIN SELECT 1; END",
+            "CREATE TRIGGER unrelated_unexpected AFTER INSERT ON settings BEGIN SELECT 1; END",
+            "PRAGMA writable_schema=ON; UPDATE sqlite_master SET sql=replace(sql, 'AND revision >= 0', 'AND revision >= -1') WHERE name='conversation_content_versions'; PRAGMA writable_schema=OFF; PRAGMA schema_version=999",
+            "DELETE FROM schema_migrations WHERE version=13",
+            "UPDATE schema_migrations SET name='wrong' WHERE version=13",
+        ] {
+            let (_temp,data,_config)=tests::profile().await;
+            let path=data.join("macro.db");
+            let mut db=connection(&path).await.unwrap();
+            tests::remove_post_catalog_schema(&mut db).await;
+            crate::db::conversation_catalog::remove_reference_schema_in(&mut db).await.unwrap();
+            sqlx::query("DELETE FROM schema_migrations WHERE version=14").execute(&mut db).await.unwrap();
+            sqlx::raw_sql(mutation).execute(&mut db).await.unwrap(); db.close().await.unwrap();
+            let before=fs::read(&path).unwrap();
+            assert!(check_database(&path).await.is_err(),"accepted {mutation}");
+            assert_eq!(fs::read(&path).unwrap(),before);
+        }
+    }
+}
+
+#[cfg(test)]
+mod content_legacy_backup_tests {
+    use super::*;
+    #[tokio::test]
+    async fn restore_reconciles_linked_running_goal_before_hold_and_keeps_foreign_goal_writable() {
+        let (_temp, data, config) = tests::profile().await;
+        let path = data.join("macro.db");
+        let mut db = connection(&path).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("PRAGMA recursive_triggers")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("PRAGMA trusted_schema")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            1
+        );
+        sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,project_id,created_at,updated_at) VALUES('foreign','Foreign','Chat','project','t','t');
+            INSERT INTO agent_runs(id,parent_conversation_id,agent_profile,depth,status,prompt,attempt_count,created_at,updated_at,started_at) VALUES('run','conversation','synthetic',1,'running','Synthetic',1,'t','t','t');
+            INSERT INTO conversation_goals(goal_id,conversation_id,revision,objective,success_criteria_json,status,created_at,updated_at) VALUES('goal','conversation',1,'Synthetic','[]','auditing','t','t'),('foreign-goal','foreign',1,'Other','[]','active_ready','t','t');
+            INSERT INTO conversation_goal_audits(audit_id,conversation_id,goal_id,goal_revision,executor_turn_id,current_run_id,status,created_at,updated_at) VALUES('audit','conversation','goal',1,'turn','run','running','t','t');
+            INSERT INTO conversation_goal_audit_runs(audit_id,run_id,attempt,linked_at) VALUES('audit','run',1,'t');")
+            .execute(&mut db).await.unwrap();
+        db.close().await.unwrap();
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        tests::queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+        let status: BackupStatus =
+            serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap())
+                .unwrap();
+        assert_eq!(status.code, Some(BackupStatusCode::Restored));
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM agent_runs WHERE id='run'")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            "interrupted"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM conversation_goals WHERE goal_id='goal'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "paused"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT mode FROM chat_admission_owners WHERE conversation_id='conversation'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "restore_hold"
+        );
+        // These are the same official init_db reconcilers, now idempotent after
+        // restore installed its hold. No ordinary writer is opened afterward.
+        assert_eq!(
+            crate::db::agent_runs::reconcile_active_agent_runs_after_restart(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            crate::db::conversation_goals::reconcile_audits_after_restart(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        crate::db::tool_invocations::reconcile_pending_after_restart(&pool)
+            .await
+            .unwrap();
+        crate::db::chat_admission::reconcile_after_restart(&pool)
+            .await
+            .unwrap();
+        let owner = crate::core::db_state::DbPool::default();
+        owner.set_ready(pool.clone()).await.unwrap();
+        sqlx::query(
+            "UPDATE conversation_goals SET objective='Still writable' WHERE goal_id='foreign-goal'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(sqlx::query(
+            "UPDATE conversation_goals SET objective='forbidden' WHERE goal_id='goal'"
+        )
+        .execute(&pool)
+        .await
+        .is_err());
+        owner.set_initializing().await;
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn exact_v15_v16_restore_preserves_inactive_bytes_and_holds_chat_before_ready() {
+        for version in [15, 16] {
+            let (_temp, data, config) = tests::profile().await;
+            let path = data.join("macro.db");
+            let mut db = connection(&path).await.unwrap();
+            crate::db::migration_tests::drop_agsdl(&mut db).await;
+            crate::db::chat_admission::remove_reference_schema_in(&mut db)
+                .await
+                .unwrap();
+            remove_reference_e_schema(&mut db, &(1..=version).collect::<Vec<_>>())
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM schema_migrations WHERE version>?")
+                .bind(version)
+                .execute(&mut db)
+                .await
+                .unwrap();
+            // These are opaque stored bytes, not a portable-semantic fixture or
+            // an authority to open E. Backup must preserve even an incomplete import.
+            sqlx::raw_sql("INSERT INTO e_inactive_domain VALUES(1,1048576,8);
+                INSERT INTO e_inactive_imports VALUES(1,printf('%064d',1),'{}',0,0,0,7,512,1,1,10000,1000,1,NULL);
+                INSERT INTO e_inactive_records VALUES(1,0,'{}',0,NULL,NULL,NULL,NULL,7,0,x'',x'');
+                INSERT INTO e_inactive_fragments VALUES(1,0,0,zeroblob(32),x'00010203feff00',7,7,1);")
+                .execute(&mut db).await.unwrap();
+            let source_version: Option<(String, i64)> = if version == 16 {
+                Some(
+                    sqlx::query_as(
+                        "SELECT incarnation,revision FROM e_source_version WHERE singleton=1",
+                    )
+                    .fetch_one(&mut db)
+                    .await
+                    .unwrap(),
+                )
+            } else {
+                None
+            };
+            db.close().await.unwrap();
+            let before = fs::read(&path).unwrap();
+            check_database(&path).await.unwrap();
+            assert_eq!(fs::read(&path).unwrap(), before);
+            let archive = capture(&data, &config, BTreeMap::new(), true)
+                .await
+                .unwrap();
+            tests::queue_restore(&data, &archive);
+            process_startup(&data, &config).await.unwrap();
+            let status: BackupStatus =
+                serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap())
+                    .unwrap();
+            assert_eq!(status.code, Some(BackupStatusCode::Restored));
+            let pool = crate::db::create_pool(&path).await.unwrap();
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_migrations")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+                i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT mode FROM chat_admission_owners WHERE conversation_id='conversation'"
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                "restore_hold"
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, Vec<u8>>(
+                    "SELECT data FROM e_inactive_fragments WHERE import_id=1"
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                vec![0, 1, 2, 3, 254, 255, 0]
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT begin_json FROM e_inactive_imports WHERE id=1"
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                "{}"
+            );
+            assert_eq!(
+                crate::db::repository::list_messages(&pool, "conversation")
+                    .await
+                    .unwrap()[0]
+                    .content,
+                "Representative transcript"
+            );
+            if let Some(expected) = source_version {
+                assert_eq!(
+                    sqlx::query_as::<_, (String, i64)>(
+                        "SELECT incarnation,revision FROM e_source_version WHERE singleton=1"
+                    )
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+                    expected
+                );
+            }
+            let owner = crate::core::db_state::DbPool::default();
+            owner.set_ready(pool.clone()).await.unwrap();
+            assert!(
+                sqlx::query("UPDATE messages SET content='forbidden' WHERE id='message'")
+                    .execute(&pool)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                crate::db::inactive_storage::InactiveStorage::closed(pool.clone())
+                    .begin(b"{}")
+                    .await
+                    .unwrap_err(),
+                "inactive_storage_disabled"
+            );
+            owner.set_initializing().await;
+            pool.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_v5_v9_and_v12_archives_validate_before_copy_migration() {
+        for version in [5, 9, 12] {
+            let (temp, data, _config) = tests::profile().await;
+            let original = data.join("macro.db");
+            let mut db = connection(&original).await.unwrap();
+            tests::remove_post_catalog_schema(&mut db).await;
+            crate::db::conversation_catalog::remove_reference_schema_in(&mut db)
+                .await
+                .unwrap();
+            let names:Vec<String>=sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'content_versions_*'").fetch_all(&mut db).await.unwrap();
+            for name in names {
+                sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER {name}")))
+                    .execute(&mut db)
+                    .await
+                    .unwrap();
+            }
+            sqlx::query("DROP TABLE conversation_content_versions")
+                .execute(&mut db)
+                .await
+                .unwrap();
+            if version < 12 {
+                for statement in [
+                    "DROP TABLE pilot_file_chunks",
+                    "DROP TABLE pilot_file_sends",
+                    "DROP TABLE pilot_message_attachments",
+                    "DROP TABLE pilot_file_transfers",
+                    "DROP TABLE pilot_file_sources",
+                    "DROP TABLE pilot_file_binding_history",
+                    "DROP TABLE pilot_file_authorities",
+                    "DROP TRIGGER conversation_management_insert",
+                    "DROP TRIGGER conversation_management_update",
+                    "DROP TRIGGER conversation_response_insert",
+                    "DROP TRIGGER conversation_response_update",
+                    "DROP TABLE conversation_response_versions",
+                    "DROP TABLE conversation_action_receipts",
+                    "DROP TABLE conversation_management",
+                    "DROP TRIGGER messages_tool_trace_revision_insert",
+                    "DROP TRIGGER messages_tool_trace_revision_delete",
+                    "DROP TRIGGER messages_tool_trace_revision_update_same_conversation",
+                    "DROP TRIGGER messages_tool_trace_revision_update_conversation",
+                    "DROP TABLE conversation_tool_trace_revisions",
+                ] {
+                    sqlx::query(statement).execute(&mut db).await.unwrap();
+                }
+            }
+            if version == 5 {
+                for statement in [
+                    "DROP TRIGGER conversation_goal_audit_run_status",
+                    "DROP TABLE conversation_goal_audit_runs",
+                    "DROP TABLE conversation_goal_audits",
+                    "DROP TABLE conversation_goals",
+                    "DROP TABLE agent_run_transitions",
+                    "DROP TABLE tool_invocations",
+                    "ALTER TABLE messages DROP COLUMN generation_attempts_json",
+                ] {
+                    sqlx::query(statement).execute(&mut db).await.unwrap();
+                }
+            }
+            sqlx::query("DELETE FROM schema_migrations WHERE version > ?")
+                .bind(version)
+                .execute(&mut db)
+                .await
+                .unwrap();
+            db.close().await.unwrap();
+            let before = fs::read(&original).unwrap();
+            check_database(&original).await.unwrap();
+            assert_eq!(fs::read(&original).unwrap(), before);
+            let copy = temp.path().join("copy.db");
+            fs::copy(&original, &copy).unwrap();
+            check_database_startup(&copy).await.unwrap();
+            check_database(&copy).await.unwrap();
+            let pool = crate::db::create_pool(&copy).await.unwrap();
+            assert_eq!(
+                crate::db::repository::list_messages(&pool, "conversation")
+                    .await
+                    .unwrap()[0]
+                    .content,
+                "Representative transcript"
+            );
+            pool.close().await;
+            assert_eq!(fs::read(&original).unwrap(), before);
+        }
+    }
+}
+
+#[cfg(test)]
+mod catalog_backup_tests {
+    use super::*;
+    use crate::commands::conversation_catalog::version;
+    use crate::core::db_state::DbPool;
+    use crate::db::models::ConversationCatalogVersionInput;
+    #[tokio::test]
+    async fn exact_schema13_is_untouched_then_only_copy_migrates_to_current() {
+        let (temp, data, _config) = tests::profile().await;
+        let original = data.join("macro.db");
+        let mut db = connection(&original).await.unwrap();
+        tests::remove_post_catalog_schema(&mut db).await;
+        crate::db::conversation_catalog::remove_reference_schema_in(&mut db)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version=14")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        let before = fs::read(&original).unwrap();
+        check_database(&original).await.unwrap();
+        assert_eq!(fs::read(&original).unwrap(), before);
+        let copy = temp.path().join("copy.db");
+        fs::copy(&original, &copy).unwrap();
+        check_database_startup(&copy).await.unwrap();
+        check_database(&copy).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_migrations")
+                .fetch_one(&mut connection(&copy).await.unwrap())
+                .await
+                .unwrap(),
+            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
+        );
+        assert_eq!(fs::read(&original).unwrap(), before);
+    }
+    #[tokio::test]
+    async fn schema14_archive_rejects_missing_altered_or_undeclared_catalog() {
+        for mutation in [
+            "DROP TRIGGER catalog_version_conversations_insert",
+            "DROP TABLE conversation_catalog_version",
+            "DELETE FROM conversation_catalog_version",
+            "DELETE FROM schema_migrations WHERE version=14",
+            "UPDATE schema_migrations SET name='wrong' WHERE version=14",
+            "DELETE FROM schema_migrations WHERE version=13",
+            "CREATE TRIGGER catalog_version_extra AFTER INSERT ON conversations BEGIN SELECT 1; END",
+            "PRAGMA writable_schema=ON; UPDATE sqlite_master SET sql=replace(sql,'AND revision >= 0','AND revision >= -1') WHERE name='conversation_catalog_version'; PRAGMA writable_schema=OFF; PRAGMA schema_version=999",
+        ] {
+            let (_temp,data,_config)=tests::profile().await;let path=data.join("macro.db");
+            let mut db=connection(&path).await.unwrap();sqlx::raw_sql(mutation).execute(&mut db).await.unwrap();db.close().await.unwrap();
+            let before=fs::read(&path).unwrap();assert!(check_database(&path).await.is_err(),"accepted {mutation}");assert_eq!(fs::read(&path).unwrap(),before);
+        }
+    }
+    #[tokio::test]
+    async fn supported_startup_restore_keeps_durable_token_and_retires_old_generation() {
+        let (_temp, data, config) = tests::profile().await;
+        let path = data.join("macro.db");
+        let owner = DbPool::default();
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        owner.set_ready(pool.clone()).await.unwrap();
+        let old = version(&owner, ConversationCatalogVersionInput::default())
+            .await
+            .unwrap();
+        owner.set_initializing().await;
+        pool.close().await;
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        let mut db = connection(&path).await.unwrap();
+        sqlx::query("UPDATE conversations SET title='new'")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        tests::queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+        let status: BackupStatus =
+            serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap())
+                .unwrap();
+        assert_eq!(status.code, Some(BackupStatusCode::Restored));
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        owner.set_ready(pool.clone()).await.unwrap();
+        let restored = version(&owner, ConversationCatalogVersionInput::default())
+            .await
+            .unwrap();
+        assert_eq!(old.incarnation, restored.incarnation);
+        assert_eq!(old.revision, restored.revision);
+        assert_ne!(old.generation, restored.generation);
+        assert_eq!(
+            version(
+                &owner,
+                ConversationCatalogVersionInput {
+                    expected_token: Some(old)
+                }
+            )
+            .await
+            .unwrap_err()
+            .message,
+            "stale_revision"
+        );
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn connect_publication_backup_accepts_exact_pre019_and_rejects_missing019_guard() {
+        let (_temp, data, _config) = tests::profile().await;
+        let path = data.join("macro.db");
+        let mut connection = connection(&path).await.unwrap();
+        crate::db::connect_transfer::remove_publication_reference_in(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version=19")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        connection.close().await.unwrap();
+        check_database(&path).await.unwrap();
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_migrations")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
+        );
+        sqlx::query("DROP TRIGGER connect_preparation_metadata")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        assert!(check_database(&path).await.is_err());
+    }
+    #[tokio::test]
+    async fn engine_snapshot_constraint_tampering_is_rejected() {
+        let (_temp, data, _config) = tests::profile().await;
+        let path = data.join("macro.db");
+        let mut db = connection(&path).await.unwrap();
+        sqlx::query("PRAGMA writable_schema=ON")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sqlite_master SET sql = replace(sql, 'CHECK(json_valid(state_json))', '') WHERE name='engine_flow030_runs'").execute(&mut db).await.unwrap();
+        sqlx::query("PRAGMA writable_schema=OFF")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        assert!(check_database(&path)
+            .await
+            .unwrap_err()
+            .contains("constraints"));
+    }
+
+    #[tokio::test]
+    async fn tool_result_constraint_tampering_is_rejected() {
+        let (_temp, data, _config) = tests::profile().await;
+        let path = data.join("macro.db");
+        let mut db = connection(&path).await.unwrap();
+        sqlx::query("PRAGMA writable_schema=ON")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sqlite_master SET sql = replace(sql, 'CHECK (result_json IS NULL OR json_valid(result_json))', '') WHERE name='tool_invocations'").execute(&mut db).await.unwrap();
+        sqlx::query("PRAGMA writable_schema=OFF")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        assert!(check_database(&path)
+            .await
+            .unwrap_err()
+            .contains("constraints"));
+    }
+    #[tokio::test]
+    async fn protocol017_backup_validation_accepts_v16_and_rejects_missing_current_table() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("protocol-backup.db");
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        pool.close().await;
+        check_database(&path).await.unwrap();
+        let mut db = connection(&path).await.unwrap();
+        crate::db::migration_tests::drop_human_public(&mut db).await;
+        sqlx::query("DROP TABLE engine_human_works030")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        assert!(check_database(&path).await.is_err());
+        let mut db = connection(&path).await.unwrap();
+        sqlx::raw_sql(
+            "DROP TABLE engine_work_admission030;
+            DROP TABLE engine_human_link_events030;
+            DROP TABLE engine_human_requests030;
+            DROP TABLE engine_work_checks030;
+            DROP TABLE engine_work_events030;
+            DROP TABLE engine_work_protocol030;
+            DELETE FROM schema_migrations WHERE version IN (27,28);",
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+        db.close().await.unwrap();
+        check_database(&path).await.unwrap();
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        pool.close().await;
+        check_database(&path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn admission018_backup_rejects_missing_current_table_and_accepts_v17() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("admission-backup.db");
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        pool.close().await;
+        check_database(&path).await.unwrap();
+        let mut db = connection(&path).await.unwrap();
+        crate::db::migration_tests::drop_human_public(&mut db).await;
+        sqlx::query("DROP TABLE engine_work_admission030")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        assert!(check_database(&path).await.is_err());
+        let mut db = connection(&path).await.unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version=28")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        check_database(&path).await.unwrap();
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        pool.close().await;
+        check_database(&path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_flow030_exact_state_survives_export_and_restore() {
+        let (temp, data, config) = tests::profile().await;
+        let mut db = connection(&data.join("macro.db")).await.unwrap();
+        let options = r#"{ "budget":9007199254740993, "limit":1.0 }"#;
+        let evidence = r#"{ "lock":"synthetic" }"#;
+        sqlx::query(
+            "INSERT INTO engine_flow030_runs VALUES ('run','flow','snapshot','epoch','{}',?,?)",
+        )
+        .bind(options)
+        .bind(evidence)
+        .execute(&mut db)
+        .await
+        .unwrap();
+        db.close().await.unwrap();
+        let dir = data.join("local-backup");
+        fs::create_dir_all(&dir).unwrap();
+        let path = temp.path().join("admission-export.json");
+        atomic(
+            &dir.join("request.json"),
+            &serde_json::to_vec(&Request {
+                operation: "export".into(),
+                path: path.to_string_lossy().into(),
+                browser: BTreeMap::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        process_startup(&data, &config).await.unwrap();
+        let archive = load_archive(&path).unwrap();
+        validate(&archive).await.unwrap();
+        let mut db = connection(&data.join("macro.db")).await.unwrap();
+        sqlx::query("UPDATE engine_flow030_runs SET state_json='{}'")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        tests::queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+        let mut restored = connection(&data.join("macro.db")).await.unwrap();
+        let row: (String, String) = sqlx::query_as(
+            "SELECT plan_json,state_json FROM engine_flow030_runs WHERE system_id='run'",
+        )
+        .fetch_one(&mut restored)
+        .await
+        .unwrap();
+        assert_eq!(row, (options.to_owned(), evidence.to_owned()));
+    }
+
+    #[tokio::test]
+    async fn historical_execution_archive_restores_then_retires_legacy_admission() {
+        let (temp, target_data, config) = tests::profile().await;
+        let old_data = temp.path().join("old-data");
+        fs::create_dir_all(&old_data).unwrap();
+        let mut old = crate::db::migration_tests::published_branch_database(
+            &old_data.join("macro.db"),
+            false,
+        )
+        .await;
+        sqlx::raw_sql(include_str!(
+            "db/migrations/017_execution_work_protocol.sql"
+        ))
+        .execute(&mut old)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!(
+            "db/migrations/018_execution_work_admission.sql"
+        ))
+        .execute(&mut old)
+        .await
+        .unwrap();
+        sqlx::raw_sql("INSERT INTO schema_migrations VALUES (17,'017_execution_work_protocol','date'),(18,'018_execution_work_admission','date');
+            INSERT INTO engine_systems VALUES ('run','request','{}','{}','[]','{}');
+            INSERT INTO engine_work_protocol030 VALUES ('run','work','{}','{}','{}','{}','0');
+            INSERT INTO engine_work_admission030 VALUES ('run','work','{ \"limit\":9007199254740993 }','{ \"proof\":true }');")
+            .execute(&mut old).await.unwrap();
+        old.close().await.unwrap();
+        let archive = capture(&old_data, &config, BTreeMap::new(), false)
+            .await
+            .unwrap();
+        validate(&archive).await.unwrap();
+        tests::queue_restore(&target_data, &archive);
+        process_startup(&target_data, &config).await.unwrap();
+        let pool = crate::db::create_pool(&target_data.join("macro.db"))
+            .await
+            .unwrap();
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='engine_work_admission030'").fetch_one(&pool).await.unwrap(), 0);
+        let stamps: Vec<(i64, String)> = sqlx::query_as("SELECT version,name FROM schema_migrations WHERE version IN (17,18,27,28) ORDER BY version")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(
+            stamps,
+            vec![
+                (17, "017_chat_admission".into()),
+                (18, "018_connect_transfer".into()),
+                (27, "027_execution_work_protocol".into()),
+                (28, "028_execution_work_admission".into())
+            ]
+        );
     }
 }

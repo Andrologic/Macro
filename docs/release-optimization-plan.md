@@ -239,7 +239,7 @@ path before creating, moving, or removing anything.
 
 Rules:
 
-- The main repository remains on `develop`.
+- The main repository remains on `main`.
 - The managed worktree checks out `origin/main` detached, so it does not compete
   with a user's `main` worktree.
 - Reuse requires a clean tracked and untracked state. The helper refuses a dirty
@@ -279,7 +279,7 @@ restores, test a pinned GitHub-compatible `sccache` action on one platform. Roll
 it out only when it cuts the median build by at least 20 percent without adding
 credentials, mutable action references, or cross-target contamination.
 
-Do not prebuild signed stable assets on `develop`, copy artifacts between tags,
+Do not prebuild signed stable assets before tagging, copy artifacts between tags,
 or remove native platform verification. Those shortcuts weaken provenance for a
 small time gain.
 

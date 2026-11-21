@@ -211,6 +211,30 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "ApprovalDecision",
+      "origin": "macro_lib::db::agsdl_execution::approvals::ApprovalDecision",
+      "path": "ApprovalDecision.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ApprovalPage",
+      "origin": "macro_lib::db::agsdl_execution::approvals::ApprovalPage",
+      "path": "ApprovalPage.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ApprovalScope",
+      "origin": "macro_lib::db::agsdl_execution::approvals::ApprovalScope",
+      "path": "ApprovalScope.ts"
+    },
+    {
+      "families": [
         "db"
       ],
       "name": "ArchitectPlanConversationSyncRecord",
@@ -307,6 +331,22 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "ClaudeStatus",
+      "origin": "macro_lib::agsdl_host_claude::profile::ClaudeStatus",
+      "path": "ClaudeStatus.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "CodexStatus",
+      "origin": "macro_lib::agsdl_host_codex_adapter::CodexStatus",
+      "path": "CodexStatus.ts"
+    },
+    {
+      "families": [
         "errors"
       ],
       "name": "CommandErrorPayload",
@@ -349,6 +389,63 @@
       "families": [
         "db"
       ],
+      "name": "ConversationActionInput",
+      "origin": "macro_lib::db::conversation_management::ConversationActionInput",
+      "path": "ConversationActionInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationActionResult",
+      "origin": "macro_lib::db::conversation_management::ConversationActionResult",
+      "path": "ConversationActionResult.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCatalogAnchor",
+      "origin": "macro_lib::db::models::ConversationCatalogAnchor",
+      "path": "ConversationCatalogAnchor.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCatalogPage",
+      "origin": "macro_lib::db::models::ConversationCatalogPage",
+      "path": "ConversationCatalogPage.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCatalogPageInput",
+      "origin": "macro_lib::db::models::ConversationCatalogPageInput",
+      "path": "ConversationCatalogPageInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCatalogToken",
+      "origin": "macro_lib::db::models::ConversationCatalogToken",
+      "path": "ConversationCatalogToken.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCatalogVersionInput",
+      "origin": "macro_lib::db::models::ConversationCatalogVersionInput",
+      "path": "ConversationCatalogVersionInput.ts"
+    },
+    {
+      "families": [
+        "db",
+        "pilot_files"
+      ],
       "name": "ConversationCitation",
       "origin": "macro_lib::db::models::ConversationCitation",
       "path": "ConversationCitation.ts"
@@ -365,6 +462,86 @@
       "families": [
         "db"
       ],
+      "name": "ConversationContentAnchor",
+      "origin": "macro_lib::db::models::ConversationContentAnchor",
+      "path": "ConversationContentAnchor.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentDescriptor",
+      "origin": "macro_lib::db::models::ConversationContentDescriptor",
+      "path": "ConversationContentDescriptor.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentItem",
+      "origin": "macro_lib::db::models::ConversationContentItem",
+      "path": "ConversationContentItem.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentMetadata",
+      "origin": "macro_lib::db::models::ConversationContentMetadata",
+      "path": "ConversationContentMetadata.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentMetadataInput",
+      "origin": "macro_lib::db::models::ConversationContentMetadataInput",
+      "path": "ConversationContentMetadataInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentMetadataPage",
+      "origin": "macro_lib::db::models::ConversationContentMetadataPage",
+      "path": "ConversationContentMetadataPage.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentOpening",
+      "origin": "macro_lib::db::models::ConversationContentOpening",
+      "path": "ConversationContentOpening.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentToken",
+      "origin": "macro_lib::db::models::ConversationContentToken",
+      "path": "ConversationContentToken.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentWindow",
+      "origin": "macro_lib::db::models::ConversationContentWindow",
+      "path": "ConversationContentWindow.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentWindowInput",
+      "origin": "macro_lib::db::models::ConversationContentWindowInput",
+      "path": "ConversationContentWindowInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
       "name": "ConversationGoal",
       "origin": "macro_lib::db::conversation_goals::ConversationGoal",
       "path": "ConversationGoal.ts"
@@ -376,6 +553,14 @@
       "name": "ConversationGoalAudit",
       "origin": "macro_lib::db::conversation_goals::ConversationGoalAudit",
       "path": "ConversationGoalAudit.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationMetadata",
+      "origin": "macro_lib::db::conversation_management::ConversationMetadata",
+      "path": "ConversationMetadata.ts"
     },
     {
       "families": [
@@ -595,6 +780,22 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "DeliveryReceipt030",
+      "origin": "macro_lib::agsdl_host_flow030::delivery_ipc::DeliveryReceipt030",
+      "path": "DeliveryReceipt030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "DeliveryRequest030",
+      "origin": "macro_lib::agsdl_host_flow030::delivery_ipc::DeliveryRequest030",
+      "path": "DeliveryRequest030.ts"
+    },
+    {
+      "families": [
         "development"
       ],
       "name": "DevProviderOverrideConfig",
@@ -611,11 +812,27 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "DiagnosticIdentity",
+      "origin": "macro_lib::db::agsdl_execution::diagnostics::DiagnosticIdentity",
+      "path": "DiagnosticIdentity.ts"
+    },
+    {
+      "families": [
         "diagnostics"
       ],
       "name": "DiagnosticReportPreview",
       "origin": "macro_lib::diagnostics::DiagnosticReportPreview",
       "path": "DiagnosticReportPreview.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "DiagnosticRequest",
+      "origin": "macro_lib::db::agsdl_execution::diagnostics::DiagnosticRequest",
+      "path": "DiagnosticRequest.ts"
     },
     {
       "families": [
@@ -632,6 +849,350 @@
       "name": "DirectReviewSnapshotDto",
       "origin": "macro_lib::commands::git::DirectReviewSnapshotDto",
       "path": "DirectReviewSnapshotDto.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineAcceptedDelivery",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineAcceptedDelivery",
+      "path": "EngineAcceptedDelivery.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineActivation",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineActivation",
+      "path": "EngineActivation.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineAgentConfiguration",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineAgentConfiguration",
+      "path": "EngineAgentConfiguration.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineAssociations",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineAssociations",
+      "path": "EngineAssociations.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineDelivery",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineDelivery",
+      "path": "EngineDelivery.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineEntry",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineEntry",
+      "path": "EngineEntry.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineEvent",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineEvent",
+      "path": "EngineEvent.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineEventPage",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineEventPage",
+      "path": "EngineEventPage.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineFailure",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineFailure",
+      "path": "EngineFailure.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineMemory",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineMemory",
+      "path": "EngineMemory.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineOutcome",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineOutcome",
+      "path": "EngineOutcome.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineOwner",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineOwner",
+      "path": "EngineOwner.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineProjection",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineProjection",
+      "path": "EngineProjection.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineSnapshot",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineSnapshot",
+      "path": "EngineSnapshot.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineSourceOwner",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineSourceOwner",
+      "path": "EngineSourceOwner.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineSourceRevision",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineSourceRevision",
+      "path": "EngineSourceRevision.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineStartReceipt",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineStartReceipt",
+      "path": "EngineStartReceipt.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineStartRequest",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineStartRequest",
+      "path": "EngineStartRequest.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineStopRequest",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineStopRequest",
+      "path": "EngineStopRequest.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineStopState",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineStopState",
+      "path": "EngineStopState.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineTerminalCommit",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineTerminalCommit",
+      "path": "EngineTerminalCommit.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineValue",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineValue",
+      "path": "EngineValue.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineVersions",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineVersions",
+      "path": "EngineVersions.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineWork",
+      "origin": "macro_lib::db::agsdl_execution::dto::ipc::EngineWork",
+      "path": "EngineWork.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionCloseIntentRequest",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionCloseIntentRequest",
+      "path": "ExecutionCloseIntentRequest.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionEnsureStopRequest",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionEnsureStopRequest",
+      "path": "ExecutionEnsureStopRequest.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionExternalDelivery",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionExternalDelivery",
+      "path": "ExecutionExternalDelivery.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentAdmission",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentAdmission",
+      "path": "ExecutionIntentAdmission.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentDisposition",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentDisposition",
+      "path": "ExecutionIntentDisposition.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentError",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentError",
+      "path": "ExecutionIntentError.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentErrorCode",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentErrorCode",
+      "path": "ExecutionIntentErrorCode.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentFormatVersion",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentFormatVersion",
+      "path": "ExecutionIntentFormatVersion.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentKey",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentKey",
+      "path": "ExecutionIntentKey.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentPayload",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentPayload",
+      "path": "ExecutionIntentPayload.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentRefusalCode",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentRefusalCode",
+      "path": "ExecutionIntentRefusalCode.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentRetryableCode",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentRetryableCode",
+      "path": "ExecutionIntentRetryableCode.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentScope",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentScope",
+      "path": "ExecutionIntentScope.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentState",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentState",
+      "path": "ExecutionIntentState.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionPreflight",
+      "origin": "macro_lib::agsdl_host_capture::ExecutionPreflight",
+      "path": "ExecutionPreflight.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionPreflightRequest",
+      "origin": "macro_lib::agsdl_host_capture::ExecutionPreflightRequest",
+      "path": "ExecutionPreflightRequest.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionReadIntentsRequest",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionReadIntentsRequest",
+      "path": "ExecutionReadIntentsRequest.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionRunCorrelation030",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionRunCorrelation030",
+      "path": "ExecutionRunCorrelation030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionStageIntentRequest",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionStageIntentRequest",
+      "path": "ExecutionStageIntentRequest.ts"
     },
     {
       "families": [
@@ -1053,6 +1614,78 @@
     },
     {
       "families": [
+        "host_telemetry"
+      ],
+      "name": "HostTelemetryAvailability",
+      "origin": "macro_lib::host_telemetry::HostTelemetryAvailability",
+      "path": "HostTelemetryAvailability.ts"
+    },
+    {
+      "families": [
+        "host_telemetry"
+      ],
+      "name": "HostTelemetryDto",
+      "origin": "macro_lib::host_telemetry::HostTelemetryDto",
+      "path": "HostTelemetryDto.ts"
+    },
+    {
+      "families": [
+        "host_telemetry"
+      ],
+      "name": "HostTelemetryReason",
+      "origin": "macro_lib::host_telemetry::HostTelemetryReason",
+      "path": "HostTelemetryReason.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanAnswer030",
+      "origin": "macro_lib::db::agsdl_execution::public030::ipc::HumanAnswer030",
+      "path": "HumanAnswer030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanContent030",
+      "origin": "macro_lib::db::agsdl_execution::public030::ipc::HumanContent030",
+      "path": "HumanContent030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanContinuation030",
+      "origin": "macro_lib::db::agsdl_execution::public030::ipc::HumanContinuation030",
+      "path": "HumanContinuation030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanDecision030",
+      "origin": "macro_lib::db::agsdl_execution::public030::ipc::HumanDecision030",
+      "path": "HumanDecision030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanPage030",
+      "origin": "macro_lib::db::agsdl_execution::public030::ipc::HumanPage030",
+      "path": "HumanPage030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanScope030",
+      "origin": "macro_lib::db::agsdl_execution::public030::ipc::HumanScope030",
+      "path": "HumanScope030.ts"
+    },
+    {
+      "families": [
         "workspace"
       ],
       "name": "ImportGitRepoRequest",
@@ -1080,6 +1713,7 @@
         "chat",
         "copilot",
         "db",
+        "errors",
         "mcp",
         "state",
         "workspace"
@@ -1167,14 +1801,6 @@
       "name": "McpCatalogDto",
       "origin": "macro_lib::commands::mcp::types::McpCatalogDto",
       "path": "McpCatalogDto.ts"
-    },
-    {
-      "families": [
-        "mcp"
-      ],
-      "name": "McpDiscoverToolsResponse",
-      "origin": "macro_lib::commands::mcp::types::McpDiscoverToolsResponse",
-      "path": "McpDiscoverToolsResponse.ts"
     },
     {
       "families": [
@@ -1307,7 +1933,8 @@
     },
     {
       "families": [
-        "db"
+        "db",
+        "pilot_files"
       ],
       "name": "Message",
       "origin": "macro_lib::db::models::Message",
@@ -1331,11 +1958,291 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "NativeModelCatalogue",
+      "origin": "macro_lib::agsdl_host_catalogue::NativeModelCatalogue",
+      "path": "NativeModelCatalogue.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "NativeModelChoice",
+      "origin": "macro_lib::agsdl_host_catalogue::NativeModelChoice",
+      "path": "NativeModelChoice.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "NativeModelEdition",
+      "origin": "macro_lib::agsdl_host_catalogue::NativeModelEdition",
+      "path": "NativeModelEdition.ts"
+    },
+    {
+      "families": [
         "config_extra"
       ],
       "name": "OrphanSecretDto",
       "origin": "macro_lib::config::commands::OrphanSecretDto",
       "path": "OrphanSecretDto.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PhaseCount030",
+      "origin": "macro_lib::db::agsdl_execution::discovery030::PhaseCount030",
+      "path": "PhaseCount030.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotAttachmentMetadata",
+      "origin": "macro_lib::db::pilot_files::PilotAttachmentMetadata",
+      "path": "PilotAttachmentMetadata.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotCitationScope",
+      "origin": "macro_lib::db::pilot_files::PilotCitationScope",
+      "path": "PilotCitationScope.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotConversationKind",
+      "origin": "macro_lib::db::pilot_files::PilotConversationKind",
+      "path": "PilotConversationKind.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileAuthorizeInput",
+      "origin": "macro_lib::db::pilot_files::PilotFileAuthorizeInput",
+      "path": "PilotFileAuthorizeInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileBeginInput",
+      "origin": "macro_lib::db::pilot_files::PilotFileBeginInput",
+      "path": "PilotFileBeginInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileChunkInput",
+      "origin": "macro_lib::db::pilot_files::PilotFileChunkInput",
+      "path": "PilotFileChunkInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileContentState",
+      "origin": "macro_lib::db::pilot_files::PilotFileContentState",
+      "path": "PilotFileContentState.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileContextRef",
+      "origin": "macro_lib::db::pilot_files::PilotFileContextRef",
+      "path": "PilotFileContextRef.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileContextState",
+      "origin": "macro_lib::db::pilot_files::PilotFileContextState",
+      "path": "PilotFileContextState.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileGuard",
+      "origin": "macro_lib::db::pilot_files::PilotFileGuard",
+      "path": "PilotFileGuard.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileImage",
+      "origin": "macro_lib::db::pilot_files::PilotFileImage",
+      "path": "PilotFileImage.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileRead",
+      "origin": "macro_lib::db::pilot_files::PilotFileRead",
+      "path": "PilotFileRead.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileReadInput",
+      "origin": "macro_lib::db::pilot_files::PilotFileReadInput",
+      "path": "PilotFileReadInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileReceipt",
+      "origin": "macro_lib::db::pilot_files::PilotFileReceipt",
+      "path": "PilotFileReceipt.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileRef",
+      "origin": "macro_lib::db::pilot_files::PilotFileRef",
+      "path": "PilotFileRef.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileScope",
+      "origin": "macro_lib::db::pilot_files::PilotFileScope",
+      "path": "PilotFileScope.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileSource",
+      "origin": "macro_lib::db::pilot_files::PilotFileSource",
+      "path": "PilotFileSource.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileSourceKind",
+      "origin": "macro_lib::db::pilot_files::PilotFileSourceKind",
+      "path": "PilotFileSourceKind.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileState",
+      "origin": "macro_lib::db::pilot_files::PilotFileState",
+      "path": "PilotFileState.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileTransferInput",
+      "origin": "macro_lib::db::pilot_files::PilotFileTransferInput",
+      "path": "PilotFileTransferInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotInspectAttachmentsInput",
+      "origin": "macro_lib::db::pilot_files::PilotInspectAttachmentsInput",
+      "path": "PilotInspectAttachmentsInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotPrepareSendInput",
+      "origin": "macro_lib::db::pilot_files::PilotPrepareSendInput",
+      "path": "PilotPrepareSendInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotPreparedSend",
+      "origin": "macro_lib::db::pilot_files::PilotPreparedSend",
+      "path": "PilotPreparedSend.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "PilotReflectionMessage",
+      "origin": "macro_lib::db::pilot_reflections::PilotReflectionMessage",
+      "path": "PilotReflectionMessage.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "PilotReflectionMessageRead",
+      "origin": "macro_lib::db::pilot_reflections::PilotReflectionMessageRead",
+      "path": "PilotReflectionMessageRead.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "PilotReflectionToolAnchor",
+      "origin": "macro_lib::db::pilot_reflections::PilotReflectionToolAnchor",
+      "path": "PilotReflectionToolAnchor.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "PilotReflectionToolStatus",
+      "origin": "macro_lib::db::pilot_reflections::PilotReflectionToolStatus",
+      "path": "PilotReflectionToolStatus.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotSendMarkInput",
+      "origin": "macro_lib::db::pilot_files::PilotSendMarkInput",
+      "path": "PilotSendMarkInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotSendReadInput",
+      "origin": "macro_lib::db::pilot_files::PilotSendReadInput",
+      "path": "PilotSendReadInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotSendReceipt",
+      "origin": "macro_lib::db::pilot_files::PilotSendReceipt",
+      "path": "PilotSendReceipt.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotSendState",
+      "origin": "macro_lib::db::pilot_files::PilotSendState",
+      "path": "PilotSendState.ts"
     },
     {
       "families": [
@@ -1368,6 +2275,14 @@
       "name": "PredictedGitTreeDto",
       "origin": "macro_lib::git::operations::PredictedGitTreeDto",
       "path": "PredictedGitTreeDto.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PreflightDiagnostic",
+      "origin": "macro_lib::agsdl_host_capture::PreflightDiagnostic",
+      "path": "PreflightDiagnostic.ts"
     },
     {
       "families": [
@@ -1491,6 +2406,14 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "ProjectionPage",
+      "origin": "macro_lib::db::agsdl_execution::public::ipc::ProjectionPage",
+      "path": "ProjectionPage.ts"
+    },
+    {
+      "families": [
         "db"
       ],
       "name": "ProviderAuthMetadata",
@@ -1520,6 +2443,150 @@
       "name": "ProviderSettings",
       "origin": "macro_lib::db::models::ProviderSettings",
       "path": "ProviderSettings.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicActivation",
+      "origin": "macro_lib::db::agsdl_execution::public::ipc::PublicActivation",
+      "path": "PublicActivation.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicAgent",
+      "origin": "macro_lib::db::agsdl_execution::public::ipc::PublicAgent",
+      "path": "PublicAgent.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicApproval",
+      "origin": "macro_lib::db::agsdl_execution::approvals::PublicApproval",
+      "path": "PublicApproval.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicDiagnostic",
+      "origin": "macro_lib::db::agsdl_execution::diagnostics::PublicDiagnostic",
+      "path": "PublicDiagnostic.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicEvent",
+      "origin": "macro_lib::db::agsdl_execution::public::ipc::PublicEvent",
+      "path": "PublicEvent.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicEventPage",
+      "origin": "macro_lib::db::agsdl_execution::public::ipc::PublicEventPage",
+      "path": "PublicEventPage.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicExecutionDiagnostic",
+      "origin": "macro_lib::db::agsdl_execution::diagnostics::PublicExecutionDiagnostic",
+      "path": "PublicExecutionDiagnostic.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicExecutionIntent",
+      "origin": "macro_lib::db::agsdl_execution::intents::PublicExecutionIntent",
+      "path": "PublicExecutionIntent.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicHumanRequest030",
+      "origin": "macro_lib::db::agsdl_execution::public030::ipc::PublicHumanRequest030",
+      "path": "PublicHumanRequest030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicProjection",
+      "origin": "macro_lib::db::agsdl_execution::public::ipc::PublicProjection",
+      "path": "PublicProjection.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicRunCounts",
+      "origin": "macro_lib::db::agsdl_execution::discovery::PublicRunCounts",
+      "path": "PublicRunCounts.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicRunSummary",
+      "origin": "macro_lib::db::agsdl_execution::discovery::PublicRunSummary",
+      "path": "PublicRunSummary.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicRunSummary030",
+      "origin": "macro_lib::db::agsdl_execution::discovery030::PublicRunSummary030",
+      "path": "PublicRunSummary030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicSnapshot",
+      "origin": "macro_lib::db::agsdl_execution::public::ipc::PublicSnapshot",
+      "path": "PublicSnapshot.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicStartReceipt",
+      "origin": "macro_lib::db::agsdl_execution::public::ipc::PublicStartReceipt",
+      "path": "PublicStartReceipt.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicStartReceipt030",
+      "origin": "macro_lib::db::agsdl_execution::intents::PublicStartReceipt030",
+      "path": "PublicStartReceipt030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicStopState",
+      "origin": "macro_lib::db::agsdl_execution::public::ipc::PublicStopState",
+      "path": "PublicStopState.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicTaskTarget",
+      "origin": "macro_lib::agsdl_host_tasks::PublicTaskTarget",
+      "path": "PublicTaskTarget.ts"
     },
     {
       "families": [
@@ -1603,11 +2670,163 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "ResolveCardTask",
+      "origin": "macro_lib::agsdl_host_tasks::ResolveCardTask",
+      "path": "ResolveCardTask.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ResolvedCardTask",
+      "origin": "macro_lib::agsdl_host_tasks::ResolvedCardTask",
+      "path": "ResolvedCardTask.ts"
+    },
+    {
+      "families": [
         "db"
       ],
       "name": "ResumeConversationGoalAuditInput",
       "origin": "macro_lib::db::conversation_goals::ResumeConversationGoalAuditInput",
       "path": "ResumeConversationGoalAuditInput.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RunListRequest",
+      "origin": "macro_lib::db::agsdl_execution::discovery::RunListRequest",
+      "path": "RunListRequest.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RunListRequest030",
+      "origin": "macro_lib::db::agsdl_execution::discovery030::RunListRequest030",
+      "path": "RunListRequest030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RunPage",
+      "origin": "macro_lib::db::agsdl_execution::discovery::RunPage",
+      "path": "RunPage.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RunPage030",
+      "origin": "macro_lib::db::agsdl_execution::discovery030::RunPage030",
+      "path": "RunPage030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeActivation030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::ipc::RuntimeActivation030",
+      "path": "RuntimeActivation030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeBranch030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::ipc::RuntimeBranch030",
+      "path": "RuntimeBranch030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeFrame030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::ipc::RuntimeFrame030",
+      "path": "RuntimeFrame030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeGroup030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::ipc::RuntimeGroup030",
+      "path": "RuntimeGroup030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeInstance030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::ipc::RuntimeInstance030",
+      "path": "RuntimeInstance030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeMembership030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::ipc::RuntimeMembership030",
+      "path": "RuntimeMembership030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeMessage030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::ipc::RuntimeMessage030",
+      "path": "RuntimeMessage030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimePath030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::ipc::RuntimePath030",
+      "path": "RuntimePath030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeProjectionContinuation030",
+      "origin": "macro_lib::agsdl_host_projection030::ipc::RuntimeProjectionContinuation030",
+      "path": "RuntimeProjectionContinuation030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeProjectionItem030",
+      "origin": "macro_lib::agsdl_host_projection030::ipc::RuntimeProjectionItem030",
+      "path": "RuntimeProjectionItem030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeProjectionPage030",
+      "origin": "macro_lib::agsdl_host_projection030::ipc::RuntimeProjectionPage030",
+      "path": "RuntimeProjectionPage030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeProjectionQuery030",
+      "origin": "macro_lib::agsdl_host_projection030::ipc::RuntimeProjectionQuery030",
+      "path": "RuntimeProjectionQuery030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeProjectionScope030",
+      "origin": "macro_lib::agsdl_host_projection030::ipc::RuntimeProjectionScope030",
+      "path": "RuntimeProjectionScope030.ts"
     },
     {
       "families": [
@@ -1859,6 +3078,14 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "UnavailableProvider",
+      "origin": "macro_lib::agsdl_host_catalogue::UnavailableProvider",
+      "path": "UnavailableProvider.ts"
+    },
+    {
+      "families": [
         "db"
       ],
       "name": "UpdateConversationGoalInput",
@@ -1960,6 +3187,14 @@
       "name": "WebSearchSecretStatus",
       "origin": "macro_lib::commands::web_search::WebSearchSecretStatus",
       "path": "WebSearchSecretStatus.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "WebviewResourceRelease",
+      "origin": "macro_lib::commands::http_resources::WebviewResourceRelease",
+      "path": "WebviewResourceRelease.ts"
     },
     {
       "families": [

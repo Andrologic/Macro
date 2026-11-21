@@ -1,0 +1,19 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "reconciliation_status",
+  "status": "in_progress",
+  "transfer_id": "00000000-0000-0000-0000-000000000004",
+  "source": {
+    "relay_origin": "https://relay.example.test",
+    "account_id": "account-synthetic",
+    "source_instance_id": "source-synthetic",
+    "source_conversation_id": "chat-synthetic"
+  },
+  "epoch": "9007199254740993",
+  "revision": "3",
+  "phase": "target_ready",
+  "terminal": null,
+  "activation": null,
+  "recovery_generation": "00000000-0000-0000-0000-000000000001",
+  "source_recovery": "intact"
+}

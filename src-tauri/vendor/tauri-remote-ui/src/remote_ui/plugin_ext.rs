@@ -120,7 +120,10 @@ impl RemoteUi {
                 id = ws_payload.id,
             )
         } else {
-            format!("const callbackId = null; const invokeArgs = {args_json};")
+            format!(
+                "const callbackId = null; const invokeArgs = ({hydrate_args})({args_json});",
+                hydrate_args = include_str!("rpc-args.js"),
+            )
         };
         let js = format!(
             r#"

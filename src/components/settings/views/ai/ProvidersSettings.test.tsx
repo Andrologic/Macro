@@ -397,6 +397,24 @@ describe('ProvidersSettings Copilot timeout', () => {
     expect(container!.textContent).not.toContain('Ready provider');
   });
 
+  it('names the provider form back action and returns to the list without saving', async () => {
+    const { ProvidersSettings } = await loadProvidersSettings();
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ProvidersSettings />);
+    });
+    const add = container!.querySelector<HTMLButtonElement>('button[aria-label="Add Provider"]')!;
+    await act(async () => add.click());
+    const back = container!.querySelector<HTMLButtonElement>('button[aria-label="Back to providers"]')!;
+    expect(back).not.toBeNull();
+    back.focus();
+    expect(document.activeElement).toBe(back);
+    await act(async () => back.click());
+    expect(container!.querySelector('#provider-name')).toBeNull();
+    expect(container!.querySelector('button[aria-label="Add Provider"]')).not.toBeNull();
+    expect(createProviderConfigMock).not.toHaveBeenCalled();
+  });
+
   it('keeps an empty provider draft open and focuses inline validation', async () => {
     providerConfigsOverride = [];
     const { ProvidersSettings } = await loadProvidersSettings();

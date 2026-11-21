@@ -316,12 +316,6 @@ export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): P
   writeStoredMCPServers(normalizeMCPServerSettingsInput(settings));
 };
 
-export const mcpDiscoverTools: ServiceProvider['mcpDiscoverTools'] = async () =>
-  remoteUnsupported('mcpDiscoverTools');
-
-export const mcpCallTool: ServiceProvider['mcpCallTool'] = async () =>
-  remoteUnsupported('mcpCallTool');
-
 export const mcpRuntimeGetSnapshot: ServiceProvider['mcpRuntimeGetSnapshot'] = async () =>
   remoteUnsupported('mcpRuntimeGetSnapshot');
 
@@ -430,6 +424,7 @@ export const readSkillResource: ServiceProvider['readSkillResource'] = async (da
 };
 
 export const runSkillScript: ServiceProvider['runSkillScript'] = async (data) => {
+  if (data.chatAdmission) throw new Error('Admitted skill scripts require the desktop backend.');
   const config = ensureRemoteConfig();
   return remoteSkillRequest<SkillScriptRunResult>(
     'runSkillScript',
@@ -486,8 +481,6 @@ export const provider: ServiceProvider = {
   updateToolSettings,
   getMCPServerSettings,
   updateMCPServerSettings,
-  mcpDiscoverTools,
-  mcpCallTool,
   mcpRuntimeGetSnapshot,
   mcpRuntimeConnect,
   mcpStoreOAuthClientSecret,

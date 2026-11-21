@@ -20,6 +20,7 @@ const FOCUSABLE_SELECTOR = [
 ].join(',');
 
 interface OpenDialogEntry {
+  dialogId?: string;
   order: number;
   zIndex: number;
   escapeHandlers: Set<EscapeHandler>;
@@ -27,6 +28,9 @@ interface OpenDialogEntry {
 }
 
 type EscapeHandler = () => boolean | void;
+type FocusTarget = HTMLElement | SVGElement;
+const isFocusTarget = (element: Element | null): element is FocusTarget =>
+  element instanceof HTMLElement || element instanceof SVGElement;
 
 interface DialogContextValue {
   zIndex: number;
@@ -54,6 +58,11 @@ const getTopmostDialog = (): HTMLElement | null => {
   return topmost?.[0] ?? null;
 };
 
+export const isTopmostDialog = (dialogId: string): boolean => {
+  const topmost = getTopmostDialog();
+  return topmost !== null && openDialogs.get(topmost)?.dialogId === dialogId;
+};
+
 const readDialogZIndex = (className: string): number => {
   let zIndex = 0;
   for (const token of className.split(/\s+/)) {
@@ -65,18 +74,18 @@ const readDialogZIndex = (className: string): number => {
   return zIndex;
 };
 
-const getFocusableElements = (container: HTMLElement): HTMLElement[] =>
-  Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-    (element) => !element.hasAttribute('hidden')
+const getFocusableElements = (container: HTMLElement): FocusTarget[] =>
+  Array.from(container.querySelectorAll(FOCUSABLE_SELECTOR)).filter(
+    (element): element is FocusTarget => isFocusTarget(element) && !element.hasAttribute('hidden')
   );
 
-const getDialogFocusableElements = (entry: OpenDialogEntry, panel: HTMLElement): HTMLElement[] => [
+const getDialogFocusableElements = (entry: OpenDialogEntry, panel: HTMLElement): FocusTarget[] => [
   ...getFocusableElements(panel),
   ...Array.from(entry.portals).flatMap(getFocusableElements),
 ];
 
 const restoreFocusAfterDialogClose = (
-  previousFocus: HTMLElement | null,
+  previousFocus: FocusTarget | null,
 ): void => {
   const topmostDialog = getTopmostDialog();
   if (!topmostDialog) {
@@ -131,12 +140,16 @@ const synchronizeBackgroundInertness = (): void => {
 };
 
 export interface DialogProps {
+  dialogId?: string;
+  closeOnEscape?: boolean;
   title: string;
   onClose: () => void;
   children: React.ReactNode;
   backdropClassName?: string;
   panelClassName?: string;
   initialFocusRef?: React.RefObject<HTMLElement | null>;
+  /** Opener to restore when async preparation loses focus before the dialog mounts. */
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
   closeOnBackdropClick?: boolean;
   ariaDescribedBy?: string;
 }
@@ -145,10 +158,13 @@ export interface DialogProps {
 export const Dialog: React.FC<DialogProps> = ({
   title,
   onClose,
+  dialogId,
+  closeOnEscape = true,
   children,
   backdropClassName = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4',
   panelClassName = 'flex w-full justify-center',
   initialFocusRef,
+  returnFocusRef,
   closeOnBackdropClick = false,
   ariaDescribedBy,
 }) => {
@@ -161,8 +177,10 @@ export const Dialog: React.FC<DialogProps> = ({
     : Math.max(requestedZIndex, parentDialogZIndex + 1);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const previousFocusRef = useRef<FocusTarget | null>(null);
   const onCloseRef = useRef(onClose);
+  const closeOnEscapeRef = useRef(closeOnEscape);
+  const returnFocusRefRef = useRef(returnFocusRef);
   const escapeHandlersRef = useRef<Set<EscapeHandler>>(new Set());
   const portalsRef = useRef<Set<HTMLElement>>(new Set());
 
@@ -190,17 +208,19 @@ export const Dialog: React.FC<DialogProps> = ({
 
   useEffect(() => {
     onCloseRef.current = onClose;
-  }, [onClose]);
+    closeOnEscapeRef.current = closeOnEscape;
+    returnFocusRefRef.current = returnFocusRef;
+  }, [onClose, closeOnEscape, returnFocusRef]);
 
   useEffect(() => {
     const root = rootRef.current;
     const panel = panelRef.current;
     if (!root || !panel) return;
 
-    previousFocusRef.current = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
+    const activeElement = document.activeElement;
+    previousFocusRef.current = isFocusTarget(activeElement) ? activeElement : null;
     openDialogs.set(root, {
+      dialogId,
       order: dialogOrder,
       zIndex: effectiveZIndex,
       escapeHandlers: escapeHandlersRef.current,
@@ -218,17 +238,15 @@ export const Dialog: React.FC<DialogProps> = ({
       if (getTopmostDialog() !== root) return;
 
       if (event.key === 'Escape') {
+        const entry = openDialogs.get(root);
+        const handlers = entry ? Array.from(entry.escapeHandlers).reverse() : [];
+        const handled = handlers.some((handler) => handler() !== false);
+        if (!handled && !closeOnEscapeRef.current) return;
+
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
-
-        const entry = openDialogs.get(root);
-        const handlers = entry ? Array.from(entry.escapeHandlers).reverse() : [];
-        for (const handler of handlers) {
-          if (handler() !== false) return;
-        }
-
-        onCloseRef.current();
+        if (!handled) onCloseRef.current();
         return;
       }
 
@@ -259,9 +277,13 @@ export const Dialog: React.FC<DialogProps> = ({
       document.removeEventListener('keydown', handleKeyDown, true);
       openDialogs.delete(root);
       synchronizeBackgroundInertness();
-      restoreFocusAfterDialogClose(previousFocusRef.current);
+      const returnFocusTarget = returnFocusRefRef.current?.current ?? null;
+      const canReturnToTarget = returnFocusTarget?.isConnected &&
+        !returnFocusTarget.matches(':disabled') &&
+        !returnFocusTarget.closest('[inert], [hidden]');
+      restoreFocusAfterDialogClose(canReturnToTarget ? returnFocusTarget : previousFocusRef.current);
     };
-  }, [dialogOrder, effectiveZIndex, initialFocusRef]);
+  }, [dialogId, dialogOrder, effectiveZIndex, initialFocusRef]);
 
   return createPortal(
     <ParentDialogZIndexContext.Provider value={effectiveZIndex}>

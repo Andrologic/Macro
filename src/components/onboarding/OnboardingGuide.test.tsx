@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import fr from '../../i18n/locales/fr.json';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import {
@@ -8,6 +9,8 @@ import {
   savePreference,
 } from '../../services/preferences';
 import type { AppMode } from '../../types';
+
+let frenchSteps = false;
 
 type AppStoreSnapshot = {
   mode: AppMode;
@@ -34,6 +37,7 @@ const setStorePatch = (patch: Partial<AppStoreSnapshot>) => {
 };
 
 const resetStore = () => {
+  frenchSteps = false;
   Reflect.deleteProperty(window as Window & { visualViewport?: VisualViewport }, 'visualViewport');
   listeners = new Set();
   storeSnapshot = {
@@ -83,7 +87,10 @@ mock.module('react-i18next', () => ({
       const values =
         typeof fallbackOrValues === 'object' ? fallbackOrValues : interpolationValues;
       const fallback = typeof fallbackOrValues === 'string' ? fallbackOrValues : key;
-      const translated = testTranslations[key] ?? fallback;
+      const frenchValue = key.startsWith('onboarding.steps.')
+        ? key.split('.').reduce<unknown>((value, segment) => value && typeof value === 'object' ? (value as Record<string, unknown>)[segment] : undefined, fr)
+        : undefined;
+      const translated = frenchSteps && typeof frenchValue === 'string' ? frenchValue : testTranslations[key] ?? fallback;
 
       if (!values) {
         return translated;
@@ -385,6 +392,29 @@ describe('OnboardingGuide positioning', () => {
     });
     await flushFrames();
   };
+
+  it('renders the French guide using current control names and separate send and stop actions', async () => {
+    frenchSteps = true;
+    await renderGuideWithShell();
+    for (let step = 1; step <= 19; step += 1) {
+      if (step === 8) {
+        expect(document.body.textContent).toContain(fr.architect.openGraphExplorer);
+        expect(document.body.textContent).not.toContain('Expand opens');
+      }
+      if (step === 17) expect(document.body.textContent).toContain(fr.chat.toolbox);
+      if (step === 18) {
+        expect(document.body.textContent).toContain('une clé dans Paramètres');
+        expect(document.body.textContent).not.toContain('une clé dans Settings');
+      }
+      if (step === 19) {
+        expect(document.body.textContent).toContain('Le bouton Arrêter interrompt le tour actif.');
+        expect(document.body.textContent).toContain('mettre le message en file');
+      } else {
+        clickByText('Next');
+        await flushFrames();
+      }
+    }
+  });
 
   it('measures the target after a step changes the active mode', async () => {
     await renderGuideWithShell();

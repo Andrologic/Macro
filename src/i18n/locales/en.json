@@ -1,4 +1,8 @@
 {
+  "remoteAuth": {
+    "agentPrompt": "Macro headless bearer token",
+    "approvalPrompt": "Macro headless approval bearer token"
+  },
   "mcpForm": {
     "title": "MCP form request",
     "server": "Server",
@@ -41,8 +45,17 @@
     "no": "No"
   },
   "speech": {
-    "button": { "start": "Start dictation", "stop": "Stop dictation", "transcribing": "Audio sent · Transcribing", "enhancing": "Transcript received · Smart cleanup" },
-    "recording": { "active": "Recording", "stopAndInsert": "Stop and insert transcription", "stopAndSend": "Stop, transcribe and send" },
+    "button": {
+      "start": "Start dictation",
+      "stop": "Stop dictation",
+      "transcribing": "Audio sent · Transcribing",
+      "enhancing": "Transcript received · Smart cleanup"
+    },
+    "recording": {
+      "active": "Recording",
+      "stopAndInsert": "Stop and insert transcription",
+      "stopAndSend": "Stop, transcribe and send"
+    },
     "errors": {
       "title": "Dictation unavailable",
       "provider-missing": "Configure and select a speech provider first.",
@@ -121,7 +134,10 @@
       "skipped": "Automatic @macro recovery skipped",
       "blockedConflictDescription": "Macro found unresolved conflicts in the metadata worktree and did not apply recovery automatically.",
       "blockedDirtyDescription": "Macro found local changes in the metadata worktree and did not apply recovery automatically."
-    }
+    },
+    "browserRuntimeSessionReplacedTitle": "This browser session is no longer connected to Macro.",
+    "browserRuntimeSessionReplacedDescription": "Another browser tab took control of the desktop runtime. Reload this tab to continue.",
+    "browserRuntimeSessionReplacedReload": "Reload tab"
   },
   "shutdown": {
     "activeWorkSingle": "A task is still running. Closing Macro will interrupt it.",
@@ -130,7 +146,9 @@
     "closeAction": "Close Macro",
     "keepWorking": "Keep working",
     "closeFailed": "Macro could not close",
-    "closeFailedDescription": "Your work was kept. Try closing Macro again.",
+    "closeFailedDescription": "Macro is still open. Try closing it again.",
+    "retirementPending": "Task shutdown has begun. Closing is incomplete. Try closing Macro again.",
+    "retry": "Retry",
     "closing": "Macro is closing."
   },
   "releaseNotes": {
@@ -175,7 +193,10 @@
     "installNow": "Install now"
   },
   "markdown": {
-    "video": "Video"
+    "video": "Video",
+    "loadRemoteImage": "Load image from {{host}}",
+    "loadRemoteVideo": "Load video from {{host}}",
+    "unknownSource": "an unknown source"
   },
   "common": {
     "save": "Save",
@@ -249,7 +270,8 @@
     "toggleLeftPanel": "Toggle left panel",
     "toggleRightPanel": "Toggle right panel",
     "settings": "Settings",
-    "account": "Account"
+    "account": "Account",
+    "operate": "Operate"
   },
   "onboarding": {
     "open": "Open onboarding",
@@ -372,6 +394,46 @@
     "cpu": "CPU",
     "memory": "Memory",
     "sync": {
+      "failure": {
+        "missing_origin": {
+          "title": "No remote configured",
+          "body": "Add the origin URL to synchronize this repository. You can also keep working locally."
+        },
+        "missing_upstream": {
+          "title": "No tracking branch configured",
+          "body": "Publish the code branch to origin to set its upstream, then retry. Publishing sends your local commits to the remote."
+        },
+        "remote_unavailable": {
+          "title": "Remote repository unavailable",
+          "body": "Check the origin URL and your access to the repository, then retry. Correct an existing remote URL in your Git client."
+        },
+        "auth": {
+          "title": "Git authentication required",
+          "body": "Check your Git credentials and repository permissions, then retry."
+        },
+        "network": {
+          "title": "Cannot reach the remote",
+          "body": "Check your connection and the origin URL, then retry."
+        },
+        "local_changes": {
+          "title": "Local files prevent the pull",
+          "body": "Keep your edits. Review them or stash them before retrying the pull."
+        },
+        "divergence": {
+          "title": "Branches have diverged",
+          "body": "Refresh the branch status and choose merge or rebase to integrate the remote commits."
+        },
+        "unknown": {
+          "title": "Git synchronization failed",
+          "body": "Review the technical details, fix the reported issue, then retry."
+        }
+      },
+      "publishCodeBranch": "Publish code branch",
+      "configureAndRetry": "Configure and retry",
+      "remoteConfigurationFailed": "Remote configuration failed. Review the URL and technical details.",
+      "originUrl": "Origin URL",
+      "metadataNeedsAttention": "Code sync completed. Metadata sync needs attention.",
+      "reviewRecovery": "Review recovery",
       "done": "Done.",
       "macroClean": "@macro clean",
       "macroPending": "@macro pending",
@@ -467,6 +529,8 @@
       "from": "from",
       "preflightAvailable": "Sync available",
       "preflightConflicts": "Conflicts detected",
+      "preflightUnavailable": "Unavailable",
+      "conflictContextChanged": "The branch changed. Refresh before opening the assistant.",
       "preflightBlockedByLocalChanges": "Blocked by local changes",
       "preflightChecking": "Checking sync status",
       "preflightFailed": "Sync check failed",
@@ -494,9 +558,12 @@
       "localChangesBadge": "local changes",
       "mergeInProgressBadge": "merge in progress",
       "conflictedFiles": "{{count}} conflicted files",
+      "conflictedFiles_one": "{{count}} conflicted file",
+      "conflictedFiles_other": "{{count}} conflicted files",
       "stashAndRetry": "Stash and retry",
       "discardLocalChanges": "Discard local changes",
-      "openConflictAssistant": "Open conflict assistant",
+      "openConflictAssistant": "Open conflict assistant in Implement",
+      "conflictReadOnly": "Read-only conflict inspection",
       "abortMerge": "Abort merge",
       "fastForwardBlockedMergeInProgress": "Fast-forward is blocked while a merge is in progress.",
       "fastForwardBlockedLocalCommits": "Fast-forward is blocked by local commits.",
@@ -515,6 +582,7 @@
       "allRepositories": "All repositories",
       "gitScope": "Git scope",
       "selectRepository": "Select repository",
+      "noRepository": "No Git repository selected",
       "selectFolder": "Select a Git folder",
       "folderNotGit": "This folder is not a Git repository.",
       "folderSelectionFailed": "Could not select this folder."
@@ -526,6 +594,10 @@
     "maximize": "Maximize"
   },
   "chat": {
+    "modelInfoContext": "{{tokens}} context",
+    "modelInfoContextFull": "{{tokens}} token context",
+    "modelInfoImages": "Images",
+    "modelInfoTools": "Tools",
     "conversationSourcesUsed": "{{count}} cited conversation sources",
     "imageImportContextChanged": "Conversation changed. Images were not added; select them again.",
     "imageImportFailed": "No images added. Use valid PNG, JPEG, GIF or WebP images, up to 2 MB each, 8 MB total and 10 images.",
@@ -553,9 +625,15 @@
     "stop": "Stop",
     "steerActiveTurn": "Steer active turn",
     "queueNextTurn": "Queue for next turn",
+    "queuedMessages": "Queued messages",
+    "queueSending": "Sending…",
+    "queuePaused": "Paused. Resume from the recovery notice.",
+    "queueWaiting": "Waiting for the current response to finish",
+    "stopQueueDescription": "Stops the current response and pauses queued messages. Queued messages are retained.",
     "queueSaveFailed": "Queued messages could not be saved. Keep this session open and try again.",
     "queuePlanUnavailable": "The original plan is unavailable for this queued message.",
     "queueContextChanged": "The queued message target has changed. Restore its original context before retrying.",
+    "sendImagesSaveFailed": "The message could not be saved with its images. Retry the draft.",
     "queueImagesSaveFailed": "The message is saved, but its images still need saving. Retry the queued submission.",
     "queueRecoveryTitle": "Queued messages need attention",
     "queueRecoveryDescription": "{{count}} queued message(s) are retained. Retry resumes them in their original context.",
@@ -566,12 +644,18 @@
     "queueAlreadySent": "This message was already saved. Retry recovery instead.",
     "queueEditInProgress": "Wait for the queued message change to finish.",
     "queueEmptyMessage": "The queued message cannot be empty.",
+    "queueAssistantInterrupted": "This saved instruction may have started executing. Review the response and tool effects, then remove this recovery entry before continuing manually.",
+    "steerImagesSaveFailed": "The direction could not be saved with its images. Retry the draft.",
+    "steerTurnEnded": "The direction was saved, but its turn ended before delivery. Review it before continuing.",
+    "goalExecutorContextUnavailable": "The Goal executor context is unavailable. Send a message in this conversation before resuming.",
     "queueInterrupted": "The queued send was interrupted. Its content is retained.",
     "queueUnavailable": "This conversation can no longer accept queued messages.",
     "secondaryAction": "Alternate action",
     "activeTurnSendFailed": "Message not sent",
     "saveRegenerate": "Save & Regenerate",
     "mermaidDiagram": "Mermaid diagram",
+    "renderMermaidDiagram": "Render diagram",
+    "mermaidExternalResourceWarning": "Rendering this diagram may contact external sites.",
     "copyCode": "Copy code",
     "copied": "Copied",
     "showCode": "Show code",
@@ -591,11 +675,19 @@
     "selectProvider": "Select a provider",
     "selectModel": "Select a model",
     "providerSelector": "Choose AI provider",
+    "modelSearchLabel": "Search models",
+    "modelSearchPlaceholder": "Search models…",
+    "modelSearchClear": "Clear model search",
+    "modelSearchEmpty": "No matching models.",
+    "modelColumn": "Model",
+    "providerColumn": "Provider",
+    "modelNavigationHint": "↑↓ navigate · Enter choose · Esc close",
     "modelSelector": "Choose AI model",
     "reasoningSelector": "Choose reasoning level",
     "noProvidersConfigured": "No providers configured",
     "providerRestoreUnavailable": "The provider or model previously used by this conversation is no longer available. Select another one to continue.",
     "runtimeErrorFallback": "Macro could not complete this action. Review the details, then try again.",
+    "conversationSourceEmpty": "The selected conversation has no completed text to cite. Remove this source or choose another conversation, then send again.",
     "noEnabledModels": "No enabled models. Enable models in Settings.",
     "selectProviderFirst": "Select a provider first",
     "agentTypeBuild": "Build",
@@ -620,6 +712,9 @@
     "deleteConversationConfirm": "Are you sure you want to delete this conversation?",
     "deleteConversationError": "Unable to delete this conversation.",
     "searchConversations": "Search conversations...",
+    "searchResults": "Search results",
+    "searchYou": "You",
+    "matchingMessages": "{{count}} matching messages",
     "messageResults": "Message results",
     "messageSearchFailed": "Message search failed.",
     "noMessageResults": "No matching messages",
@@ -656,7 +751,11 @@
     "generationAttempts_one": "{{count}} generation attempt",
     "generationAttempts_other": "{{count}} generation attempts",
     "generationAttemptNumber": "Attempt {{number}}",
-    "generationAttemptStatus": { "completed": "completed", "partial": "partial", "abandoned": "abandoned" },
+    "generationAttemptStatus": {
+      "completed": "completed",
+      "partial": "partial",
+      "abandoned": "abandoned"
+    },
     "generationAttemptCostUnknown": "cost unknown",
     "generationAttemptCost": "${{amount}}",
     "generationAttemptRawText": "Attempt text",
@@ -665,6 +764,7 @@
     "toolDenied": "denied",
     "toolApprovalRecoveryWarning": "Some saved tool requests could not be restored. Their data has been kept. You can close this notice and continue chatting.",
     "toolApprovalResumeCancelled": "The new turn did not start. You can resume again.",
+    "sourcePassageEditApproval": "Edit a saved source passage",
     "toolApprovalInterrupted": "This tool request was interrupted.",
     "toolApprovalInterruptedHint": "Resume starts a new turn that checks the current workspace and requests fresh approval if needed. The original request remains in the history.",
     "toolApprovalResume": "Resume with a new turn",
@@ -757,10 +857,19 @@
       "binaryFileRejected": "{{file}} contains binary or invalid UTF-8 data.",
       "conversationRequired": "Select a task or plan before attaching files.",
       "urlPreviewFailedTitle": "Could not fetch URL preview",
+      "urlPreviewBlockedDescription": "For security, previews cannot access local, private, reserved or link-local network addresses. Use a public URL.",
       "clipboardEmptyTitle": "Clipboard is empty",
       "clipboardReadFailedTitle": "Could not read clipboard",
       "previewUnavailable": "Preview unavailable",
       "removeFromContext": "Remove from context",
+      "toolDescriptions": {
+        "web_search": "Search the web for information with citations",
+        "web_fetch": "Fetch and read a specific URL directly",
+        "question": "Ask the user a structured blocking question with guided answers",
+        "read_file": "Read attached files and context documents in this chat",
+        "terminal_create_session": "Run individually approved commands on the computer",
+        "mark_source_passage": "Track interesting passages and passages used by the AI"
+      },
       "toolsUnavailableWarning": "Tools are unavailable for the currently selected provider or model. Select a model with native tool calling support to enable them.",
       "builtInTools": "Built-in Tools",
       "noToolsEnabled": "No tools enabled",
@@ -770,6 +879,8 @@
       "webFetchDisabledTooltip": "Enable Web Fetch in Settings > Tools > Web Search",
       "nativeToolTooltip": "The selected model does not support native tool calls.",
       "sourceSummary": "{{interesting}} found • {{used}} used • {{total}} passages",
+      "sourceSummary_one": "{{interesting}} found • {{used}} used • {{total}} passage",
+      "sourceSummary_other": "{{interesting}} found • {{used}} used • {{total}} passages",
       "collectionDisabledTitle": "Collection disabled",
       "collectionDisabledDescription": "Enable the Sources tool to save new passages.",
       "sourceSearchPlaceholder": "Search sources",
@@ -943,7 +1054,13 @@
           "belowThresholdDetail": "Context is below the useful compaction threshold"
         }
       }
-    }
+    },
+    "queueWriteInProgress": "This direction is still being saved. Wait for its save to finish before retrying.",
+    "queueDirectionDeleted": "This direction was invalidated by deletion or replay. Remove this recovery entry before continuing manually.",
+    "directionContextUnavailable": "The active turn context is unavailable. Wait for it to finish before sending.",
+    "providerErrorTitle": "The model could not complete this request.",
+    "providerErrorRetry": "Try again in a moment.",
+    "providerErrorSettings": "Check the model settings before trying again."
   },
   "skills": {
     "importDialogTitle": "Select a skill folder",
@@ -1038,6 +1155,91 @@
     "moreDiagnostics": "+{{count}} more diagnostics"
   },
   "settings": {
+    "connectReader": {
+      "title": "Computers · Read only",
+      "help": "Conversations stay on their source computer. Reading does not mark replies as read.",
+      "launchTitle": "Browse computers",
+      "launchHelp": "Read Chats on up to two computers while continuing local work.",
+      "open": "Open reader",
+      "computer": "Computer",
+      "chooseComputer": "Choose a computer",
+      "add": "Add computer",
+      "verify": "Verify computers",
+      "twoLimit": "Two computers maximum. Close a panel to choose another.",
+      "locked": "Contents are locked while hidden or offline. A new check is required.",
+      "passive": "Temporary offline reading. Copying and navigation require a fresh connection.",
+      "thisComputer": "This computer",
+      "closeComputer": "Close {{computer}}",
+      "chat": "Chat",
+      "archiveFilter": "Conversation status",
+      "active": "Active",
+      "archived": "Archived",
+      "unread": "Unread",
+      "emptyCatalog": "No Chat conversation in this list.",
+      "emptyWindow": "No messages in this window.",
+      "chooseConversation": "Choose a conversation.",
+      "back": "Back to conversations",
+      "conversation": "Conversation",
+      "next": "Next page",
+      "older": "Older messages",
+      "first": "Back to beginning",
+      "latest": "Latest messages",
+      "beginning": "Beginning of conversation",
+      "anchor": "Continue older · new capture",
+      "newCapture": "New capture around the previous anchor. Some messages may overlap.",
+      "limit": "Browsing limit: 10 pages or 500 items. This is not an exhaustive list.",
+      "phase": {
+        "connecting": "Connecting",
+        "ready": "Ready",
+        "revalidating": "Checking access",
+        "error": "Unavailable",
+        "offline": "Temporary offline reading",
+        "authority_expired": "Reading locked · checking access",
+        "locked": "Locked"
+      },
+      "attention": {
+        "generating": "Generating",
+        "user_request": "Response requested",
+        "tool_approval": "Approval requested",
+        "error": "Error",
+        "unknown": "Unknown"
+      },
+      "role": {
+        "user": "You",
+        "assistant": "Assistant"
+      },
+      "content": {
+        "complete": "Complete",
+        "excerpt": "Excerpt",
+        "withheld": "Content withheld",
+        "pending": "Generating"
+      },
+      "completion": {
+        "complete": "Complete",
+        "incomplete": "Incomplete",
+        "unknown": "Unknown"
+      },
+      "errors": {
+        "invalid_configuration": "Check the device name and try again.",
+        "invalid_response": "The relay returned an invalid response.",
+        "validation_failed": "The relay rejected this request. Refresh and try again.",
+        "response_too_large": "The relay response exceeded the 1 MB limit.",
+        "redirect_refused": "The relay tried to redirect the request.",
+        "unauthorized": "Reading this computer is not authorized. Verify access before retrying.",
+        "session_revoked": "Reading this computer is not authorized. Verify access before retrying.",
+        "forbidden": "Reading this computer is not authorized. Verify access before retrying.",
+        "not_found": "The requested Macro Connect item no longer exists.",
+        "conflict": "The connection changed. Refresh and try again.",
+        "stale_revision": "The request changed before it could be applied.",
+        "unavailable": "Macro Connect is temporarily unavailable.",
+        "vault_unavailable": "Saved credentials are inaccessible. Restore the connection.",
+        "offline": "The relay cannot be reached. Local Macro features remain available.",
+        "extension_unavailable": "This computer does not support this reader.",
+        "snapshot_expired": "This list expired. Refresh it before continuing.",
+        "resource_limit": "The relay cannot return this list within its resource limits.",
+        "context_changed": "The connected account changed. Refresh and try again."
+      }
+    },
     "searchNoResults": "No matching settings",
     "title": "Settings",
     "general": "General",
@@ -1064,7 +1266,158 @@
       "providers": "Configure API keys and endpoints",
       "models": "Manage available models parameters",
       "speech": "Configure microphone dictation and speech-to-text providers",
+      "pilot": "Connect this computer to Macro Connect and manage device access",
       "configuration": "Edit, validate, and inspect Macro's strict JSON configuration"
+    },
+    "pilot": {
+      "sessionVerification": {
+        "pending": "Checking your Macro Connect session before reconnecting this computer. Your local projects and conversations remain available.",
+        "failed": "Your saved credentials are available, but Macro Connect could not check your session. Check your internet connection and try again. Your local projects and conversations remain available.",
+        "retry": "Retry connection"
+      },
+      "accessRequestsFailed": "Access requests from older devices could not be loaded.",
+      "clearExpiredSession": "Sign out before reconnecting",
+      "availability": {
+        "online": "Online",
+        "paused": "Connection paused",
+        "intervention_required": "Permission required",
+        "cancelled": "Permission cancelled",
+        "vault_unavailable": "Saved credentials inaccessible",
+        "unavailable": "Unavailable",
+        "offline": "Offline",
+        "resuming": "Connecting…",
+        "access_required": "Access needs restoring"
+      },
+      "connectionHelp": "Keep Macro open and check your internet connection so Macro Pilot can reach this computer.",
+      "accountSession": "Account session",
+      "savedCredentials": "Saved credentials",
+      "credentialsReady": "Available",
+      "legacyAccessTitle": "Access requests from older devices",
+      "attentionTitle": "Macro Connect needs your attention",
+      "openSettings": "Open Macro Connect",
+      "actionsNeedReview": "Actions to verify",
+      "currentComputer": "This computer",
+      "online": "Online",
+      "disconnectAllDescription": "Every device, including this computer, will need to sign in again. Local projects and conversations are preserved.",
+      "disconnectDevice": "Disconnect this device",
+      "troubleshoot": "Resolve a connection problem",
+      "manageAccount": "Manage account",
+      "deviceMenu": "Options for {{device}}",
+      "accountMenu": "Account options",
+      "otherDevices": "Other devices",
+      "devicesTitle": "Devices",
+      "automaticDevices": "Devices signed in to the same Macro Connect account are connected automatically.",
+      "lastActivity": "Last activity {{date}}",
+      "lastActivityUnknown": "Last activity unknown",
+      "activityHelp": "Last activity records a successful request. It does not indicate whether a device is online.",
+      "preparingDevice": "Setting up this device…",
+      "accessRecovery": "Device access recovery",
+      "label": "Macro Connect",
+      "title": "Macro Connect",
+      "description": "Find your computers in Macro Pilot.",
+      "connection": "Connection",
+      "vaultRecovery": {
+        "title": "Macro Connect connection paused",
+        "intervention_required": "Macro needs your permission to read the saved credentials. Restore the connection to continue using Macro Pilot. Your local projects and conversations remain available.",
+        "cancelled": "Permission was cancelled. Restore the connection when you are ready. Your local projects and conversations remain available.",
+        "suspended": "The connection is paused. If it does not resume after you unlock your session, restore it here. Your local projects and conversations remain available.",
+        "vault_unavailable": "Saved credentials are inaccessible. Check that your system credential storage is unlocked, then restore the connection. Your local projects and conversations remain available.",
+        "waiting": "Waiting for permission to read the saved credentials. You can keep using Macro or sign out.",
+        "resume": "Restore connection",
+        "resuming": "Restoring connection…"
+      },
+      "relayOrigin": "Relay HTTPS origin",
+      "legacyRelay": "This session still uses the previously configured relay: {{origin}}. Sign out, then connect with GitHub again to use the Macro relay.",
+      "deviceLabel": "Device label",
+      "signIn": "Connect with GitHub",
+      "deviceCodeHelp": "Copy this code, then enter it on GitHub to connect.",
+      "copyAndOpenGitHub": "Copy code and open GitHub",
+      "copyCodeFailed": "Could not copy the code. Copy it manually before opening GitHub.",
+      "openGitHubFailed": "The code was copied. Open github.com/login/device in your browser.",
+      "finishingConnection": "Finishing connection…",
+      "openGitHub": "Open GitHub",
+      "check": "Check now",
+      "confirmIdentity": "Confirm that this is the GitHub account you intended to connect.",
+      "confirmAccount": "Confirm this account",
+      "connected": "Macro Connect account connected.",
+      "signOut": "Sign out",
+      "logoutConfirmed": "Signed out and revoked the server session.",
+      "logoutOffline": "Signed out locally. Server revocation could not be confirmed. Sign in again to check your account.",
+      "instanceTitle": "Desktop instance",
+      "instanceDescription": "The instance key stays in the operating system credential vault.",
+      "createInstance": "Create instance",
+      "reattach": "Restore access",
+      "instanceConnected": "This computer is connected to Macro Connect.",
+      "accessTitle": "Device access",
+      "accessDescription": "Associate only devices you trust. Associated devices can access all projects and use the available Pilot actions.",
+      "noAccessRequests": "No pending access requests.",
+      "expiresAt": "Expires {{date}}",
+      "grant": "Allow access",
+      "deny": "Deny",
+      "indeterminateTitle": "Commands requiring reconciliation",
+      "indeterminateDescription": "Check whether these actions took effect before continuing.",
+      "noIndeterminate": "No command requires local reconciliation.",
+      "commandTarget": "Target: {{target}}",
+      "reconcile": "Reconcile locally",
+      "reconciliationTitle": "Confirm that the effect did not occur",
+      "reconciliationDescription": "Use this only after checking the local task, conversation, tool or Git state and confirming that the command had no effect. Macro will close this attempt and require a new explicit command.",
+      "reconciliationConfirm": "I confirm it was not executed",
+      "reconciliationDone": "The command was marked as not executed. A new explicit command is required.",
+      "reconciliationFailed": "The local reconciliation could not be saved.",
+      "runtimeUnavailable": "This computer is currently unavailable in Macro Pilot. Retry the connection. Your local projects and conversations remain available.",
+      "status": {
+        "expired": "Session expired",
+        "revoked": "Access revoked",
+        "unconfigured": "Not connected",
+        "signed_out": "Signed out",
+        "authorizing": "Waiting for GitHub",
+        "confirming_account": "Confirmation required",
+        "connected": "Connected",
+        "offline": "Offline",
+        "vault_unavailable": "Connection paused"
+      },
+      "errors": {
+        "invalid_configuration": "Check the device name and try again.",
+        "invalid_response": "The relay returned an invalid response.",
+        "validation_failed": "The relay rejected this request. Refresh and try again.",
+        "response_too_large": "The relay response exceeded the 1 MB limit.",
+        "redirect_refused": "The relay tried to redirect the request.",
+        "unauthorized": "Your Macro Connect session has expired. Connect with GitHub again. Your local projects and conversations remain available.",
+        "session_revoked": "Access for this device was revoked. Connect with GitHub again to restore it. Your local projects and conversations remain available.",
+        "forbidden": "This account cannot perform that action.",
+        "not_found": "The requested Macro Connect item no longer exists.",
+        "conflict": "The connection changed. Refresh and try again.",
+        "stale_revision": "The request changed before it could be applied.",
+        "unavailable": "Macro Connect is temporarily unavailable.",
+        "vault_unavailable": "Saved credentials are inaccessible. Restore the connection.",
+        "offline": "The relay cannot be reached. Local Macro features remain available.",
+        "extension_unavailable": "This relay does not support account management yet.",
+        "snapshot_expired": "This list expired. Refresh it before continuing.",
+        "resource_limit": "The relay cannot return this list within its resource limits.",
+        "context_changed": "The connected account changed. Refresh and try again."
+      },
+      "accountTitle": "GitHub account and devices",
+      "accountDescription": "Manage relay sessions even without a connected desktop instance.",
+      "githubSubject": "GitHub ID: {{subject}}",
+      "currentDevice": "This device",
+      "revokeSession": "Revoke session",
+      "revokeAll": "Disconnect all devices",
+      "deleteAccount": "Delete relay account",
+      "accountNotLoaded": "Account details have not been loaded. Refresh to try again.",
+      "accountUpdated": "Account access updated.",
+      "limitedAccess": "Access to this computer needs to be restored.",
+      "accessNotLoaded": "Refresh to load pending access requests.",
+      "deleteDescription": "Delete this relay account and revoke every session and association. Local projects and conversations are preserved. Signing in again creates an account with no restored associations.",
+      "deleteConfirm": "Delete this account permanently",
+      "clientKind": {
+        "desktop": "Desktop",
+        "mobile": "Mobile"
+      },
+      "sessionState": {
+        "active": "Active",
+        "revoked": "Revoked",
+        "expired": "Expired"
+      }
     },
     "configuration": {
       "title": "JSON configuration",
@@ -1245,6 +1598,10 @@
       "maxTurnsLabel": "Max agent turns",
       "maxTurnsDescription": "Maximum AI/tool cycles before Macro stops the agent loop and shows a chat notice."
     },
+    "themeDark": "Dark",
+    "themeLight": "Light",
+    "notificationChannelsUnsupportedDesc": "Desktop delivery is unavailable in this runtime. Choose in-app toast or off.",
+    "desktopNotificationsUnsupportedHint": "Desktop notifications are unavailable in this runtime. Notification delivery falls back to in-app toasts.",
     "theme": "Theme",
     "zoom": "Zoom",
     "zoom_auto": "Auto",
@@ -1389,6 +1746,9 @@
     "parentFolderRequired": "Parent folder is required",
     "folderNameRequired": "Folder name must be a single folder name",
     "repoPathRequired": "Choose an existing project folder first",
+    "folderNotFound": "This folder does not exist. Choose an existing folder.",
+    "pathNotDirectory": "This path is not a folder. Choose an existing folder.",
+    "folderCheckFailed": "Unable to read this folder. Check the path and access permissions.",
     "projectPathRequired": "Project path is required",
     "duplicateSubprojectName": "A project with this name already exists in this group",
     "localFolder": "Local folder",
@@ -1402,6 +1762,7 @@
     "attachedReposCount_one": "{{count}} project in this group",
     "attachedReposCount_other": "{{count}} projects in this group",
     "folderAlreadyAttached": "This folder is already attached to {{name}}.",
+    "folderAlreadyAttachedInWorkspace": "This folder is already attached to a project in this workspace.",
     "folderAlreadyAttachedNamed": "This folder is already attached to \"{{name}}\"",
     "saveFailed": "Failed to save project",
     "createProject": "Create project",
@@ -1522,6 +1883,8 @@
     "projectGitPrepared": "Git is now ready for {{projectName}}.",
     "projectDirectEditEnabled": "{{projectName}} can now be edited without Git.",
     "projectDirectEditDisabled": "{{projectName}} is now read-only until Git is initialized.",
+    "gitFlowInvalidBranch": "Enter a valid Git branch name.",
+    "projectActions": "Actions for {{name}}",
     "gitFlowSaved": "Git workflow settings saved.",
     "readOnlyImpactTitle": "Switch to read-only?",
     "readOnlyImpactDescription": "Macro will remove this project from editable plan and task targets, but keep it available for context and read access.",
@@ -1628,7 +1991,76 @@
       "hotfixEmptyHint": "Describe the production bug. Macro will infer the projects, propose a hotfix slug and patch versions, then ask you to confirm.",
       "bugfixEmptyHint": "Describe the bug. Macro will infer the projects and propose a bugfix slug before asking you to confirm."
     },
+    "planIcon": {
+      "title": "Choose an icon",
+      "reset": "Default icon",
+      "options": {
+        "sparkles": "Sparkles",
+        "workflow": "Workflow",
+        "network": "Network",
+        "layers": "Layers",
+        "pencil-ruler": "Design",
+        "code": "Code",
+        "terminal": "Terminal",
+        "flag": "Flag",
+        "target": "Target",
+        "zap": "Lightning",
+        "shield": "Shield",
+        "tool": "Tools",
+        "cpu": "Processor",
+        "database": "Database",
+        "globe": "Globe",
+        "cloud": "Cloud",
+        "message-square": "Conversation",
+        "book-open": "Book",
+        "folder": "Folder",
+        "folder-open": "Open folder",
+        "file": "File",
+        "file-code": "Code file",
+        "file-text": "Document",
+        "git-branch": "Branch",
+        "git-commit": "Commit",
+        "git-merge": "Merge",
+        "git-compare": "Compare",
+        "history": "History",
+        "list-todo": "Checklist",
+        "check-square": "Checked box",
+        "clipboard": "Clipboard",
+        "clock": "Clock",
+        "milestone": "Milestone",
+        "compass": "Compass",
+        "map": "Map",
+        "folder-tree": "Folder tree",
+        "server": "Server",
+        "hard-drive": "Storage",
+        "user": "User",
+        "lock": "Lock",
+        "eye": "Eye",
+        "palette": "Palette",
+        "image": "Image",
+        "camera": "Camera",
+        "mic": "Microphone",
+        "bell": "Bell",
+        "settings": "Settings",
+        "layout-grid": "Grid"
+      }
+    },
     "projectNavigator": {
+      "newBlueprint": "New blueprint",
+      "blueprintCreatedAtRoot": "Blueprint created at the project root. Its folder placement could not be saved.",
+      "newSubfolder": "New subfolder",
+      "newFolder": "New folder",
+      "renameFolder": "Rename folder",
+      "folderActions": "Actions for {{name}}",
+      "removeFolder": "Remove folder",
+      "removeFolderHelp": "Contents remain in the parent folder.",
+      "emptyFolder": "Drop a blueprint here",
+      "moveToFolder": "Move to…",
+      "projectRoot": "Project root",
+      "folderNameError": "Choose a different folder name.",
+      "folderSaveError": "Could not save folder organization.",
+      "macroBlueprints": "Macro library",
+      "newMacroBlueprint": "New Macro blueprint",
       "title": "Projects",
       "searchPlans": "Search plans...",
       "noSearchResults": "No plan matches this search.",
@@ -1767,15 +2199,13 @@
       "targetBranch": "Target: {{branchName}}"
     },
     "planNamingRecovery": {
-      "title": "Plan name still needed",
-      "description": "Macro could not generate a plan name from the first message after three attempts. Retry with AI or name the plan manually.",
+      "title": "Plan name not generated",
+      "description": "The plan keeps its default name.",
       "retryAi": "Retry AI",
-      "retryingAi": "Retrying AI...",
       "nameManually": "Name manually",
       "manualTitle": "Name This Plan",
       "manualDescription": "Enter the plan name you want to use for this conversation.",
       "saveManualName": "Save plan name",
-      "back": "Back",
       "manualPlaceholder": "e.g. Checkout Recovery Refresh"
     },
     "strategy": "Strategy",
@@ -1794,6 +2224,11 @@
     "noStrategyDescription": "Discuss the plan in Architect chat, then use Generate Strategy to create this graph.",
     "noBranchesMatchingFilters": "No branches match the current filters.",
     "planCompleted": "Plan completed",
+    "newPlanPlaceholder": "New plan",
+    "planValidationBranchesCreated_one": "Plan validated. {{count}} branch provisioned.",
+    "planValidationBranchesCreated_other": "Plan validated. {{count}} branches provisioned.",
+    "planValidationBranchesCurrent": "Plan validated. Branches are already up to date.",
+    "finalizationTaskTitle": "Finalize plan: {{name}}",
     "planValidated": "Plan validated",
     "validatingPlan": "Validating...",
     "noActivePlan": "No active plan",
@@ -1876,6 +2311,7 @@
     "totalChanges": "total changes"
   },
   "providers": {
+    "backToProviders": "Back to providers",
     "macroAi": {
       "included": "AI included with the Macro beta",
       "dropdownNotice": "AI included with the beta"
@@ -1892,6 +2328,13 @@
     "emptyDescription": "Add a provider to connect Macro to an AI service.",
     "configuredTitle": "Configured providers",
     "unconfiguredTitle": "Providers to configure",
+    "connectionModelsFound_one": "Connected! Found {{count}} model.",
+    "connectionModelsFound_other": "Connected! Found {{count}} models.",
+    "connectionLmStudioModelsFound_one": "Connected! Found {{count}} LM Studio model.",
+    "connectionLmStudioModelsFound_other": "Connected! Found {{count}} LM Studio models.",
+    "connectionModelVerified": "Connected using model {{model}}.",
+    "connectionModelsFound_zero": "Connected! Found {{count}} models.",
+    "connectionLmStudioModelsFound_zero": "Connected! Found {{count}} LM Studio models.",
     "testSaveFirst": "Please save the provider before testing.",
     "testConnection": "Test Connection",
     "saveProvider": "Save Provider",
@@ -2104,10 +2547,17 @@
       "deleteFailed": "Failed to delete MCP server.",
       "toggleFailed": "Failed to update MCP server.",
       "transportHint": "Use stdio for local servers or Streamable HTTP for legacy and stateless remote servers.",
-      "transport": { "stdio": "Local stdio", "streamableHttp": "Streamable HTTP" },
+      "transport": {
+        "stdio": "Local stdio",
+        "streamableHttp": "Streamable HTTP"
+      },
       "urlPlaceholder": "https://example.com/mcp",
       "headersPlaceholder": "Authorization=Bearer token\nX-API-Key=value",
-      "protocol": { "auto": "Automatic detection", "legacy": "Legacy session", "modern": "Modern stateless" },
+      "protocol": {
+        "auto": "Automatic detection",
+        "legacy": "Legacy session",
+        "modern": "Modern stateless"
+      },
       "oauth": {
         "enable": "Use OAuth",
         "scopes": "Scopes, separated by spaces",
@@ -2127,6 +2577,12 @@
         "failed": "MCP authorization failed.",
         "loggedOut": "MCP authorization removed.",
         "logoutFailed": "Failed to remove MCP authorization."
+      },
+      "status": {
+        "online": "Online",
+        "degraded": "Degraded",
+        "offline": "Offline",
+        "unconfigured": "Unconfigured"
       }
     }
   },
@@ -2224,34 +2680,166 @@
         }
       },
       "metadata": {
-        "clean": { "title": "@macro metadata is up to date", "body": "No action is needed." },
-        "dirty": { "title": "@macro metadata has local changes", "body": "Macro needs to save metadata changes before syncing.", "nextStep": "Save @macro metadata, then retry the sync." },
-        "ahead": { "title": "@macro metadata is ready to publish", "body": "Your local metadata branch has changes that are not on the remote yet.", "nextStep": "Push @macro when you are ready." },
-        "behind": { "title": "@macro metadata is behind remote", "body": "Remote metadata has updates that are not local yet.", "nextStep": "Pull @macro, then retry your action." },
-        "diverged": { "title": "@macro metadata has diverged", "body": "Local and remote metadata both changed.", "nextStep": "Pull @macro, resolve any conflicts, then push." },
-        "mergeConflict": { "title": "@macro metadata has conflicts", "body": "The metadata branch has unresolved conflict files.", "nextStep": "Resolve the conflicted metadata files, then retry the same sync step." },
-        "missingOrigin": { "title": "@macro remote is not configured", "body": "Macro cannot sync metadata because the repository has no origin remote.", "nextStep": "Configure the Git remote, then retry." },
-        "missingUpstream": { "title": "@macro has no upstream branch", "body": "The metadata branch exists locally but is not linked to a remote branch yet.", "nextStep": "Push @macro to publish it, or ignore this warning to keep metadata local." },
-        "authRequired": { "title": "Git authentication is required", "body": "Macro cannot reach the metadata remote with the current credentials.", "nextStep": "Configure Git authentication, then retry." },
-        "networkError": { "title": "Metadata sync could not reach the remote", "body": "The network or remote service is unavailable right now.", "nextStep": "Check your connection, then retry." },
-        "unknownError": { "title": "Macro metadata sync failed", "body": "Macro could not complete the metadata sync safely.", "nextStep": "Retry the sync. If it fails again, inspect the technical details." }
+        "clean": {
+          "title": "@macro metadata is up to date",
+          "body": "No action is needed."
+        },
+        "dirty": {
+          "title": "@macro metadata has local changes",
+          "body": "Macro needs to save metadata changes before syncing.",
+          "nextStep": "Save @macro metadata, then retry the sync."
+        },
+        "ahead": {
+          "title": "@macro metadata is ready to publish",
+          "body": "Your local metadata branch has changes that are not on the remote yet.",
+          "nextStep": "Push @macro when you are ready."
+        },
+        "behind": {
+          "title": "@macro metadata is behind remote",
+          "body": "Remote metadata has updates that are not local yet.",
+          "nextStep": "Pull @macro, then retry your action."
+        },
+        "diverged": {
+          "title": "@macro metadata has diverged",
+          "body": "Local and remote metadata both changed.",
+          "nextStep": "Pull @macro, resolve any conflicts, then push."
+        },
+        "mergeConflict": {
+          "title": "@macro metadata has conflicts",
+          "body": "The metadata branch has unresolved conflict files.",
+          "nextStep": "Resolve the conflicted metadata files, then retry the same sync step."
+        },
+        "missingOrigin": {
+          "title": "@macro remote is not configured",
+          "body": "Macro cannot sync metadata because the repository has no origin remote.",
+          "nextStep": "Configure the Git remote, then retry."
+        },
+        "missingUpstream": {
+          "title": "@macro has no upstream branch",
+          "body": "The metadata branch exists locally but is not linked to a remote branch yet.",
+          "nextStep": "Push @macro to publish it, or ignore this warning to keep metadata local."
+        },
+        "authRequired": {
+          "title": "Git authentication is required",
+          "body": "Macro cannot reach the metadata remote with the current credentials.",
+          "nextStep": "Configure Git authentication, then retry."
+        },
+        "networkError": {
+          "title": "Metadata sync could not reach the remote",
+          "body": "The network or remote service is unavailable right now.",
+          "nextStep": "Check your connection, then retry."
+        },
+        "unknownError": {
+          "title": "Macro metadata sync failed",
+          "body": "Macro could not complete the metadata sync safely.",
+          "nextStep": "Retry the sync. If it fails again, inspect the technical details."
+        }
       },
       "service": {
-        "gitObjectMissing": { "title": "Git review is paused", "body": "A Git object needed for this review is unavailable. Macro did not modify any working files.", "bodyUncertain": "Git could not read an object required for this operation. Check the technical details before retrying.", "nextStep": "Retry to ask Git for the object again. Open the technical details to inspect the operation, object ID, and sanitized Git output." },
-        "directModeConfigurationRequired": { "title": "The review mode needs configuration", "body": "This project is not a Git repository, but the task metadata does not allow direct review. Macro did not start a Git review or modify any working files.", "nextStep": "Configure Git for this project, or recreate the task in direct mode. The technical details show the stored mode." },
-        "directCheckpointMissing": { "title": "Macro's review checkpoint is unavailable", "body": "The internal checkpoint for this non-Git project's review is missing. Macro did not modify any working files.", "nextStep": "Retry after the task has been prepared again. Open the technical details to inspect the checkpoint identifier." },
-        "directCheckpointCorrupt": { "title": "Macro's review checkpoint is damaged", "body": "The internal checkpoint for this non-Git project's review is incomplete. Macro preserved it and did not modify any working files.", "nextStep": "Retry once. Do not reset the checkpoint if accepted review history must be preserved; open the technical details for diagnosis." },
-        "directCheckpointProjectMismatch": { "title": "Macro's review checkpoint belongs to another project path", "body": "The saved checkpoint identity does not match this project's current path. Macro preserved the checkpoint and did not modify any working files.", "nextStep": "Check the project's saved path or reopen the original project. Use the technical details to identify the checkpoint before changing its metadata." },
-        "resourcePressure": { "title": "Macro is temporarily overloaded", "body": "The system has too many files open, so Macro paused automatic repository refreshes before retrying.", "nextStep": "Wait a moment, then retry. If this keeps happening, close extra project windows or terminals." },
-        "replicaRepair": { "title": "Plan metadata needs repair", "body": "Macro found inconsistent plan metadata and needs to repair the canonical copy before continuing.", "nextStep": "Repair the plan metadata, then retry the action." },
-        "metadataMissing": { "title": "Plan metadata is incomplete", "body": "Macro found a task or conversation that points to plan metadata that is missing or only partially persisted.", "nextStep": "Repair the metadata links, then retry the action." },
-        "workspaceUnavailable": { "title": "Workspace state is temporarily unavailable", "body": "Macro could not read the workspace state needed for this action.", "nextStep": "Retry after the workspace finishes updating. If it persists, reopen the project." },
-        "gitNotReady": { "title": "This project is not ready for editable work", "body": "Macro can still use this project for context, but it cannot write to it until Git is ready.", "nextStep": "Open project settings and finish the Git setup." },
-        "fallback": { "title": "Something needs attention", "nextStep": "Review the details, fix the blocking state, then retry." }
+        "gitObjectMissing": {
+          "title": "Git review is paused",
+          "body": "A Git object needed for this review is unavailable. Macro did not modify any working files.",
+          "bodyUncertain": "Git could not read an object required for this operation. Check the technical details before retrying.",
+          "nextStep": "Retry to ask Git for the object again. Open the technical details to inspect the operation, object ID, and sanitized Git output."
+        },
+        "directModeConfigurationRequired": {
+          "title": "The review mode needs configuration",
+          "body": "This project is not a Git repository, but the task metadata does not allow direct review. Macro did not start a Git review or modify any working files.",
+          "nextStep": "Configure Git for this project, or recreate the task in direct mode. The technical details show the stored mode."
+        },
+        "directCheckpointMissing": {
+          "title": "Macro's review checkpoint is unavailable",
+          "body": "The internal checkpoint for this non-Git project's review is missing. Macro did not modify any working files.",
+          "nextStep": "Retry after the task has been prepared again. Open the technical details to inspect the checkpoint identifier."
+        },
+        "directCheckpointCorrupt": {
+          "title": "Macro's review checkpoint is damaged",
+          "body": "The internal checkpoint for this non-Git project's review is incomplete. Macro preserved it and did not modify any working files.",
+          "nextStep": "Retry once. Do not reset the checkpoint if accepted review history must be preserved; open the technical details for diagnosis."
+        },
+        "directCheckpointProjectMismatch": {
+          "title": "Macro's review checkpoint belongs to another project path",
+          "body": "The saved checkpoint identity does not match this project's current path. Macro preserved the checkpoint and did not modify any working files.",
+          "nextStep": "Check the project's saved path or reopen the original project. Use the technical details to identify the checkpoint before changing its metadata."
+        },
+        "resourcePressure": {
+          "title": "Macro is temporarily overloaded",
+          "body": "The system has too many files open, so Macro paused automatic repository refreshes before retrying.",
+          "nextStep": "Wait a moment, then retry. If this keeps happening, close extra project windows or terminals."
+        },
+        "replicaRepair": {
+          "title": "Plan metadata needs repair",
+          "body": "Macro found inconsistent plan metadata and needs to repair the canonical copy before continuing.",
+          "nextStep": "Repair the plan metadata, then retry the action."
+        },
+        "metadataMissing": {
+          "title": "Plan metadata is incomplete",
+          "body": "Macro found a task or conversation that points to plan metadata that is missing or only partially persisted.",
+          "nextStep": "Repair the metadata links, then retry the action."
+        },
+        "conflictAssistantContextChanged": {
+          "title": "Git context changed",
+          "body": "The selected Git context changed while opening the assistant.",
+          "nextStep": "Refresh the Git view and reopen the assistant."
+        },
+        "workspaceUnavailable": {
+          "title": "Workspace state is temporarily unavailable",
+          "body": "Macro could not read the workspace state needed for this action.",
+          "nextStep": "Retry after the workspace finishes updating. If it persists, reopen the project."
+        },
+        "gitNotReady": {
+          "title": "This project is not ready for editable work",
+          "body": "Macro can still use this project for context, but it cannot write to it until Git is ready.",
+          "nextStep": "Open project settings and finish the Git setup."
+        },
+        "fallback": {
+          "title": "Something needs attention",
+          "nextStep": "Review the details, fix the blocking state, then retry."
+        }
       }
     }
   },
-  "prompts": { "title": "System Prompts", "description": "Customize the base mode prompts and the internal profile prompts used during plan, review, and repository audit flows.", "restoreAll": "Restore All", "saveFailed": "Unable to save system prompts." },
+  "prompts": {
+    "editors": {
+      "promptArchitect": {
+        "label": "Architect Mode",
+        "description": "Base system prompt for Architect conversations."
+      },
+      "promptImplement": {
+        "label": "Implement Mode",
+        "description": "Base system prompt for Implement conversations."
+      },
+      "promptChat": {
+        "label": "Chat Mode",
+        "description": "Base system prompt for general chat conversations."
+      },
+      "promptPlanExplorer": {
+        "label": "Plan Explorer Profile",
+        "description": "Extra guidance injected for Architect planning and exploration flows."
+      },
+      "promptTaskReviewer": {
+        "label": "Task Reviewer Profile",
+        "description": "Extra guidance injected while reviewing an Implement task in review."
+      },
+      "promptRepoAuditor": {
+        "label": "Repo Auditor Profile",
+        "description": "Extra guidance injected for Git conflict, finalization, and repository audit flows."
+      },
+      "promptGoalAuditor": {
+        "label": "Goal Auditor Profile",
+        "description": "Extra guidance injected for read-only conversation goal audits."
+      },
+      "smartCommitPrompt": {
+        "label": "Commit generation prompt",
+        "description": "Guides AI-generated Conventional Commit messages. Macro still validates the final message and removes scopes before committing."
+      }
+    },
+    "loadFailed": "Unable to load system prompts. Retry before saving.",
+    "title": "System Prompts",
+    "description": "Customize the base mode prompts and the internal profile prompts used during plan, review, and repository audit flows.",
+    "restoreAll": "Restore All",
+    "saveFailed": "Unable to save system prompts."
+  },
   "toast": {
     "languageChanged": "Language changed to {{language}}",
     "settingsSaved": "Settings saved",
@@ -2299,6 +2887,8 @@
     }
   },
   "models": {
+    "catalogSuggestions": "Catalog suggestions",
+    "catalogSuggestionsHint": "Search the provider catalog by ID or name, or enter any model ID.",
     "noProviders": "No providers configured yet. Add a provider first.",
     "noProvidersTitle": "Add a provider before adding models",
     "collectionTitle": "Models",
@@ -2606,7 +3196,17 @@
     "artifactSaveFailed": "Could not save the Goal review artifact",
     "artifactTitle": "Goal review",
     "queueTrackingFailed": "Could not track the queued Goal turn",
-    "artifactStatus": { "achieved": "Achieved", "continue": "Continue", "needs_user": "Needs your response", "cannot_progress": "Cannot progress", "applied": "Applied", "failed": "Failed", "cancelled": "Cancelled", "stale": "Outdated", "timed_out": "Timed out" },
+    "artifactStatus": {
+      "achieved": "Achieved",
+      "continue": "Continue",
+      "needs_user": "Needs your response",
+      "cannot_progress": "Cannot progress",
+      "applied": "Applied",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "stale": "Outdated",
+      "timed_out": "Timed out"
+    },
     "reason": {
       "reviewInterrupted": "The previous review was interrupted. Resume to start another agent turn.",
       "executorInterrupted": "The previous agent turn was interrupted. Resume to continue.",
@@ -2668,6 +3268,16 @@
     "slashMenuLabel": "Insert context or command"
   },
   "backup": {
+    "confirmReplace": "Prepare replacement",
+    "destination": "New archive destination",
+    "source": "Archive to restore",
+    "scheduledTitle": "Operation prepared",
+    "desktopRequired": "Open Macro on the desktop to back up or restore its local data.",
+    "restoreHelp": "Replace the local data with an archive. Keep the previous profile for recovery.",
+    "exportHelp": "Save the local data to a new archive at the next startup.",
+    "limits": "Maximum archive size: 256 MiB. Restore with the same Macro version. Project paths are kept as recorded; restoring does not reconnect moved projects or merge profiles.",
+    "limitsTitle": "Compatibility, limits and private data",
+    "exclusions": "Project folders and their Git history are excluded, as are provider credentials. Keep a separate copy of your projects.",
     "scheduled": "Operation prepared. Quit Macro completely, then reopen it. Keep this session unchanged until you quit.",
     "resultExported": "Backup saved.",
     "resultRestored": "Profile restored. The previous profile is retained at the path below.",
@@ -2676,18 +3286,23 @@
     "resultInvalidRequest": "The pending request was invalid and has been set aside. Your profile was not changed.",
     "resultLegacy": "A result from an earlier version is available in the diagnostic details.",
     "diagnostics": "Diagnostic details",
+    "sessionReplacedTitle": "Session open in another tab",
+    "sessionReplacedHint": "Reload this tab to continue using Macro here.",
+    "sessionReplacedReload": "Reload",
+    "runtimeUnavailableTitle": "Desktop runtime unavailable",
+    "runtimeUnavailableHint": "Macro is restarting or is not running. Retry once the desktop runtime is ready.",
     "startupTitle": "Profile recovery required",
     "startupRecovery": "Browser data restoration could not finish. The native recovery archive is retained. Check the diagnostic details, free local storage if necessary, then restart Macro to retry.",
     "title": "Backup and restore",
-    "scope": "Local profile: conversations, stored attachments, code checkpoints, drafts and global preferences. Project folders and their Git metadata are excluded. Keep a separate copy of your projects. Maximum archive size: 256 MiB; restore with the same Macro version.",
-    "secrets": "Provider credentials, MCP environment variables and headers are excluded from portable exports. Reconnect providers after restoring. Conversation and file contents remain private data; store the archive securely.",
+    "scope": "Macro’s local data: conversations, stored attachments, code checkpoints, drafts, queued instructions, recovery responses and global preferences.",
+    "secrets": "Portable exports exclude provider credentials, MCP environment variables and headers. Credentials already on this installation remain here. On another installation, reconnect providers. Conversation and file contents may contain private data; store the archive securely.",
     "recovery": "Recovery required. Original data preserved.",
     "path": "Absolute path to the local backup file",
     "export": "Prepare backup",
     "restore": "Restore backup",
     "confirmTitle": "Confirm profile operation",
-    "confirmRestore": "At the next startup, this archive will replace your local profile. Macro validates it first and keeps the previous profile for recovery. Stop current tasks and quit immediately after confirming. Restore this file?",
-    "confirmExport": "Stop current tasks before continuing. Macro will create the archive at the next startup, while the database and configuration are closed. Prepare this backup?",
+    "confirmRestore": "At the next startup, this archive will replace Macro’s local data without merging. Macro validates it first and saves a recovery copy of the replaced data. Queued instructions stay paused. Stop running tasks now, then quit immediately after confirming and reopen Macro.",
+    "confirmExport": "Stop running tasks now. Macro will create this archive at the next startup. Choose a new file; existing archives are never overwritten. After confirming, quit without editing the session, then reopen Macro.",
     "confirm": "Confirm"
   }
 }

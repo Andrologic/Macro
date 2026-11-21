@@ -1,0 +1,44 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "demo-audio-feature",
+  "title": "Améliorer la lecture audio",
+  "agents": {
+    "scope": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Définir les situations de pause, de navigation et de chargement à couvrir."
+    },
+    "implement": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Conserver la dernière position de lecture et rendre l’état de chargement compréhensible."
+    },
+    "verify": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Vérifier la reprise après une pause, un changement d’écran et un chargement lent."
+    }
+  },
+  "flow": {
+    "entry": "scope",
+    "steps": {
+      "scope": {
+        "type": "agent",
+        "agent": "scope",
+        "title": "Préciser la reprise audio",
+        "next": "implement"
+      },
+      "implement": {
+        "type": "agent",
+        "agent": "implement",
+        "title": "Améliorer la lecture audio",
+        "next": "verify"
+      },
+      "verify": {
+        "type": "agent",
+        "agent": "verify",
+        "title": "Vérifier la reprise audio"
+      }
+    }
+  }
+}

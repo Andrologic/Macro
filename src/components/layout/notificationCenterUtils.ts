@@ -129,7 +129,11 @@ export const groupNotificationCenterItemsByDate = (
   };
   const nowDate = new Date(nowTimestamp);
   const todayStart = startOfDay(nowDate).getTime();
-  const yesterdayStart = todayStart - 24 * 60 * 60 * 1000;
+  const yesterdayStart = new Date(
+    nowDate.getFullYear(),
+    nowDate.getMonth(),
+    nowDate.getDate() - 1
+  ).getTime();
   const dateFormatterSameYear = new Intl.DateTimeFormat(locale, {
     month: 'long',
     day: 'numeric',

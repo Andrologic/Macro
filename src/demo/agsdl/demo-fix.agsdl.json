@@ -1,0 +1,184 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "demo-fix",
+  "title": "Correctif piloté par les tests",
+  "agents": {
+    "triage": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Lire le ticket et choisir correctif, évolution, question ou doublon. Justifier le choix en une phrase."
+    },
+    "designer": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Décrire le comportement attendu et les critères d’acceptation avant tout développement."
+    },
+    "developer": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Corriger le portail avec un changement minimal. Ajouter ou adapter les tests qui démontrent la correction."
+    },
+    "reviewer": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Relire le changement et ses tests. Choisir accepter ou reprendre, avec les remarques bloquantes."
+    },
+    "releaser": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Fusionner et publier le correctif autorisé. Indiquer la version publiée."
+    },
+    "support": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Répondre à la question posée dans le ticket, sans engager de développement."
+    },
+    "duplicate": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Identifier le ticket d’origine et expliquer le rattachement au demandeur."
+    },
+    "recovery": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Expliquer pourquoi les tests ou la publication n’ont pas pu s’exécuter. Ne pas relancer d’action."
+    },
+    "scene-testedChange-tests": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Exécuter les tests"
+    },
+    "scene-testedChange-passed": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Tests réussis ?"
+    },
+    "scene-testedChange-failures": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre les échecs"
+    },
+    "scene-main-remarks": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Transmettre les remarques"
+    },
+    "scene-main-releaseApproval": {
+      "harness": "codex",
+      "permissions": "read-only",
+      "instructions": "Autoriser la publication"
+    }
+  },
+  "flow": {
+    "entry": "triage",
+    "steps": {
+      "triage": {
+        "type": "agent",
+        "agent": "triage",
+        "title": "Qualifier le ticket",
+        "next": "design"
+      },
+      "design": {
+        "type": "agent",
+        "agent": "designer",
+        "title": "Cadrer l’évolution",
+        "next": "change"
+      },
+      "change": {
+        "type": "compose",
+        "composition": "testedChange",
+        "agents": {
+          "developer": "developer"
+        },
+        "title": "Livrer un correctif testé",
+        "next": {
+          "green": [
+            "review"
+          ]
+        }
+      },
+      "review": {
+        "type": "agent",
+        "agent": "reviewer",
+        "title": "Relire le correctif",
+        "next": "remarks"
+      },
+      "remarks": {
+        "type": "agent",
+        "agent": "scene-main-remarks",
+        "title": "Transmettre les remarques",
+        "next": "releaseApproval"
+      },
+      "releaseApproval": {
+        "type": "agent",
+        "agent": "scene-main-releaseApproval",
+        "title": "Autoriser la publication",
+        "next": "release"
+      },
+      "release": {
+        "type": "agent",
+        "agent": "releaser",
+        "title": "Publier le correctif",
+        "next": "answer"
+      },
+      "answer": {
+        "type": "agent",
+        "agent": "support",
+        "title": "Répondre au demandeur",
+        "next": "link"
+      },
+      "link": {
+        "type": "agent",
+        "agent": "duplicate",
+        "title": "Rattacher au ticket existant",
+        "next": "recovery"
+      },
+      "recovery": {
+        "type": "agent",
+        "agent": "recovery",
+        "title": "Diagnostiquer l’environnement"
+      }
+    }
+  },
+  "compositions": {
+    "testedChange": {
+      "entry": "develop",
+      "steps": {
+        "develop": {
+          "type": "agent",
+          "agent": {
+            "parameter": "developer"
+          },
+          "title": "Développer le correctif",
+          "next": "tests"
+        },
+        "tests": {
+          "type": "agent",
+          "agent": "scene-testedChange-tests",
+          "title": "Exécuter les tests",
+          "next": "passed"
+        },
+        "passed": {
+          "type": "agent",
+          "agent": "scene-testedChange-passed",
+          "title": "Tests réussis ?",
+          "next": "failures"
+        },
+        "failures": {
+          "type": "agent",
+          "agent": "scene-testedChange-failures",
+          "title": "Transmettre les échecs",
+          "next": {
+            "output": "green"
+          }
+        }
+      },
+      "parameters": [
+        "developer"
+      ],
+      "outputs": [
+        "green"
+      ]
+    }
+  }
+}

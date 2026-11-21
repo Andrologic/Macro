@@ -150,7 +150,8 @@ export const registerToolApprovalRecoveryScenarios = (context: UseChatStoreScena
       if (failure === 'missing') context.scopedTurnConfigurationForTest = null;
       else Object.defineProperty(context.scopedTurnConfigurationForTest!, 'riskLevel', { get() { throw new Error('Configuration unavailable'); } });
       useChatStore.getState().approvePendingToolApprovalOnce('implement-conv');
-      await expect(pending).rejects.toThrow(failure === 'missing' ? 'could not be verified' : 'Configuration unavailable');
+      await expect(pending).resolves.toMatchObject({ kind: 'result', isError: true, errorKind: 'uncertain',
+        result: expect.stringContaining(failure === 'missing' ? 'could not be verified' : 'Configuration unavailable') });
       expect(hasRecovery()).toBe(true);
       expect(useChatStore.getState().getPendingToolApproval('implement-conv')?.recoveryState).toBe('interrupted');
       expect(useChatStore.getState().conversationApprovalGrantsByConversationId).toEqual({});
@@ -339,7 +340,7 @@ export const registerToolApprovalRecoveryScenarios = (context: UseChatStoreScena
       const { useChatStore, onToolCall } = await context.startImplementToolConversation();
       context.tauriAvailable = true;
       context.dbSetAppSettingMock.mockImplementationOnce(async () => { throw new Error('Marker write failed'); });
-      await expect(onToolCall('terminal_run', { command: 'bun test', session_id: 'session-1' }, 'failed-marker')).rejects.toThrow('Marker write failed');
+      await expect(onToolCall('terminal_run', { command: 'bun test', session_id: 'session-1' }, 'failed-marker')).resolves.toMatchObject({ kind: 'result', isError: true, errorKind: 'uncertain', result: expect.stringContaining('Marker write failed') });
       const updates = context.updateMessageMock.mock.calls;
       expect(updates.flatMap((call) => call[2]?.toolTraces ?? [])).toContainEqual(expect.objectContaining({ tool_call_id: 'failed-marker', status: 'pending_approval' }));
       expect(updates.at(-1)?.[2]?.toolTraces).toContainEqual(expect.objectContaining({ tool_call_id: 'failed-marker', status: 'denied' }));

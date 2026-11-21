@@ -1,0 +1,40 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "error-route",
+  "agents": {
+    "dev": {
+      "harness": "example",
+      "permissions": "workspace"
+    },
+    "support": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "code",
+    "steps": {
+      "code": {
+        "type": "agent",
+        "agent": "dev",
+        "onError": {
+          "step": "report",
+          "message": {
+            "resources": {
+              "error": {
+                "from": [
+                  "error"
+                ]
+              }
+            }
+          }
+        },
+        "next": []
+      },
+      "report": {
+        "type": "agent",
+        "agent": "support"
+      }
+    }
+  }
+}

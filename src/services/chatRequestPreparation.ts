@@ -60,7 +60,7 @@ export interface PreparedChatRequestContext {
 }
 
 export type PrepareChatRequestCompaction = Pick<PrepareAssistantStreamParams,
-  "conversationId" | "providerId" | "modelId" | "reasoningEffort" | "providerConfig" |
+  "providerAdmission" | "conversationId" | "providerId" | "modelId" | "reasoningEffort" | "providerConfig" |
   "forceCompaction" | "forcePrune"
 > & Pick<PreparedChatRequestContext,
   "systemMessage" | "preparedMessages" | "orderedMessages" | "citations"
@@ -347,17 +347,6 @@ export const prepareAssistantStreamLaunch = async (
     mode: params.compactionMode ?? "blocking",
     budgetPolicy,
   });
-  const markSafetyPrestreamCompacting = (footprintAfter: ContextFootprint) => {
-    const previousStatus =
-      ports.compaction.status(params.conversationId) ?? null;
-    ports.compaction.setStatus(params.conversationId, {
-      ...previousStatus,
-      phase: "safety_compacting",
-      updatedAt: new Date().toISOString(),
-      kind: "safety_prestream",
-      footprintAfter,
-    });
-  };
   const compactPreparedRequest = (
     overrides: Partial<{
       mode: ContextCompactionKind;
@@ -366,6 +355,7 @@ export const prepareAssistantStreamLaunch = async (
     }> = {},
   ) =>
     ports.compaction.compact({
+      providerAdmission: params.providerAdmission,
       conversationId: params.conversationId,
       providerId: params.providerId,
       modelId: params.modelId,
@@ -392,7 +382,6 @@ export const prepareAssistantStreamLaunch = async (
     });
   let compactedRequest: MaybeCompactConversationResult;
   if (needsSafetyPrestream) {
-    markSafetyPrestreamCompacting(initialFootprint);
     compactedRequest = await waitForCurrent(compactPreparedRequest({
       mode: "safety_prestream",
       forcePrune: true,
@@ -407,7 +396,6 @@ export const prepareAssistantStreamLaunch = async (
         footprint: compactedRequest.footprintAfter,
       });
     if (needsSafetyPrestream) {
-      markSafetyPrestreamCompacting(compactedRequest.footprintAfter);
       compactedRequest = await waitForCurrent(compactPreparedRequest({
         mode: "safety_prestream",
         forcePrune: true,

@@ -69,6 +69,9 @@ pub struct CompleteToolInvocationInput {
     #[ts(flatten)]
     pub identity: ToolInvocationIdentity,
     pub receipt_id: String,
+    #[serde(default)]
+    #[ts(optional)]
+    pub result_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
@@ -83,6 +86,7 @@ pub struct ToolInvocation {
     pub remote_execution_id: Option<String>,
     pub status: ToolInvocationStatus,
     pub receipt_id: Option<String>,
+    pub result_json: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -143,6 +147,7 @@ fn map_row(row: SqliteRow) -> DbResult<ToolInvocation> {
         remote_execution_id: row.get("remote_execution_id"),
         status: ToolInvocationStatus::from_db(row.get("status"))?,
         receipt_id: row.get("receipt_id"),
+        result_json: row.get("result_json"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })
@@ -185,7 +190,7 @@ fn arguments_digest(value: &Value) -> DbResult<String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
-async fn get_on_connection(
+pub(crate) async fn get_on_connection(
     connection: &mut sqlx::SqliteConnection,
     identity: &ToolInvocationIdentity,
 ) -> DbResult<Option<ToolInvocation>> {
@@ -205,6 +210,24 @@ pub async fn record(
     pool: &SqlitePool,
     input: RecordToolInvocationInput,
 ) -> DbResult<RecordToolInvocationResult> {
+    // A successful pre-dispatch insert must survive before authorizing the effect.
+    let mut connection = pool.acquire().await?;
+    sqlx::query("PRAGMA synchronous = FULL")
+        .execute(&mut *connection)
+        .await?;
+    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+    let result = record_on_connection(&mut tx, input).await?;
+    tx.commit().await?;
+    sqlx::query("PRAGMA synchronous = NORMAL")
+        .execute(&mut *connection)
+        .await?;
+    Ok(result)
+}
+
+pub(crate) async fn record_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    input: RecordToolInvocationInput,
+) -> DbResult<RecordToolInvocationResult> {
     validate_identity(&input.identity)?;
     nonempty(&input.tool_name, "tool_name")?;
     if let Some(id) = &input.remote_execution_id {
@@ -213,13 +236,6 @@ pub async fn record(
     // Sort object keys at every depth, regardless of serde_json's map feature.
     // Never persist the supplied arguments or put them in an error message.
     let digest = arguments_digest(&input.arguments)?;
-    // The shared pool uses WAL/NORMAL. A successful pre-dispatch insert must
-    // survive power loss before is_new can authorize the effect.
-    let mut connection = pool.acquire().await?;
-    sqlx::query("PRAGMA synchronous = FULL")
-        .execute(&mut *connection)
-        .await?;
-    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
     let now = chrono::Utc::now().to_rfc3339();
     let inserted = sqlx::query(
         "INSERT OR IGNORE INTO tool_invocations (conversation_id, turn_id, message_id, call_id, tool_name, effect_class, arguments_sha256, remote_execution_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -234,10 +250,10 @@ pub async fn record(
     .bind(&input.remote_execution_id)
     .bind(&now)
     .bind(&now)
-    .execute(&mut *tx)
+    .execute(&mut *connection)
     .await?
     .rows_affected() == 1;
-    let row = get_on_connection(&mut tx, &input.identity)
+    let row = get_on_connection(&mut *connection, &input.identity)
         .await?
         .ok_or_else(|| DbError::Validation("Tool invocation conversation does not exist".into()))?;
     if row.tool_name != input.tool_name
@@ -249,10 +265,6 @@ pub async fn record(
             "Conflicting tool invocation identity".into(),
         ));
     }
-    tx.commit().await?;
-    sqlx::query("PRAGMA synchronous = NORMAL")
-        .execute(&mut *connection)
-        .await?;
     Ok(RecordToolInvocationResult {
         invocation: row,
         is_new: inserted,
@@ -270,33 +282,7 @@ pub async fn complete(
         .execute(&mut *connection)
         .await?;
     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-    let previous = get_on_connection(&mut tx, &input.identity)
-        .await?
-        .ok_or_else(|| DbError::Validation("Tool invocation not found".into()))?;
-    if previous.status == ToolInvocationStatus::Completed {
-        if previous.receipt_id != Some(input.receipt_id) {
-            return Err(DbError::Validation(
-                "Conflicting tool invocation receipt".into(),
-            ));
-        }
-        tx.commit().await?;
-        sqlx::query("PRAGMA synchronous = NORMAL")
-            .execute(&mut *connection)
-            .await?;
-        return Ok(previous);
-    }
-    let now = chrono::Utc::now().to_rfc3339();
-    sqlx::query("UPDATE tool_invocations SET status = 'completed', receipt_id = ?, updated_at = ? WHERE conversation_id = ? AND turn_id = ? AND message_id = ? AND call_id = ?")
-        .bind(&input.receipt_id)
-        .bind(&now)
-        .bind(&input.identity.conversation_id)
-        .bind(&input.identity.turn_id)
-        .bind(&input.identity.message_id)
-        .bind(&input.identity.call_id)
-        .execute(&mut *tx).await?;
-    let row = get_on_connection(&mut tx, &input.identity)
-        .await?
-        .expect("row locked by transaction");
+    let row = complete_on_connection(&mut tx, input).await?;
     tx.commit().await?;
     sqlx::query("PRAGMA synchronous = NORMAL")
         .execute(&mut *connection)
@@ -304,24 +290,85 @@ pub async fn complete(
     Ok(row)
 }
 
+pub(crate) async fn complete_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    input: CompleteToolInvocationInput,
+) -> DbResult<ToolInvocation> {
+    validate_identity(&input.identity)?;
+    opaque_id(&input.receipt_id, "receipt_id")?;
+    if let Some(result) = &input.result_json {
+        super::exact_json::validate(result)
+            .map_err(|_| DbError::Validation("Invalid tool result JSON".into()))?;
+    }
+    let previous = get_on_connection(&mut *connection, &input.identity)
+        .await?
+        .ok_or_else(|| DbError::Validation("Tool invocation not found".into()))?;
+    if previous.status == ToolInvocationStatus::Completed {
+        if previous.receipt_id != Some(input.receipt_id)
+            || !super::exact_json::equal_optional(
+                previous.result_json.as_deref(),
+                input.result_json.as_deref(),
+            )
+            .map_err(|_| DbError::Validation("Invalid tool result JSON".into()))?
+        {
+            return Err(DbError::Validation(
+                "Conflicting tool invocation receipt".into(),
+            ));
+        }
+        return Ok(previous);
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE tool_invocations SET status = 'completed', receipt_id = ?, result_json = ?, updated_at = ? WHERE conversation_id = ? AND turn_id = ? AND message_id = ? AND call_id = ?")
+        .bind(&input.receipt_id)
+        .bind(&input.result_json)
+        .bind(&now)
+        .bind(&input.identity.conversation_id)
+        .bind(&input.identity.turn_id)
+        .bind(&input.identity.message_id)
+        .bind(&input.identity.call_id)
+        .execute(&mut *connection).await?;
+    let row = get_on_connection(&mut *connection, &input.identity)
+        .await?
+        .expect("row locked by transaction");
+    Ok(row)
+}
+
 pub async fn mark_unknown(
     pool: &SqlitePool,
     identity: ToolInvocationIdentity,
 ) -> DbResult<ToolInvocation> {
-    validate_identity(&identity)?;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let row = mark_unknown_on_connection(&mut tx, identity).await?;
+    tx.commit().await?;
+    Ok(row)
+}
+
+pub(crate) async fn mark_unknown_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    identity: ToolInvocationIdentity,
+) -> DbResult<ToolInvocation> {
+    validate_identity(&identity)?;
     sqlx::query("UPDATE tool_invocations SET status = 'unknown', updated_at = ? WHERE conversation_id = ? AND turn_id = ? AND message_id = ? AND call_id = ? AND status = 'pending'")
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(&identity.conversation_id)
         .bind(&identity.turn_id)
         .bind(&identity.message_id)
         .bind(&identity.call_id)
-        .execute(&mut *tx).await?;
-    let row = get_on_connection(&mut tx, &identity)
+        .execute(&mut *connection).await?;
+    let row = get_on_connection(&mut *connection, &identity)
         .await?
         .ok_or_else(|| DbError::Validation("Tool invocation not found".into()))?;
-    tx.commit().await?;
     Ok(row)
+}
+
+pub(crate) async fn has_unresolved_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    conversation_id: &str,
+) -> DbResult<bool> {
+    nonempty(conversation_id, "conversation_id")?;
+    let pending: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_invocations WHERE conversation_id=? AND status IN ('pending','unknown'))")
+        .bind(conversation_id).fetch_one(connection).await?;
+    Ok(pending != 0)
 }
 
 pub async fn list_unresolved(
@@ -338,12 +385,73 @@ pub async fn list_unresolved(
         .collect()
 }
 
+/// Overlay confirmed receipts on chat reads without rewriting historical messages.
+/// The full journal identity and tool name must match; absence is never completion.
+pub(super) async fn project_completed_traces(
+    connection: &mut sqlx::SqliteConnection,
+    conversation_id: &str,
+    messages: &mut [super::models::Message],
+) -> DbResult<()> {
+    let receipts = sqlx::query("SELECT * FROM tool_invocations WHERE conversation_id = ? AND status = 'completed' AND receipt_id IS NOT NULL")
+        .bind(conversation_id)
+        .fetch_all(connection)
+        .await?
+        .into_iter()
+        .map(map_row)
+        .collect::<DbResult<Vec<_>>>()?;
+    for message in messages {
+        let Some(raw) = message.tool_traces_json.as_deref() else {
+            continue;
+        };
+        let Ok(Value::Array(mut traces)) = serde_json::from_str::<Value>(raw) else {
+            continue;
+        };
+        let mut changed = false;
+        for trace in &mut traces {
+            // Approval and denial are separate user decisions, not receipt states.
+            if !matches!(
+                trace.get("status").and_then(Value::as_str),
+                Some("running" | "done")
+            ) {
+                continue;
+            }
+            let receipt = receipts.iter().find(|receipt| {
+                receipt.conversation_id == message.conversation_id
+                    && Some(receipt.turn_id.as_str()) == message.turn_id.as_deref()
+                    && receipt.message_id == message.id
+                    && Some(receipt.call_id.as_str())
+                        == trace.get("tool_call_id").and_then(Value::as_str)
+                    && Some(receipt.tool_name.as_str())
+                        == trace.get("tool_name").and_then(Value::as_str)
+            });
+            if receipt.is_some() {
+                trace["status"] = Value::String("done".into());
+                trace["recovery_state"] = Value::String("completed".into());
+                changed = true;
+            }
+        }
+        if changed {
+            message.tool_traces_json = Some(
+                serde_json::to_string(&traces)
+                    .map_err(|error| DbError::Validation(error.to_string()))?,
+            );
+        }
+    }
+    Ok(())
+}
+
 pub async fn reconcile_pending_after_restart(pool: &SqlitePool) -> DbResult<()> {
+    reconcile_pending_after_restart_in(&mut *pool.acquire().await?).await
+}
+
+pub(crate) async fn reconcile_pending_after_restart_in(
+    db: &mut sqlx::SqliteConnection,
+) -> DbResult<()> {
     sqlx::query(
         "UPDATE tool_invocations SET status = 'unknown', updated_at = ? WHERE status = 'pending'",
     )
     .bind(chrono::Utc::now().to_rfc3339())
-    .execute(pool)
+    .execute(db)
     .await?;
     Ok(())
 }
@@ -394,6 +502,69 @@ mod tests {
         .unwrap()
         .id;
         (temp, pool, conversation_id)
+    }
+
+    #[tokio::test]
+    async fn chat_reads_project_exact_receipts_without_rewriting_history() {
+        let (_temp, pool, conversation_id) = setup().await;
+        let traces = json!([
+            {"tool_call_id":"call-1","tool_name":"write","status":"done","recovery_state":"unknown"},
+            {"tool_call_id":"other-call","tool_name":"write","status":"done","recovery_state":"unknown"},
+            {"tool_call_id":"call-1","tool_name":"read","status":"done","recovery_state":"unknown"},
+            {"tool_call_id":"call-1","tool_name":"write","status":"denied","recovery_state":"unknown"}
+        ]).to_string();
+        let message: crate::db::models::CreateMessageInput = serde_json::from_value(json!({
+            "id":"message-1", "conversation_id":conversation_id, "turn_id":"turn-1",
+            "role":"assistant", "content":"Synthetic", "tool_traces_json":traces
+        }))
+        .unwrap();
+        repository::create_message(&pool, message).await.unwrap();
+        record(&pool, input(&conversation_id)).await.unwrap();
+        assert_eq!(
+            repository::list_messages(&pool, &conversation_id)
+                .await
+                .unwrap()[0]
+                .tool_traces_json
+                .as_deref(),
+            Some(traces.as_str())
+        );
+        complete(
+            &pool,
+            CompleteToolInvocationInput {
+                identity: identity(&conversation_id),
+                receipt_id: "receipt-1".into(),
+                result_json: Some("{}".into()),
+            },
+        )
+        .await
+        .unwrap();
+        let loaded = repository::list_messages(&pool, &conversation_id)
+            .await
+            .unwrap();
+        let projected: Value =
+            serde_json::from_str(loaded[0].tool_traces_json.as_deref().unwrap()).unwrap();
+        assert_eq!(projected[0]["recovery_state"], "completed");
+        for index in 1..4 {
+            assert_eq!(projected[index]["recovery_state"], "unknown");
+        }
+        let persisted: String =
+            sqlx::query_scalar("SELECT tool_traces_json FROM messages WHERE id = 'message-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(persisted, traces);
+        sqlx::query("UPDATE messages SET turn_id = 'other-turn' WHERE id = 'message-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            repository::list_messages(&pool, &conversation_id)
+                .await
+                .unwrap()[0]
+                .tool_traces_json
+                .as_deref(),
+            Some(traces.as_str())
+        );
     }
 
     #[tokio::test]
@@ -480,6 +651,7 @@ mod tests {
         let completion = CompleteToolInvocationInput {
             identity: identity(&conversation_id),
             receipt_id: "accepted-1".into(),
+            result_json: None,
         };
         assert!(complete(&pool, completion).await.is_err());
         assert!(list_unresolved(&pool, &conversation_id)
@@ -491,7 +663,8 @@ mod tests {
             &pool,
             CompleteToolInvocationInput {
                 identity: identity(&conversation_id),
-                receipt_id: " ".into()
+                receipt_id: " ".into(),
+                result_json: None,
             }
         )
         .await
@@ -505,6 +678,7 @@ mod tests {
             CompleteToolInvocationInput {
                 identity: identity(&conversation_id),
                 receipt_id: "accepted-1".into(),
+                result_json: None,
             },
         )
         .await
@@ -524,7 +698,8 @@ mod tests {
             &pool,
             CompleteToolInvocationInput {
                 identity: identity(&conversation_id),
-                receipt_id: "accepted-2".into()
+                receipt_id: "accepted-2".into(),
+                result_json: None,
             }
         )
         .await
@@ -539,6 +714,7 @@ mod tests {
             CompleteToolInvocationInput {
                 identity: duplicate_receipt,
                 receipt_id: "accepted-1".into(),
+                result_json: None,
             }
         )
         .await
@@ -571,6 +747,7 @@ mod tests {
             CompleteToolInvocationInput {
                 identity: identity(&conversation_id),
                 receipt_id: "late-confirmation".into(),
+                result_json: None,
             },
         )
         .await
@@ -587,5 +764,68 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 0);
+    }
+    #[tokio::test]
+    async fn exact_result_and_receipt_survive_reopen_and_conflicts_do_not_replace_them() {
+        let (temp, pool, conversation_id) = setup().await;
+        record(&pool, input(&conversation_id)).await.unwrap();
+        let payload = "{ \"value\": 9007199254740993, \"nullable\": null }";
+        complete(
+            &pool,
+            CompleteToolInvocationInput {
+                identity: identity(&conversation_id),
+                receipt_id: "stable-result".into(),
+                result_json: Some(payload.into()),
+            },
+        )
+        .await
+        .unwrap();
+        pool.close().await;
+        let reopened = create_pool(&temp.path().join("macro.db")).await.unwrap();
+        let retained = record(&reopened, input(&conversation_id)).await.unwrap();
+        assert!(!retained.is_new);
+        assert_eq!(retained.invocation.result_json.as_deref(), Some(payload));
+        complete(
+            &reopened,
+            CompleteToolInvocationInput {
+                identity: identity(&conversation_id),
+                receipt_id: "stable-result".into(),
+                result_json: Some(payload.into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(complete(
+            &reopened,
+            CompleteToolInvocationInput {
+                identity: identity(&conversation_id),
+                receipt_id: "stable-result".into(),
+                result_json: Some("null".into())
+            }
+        )
+        .await
+        .is_err());
+        assert!(complete(
+            &reopened,
+            CompleteToolInvocationInput {
+                identity: identity(&conversation_id),
+                receipt_id: "stable-result".into(),
+                result_json: None
+            }
+        )
+        .await
+        .is_err());
+        complete(
+            &reopened,
+            CompleteToolInvocationInput {
+                identity: identity(&conversation_id),
+                receipt_id: "stable-result".into(),
+                result_json: Some("{\"nullable\":null,\"value\":9007199254740993e0}".into()),
+            },
+        )
+        .await
+        .unwrap();
+        let retained = record(&reopened, input(&conversation_id)).await.unwrap();
+        assert_eq!(retained.invocation.result_json.as_deref(), Some(payload));
     }
 }
