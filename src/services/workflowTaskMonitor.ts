@@ -3,6 +3,7 @@ export function startWorkflowTaskMonitor(ports: {
   enabled(): boolean;
   refresh(): Promise<void>;
   schedule(callback: () => void): () => void;
+  immediate?: boolean;
   report?(error: unknown): void;
 }): () => void {
   let stopped = false;
@@ -13,6 +14,7 @@ export function startWorkflowTaskMonitor(ports: {
     catch (error) { if (!stopped) ports.report?.(error); }
     finally { if (!stopped) cancel = ports.schedule(() => { void tick(); }); }
   };
-  cancel = ports.schedule(() => { void tick(); });
+  if (ports.immediate) void tick();
+  else cancel = ports.schedule(() => { void tick(); });
   return () => { stopped = true; cancel?.(); };
 }

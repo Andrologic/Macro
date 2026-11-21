@@ -782,26 +782,34 @@ describe('getPlanActivationCandidateTask', () => {
 describe('useTaskStore refreshFromPlan selection reconciliation', () => {
   it('refreshes native Agent Tasks in place, marks read failures stale and rejects legacy status writes', async () => {
     const { workflowTaskFixture } = await import('../services/workflowAgentTasks.fixtures');
-    const { projectWorkflowAgentTasks030, configureWorkflowRunAccess030, getWorkflowRunAccess030 } = await import('../services/workflowAgentTasks');
+    const { loadWorkflowAgentTasks, projectWorkflowAgentTasks030, configureWorkflowRunAccess030 } = await import('../services/workflowAgentTasks');
     const f = await workflowTaskFixture();
     const tasks = projectWorkflowAgentTasks030(f.plan, await f.ports.inspect!(f.snapshot));
     const { nativeTransportFor030 } = await import('../services/agsdl/runAccess030.testSupport');
     const { createRunInspectionAccess030 } = await import('../services/agsdl/runAccess030');
     const { transport, scope } = nativeTransportFor030(f.fixture);
     configureWorkflowRunAccess030(() => ({ access: createRunInspectionAccess030(scope, transport) }));
-    getWorkflowRunAccess030(scope);
     const { useTaskStore, getTaskLifecycleCapabilities } = await loadIsolatedTaskStore();
     useTaskStore.setState({ tasks: [buildTask(), ...tasks] });
+    appStoreState.standaloneProjects = [{ id: scope.owner.projectId, name: 'Workflow project', path: '/repos/workflow' }];
     let fail = false;
-    let release: (() => void) | undefined;
-    installTauriRuntimeMock(async command => {
-      if (command === 'execution_read_snapshot') {
-        if (fail) throw new Error('Native read interrupted');
-        if (release !== undefined) await new Promise<void>(resolve => { release = resolve; });
-        return f.snapshot;
-      }
-      throw new Error(`Unexpected ${command}`);
-    });
+    let snapshotBlocked: (() => void) | undefined;
+    let release!: () => void;
+    const readSnapshot = transport.readExecutionSnapshot030;
+    transport.readExecutionSnapshot030 = async id => {
+      if (fail) throw new Error('Native read interrupted');
+      if (snapshotBlocked) await new Promise<void>(resolve => {
+        release = resolve;
+        snapshotBlocked?.();
+      });
+      return readSnapshot(id);
+    };
+    const list = spyOn(services, 'listTasks').mockImplementation(async () => ({
+      tasks: await loadWorkflowAgentTasks([{ ...f.plan, conversationId: scope.conversationId }], null, {
+        ...f.ports, runs: async () => ({ runs: [], nextCursor: null }),
+      }),
+      plans: [], hasStandaloneTasks: false, source: 'architect',
+    }));
     const visit = f.fixture.runtime.items.find(item => item.kind === 'activation');
     if (visit?.kind !== 'activation') throw new Error('Missing synthetic native visit');
     visit.value.phase = 'done'; visit.value.physical = false;
@@ -827,14 +835,15 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
     fail = false;
     await useTaskStore.getState().refreshWorkflowTasks();
     expect(useTaskStore.getState().tasks.find((task: ImplementTask) => task.id === tasks[0].id)?.workflow_execution?.stale).toBeUndefined();
-    release = () => undefined;
+    const reading = new Promise<void>(resolve => { snapshotBlocked = resolve; });
     const pending = useTaskStore.getState().refreshWorkflowTasks();
-    await flushPromises();
+    await reading;
     appStoreState.selectedProjectId = 'other-project';
     useTaskStore.setState({ tasks: [buildTask({ id: 'other-task' })] });
     release();
     await pending;
     expect(useTaskStore.getState().tasks.map((task: ImplementTask) => task.id)).toEqual(['other-task']);
+    list.mockRestore();
     configureWorkflowRunAccess030(undefined);
   });
 
@@ -859,6 +868,23 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
     expect(useTaskStore.getState().lastSuccessfulCatalogLoad).toBeNull();
     await useTaskStore.getState().drainAppSync();
     list.mockRestore();
+  });
+
+  it('resumes an Implement profile without activating its former development task', async () => {
+    const legacy = buildTask({ id: 'retired-task' });
+    const list = spyOn(services, 'listTasks').mockResolvedValue({
+      tasks: [legacy], plans: [], hasStandaloneTasks: false, source: 'architect',
+    });
+    appStoreState.selectedTaskId = legacy.id;
+    appStoreState.setSelectedTask.mockImplementation(id => { appStoreState.selectedTaskId = id; });
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      const activate = spyOn(useTaskStore.getState(), 'activateTask');
+      await useTaskStore.getState().resumeAfterInitialize();
+      expect(list).toHaveBeenCalledWith({ persistedOnly: true });
+      expect(appStoreState.selectedTaskId).toBeNull();
+      expect(activate).not.toHaveBeenCalled();
+    } finally { list.mockRestore(); }
   });
 
   it('keeps the newest refresh and selection when an older context resolves last', async () => {
