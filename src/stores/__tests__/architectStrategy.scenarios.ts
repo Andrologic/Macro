@@ -152,7 +152,7 @@ export const registerArchitectStrategyScenarios = (
       expect(streamOptions.allowedToolIds).not.toContain('mark_source_passage');
       expect(streamOptions.allowedToolIds).not.toContain('read_sources');
       expect(streamOptions.allowedToolIds).not.toContain('edit_source_passage');
-      expect(streamOptions.allowedToolIds).toContain('plan_get');
+      expect(streamOptions.allowedToolIds).not.toContain('plan_get');
       expect(streamOptions.allowedToolIds).toContain('agsdl_get');
       expect(streamOptions.allowedToolIds).toContain('agsdl_update');
       expect(streamOptions.allowedToolIds).not.toContain('strategy_update');
@@ -200,7 +200,7 @@ export const registerArchitectStrategyScenarios = (
         allowedToolIds: string[];
         messages: Array<{ content: string }>;
       }>();
-      expect(String(streamOptions.messages[0]?.content)).toContain('This is a direct-only plan.');
+      expect(String(streamOptions.messages[0]?.content)).toContain('agsdl_get');
       expect(String(streamOptions.messages[0]?.content)).not.toContain('Git workflow for plans is strict');
       expect(streamOptions.allowedToolIds).not.toContain('git_status');
       expect(streamOptions.allowedToolIds).not.toContain('git_diff');
@@ -233,7 +233,7 @@ export const registerArchitectStrategyScenarios = (
       });
 
       const streamOptions = getLatestStreamOptions<{ messages: Array<{ content: string }> }>();
-      expect(String(streamOptions.messages[0]?.content)).toContain('This is a direct-only plan.');
+      expect(String(streamOptions.messages[0]?.content)).toContain('agsdl_get');
       expect(String(streamOptions.messages[0]?.content)).not.toContain('Git workflow for plans is strict');
     });
 
@@ -454,7 +454,7 @@ export const registerArchitectStrategyScenarios = (
       };
       expect(streamOptions.allowedToolIds).toContain('agsdl_get');
       expect(streamOptions.allowedToolIds).toContain('agsdl_update');
-      expect(streamOptions.allowedToolIds).toContain('plan_update');
+      expect(streamOptions.allowedToolIds).not.toContain('plan_update');
       expect(streamOptions.allowedToolIds).not.toContain('strategy_delete');
     });
 

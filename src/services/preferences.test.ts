@@ -384,9 +384,9 @@ describe('preferences JSON configuration adapter', () => {
     const { getDefaultPromptForPreferenceKey, PREF_KEYS } = await loadPreferencesModule();
     const prompt = getDefaultPromptForPreferenceKey(PREF_KEYS.PROMPT_ARCHITECT);
 
-    expect(prompt).toContain('retains its own conversation and strategy');
-    expect(prompt).toContain('Generate or regenerate strategy only after an explicit user request');
-    expect(prompt).toContain('Do not create a "Finalize plan" strategy node yourself');
+    expect(prompt).toContain('design an agentic system');
+    expect(prompt).toContain('Use the AgSDL authoring tools');
+    expect(prompt).not.toContain('strategy');
   });
 
   it('keeps the goal auditor prompt read-only, evidence-based, and JSON-only', async () => {

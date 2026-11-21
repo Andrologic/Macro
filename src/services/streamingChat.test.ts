@@ -228,57 +228,15 @@ const loadStreamingChat = async (
   };
 };
 
-const asObjectSchema = (
-  schema: unknown
-): {
-  properties: Record<string, unknown>;
-  required?: string[];
-} => schema as {
-  properties: Record<string, unknown>;
-  required?: string[];
-};
-
-describe('streamingChat Architect tool contracts', () => {
-  beforeEach(() => {
-    mock.restore();
-  });
-
-  it('does not require title for plan_create and exposes label support', async () => {
-    const { CREATE_PLAN_TOOL } = await loadStreamingChat();
-    const { properties, required = [] } = asObjectSchema(CREATE_PLAN_TOOL.function.parameters);
-
-    expect(required).not.toContain('title');
-    expect(properties.label).toBeDefined();
-    expect(String(CREATE_PLAN_TOOL.function.description)).toContain('generated identifier');
-  });
-
-  it('documents plan_title as a label alias for strategy generation', async () => {
-    const { GENERATE_PLAN_TOOL } = await loadStreamingChat();
-    const properties = asObjectSchema(GENERATE_PLAN_TOOL.function.parameters).properties as Record<
-      string,
-      { description?: string }
-    >;
-    const planTitleProperty = properties.plan_title;
-
-    expect(String(GENERATE_PLAN_TOOL.function.description)).toContain('plan_slug');
-    expect(properties.plan_slug).toBeDefined();
-    expect(String(planTitleProperty.description)).toContain('secondary plan label');
-  });
-
-  it('documents plan_update title as a legacy alias without changing canonical ids', async () => {
-    const { UPDATE_PLAN_TOOL } = await loadStreamingChat();
-    const properties = asObjectSchema(UPDATE_PLAN_TOOL.function.parameters).properties as Record<
-      string,
-      { description?: string }
-    >;
-
-    expect(properties.label).toBeDefined();
-    expect(String(properties.title.description).toLowerCase()).toContain('legacy alias');
-    expect(properties.status).toBeUndefined();
-    expect(properties.set_active).toBeUndefined();
-    expect(String(UPDATE_PLAN_TOOL.function.description)).toContain(
-      'logical slug becomes immutable'
-    );
+describe('Architect provider tools', () => {
+  it('only advertises AgSDL tools when the allowed list still includes historical Architect tools', async () => {
+    const { collectAllowedTools, getFunctionToolName } = await import('./ai/toolDefinitions');
+    const tools = collectAllowedTools({
+      allowedTools: new Set(['plan_create', 'plan_get', 'plan_update', 'strategy_generate', 'strategy_update', 'agsdl_get', 'agsdl_update']),
+      enableWebSearch: false,
+      enableWebFetch: false,
+    });
+    expect(tools.map(getFunctionToolName)).toEqual(['agsdl_get', 'agsdl_update']);
   });
 });
 

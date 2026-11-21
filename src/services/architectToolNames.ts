@@ -24,4 +24,10 @@ export const ARCHITECT_TOOL_ID_ALIASES: Record<string, string> = {
 };
 
 export const normalizeArchitectToolId = (toolId: string): string =>
-  ARCHITECT_TOOL_ID_ALIASES[toolId] || toolId;
+  Object.hasOwn(ARCHITECT_TOOL_ID_ALIASES, toolId) ? ARCHITECT_TOOL_ID_ALIASES[toolId] : toolId;
+
+// Old names still identify historical traces and saved tool preferences.
+const RETIRED_ARCHITECT_TOOL_IDS = new Set(Object.values(ARCHITECT_TOOL_ID_ALIASES));
+
+export const isRetiredArchitectToolId = (toolId: string): boolean =>
+  RETIRED_ARCHITECT_TOOL_IDS.has(normalizeArchitectToolId(toolId));

@@ -2554,15 +2554,19 @@ describe('architectPlanService', () => {
     expect(created.id).toBe('oversized-blueprint');
   });
 
-  it('fully activates an AgSDL-only draft and marks its summary as authored', async () => {
-    const created = await service.createArchitectPlan({ branchName, planId: 'agsdl-only', label: DEFAULT_NEW_PLAN_LABEL });
-    const source = '{ "opaque":900719925474099312345 }';
-    await service.updateArchitectPlan({ branchName, planId: created.id, agsdl: { source, annexes: {} }, expectedAgsdlRevision: 0 });
+  it('creates, activates, saves and reopens an initially empty AgSDL draft', async () => {
+    const empty = { source: '', annexes: {} };
+    const created = await service.createArchitectPlan({ branchName, planId: 'agsdl-only', label: DEFAULT_NEW_PLAN_LABEL, agsdl: empty });
     const listed = await service.listArchitectPlans(branchName, true, true);
     expect(listed.plans.find((plan: ArchitectPlanSummary) => plan.id === created.id)?.hasAgsdl).toBe(true);
-    const payload = await service.getArchitectPlanActivationPayload(branchName, created.id);
-    expect(payload?.resolutionMode).toBe('full');
-    expect(payload?.plan.agsdl?.source).toBe(source);
+    const initial = await service.getArchitectPlanActivationPayload(branchName, created.id);
+    expect(initial?.resolutionMode).toBe('full');
+    expect(initial?.plan.agsdl).toEqual({ ...empty, revision: 1 });
+
+    const source = '{ "contract":"agsdl-0.3.0", "id":"test", "agents":{} }';
+    await service.updateArchitectPlan({ branchName, planId: created.id, agsdl: { source, annexes: {} }, expectedAgsdlRevision: 1 });
+    const reopened = await service.getArchitectPlanActivationPayload(branchName, created.id);
+    expect(reopened?.plan.agsdl).toEqual({ source, annexes: {}, revision: 2 });
   });
 
   it('returns a blank fast-path activation payload for an untouched new plan', async () => {

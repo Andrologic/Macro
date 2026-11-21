@@ -1854,7 +1854,7 @@ export const registerCompactionAndDiagnosticsScenarios = (
       expect(firstCall?.maxTurns).toBe(7);
       expect(firstCall?.messages[0]?.role).toBe('system');
       expect(firstCall?.messages[0]?.content).toContain(
-        'always answer in natural language with a concise recap'
+        'Summarize changes and report any open design questions.'
       );
       expect(
         useChatStore
