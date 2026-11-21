@@ -1,46 +1,21 @@
 import { describe, expect, it } from 'bun:test';
-import type { ProjectExecutionContext } from '../../services/projectExecutionContext';
 import { buildArchitectPlanInstructions } from './chatArchitectPlanPrompt';
 
-const executionContext = {
-  projectIds: [],
-  projectMounts: [],
-} as unknown as ProjectExecutionContext;
-const options = { getProjectGitFlowSettings: () => null };
-const activePlan = {
-  id: 'plan-1',
-  planKind: 'hotfix' as const,
-  title: 'Repair startup',
-  label: undefined,
-  description: '',
-  status: 'draft',
-  slug: 'repair-startup',
-  targetBranch: 'main',
-  targetBranchesByProjectId: {},
-  executionModesByProjectId: {},
-  projectId: undefined,
-  projectIds: [],
-} satisfies NonNullable<Parameters<typeof buildArchitectPlanInstructions>[0]>;
-
-describe('Architect plan authoring instructions', () => {
-  it('builds the AgSDL instructions from an explicit authoring mode', () => {
-    const instructions = buildArchitectPlanInstructions(activePlan, [], executionContext, options, {
-      kind: 'agsdl',
-      instruction: 'Read agsdl_get before agsdl_update.',
+describe('Architect authoring instructions', () => {
+  it('gives AgSDL tools the system identity and storage branch', () => {
+    const instructions = buildArchitectPlanInstructions({
+      id: 'system-1', title: 'Order review', description: '', targetBranch: 'main', status: 'draft',
     }).join(' ');
-    expect(instructions).toContain('Read agsdl_get before agsdl_update.');
-    expect(instructions).toContain('id="plan-1"');
+    expect(instructions).toContain('agsdl_get');
+    expect(instructions).toContain('agsdl_update');
+    expect(instructions).toContain('id="system-1"');
     expect(instructions).toContain('storageTargetBranch="main"');
-    expect(instructions).toContain('before editing the AgSDL document');
-    expect(instructions).toContain('plan_update.slug');
-    expect(instructions).not.toContain('strategy_generate');
-    expect(instructions).not.toContain('per-node `todos`');
+    expect(instructions).not.toMatch(/plan_update|strategy_generate/);
   });
 
-  it('preserves strategy instructions for callers using the default mode', () => {
-    const instructions = buildArchitectPlanInstructions(activePlan, [], executionContext, options).join(' ');
-    expect(instructions).toContain('strategy_generate');
-    expect(instructions).toContain('per-node `todos`');
-    expect(instructions).toContain('before strategy generation');
+  it('points to the navigator when no system is selected', () => {
+    const instructions = buildArchitectPlanInstructions(null).join(' ');
+    expect(instructions).toContain('create or select a system');
+    expect(instructions).not.toContain('agsdl_update');
   });
 });

@@ -20,6 +20,7 @@ const plan = (params: Partial<ArchitectPlanSummary> & Pick<ArchitectPlanSummary,
   createdAt: '2026-08-01T00:00:00.000Z',
   updatedAt: '2026-08-01T00:00:00.000Z',
   nodeCount: 0,
+  hasAgsdl: true,
   ...params,
 });
 
@@ -61,7 +62,7 @@ describe('architect project navigator model', () => {
     })[0].projectIds).toEqual(['archived']);
   });
 
-  it('shows a multi-project plan once under its canonical group', () => {
+  it('shows an AgSDL system once under its canonical group and omits software plans', () => {
     const scopes = buildArchitectNavigatorScopes({
       projectGroups: [{
         id: 'group-1',
@@ -75,7 +76,10 @@ describe('architect project navigator model', () => {
       branchName: 'develop',
       activePlanId: null,
       error: null,
-      plans: [plan({ id: 'shared', projectIds: ['a', 'b'] })],
+      plans: [
+        plan({ id: 'software', projectIds: ['a', 'b'], hasAgsdl: false, nodeCount: 1 }),
+        plan({ id: 'shared', projectIds: ['a', 'b'] }),
+      ],
     }];
 
     expect(buildArchitectNavigatorPlanEntries({ branches, scopes })).toMatchObject([
