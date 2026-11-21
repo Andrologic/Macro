@@ -3850,35 +3850,18 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     } finally { stop(); if (id) clearConflictAssistantContext(id); }
   });
 
-  it.each(['selected', 'task-read', 'conversation-read'])('preserves a selected inspection against remembered task restoration at %s', async phase => {
+  it('keeps an explicit conflict inspection selected during context restoration', async () => {
     const chat = await setupConflictConversation();
-    taskStoreState.tasks = phase === 'conversation-read' ? [] : [createImplementTask()];
-    const stored = { architectConversationId: null, implementConversationId: 'task-conv', lastTaskId: 'task-1' };
-    const entered = createDeferred<void>();
-    const read = createDeferred<typeof stored>();
-    const late = phase !== 'selected';
-    let reads = 0;
-    getLocalProjectContextStateMock.mockImplementation(async () => {
-      if (phase === 'conversation-read' && ++reads === 1) return { ...stored, lastTaskId: null };
-      entered.resolve();
-      return late ? read.promise : stored;
-    });
-    if (late) chat.setState({ selectedConversationId: null });
+    taskStoreState.tasks = [createImplementTask()];
+    chat.setState({ selectedConversationId: null });
     try {
-      const pending = chat.getState().ensureConversationForCurrentMode();
-      if (late) {
-        await entered.promise;
-        taskStoreState.tasks = [createImplementTask()];
-        expect(await chat.getState().selectConversation('conflict-store')).toBe(true);
-        read.resolve(stored);
-      }
-      expect(await pending).toBe('conflict-store');
+      const restoring = chat.getState().ensureConversationForCurrentMode();
+      expect(await chat.getState().selectConversation('conflict-store')).toBe(true);
+      expect(await restoring).toBe('conflict-store');
+      expect(await chat.getState().ensureConversationForCurrentMode()).toBe('conflict-store');
       expect(appState.selectedTaskId).toBeNull();
-      expect(chat.getState().selectedConversationId).toBe('conflict-store');
       expect(streamChatMock).not.toHaveBeenCalled();
-    } finally { read.resolve(stored); getLocalProjectContextStateMock.mockImplementation(async () => ({
-      architectConversationId: 'project-architect-conversation', implementConversationId: null, lastTaskId: null,
-    })); clearConflictAssistantContext('conflict-store'); }
+    } finally { clearConflictAssistantContext('conflict-store'); }
   });
 
   it.each(['task', 'project', 'group', 'mode', 'path'])('does not retain inspection selection after real %s navigation', async change => {
@@ -4148,6 +4131,79 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     expect(useChatStore.getState().selectedConversationId).toBe(conversation.id);
     expect(useChatStore.getState().selectedConversationContextKey).toBe('Chat::none::none::none');
+  });
+
+  it.each(['Implement', 'Chat', 'Architect'] as const)(
+    'does not reopen a historical Implement task when chat restoration runs late in %s',
+    async (mode) => {
+      const { useChatStore } = await loadChatStore();
+      const scope = createLifecycleScope();
+      tauriAvailable = true;
+      appState.mode = mode;
+      const legacy = createChatSnapshotConversation('legacy-implement', {
+        scope_mode: 'Implement', task_id: 'task-1', message_count: 1,
+      });
+      const chat = { ...createChatSnapshotConversation('current-chat', { scope_mode: 'Chat' }),
+        group_id: null, project_id: null };
+      chatSnapshotConversations = [legacy, chat];
+      chatSnapshotMessages = [{
+        id: 'legacy-question', conversation_id: legacy.id, role: 'assistant',
+        content: 'Choose a direction.\n[quick-replies]\n- First\n- Second\n- Third\n[/quick-replies]',
+        created_at: '2026-10-01T00:00:00Z',
+      }];
+      getChatBootstrapSnapshotMock.mockImplementationOnce(async () => ({
+        conversations: chatSnapshotConversations, messages_by_conversation_id: {
+          [legacy.id]: chatSnapshotMessages,
+        },
+      }));
+      try {
+        await useChatStore.getState().initializeCritical(scope);
+        expect(useChatStore.getState().getActiveQuestionnaire(legacy.id)?.mode).toBe('pending_reply');
+        const providerReady = createDeferred<void>();
+        const restore = providerReady.promise.then(() => useChatStore.getState().reapplySelectionForCurrentContext(scope));
+        const previousTasks = taskStoreState.tasks;
+        taskStoreState.tasks = [createImplementTask({ status: 'Pending' })];
+        emitTaskStoreUpdate(previousTasks);
+        providerReady.resolve();
+        await restore;
+        expect(appState.selectedTaskId).toBeNull();
+        expect(useChatStore.getState().selectedConversationId).toBe(mode === 'Chat' ? chat.id : null);
+        expect(taskStoreState.startTask).not.toHaveBeenCalled();
+        expect(streamChatMock).not.toHaveBeenCalled();
+        const pilot = reservePilotAction({ taskId: 'task-1' });
+        try {
+          expect((await useChatStore.getState().ensurePilotTaskConversation('task-1', pilot.token)).id).toBe(legacy.id);
+          expect(useChatStore.getState().selectedConversationId).toBe(mode === 'Chat' ? chat.id : null);
+        } finally { pilot.release(); }
+      } finally {
+        scope.stop();
+        await useChatStore.getState().drainSubscriptions();
+      }
+    },
+  );
+
+  it('retains an interrupted Implement worktree replay journal during Chat startup', async () => {
+    const { getAgentCodeReplayRecoveryKey } = await import('../services/agentCodeCheckpoints');
+    const { useChatStore } = await loadChatStore();
+    const scope = createLifecycleScope();
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const id = 'interrupted-implement';
+    chatSnapshotConversations = [createChatSnapshotConversation(id, { scope_mode: 'Implement', task_id: 'task-1' })];
+    const key = getAgentCodeReplayRecoveryKey(id);
+    const marker = JSON.stringify({
+      version: 1, conversationId: id, phase: 'pending', rollbackPreview: { affectedFiles: [] },
+    });
+    appSettingValues.set(key, marker);
+    try {
+      await useChatStore.getState().initialize(scope);
+      expect(appSettingValues.get(key)).toBe(marker);
+      expect(dbDeleteAppSettingMock).not.toHaveBeenCalledWith(key);
+      expect(useChatStore.getState().conversations.some(conversation => conversation.id === id)).toBe(false);
+    } finally {
+      scope.stop();
+      await useChatStore.getState().drainSubscriptions();
+    }
   });
 
   it('stops hydration before replay recovery or publication after a delayed snapshot', async () => {

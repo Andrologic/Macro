@@ -311,7 +311,7 @@ const completeLinkedTaskConversationDeletionMock = mock(async (conversationId: s
 let chatStoreConversations: Array<{ id: string; task_id?: string | null }> = [];
 let chatStoreRuntimeById: Record<string, { phase: string }> = {};
 const appStoreState = {
-  mode: 'Implement' as const,
+  mode: 'Implement' as 'Implement' | 'Chat' | 'Architect',
   selectedTaskId: null as string | null,
   selectedGroupId: 'group-1' as string | null,
   selectedProjectId: null as string | null,
@@ -529,6 +529,7 @@ let releasePlanPorts: (() => void) | undefined;
 beforeEach(() => {
   releasePlanPorts = installArchitectPlanPorts({ getAppState: () => appStoreState as unknown as ArchitectPlanServiceAppState });
   installTauriRuntimeMock();
+  appStoreState.mode = 'Implement';
   appStoreState.selectedTaskId = null;
   appStoreState.selectedGroupId = 'group-1';
   appStoreState.selectedProjectId = null;
@@ -870,22 +871,56 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
     list.mockRestore();
   });
 
-  it('resumes an Implement profile without activating its former development task', async () => {
-    const legacy = buildTask({ id: 'retired-task' });
-    const list = spyOn(services, 'listTasks').mockResolvedValue({
-      tasks: [legacy], plans: [], hasStandaloneTasks: false, source: 'architect',
-    });
-    appStoreState.selectedTaskId = legacy.id;
-    appStoreState.setSelectedTask.mockImplementation(id => { appStoreState.selectedTaskId = id; });
-    try {
+  it.each(['Implement', 'Chat', 'Architect'] as const)(
+    'boots and resumes in %s without restoring a legacy task or replaying its Git cleanup',
+    async (mode) => {
+      const legacy = buildTask({ id: 'retired-task', status: 'InProgress' });
+      const catalog = spyOn(services, 'listTasks').mockResolvedValue({
+        tasks: [legacy], plans: [], hasStandaloneTasks: false, source: 'architect',
+      });
+      const cleanupJournal = JSON.stringify([{
+        taskId: 'removed-task', conversationId: 'removed-conversation', phase: 'task_deleting',
+        draft: false,
+        executionTargets: [{
+          worktreeKey: 'project-1::feature/removed',
+          repoPath: '/repos/web', branchName: 'feature/removed',
+          branchExisted: true, expectedCommit: 'abc123',
+          expectedWorktreePath: '/repos/web/.macro/worktrees/project-1::feature/removed',
+          worktreeRemoved: false, branchRemoved: false,
+        }],
+        createdAt: '2026-08-12T00:00:00.000Z', updatedAt: '2026-08-12T00:00:00.000Z',
+      }]);
+      dbAppSettings.set('pendingLinkedTaskDeletions:v1', cleanupJournal);
+      appStoreState.mode = mode;
+      appStoreState.selectedTaskId = null;
+      const invoke = mock(async (command: string) => command === 'db_get_project_context_state'
+        ? { project_id: 'group-1', last_task_id: legacy.id }
+        : undefined);
+      installTauriRuntimeMock(invoke);
+      gitWorktreeRemoveMock.mockClear();
+      gitBranchDeleteMock.mockClear();
       const { useTaskStore } = await loadIsolatedTaskStore();
       const activate = spyOn(useTaskStore.getState(), 'activateTask');
-      await useTaskStore.getState().resumeAfterInitialize();
-      expect(list).toHaveBeenCalledWith({ persistedOnly: true });
-      expect(appStoreState.selectedTaskId).toBeNull();
-      expect(activate).not.toHaveBeenCalled();
-    } finally { list.mockRestore(); }
-  });
+      const scope = createLifecycleScope();
+      try {
+        await useTaskStore.getState().initializeCritical(scope);
+        await useTaskStore.getState().resumeAfterInitialize(scope);
+        expect(catalog.mock.calls).toEqual([[{ persistedOnly: true }], [{ persistedOnly: true }]]);
+        expect(useTaskStore.getState().getTaskById(legacy.id)).toBeDefined();
+        expect(appStoreState.setSelectedTask).not.toHaveBeenCalledWith(legacy.id);
+        expect(appStoreState.selectedTaskId).toBeNull();
+        expect(activate).not.toHaveBeenCalled();
+        expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+        expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+        expect(dbAppSettings.get('pendingLinkedTaskDeletions:v1')).toBe(cleanupJournal);
+      } finally {
+        scope.stop();
+        await useTaskStore.getState().drainAppSync();
+        activate.mockRestore();
+        catalog.mockRestore();
+      }
+    },
+  );
 
   it('keeps the newest refresh and selection when an older context resolves last', async () => {
     const originalListTasks = services.listTasks;

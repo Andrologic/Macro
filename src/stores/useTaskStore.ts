@@ -1931,7 +1931,8 @@ const ensureAppSync = (lifecycle?: LifecycleContext): (() => void) => {
       nextState.predictedBranches !== previousState.predictedBranches;
 
     if (strategyChanged) {
-      void scope.track(useTaskStore.getState().refreshFromPlan({ lifecycle: scope, observeOnly: isOperateWorkspace(nextState.mode) })).catch(() => undefined);
+      // Restoring or changing Architect's plan can publish strategy state without a task action.
+      void scope.track(useTaskStore.getState().refreshFromPlan({ lifecycle: scope, observeOnly: true })).catch(() => undefined);
       return;
     }
 
@@ -2948,7 +2949,7 @@ return ({
       lifecycle,
       restoreSelection: false,
       activateSelectedTask: false,
-      observeOnly: isOperateWorkspace(useAppStore.getState().mode),
+      observeOnly: true,
     });
     lifecycle?.assertActive();
     set({ isLoading: false });
@@ -2959,9 +2960,7 @@ return ({
     try {
       await get().refreshFromPlan({
         lifecycle,
-        restoreSelection: true,
-        activateSelectedTask: true,
-        observeOnly: isOperateWorkspace(useAppStore.getState().mode),
+        observeOnly: true,
       });
       lifecycle?.assertActive();
     } catch (error) {
@@ -3003,7 +3002,7 @@ return ({
         `${currentAppState.selectedGroupId ?? ''}::${currentAppState.selectedProjectId ?? ''}` === selectionContextKey;
     };
     const restoreSelection = options?.restoreSelection !== false;
-    const activateSelectedTask = options?.activateSelectedTask !== false;
+    const activateSelectedTask = !options?.observeOnly && options?.activateSelectedTask !== false;
     const creatingTaskId = options?.creatingTaskId;
     try {
       const previousTaskCount = get().tasks.length;
@@ -3412,7 +3411,8 @@ return ({
 
       if (restoreSelection) {
         if (!isCurrentRefresh()) return;
-        const { selectedGroupId, selectedProjectId, standaloneProjects, projectGroups } = useAppStore.getState();
+        const { mode, selectedGroupId, selectedProjectId, standaloneProjects, projectGroups } = useAppStore.getState();
+        const operate = isOperateWorkspace(mode);
         const scopedProjectIds = getScopedProjectIds(
           { standaloneProjects, projectGroups },
           selectedGroupId,
@@ -3420,17 +3420,20 @@ return ({
         );
         const selectedTaskIdFromApp = useAppStore.getState().selectedTaskId;
         const restored = selectedTaskIdFromApp && resolveTaskReference(tasks, selectedTaskIdFromApp);
-        if (selectedTaskIdFromApp && (!restored || (observeOnly && !isWorkflowAgentTask(restored)))) {
+        if (selectedTaskIdFromApp && (!restored || (operate && observeOnly && !isWorkflowAgentTask(restored)))) {
           useAppStore.getState().setSelectedTask(null);
         }
 
         const selectedTaskId = useAppStore.getState().selectedTaskId;
-        if (!selectedTaskId && scopedProjectIds.length > 0) {
+        if (!selectedTaskId && scopedProjectIds.length > 0 &&
+          (!observeOnly || operate)) {
           try {
             const contextKey = selectedGroupId || selectedProjectId;
             const context = contextKey ? await getLocalProjectContextState(contextKey) : null;
             lifecycle?.assertActive();
             if (!isCurrentRefresh()) return;
+            const latestAppState = useAppStore.getState();
+            if (latestAppState.selectedTaskId || latestAppState.mode !== mode) return;
             const candidateTaskId = context?.lastTaskId;
             if (candidateTaskId) {
               const candidateTask = resolveTaskReference(tasks, candidateTaskId);

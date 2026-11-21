@@ -103,31 +103,6 @@ export const registerImplementSelectionScenarios = (
       }
     });
 
-    it('ignores a delayed Implement context read after group navigation', async () => {
-      appState.mode = 'Implement';
-      appState.selectedGroupId = 'group-old';
-      appState.selectedTaskId = null;
-      taskStoreState.tasks = [createImplementTask()];
-      const { useChatStore } = await loadChatStore();
-      useChatStore.setState({ conversations: [], selectedConversationId: null });
-      const started = createDeferred<void>();
-      const pending = createDeferred<{ architectConversationId: null; implementConversationId: null; lastTaskId: string }>();
-      getLocalProjectContextStateMock.mockImplementationOnce(async () => {
-        started.resolve();
-        return pending.promise;
-      });
-      const operation = useChatStore.getState().ensureConversationForCurrentMode();
-      await started.promise;
-      appState.selectedGroupId = 'group-new';
-      appState.selectedProjectId = 'project-new';
-      appState.selectedTaskId = 'task-new';
-      pending.resolve({ architectConversationId: null, implementConversationId: null, lastTaskId: 'task-1' });
-      await operation;
-      expect(appState.selectedTaskId).toBe('task-new');
-      expect(useChatStore.getState().selectedConversationId).toBeNull();
-      expect(useChatStore.getState().conversations).toEqual([]);
-    });
-
     it('reuses the same implement conversation for the selected task', async () => {
       appState.mode = 'Implement';
       appState.selectedTaskId = 'task-1';
@@ -162,10 +137,8 @@ export const registerImplementSelectionScenarios = (
         composerContextRefs: [],
       });
 
-      const ensuredId = await useChatStore.getState().ensureConversationForCurrentMode();
       const conversation = await useChatStore.getState().createConversation('New Conversation', null, null);
 
-      expect(ensuredId).toBe('implement-latest');
       expect(conversation.id).toBe('implement-latest');
       expect(useChatStore.getState().conversations).toHaveLength(2);
       expect(useChatStore.getState().selectedConversationId).toBe('implement-latest');
@@ -185,10 +158,7 @@ export const registerImplementSelectionScenarios = (
 
       const { useChatStore } = await loadChatStore();
       useChatStore.setState({ conversations: [], selectedConversationId: null });
-      const ensuredId = await useChatStore.getState().ensureConversationForCurrentMode();
-      const conversation = useChatStore.getState().conversations.find(
-        (candidate: Conversation) => candidate.id === ensuredId,
-      );
+      const conversation = await useChatStore.getState().createConversation('Task', 'task-b', 'project-2');
 
       expect(appState.selectedTaskId).toBe('task-b');
       expect(conversation).toMatchObject({
@@ -215,105 +185,8 @@ export const registerImplementSelectionScenarios = (
         selectedConversationIdsByMode: {},
       });
 
-      expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBe(
-        'archived-conversation',
-      );
+      expect(await useChatStore.getState().selectConversation('archived-conversation')).toBe(true);
       expect(appState.selectedTaskId).toBe('task-archived');
-    });
-
-    it('restores an implement task from local project context before selecting its conversation', async () => {
-      appState.mode = 'Implement';
-      appState.selectedTaskId = null;
-      taskStoreState.tasks = [
-        createImplementTask({ id: 'task-1', status: 'Pending' }),
-        createImplementTask({
-          id: 'task-2',
-          title: 'Implement search',
-          status: 'InProgress',
-          sequence_index: 1,
-        }),
-      ];
-      getLocalProjectContextStateMock.mockImplementationOnce(async () => ({
-        architectConversationId: null,
-        implementConversationId: 'implement-task-1',
-        lastTaskId: 'task-1',
-      }));
-
-      const { useChatStore } = await loadChatStore();
-      useChatStore.setState({
-        conversations: [
-          {
-            ...createConversation('implement-task-1'),
-            scope_mode: 'Implement',
-            task_id: 'task-1',
-            title: 'Task - Implement checkout',
-          },
-        ],
-        messages: [],
-        selectedConversationId: null,
-        selectedConversationIdsByMode: {},
-        isLoading: false,
-        isStreaming: false,
-        lastError: null,
-        abortController: null,
-        messageImagesByMessageId: {},
-        composerContextRefs: [],
-      });
-
-      const ensuredId = await useChatStore.getState().ensureConversationForCurrentMode();
-
-      expect(appState.selectedTaskId as string | null).toBe('task-1');
-      expect(ensuredId).toBe('implement-task-1');
-      expect(useChatStore.getState().selectedConversationId).toBe('implement-task-1');
-    });
-
-    it('restores an in-progress implement task when no local task context exists', async () => {
-      const originalNow = Date.now;
-      Date.now = () => 1773930000000;
-
-      try {
-        appState.mode = 'Implement';
-        appState.selectedTaskId = null;
-        taskStoreState.tasks = [
-          createImplementTask({ id: 'task-pending', status: 'Pending', sequence_index: 0 }),
-          createImplementTask({
-            id: 'task-active',
-            title: 'Implement active task',
-            status: 'InProgress',
-            sequence_index: 1,
-          }),
-        ];
-        getLocalProjectContextStateMock.mockImplementationOnce(async () => ({
-          architectConversationId: null,
-          implementConversationId: null,
-          lastTaskId: null,
-        }));
-
-        const { useChatStore } = await loadChatStore();
-        useChatStore.setState({
-          conversations: [],
-          messages: [],
-          selectedConversationId: null,
-          selectedConversationIdsByMode: {},
-          isLoading: false,
-          isStreaming: false,
-          lastError: null,
-          abortController: null,
-          messageImagesByMessageId: {},
-          composerContextRefs: [],
-        });
-
-        const ensuredId = await useChatStore.getState().ensureConversationForCurrentMode();
-        const conversation = useChatStore
-          .getState()
-          .conversations.find((candidate: Conversation) => candidate.id === ensuredId);
-
-        expect(appState.selectedTaskId as string | null).toBe('task-active');
-        expect(conversation?.task_id).toBe('task-active');
-        expect(conversation?.title).toBe('Task - Implement active task');
-      } finally {
-        Date.now = originalNow;
-      }
     });
 
     it('clears implement selection and does not create a conversation when no task is eligible for the current scope', async () => {
@@ -397,44 +270,6 @@ export const registerImplementSelectionScenarios = (
       expect(useChatStore.getState().selectedConversationId).toBeNull();
       expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBeNull();
       expect(useChatStore.getState().conversations).toHaveLength(1);
-    });
-
-    it('syncs the selected task when an existing implement conversation is restored', async () => {
-      appState.mode = 'Implement';
-      appState.selectedTaskId = null;
-      taskStoreState.tasks = [createImplementTask({ id: 'task-1' })];
-      getLocalProjectContextStateMock.mockImplementationOnce(async () => ({
-        architectConversationId: null,
-        implementConversationId: 'implement-conv',
-        lastTaskId: null,
-      }));
-
-      const { useChatStore } = await loadChatStore();
-      useChatStore.setState({
-        conversations: [
-          {
-            ...createConversation('implement-conv'),
-            scope_mode: 'Implement',
-            task_id: 'task-1',
-            title: 'Task - Implement checkout',
-          },
-        ],
-        messages: [],
-        selectedConversationId: null,
-        selectedConversationIdsByMode: {},
-        isLoading: false,
-        isStreaming: false,
-        lastError: null,
-        abortController: null,
-        messageImagesByMessageId: {},
-        composerContextRefs: [],
-      });
-
-      const ensuredId = await useChatStore.getState().ensureConversationForCurrentMode();
-
-      expect(ensuredId).toBe('implement-conv');
-      expect(appState.selectedTaskId as string | null).toBe('task-1');
-      expect(useChatStore.getState().selectedConversationId).toBe('implement-conv');
     });
 
     it('creates a task-scoped implement conversation when none exists yet', async () => {
@@ -542,7 +377,8 @@ export const registerImplementSelectionScenarios = (
         expect(useChatStore.getState().selectedConversationId).toBeNull();
         expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBeNull();
 
-        const recreatedId = await useChatStore.getState().ensureConversationForCurrentMode();
+        expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBeNull();
+        const { id: recreatedId } = await useChatStore.getState().createConversation('Task', 'task-1', 'project-1');
 
         expect(recreatedId).toMatch(/^conv-conversation-session-1773920000000-/);
         expect(useChatStore.getState().conversations).toHaveLength(1);
