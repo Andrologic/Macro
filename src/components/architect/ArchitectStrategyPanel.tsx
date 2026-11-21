@@ -22,9 +22,9 @@ import { readDocument } from "../../services/agsdl/document";
 import { useChatStore } from "../../stores/useChatStore";
 
 /** Shared dedicated view. An exact notification target never falls back to another run. */
-export function WorkflowRunView030({ bundle, currentSource, target, initialRunId, onSelection, canvas, controls, projectPicker, onExpand, expanded }: {
+export function WorkflowRunView030({ bundle, currentSource, target, initialInstanceId, initialRunId, onSelection, canvas, controls, projectPicker, onExpand, expanded }: {
   expanded?: boolean; canvas?: ReactNode; controls?: ReactNode; projectPicker?: ReactNode; onExpand?: () => void;
-  bundle: WorkflowRunAccess030; currentSource?: string; target?: WorkflowRunTarget030; initialRunId?: string; onSelection?: (id: string | undefined, active: boolean, viewingRun: boolean) => void;
+  bundle: WorkflowRunAccess030; currentSource?: string; target?: WorkflowRunTarget030; initialInstanceId?: string; initialRunId?: string; onSelection?: (id: string | undefined, active: boolean, viewingRun: boolean) => void;
 }) {
   const { t } = useAgsdlTranslation();
   const host = useRef<HTMLDivElement>(null);
@@ -32,13 +32,15 @@ export function WorkflowRunView030({ bundle, currentSource, target, initialRunId
   const registry = useSyncExternalStore(subscribeWorkflowRunAccess030, workflowRunAccessSnapshot030, workflowRunAccessSnapshot030);
   const focusedTarget = useRef<string>(undefined);
   const snapshot = useSyncExternalStore(access.subscribe.bind(access), access.getSnapshot.bind(access), access.getSnapshot.bind(access));
+  const targetRunId = target?.scope.systemStartId;
   useEffect(() => {
-    if (target) { void access.refreshHistory().catch(() => {}); void access.refreshRun(target.scope.systemStartId).catch(() => {}); }
-  }, [access, target]);
+    if (targetRunId) { void access.refreshHistory().catch(() => {}); void access.refreshRun(targetRunId).catch(() => {}); }
+  }, [access, targetRunId]);
   const read = target && snapshot.runs[target.scope.systemStartId];
   const inspection = read ? retainedRunValue030(read) : null;
   const history = retainedRunValue030(snapshot.history);
   const exact = !target || (inspection && inspection.capture.systemStartId === target.scope.systemStartId && sameSource(inspection.capture.source, target.scope.source) &&
+    (!initialInstanceId || inspection.state.instances.some(instance => instance.id === initialInstanceId)) &&
     history?.some(item => item.scope.systemStartId === target.scope.systemStartId && sameSource(item.capture.source, target.scope.source)));
   const focusKey = target?.requestId ? JSON.stringify([target.scope, target.requestId]) : undefined;
   const requestVisible = !!target && !!inspection && retainedRunValue030(inspection.state.humans)?.some(request => request.id === target.requestId);
@@ -73,7 +75,7 @@ export function WorkflowRunView030({ bundle, currentSource, target, initialRunId
         <p>{bundle.catalogError.code}: {bundle.catalogError.message}</p></details>
     </div>}
     {exact ? <ExecutionMonitor030 key={target ? JSON.stringify(target) : `${access.scopeKey}:${initialRunId ?? ""}`} access={access}
-      onSelection={onSelection} initialRunId={target?.scope.systemStartId ?? initialRunId} currentSource={currentSource} canvas={canvas} controls={controls} capturedControls={onExpand && <button className="agsdl-icon-button" aria-label={t(expanded ? "agsdl.shrink" : "agsdl.expand")} title={t(expanded ? "agsdl.shrink" : "agsdl.expand")} onClick={onExpand}>{expanded ? <X size={14} /> : <Maximize2 size={14} />}</button>} projectPicker={projectPicker} renderHumans={humans} renderGraph={value => <CapturedRunGraph030 bridge={value} currentSource={currentSource} onInspect={value.inspect} />} />
+      onSelection={onSelection} initialInstanceId={initialInstanceId} initialRunId={target?.scope.systemStartId ?? initialRunId} currentSource={currentSource} canvas={canvas} controls={controls} capturedControls={onExpand && <button className="agsdl-icon-button" aria-label={t(expanded ? "agsdl.shrink" : "agsdl.expand")} title={t(expanded ? "agsdl.shrink" : "agsdl.expand")} onClick={onExpand}>{expanded ? <X size={14} /> : <Maximize2 size={14} />}</button>} projectPicker={projectPicker} renderHumans={humans} renderGraph={value => <CapturedRunGraph030 bridge={value} currentSource={currentSource} onInspect={value.inspect} />} />
       : <p role="status" className="p-3 text-xs">{t('agsdl.shell030.exactUnavailable')}</p>}
     {target?.requestId && exact && inspection && !retainedRunValue030(inspection.state.humans)?.some(request => request.id === target.requestId && sameSource(request.scope.source, target.scope.source)) &&
       <p role="status" className="p-3 text-xs">{t('agsdl.shell030.requestUnavailable')}</p>}

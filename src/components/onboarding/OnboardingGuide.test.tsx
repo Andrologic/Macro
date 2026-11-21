@@ -72,7 +72,7 @@ const testTranslations: Record<string, string> = {
   'onboarding.sectionProgress': '{{current}}/{{total}} dans cette section',
   'onboarding.sections.basics': 'Bases',
   'onboarding.sections.architect': 'Architect',
-  'onboarding.sections.implement': 'Implement',
+  'onboarding.sections.implement': 'Operate',
   'onboarding.sections.chat': 'Chat',
   'onboarding.sections.system': 'Système',
 };
@@ -396,17 +396,17 @@ describe('OnboardingGuide positioning', () => {
   it('renders the French guide using current control names and separate send and stop actions', async () => {
     frenchSteps = true;
     await renderGuideWithShell();
-    for (let step = 1; step <= 19; step += 1) {
+    for (let step = 1; step <= 14; step += 1) {
       if (step === 8) {
         expect(document.body.textContent).toContain(fr.architect.openGraphExplorer);
         expect(document.body.textContent).not.toContain('Expand opens');
       }
-      if (step === 17) expect(document.body.textContent).toContain(fr.chat.toolbox);
-      if (step === 18) {
+      if (step === 12) expect(document.body.textContent).toContain(fr.chat.toolbox);
+      if (step === 13) {
         expect(document.body.textContent).toContain('une clé dans Paramètres');
         expect(document.body.textContent).not.toContain('une clé dans Settings');
       }
-      if (step === 19) {
+      if (step === 14) {
         expect(document.body.textContent).toContain('Le bouton Arrêter interrompt le tour actif.');
         expect(document.body.textContent).toContain('mettre le message en file');
       } else {

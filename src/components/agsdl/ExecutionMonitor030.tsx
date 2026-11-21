@@ -16,6 +16,7 @@ export interface ExecutionMonitorProps030 {
   readonly projectPicker?: ReactNode;
   readonly access: RunInspectionAccess030;
   readonly initialRunId?: string;
+  readonly initialInstanceId?: string;
   readonly onSelection?: (id: string | undefined, active: boolean, viewingRun: boolean) => void;
   readonly currentSource?: string;
   readonly renderGraph?: (bridge: RunGraphBridge030) => ReactNode;
@@ -29,7 +30,7 @@ function retainedInspection(read: ReturnType<RunInspectionAccess030['getSnapshot
 export function ExecutionMonitor030(props: ExecutionMonitorProps030) {
   return <ScopedMonitor030 key={props.access.scopeKey} {...props} />;
 }
-function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, access, initialRunId, onSelection, currentSource, renderGraph, refreshIntervalMs = 5000, renderHumans }: ExecutionMonitorProps030) {
+function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, access, initialRunId, initialInstanceId, onSelection, currentSource, renderGraph, refreshIntervalMs = 5000, renderHumans }: ExecutionMonitorProps030) {
   const { t } = useAgsdlTranslation();
   const tr = (key: string) => t(`agsdl.run030.${key}`);
   const subscribe = useCallback((listener: () => void) => access.subscribe(listener), [access]);
@@ -40,7 +41,7 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
   const [explicit, setExplicit] = useState(initialRunId);
   const [automatic, setAutomatic] = useState<string>();
   const preferred = explicit ?? automatic;
-  const selected = snapshot.history.kind === 'ready' ? initialRunSelection030(snapshot, preferred)
+  const selected = initialInstanceId ? initialRunId : snapshot.history.kind === 'ready' ? initialRunSelection030(snapshot, preferred)
     : preferred ?? initialRunSelection030(snapshot);
   useEffect(() => { if (initialRunId) { setExplicit(initialRunId); setDesign(false); } }, [initialRunId]);
   const [comparison, setComparison] = useState<string>();
@@ -78,7 +79,8 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
   const readState = selected ? snapshot.runs[selected] : undefined;
   const inspection = readState ? retainedInspection(readState) : null;
   const identity = inspection ? runCaptureKey030(inspection.state.scope) : '';
-  const selection = selections[identity] ?? {};
+  const initialInstance = selected === initialRunId && inspection?.state.instances.find(item => item.id === initialInstanceId);
+  const selection = selections[identity] ?? { runtime: initialInstance ? { kind: 'instance' as const, id: initialInstance.id } : undefined };
   const choose = (value: Partial<typeof selection>) => setSelections(previous => ({ ...previous, [identity]: { ...previous[identity], ...value } }));
   const left = history.find(run => run.scope.systemStartId === selected);
   const right = history.find(run => run.scope.systemStartId === comparison);
@@ -113,7 +115,7 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
     <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-medium">{tr('monitor')}</h2>
       <button type="button" className="rounded border border-border px-2 py-1 hover:bg-accent" onClick={refresh}>{tr('refresh')}</button></div>
     {readFailed && <p role="alert">{tr('readFailed')}</p>}
-    <RunHistory030 history={snapshot.history} historyOrder={snapshot.historyOrder} runFailures={snapshot.runFailures} selected={selected} comparison={comparison} select={id => { setExplicit(id); setDesign(false); if (comparison === id) setComparison(undefined); }} compare={setComparison} />
+    {!initialInstanceId && <RunHistory030 history={snapshot.history} historyOrder={snapshot.historyOrder} runFailures={snapshot.runFailures} selected={selected} comparison={comparison} select={id => { setExplicit(id); setDesign(false); if (comparison === id) setComparison(undefined); }} compare={setComparison} />}
     {!selected && history.length > 0 && <p role="status">{tr('selectionPending')}</p>}
     {left && right && <RunCaptureComparison030 left={left} right={right} />}
     {selected && !inspection && <p role="status">{tr(readState?.kind === 'error' ? 'readFailed' : readState?.kind === 'unavailable' ? 'unavailable' : 'loading')}</p>}
@@ -137,9 +139,9 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
         <ExactContent label={tr('capturedSource')} value={inspection.capture.authoredSource} />
         {currentSource !== undefined && <ExactContent label={tr('currentDocument')} value={currentSource} />}
       </section>
-      <Messages030 key={identity} run={inspection} stale={stale} refresh={refresh} />
+      <Messages030 key={identity} instanceId={initialInstanceId} run={inspection} stale={stale} refresh={refresh} />
       {inspectorProps && <RunInspector030 {...inspectorProps} renderGraph={canvasMode ? undefined : renderGraph} />}
-      <details><summary>{tr('runtimeDetails')}</summary>
+      <details open={initialInstance ? true : undefined}><summary>{tr('runtimeDetails')}</summary>
         {occurrences === null || state.occurrences.kind !== 'ready' || state.occurrences.revision !== state.revision ? <p>{tr('incomplete')}</p> : <RuntimeProjectionView030
           page={{ scope: state.scope, revision: state.revision, flowInvocationId: state.flowInvocationId, stopping: state.stopping, verdict: state.verdict,
             total: String(state.instances.length + occurrences.length + state.groups.length + state.paths.length), nextPage: null,

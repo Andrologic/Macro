@@ -293,3 +293,15 @@ it('keeps graphless queue and steer messages in the collapsible run drawer', asy
   expect(drawer.querySelector('section[aria-label="Messages"]')).toBe(messages);
   expect(host.querySelector('[data-captured]')).not.toBeNull();
 });
+
+it('opens the requested instance in its run when two runs use the same agent name', async () => {
+  const first = inspectionFixture030('first');
+  const second = inspectionFixture030('second');
+  const instance = { ...second.state.instances[0], id: 'another-conversation', selectorName: 'second inbox' };
+  const access = monitorFixture030(first, { ...second, state: { ...second.state, instances: [...second.state.instances, instance] } });
+  await mount(access, { initialRunId: 'second', initialInstanceId: instance.id });
+  expect(access.reads).toEqual(['history', 'second']);
+  const chosen = [...host.querySelectorAll('button[aria-pressed=true]')].find(item => item.textContent?.includes('second inbox'));
+  expect(chosen?.closest('details')?.open).toBe(true);
+  expect(host.querySelector('[data-run-id="first"]')).toBeNull();
+});

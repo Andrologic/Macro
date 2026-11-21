@@ -1,3 +1,4 @@
+import { isOperateWorkspace } from '../services/operateWorkspace';
 import { configurationGetLoadedSnapshot } from '../services/configurationClient';
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
 import { createTaskReviewWorkflow } from '../services/taskReviewWorkflow';
@@ -1913,7 +1914,7 @@ const ensureAppSync = (lifecycle?: LifecycleContext): (() => void) => {
       nextState.predictedBranches !== previousState.predictedBranches;
 
     if (strategyChanged) {
-      void scope.track(useTaskStore.getState().refreshFromPlan({ lifecycle: scope })).catch(() => undefined);
+      void scope.track(useTaskStore.getState().refreshFromPlan({ lifecycle: scope, observeOnly: isOperateWorkspace(nextState.mode) })).catch(() => undefined);
       return;
     }
 
@@ -1959,7 +1960,8 @@ const ensureAppSync = (lifecycle?: LifecycleContext): (() => void) => {
       }
     }
 
-    if (nextState.selectedTaskId !== previousState.selectedTaskId && nextState.selectedTaskId) {
+    if (nextState.selectedTaskId !== previousState.selectedTaskId && nextState.selectedTaskId &&
+      (!isOperateWorkspace(nextState.mode) || isWorkflowAgentTask(useTaskStore.getState().getTaskById(nextState.selectedTaskId)))) {
       void scope.track(useTaskStore.getState().activateTask(nextState.selectedTaskId, scope)).catch(() => undefined);
     }
   });
@@ -2176,6 +2178,7 @@ interface TaskStore {
     restoreSelection?: boolean;
     activateSelectedTask?: boolean;
     creatingTaskId?: string;
+    observeOnly?: boolean;
   }) => Promise<void>;
   activateTask: (taskId: string, lifecycle?: LifecycleContext) => Promise<void>;
   refreshWorkflowTasks: (lifecycle?: LifecycleContext) => Promise<void>;
@@ -2935,6 +2938,7 @@ return ({
       lifecycle,
       restoreSelection: false,
       activateSelectedTask: false,
+      observeOnly: isOperateWorkspace(useAppStore.getState().mode),
     });
     lifecycle?.assertActive();
     set({ isLoading: false });
@@ -2947,6 +2951,7 @@ return ({
         lifecycle,
         restoreSelection: true,
         activateSelectedTask: true,
+        observeOnly: isOperateWorkspace(useAppStore.getState().mode),
       });
       lifecycle?.assertActive();
     } catch (error) {
@@ -2995,14 +3000,15 @@ return ({
       const previousSource = get().source;
       const appStateBeforeRefresh = useAppStore.getState();
       const selectedTaskIdBeforeRefresh = appStateBeforeRefresh.selectedTaskId;
-      await resumePlanLifecycleSagas();
+      const observeOnly = options?.observeOnly === true;
+      if (!observeOnly) await resumePlanLifecycleSagas();
       lifecycle?.assertActive();
       if (!isCurrentRefresh()) return;
-      let catalog = await services.listTasks();
+      let catalog = observeOnly ? await services.listTasks({ persistedOnly: true }) : await services.listTasks();
       lifecycle?.assertActive();
       if (!isCurrentRefresh()) return;
       // Recovery takes task leases. A creator holding one must not wait on another creator's lease.
-      const pendingLinkedTaskDeletions = creatingTaskId
+      const pendingLinkedTaskDeletions = observeOnly || creatingTaskId
         ? []
         : (await loadLinkedTaskDeletionSagas()).filter(
           (pending) => pending.taskId !== activeManualFeatureCreationId,
@@ -3399,7 +3405,8 @@ return ({
           selectedProjectId
         );
         const selectedTaskIdFromApp = useAppStore.getState().selectedTaskId;
-        if (selectedTaskIdFromApp && !resolveTaskReference(tasks, selectedTaskIdFromApp)) {
+        const restored = selectedTaskIdFromApp && resolveTaskReference(tasks, selectedTaskIdFromApp);
+        if (selectedTaskIdFromApp && (!restored || (observeOnly && !isWorkflowAgentTask(restored)))) {
           useAppStore.getState().setSelectedTask(null);
         }
 
@@ -3413,7 +3420,7 @@ return ({
             const candidateTaskId = context?.lastTaskId;
             if (candidateTaskId) {
               const candidateTask = resolveTaskReference(tasks, candidateTaskId);
-              if (candidateTask && taskMatchesAnyProjectId(candidateTask, scopedProjectIds)) {
+              if (candidateTask && (!observeOnly || isWorkflowAgentTask(candidateTask)) && taskMatchesAnyProjectId(candidateTask, scopedProjectIds)) {
                 useAppStore.getState().setSelectedTask(candidateTaskId);
               }
             }

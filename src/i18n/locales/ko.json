@@ -263,7 +263,7 @@
   },
   "header": {
     "architect": "Architect",
-    "implement": "Implement",
+    "implement": "Operate",
     "chat": "Chat",
     "debug": "Debug",
     "selectProject": "프로젝트 선택",
@@ -281,7 +281,7 @@
     "sections": {
       "basics": "기본",
       "architect": "Architect",
-      "implement": "Implement",
+      "implement": "Operate",
       "chat": "Chat",
       "system": "시스템"
     },
@@ -298,10 +298,10 @@
       },
       "modes": {
         "title": "모드 선택기",
-        "body": "이 세 버튼은 전체 작업 화면을 바꿉니다. Architect는 범위 잡기, Implement는 실행, Chat은 컨텍스트가 있는 자유로운 대화에 사용합니다.",
+        "body": "이 세 버튼은 전체 작업 화면을 바꿉니다. Architect는 범위 잡기, Operate는 실행, Chat은 컨텍스트가 있는 자유로운 대화에 사용합니다.",
         "points": [
           "Architect: 대화, 계획, 전략.",
-          "Implement: 작업, 터미널, 변경 검증.",
+          "Operate에서 실행 중인 시스템, 에이전트 대화 및 응답이 필요한 요청을 확인할 수 있습니다.",
           "Chat: 대화, 소스, 일반 도구."
         ]
       },
@@ -339,8 +339,8 @@
         "body": "검증은 브랜치를 준비하고 Implement로 넘길 수 있을 만큼 계획을 고정합니다. 시작되었거나 완료된 작업은 파괴적인 재생성으로부터 보호됩니다."
       },
       "implement-mode": {
-        "title": "Implement 모드",
-        "body": "Implement는 작업을 선택하고, 실행을 논의하고, 터미널을 열고, 커밋 전에 수정된 파일을 검증하는 모드입니다."
+        "title": "Operate 모드",
+        "body": "Operate에서 실행 중인 시스템, 에이전트 대화 및 응답이 필요한 요청을 확인할 수 있습니다."
       },
       "implement-tasks": {
         "title": "작업 대기열",
@@ -3098,8 +3098,8 @@
         "description": "활성 모드를 Architect 로 전환"
       },
       "switchImplement": {
-        "label": "Implement 모드로 전환",
-        "description": "활성 모드를 Implement 로 전환"
+        "label": "Operate 모드로 전환",
+        "description": "활성 모드를 Operate 로 전환"
       },
       "switchChat": {
         "label": "채팅 모드로 전환",

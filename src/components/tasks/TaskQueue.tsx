@@ -1,3 +1,4 @@
+import { demoWorkflowJourney } from '../../services/operateWorkspace';
 import { visibleTaskQueueTasks } from '../../services/taskQueueVisibility';
 import { groupTaskQueueLanes, TASK_QUEUE_LANES, type TaskQueueLane } from '../../services/taskQueueLanes';
 import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
@@ -1696,7 +1697,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   };
 
   const buildTaskActions = (task: ImplementTask): TaskActionDescriptor[] => {
-    if (isPlanFinalizationTask(task)) {
+    if (demoWorkflowJourney || isPlanFinalizationTask(task)) {
       return [{ key: 'execution_graph', label: t('implement.viewExecutionGraph', 'View workflow'), icon: 'workflow' }];
     }
 
@@ -2245,7 +2246,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   };
   const panelMenu = panelMenuPosition && <SidebarMenu position={panelMenuPosition} onClose={() => setPanelMenuPosition(null)} aria-label={t('implement.tasks', 'Tasks')} className="w-52">
         <button role="menuitem" type="button" disabled={Boolean(pendingTaskId) || editableProjectOptions.length === 0 || taskMutationDisabled || taskExecutionDisabled}
-          onClick={() => { setPanelMenuPosition(null); setCreateTaskError(null); setShowCreateTaskDialog(true); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name="plus" size={12} />{import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? t('implement.launchWorkflow', 'Launch a workflow') : t('implement.createStandaloneTask', 'Créer une tâche indépendante')}</button>
+          onClick={() => { setPanelMenuPosition(null); setCreateTaskError(null); setShowCreateTaskDialog(true); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name="plus" size={12} />{demoWorkflowJourney ? t('implement.launchWorkflow', 'Launch a workflow') : t('implement.createStandaloneTask', 'Créer une tâche indépendante')}</button>
         <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); openProjectNavigator(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="settings" size={12} />{t('implement.manageProjects', 'Manage projects')}</button>
       </SidebarMenu>;
 
@@ -2344,7 +2345,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
                         'implement.readOnlyOnlyAction',
                         'At least one editable repository is required to create a standalone feature.'
                       )
-                    : import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1'
+                    : demoWorkflowJourney
                       ? t('implement.launchWorkflow', 'Launch a workflow')
                       : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
             }
@@ -2415,7 +2416,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
 
       {showCreateTaskDialog && (
         <React.Suspense fallback={null}>
-          {import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? (
+          {demoWorkflowJourney ? (
             <DemoBlueprintLaunchDialog
               projects={projectFilterOptions}
               onClose={() => setShowCreateTaskDialog(false)}
@@ -2469,7 +2470,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
                     <MemoizedTaskItem
                       task={row.task}
                       mergeWorkflowRuntime={mergeWorkflowRuntimeByTaskId[row.task.id] ?? null}
-                      multiRepoPresentation={row.multiRepoPresentation}
+                      multiRepoPresentation={demoWorkflowJourney ? null : row.multiRepoPresentation}
                       attention={attentionByTaskId.get(row.task.id)}
                       hasResolvedUserRequest={resolvedWaitTaskIds.has(row.task.id)}
                       isSelected={selectedTaskId === row.task.id}
@@ -2477,9 +2478,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
                       planLabel={getTaskPlanLabel(row.task)}
                       planKind={planKindsById.get(row.task.plan_id) ?? null}
                       isAssistantRunning={runningTaskIds.has(row.task.id)}
-                      taskCommandRunStatus={taskCommandRuns[row.task.id]?.status ?? null}
+                      taskCommandRunStatus={demoWorkflowJourney ? null : taskCommandRuns[row.task.id]?.status ?? null}
                       canRunTaskCommands={canRunTaskCommandsForTask(row.task)}
-                      showRunTaskCommands={row.task.task_source !== 'agsdl' && !isPlanFinalizationTask(row.task)}
+                      showRunTaskCommands={!demoWorkflowJourney && row.task.task_source !== 'agsdl' && !isPlanFinalizationTask(row.task)}
                       runTaskCommandsTitle={getRunTaskCommandsTitle(row.task)}
                       onSelect={() => {
                         if (row.task.task_source === 'agsdl') { setExecutionGraphTask(row.task); return; }
