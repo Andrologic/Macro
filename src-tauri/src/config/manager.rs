@@ -1,7 +1,7 @@
 use super::registry::{
-    apply_modes_for_paths, classify_sensitive_paths, collect_leaf_pointers, default_document,
-    effective_documents, project_overlay_is_restrictive, schema_map, sparse_document,
-    strip_default_values, validate_document,
+    active_document, apply_modes_for_paths, classify_sensitive_paths, collect_leaf_pointers,
+    default_document, effective_documents, project_overlay_is_restrictive, schema_map,
+    sparse_document, strip_default_values, validate_document,
 };
 use super::types::*;
 use chrono::Utc;
@@ -2083,7 +2083,10 @@ impl ConfigManager {
             kind,
             scope: ConfigScope::User,
         }) {
-            super::registry::merge_values(&mut effective, &stored.last_valid_value);
+            super::registry::merge_values(
+                &mut effective,
+                &active_document(kind, &stored.last_valid_value),
+            );
         }
         effective
     }
@@ -4334,55 +4337,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lsp_configuration_requires_approval_and_survives_restart() {
+    async fn legacy_language_server_settings_do_not_invalidate_tools_or_approvals() {
         let (_temp, manager) = manager().await;
         let root = manager.root().to_path_buf();
-        let server = json!({
-            "enabled": true, "executable": root.join("language-server"),
-            "arguments": ["--stdio"], "workspaceRoots": [root.join("workspace")], "waitMs": 4000
+        let key = DocumentKey {
+            kind: ConfigDocumentKind::Tools,
+            scope: ConfigScope::User,
+        };
+        let mut legacy = sparse_document(key.kind);
+        legacy["languageServer"] = json!({
+            "enabled": true,
+            "executable": root.join("language-server"),
+            "arguments": ["--stdio"],
+            "workspaceRoots": [root.join("workspace")],
+            "waitMs": 4000,
         });
+        legacy["riskLevel"] = json!("strict");
+        legacy["builtIn"] = json!({"write": false});
+        legacy["agsdlHostPermissions"] = json!("workspace");
+        let path = root.join(key.kind.file_name());
+        atomic_write_json(&path, &legacy).unwrap();
+        write_runtime_json(&approved_document_path(&root, &key), &legacy, &key.scope).unwrap();
+        drop(manager);
+
+        let manager = ConfigManager::initialize(root.clone()).await.unwrap();
+        let snapshot = manager.get_snapshot(&[]).await.unwrap();
+        let effective = &snapshot.effective["tools"];
+        assert_eq!(effective["riskLevel"], "strict");
+        assert_eq!(effective["builtIn"]["write"], false);
+        assert_eq!(effective["agsdlHostPermissions"], "workspace");
+        assert!(effective.get("languageServer").is_none());
+        assert_eq!(read_json_value(&path).unwrap(), legacy);
+
         let document = manager
-            .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+            .get_document(key.kind, key.scope.clone())
             .await
             .unwrap();
-        let pending = manager
+        let result = manager
             .apply_patch(ConfigPatchRequest {
-                kind: ConfigDocumentKind::Tools,
-                scope: ConfigScope::User,
+                kind: key.kind,
+                scope: key.scope,
                 expected_etag: document.etag,
                 patch: vec![JsonPatchOperation {
-                    op: "add".into(),
-                    path: "/languageServer".into(),
+                    op: "replace".into(),
+                    path: "/riskLevel".into(),
                     from: None,
-                    value: Some(server.clone()),
+                    value: Some(json!("yolo")),
                 }],
                 source: ConfigChangeSource::Agent,
             })
             .await
             .unwrap();
-        assert_eq!(pending.status, "pendingApproval");
-        let pending_id = pending.pending_change.unwrap().id;
-        assert!(manager
-            .effective_user_document(ConfigDocumentKind::Tools)
-            .await
-            .get("languageServer")
-            .is_none());
+        assert_eq!(result.status, "pendingApproval");
+        let pending = result.pending_change.unwrap();
+        assert_eq!(pending.changed_paths, ["/riskLevel"]);
         drop(manager);
-        let manager = ConfigManager::initialize(root.clone()).await.unwrap();
-        assert!(manager
-            .effective_user_document(ConfigDocumentKind::Tools)
-            .await
-            .get("languageServer")
-            .is_none());
-        manager.accept_pending_change(&pending_id).await.unwrap();
-        drop(manager);
+
         let manager = ConfigManager::initialize(root).await.unwrap();
         assert_eq!(
-            manager
-                .effective_user_document(ConfigDocumentKind::Tools)
-                .await["languageServer"],
-            server
+            manager.effective_user_document(key.kind).await["riskLevel"],
+            "strict"
         );
+        manager.accept_pending_change(&pending.id).await.unwrap();
+        let effective = manager.effective_user_document(key.kind).await;
+        assert_eq!(effective["riskLevel"], "yolo");
+        assert_eq!(effective["agsdlHostPermissions"], "workspace");
+        assert!(effective.get("languageServer").is_none());
     }
 
     #[tokio::test]

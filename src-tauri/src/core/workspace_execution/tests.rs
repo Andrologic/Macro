@@ -1564,6 +1564,7 @@ async fn commit_and_validate_returns_the_standard_response_when_readback_succeed
         content_revision(b"updated\n")
     );
     assert_eq!(parsed["tool"], "write");
+    assert_eq!(parsed["diagnostics"], json!([]));
     assert_eq!(
         fs::read_to_string(path).expect("read mutated file"),
         "updated\n"

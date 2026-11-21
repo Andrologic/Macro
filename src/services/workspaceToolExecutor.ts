@@ -980,10 +980,7 @@ const buildApplyPatchDiff = (
 const countLogicalLines = (content: string): number =>
   splitTextLines(content).lines.length;
 
-const formatStructuredWriteResponse = (
-  input: StructuredWriteResultInput,
-  diagnostics: unknown[],
-): string =>
+const formatStructuredWriteResponse = (input: StructuredWriteResultInput): string =>
   JSON.stringify(
     {
       ok: true,
@@ -1021,7 +1018,7 @@ const formatStructuredWriteResponse = (
           deletions: input.deletions,
         },
       ]),
-      diagnostics,
+      diagnostics: [],
       validation: {
         all_files_readable:
           input.validation.readable || !input.validation.exists,
@@ -2166,71 +2163,6 @@ export const executeWorkspaceTool = async (
           return result;
         }, "tool_execute_workspace")
       : tauriIpc.executeWorkspaceTool({ ...request, chatAdmission: options.chatAdmission });
-  let nativeDiagnostics: unknown[] = [];
-  const diagnosticsAfterCheckpoint = async (): Promise<unknown[]> => {
-    const isReady = (item: unknown): item is Record<string, unknown> =>
-      item !== null && typeof item === "object" &&
-      (item as { status?: unknown }).status === "ready";
-    if (!nativeDiagnostics.some(isReady)) {
-      return nativeDiagnostics;
-    }
-    let stopChecking = false;
-    let stop!: () => void;
-    const interrupted = new Promise<boolean>((resolve) => {
-      stop = () => { stopChecking = true; resolve(true); };
-    });
-    // Checkpoint persistence can outlive the native observation. Revalidate with
-    // one small budget for the whole checkpoint; filesystem IPC itself has no abort.
-    const deadline = setTimeout(stop, 250);
-    options.signal?.addEventListener("abort", stop, { once: true });
-    if (options.signal?.aborted) stop();
-    const verified = new Set<unknown>();
-    const verify = async (): Promise<boolean> => {
-      for (const item of nativeDiagnostics) {
-        if (stopChecking) return true;
-        if (!isReady(item)) continue;
-        // Use the native observation's target, never the current UI selection or
-        // an unqualified checkpoint path shared by several mounts.
-        if (typeof item.root_identity !== "string" || !item.root_identity ||
-            typeof item.workspace_path !== "string" || !item.workspace_path ||
-            typeof item.document_path !== "string" || !item.document_path ||
-            typeof item.revision !== "string" || !item.revision) continue;
-        try {
-          const current = await tauriIpc.fsReadFileWithOptions({
-            path: item.document_path,
-            workspacePath: item.workspace_path,
-            allowOutsideWorkspace: false,
-          });
-          if (!stopChecking && current.workspace_identity === item.root_identity &&
-              current.revision === item.revision) verified.add(item);
-        } catch {
-          // Unknown identity, missing file and failed read invalidate only this observation.
-        }
-      }
-      return false;
-    };
-    try {
-      await Promise.race([verify(), interrupted]);
-    } finally {
-      stopChecking = true;
-      clearTimeout(deadline);
-      options.signal?.removeEventListener("abort", stop);
-    }
-    return nativeDiagnostics.map((item) => {
-      if (!isReady(item)) return item;
-      if (verified.has(item) && !options.signal?.aborted) return item;
-      return {
-        ...item,
-        status: options.signal?.aborted ? "cancelled" : "stale",
-        items: [],
-        truncated: false,
-      };
-    });
-  };
-  const buildStructuredWriteResponse = async (input: StructuredWriteResultInput): Promise<string> => {
-    return formatStructuredWriteResponse(input, await diagnosticsAfterCheckpoint());
-  };
-
   const executeBackendTool = async (
     backendToolName: string,
     backendArgs: ToolArgs,
@@ -2269,16 +2201,7 @@ export const executeWorkspaceTool = async (
         if (options.signal?.aborted) abortListener();
       }
       try {
-        const response = await executionPromise;
-        if (isWriteTool(backendToolName)) {
-          try {
-            const parsed = JSON.parse(response);
-            nativeDiagnostics = Array.isArray(parsed.diagnostics) ? parsed.diagnostics : [];
-          } catch {
-            // Refusals may be plain text and carry no observations.
-          }
-        }
-        return response;
+        return await executionPromise;
       } finally {
         if (abortListener) {
           options.signal?.removeEventListener("abort", abortListener);
@@ -2441,8 +2364,7 @@ export const executeWorkspaceTool = async (
     }
   };
 
-  // Keep frontend checkpoint snapshots and CAS compensation, but commit through
-  // the native transaction so the written revision is the one observed by LSP.
+  // Use the native transaction's applied revision for checkpoint compensation.
   const writeCheckpointedText = async (
     request: Parameters<typeof tauriIpc.fsWriteFile>[0],
   ): Promise<Awaited<ReturnType<typeof tauriIpc.fsWriteFile>>> => {
@@ -2455,7 +2377,7 @@ export const executeWorkspaceTool = async (
       unix_mode: request.unixMode,
     }, { workspacePath: request.workspacePath, workspaceScope: request.workspaceScope });
     if (response === "UNSUPPORTED_WORKSPACE_TOOL") {
-      // Compatibility with older desktop runtimes, explicitly without LSP proof.
+      // Older desktop runtimes expose the filesystem command only.
       return mutations.fsWriteFile(request);
     }
     let result;
@@ -2886,7 +2808,7 @@ export const executeWorkspaceTool = async (
             },
           },
         );
-        return buildStructuredWriteResponse({
+        return formatStructuredWriteResponse({
           path: resolved.virtualPath,
           status: writeResult.created ? "created" : "updated",
           additions: countLogicalLines(content),
@@ -3034,7 +2956,7 @@ export const executeWorkspaceTool = async (
           },
         });
         const stats = computeLineChangeStats(current.content, updated);
-        return buildStructuredWriteResponse({
+        return formatStructuredWriteResponse({
           path: resolved.virtualPath,
           status: "updated",
           additions: stats.additions,
@@ -3159,7 +3081,7 @@ export const executeWorkspaceTool = async (
           },
         });
 
-        return buildStructuredWriteResponse({
+        return formatStructuredWriteResponse({
           path: resolved.virtualPath,
           status: "deleted",
           additions: 0,
@@ -3533,7 +3455,7 @@ export const executeWorkspaceTool = async (
             ok: errors.length === 0,
             files,
             diff: buildApplyPatchDiff(files),
-            diagnostics: await diagnosticsAfterCheckpoint(),
+            diagnostics: [],
             validation: {
               all_files_readable: errors.length === 0,
               files: validationFiles,
@@ -4074,7 +3996,7 @@ export const executeWorkspaceTool = async (
           return { writeResult: result, readback: validation };
         },
       });
-      return buildStructuredWriteResponse({
+      return formatStructuredWriteResponse({
         path: resolvedPath,
         status: writeResult.created ? "created" : "updated",
         additions: countLogicalLines(content),
@@ -4200,7 +4122,7 @@ export const executeWorkspaceTool = async (
           return { writeResult: result, readback: validation };
         },
       });
-      return buildStructuredWriteResponse({
+      return formatStructuredWriteResponse({
         path: resolvedPath,
         status: "updated",
         additions: stats.additions,
@@ -4304,7 +4226,7 @@ export const executeWorkspaceTool = async (
         },
       });
 
-      return buildStructuredWriteResponse({
+      return formatStructuredWriteResponse({
         path: resolvedPath,
         status: "deleted",
         additions: 0,
@@ -4651,7 +4573,7 @@ export const executeWorkspaceTool = async (
           ok: errors.length === 0,
           files,
           diff: buildApplyPatchDiff(files),
-          diagnostics: await diagnosticsAfterCheckpoint(),
+          diagnostics: [],
           validation: {
             all_files_readable: errors.length === 0,
             files: validationFiles,
