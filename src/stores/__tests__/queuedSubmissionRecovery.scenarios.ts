@@ -388,8 +388,9 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
       const sent = JSON.stringify(options.messages);
       expect(sent).toContain('[Active Plan] id=\\"original-plan\\"');
       expect(sent).not.toContain('different-plan');
-      expect(sent).toContain('This is a Bugfix plan.');
-      expect(sent).toContain('direct-only plan');
+      expect(sent).toContain('storageTargetBranch=\\"develop\\"');
+      expect(sent).toContain('agsdl_update');
+      expect(sent).not.toContain('This is a Bugfix plan.');
       expect(options.allowedToolIds).not.toContain('git_status');
     });
 
