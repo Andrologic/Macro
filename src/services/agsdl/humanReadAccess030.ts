@@ -3,20 +3,16 @@ import type { HumanScope030 } from '../../types/generated/ipc';
 import { readExecutionHumans030, readExecutionSnapshot030, submitExecutionHuman030 } from '../tauriIpc';
 import { MacroServiceError, toServiceError } from '../contracts/errors';
 import { integer030, compareIntegers030, boundedInteger030 } from '../agsdlExecution/workIntegers030';
-import { createHumanRequestClient030, loadHumanRequests030 } from './humanRequests030';
+import { createHumanRequestClient030, loadHumanRequests030, sameHumanScope030 } from './humanRequests030';
 import type { HumanDraftStorage030, ReadHuman030, SubmitHuman030 } from './humanRequests030';
+
+export { sameHumanScope030 } from './humanRequests030';
 
 export interface HumanReadTransport030 {
   readExecutionHumans030: typeof readExecutionHumans030;
   readExecutionSnapshot030: typeof readExecutionSnapshot030;
   submitExecutionHuman030?: typeof submitExecutionHuman030;
 }
-
-export const sameHumanScope030 = (a: HumanScope030, b: HumanScope030) =>
-  a.systemStartId === b.systemStartId && a.source.revision === b.source.revision &&
-  a.source.sourceSha256 === b.source.sourceSha256 &&
-  a.source.owner.projectId === b.source.owner.projectId &&
-  a.source.owner.planId === b.source.owner.planId && a.source.owner.branch === b.source.owner.branch;
 
 /** Publish only a complete snapshot of the retained native flow. */
 export async function readHumanFacts030(scope: HumanScope030,

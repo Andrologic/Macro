@@ -27,7 +27,7 @@ export function nativeCommandSummary030(raw: string): { command: string; file: s
   } catch { return null; }
 }
 
-const sameScope = (a: HumanScope030, b: HumanScope030) => a.systemStartId === b.systemStartId &&
+export const sameHumanScope030 = (a: HumanScope030, b: HumanScope030) => a.systemStartId === b.systemStartId &&
   a.source.revision === b.source.revision && a.source.sourceSha256 === b.source.sourceSha256 &&
   a.source.owner.projectId === b.source.owner.projectId && a.source.owner.planId === b.source.owner.planId &&
   a.source.owner.branch === b.source.owner.branch;
@@ -46,7 +46,7 @@ export async function loadHumanRequests030(scope: HumanScope030, read: (scope: H
     if (!current(captured)) return undefined;
     const page = await read(structuredClone(captured), next && structuredClone(next));
     if (!current(captured)) return undefined;
-    if (!sameScope(page.scope, captured) || (cursor !== undefined && page.cursor !== cursor) ||
+    if (!sameHumanScope030(page.scope, captured) || (cursor !== undefined && page.cursor !== cursor) ||
         !/^(0|[1-9][0-9]*)$/.test(page.total) || (total !== undefined && page.total !== total) ||
         page.requests.length > 64 || (offset > 0 && !page.requests.length)) throw new Error('Invalid human projection page');
     cursor = page.cursor; total = page.total;
@@ -55,7 +55,7 @@ export async function loadHumanRequests030(scope: HumanScope030, read: (scope: H
       ids.add(request.id); requests.push(request);
     }
     next = page.nextPage ?? undefined;
-    if (next && (!sameScope(next.scope, captured) || next.cursor !== cursor || next.offset !== offset + 64 || page.requests.length !== 64)) throw new Error('Invalid human projection continuation');
+    if (next && (!sameHumanScope030(next.scope, captured) || next.cursor !== cursor || next.offset !== offset + 64 || page.requests.length !== 64)) throw new Error('Invalid human projection continuation');
     offset += 64;
   } while (next);
   if (BigInt(total!) !== BigInt(requests.length)) throw new Error('Incomplete human projection');

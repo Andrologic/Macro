@@ -1,4 +1,4 @@
-import { claimHumanAttention030 } from '../../services/agsdl/humanAttention030';
+import { claimHumanAttention030, subscribeRunHumanRequests030 } from '../../services/agsdl/humanAttention030';
 import { useEffect, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
@@ -30,8 +30,7 @@ import type { RunHumanRequest030 } from '../../types/agsdlRunUi030';
 import { sameWorkflowSource030 as sameSource } from '../../services/workflowAgentTasks';
 
 export function emitRunAttentionNotification030(request: RunHumanRequest030, t: TFunction, conversationId?: string): void {
-  if (request.state.kind !== 'open' || request.content.kind === 'unclassified' ||
-      request.content.kind === 'question' && request.content.answerContract.kind !== 'available' || !claimHumanAttention030(request)) return;
+  if (!claimHumanAttention030(request)) return;
   const target = { scope: request.scope, requestId: request.id, ...(conversationId ? { conversationId } : {}) };
   notify.actionRequired(t('agsdl.shell030.attention', { ns: 'agsdl' }), {
     description: t('agsdl.shell030.attentionBody', { ns: 'agsdl' }),
@@ -41,35 +40,16 @@ export function emitRunAttentionNotification030(request: RunHumanRequest030, t: 
   });
 }
 export function subscribeRunAttention030(registrations: readonly WorkflowRunRegistration030[], t: TFunction) {
-  const subscriptions = registrations.map(({ access, scope }) => {
-    const check = () => {
-      const snapshot = access.getSnapshot();
-      if (snapshot.history.kind !== 'ready') return;
-      for (const read of Object.values(snapshot.runs)) {
-        if (read.kind !== 'ready' || read.value.state.humans.kind !== 'ready') continue;
-        const { capture } = read.value;
-        const humans = read.value.state.humans;
-        if (humans.kind !== 'ready') continue;
-        if (capture.source.owner.projectId !== scope.owner.projectId || capture.source.owner.planId !== scope.owner.planId ||
-            capture.source.owner.branch !== scope.owner.branch) continue;
-        for (const request of humans.value) {
-          if (request.scope.systemStartId !== capture.systemStartId || !sameSource(request.scope.source, capture.source)) continue;
-          const key = humanRequestKey030(request);
-          if (request.state.kind !== 'open') {
-            const center = useNotificationCenterStore.getState();
-            const item = center.items.find(item => item.id === `human030:${key}`);
-            if (item?.sessionToastId != null) notify.dismiss(item.sessionToastId);
-            if (item) center.removeItem(item.id);
-            continue;
-          }
-          if (request.content.kind === 'unclassified') continue;
-          emitRunAttentionNotification030(request, t, scope.conversationId);
-        }
-      }
-    };
-    const unsubscribe = access.subscribe(check); check(); return unsubscribe;
+  return subscribeRunHumanRequests030(registrations, (request, conversationId) => {
+    if (request.state.kind === 'open') {
+      emitRunAttentionNotification030(request, t, conversationId);
+      return;
+    }
+    const center = useNotificationCenterStore.getState();
+    const item = center.items.find(item => item.id === `human030:${humanRequestKey030(request)}`);
+    if (item?.sessionToastId != null) notify.dismiss(item.sessionToastId);
+    if (item) center.removeItem(item.id);
   });
-  return () => subscriptions.forEach(unsubscribe => unsubscribe());
 }
 
 const getAttentionContext = () => {

@@ -86,4 +86,16 @@ describe('resolveTaskQueueAttention', () => {
       }).size).toBe(0);
     }
   });
+
+  it('keeps the legacy workflow rows based on execution interaction state', () => {
+    const tasks = [
+      { id: 'approval', status: 'Blocked' as const, workflow_execution: { interactionRequired: true, state: 'approval' } },
+      { id: 'review', status: 'Pending' as const, workflow_execution: { interactionRequired: true, state: 'active' } },
+      { id: 'no-request', status: 'InReview' as const, workflow_execution: { interactionRequired: false, state: 'active' } },
+    ];
+    expect([...resolveTaskQueueAttention({ ...base(), tasks })]).toEqual([
+      ['approval', { kind: 'approval', conversationId: null }],
+      ['review', { kind: 'review', conversationId: null }],
+    ]);
+  });
 });

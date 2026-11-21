@@ -1,5 +1,9 @@
 import type { ChatMessage, ConversationQuestionnaireDraft, TaskStatus } from '../types';
-import { resolveActiveConversationQuestionnaire } from './chatQuestionnaires';
+import {
+  resolveConversationAttentionKind,
+  resolveConversationRequestStates,
+  type ConversationRequestState,
+} from './conversationAttention';
 import type { MergeWorkflowRuntimeState } from './mergeWorkflow';
 import type { MergeWorkflowSummary } from './mergeWorkflowPersistence';
 import { resolveTaskMergeWorkflowPresentationState } from './taskMergeWorkflowPresentation';
@@ -33,43 +37,23 @@ export interface TaskQueueAttentionInput {
   mergeWorkflowRuntimeByTaskId?: Record<string, MergeWorkflowRuntimeState | undefined>;
 }
 
-export type ConversationRequestState = 'pending' | 'resolved' | 'unknown';
+export type { ConversationRequestState } from './conversationAttention';
 
 // Only semantic request changes affect the queue, never ordinary text fragments.
 export const selectTaskQueueRequestSignature = (state: Pick<TaskQueueAttentionInput,
-  'messages' | 'messagesByConversationId' | 'questionnaireDraftsByConversationId'>): string => {
-  const transcripts = { ...state.messagesByConversationId };
-  for (const message of state.messages ?? []) {
-    if (!state.messagesByConversationId?.[message.conversation_id]) {
-      (transcripts[message.conversation_id] ??= []).push(message);
-    }
-  }
-  return JSON.stringify(Object.entries(transcripts).map(([id, transcript]) => {
-    const pending = resolveActiveConversationQuestionnaire(id, transcript)?.mode === 'pending_reply';
-    let sawReply = false;
-    let resolved = false;
-    for (let index = transcript.length - 1; index >= 0; index--) {
-      const message = transcript[index]!;
-      if (message.role === 'user') sawReply = true;
-      if (message.role === 'assistant' && message.questionnaire) {
-        resolved = sawReply;
-        break;
-      }
-    }
-    return [id, pending ? 'pending' : resolved ? 'resolved' : 'unknown'];
-  }).sort(([left], [right]) => left!.localeCompare(right!)));
-};
+  'messages' | 'messagesByConversationId' | 'questionnaireDraftsByConversationId'>): string =>
+  JSON.stringify(Object.entries(resolveConversationRequestStates(state))
+    .sort(([left], [right]) => left.localeCompare(right)));
 
 // Derive one row per task from durable links, including before transcripts load.
 export const resolveTaskQueueSupervision = ({
   tasks, conversations, messages = [], messagesByConversationId = {}, requestStateByConversationId,
-  questionnaireDraftsByConversationId, pendingToolApprovalByConversationId, runningTaskIds, mergeWorkflowRuntimeByTaskId = {},
+  pendingToolApprovalByConversationId, runningTaskIds, mergeWorkflowRuntimeByTaskId = {},
 }: TaskQueueAttentionInput): { attentionByTaskId: Map<string, TaskQueueAttention>; resolvedWaitTaskIds: Set<string> } => {
   const result = new Map<string, TaskQueueAttention>();
   const resolvedWaitTaskIds = new Set<string>();
-  const requestStates: Record<string, ConversationRequestState> = requestStateByConversationId ?? Object.fromEntries(JSON.parse(
-    selectTaskQueueRequestSignature({ messages, messagesByConversationId, questionnaireDraftsByConversationId }),
-  ));
+  const requestStates = requestStateByConversationId ??
+    resolveConversationRequestStates({ messages, messagesByConversationId });
   const conversationsById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
   const conversationIdsByTaskId = new Map<string, string[]>();
   for (const conversation of conversations) {
@@ -97,15 +81,11 @@ export const resolveTaskQueueSupervision = ({
     }
     let hasResolvedRequest = false;
     for (const conversationId of conversationIds) {
-      if (Object.hasOwn(pendingToolApprovalByConversationId, conversationId)) {
-        result.set(task.id, { kind: 'approval', conversationId });
-        break;
-      }
       const requestState = requestStates[conversationId];
+      const kind = resolveConversationAttentionKind(conversationId, requestState, pendingToolApprovalByConversationId);
+      if (kind) result.set(task.id, { kind, conversationId });
+      if (kind === 'approval') break;
       hasResolvedRequest ||= requestState === 'resolved';
-      if (requestState === 'pending') {
-        result.set(task.id, { kind: 'questionnaire', conversationId });
-      }
     }
     if (result.has(task.id)) continue;
     if (hasResolvedRequest) resolvedWaitTaskIds.add(task.id);
