@@ -6,14 +6,10 @@ import {
   getArchitectPlan,
   getArchitectPlanCrudCapabilities,
   getGitFlowBaseBranch,
+  mutateAgsdlPlanLifecycle,
   updateArchitectPlan,
   type ArchitectPlanRecord,
 } from '../../services/architectPlanService';
-import {
-  archivePlanAndCleanupBranches,
-  deletePlanAndCleanupBranches,
-  restorePlanAndProvisionBranches,
-} from '../../services/architectGitFlowService';
 import {
   getArchitectPlanDisplayName,
   getArchitectPlanEditableName,
@@ -31,7 +27,6 @@ import {
 } from '../../services/preferences';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
-import { useTaskStore } from '../../stores/useTaskStore';
 import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { cn } from '../../utils/cn';
 import { SidebarMenu, sidebarMenuPosition, isSidebarTextInput, type SidebarMenuPosition } from '../ui/SidebarMenu';
@@ -472,10 +467,10 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     }
   };
 
-  const refreshAfterMutation = async () => {
+  const refreshAfterMutation = async (refreshTasks = true) => {
     await refreshCurrentPlanCatalog({
       hydrateActivePlan: true,
-      refreshTasks: true,
+      refreshTasks,
       includeArchivedInVisible: false,
       preserveCurrentActivePlan: true,
       reason: 'manual',
@@ -534,42 +529,25 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     if (mutatingPlanId) return;
     setOpenPlanMenuKey(null);
     setMutatingPlanId(entry.locatorKey);
-    let releaseMutation: (() => void) | null = null;
     try {
-      if (entry.plan.status === 'archived') {
-        await restorePlanAndProvisionBranches({ branchName: entry.branchName, planId: entry.plan.id });
-        notify.success(t('architect.projectNavigator.planRestored', 'Plan restauré.'));
-      } else {
-        const taskStore = useTaskStore.getState();
-        if (!taskStore.reservePlanWorktreeMutation(entry.plan.id)) {
-          throw new Error(t('implement.taskCommandsPlanMutationActive', 'Arrêtez les commandes actives avant d’archiver ce plan.'));
-        }
-        releaseMutation = () => taskStore.releasePlanWorktreeMutation(entry.plan.id);
-        const latest = await getArchitectPlan(entry.branchName, entry.plan.id);
-        if (!latest || !getArchitectPlanCrudCapabilities(latest).canArchive) {
-          throw new Error(t('architect.projectNavigator.archiveUnavailable', 'Ce plan ne peut plus être archivé.'));
-        }
-        const { cleanup } = await archivePlanAndCleanupBranches({
-          branchName: entry.branchName,
-          planId: entry.plan.id,
-        });
-        taskStore.clearPlanRuntimeState({
-          planId: entry.plan.id,
-          branchName: entry.branchName,
-          deletedWorktreeKeys: cleanup.flatMap((repository) =>
-            repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)),
-        });
-        notify.success(t('architect.projectNavigator.planArchived', 'Plan archivé.'));
-      }
-      await refreshAfterMutation();
+      const restoring = entry.plan.status === 'archived';
+      await mutateAgsdlPlanLifecycle({
+        branchName: entry.branchName,
+        planId: entry.plan.id,
+        expectedRevision: entry.plan.revision ?? 1,
+        operation: restoring ? 'restore' : 'archive',
+      });
+      notify.success(restoring
+        ? t('architect.projectNavigator.planRestored', 'Plan restauré.')
+        : t('architect.projectNavigator.planArchived', 'Plan archivé.'));
+      await refreshAfterMutation(false);
     } catch (mutationError) {
       const message = mutationError instanceof Error
         ? mutationError.message
         : t('architect.projectNavigator.mutationError', 'Impossible de modifier le plan.');
-      setError(message);
       notify.error(message);
+      await refreshPlans();
     } finally {
-      releaseMutation?.();
       setMutatingPlanId(null);
     }
   };
@@ -577,33 +555,24 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const deletePlan = async () => {
     if (!planToDelete || isDeleting) return;
     setIsDeleting(true);
-    let releaseMutation: (() => void) | null = null;
     try {
-      const taskStore = useTaskStore.getState();
-      if (!taskStore.reservePlanWorktreeMutation(planToDelete.plan.id)) {
-        throw new Error(t('implement.taskCommandsPlanMutationActive', 'Arrêtez les commandes actives avant de supprimer ce plan.'));
-      }
-      releaseMutation = () => taskStore.releasePlanWorktreeMutation(planToDelete.plan.id);
-      const cleanup = await deletePlanAndCleanupBranches({
+      await mutateAgsdlPlanLifecycle({
         branchName: planToDelete.branchName,
         planId: planToDelete.plan.id,
-      });
-      taskStore.clearPlanRuntimeState({
-        planId: planToDelete.plan.id,
-        branchName: planToDelete.branchName,
-        deletedWorktreeKeys: cleanup.deletedWorktreeKeys,
+        expectedRevision: planToDelete.plan.revision ?? 1,
+        operation: 'delete',
       });
       setPlanToDelete(null);
-      await refreshAfterMutation();
+      await refreshAfterMutation(false);
       notify.success(t('architect.projectNavigator.planDeleted', 'Plan supprimé.'));
     } catch (deletionError) {
       const message = deletionError instanceof Error
         ? deletionError.message
         : t('architect.projectNavigator.deleteError', 'Impossible de supprimer le plan.');
-      setError(message);
+      setPlanToDelete(null);
       notify.error(message);
+      await refreshPlans();
     } finally {
-      releaseMutation?.();
       setIsDeleting(false);
     }
   };
@@ -1482,7 +1451,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         isOpen={Boolean(planToDelete)}
         title={t('architect.projectNavigator.deleteTitle', 'Supprimer le plan')}
         description={planToDelete
-          ? t('architect.projectNavigator.deleteDescription', 'Le plan « {{name}} » et ses branches locales Macro seront supprimés. Cette action est irréversible.', {
+          ? t('architect.projectNavigator.deleteDescription', 'Le plan « {{name}} » sera supprimé. Cette action est irréversible.', {
               name: getArchitectPlanDisplayName(planToDelete.plan),
             })
           : ''}

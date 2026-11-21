@@ -2164,7 +2164,7 @@
       "delete": "삭제",
       "deleting": "삭제 중…",
       "deleteTitle": "플랜 삭제",
-      "deleteDescription": "플랜 ‘{{name}}’과 로컬 Macro 브랜치가 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+      "deleteDescription": "플랜 ‘{{name}}’이 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
       "editUnavailable": "이 플랜은 더 이상 편집할 수 없습니다.",
       "editError": "플랜을 편집할 수 없습니다.",
       "archiveUnavailable": "이 플랜은 더 이상 보관할 수 없습니다.",

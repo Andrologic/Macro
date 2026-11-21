@@ -1,4 +1,5 @@
 import { afterEach,beforeEach,describe,expect,it,mock,spyOn } from 'bun:test';
+import { createEmptyBlueprintDocument } from './agsdl/design';
 import { DEFAULT_NEW_PLAN_LABEL } from './architectPlanPresentation';
 import { installArchitectPlanPorts,type ArchitectPlanServiceAppState } from './architectPlanReadContext';
 import type { ArchitectPlanRecord,ArchitectPlanSummary } from './architectPlanService';
@@ -56,6 +57,7 @@ interface LoadArchitectPlanServiceOptions {
   }>;
   readPaths?: string[];
   failDelete?: (path: string) => boolean;
+  onDevelopmentGitCall?: (command: string) => never;
   failWriteOnce?: (params: {
     path: string;
     workspacePath?: string | null;
@@ -127,6 +129,10 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
   };
   const tauriModule = () => ({
     ...actualTauriIpc,
+    ...(options.onDevelopmentGitCall && Object.fromEntries([
+      'gitBranchCreate', 'gitBranchDelete', 'gitBranchWorktreeCreate', 'gitBranchWorktreeRemove',
+      'gitWorktreeCreate', 'gitWorktreeRemove', 'gitWorkflowCleanup',
+    ].map(command => [command, () => options.onDevelopmentGitCall!(command)]))),
     aiGetDevProviderOverrides: async () => null,
     isTauriAvailable: () => options.tauriAvailable === true,
     configGetDocument: async (kind: string) => configDocuments.get(kind),
@@ -245,6 +251,11 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       options.workspaceScopeCalls?.push({ operation: 'list', workspaceScope: params.workspaceScope });
       const workspacePath = params.workspacePath ?? '';
       return listWorkspaceDir(workspacePath, params.path);
+    },
+    fsExists: async (path: string, params?: { workspacePath?: string | null }) => {
+      const workspacePath = params?.workspacePath ?? '';
+      return typeof workspaceFilesByWorkspacePath[workspacePath]?.[normalizeMockPath(path)] === 'string' ||
+        listWorkspaceDir(workspacePath, path).length > 0;
     },
     fsDelete: async (params: {
       path: string;
@@ -689,6 +700,93 @@ describe('architectPlanService', () => {
     expect(restored.status).toBe('validated');
     expect(restored.archivedAt).toBeUndefined();
     expect(restored.archivedFromStatus).toBeUndefined();
+  });
+
+  it('mutates a historical AgSDL blueprint through Git and direct metadata ports', async () => {
+    const projectIds = ['web', 'docs'];
+    registerAppStateGetter(() => ({
+      standaloneProjects: [
+        { id: 'web', path: '/repos/web', gitSetupState: 'ready', directEdit: false, isReadOnly: false },
+        { id: 'docs', path: '/repos/docs', gitSetupState: 'not_git', directEdit: true, isReadOnly: false },
+      ],
+      projectGroups: [],
+    }));
+    const workspacePathByProjectId = new Map(projectIds.map(id => [id, `/repos/${id}`]));
+    const filesByWorkspacePath: Record<string, Record<string, string>> = { '/repos/web': {}, '/repos/docs': {} };
+    const appSettings = new Map<string, string>();
+    const workspaceScopeCalls: NonNullable<LoadArchitectPlanServiceOptions['workspaceScopeCalls']> = [];
+    const onDevelopmentGitCall = mock((command: string): never => {
+      throw new Error(`Unexpected development Git command: ${command}`);
+    });
+    const macroBranchCommitIfDirty = mock(async (_args?: Parameters<typeof actualTauriIpc.macroBranchCommitIfDirty>[0]) => ({
+      branch: '@macro',
+      state: 'clean' as const,
+      worktree_path: '/repos/web/.git/macro-metadata-worktree',
+      is_dirty: false, has_origin: false, has_upstream: false, ahead: 0, behind: 0,
+      conflicted_files: [], committed: true, commit_hash: null, reason: null, next_action: null, output: '', error: null,
+    }));
+    service = await loadArchitectPlanService({
+      tauriAvailable: true, appSettings, filesByWorkspacePath, workspaceScopeCalls,
+      onDevelopmentGitCall, macroBranchCommitIfDirty,
+      registrySnapshot: {
+        selectedGroupId: null, selectedProjectId: 'web', scopedProjectIds: projectIds,
+        actionableProjectIds: projectIds, actionableProjectIdSet: new Set(projectIds),
+        readOnlyProjectIds: [], readOnlyProjectIdSet: new Set(),
+        validProjectIds: projectIds, validProjectIdSet: new Set(projectIds),
+        repoPathByProjectId: new Map([['web', '/repos/web']]), workspacePathByProjectId,
+        gitFlowSettingsByProjectId: new Map(),
+        executionModeByProjectId: new Map([['web', 'git'], ['docs', 'direct']]),
+        hasRegisteredProjects: true,
+      },
+    });
+    const planId = 'old-blueprint';
+    const target = { branchName, planId };
+    const agsdl = { ...createEmptyBlueprintDocument('Legacy blueprint'), annexes: { example: '{ "preserved": true }' } };
+    await service.createArchitectPlan({
+      ...target, projectIds, agsdl, status: 'in_progress', conversationId: 'blueprint-chat', setActive: true,
+    });
+    const transcript = [{
+      id: 'message-1', role: 'user' as const, content: 'Keep this blueprint.',
+      createdAt: '2026-04-14T12:05:00.000Z',
+    }];
+    await service.saveArchitectPlanChatMessages(branchName, planId, transcript);
+    const plan = (await service.getArchitectPlan(branchName, planId))!;
+    const lifecycle = { ...target, expectedRevision: plan.revision! };
+    macroBranchCommitIfDirty.mockClear();
+    workspaceScopeCalls.length = 0;
+
+    await expect(service.mutateAgsdlPlanLifecycle({ ...lifecycle, planId: ' OLD-BLUEPRINT ', operation: 'archive' })).rejects.toThrow('identity');
+    await expect(service.mutateAgsdlPlanLifecycle({ ...lifecycle, planId: '..', operation: 'delete' })).rejects.toThrow('identity');
+    await expect(service.mutateAgsdlPlanLifecycle({ ...lifecycle, operation: 'delete' })).rejects.toThrow('in_progress');
+    const results = await Promise.allSettled([
+      service.mutateAgsdlPlanLifecycle({ ...lifecycle, operation: 'archive' }),
+      service.mutateAgsdlPlanLifecycle({ ...lifecycle, operation: 'archive' }),
+    ]);
+    expect(results[0].status).toBe('fulfilled');
+    expect(results[1]).toMatchObject({ status: 'rejected', reason: expect.objectContaining({ message: expect.stringContaining('changed') }) });
+    const archived = (await service.getArchitectPlan(branchName, planId))!;
+    expect(archived).toMatchObject({ status: 'archived', archivedFromStatus: 'in_progress' });
+    expect((await service.listArchitectPlans(branchName)).activePlanId).toBeNull();
+
+    await service.mutateAgsdlPlanLifecycle({ ...target, expectedRevision: archived.revision!, operation: 'restore' });
+    await expect(service.mutateAgsdlPlanLifecycle({ ...target, expectedRevision: archived.revision!, operation: 'delete' })).rejects.toThrow('changed');
+    const restored = (await service.getArchitectPlan(branchName, planId))!;
+    expect(restored).toMatchObject({ status: 'in_progress', conversationId: plan.conversationId, agsdl: plan.agsdl });
+    expect(restored.archivedAt).toBeUndefined();
+    expect(await service.getArchitectPlanChatMessages(branchName, planId)).toEqual(transcript);
+    await service.mutateAgsdlPlanLifecycle({ ...target, expectedRevision: restored.revision!, operation: 'archive' });
+    await service.mutateAgsdlPlanLifecycle({ ...target, expectedRevision: restored.revision! + 1, operation: 'delete' });
+
+    expect(await service.getArchitectPlan(branchName, planId)).toBeNull();
+    for (const files of Object.values(filesByWorkspacePath)) {
+      expect(Object.keys(files).some(path => path.startsWith(`branches/${branchName}/plans/${planId}/`))).toBe(false);
+    }
+    expect(workspaceScopeCalls).toContainEqual({ operation: 'delete', workspaceScope: 'metadata' });
+    expect(workspaceScopeCalls).toContainEqual({ operation: 'delete', workspaceScope: 'direct' });
+    expect(macroBranchCommitIfDirty.mock.calls.map(([args]) => args?.workspacePath)).toEqual(
+      ['/repos/web', '/repos/web', '/repos/web', '/repos/web'],
+    );
+    expect(onDevelopmentGitCall).not.toHaveBeenCalled();
   });
 
   it('allows archiving and hard deleting a renamed canonical plan', async () => {

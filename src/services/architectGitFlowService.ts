@@ -2116,7 +2116,7 @@ export const createArchitectGitFlowService = (
     lifecycleSaga: PlanLifecycleSaga;
   }> => {
     const plan = await deps.getArchitectPlan(params.branchName, params.planId);
-    if (!plan || !getArchitectPlanCrudCapabilities(plan).canArchive) {
+    if (!plan || plan.agsdl || !getArchitectPlanCrudCapabilities(plan).canArchive) {
       throw new Error(`Plan ${params.planId} cannot be archived.`);
     }
     const cleanupTargets = buildCleanupPlanTargetsWithDeps(plan, params.repoPath);
@@ -2170,7 +2170,7 @@ export const createArchitectGitFlowService = (
     repoPath?: string;
   }): Promise<ArchitectPlanRecord> => {
     const plan = await deps.getArchitectPlan(params.branchName, params.planId);
-    if (!plan || plan.status === 'deleted') {
+    if (!plan || plan.agsdl || plan.status === 'deleted') {
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
     const pendingArchiveSaga = (await loadPlanLifecycleSagas()).find(
@@ -2779,7 +2779,7 @@ export const createArchitectGitFlowService = (
     cleanup: CleanupPlanRepositoryResult[];
   }> => {
     let plan = await deps.getArchitectPlan(params.branchName, params.planId);
-    if (!plan || plan.status === 'deleted') {
+    if (!plan || plan.agsdl || plan.status === 'deleted') {
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
     const pendingFinalization = (await loadPlanLifecycleSagas()).find(
@@ -2975,7 +2975,7 @@ export const createArchitectGitFlowService = (
     repositories: CleanupPlanRepositoryResult[];
   }> => {
     const plan = await deps.getArchitectPlan(params.branchName, params.planId);
-    if (!plan) {
+    if (!plan || plan.agsdl) {
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
 

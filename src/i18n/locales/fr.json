@@ -2164,7 +2164,7 @@
       "delete": "Supprimer",
       "deleting": "Suppression…",
       "deleteTitle": "Supprimer le plan",
-      "deleteDescription": "Le plan « {{name}} » et ses branches locales Macro seront supprimés. Cette action est irréversible.",
+      "deleteDescription": "Le plan « {{name}} » sera supprimé. Cette action est irréversible.",
       "editUnavailable": "Ce plan ne peut plus être modifié.",
       "editError": "Impossible de modifier le plan.",
       "archiveUnavailable": "Ce plan ne peut plus être archivé.",
