@@ -18,6 +18,12 @@ pub(in crate::db::connect_transfer) async fn fixture() -> (TempDir, SqlitePool) 
 }
 pub(in crate::db::connect_transfer) async fn input(pool: &SqlitePool) -> Reservation {
     Reservation {
+        native_authority: None,
+        native_target_prepared: None,
+        native_target_activation: None,
+        native_lineage_id: String::new(),
+        native_installation_id: String::new(),
+        native_birth_generation: String::new(),
         transfer_id: uuid::Uuid::new_v4().to_string(),
         relay_origin: "https://relay.invalid".into(),
         account_id: "account-1".into(),
@@ -78,6 +84,94 @@ pub(in crate::db::connect_transfer) async fn inspected(
     .unwrap();
     (owner, runtime, handle, input)
 }
+
+/// Storage-only chain fixture. Reservation fields remain private to journal;
+/// reconciliation and freezing still use the real native 017 owner.
+pub(in crate::db::connect_transfer) async fn reserve_published_as_source(
+    pool: &SqlitePool,
+    conversation: &str,
+) -> (DbPool, String) {
+    let owner = DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = ChatAdmissionRuntime::default();
+    runtime
+        .open_browser(owner.clone(), "chain-window", "chain-browser")
+        .await
+        .unwrap();
+    let inspection = runtime
+        .begin_reconciliation(&owner, "chain-window", "chain-browser", conversation)
+        .await
+        .unwrap();
+    runtime
+        .complete_reconciliation(
+            &owner,
+            "chain-window",
+            "chain-browser",
+            &inspection,
+            &BrowserInspection {
+                queue: vec![],
+                unsaved: vec![],
+                approvals: vec![],
+                questions: vec![],
+                drafts: vec![],
+                steers: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    let mut outgoing = input(pool).await;
+    outgoing.source_conversation_id = conversation.into();
+    outgoing.source_instance_id = "target-pc".into();
+    outgoing.target_instance_id = "third-pc".into();
+    outgoing.expected_ownership_revision = sqlx::query_scalar::<_, i64>(
+        "SELECT revision+1 FROM chat_admission_owners WHERE conversation_id=?",
+    )
+    .bind(conversation)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    outgoing.expected_content =
+        db::conversation_content::conversation_content_version(pool, conversation)
+            .await
+            .unwrap();
+    runtime
+        .reserve_reconciled_transfer(
+            &owner,
+            "chain-window",
+            "chain-browser",
+            &inspection,
+            &outgoing,
+        )
+        .await
+        .unwrap();
+    (owner, outgoing.transfer_id)
+}
+#[tokio::test]
+async fn connect_transfer_reserves_on_a_new_database_without_preseeded_budget() {
+    let dir = TempDir::new().unwrap();
+    let pool = db::create_pool(&dir.path().join("fresh.db")).await.unwrap();
+    sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('source','Synthetic','Chat','t','t'); INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES('message','source','user','complete history','t');")
+        .execute(&pool).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM e_inactive_domain")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    let (owner, runtime, handle, input) = inspected(&pool).await;
+    runtime
+        .reserve_reconciled_transfer(&owner, "window", "browser", &handle, &input)
+        .await
+        .unwrap();
+    let policy: (i64, i64) =
+        sqlx::query_as("SELECT budget_bytes,max_receipts FROM e_inactive_domain WHERE singleton=1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(policy, (16 * 1024 * 1024, 64));
+}
+
 #[tokio::test]
 async fn connect_transfer_freeze_and_identity_commit_together_with_real_017_guards() {
     let (_dir, pool) = fixture().await;
@@ -90,13 +184,24 @@ async fn connect_transfer_freeze_and_identity_commit_together_with_real_017_guar
         receipt.ownership_revision,
         Some(input.expected_ownership_revision)
     );
+    let replay = runtime
+        .reserve_reconciled_transfer(&owner, "window", "browser", &handle, &input)
+        .await
+        .unwrap();
     assert_eq!(
-        runtime
-            .reserve_reconciled_transfer(&owner, "window", "browser", &handle, &input)
-            .await
-            .unwrap(),
-        receipt
+        (
+            &replay.transfer_id,
+            &replay.fingerprint,
+            replay.ownership_revision
+        ),
+        (
+            &receipt.transfer_id,
+            &receipt.fingerprint,
+            receipt.ownership_revision
+        )
     );
+    assert!(receipt.native_source_frozen);
+    assert!(!replay.native_source_frozen);
     input.reserve_request.push(b' ');
     assert!(runtime
         .reserve_reconciled_transfer(&owner, "window", "browser", &handle, &input)
@@ -549,6 +654,87 @@ async fn connect_transfer_target_import_attachment_uses_full_source_and_generati
     assert!(attach_import(&pool, &input, &key).await.is_err());
 }
 
+/// A target whose import failed or stopped before attachment holds a partial
+/// import that only its identity names: applying the relay's abort empties it.
+#[tokio::test]
+async fn connect_transfer_aborted_target_releases_an_unattached_partial_import() {
+    use crate::db::inactive_storage::{identity_key, Begin, Bindings, Identity, Profile};
+    let (_dir, pool) = fixture().await;
+    let input = input(&pool).await;
+    reserve_target(&pool, &input).await.unwrap();
+    let begin = Begin {
+        version: 1,
+        identity: Identity {
+            origin: input.relay_origin.clone(),
+            account_incarnation: input.account_id.clone(),
+            source_instance: input.source_instance_id.clone(),
+            source_conversation: input.source_conversation_id.clone(),
+            transfer: input.transfer_id.clone(),
+            source_epoch: input.source_epoch.to_string(),
+        },
+        bindings: Bindings {
+            target_instance: input.target_instance_id.clone(),
+            source_generation: input.source_generation.clone(),
+            target_generation: input.target_generation.clone(),
+            actor: "synthetic".into(),
+            initial_session: "synthetic".into(),
+            policy_revision: "synthetic".into(),
+        },
+        profile: Profile::PortableChatHistoryV1,
+        records: 2,
+        bytes: 2,
+        manifest_sha256: "0".repeat(64),
+    };
+    let begin_json = serde_json::to_string(&begin).unwrap();
+    sqlx::query("INSERT INTO e_inactive_imports(identity_key,begin_json,phase,revision,next_record,received_bytes,charge_bytes,created_at,progressed_at,expires_at,idle_ms,last_clock) VALUES(?,?,0,1,1,1,4096,0,0,1,1,0)")
+        .bind(identity_key(&begin.identity).unwrap()).bind(&begin_json).execute(&pool).await.unwrap();
+    sqlx::raw_sql("INSERT INTO e_inactive_records(import_id,ordinal,header_json,kind,received_bytes,complete,utf8_tail,scan_tail) VALUES(1,0,'{}',0,1,1,x'',x''); INSERT INTO e_inactive_fragments VALUES(1,0,0,zeroblob(32),x'78',1,1,1); INSERT INTO e_inactive_mapping VALUES(1,0,'00000000-0000-4000-8000-000000000000');")
+        .execute(&pool).await.unwrap();
+    let row = sqlx::query(
+        "SELECT fingerprint,binding_digest,source_epoch FROM connect_transfers WHERE transfer_id=?",
+    )
+    .bind(&input.transfer_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    crate::db::connect_transfer::terminal::store_aborted_target(
+        &pool,
+        &input.transfer_id,
+        row.get("fingerprint"),
+        row.get("binding_digest"),
+        row.get("source_epoch"),
+        &serde_json::json!({"outcome": "aborted", "decision_revision": "3", "prepared": null}),
+    )
+    .await
+    .unwrap();
+    for table in [
+        "e_inactive_records",
+        "e_inactive_fragments",
+        "e_inactive_mapping",
+    ] {
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM {table}"
+            )))
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            0,
+            "{table}"
+        );
+    }
+    // The import stays as an aborted tombstone charged for its journal only.
+    assert_eq!(
+        sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT phase,next_record,charge_bytes FROM e_inactive_imports"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        (3, 0, 152 + begin_json.len() as i64)
+    );
+}
+
 #[tokio::test]
 async fn connect_transfer_sqlite_full_returns_no_prefix_and_rolls_back_storage_charge() {
     let (dir, pool) = fixture().await;
@@ -608,7 +794,11 @@ async fn connect_transfer_sqlite_full_returns_no_prefix_and_rolls_back_storage_c
 
 #[tokio::test]
 async fn connect_transfer_migration_and_stamp_roll_back_together() {
-    let (dir, pool) = fixture().await;
+    // A schema reference has no user conversations. Seeded journal fixtures do.
+    let dir = tempfile::tempdir().unwrap();
+    let pool = db::create_pool(&dir.path().join("journal.db"))
+        .await
+        .unwrap();
     crate::db::connect_transfer::remove_reference_schema_in(&mut *pool.acquire().await.unwrap())
         .await
         .unwrap();

@@ -127,6 +127,7 @@ fn expected_rows(conversation_id: &str, inputs: Vec<ImportMessageInput>) -> Vec<
             provider_turn_state_json: None,
             context_refs_json: None,
             generation_attempts_json: None,
+            portable_history: None,
         })
         .collect()
 }

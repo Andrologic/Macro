@@ -62,6 +62,9 @@ pub(crate) const NAMES: &[&str] = &[
     "040_execution_flow_human_clock030",
     "041_execution_flow_interrupted030",
     "042_retire_execution020",
+    "043_connect_archive_lifecycle",
+    "044_connect_target_abort",
+    "045_connect_target_activation",
 ];
 
 pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {
@@ -69,6 +72,7 @@ pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {
         return Ok(vec![version]);
     }
     let versions = match (version, name) {
+        (2, "002_agent_runs") => vec![3],
         (5, "005_pilot_tool_trace_revisions") => vec![5, 10],
         (6, "006_pilot_tool_trace_revisions") => vec![10],
         (7, "007_conversation_management") => vec![11],
@@ -82,6 +86,9 @@ pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {
         (16, "016_execution_native_operations") => vec![26],
         (17, "017_execution_work_protocol") => vec![27],
         (18, "018_execution_work_admission") => vec![28],
+        (20, "020_connect_archive_lifecycle") => vec![43],
+        (21, "021_connect_target_abort") => vec![44],
+        (22, "022_connect_target_activation") => vec![45],
         _ => {
             return Err(DbError::Migration(format!(
                 "Unknown migration identity {version}/{name}; database left unchanged"
@@ -126,6 +133,9 @@ pub(crate) async fn canonical_versions(c: &mut SqliteConnection) -> DbResult<Vec
         || versions.contains(&40) && !versions.contains(&39)
         || versions.contains(&41) && !versions.contains(&40)
         || versions.contains(&42) && !versions.contains(&41)
+        || versions.contains(&43) && !versions.contains(&19)
+        || versions.contains(&44) && !versions.contains(&43)
+        || versions.contains(&45) && !versions.contains(&44)
     {
         return Err(DbError::Migration(
             "Inconsistent AgSDL migration history".into(),

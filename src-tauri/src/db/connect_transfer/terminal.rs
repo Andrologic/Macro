@@ -126,6 +126,150 @@ async fn apply_source(pool: &SqlitePool, input: &TerminalWrite) -> DbResult<Sour
     Ok(result)
 }
 
+// Storage composition only. The caller retains the original native reservation
+// and has already obtained and matched the authenticated canonical terminal.
+fn decode_digest(value: String) -> DbResult<Vec<u8>> {
+    if value.len() != 64 {
+        return Err(invalid("connect_terminal_invalid_input"));
+    }
+    (0..64)
+        .step_by(2)
+        .map(|n| {
+            u8::from_str_radix(&value[n..n + 2], 16)
+                .map_err(|_| invalid("connect_terminal_invalid_input"))
+        })
+        .collect()
+}
+pub(super) async fn store_committed(
+    pool: &SqlitePool,
+    transfer: &str,
+    reservation_fingerprint: Vec<u8>,
+    binding_digest: Vec<u8>,
+    source_epoch: i64,
+    terminal: &serde_json::Value,
+    source: bool,
+) -> DbResult<Vec<u8>> {
+    use crate::commands::pilot_secrets::transport::commitment;
+    let decode = decode_digest;
+    let input = TerminalWrite {
+        transfer_id: transfer.into(),
+        reservation_fingerprint,
+        binding_digest,
+        source_epoch,
+        outcome: Outcome::Committed,
+        decision_revision: terminal["decision_revision"]
+            .as_str()
+            .ok_or_else(|| invalid("connect_terminal_invalid_input"))?
+            .into(),
+        exact: serde_json::to_vec(terminal)
+            .map_err(|_| invalid("connect_terminal_invalid_input"))?,
+        canonical_digest: decode(commitment("terminal", terminal).map_err(invalid)?)?,
+        prepared_digest: Some(decode(
+            commitment("prepared", &terminal["prepared"]).map_err(invalid)?,
+        )?),
+    };
+    if source {
+        if apply_source(pool, &input).await? == SourceApplication::Held {
+            return Err(invalid("connect_terminal_hold"));
+        }
+    } else {
+        store(pool, &input).await?;
+    }
+    Ok(fingerprint(&input)?.0)
+}
+// Only a durable aborted receipt for this epoch reopens the frozen source.
+pub(super) async fn store_aborted_source(
+    pool: &SqlitePool,
+    transfer: &str,
+    reservation_fingerprint: Vec<u8>,
+    binding_digest: Vec<u8>,
+    source_epoch: i64,
+    terminal: &serde_json::Value,
+) -> DbResult<()> {
+    use crate::commands::pilot_secrets::transport::commitment;
+    if terminal["outcome"] != "aborted" || !terminal["prepared"].is_null() {
+        return Err(invalid("connect_terminal_invalid_input"));
+    }
+    let input = TerminalWrite {
+        transfer_id: transfer.into(),
+        reservation_fingerprint,
+        binding_digest,
+        source_epoch,
+        outcome: Outcome::Aborted,
+        decision_revision: terminal["decision_revision"]
+            .as_str()
+            .ok_or_else(|| invalid("connect_terminal_invalid_input"))?
+            .into(),
+        exact: serde_json::to_vec(terminal)
+            .map_err(|_| invalid("connect_terminal_invalid_input"))?,
+        canonical_digest: decode_digest(commitment("terminal", terminal).map_err(invalid)?)?,
+        prepared_digest: None,
+    };
+    if apply_source(pool, &input).await? == SourceApplication::Held {
+        return Err(invalid("connect_terminal_hold"));
+    }
+    Ok(())
+}
+
+/// Records the relay's aborted terminal on a target attempt, then releases its
+/// staged import content and projection in the same transaction. The transfer,
+/// preparation and import rows remain as tombstones.
+pub(super) async fn store_aborted_target(
+    pool: &SqlitePool,
+    transfer: &str,
+    reservation_fingerprint: Vec<u8>,
+    binding_digest: Vec<u8>,
+    source_epoch: i64,
+    terminal: &serde_json::Value,
+) -> DbResult<()> {
+    use crate::commands::pilot_secrets::transport::commitment;
+    if terminal["outcome"] != "aborted" {
+        return Err(invalid("connect_terminal_invalid_input"));
+    }
+    let prepared_digest = if terminal["prepared"].is_null() {
+        None
+    } else {
+        Some(decode_digest(
+            commitment("prepared", &terminal["prepared"]).map_err(invalid)?,
+        )?)
+    };
+    let input = TerminalWrite {
+        transfer_id: transfer.into(),
+        reservation_fingerprint,
+        binding_digest,
+        source_epoch,
+        outcome: Outcome::Aborted,
+        decision_revision: terminal["decision_revision"]
+            .as_str()
+            .ok_or_else(|| invalid("connect_terminal_invalid_input"))?
+            .into(),
+        exact: serde_json::to_vec(terminal)
+            .map_err(|_| invalid("connect_terminal_invalid_input"))?,
+        canonical_digest: decode_digest(commitment("terminal", terminal).map_err(invalid)?)?,
+        prepared_digest,
+    };
+    let mut lease = lease(pool).await?;
+    let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
+    validate_schema(&mut tx).await?;
+    store_in(&mut tx, &input).await?;
+    let role: String =
+        sqlx::query_scalar("SELECT local_role FROM connect_transfers WHERE transfer_id=?")
+            .bind(transfer)
+            .fetch_one(&mut *tx)
+            .await?;
+    if role != "target" {
+        return Err(invalid("connect_terminal_wrong_role"));
+    }
+    sqlx::query("UPDATE connect_transfers SET resolution='aborted' WHERE transfer_id=? AND resolution IS NULL")
+        .bind(transfer)
+        .execute(&mut *tx)
+        .await?;
+    super::deletion::release_aborted_target(&mut tx, transfer).await?;
+    tx.commit().await?;
+    lease.committed = true;
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "terminal_tests.rs"]
 mod tests;
@@ -156,4 +300,32 @@ pub(super) async fn store_target_fixture(
     };
     store(pool, &input).await.unwrap();
     fingerprint(&input).unwrap().0
+}
+
+/// SQLite transition fixture only. This is absent from production and emits no
+/// authenticated terminal or transport capability.
+#[cfg(test)]
+pub(in crate::db) async fn commit_source_fixture(pool: &SqlitePool, transfer: &str) {
+    let row = sqlx::query(
+        "SELECT fingerprint,binding_digest,source_epoch FROM connect_transfers WHERE transfer_id=?",
+    )
+    .bind(transfer)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    let input = TerminalWrite {
+        transfer_id: transfer.into(),
+        reservation_fingerprint: row.get("fingerprint"),
+        binding_digest: row.get("binding_digest"),
+        source_epoch: row.get("source_epoch"),
+        outcome: Outcome::Committed,
+        decision_revision: "2".into(),
+        exact: b"synthetic storage terminal, not authenticated".to_vec(),
+        canonical_digest: vec![7; 32],
+        prepared_digest: None,
+    };
+    assert_eq!(
+        apply_source(pool, &input).await.unwrap(),
+        SourceApplication::Applied
+    );
 }

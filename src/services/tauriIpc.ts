@@ -286,6 +286,7 @@ export type { HostTelemetryAvailability,HostTelemetryDto,HostTelemetryReason } f
 export { hostTelemetryRead } from "./ipc/hostTelemetry";
 
 export * from "./ipc/pilotFiles";
+export * from "./ipc/connectArchive";
 
 export * from './ipc/conversationContent';
 

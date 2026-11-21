@@ -5,7 +5,18 @@ import { captureComposerSnapshot, hasMultipleAgsdlContexts, rebindAgsdlContextRe
 import type { ContextRefKind } from "../../types";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { AgsdlSentSelection } from "../agsdl/AgsdlChatSelection";
+import { TransferConversationDialog } from '../connect/TransferConversationDialog';
+import { macroPilotNativeClient } from '../../services/macroPilot/nativeClient';
+import { macroConnectReaderPorts } from '../../composition/macroConnectReader';
+import { macroPilotRuntime } from '../../composition/macroPilotDesktop';
+import { usePilotStore } from '../../stores/usePilotStore';
+import type { ConsumerReaderPorts } from '../../services/macroPilot/consumerReader';
+import { ArrowRightLeft } from 'lucide-react';
 import { observeConversationMessage } from '../../services/conversationReadObservation';
+import { ArchiveReaderDialog } from './ArchiveReaderDialog';
+import { HistoricalMessageContent } from './HistoricalMessageContent';
+import { retainArchiveImages } from '../../services/archiveImages';
+import { onArchiveReadersRetiring } from '../../services/conversationPortableArchive';
 import { acknowledgeDisplayedConversation } from '../../services/conversationManagementService';
 import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { useShortcutBinding } from '../../hooks/useShortcutBinding';
@@ -57,6 +68,7 @@ import { cn } from '../../utils/cn';
 import { ModelDropdown } from '../ai/ModelDropdown';
 import { ReasoningDropdown } from '../ai/ReasoningDropdown';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { messageDisplayDate } from '../../services/chatHistoryDisplay';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { useSpeechDictation } from '../../hooks/useSpeechDictation';
 import { ScrollSeparator } from './ScrollSeparator';
@@ -122,6 +134,7 @@ import { toServiceError, type ServiceError } from '../../services/contracts/erro
 import { parseConversationGoalCommand } from '../../services/conversationGoalCommand';
 import { conversationGoalProductFlow } from '../../composition/goalProductComposition';
 import { isTauriAvailable } from '../../services/ipc/runtime';
+import { chatAdmissionMode, type ChatAdmissionMode } from '../../services/ipc/chatAdmission';
 import { GoalAuditArtifactsButton } from './GoalAuditArtifactsButton';
 import { StandaloneTaskLaunchProgressCard } from './StandaloneTaskLaunchProgressCard';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
@@ -776,7 +789,7 @@ const ArchitectActionMessage: React.FC<{ action: ArchitectButtonAction }> = ({ a
   </div>
 );
 
-const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
+export const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   virtualMessage,
   measureElement,
   assistantActivity,
@@ -797,10 +810,13 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   standaloneLaunchProgress,
 }) => {
   const { t } = useTranslation();
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const message = virtualMessage.item.message;
+  const historicalDate = message.portable_history ? messageDisplayDate(message) : null;
   const observedRow = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => retainArchiveImages(messageImages), [messageImages]);
   useEffect(() => {
-    if (!observedRow.current || message.role !== 'assistant' || !message.content || assistantActivity || message.persistence_state === 'failed' || message.persistence_state === 'retrying') return;
+    if (!observedRow.current || message.portable_history || message.role !== 'assistant' || !message.content || assistantActivity || message.persistence_state === 'failed' || message.persistence_state === 'retrying') return;
     // Capture this rendered message, before asynchronous reads can see a new turn.
     const displayed = { ...message };
     return observeConversationMessage(observedRow.current, () => {
@@ -811,17 +827,19 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   const citedConversations = message.context_refs?.filter(
     (ref) => ref.kind === 'conversation' && ref.conversationId && ref.snippet,
   ) ?? [];
-  const questionnaireResponseSummary = message.questionnaire_response_summary;
+  const questionnaireResponseSummary = message.portable_history ? undefined : message.questionnaire_response_summary;
   const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
   const architectActionMessage =
-    message.role === 'user'
+    !message.portable_history && message.role === 'user'
       ? resolveArchitectButtonActionFromContent(message.content, t)
       : null;
   const isArchitectActionMessage = Boolean(architectActionMessage);
   const hasAssistantActivity =
+    !message.portable_history &&
     message.role === 'assistant' &&
     assistantActivity !== null;
   const hasAssistantCompletionNotice =
+    !message.portable_history &&
     message.role === 'assistant' &&
     Boolean(message.completion_reason && message.completion_reason !== 'completed');
   const hasAssistantVisibleBody =
@@ -829,6 +847,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
     (message.content.trim().length > 0 ||
       (showToolTraces && (message.tool_traces?.length ?? 0) > 0));
   const hasAssistantPersistenceFailure =
+    !message.portable_history &&
     message.role === 'assistant' &&
     (message.persistence_state === 'failed' || message.persistence_state === 'retrying');
   const isRetryingAssistantPersistence = message.persistence_state === 'retrying';
@@ -898,7 +917,9 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
             </div>
           ) : (
             <div className="text-sm leading-relaxed text-foreground">
-              {message.role === 'assistant' ? (
+              {message.portable_history ? (
+                <HistoricalMessageContent content={message.content} date={historicalDate} />
+              ) : message.role === 'assistant' ? (
                 <>
                   <MarkdownRenderer
                     content={message.content}
@@ -998,10 +1019,10 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   )}
                 </>
               )}
-              {message.role === 'user' && !questionnaireResponseSummary && !architectActionMessage && (
+              {message.role === 'user' && !message.portable_history && !questionnaireResponseSummary && !architectActionMessage && (
                 <SkillTurnFeedbackRow feedback={skillTurnFeedback} />
               )}
-              {message.role === 'user' && messageImages.length > 0 && (
+              {(message.role === 'user' || message.portable_history) && messageImages.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {messageImages.map((image) => (
                     <button
@@ -1017,6 +1038,8 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   ))}
                 </div>
               )}
+              {message.portable_history && <button type="button" className="mt-2 text-xs text-muted-foreground underline" onClick={() => setArchiveOpen(true)}>{t('chat.archive.resources')}</button>}
+              {archiveOpen && <ArchiveReaderDialog key={`${message.conversation_id}:${message.id}`} conversationId={message.conversation_id} messageId={message.id} onClose={() => setArchiveOpen(false)} />}
               {hasAssistantActivity && (
                 <span
                   data-chat-assistant-activity="true"
@@ -1042,28 +1065,24 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   )}
                 />
               </button>
-              <button
-                onClick={() => onEditStart(message)}
-                className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
-                title={t('common.edit')}
-              >
-                <Icon
-                  name="edit"
-                  size={12}
-                  className="text-muted-foreground hover:text-foreground transition-colors"
-                />
-              </button>
-              <button
-                onClick={() => void onRegenerate(message.id, message.content)}
-                className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
-                title={t('common.regenerate') || 'Regenerate'}
-              >
-                <Icon
-                  name="refresh-cw"
-                  size={12}
-                  className="text-muted-foreground hover:text-foreground transition-colors"
-                />
-              </button>
+              {!message.portable_history && (
+                <>
+                  <button
+                    onClick={() => onEditStart(message)}
+                    className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
+                    title={t('common.edit')}
+                  >
+                    <Icon name="edit" size={12} className="text-muted-foreground hover:text-foreground transition-colors" />
+                  </button>
+                  <button
+                    onClick={() => void onRegenerate(message.id, message.content)}
+                    className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
+                    title={t('common.regenerate') || 'Regenerate'}
+                  >
+                    <Icon name="refresh-cw" size={12} className="text-muted-foreground hover:text-foreground transition-colors" />
+                  </button>
+                </>
+              )}
             </div>
           )}
 
@@ -1087,7 +1106,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
           )}
         </div>
       </div>
-      {message.role === 'user' && standaloneLaunchProgress && (
+      {message.role === 'user' && !message.portable_history && standaloneLaunchProgress && (
         <div
           data-testid="standalone-task-launch-progress-container"
           className="mx-auto w-full max-w-sm"
@@ -1387,7 +1406,19 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const standaloneTaskBuildResetRef = useRef<string | null>(null);
 
   const [executionGraphTask, setExecutionGraphTask] = useState<CatalogedImplementTask | null>(null);
-  const [previewImage, setPreviewImage] = useState<MessageImageAttachment | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ image: MessageImageAttachment; release(): void } | null>(null);
+  const previewOwners = useRef(new Set<() => void>());
+  const [archiveReaderOpen, setArchiveReaderOpen] = useState(false);
+  const [transferPorts, setTransferPorts] = useState<ConsumerReaderPorts | null>(null);
+  const connectReady = usePilotStore(state => state.status === 'connected');
+  useLayoutEffect(() => {
+    for (const release of previewOwners.current) {
+      if (release !== previewImage?.release) { release(); previewOwners.current.delete(release); }
+    }
+    return () => { previewImage?.release(); };
+  }, [previewImage]);
+  useEffect(() => () => { for (const release of previewOwners.current) release(); previewOwners.current.clear(); }, []);
+  useEffect(() => onArchiveReadersRetiring(() => setPreviewImage(null)), []);
   const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null);
   const [draftBeforeHistory, setDraftBeforeHistory] = useState<ComposerDraftSnapshot>(
     EMPTY_COMPOSER_DRAFT_SNAPSHOT
@@ -2203,6 +2234,46 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   );
   const isConversationArchivePending =
     mode === 'Chat' && Boolean(selectedConversationId) && !isConversationArchiveHydrated;
+  // The native admission barrier: restored, in transfer, or transferred away.
+  const selectedConversationUpdatedAt = useChatStore((state) =>
+    state.conversations.find((conversation) => conversation.id === state.selectedConversationId)?.updated_at);
+  const copyRestoredConversation = useChatStore((state) => state.copyRestoredConversation);
+  const [admission, setAdmission] = useState<{ id: string; mode: ChatAdmissionMode | null } | null>(null);
+  const [isCopyingRestored, setIsCopyingRestored] = useState(false);
+  useEffect(() => {
+    if (mode !== 'Chat' || !selectedConversationId || !isTauriAvailable()) return;
+    let active = true;
+    void chatAdmissionMode(selectedConversationId).then(
+      (value) => { if (active) setAdmission({ id: selectedConversationId, mode: value }); },
+      () => { if (active) setAdmission({ id: selectedConversationId, mode: null }); },
+    );
+    return () => { active = false; };
+  }, [mode, selectedConversationId, selectedConversationUpdatedAt]);
+  const selectedAdmissionMode =
+    mode === 'Chat' && admission?.id === selectedConversationId ? admission.mode : null;
+  const isSelectedConversationHeld =
+    selectedAdmissionMode === 'restore_hold' ||
+    selectedAdmissionMode === 'frozen' ||
+    selectedAdmissionMode === 'ceded';
+  const handleCopyRestoredConversation = useCallback(async () => {
+    if (!selectedConversationId || isCopyingRestored) return;
+    setIsCopyingRestored(true);
+    try {
+      await copyRestoredConversation(selectedConversationId);
+      notify.success(t('chat.restoredCopy.successTitle', 'Copy created'), {
+        description: t(
+          'chat.restoredCopy.successDescription',
+          'The new conversation continues from this history. The original stays read-only.',
+        ),
+      });
+    } catch (error) {
+      notify.error(t('chat.restoredCopy.errorTitle', 'Copy failed'), {
+        description: toServiceError(error).message,
+      });
+    } finally {
+      setIsCopyingRestored(false);
+    }
+  }, [copyRestoredConversation, isCopyingRestored, selectedConversationId, t]);
   const isComposerDisabled =
     isConversationPending ||
     isModeProjectWorkspaceMissing ||
@@ -2212,6 +2283,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isSelectedTaskDependencyBlocked ||
     isConversationArchivePending ||
     isSelectedConversationArchived ||
+    isSelectedConversationHeld ||
     isPersistingAssistantResponse ||
     hasUnsavedAssistantResponse ||
     Boolean(activeQuestionnaire) ||
@@ -2973,7 +3045,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   ) => {
     event.preventDefault();
     event.stopPropagation();
-    setPreviewImage(image);
+    const release = retainArchiveImages([image]);
+    previewOwners.current.add(release);
+    setPreviewImage({ image, release });
   });
 
   const applySavedComposerDraft = useCallback((session: SavedComposerDraft) => {
@@ -3558,6 +3632,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   const handleEditStart = useMessageAction((message: ChatMessage) => {
     if (
+      message.portable_history ||
       composerEditSession ||
       goalComposerEditSession ||
       isConversationMutationPending ||
@@ -3675,6 +3750,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [deleteUnsavedAssistantResponse]);
 
   const handleRegenerate = useMessageAction(async (messageId: string, content: string) => {
+    if (useChatStore.getState().messages.find(message => message.id === messageId)?.portable_history) return;
     await requestReplay({
       kind: 'regenerate',
       messageId,
@@ -3913,6 +3989,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           </div>
 
           <div className="flex items-center gap-2">
+            {connectReady && selectedConversationId && currentConversation?.scope_mode === 'Chat' && !currentConversation.project_id && !currentConversation.group_id && !currentConversation.task_id && <button type="button" className="rounded p-1.5 text-muted-foreground hover:bg-accent" title={t('chat.transfer.title')} aria-label={t('chat.transfer.title')} onClick={() => { try { setTransferPorts(macroConnectReaderPorts(macroPilotNativeClient)); } catch { notify.error(t('chat.transfer.errors.unavailable')); } }}><ArrowRightLeft aria-hidden="true" size={14} /></button>}
+            {selectedConversationId && currentConversation?.scope_mode === 'Chat' && !currentConversation.project_id && !currentConversation.group_id && !currentConversation.task_id && (
+              <button type="button" className="rounded p-1.5 text-muted-foreground hover:bg-accent" title={t('chat.archive.title')} aria-label={t('chat.archive.title')} onClick={() => setArchiveReaderOpen(true)}><Icon name="archive" size={14} /></button>
+            )}
             {mode === 'Implement' && <TaskArtifactsButton />}
             {currentConversation?.project_id && (
               <GoalAuditArtifactsButton key={`${currentConversation.project_id}:${currentConversation.id}:${activeConversationGoal?.goalId ?? ''}`}
@@ -4080,7 +4160,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 const virtualMessage = virtualItem as RenderedMessageItem;
                 const message = virtualMessage.item.message;
                 const isEditing = composerEditSession?.messageId === message.id;
-                const messageImages = message.role === 'user' ? getMessageImages(message.id) : [];
+                const messageImages = message.role === 'user' || message.portable_history ? getMessageImages(message.id) : [];
                 const assistantActivity: AssistantMessageActivity =
                   message.id === streamingAssistantActivityMessageId ? 'streaming' : null;
                 return (
@@ -4158,7 +4238,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           composerError ||
           toolApprovalRecoveryError ||
           showSkillNativeToolWarning ||
-          isSelectedConversationArchived) && (
+          isSelectedConversationArchived ||
+          isSelectedConversationHeld) && (
           <ChatFloatingNoticeStack>
             {composerError && (
               <ActionableErrorCallout
@@ -4218,6 +4299,46 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 {t(
                   'chat.archivedConversationReadOnly',
                   'This conversation is archived. Restore it before sending another message.'
+                )}
+              </ChatFloatingNotice>
+            )}
+
+            {selectedAdmissionMode === 'restore_hold' && (
+              <ChatFloatingNotice icon="archive" tone="neutral" testId="restored-conversation-notice">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span>
+                    {t(
+                      'chat.restoredCopy.notice',
+                      'This conversation comes from a restored backup and stays read-only. Continue in a copy with new identifiers.'
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyRestoredConversation()}
+                    disabled={isCopyingRestored}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs text-foreground transition-colors hover:bg-muted disabled:opacity-60"
+                  >
+                    {isCopyingRestored && <SpinnerIcon size={12} />}
+                    {t('chat.restoredCopy.action', 'Copy to a new conversation')}
+                  </button>
+                </div>
+              </ChatFloatingNotice>
+            )}
+
+            {selectedAdmissionMode === 'frozen' && (
+              <ChatFloatingNotice icon="lock" tone="neutral">
+                {t(
+                  'chat.admission.frozen',
+                  'This conversation is being transferred to another computer and is read-only until the transfer ends.'
+                )}
+              </ChatFloatingNotice>
+            )}
+
+            {selectedAdmissionMode === 'ceded' && (
+              <ChatFloatingNotice icon="lock" tone="neutral">
+                {t(
+                  'chat.admission.ceded',
+                  'This conversation was transferred to another computer. It continues there; this copy is read-only.'
                 )}
               </ChatFloatingNotice>
             )}
@@ -4544,6 +4665,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                                 'chat.archivedConversationPlaceholder',
                                 'Restore this conversation to continue.'
                               )
+                          : isSelectedConversationHeld
+                            ? t('chat.admission.readOnlyPlaceholder', 'This conversation is read-only.')
                           : isSelectedTaskDependencyBlocked
                             ? t(
                                 'implement.taskBlockedComposerPlaceholder',
@@ -4697,11 +4820,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         <Suspense fallback={null}>
           <ImagePreviewModal
             isOpen
-            image={previewImage}
+            image={previewImage.image}
             onClose={() => setPreviewImage(null)}
           />
         </Suspense>
       )}
+      {transferPorts && selectedConversationId && currentConversation && <TransferConversationDialog key={selectedConversationId} ports={transferPorts} source={{ id: selectedConversationId, title: currentConversation.title, providerId: currentConversation.provider_id ?? null, modelId: currentConversation.model_id ?? null }} send={(target, selection) => macroPilotRuntime.sendConversation(selectedConversationId, target, selection)} onClose={() => setTransferPorts(null)} onTransferred={() => { setTransferPorts(null); notify.success(t('chat.transfer.done')); }} />}
+      {archiveReaderOpen && selectedConversationId && <ArchiveReaderDialog key={selectedConversationId} conversationId={selectedConversationId} onClose={() => setArchiveReaderOpen(false)} />}
 
       {mode === 'Architect' &&
         architectPlanNamingRecovery?.stage === 'manual' && (

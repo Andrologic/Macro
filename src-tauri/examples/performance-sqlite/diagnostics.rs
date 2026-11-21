@@ -264,6 +264,7 @@ pub(super) async fn measure(pool: &SqlitePool, id: &str, size: usize) -> Result<
             context_refs_json: None,
             completion_reason: None,
             generation_attempts_json: None,
+            portable_history: None,
         };
         keep(&mut series[8], i, start);
         if count as usize != size + i + 1 {

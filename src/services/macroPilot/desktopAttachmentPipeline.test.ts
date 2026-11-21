@@ -25,7 +25,7 @@ for (const mode of ['Chat', 'Implement'] as const) for (const resume of [false, 
     const context = 'Première ligne accentuée\nDernière ligne complète.\n';
     const paths = [{ id: 'text-demo', kind: 'file' as const, title: 'exemple.txt', path: 'attachment://text-demo' }];
     const prepared = (): PilotPreparedSend => ({
-      receipt: receipt!, message: { id: 'native-user', conversation_id: ref.conversation_id, turn_id: 'native-turn', role: 'user',
+      receipt: receipt!, message: { portable_history: null, id: 'native-user', conversation_id: ref.conversation_id, turn_id: 'native-turn', role: 'user',
         content: 'Lis les pièces jointes', created_at: '2026-10-12T00:00:00Z', token_count: null, tool_traces_json: null,
         hidden_context: null, provider_input_items_json: null, provider_turn_state_json: null, context_refs_json: JSON.stringify(paths),
         completion_reason: null, generation_attempts_json: null },

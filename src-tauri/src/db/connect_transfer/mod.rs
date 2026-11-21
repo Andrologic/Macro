@@ -2,21 +2,36 @@
 //! terminal constructor exists here. The storage inputs are not authority.
 #![allow(dead_code)]
 mod journal;
+pub(crate) use journal::{
+    reserve_verified_source, reserve_verified_target, unactivated_target, unactivated_targets,
+    unresolved_source, unresolved_sources, unresolved_target, unresolved_targets, TargetSelection,
+};
+pub(in crate::db) mod deletion;
 mod preparation;
 mod publication;
+mod reader;
+mod reader_resources;
+pub(crate) mod reader_runtime;
+pub(crate) mod reader_types;
 mod schema;
 mod staging;
 mod terminal;
+#[cfg(test)]
+pub(in crate::db) use terminal::commit_source_fixture;
 
 use super::{preparation_lease::Lease, DbError, DbResult};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{SqliteConnection, SqlitePool};
 
-pub(super) use journal::Reservation;
+pub(crate) use journal::Reservation;
 pub(super) use journal::{reserve_source, LocalReservation};
+pub(in crate::db) use schema::reference;
 pub(super) use schema::validate_schema;
-pub(crate) use schema::{remove_publication_reference_in, remove_reference_schema_in};
+pub(crate) use schema::{
+    remove_publication_reference_in, remove_reader_reference_in, remove_reference_schema_in,
+    remove_target_abort_reference_in, remove_target_activation_reference_in,
+};
 const CONTROL: usize = 98_304;
 fn invalid(code: &str) -> DbError {
     DbError::Validation(code.into())
@@ -57,7 +72,7 @@ fn fingerprint<T: Serialize>(value: &T) -> DbResult<(Vec<u8>, i64)> {
 fn charge(payload: i64, indexes: i64, fixed: i64) -> DbResult<i64> {
     add(add(payload, indexes)?, fixed)
 }
-async fn lease(pool: &SqlitePool) -> DbResult<Lease> {
+pub(in crate::db) async fn lease(pool: &SqlitePool) -> DbResult<Lease> {
     let mut lease = Lease::new(pool.acquire().await?);
     sqlx::query("PRAGMA recursive_triggers=ON")
         .execute(&mut *lease)
@@ -67,13 +82,23 @@ async fn lease(pool: &SqlitePool) -> DbResult<Lease> {
         .await?;
     Ok(lease)
 }
+pub(in crate::db) use lease as deletion_lease;
 async fn admit(db: &mut SqliteConnection, extra: i64) -> DbResult<()> {
     let domain: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM e_inactive_domain WHERE singleton=1")
             .fetch_one(&mut *db)
             .await?;
-    if domain != 1 {
-        return Err(invalid("connect_transfer_budget_unconfigured"));
+    if domain == 0 {
+        // The reservation precedes capture/import. Provision under this same
+        // FULL transaction through the existing DB-wide budget owner.
+        super::inactive_budget::admit_e(
+            db,
+            0,
+            super::inactive_budget::NATIVE_BUDGET,
+            super::inactive_budget::NATIVE_MAX_RECEIPTS,
+        )
+        .await
+        .map_err(|code| invalid(&code))?;
     }
     super::inactive_budget::admit(db, extra)
         .await

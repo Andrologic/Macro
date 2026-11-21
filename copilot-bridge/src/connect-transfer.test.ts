@@ -11,7 +11,7 @@ import { TRANSFER_RESOURCES, TRANSFER_HELLO } from './connect-transfer-identitie
 import { IDENTITIES } from '../../contracts/macro-pilot/v2/transfer-transit/identities.generated.mjs';
 import { TransferParent, repository } from './connect-transfer.testSupport';
 import { Frame, Reject, headerBytes } from './connect-codec-framing';
-import { validateRequest, validateResponse, validateStart, validateHello, validateGrant, grantBytes, encodeControl, PROJECTION_KINDS } from './connect-transfer-protocol';
+import { validateRequest, validateResponse, validateTarget, validateStart, validateHello, validateGrant, grantBytes, encodeControl, PROJECTION_KINDS } from './connect-transfer-protocol';
 import { measureValue, withEncodedValue, CONTROL_RESERVE, decimal } from './connect-transfer-values';
 const local = process.platform === 'win32' ? test.skip : test;
 const digest = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
@@ -22,6 +22,13 @@ const header = { ordinal: maximum, entry: { kind: 'association', from: maximum, 
 const target = { kind: 'target', provider_type: 'chatgpt', fields: Object.fromEntries(['conversationId', 'providerId', 'modelId', 'baseUrl', 'modePrompt', 'reasoningEffort', 'currentCheckpoint', 'contextWarning'].map(key => [key, field])),
   footprint: { modelContextWindowTokens: maximum, inputLimitTokens: maximum, outputLimitTokens: maximum, contextLimitSource: 'provider_overflow_error', contextLimitConfidence: 'configured', isContextLimitAuthoritative: false },
   risk: 'balanced', max_turns: d, budget_policy: { auto: false, prune: false, reservedTokens: maximum, preserveRecentTokens: maximum, hardStopRatio: Number.MAX_VALUE } };
+
+test('target accepts a disabled turn limit without accepting malformed counters', () => {
+  expect(() => validateTarget({ ...target, max_turns: '0' })).not.toThrow();
+  for (const max_turns of ['-1', '1.5', '00', 0, null]) {
+    expect(() => validateTarget({ ...target, max_turns })).toThrow();
+  }
+});
 
 test('embedded identity commits real E/preparation sources and independent canonical descriptor expectation', () => {
   for (const resource of TRANSFER_RESOURCES) expect(digest(readFileSync(resolve(repository, resource.path)))).toBe(resource.sha256);
@@ -204,7 +211,7 @@ async function targetFields(parent: TransferParent, provider: 'chatgpt' | 'opena
     if (value === null) { fields[name] = null; continue; }
     const bytes = new TextEncoder().encode(value); data.set(ordinal, bytes); fields[name] = { ordinal: ordinal++, bytes: bytes.length, sha256: await portableDigest(bytes) };
   }
-  parent.data.set(h, data); parent.roots.set(h, { ...target, fields, provider_type: provider, max_turns: '3',
+  parent.data.set(h, data); parent.roots.set(h, { ...target, fields, provider_type: provider, max_turns: '0',
     footprint: { modelContextWindowTokens: 100000, inputLimitTokens: null, outputLimitTokens: 1000,
       contextLimitSource: 'provider_metadata', contextLimitConfidence: 'verified', isContextLimitAuthoritative: true },
     budget_policy: { auto: false, prune: true, reservedTokens: 1000, preserveRecentTokens: 1000, hardStopRatio: 1 } });

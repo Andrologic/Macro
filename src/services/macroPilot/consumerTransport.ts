@@ -8,11 +8,11 @@ import type { ReadAuthoritySupport } from './readAuthority';
 
 // D1 deliberately implements no commands, files, reflections or interactions.
 export const CONSUMER_READ_OPERATIONS = [
-  'projects.list', 'conversations.list', 'conversation.read',
+  'instance.models', 'projects.list', 'conversations.list', 'conversation.read',
   'conversations.catalog', 'conversation.window',
 ] as const;
 export const CONSUMER_CAPABILITIES = [
-  'network-reliability-1', 'conversations-1', 'conversation-history-1', 'read-authority-1',
+  'instance-models-1', 'network-reliability-1', 'conversations-1', 'conversation-history-1', 'read-authority-1',
 ] as const;
 export type ConsumerOperation = typeof CONSUMER_READ_OPERATIONS[number];
 export type ConsumerCapability = typeof CONSUMER_CAPABILITIES[number];

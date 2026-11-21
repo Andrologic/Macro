@@ -67,6 +67,7 @@ export type { PilotReflectionMessage } from '../PilotReflectionMessage';
 export type { PilotReflectionMessageRead } from '../PilotReflectionMessageRead';
 export type { PilotReflectionToolAnchor } from '../PilotReflectionToolAnchor';
 export type { PilotReflectionToolStatus } from '../PilotReflectionToolStatus';
+export type { PortableMessageOrigin } from '../PortableMessageOrigin';
 export type { ProjectContextStateRecord } from '../ProjectContextStateRecord';
 export type { ProjectRegistryDbRepairReport } from '../ProjectRegistryDbRepairReport';
 export type { ProviderAuthMetadata } from '../ProviderAuthMetadata';
@@ -78,6 +79,7 @@ export type { RecordGoalAuditTransitionInput } from '../RecordGoalAuditTransitio
 export type { RecordToolInvocationInput } from '../RecordToolInvocationInput';
 export type { RecordToolInvocationResult } from '../RecordToolInvocationResult';
 export type { ReserveGoalAuditChildSelection } from '../ReserveGoalAuditChildSelection';
+export type { RestoredCopy } from '../RestoredCopy';
 export type { ResumeConversationGoalAuditInput } from '../ResumeConversationGoalAuditInput';
 export type { SessionContextStateRecord } from '../SessionContextStateRecord';
 export type { SpeechProviderConfig } from '../SpeechProviderConfig';

@@ -55,7 +55,7 @@ pub(super) async fn run() -> Result<Value> {
             id:key.into(),conversation_id:id.clone(),turn_id:None,role:"user".into(),content:unicode.clone(),
             created_at:future.into(),token_count:None,tool_traces_json:None,hidden_context:None,
             provider_input_items_json:None,provider_turn_state_json:None,context_refs_json:None,
-            completion_reason:None,generation_attempts_json:None }).collect();
+            completion_reason:None,generation_attempts_json:None,portable_history:None }).collect();
         assert_eq!(serde_json::to_value(rows)?,serde_json::to_value(golden)?);
         let created = repository::create_message(&pool,input(id,"full-fields","synthetic fullfields")).await?;
         assert_eq!(serde_json::to_value(&created)?,serde_json::to_value(repository::get_message(&pool,&created.id).await?.unwrap())?);

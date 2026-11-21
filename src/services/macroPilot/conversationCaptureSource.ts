@@ -82,7 +82,7 @@ export function desktopConversationManagementSource(ports: DesktopStorePorts): C
         else if (item.pending_tool) persistedAttention.set(item.conversation_id, 'tool_approval');
         else if (item.question_message_id) {
           const message = await getMessage(item.question_message_id);
-          if (message && assistantTurnRequiresUserReply(message.content, message.hidden_context ?? undefined)) persistedAttention.set(item.conversation_id, 'user_request');
+          if (message && !message.portable_history && assistantTurnRequiresUserReply(message.content, message.hidden_context ?? undefined)) persistedAttention.set(item.conversation_id, 'user_request');
         }
       }
       return metadata;

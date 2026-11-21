@@ -29,6 +29,7 @@ async fn current(
     digest: &[u8],
     mutation: bool,
 ) -> DbResult<Prefix> {
+    super::deletion::require_transfer(db, &session.transfer_id).await?;
     let row=sqlx::query("SELECT p.fingerprint,p.next_sequence,p.next_offset,p.eof,t.binding_digest,t.target_generation,t.restore_hold,t.phase,t.terminal_outcome FROM connect_raw_prefix p JOIN connect_transfers t ON t.transfer_id=p.transfer_id WHERE p.transfer_id=?")
         .bind(&session.transfer_id).fetch_optional(db).await?.ok_or_else(||invalid("connect_transfer_prefix_missing"))?;
     if row.get::<Vec<u8>, _>("fingerprint") != digest

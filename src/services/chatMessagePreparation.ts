@@ -50,6 +50,7 @@ export interface ChatMessagePreparationPorts {
   orderedMessages(conversationId: string): ChatMessage[];
   composerContextRefs(): ContextReference[];
   messageImages(): Record<string, MessageImageAttachment[]>;
+  archiveContext?(messageId: string): readonly string[];
   loadModePrompt(mode: AppMode): Promise<string | null | undefined>;
   internalAgentProfilePromptKey: typeof getInternalAgentProfilePromptPreferenceKey;
   loadPrompt(key: NonNullable<ReturnType<typeof getInternalAgentProfilePromptPreferenceKey>>): Promise<string | undefined>;
@@ -286,7 +287,7 @@ export const prepareChatMessages = async (
 
       const skillActivationAvailable = allowedToolIds.includes("skill_activate");
       const contextRefs: (ContextReference | PersistedContextReference)[] = (message.context_refs ?? []).filter(
-        (ref) => ref.kind !== "skill" || explicitSkillIdSet.has(ref.id) || skillActivationAvailable,
+        (ref) => !("archive" in ref && ref.archive) && (ref.kind !== "skill" || explicitSkillIdSet.has(ref.id) || skillActivationAvailable),
       );
       if (contextRefs.length > 0) {
         const refsBlock = contextRefs
@@ -386,13 +387,16 @@ export const prepareChatMessages = async (
       messageContent = `${messageContent}\n\n${agsdlContext}`;
       persistableMessageContent = `${persistableMessageContent}\n\n${agsdlContext}`;
     }
-    const hasDynamicRepositoryInstructions = Boolean(agsdlContext) ||
-      index === lastUserIndex && Boolean(repositoryInstructionContext.contextBlock);
+    const archiveBlocks = message.role === 'user' ? ports.archiveContext?.(message.id) ?? [] : [];
+    if (archiveBlocks.length) messageContent = `${archiveBlocks.join('\n\n')}\n\nUSER REQUEST: ${messageContent}`;
+    const hasDynamicRepositoryInstructions = Boolean(agsdlContext) || archiveBlocks.length > 0 ||
+      (index === lastUserIndex && Boolean(repositoryInstructionContext.contextBlock));
 
     if (
       message.role === "user" &&
       ((messageWithImagesId && message.id === messageWithImagesId) ||
-        Boolean(message.portable_history))
+        Boolean(message.portable_history) ||
+        !message.provider_input_items?.length)
     ) {
       const images = messageImagesByMessageId[message.id] || [];
       if (images.length > 0) {

@@ -152,8 +152,23 @@ pub struct Conversation {
     pub is_pinned: bool,
 }
 
+/// Presentation provenance from native archive relations, never an input capability.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PortableMessageOrigin {
+    pub version: u8,
+    pub import_key: String,
+    pub manifest: String,
+    pub ordinal: String,
+    pub source_ordinal: Option<String>,
+    pub display_date: Option<String>,
+    pub inherited_from: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct Message {
+    #[serde(default)]
+    pub portable_history: Option<PortableMessageOrigin>,
     pub id: String,
     pub conversation_id: String,
     pub turn_id: Option<String>,

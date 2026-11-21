@@ -33,8 +33,13 @@ pub mod execution {
     };
 }
 
+pub mod archive {
+    pub use crate::db::connect_transfer::reader_types::*;
+}
+
 pub mod db {
     pub use crate::commands::goal_auditor_read::GoalAuditorReadInput;
+    pub use crate::db::chat_admission::restored_copy::RestoredCopy;
     pub use crate::db::conversation_goals::{
         ActivateConversationGoalInput, ApplyConversationGoalVerdictInput,
         ClaimConversationGoalAuditInput, ConversationGoal, ConversationGoalAudit,

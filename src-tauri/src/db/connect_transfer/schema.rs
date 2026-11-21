@@ -5,30 +5,73 @@ const MIGRATION: &str = include_str!("../migrations/018_connect_transfer.sql");
 const PUBLICATION: &str = include_str!("../migrations/019_connect_publication.sql");
 const OBJECTS: &str = "name GLOB 'connect_*' OR tbl_name GLOB 'connect_*' OR name='conversation_portable_archives' OR tbl_name='conversation_portable_archives'";
 static EXPECTED: OnceCell<Vec<(String, Option<String>)>> = OnceCell::const_new();
+// DDL-only reference. These namespaces never supply ownership or content data.
+/// `reader` adds the archive lifecycle (020), target abort release (021) and
+/// recorded target activations (022).
+pub(in crate::db) async fn reference(reader: bool) -> DbResult<SqliteConnection> {
+    reference_through(if reader { 22 } else { 19 }).await
+}
+async fn reference_through(version: u32) -> DbResult<SqliteConnection> {
+    let mut db = SqliteConnection::connect("sqlite::memory:").await?;
+    for table in [
+        "conversations",
+        "messages",
+        "conversation_management",
+        "conversation_response_versions",
+        "conversation_citations",
+        "conversation_toolbox_state",
+        "conversation_compactions",
+        "conversation_compaction_events",
+        "conversation_action_receipts",
+        "tool_invocations",
+        "pilot_message_attachments",
+        "pilot_file_sends",
+        "app_settings",
+        "agent_runs",
+        "agent_run_transitions",
+        "conversation_goals",
+        "conversation_goal_audits",
+        "conversation_goal_audit_runs",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE TABLE {table}(id TEXT,conversation_id TEXT,scope_mode TEXT,project_id TEXT,group_id TEXT,task_id TEXT)")))
+            .execute(&mut db).await?;
+    }
+    sqlx::raw_sql(include_str!("../migrations/015_inactive_storage.sql"))
+        .execute(&mut db)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/016_source_capture.sql"))
+        .execute(&mut db)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/017_chat_admission.sql"))
+        .execute(&mut db)
+        .await?;
+    sqlx::raw_sql(MIGRATION).execute(&mut db).await?;
+    sqlx::raw_sql(PUBLICATION).execute(&mut db).await?;
+    if version >= 20 {
+        sqlx::raw_sql(include_str!(
+            "../migrations/020_connect_archive_lifecycle.sql"
+        ))
+        .execute(&mut db)
+        .await?;
+    }
+    if version >= 21 {
+        sqlx::raw_sql(include_str!("../migrations/021_connect_target_abort.sql"))
+            .execute(&mut db)
+            .await?;
+    }
+    if version >= 22 {
+        sqlx::raw_sql(include_str!(
+            "../migrations/022_connect_target_activation.sql"
+        ))
+        .execute(&mut db)
+        .await?;
+    }
+    Ok(db)
+}
 async fn expected() -> DbResult<&'static Vec<(String, Option<String>)>> {
     EXPECTED
         .get_or_try_init(|| async {
-            let mut db = SqliteConnection::connect("sqlite::memory:").await?;
-            for table in [
-                "conversations",
-                "chat_admission_owners",
-                "e_source_captures",
-                "e_source_fields",
-                "e_source_fragments",
-                "e_source_relations",
-                "e_inactive_imports",
-                "e_inactive_records",
-                "e_inactive_fragments",
-                "e_inactive_mapping",
-            ] {
-                sqlx::query(sqlx::AssertSqlSafe(format!(
-                    "CREATE TABLE {table}(id INTEGER PRIMARY KEY)"
-                )))
-                .execute(&mut db)
-                .await?;
-            }
-            sqlx::raw_sql(MIGRATION).execute(&mut db).await?;
-            sqlx::raw_sql(PUBLICATION).execute(&mut db).await?;
+            let mut db = reference(true).await?;
             let objects = sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "SELECT name,sql FROM sqlite_master WHERE {OBJECTS} ORDER BY name"
             )))
@@ -53,7 +96,7 @@ pub(in crate::db) async fn validate_schema(db: &mut SqliteConnection) -> DbResul
             .push_bind(ddl)
             .push(")");
     }
-    query.push(" AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=18 AND name='018_connect_transfer') AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=19 AND name='019_connect_publication')");
+    query.push(" AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=18 AND name='018_connect_transfer') AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=19 AND name='019_connect_publication') AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=43 AND name='043_connect_archive_lifecycle') AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=44 AND name='044_connect_target_abort') AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=45 AND name='045_connect_target_activation')");
     if query
         .build_query_scalar::<i64>()
         .fetch_one(&mut *db)
@@ -65,14 +108,20 @@ pub(in crate::db) async fn validate_schema(db: &mut SqliteConnection) -> DbResul
         ));
     }
     let inconsistent:i64=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connect_transfers t LEFT JOIN chat_admission_owners o ON o.conversation_id=t.source_conversation_id WHERE t.local_role='source' AND t.resolution IS NOT 'aborted' AND (o.conversation_id IS NULL OR o.incarnation<>t.ownership_incarnation OR o.mode NOT IN ('frozen','ceded','restore_hold')))")
-        .fetch_one(db).await?;
+        .fetch_one(&mut *db).await?;
     if inconsistent != 0 {
         return Err(invalid("connect_transfer_ownership_inconsistent"));
+    }
+    let incomplete: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connect_local_deletions WHERE phase<>'deleted') OR EXISTS(SELECT 1 FROM connect_deletion_payloads)")
+        .fetch_one(db).await?;
+    if incomplete != 0 {
+        return Err(invalid("connect_deletion_inconsistent"));
     }
     Ok(())
 }
 /// Fresh backup reference or synthetic legacy fixture only, never an archive.
 pub(crate) async fn remove_reference_schema_in(db: &mut SqliteConnection) -> DbResult<()> {
+    remove_reader_reference_in(db).await?;
     let names: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'connect_*'",
     )
@@ -92,5 +141,136 @@ pub(crate) async fn remove_reference_schema_in(db: &mut SqliteConnection) -> DbR
 pub(crate) async fn remove_publication_reference_in(db: &mut SqliteConnection) -> DbResult<()> {
     remove_reference_schema_in(db).await?;
     sqlx::raw_sql(MIGRATION).execute(db).await?;
+    Ok(())
+}
+
+/// For an empty F reference only: back to 021, without recorded target
+/// activations (022).
+pub(crate) async fn remove_target_activation_reference_in(
+    db: &mut SqliteConnection,
+) -> DbResult<()> {
+    require_empty_reference(db).await?;
+    sqlx::raw_sql("DROP TRIGGER IF EXISTS connect_recorded_activation_update; DROP TRIGGER IF EXISTS connect_recorded_activation_delete; DROP TABLE IF EXISTS connect_recorded_activations;")
+        .execute(&mut *db)
+        .await?;
+    Ok(())
+}
+/// For an empty F reference only: back to the 020 guards, without the target
+/// abort release (021).
+pub(crate) async fn remove_target_abort_reference_in(db: &mut SqliteConnection) -> DbResult<()> {
+    require_empty_reference(db).await?;
+    let present: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='view' AND name='connect_aborted_targets'",
+    )
+    .fetch_one(&mut *db)
+    .await?;
+    if present == 0 {
+        return Ok(());
+    }
+    restore_guards(db, 20).await?;
+    sqlx::raw_sql("DROP VIEW connect_aborted_targets;")
+        .execute(&mut *db)
+        .await?;
+    Ok(())
+}
+/// Replaces the connect guards with those of the checked-in migrations up to
+/// `version`, created in an isolated connection, never read from input.
+async fn restore_guards(db: &mut SqliteConnection, version: u32) -> DbResult<()> {
+    let mut legacy = reference_through(version).await?;
+    let guards: Vec<String> = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='trigger' AND (name GLOB 'connect_*' OR (name GLOB 'chat_admission_*' AND name GLOB '*_delete')) ORDER BY name")
+        .fetch_all(&mut legacy).await?;
+    legacy.close().await?;
+    let current: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='trigger' AND (name GLOB 'connect_*' OR (name GLOB 'chat_admission_*' AND name GLOB '*_delete')) ORDER BY name")
+        .fetch_all(&mut *db).await?;
+    for name in current {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP TRIGGER \"{}\"",
+            name.replace('"', "\"\"")
+        )))
+        .execute(&mut *db)
+        .await?;
+    }
+    for ddl in guards {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(ddl))
+            .execute(&mut *db)
+            .await?;
+    }
+    Ok(())
+}
+async fn require_empty_reference(db: &mut SqliteConnection) -> DbResult<()> {
+    for table in [
+        "connect_transfers",
+        "connect_exchanges",
+        "connect_raw_prefix",
+        "connect_raw_chunks",
+        "connect_preparations",
+        "connect_projection_messages",
+        "connect_projection_citations",
+        "connect_projection_assets",
+        "connect_projection_fields",
+        "connect_projection_fragments",
+        "conversation_portable_archives",
+        "connect_activation_receipts",
+        "connect_local_deletions",
+        "connect_projection_display",
+        "connect_publication_times",
+        "connect_recorded_activations",
+    ] {
+        let exists: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?")
+                .bind(table)
+                .fetch_one(&mut *db)
+                .await?;
+        if exists != 0 {
+            let populated: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT EXISTS(SELECT 1 FROM {table})"
+            )))
+            .fetch_one(&mut *db)
+            .await?;
+            if populated != 0 {
+                return Err(invalid("backup_reference_not_empty"));
+            }
+        }
+    }
+    Ok(())
+}
+/// For an empty F reference only. Ordinary conversations are not modified.
+/// Legacy fixtures may contain ordinary data but no F rows may be discarded.
+pub(crate) async fn remove_reader_reference_in(db: &mut SqliteConnection) -> DbResult<()> {
+    require_empty_reference(db).await?;
+    // Backup comparison removes 022, 021, 020, then 019, then 018 as separate
+    // phases.
+    // Re-entering from a pre-020 reference must not recreate 019 triggers on
+    // tables already removed by the next downgrade phase. Still check all
+    // retained tables above before treating this as an empty reference.
+    let reader_objects: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('connect_local_deletions','connect_projection_display','connect_publication_times')")
+        .fetch_one(&mut *db).await?;
+    if reader_objects == 0 {
+        return Ok(());
+    }
+    // Restore declared pre-020 guards only on this verified empty F reference.
+    // Application deletion never calls DDL or temporarily opens an owner.
+    let mut legacy = reference(false).await?;
+    let guards: Vec<String> = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='trigger' AND (name GLOB 'connect_*' OR (name GLOB 'chat_admission_*' AND name GLOB '*_delete')) ORDER BY name")
+        .fetch_all(&mut legacy).await?;
+    legacy.close().await?;
+    let current: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='trigger' AND (name GLOB 'connect_*' OR (name GLOB 'chat_admission_*' AND name GLOB '*_delete')) ORDER BY name")
+        .fetch_all(&mut *db).await?;
+    for name in current {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP TRIGGER \"{}\"",
+            name.replace('"', "\"\"")
+        )))
+        .execute(&mut *db)
+        .await?;
+    }
+    sqlx::raw_sql("DROP TABLE IF EXISTS connect_recorded_activations; DROP VIEW IF EXISTS connect_aborted_targets; DROP INDEX IF EXISTS connect_message_reader; DROP INDEX IF EXISTS connect_asset_reader; DROP INDEX IF EXISTS connect_citation_reader; DROP VIEW IF EXISTS connect_message_origins; DROP VIEW IF EXISTS connect_deleting_owners; DROP VIEW IF EXISTS connect_deleting_transfers; DROP VIEW IF EXISTS connect_deletion_payloads; DROP TABLE IF EXISTS connect_projection_display; DROP TABLE IF EXISTS connect_publication_times; DROP TABLE IF EXISTS connect_local_deletions;").execute(&mut *db).await?;
+    // These statements were just created from the checked-in migrations in an
+    // isolated connection, never read from the application database or input.
+    for ddl in guards {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(ddl))
+            .execute(&mut *db)
+            .await?;
+    }
     Ok(())
 }

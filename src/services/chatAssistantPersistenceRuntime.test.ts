@@ -52,6 +52,16 @@ test("retries a failed response through the persistence adapter and resumes its 
   expect(f.resumeQueue).toHaveBeenCalledWith("conversation-a");
 });
 
+test("imported history cannot reenter persistence recovery even with a stale failed flag", async () => {
+  const f = fixture();
+  f.read()!.portable_history = { version: 1, importKey: "historical-import", manifest: "a".repeat(64), ordinal: "0" };
+  await expect(retryAssistantPersistence("assistant-a", f.ports)).rejects.toThrow("not waiting");
+  expect(f.read()?.persistence_state).toBe("failed");
+  expect(f.update).not.toHaveBeenCalled();
+  expect(f.clearError).not.toHaveBeenCalled();
+  expect(f.resumeQueue).not.toHaveBeenCalled();
+});
+
 test("keeps recovery on failure and permits a later successful retry", async () => {
   const f = fixture();
   f.update.mockRejectedValueOnce(new Error("disk full"));

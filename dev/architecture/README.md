@@ -22,6 +22,9 @@ The existing TypeScript parser, transpiler and alias resolver determine these
 edges; type-only imports remain allowed. This is not a claim that every Chat
 dependency is transport-free: tool execution still reaches configuration
 transports through `configurationClient`. Package internals are not traversed.
+Shared wire contracts under the repository's `contracts/` directory are treated
+like packages: they are leaf modules that never import `src/`. Any other import
+outside `src/` remains a diagnostic.
 
 The native guard scans only the extracted command-error, DB-state, MCP-ID,
 workspace-execution, filesystem-operation and Git-operation modules listed in

@@ -2,7 +2,10 @@
 
 Versions 1, 3 and 4 retain their published SQL. Version 2 was a provider data
 migration removed from the source tree; its existing record remains valid and
-is not recreated. The file `002_agent_runs.sql` implements version 3.
+is not recreated. The file `002_agent_runs.sql` implements version 3. Older
+builds stamped this SQL as `2/002_agent_runs`. The runner saves that original
+stamp in the identity ledger and uses it for version 3 when no version 3 stamp
+already exists.
 
 Version 5, `005_runtime_schema`, freezes the former startup compatibility
 helpers in `reconcile_runtime_schema_v5`. SQLite cannot conditionally add a
@@ -136,3 +139,23 @@ provider settings. Normal startup retains its provider seeding and reconciles
 unfinished local operations as unknown. These tables expose no transfer command
 and do not activate an inactive import. Provider and browser admission still
 require their runtime integration.
+
+Versions 43 through 45 add the Connect archive lifecycle, target abort and
+target activation. The runner recognizes their original Connect identities
+`20/020_connect_archive_lifecycle`, `21/021_connect_target_abort` and
+`22/022_connect_target_activation` alongside the AgSDL identities that use the
+same numbers. It preserves the original Connect stamps in the identity ledger.
+
+Version 44 lets a transfer target release what it staged once the relay has
+recorded the transfer as aborted. The `connect_aborted_targets` view names such
+targets: resolved and terminal `aborted`, outside a restore hold, with nothing
+published. The guards of version 43 are recreated with this one exception, so
+the target can delete its projection and import content and compact the
+import's charge. The transfer, preparation and import rows remain as
+tombstones. Backup comparison removes version 44 before version 43.
+
+Version 45 adds `connect_recorded_activations`. A published transfer target
+writes its row once the relay has acknowledged its activation receipt. A
+published target without that row resumes `activation.record` at startup. The
+rows are immutable and reference the local activation receipt. Backup
+comparison removes version 45 before version 44.

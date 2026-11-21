@@ -12,9 +12,15 @@ pub(super) struct PublishWrite {
     pub(super) configuration_digest: Vec<u8>,
 }
 #[derive(Debug, PartialEq, Eq)]
+pub(super) enum LocalDisposition {
+    Published,
+    Removed,
+}
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct LocalPublication {
     pub(super) conversation_id: String,
     pub(super) receipt: Vec<u8>,
+    pub(super) disposition: LocalDisposition,
 }
 pub(super) async fn publish(pool: &SqlitePool, input: &PublishWrite) -> DbResult<LocalPublication> {
     let mut lease = lease(pool).await?;
@@ -37,7 +43,8 @@ pub(super) async fn publish(pool: &SqlitePool, input: &PublishWrite) -> DbResult
     }
     if let Some(receipt)=sqlx::query("SELECT conversation_id,local_receipt,preparation_fingerprint,terminal_digest FROM connect_activation_receipts WHERE transfer_id=?").bind(&input.transfer_id).fetch_optional(&mut *tx).await? {
         if receipt.get::<Vec<u8>,_>("preparation_fingerprint")!=input.preparation_fingerprint || receipt.get::<Vec<u8>,_>("terminal_digest")!=row.get::<Vec<u8>,_>("terminal_digest") {return Err(invalid("connect_publication_conflict"));}
-        let result=LocalPublication{conversation_id:receipt.get("conversation_id"),receipt:receipt.get("local_receipt")};
+        let removed: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connect_local_deletions WHERE transfer_id=?)").bind(&input.transfer_id).fetch_one(&mut *tx).await?;
+        let result=LocalPublication{conversation_id:receipt.get("conversation_id"),receipt:receipt.get("local_receipt"),disposition:if removed != 0 { LocalDisposition::Removed } else { LocalDisposition::Published }};
         tx.commit().await?;lease.committed=true;return Ok(result);
     }
     if row.get::<String, _>("phase") != "pinned"
@@ -69,7 +76,13 @@ pub(super) async fn publish(pool: &SqlitePool, input: &PublishWrite) -> DbResult
         )?,
         4096,
     )?;
-    super::preparation::grow(&mut tx, &input.transfer_id, extra).await?;
+    super::preparation::grow(&mut tx, &input.transfer_id, add(extra, 512)?).await?;
+    let published_at = chrono::Utc::now().to_rfc3339();
+    sqlx::query("INSERT INTO connect_publication_times VALUES(?,?)")
+        .bind(&input.transfer_id)
+        .bind(&published_at)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("INSERT INTO conversations(id,title,scope_mode,project_id,group_id,task_id,provider_id,model_id,reasoning_effort,created_at,updated_at,message_count,is_pinned) VALUES(?,?,'Chat',NULL,NULL,NULL,?,?,?,?,?,?,0)")
         .bind(&conversation).bind(row.get::<String,_>("title")).bind(row.get::<String,_>("provider_id")).bind(row.get::<String,_>("model_id")).bind(row.get::<Option<String>,_>("reasoning_effort")).bind(row.get::<String,_>("created_at")).bind(row.get::<String,_>("created_at")).bind(row.get::<i64,_>("message_count")).execute(&mut *tx).await?;
     let mut cursor = -1_i64;
@@ -167,7 +180,7 @@ pub(super) async fn publish(pool: &SqlitePool, input: &PublishWrite) -> DbResult
         .bind(receipt_charge)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE conversations SET last_message=(SELECT substr(content,1,100) FROM messages WHERE conversation_id=? ORDER BY created_at DESC,id DESC LIMIT 1),updated_at=COALESCE((SELECT created_at FROM messages WHERE conversation_id=? ORDER BY created_at DESC,id DESC LIMIT 1),updated_at) WHERE id=?").bind(&conversation).bind(&conversation).bind(&conversation).execute(&mut *tx).await?;
+    sqlx::query("UPDATE conversations SET last_message=(SELECT substr(m.content,1,100) FROM messages m JOIN connect_projection_messages pm ON pm.id=m.id WHERE pm.transfer_id=? ORDER BY pm.ordinal DESC LIMIT 1),updated_at=? WHERE id=?").bind(&input.transfer_id).bind(&published_at).bind(&conversation).execute(&mut *tx).await?;
     let owner=sqlx::query("UPDATE chat_admission_owners SET mode='open',browser_reconciled=0,runtime_generation=NULL WHERE conversation_id=?").bind(&conversation).execute(&mut *tx).await?;
     if owner.rows_affected() != 1 {
         return Err(invalid("connect_publication_owner_missing"));
@@ -189,6 +202,7 @@ pub(super) async fn publish(pool: &SqlitePool, input: &PublishWrite) -> DbResult
     Ok(LocalPublication {
         conversation_id: conversation,
         receipt,
+        disposition: LocalDisposition::Published,
     })
 }
 // Fixed table/column names come only from this module. Each native allocation

@@ -3,7 +3,7 @@ export { secretForms } from './secretForms';
 import { desktopConversationReflections } from './desktopConversationReflections';
 import { desktopAttachmentFiles } from './desktopAttachmentFiles';
 import { desktopMachineResources } from './desktopMachineResources';
-import { desktopConversationInteractions } from './desktopConversationInteractions';
+import { desktopTransferModels, desktopConversationInteractions } from './desktopConversationInteractions';
 import type { DesktopStorePorts } from './desktopStorePorts';
 import { desktopTaskCompletionSource } from './desktopTaskCompletionSource';
 import { desktopPilotTasks } from './desktopTaskCatalog';
@@ -65,6 +65,7 @@ export function createDesktopContentHost(options: DesktopContentOptions): Conten
     storage: { load: async () => (await dbGetAppSetting(managerKey))?.value_json ?? null,
       compareAndSwap: async (previous, next) => (await dbCompareAndSwapAppSetting({ key: managerKey, expectedValueJson: previous, valueJson: next })).applied } });
   return new ContentHost({ accountId, instanceId, signal, conversations, conversationManagement,
+    models: policy => desktopTransferModels(options.ports, policy),
     files: desktopAttachmentFiles({ instanceId, workspaceId, ports: options.ports, conversations: managementCaptures, signal, validateSendTarget: (ref, revision) => conversationManagement.validateSendTarget(ref, revision, policy) }),
     reflections: desktopConversationReflections({ instanceId,workspaceId,ports: options.ports,signal }),
     machines: desktopMachineResources(instanceId, workspaceId, options.ports),

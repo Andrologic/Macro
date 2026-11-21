@@ -243,6 +243,102 @@
     },
     {
       "families": [
+        "archive"
+      ],
+      "name": "ArchiveBacking",
+      "origin": "macro_lib::db::connect_transfer::reader_types::ArchiveBacking",
+      "path": "ArchiveBacking.ts"
+    },
+    {
+      "families": [
+        "archive"
+      ],
+      "name": "ArchiveItem",
+      "origin": "macro_lib::db::connect_transfer::reader_types::ArchiveItem",
+      "path": "ArchiveItem.ts"
+    },
+    {
+      "families": [
+        "archive"
+      ],
+      "name": "ArchiveMaterializeInput",
+      "origin": "macro_lib::db::connect_transfer::reader_types::ArchiveMaterializeInput",
+      "path": "ArchiveMaterializeInput.ts"
+    },
+    {
+      "families": [
+        "archive"
+      ],
+      "name": "ArchiveOpenInput",
+      "origin": "macro_lib::db::connect_transfer::reader_types::ArchiveOpenInput",
+      "path": "ArchiveOpenInput.ts"
+    },
+    {
+      "families": [
+        "archive"
+      ],
+      "name": "ArchivePage",
+      "origin": "macro_lib::db::connect_transfer::reader_types::ArchivePage",
+      "path": "ArchivePage.ts"
+    },
+    {
+      "families": [
+        "archive"
+      ],
+      "name": "ArchivePageInput",
+      "origin": "macro_lib::db::connect_transfer::reader_types::ArchivePageInput",
+      "path": "ArchivePageInput.ts"
+    },
+    {
+      "families": [
+        "archive"
+      ],
+      "name": "ArchiveRange",
+      "origin": "macro_lib::db::connect_transfer::reader_types::ArchiveRange",
+      "path": "ArchiveRange.ts"
+    },
+    {
+      "families": [
+        "archive"
+      ],
+      "name": "ArchiveReadHandle",
+      "origin": "macro_lib::db::connect_transfer::reader_types::ArchiveReadHandle",
+      "path": "ArchiveReadHandle.ts"
+    },
+    {
+      "families": [
+        "archive"
+      ],
+      "name": "ArchiveReleaseInput",
+      "origin": "macro_lib::db::connect_transfer::reader_types::ArchiveReleaseInput",
+      "path": "ArchiveReleaseInput.ts"
+    },
+    {
+      "families": [
+        "archive"
+      ],
+      "name": "ArchiveResource",
+      "origin": "macro_lib::db::connect_transfer::reader_types::ArchiveResource",
+      "path": "ArchiveResource.ts"
+    },
+    {
+      "families": [
+        "archive"
+      ],
+      "name": "ArchiveSelector",
+      "origin": "macro_lib::db::connect_transfer::reader_types::ArchiveSelector",
+      "path": "ArchiveSelector.ts"
+    },
+    {
+      "families": [
+        "archive"
+      ],
+      "name": "ArchiveUse",
+      "origin": "macro_lib::db::connect_transfer::reader_types::ArchiveUse",
+      "path": "ArchiveUse.ts"
+    },
+    {
+      "families": [
         "backup"
       ],
       "name": "BackupStatus",
@@ -2262,6 +2358,16 @@
     },
     {
       "families": [
+        "archive",
+        "db",
+        "pilot_files"
+      ],
+      "name": "PortableMessageOrigin",
+      "origin": "macro_lib::db::models::PortableMessageOrigin",
+      "path": "PortableMessageOrigin.ts"
+    },
+    {
+      "families": [
         "workspace"
       ],
       "name": "PredictedBranchDto",
@@ -2683,6 +2789,14 @@
       "name": "ResolvedCardTask",
       "origin": "macro_lib::agsdl_host_tasks::ResolvedCardTask",
       "path": "ResolvedCardTask.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "RestoredCopy",
+      "origin": "macro_lib::db::chat_admission::restored_copy::RestoredCopy",
+      "path": "RestoredCopy.ts"
     },
     {
       "families": [
