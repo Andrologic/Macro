@@ -9,7 +9,7 @@ export type { TaskCompletionRepositoryRecord } from '../services/taskPortsWorkfl
 import { loadPlanReview } from '../services/architectGitFlowService';
 import { create } from 'zustand';
 import { createTaskStartupWorkflow } from '../services/taskStartupWorkflow';
-import { isWorkflowAgentTask, refreshWorkflowAgentTasks, retainWorkflowTaskOrder } from '../services/workflowAgentTasks';
+import { isWorkflowAgentTask, retainWorkflowTaskOrder, staleWorkflowTask } from '../services/workflowAgentTasks';
 import { assertLegacyTaskOwnership } from '../services/workflowTaskOwnership';
 import { startWorkflowTaskMonitor } from '../services/workflowTaskMonitor';
 import { withTaskLifecycleLock } from '../services/taskLifecycleLease';
@@ -1906,8 +1906,25 @@ const ensureAppSync = (lifecycle?: LifecycleContext): (() => void) => {
   lifecycle?.signal.addEventListener('abort', stop, { once: true });
   scope.own(() => lifecycle?.signal.removeEventListener('abort', stop));
 
+  let stopWorkflowMonitor: (() => void) | undefined;
+  const syncWorkflowMonitor = () => {
+    stopWorkflowMonitor?.();
+    stopWorkflowMonitor = undefined;
+    if (!isOperateWorkspace(useAppStore.getState().mode)) return;
+    const observe = createLifecycleScope();
+    observe.own(startWorkflowTaskMonitor({
+      enabled: () => tauriIpc.isTauriAvailable() && getServiceRuntimeCapabilities().implementExecution,
+      refresh: () => scope.track(useTaskStore.getState().refreshWorkflowTasks(observe)),
+      schedule: callback => { const timer = setTimeout(callback, 3000); return () => clearTimeout(timer); },
+      immediate: true,
+    }));
+    stopWorkflowMonitor = () => observe.stop();
+  };
+  scope.own(() => stopWorkflowMonitor?.());
+
   appSyncUnsubscribe = useAppStore.subscribe((nextState, previousState) => {
     if (!scope.isActive()) return;
+    if (nextState.mode !== previousState.mode) syncWorkflowMonitor();
     const strategyChanged =
       nextState.activeArchitectPlanId !== previousState.activeArchitectPlanId ||
       nextState.planNodes !== previousState.planNodes ||
@@ -1966,14 +1983,7 @@ const ensureAppSync = (lifecycle?: LifecycleContext): (() => void) => {
     }
   });
   scope.own(appSyncUnsubscribe);
-  scope.own(startWorkflowTaskMonitor({
-    enabled: () => scope.isActive() && useAppStore.getState().mode === 'Implement' &&
-      tauriIpc.isTauriAvailable() && getServiceRuntimeCapabilities().implementExecution &&
-      !(import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1') &&
-      useTaskStore.getState().tasks.some(isWorkflowAgentTask),
-    refresh: () => scope.track(useTaskStore.getState().refreshWorkflowTasks(scope)),
-    schedule: callback => { const timer = setTimeout(callback, 3000); return () => clearTimeout(timer); },
-  }));
+  syncWorkflowMonitor();
   return stop;
 };
 
@@ -2484,7 +2494,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   // Catalog loads and task activation await metadata/filesystem work. Keep their
   // effects scoped to the latest request so a stale context cannot win a race.
   let refreshRequestId = 0;
-  let workflowRefreshRequestId = 0;
+  let workflowCatalogRead: ReturnType<typeof services.listTasks> | undefined;
   let workflowReadError: string | null = null;
   const catalogRefreshes = new Set<number>();
   let creationRefreshBarrier: Promise<void> | null = null;
@@ -3003,6 +3013,10 @@ return ({
       const observeOnly = options?.observeOnly === true;
       if (!observeOnly) await resumePlanLifecycleSagas();
       lifecycle?.assertActive();
+      if (workflowCatalogRead) {
+        await workflowCatalogRead.catch(() => undefined);
+        lifecycle?.assertActive();
+      }
       if (!isCurrentRefresh()) return;
       let catalog = observeOnly ? await services.listTasks({ persistedOnly: true }) : await services.listTasks();
       lifecycle?.assertActive();
@@ -3480,35 +3494,38 @@ return ({
 
   refreshWorkflowTasks: async (lifecycle) => {
     lifecycle?.assertActive();
-    if (catalogRefreshes.size) return;
-    const request = ++workflowRefreshRequestId;
+    if (catalogRefreshes.size || workflowCatalogRead) return;
     const catalogRevision = refreshRequestId;
-    const app = useAppStore.getState();
-    const context = JSON.stringify([app.selectedGroupId, app.selectedProjectId]);
-    const current = () => lifecycle?.isActive() !== false && request === workflowRefreshRequestId &&
-      catalogRevision === refreshRequestId && context === JSON.stringify([
-        useAppStore.getState().selectedGroupId, useAppStore.getState().selectedProjectId,
-      ]);
+    const { selectedGroupId, selectedProjectId, standaloneProjects, projectGroups } = useAppStore.getState();
+    const current = () => {
+      const latest = useAppStore.getState();
+      return lifecycle?.isActive() !== false && catalogRevision === refreshRequestId &&
+        selectedGroupId === latest.selectedGroupId && selectedProjectId === latest.selectedProjectId &&
+        standaloneProjects === latest.standaloneProjects && projectGroups === latest.projectGroups;
+    };
     try {
-      const workflow = await refreshWorkflowAgentTasks(get().tasks);
+      workflowCatalogRead = services.listTasks({ persistedOnly: true });
+      const catalog = await workflowCatalogRead;
       if (!current()) return;
-      const tasks = [...get().tasks.filter(task => !isWorkflowAgentTask(task)), ...retainWorkflowTaskOrder(get().tasks, workflow)];
+      const previous = get().tasks;
+      const workflow = catalog.tasks.filter(isWorkflowAgentTask);
+      const tasks = [...previous.filter(task => !isWorkflowAgentTask(task)), ...retainWorkflowTaskOrder(previous, workflow)];
       if (new Set(tasks.map(task => task.id)).size !== tasks.length) throw new Error('Repeated workflow Task identity');
       const clearError = workflowReadError !== null && get().lastError === workflowReadError;
       workflowReadError = null;
-      set({ tasks, ...(clearError ? { lastError: null } : {}), planSummaries: get().planSummaries.map(plan => {
-        const agents = workflow.filter(task => task.plan_id === plan.id && task.plan_storage_branch === plan.storageBranch);
-        return agents.length ? { ...plan, taskCount: agents.length,
-          completedTaskCount: agents.filter(task => task.status === 'Completed').length,
-          activeTaskCount: agents.filter(task => task.status === 'InProgress').length } : plan;
-      }) });
+      const workflowPlanKeys = new Set([...previous.filter(isWorkflowAgentTask), ...workflow].map(task =>
+        toPlanLocatorKey({ branchName: task.workflow_execution!.source.owner.branch, planId: task.plan_id })));
+      const planSummaries = [
+        ...get().planSummaries.filter(plan => !workflowPlanKeys.has(plan.locatorKey)),
+        ...catalog.plans.filter(plan => workflowPlanKeys.has(plan.locatorKey)),
+      ];
+      set({ tasks, ...(clearError ? { lastError: null } : {}), planSummaries });
     } catch (error) {
       if (!current()) return;
       workflowReadError = toServiceError(error).message;
-      set({ tasks: get().tasks.map(task => isWorkflowAgentTask(task) ? {
-        ...task, status: 'Blocked', is_blocked: true,
-        workflow_execution: { ...task.workflow_execution!, stale: true, interactionRequired: true },
-      } : task), lastError: workflowReadError });
+      set({ tasks: get().tasks.map(staleWorkflowTask), lastError: workflowReadError });
+    } finally {
+      workflowCatalogRead = undefined;
     }
   },
 

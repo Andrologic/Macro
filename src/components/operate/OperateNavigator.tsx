@@ -18,7 +18,8 @@ function InstanceRow({ task }: { task: CatalogedImplementTask }) {
     onClick={() => useAppStore.getState().setSelectedTask(task.id)}>
     <span className="block break-words font-medium">{task.title}</span>
     <span className="block truncate text-muted-foreground" title={ref?.agentInstanceId}>{ref?.agentInstanceId ?? task.plan_title}</span>
-    {ref?.interactionRequired && <span>{t('agsdl.run030.waitingHuman')}</span>}
+    {ref?.stale && <span>{t('agsdl.run030.staleShort')}</span>}
+    {!ref?.stale && ref?.interactionRequired && <span>{t('agsdl.run030.waitingHuman')}</span>}
   </button>;
 }
 
@@ -26,21 +27,37 @@ function RunList({ registration, tasks }: { registration: WorkflowRunRegistratio
   const { t } = useAgsdlTranslation();
   const { access, scope } = registration;
   const snapshot = useSyncExternalStore(access.subscribe, access.getSnapshot);
-  const runs = retainedRunValue030(snapshot.history) ?? [];
+  const history = retainedRunValue030(snapshot.history) ?? [];
+  const entries = new Map(history.map(run => [run.scope.systemStartId, run]));
+  const runIds = new Set([...snapshot.historyOrder, ...entries.keys(), ...Object.keys(snapshot.runFailures)]);
   return <>
+    {snapshot.history.kind === 'loading' && !history.length && <p role="status">{t('agsdl.run030.loading')}</p>}
+    {snapshot.history.kind === 'stale' && <p role="status">{t('agsdl.run030.stale')}</p>}
     {(registration.catalogError || snapshot.history.kind === 'error') && <p role="alert">{t('agsdl.run030.readFailed')}</p>}
-    {runs.map(run => {
-      const rows = tasks.filter(({ workflow_execution: ref }) => ref && ref.systemStartId === run.scope.systemStartId && sameWorkflowSource030(ref.source, run.scope.source));
-      return <section className="mb-2" key={run.scope.systemStartId}>
-        <button type="button" className="w-full rounded px-2 py-1 text-left hover:bg-accent"
-          onClick={() => openWorkflowRun030({ scope: run.scope, conversationId: scope.conversationId })}>
+    {[...runIds].map(id => {
+      const entry = entries.get(id);
+      const read = Object.hasOwn(snapshot.runs, id) ? snapshot.runs[id] : undefined;
+      const execution = entry?.scope ?? (read && retainedRunValue030(read)?.state.scope);
+      const failed = Object.hasOwn(snapshot.runFailures, id);
+      if (!execution && !failed) return null;
+      const rows = execution ? tasks.filter(({ workflow_execution: ref }) =>
+        ref && ref.systemStartId === id && sameWorkflowSource030(ref.source, execution.source)) : [];
+      const humans = entry?.humans;
+      return <section className="mb-2" key={id}>
+        {execution ? <button type="button" className="w-full rounded px-2 py-1 text-left hover:bg-accent"
+          onClick={() => openWorkflowRun030({ scope: execution, conversationId: scope.conversationId })}>
           <strong className="block truncate">{rows[0]?.plan_title || scope.owner.planId}</strong>
-          <span className="block truncate text-muted-foreground" title={run.scope.systemStartId}>{run.scope.systemStartId}</span>
-        </button>
+          <span className="block truncate text-muted-foreground" title={id}>{id}</span>
+        </button> : <p className="break-all px-2">{id}</p>}
+        {failed && <p className="px-2" role="alert">{t('agsdl.run030.readFailed')}</p>}
+        {humans?.kind === 'ready' && humans.value.some(request => request.state.kind === 'open') &&
+          !rows.some(task => task.workflow_execution?.interactionRequired) &&
+          <p className="px-2">{t('agsdl.run030.waitingHuman')}</p>}
         <div className="ml-2 border-l border-border pl-1">{rows.map(task => <InstanceRow key={task.id} task={task} />)}</div>
       </section>;
     })}
-    {snapshot.history.kind === 'ready' && runs.length === 0 && <p className="p-2 text-muted-foreground">{scope.owner.planId} · {t('agsdl.run030.noRuns')}</p>}
+    {snapshot.history.kind === 'ready' && runIds.size === 0 && !registration.catalogError &&
+      <p className="p-2 text-muted-foreground">{scope.owner.planId} · {t('agsdl.run030.noRuns')}</p>}
   </>;
 }
 

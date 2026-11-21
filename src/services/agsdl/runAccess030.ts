@@ -257,53 +257,78 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     }
     if (changed) publish({ ...snapshot, runs: retainedRuns });
   }
+  async function inspect(summary: PublicRunSummary030, capture: RunCapture030, history?: RunHistoryEntry030): Promise<RunInspection030> {
+    const scope = { systemStartId: summary.systemStartId, source: summary.source, snapshotId: summary.snapshotId };
+    const runtime = await loadRuntimeProjection030(scope, summary.flowInvocationId, transport.readExecutionRuntimeProjection030, () => true);
+    requireFact(runtime && runtime.revision === summary.revision && runtime.stopping === summary.stopping &&
+      runtime.verdict === summary.verdict, 'REVISION_CONFLICT');
+    const sections = runtimeSections030(runtime);
+    requireFact(BigInt(sections.activations.filter(activation => activation.physical).length) === BigInt(summary.physicalPending));
+    const humans = history?.humans ?? await readHumanFacts030({ systemStartId: scope.systemStartId, source: scope.source }, transport.readExecutionHumans030);
+    return { capture, state: { scope, flowInvocationId: runtime.flowInvocationId,
+      revision: runtime.revision, verdict: verdict(runtime.verdict), ownerStatus: summary.ownerStatus as 'live' | 'revoked',
+      stopping: runtime.stopping, physicalPending: summary.physicalPending,
+      stop: unavailable('stop-proof'), uncertainties: unavailable('uncertainty'), humans,
+      occurrences: { kind: 'ready', revision: runtime.revision, value: sections.activations.map(activation => ({
+        scope, activation, details: unavailable('occurrence-details'),
+      })) }, instances: sections.instances, groups: sections.groups, paths: sections.paths,
+      diagnostics: unavailable('diagnostics'), chronology: unavailable('chronology') } };
+  }
+  const refreshHistory = (includeRuns: boolean) => enqueue(async () => {
+    const previous = snapshot.history;
+    let admissionError: RunInspectionReadError030 | undefined;
+    publish({ ...snapshot, history: { kind: 'loading', retained: retainedRunValue030(previous) } });
+    try {
+      const runs = await summaries(), history: RunHistoryEntry030[] = [];
+      invalidateRetained(runs);
+      let retainedAdmission: NativeFact030<string | null>;
+      try { retainedAdmission = await admission(runs); }
+      catch (error) { retainedAdmission = unavailable('qualification'); admissionError = new RunInspectionReadError030(error); }
+      const results = await correlations(runs);
+      const excludedRuns: Record<string, RunRefusal030<'consult'>> = Object.create(null);
+      const runFailures: Record<string, RunReadFailure030> = Object.create(null);
+      const inspections: Record<string, RunRead030<RunInspection030>> = Object.create(null);
+      for (const run of runs) {
+        const result = results.get(run.systemStartId)!;
+        if (result.kind === 'excluded') { excludedRuns[run.systemStartId] = result.refusal; continue; }
+        try {
+          if (result.kind === 'failed') throw result.error;
+          const capture = await captureFor(run, result.value);
+          const entry = await historyEntry(run, capture);
+          history.push(entry);
+          if (includeRuns) {
+            const value = await inspect(run, capture, entry);
+            inspections[run.systemStartId] = { kind: 'ready', revision: value.state.revision, value };
+          }
+        } catch (error) { runFailures[run.systemStartId] = readFailure(error, run.revision); }
+      }
+      const retainedRuns = Object.fromEntries(Object.entries(snapshot.runs).filter(([id]) =>
+        history.some(item => item.scope.systemStartId === id) || Object.hasOwn(runFailures, id)));
+      for (const [id, error] of Object.entries(runFailures)) {
+        const retained = retainedRuns[id] && retainedRunValue030(retainedRuns[id]);
+        if (retained) retainedRuns[id] = { kind: 'stale', revision: retained.state.revision, retained, refusal: refusal(error) };
+      }
+      for (const entry of history) retainedSummaries.set(entry.scope.systemStartId,
+        structuredClone(runs.find(run => run.systemStartId === entry.scope.systemStartId)!));
+      publish({ history: { kind: 'ready', revision: JSON.stringify(history.map(item => {
+        const run = runs.find(run => run.systemStartId === item.scope.systemStartId)!;
+        return [run.systemStartId, run.snapshotId, run.revision];
+      })), value: history }, historyOrder: runs.filter(run => !Object.hasOwn(excludedRuns, run.systemStartId)).map(run => run.systemStartId),
+      retainedAdmission, runs: { ...retainedRuns, ...inspections }, excludedRuns, runFailures });
+    } catch (error) {
+      publish({ ...snapshot, history: failed(previous, error), retainedAdmission: unavailable('qualification') });
+      throw new RunInspectionReadError030(error);
+    }
+    // The history is complete and remains ready even if the independent
+    // intent read failed. Notify callers without rolling that history back.
+    if (admissionError) throw admissionError;
+  });
   return {
     scopeKey,
     getSnapshot: () => snapshot,
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    refreshHistory: () => enqueue(async () => {
-      const previous = snapshot.history;
-      let admissionError: RunInspectionReadError030 | undefined;
-      publish({ ...snapshot, history: { kind: 'loading', retained: retainedRunValue030(previous) } });
-      try {
-        const runs = await summaries(), history: RunHistoryEntry030[] = [];
-        invalidateRetained(runs);
-        let retainedAdmission: NativeFact030<string | null>;
-        try { retainedAdmission = await admission(runs); }
-        catch (error) { retainedAdmission = unavailable('qualification'); admissionError = new RunInspectionReadError030(error); }
-        const results = await correlations(runs);
-        const excludedRuns: Record<string, RunRefusal030<'consult'>> = Object.create(null);
-        const runFailures: Record<string, RunReadFailure030> = Object.create(null);
-        for (const run of runs) {
-          const result = results.get(run.systemStartId)!;
-          if (result.kind === 'excluded') { excludedRuns[run.systemStartId] = result.refusal; continue; }
-          try {
-            if (result.kind === 'failed') throw result.error;
-            const capture = await captureFor(run, result.value);
-            history.push(await historyEntry(run, capture));
-          } catch (error) { runFailures[run.systemStartId] = readFailure(error, run.revision); }
-        }
-        const retainedRuns = Object.fromEntries(Object.entries(snapshot.runs).filter(([id]) =>
-          history.some(item => item.scope.systemStartId === id) || Object.hasOwn(runFailures, id)));
-        for (const [id, error] of Object.entries(runFailures)) {
-          const retained = retainedRuns[id] && retainedRunValue030(retainedRuns[id]);
-          if (retained) retainedRuns[id] = { kind: 'stale', revision: retained.state.revision, retained, refusal: refusal(error) };
-        }
-        for (const entry of history) retainedSummaries.set(entry.scope.systemStartId,
-          structuredClone(runs.find(run => run.systemStartId === entry.scope.systemStartId)!));
-        publish({ history: { kind: 'ready', revision: JSON.stringify(history.map(item => {
-          const run = runs.find(run => run.systemStartId === item.scope.systemStartId)!;
-          return [run.systemStartId, run.snapshotId, run.revision];
-        })), value: history }, historyOrder: runs.filter(run => !Object.hasOwn(excludedRuns, run.systemStartId)).map(run => run.systemStartId),
-        retainedAdmission, runs: retainedRuns, excludedRuns, runFailures });
-      } catch (error) {
-        publish({ ...snapshot, history: failed(previous, error), retainedAdmission: unavailable('qualification') });
-        throw new RunInspectionReadError030(error);
-      }
-      // The history is complete and remains ready even if the independent
-      // intent read failed. Notify callers without rolling that history back.
-      if (admissionError) throw admissionError;
-    }),
+    refreshHistory: () => refreshHistory(false),
+    refreshCatalog: () => refreshHistory(true),
     refreshRun: systemStartId => enqueue(async () => {
       const previous = Object.hasOwn(snapshot.runs, systemStartId) ? snapshot.runs[systemStartId] : { kind: 'loading' as const, retained: null };
       let admissionError: RunInspectionReadError030 | undefined;
@@ -335,23 +360,9 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
         if (result.kind === 'excluded') throw new MacroServiceError(result.refusal.code, result.refusal.message);
         const capture = await captureFor(summary, result.value);
         verifyRetained(summary);
-        const scope = { systemStartId, source: summary.source, snapshotId: summary.snapshotId };
-        const runtime = await loadRuntimeProjection030(scope, summary.flowInvocationId, transport.readExecutionRuntimeProjection030, () => true);
-        requireFact(runtime && runtime.revision === summary.revision && runtime.stopping === summary.stopping &&
-          runtime.verdict === summary.verdict, 'REVISION_CONFLICT');
-        const sections = runtimeSections030(runtime);
-        requireFact(BigInt(sections.activations.filter(activation => activation.physical).length) === BigInt(summary.physicalPending));
-        const humans = await readHumanFacts030({ systemStartId, source: summary.source }, transport.readExecutionHumans030);
-        const value: RunInspection030 = { capture, state: { scope, flowInvocationId: runtime.flowInvocationId,
-          revision: runtime.revision, verdict: verdict(runtime.verdict), ownerStatus: summary.ownerStatus as 'live' | 'revoked',
-          stopping: runtime.stopping, physicalPending: summary.physicalPending,
-          stop: unavailable('stop-proof'), uncertainties: unavailable('uncertainty'), humans,
-          occurrences: { kind: 'ready', revision: runtime.revision, value: sections.activations.map(activation => ({
-            scope, activation, details: unavailable('occurrence-details'),
-          })) }, instances: sections.instances, groups: sections.groups, paths: sections.paths,
-          diagnostics: unavailable('diagnostics'), chronology: unavailable('chronology') } };
+        const value = await inspect(summary, capture);
         retainedSummaries.set(systemStartId, structuredClone(summary));
-        publish({ ...snapshot, runs: { ...snapshot.runs, [systemStartId]: { kind: 'ready', revision: runtime.revision, value } } });
+        publish({ ...snapshot, runs: { ...snapshot.runs, [systemStartId]: { kind: 'ready', revision: value.state.revision, value } } });
       } catch (error) {
         const failure = new RunInspectionReadError030(error);
         const runFailures = { ...snapshot.runFailures }, excludedRuns = { ...snapshot.excludedRuns };
