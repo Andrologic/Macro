@@ -114,11 +114,16 @@ export class PilotRuntime {
       await this.receiving;
       const connection = this.client.transferConnection(this.producerCapabilities);
       const inspection = await this.ports.chat().reconcileConversationAdmission(conversationId);
-      if (signal.aborted || this.generation !== generation || stableJson(connection) !== stableJson(this.client.transferConnection(this.producerCapabilities))) throw new PilotError('unavailable');
       const input: ConnectTransferSendInput = { connection, targetInstanceId, conversationId, ...selection,
         runtime: inspection.runtime, inspectionHandle: inspection.handle };
       let targetConversationId: string;
-      try { targetConversationId = await this.transfers.send(input); } catch (error) {
+      try {
+        targetConversationId = await this.ports.chat().withArchiveReadersPaused(async () => {
+          if (signal.aborted || this.generation !== generation || !this.producerCapabilities || !this.client.transferConnection ||
+              stableJson(connection) !== stableJson(this.client.transferConnection(this.producerCapabilities))) throw new PilotError('unavailable');
+          return this.transfers.send(input);
+        });
+      } catch (error) {
         const outcome = transferOutcome(error);
         if (!outcome) throw error;
         if (!signal.aborted) await this.ports.chat().refreshConversationMetadata();

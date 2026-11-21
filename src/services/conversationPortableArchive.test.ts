@@ -11,7 +11,9 @@ mock.module('./ipc/connectArchive', () => ({
   connectArchiveMaterialize: async () => ({ backingId: 'image', readyDataUrl: 'data:image/png;base64,AA==' }),
   connectArchiveRelease: async ({ id }: { id: string }) => { released.push(id); },
 }));
-const { ArchiveReaderSession, retireArchiveReaders, activateArchiveReaders } = await import('./conversationPortableArchive');
+const {
+  ArchiveReaderSession, retireArchiveReaders, activateArchiveReaders, onArchiveReadersRetiring, withArchiveReadersPaused,
+} = await import('./conversationPortableArchive');
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 const input = (conversationId: string) => ({ conversationId, selector: { kind: 'records' as const, ordinal: null, uuid: null } });
 
@@ -60,4 +62,27 @@ test('local archive backings outlive registry consumers and retirement joins lat
   await retireArchiveReaders();
   expect(() => ArchiveReaderSession.open(input('retired-profile'))).toThrow('stopped');
   await activateArchiveReaders();
+});
+
+test('drains cache and render backings across conversations before a transfer and resumes reads after failure', async () => {
+  openReply = async ({ conversationId }) => ({
+    readId: `read-${conversationId}`, conversationId, generation: 'generation', manifest: 'manifest',
+  });
+  const session = await ArchiveReaderSession.open(input('another-conversation'));
+  const cached = await session.materialize({ resourceUuid: 'asset', use: 'image', range: null });
+  const rendered = cached.retain();
+  session.close();
+  const stopListening = onArchiveReadersRetiring(id => { if (!id) rendered.release(); });
+  try {
+    await expect(withArchiveReadersPaused(async () => cached.release(), async () => {
+      expect(released).toContain('read-another-conversation');
+      expect(() => ArchiveReaderSession.open(input('new'))).toThrow('stopped');
+      throw new Error('transfer failed');
+    })).rejects.toThrow('transfer failed');
+  } finally {
+    stopListening();
+  }
+  const reopened = await ArchiveReaderSession.open(input('after-transfer'));
+  reopened.close();
+  await reopened.drain();
 });

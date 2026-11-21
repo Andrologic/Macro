@@ -12,7 +12,7 @@ import { assertLegacyTaskOwnership } from '../services/workflowTaskOwnership';
 import { hasMultipleAgsdlContexts, persistableContextRefs, rebindAgsdlContextRefs, submissionHiddenContext } from "../services/chat/composerSubmission";
 import { agsdlContextForModel } from "../services/agsdl/chatContextPayload";
 import { prepareChatMessages, isStandaloneImplementTask, sanitizeAssistantContentForModel, isFileContextRef, getFileRefPath, getImageContextMetadata, type ChatMessagePreparationPorts } from "../services/chatMessagePreparation";
-import { activateArchiveReaders, retireArchiveReaders } from '../services/conversationPortableArchive';
+import { activateArchiveReaders, retireArchiveReaders, withArchiveReadersPaused } from '../services/conversationPortableArchive';
 import { copyRestoredImages } from '../services/restoredConversationCopy';
 import { isBrowserRuntimeBridgeEnabled } from '../services/tauriRuntimeBridge';
 import { loadArchiveMessageImages, releaseArchiveImages, archiveImageConversation, isArchiveImage, prepareArchiveImages, ownArchiveRequestResources } from '../services/archiveImages';
@@ -25,7 +25,7 @@ import { ensureChatBrowser, beginChatAdmission, closeChatPreparation, finishChat
 import { buildProviderInputItemsFromContent } from '../services/ai/responsesCodec';
 import { acknowledgeDisplayedConversation } from '../services/conversationManagementService';
 import { getConflictAssistantContext, clearConflictAssistantContext, isConflictAssistantContextAllowed, revalidateConflictAssistantContext, scopeConflictAssistantExecutionContext } from '../services/conflictAssistantContext';
-import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
+import { type LifecycleContext, createLifecycleScope, isLifecycleStopped } from '../services/lifecycleScope';
 import type { PendingToolApprovalResolution } from "../services/chatToolExecutionContracts";
 import { createChatToolExecution } from "../services/chatToolExecution";
 import { chatToolInvocationJournal } from "../services/chatToolInvocationJournal";
@@ -1029,6 +1029,7 @@ interface ChatStore {
   drainSubscriptions: () => Promise<void>;
   initialize: (lifecycle?: LifecycleContext) => Promise<void>;
   reconcileConversationAdmission: (conversationId: string) => Promise<{ runtime: string; handle: string }>;
+  withArchiveReadersPaused: <T>(operation: () => Promise<T>) => Promise<T>;
   initializeCritical: (lifecycle?: LifecycleContext) => Promise<void>;
   resumeAfterInitialize: (lifecycle?: LifecycleContext) => Promise<void>;
 }
@@ -1374,14 +1375,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (previous && previous.images !== images) releaseArchiveImages(previous.images);
     return true;
   };
-  const resetNativeImageHydration = () => {
+  const resetNativeImageHydration = (archiveOnly = false) => {
     const retired = nativeImageScope;
     retired.stop();
     nativeImageScope = createLifecycleScope();
     nativeImageLoadGeneration++;
-    for (const id of nativeImageCacheEntries.keys()) evictNativeImages(id);
-    nativeImageMessageIds.clear();
-    hydratedImageMessageIds.clear();
+    for (const [id, entry] of nativeImageCacheEntries) {
+      if (!archiveOnly || entry.images.some(isArchiveImage)) evictNativeImages(id);
+    }
+    if (!archiveOnly) {
+      nativeImageMessageIds.clear();
+      hydratedImageMessageIds.clear();
+    }
     nativeImageLoadPromises.clear();
     // Retired IPC reads keep their reservations until their results settle.
     return retired.drain();
@@ -2860,7 +2865,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       try { await pending; } catch (error) {
         // A failed native read preserves legacy images and can be retried.
-        if (message.portable_history && generation === nativeImageLoadGeneration && !deletedConversationIds.has(message.conversation_id)) {
+        if (message.portable_history && !isLifecycleStopped(error) &&
+            generation === nativeImageLoadGeneration && !deletedConversationIds.has(message.conversation_id)) {
           set({ lastError: `${i18n.t('chat.archive.resources')}: ${toServiceError(error).message}` });
         }
       } finally {
@@ -14976,6 +14982,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     reconcileConversationAdmission,
+    withArchiveReadersPaused: async operation => {
+      const scope = subscriptionScope;
+      try {
+        return await withArchiveReadersPaused(() => resetNativeImageHydration(true), operation);
+      } finally {
+        if (scope?.isActive() && subscriptionScope === scope) {
+          const { messages, selectedConversationId } = get();
+          const visibleArchive = messages.filter(message =>
+            message.conversation_id === selectedConversationId && message.portable_history,
+          );
+          if (visibleArchive.length) void hydrateNativeMessageImages(visibleArchive, scope).catch(() => undefined);
+        }
+      }
+    },
     initializeCritical: async (lifecycle) => {
       lifecycle?.assertActive();
       await activateArchiveReaders();

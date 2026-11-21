@@ -154,7 +154,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/chatMessagePreparation.ts",
-    "sha256": "fe06743f2a3ffc3b0e68bc1557cb7e30a239b36d8ab70d2aea3567e9dabf96c1"
+    "sha256": "13aef9ae2bce26cbf0e0699391b41f0ec5ab42934ff7c6b3517b7a9b35c0f229"
   },
   {
     "path": "src/services/chatQuestionnaires.ts",
@@ -452,5 +452,5 @@ export const TRANSFER_RESOURCES = [
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "b623f3db08b6e33c0c84993ef8ac215b8f01a40d5d8c72a400b941f96a480968"
+  "preparation_set_sha256": "f4f929b7ab482689a685f6350405a5dd4518d52880251bc9f5f7d07d61bd0f5e"
 } as const;

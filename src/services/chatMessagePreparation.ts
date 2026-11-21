@@ -395,7 +395,8 @@ export const prepareChatMessages = async (
     if (
       message.role === "user" &&
       ((messageWithImagesId && message.id === messageWithImagesId) ||
-        Boolean(message.portable_history))
+        Boolean(message.portable_history) ||
+        !message.provider_input_items?.length)
     ) {
       const images = messageImagesByMessageId[message.id] || [];
       if (images.length > 0) {

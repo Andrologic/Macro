@@ -45,6 +45,7 @@ const sessions = new Set<ArchiveReaderSession>();
 const openings = new Set<{ conversationId: string; cancelled: boolean; work: Promise<unknown> }>();
 let readers = createLifecycleScope();
 let retirement: Promise<void> = Promise.resolve();
+let exclusiveOperations = 0;
 const retiring = new Set<(conversationId?: string) => void>();
 
 export function onArchiveReadersRetiring(listener: (conversationId?: string) => void): () => void {
@@ -60,26 +61,43 @@ export async function activateArchiveReaders(): Promise<void> {
 
 /** Consumers first remove cached/rendered/context values, then join this owner. */
 export function retireArchiveReaders(conversationId?: string): Promise<void> {
+  const work = drainArchiveReaders(conversationId);
+  if (conversationId) return work;
+  readers.stop();
+  retirement = Promise.all([retirement, readers.drain(), work]).then(() => undefined);
+  return retirement;
+}
+
+/** Join existing archive readers and defer new opens while a transfer owns the native budget. */
+export async function withArchiveReadersPaused<T>(
+  retireImages: () => Promise<void>, operation: () => Promise<T>,
+): Promise<T> {
+  exclusiveOperations++;
+  try {
+    await Promise.all([retireImages(), drainArchiveReaders()]);
+    return await operation();
+  } finally {
+    exclusiveOperations--;
+  }
+}
+
+function drainArchiveReaders(conversationId?: string): Promise<void> {
   // Renderers revoke their views here, then release after removing their DOM
   // and application copies. The join below still waits for those consumers.
   const failures: unknown[] = [];
   for (const listener of retiring) {
     try { listener(conversationId); } catch (error) { failures.push(error); }
   }
-  if (!conversationId) readers.stop();
   const pending = [...openings].filter(opening => !conversationId || opening.conversationId === conversationId);
   pending.forEach(opening => { opening.cancelled = true; });
   const selected = [...sessions].filter(session => !conversationId || session.conversationId === conversationId);
   selected.forEach(session => session.close());
-  const work = Promise.all([
+  return Promise.all([
     ...selected.map(session => session.drain()),
     ...pending.map(opening => opening.work.then(() => undefined, () => undefined)),
   ]).then(() => {
     if (failures.length) throw new AggregateError(failures, 'Archive consumer retirement failed.');
   });
-  if (conversationId) return work;
-  retirement = Promise.all([retirement, readers.drain(), work]).then(() => undefined);
-  return retirement;
 }
 
 export class ArchiveReaderSession {
@@ -102,6 +120,7 @@ export class ArchiveReaderSession {
   static open(input: ArchiveOpenInput, lifecycle?: LifecycleContext): Promise<ArchiveReaderSession> {
     const owner = readers;
     owner.assertActive();
+    if (exclusiveOperations > 0) throw new LifecycleStoppedError();
     lifecycle?.assertActive();
     const opening = { conversationId: input.conversationId, cancelled: false, work: Promise.resolve() as Promise<unknown> };
     const work = owner.track((async () => {
