@@ -158,17 +158,13 @@ import {
   type ArchitectPlanActivationPayload,
   type ArchitectPlanRecord,
   bindArchitectPlanConversation,
-  createArchitectPlan,
   getArchitectPlan,
   getArchitectPlanActivationPayload,
   getArchitectPlanChatTranscript,
-  getGitFlowBaseBranch,
   getArchitectPlanVisibleProjectIds,
   hasPersistedArchitectStrategy,
   isArchitectPlanReplicaDivergenceError,
   isArchitectPlanStrategyMutationLocked,
-  isArchitectPlanSlugAvailable,
-  isArchitectPlanSlugMutable,
   listArchitectPlans,
   resolvePlanProjectContextId,
   resolveTargetBranch,
@@ -192,7 +188,6 @@ import {
 import {
   getArchitectProfileAdjustedToolIds,
 } from "../services/architectToolSurface";
-import { handleDeferredArchitectToolCall } from "../services/deferredArchitectTool";
 import {
   canPlanFinalizationTaskReceiveMessages,
   isPlanFinalizationTaskSource,
@@ -231,11 +226,6 @@ import { classifyToolTraceRecovery } from "../services/toolTraceState";
 import {
   renderStandaloneTaskBranchName,
 } from "../services/architectGitNaming";
-import { provisionPlanBranches } from "../services/architectGitFlowService";
-import {
-  applyStrategyMutationPreview,
-  prepareStrategyMutationPreview,
-} from "../services/architectStrategyMutationGuard";
 import {
   getLocalProjectContextState,
 } from "../services/localProjectContext";
@@ -445,12 +435,6 @@ const LOCKED_AGENT_TOOL_IDS = [
   "skill_read_resource",
   "skill_run_script",
 ] as const;
-const ARCHITECT_STRATEGY_MUTATION_TOOL_IDS = new Set([
-  "agsdl_update",
-  "strategy_generate",
-  "strategy_update",
-  "strategy_delete",
-]);
 const assistantTurnContextByMessageId = new Map<
   string,
   { conversationId: string; mode: AppMode; agentType: AgentType | null }
@@ -5706,49 +5690,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       taskTodo: handleTaskTodoToolCall,
       taskArtifact: handleTaskArtifactToolCall,
       architect: async (params) => {
-        if (["strategy_generate", "strategy_get", "strategy_update", "strategy_delete"].includes(params.toolName)) {
-          throw new Error("Strategy tools have been retired. Use agsdl_get and agsdl_update in the plan conversation.");
+        const { handleAgsdlToolCall, AgsdlAuthoringRefusal } = await import("./agsdl/tools");
+        try {
+          return await handleAgsdlToolCall(params);
+        } catch (error) {
+          if (error instanceof AgsdlAuthoringRefusal) return {
+            kind: "result" as const, result: error.message, isError: true, errorKind: "validation" as const,
+          };
+          throw error;
         }
-        if (params.toolName === "agsdl_get" || params.toolName === "agsdl_update") {
-          const conversationId = assistantTurnContextByMessageId.get(params.assistantMessageId)?.conversationId;
-          if (!conversationId) throw new Error("The calling plan conversation is unavailable.");
-          const { handleAgsdlToolCall, AgsdlAuthoringRefusal } = await import("./agsdl/tools");
-          try {
-            return await handleAgsdlToolCall({
-              toolName: params.toolName,
-              args: params.args,
-              conversationId,
-              isCurrent: () => params.turnContext?.isCurrent() ?? false,
-            });
-          } catch (error) {
-            if (error instanceof AgsdlAuthoringRefusal) return {
-              kind: "result" as const, result: error.message, isError: true, errorKind: "validation" as const,
-            };
-            throw error;
-          }
-        }
-        return handleDeferredArchitectToolCall({
-          ...params,
-          planService: {
-            createArchitectPlan,
-            getArchitectPlan,
-            getGitFlowBaseBranch,
-            isArchitectPlanSlugAvailable,
-            isArchitectPlanSlugMutable,
-            listArchitectPlans,
-            resolvePlanProjectContextId,
-            resolveTargetBranch,
-            updateArchitectPlan,
-          },
-          strategyService: {
-            prepareStrategyMutationPreview,
-            applyStrategyMutationPreview,
-            guardDeps: { getArchitectPlan, updateArchitectPlan, provisionPlanBranches },
-          },
-          getAppState: () => useAppStore.getState(),
-          getTaskState: () => useTaskStore.getState(),
-          ensureArchitectConversationForPlan: get().ensureArchitectConversationForPlan,
-        });
       },
     },
     terminal: {
@@ -6384,10 +6334,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     previousAssistantContext: id => assistantTurnContextByMessageId.get(id),
     standaloneTaskInstruction: buildStandaloneImplementSystemInstruction,
     taskArtifactContext: (task, allowWrites) => buildTaskArtifactContextBlock({ task, getPlan: getArchitectPlan, allowWrites }),
-    architectPlanInstructions: async (...args) => {
+    architectPlanInstructions: async (plan) => {
       const { buildArchitectPlanInstructions } = await import("./chat/chatArchitectPlanPrompt");
-      const { AGSDL_AUTHORING_INSTRUCTION } = await import("./agsdl/tools");
-      return buildArchitectPlanInstructions(args[0], args[1], args[2], args[3], { kind: 'agsdl', instruction: AGSDL_AUTHORING_INSTRUCTION });
+      return buildArchitectPlanInstructions(plan);
     },
   };
 
@@ -7126,7 +7075,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ) {
         return toolIds;
       }
-      return toolIds.filter((toolId) => !ARCHITECT_STRATEGY_MUTATION_TOOL_IDS.has(toolId));
+      return toolIds.filter((toolId) => toolId !== "agsdl_update");
     };
     const finalizeAllowedToolIds = (toolIds: string[]): string[] => {
       const uniqueToolIds = filterStrategyMutationToolsForActivePlan(

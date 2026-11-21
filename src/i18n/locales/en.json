@@ -2164,7 +2164,7 @@
       "delete": "Delete",
       "deleting": "Deleting…",
       "deleteTitle": "Delete plan",
-      "deleteDescription": "The plan “{{name}}” and its local Macro branches will be deleted. This action cannot be undone.",
+      "deleteDescription": "The plan “{{name}}” will be deleted. This action cannot be undone.",
       "editUnavailable": "This plan can no longer be edited.",
       "editError": "Unable to edit the plan.",
       "archiveUnavailable": "This plan can no longer be archived.",

@@ -17,9 +17,6 @@ export class AgsdlAuthoringRefusal extends Error {
 
 class AgsdlReadArgumentError extends Error {}
 
-export const AGSDL_AUTHORING_INSTRUCTION =
-  "For AgSDL process design or editing, read agsdl_get with the plan_id and target_branch (storageTargetBranch) from this conversation. Read section: guide for the source contract before structural changes; empty sources default to AgSDL 0.3; it is available even when a scoped source read omits the overview. Follow its authoring guide, edit through agsdl_update using the returned revision, and report scoped diagnostics. The right panel visualizes this document; focused manual edits share the same versioned session. Handle structural changes through the authoring tools. Explain changed missions, data transfers and routes in plain language. Document authoring does not execute agents.";
-
 const legacyGuide = {
   contract: "agsdl-0.1.0",
   workflow:
@@ -174,6 +171,7 @@ export async function handleAgsdlToolCall(params: AgsdlToolCall): Promise<string
 }
 
 async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
+  if (!params.isCurrent()) throw new Error("The authoring turn has ended.");
   const { args } = params;
   const target = {
     planId: text(args.plan_id),
@@ -184,6 +182,7 @@ async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
       "Supply plan_id and target_branch (storageTargetBranch) from this conversation.",
     );
   const plan = await getArchitectPlan(target.branchName, target.planId);
+  if (!params.isCurrent()) throw new Error("The authoring turn has ended.");
   if (
     !plan ||
     plan.status === "deleted" ||
@@ -192,6 +191,7 @@ async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
     throw new Error(
       "The AgSDL document must belong to the calling plan conversation.",
     );
+  if (!plan.agsdl) throw new AgsdlAuthoringRefusal("Select an AgSDL system in the Architect navigator.");
   const store = useAgsdlStore.getState;
   await store().load(target);
   if (!params.isCurrent()) throw new Error("The authoring turn has ended.");

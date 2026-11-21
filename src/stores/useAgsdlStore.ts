@@ -106,18 +106,18 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       const originalVersion = existing?.version;
       const pending = (async () => {
         const plan = await getArchitectPlan(target.branchName, target.planId);
-        if (!plan || plan.status === "deleted")
-          throw new Error("The Architect plan is unavailable.");
+        if (!plan?.agsdl || plan.status === "deleted")
+          throw new Error("The AgSDL system is unavailable.");
         const current = get().sessions[key];
         if (current?.version !== originalVersion) return current;
         const next: AgsdlSession = {
-          source: plan.agsdl?.source ?? "",
-          annexes: plan.agsdl?.annexes ?? {},
-          design: plan.agsdl?.design,
-          display: plan.agsdl?.display,
-          migration: plan.agsdl?.migration,
+          source: plan.agsdl.source,
+          annexes: plan.agsdl.annexes,
+          design: plan.agsdl.design,
+          display: plan.agsdl.display,
+          migration: plan.agsdl.migration,
           version: crypto.randomUUID(),
-          persistedRevision: plan.agsdl?.revision ?? 0,
+          persistedRevision: plan.agsdl.revision,
           dirty: false,
           saving: false,
           status: plan.status,

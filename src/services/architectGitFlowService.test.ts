@@ -759,6 +759,24 @@ describe('architectGitFlowService', () => {
     expect(gitWorktreeInspectMock.mock.invocationCallOrder.every((order) => order < firstRestoreCallOrder)).toBe(true);
   });
 
+  it('keeps AgSDL documents out of the legacy lifecycle even with executable plan branches', async () => {
+    currentPlan = { ...buildPlan(), status: 'in_progress', agsdl: { source: '', annexes: {}, revision: 1 } };
+    const target = { branchName: 'develop', planId: currentPlan.id };
+    await expect(architectGitFlowService.archivePlanAndCleanupBranches(target)).rejects.toThrow('cannot be archived');
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch(target)).rejects.toThrow('unavailable');
+    currentPlan = { ...currentPlan, status: 'archived', archivedFromStatus: 'in_progress' };
+    await expect(architectGitFlowService.restorePlanAndProvisionBranches(target)).rejects.toThrow('unavailable');
+    await expect(architectGitFlowService.deletePlanAndCleanupBranches(target)).rejects.toThrow('unavailable');
+
+    expect(persistedPlanLifecycleSagas).toBe('[]');
+    expect(gitBranchListMock).not.toHaveBeenCalled();
+    expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
+    expect(gitBranchWorktreeInspectMock).not.toHaveBeenCalled();
+    expect(archiveArchitectPlanMock).not.toHaveBeenCalled();
+    expect(restoreArchitectPlanMock).not.toHaveBeenCalled();
+    expect(deleteArchitectPlanMock).not.toHaveBeenCalled();
+  });
+
   it('validates a direct-only plan without invoking Git', async () => {
     projectPaths.set('web', {
       ...projectPaths.get('web')!,

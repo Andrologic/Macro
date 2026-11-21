@@ -1,9 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useAppStore } from '../../stores/useAppStore';
 import { toPlanLocatorKey } from '../../services/durableIdentity';
-import type { ArchitectPlanRecord, ArchitectPlanSummary } from '../../services/architectPlanService';
+import {
+  createArchitectPlan, getArchitectPlan, getGitFlowBaseBranch, type ArchitectPlanRecord, type ArchitectPlanSummary,
+} from '../../services/architectPlanService';
+import { installArchitectPlanPorts } from '../../services/architectPlanReadContext';
+import { useTaskStore } from '../../stores/useTaskStore';
 import type { MacroProjectMetadataLoadResult } from '../../services/macroProjectMetadataLoader';
 import { ArchitectProjectNavigator } from './ArchitectProjectNavigator';
 import {
@@ -13,7 +17,7 @@ import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { dispatchArchitectPlanSelectorRequest } from './planSelectorEvents';
 import { nameBlueprintFolder, moveBlueprintToFolder, emptyBlueprintFolders } from '../../services/blueprintFolders';
 import { PREF_KEYS, savePreference, loadPreference } from '../../services/preferences';
-import { readDesign } from '../../services/agsdl/design';
+import { createEmptyBlueprintDocument, readDesign } from '../../services/agsdl/design';
 import { AGSDL_CONTRACT, readDocument } from '../../services/agsdl/document';
 
 const flushRender = async () => {
@@ -35,6 +39,7 @@ const plan = (id: string, title: string): ArchitectPlanSummary => ({
   createdAt: '2026-08-01T00:00:00.000Z',
   updatedAt: '2026-08-01T00:00:00.000Z',
   nodeCount: 0,
+  hasAgsdl: true,
 });
 
 describe('ArchitectProjectNavigator search', () => {
@@ -64,6 +69,73 @@ describe('ArchitectProjectNavigator search', () => {
     container = null;
     root = null;
     useAppStore.setState(initialAppState, true);
+  });
+
+  it('archives, restores and deletes an old Macro blueprint through the metadata catalog', async () => {
+    const projectId = 'macro-library';
+    useAppStore.setState({
+      mode: 'Architect',
+      standaloneProjects: [{ id: projectId, name: 'Macro', path: '/demo/macro', gitSetupState: 'ready' }] as never,
+      projectGroups: [], selectedProjectId: projectId, selectedGroupId: null,
+      activeArchitectPlanId: null, activePlanContext: null,
+    });
+    const releasePlanPorts = installArchitectPlanPorts({ getAppState: useAppStore.getState });
+    const refreshTasks = spyOn(useTaskStore.getState(), 'refreshFromPlan').mockResolvedValue(undefined);
+    try {
+      const branchName = getGitFlowBaseBranch();
+      const doc = createEmptyBlueprintDocument('Legacy Macro blueprint');
+      const created = await createArchitectPlan({
+        branchName, projectId, label: 'Legacy Macro blueprint', agsdl: doc, status: 'validated',
+      });
+      const menuAction = async (label: string) => {
+        await act(async () => {
+          container!.querySelector<HTMLButtonElement>('[data-architect-plan-menu] > button')!.click();
+          await flushRender();
+        });
+        await act(async () => {
+          const actions = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+          expect(actions.map(button => button.textContent?.trim())).toContain(label);
+          actions.find(button => button.textContent?.trim() === label)!.click();
+          await flushRender();
+        });
+      };
+      const toggleArchives = async () => {
+        await act(async () => {
+          container!.querySelector<HTMLButtonElement>('[data-tour-id="architect-archive-toggle"]')!.click();
+          await flushRender();
+        });
+      };
+      await act(async () => {
+        root?.render(<ArchitectProjectNavigator macroBlueprintProjectId={projectId} />);
+        await flushRender();
+      });
+
+      await menuAction('Archiver');
+      expect((await getArchitectPlan(branchName, created.id))?.archivedFromStatus).toBe('validated');
+      expect(container?.textContent).not.toContain('Legacy Macro blueprint');
+      await toggleArchives();
+      await menuAction('Restaurer');
+      expect(await getArchitectPlan(branchName, created.id)).toMatchObject({
+        status: 'validated', agsdl: doc,
+      });
+      expect(container?.textContent).not.toContain('Legacy Macro blueprint');
+      await toggleArchives();
+      await menuAction('Archiver');
+      await toggleArchives();
+      await menuAction('Supprimer');
+      const dialog = document.querySelector('[role="dialog"]')!;
+      expect(dialog.textContent).toContain('sera supprimé');
+      await act(async () => {
+        [...dialog.querySelectorAll('button')].find(button => button.textContent === 'Supprimer')!.click();
+        await flushRender();
+      });
+      expect(await getArchitectPlan(branchName, created.id)).toBeNull();
+      expect(container?.textContent).not.toContain('Legacy Macro blueprint');
+      expect(refreshTasks).not.toHaveBeenCalled();
+    } finally {
+      refreshTasks.mockRestore();
+      releasePlanPorts();
+    }
   });
 
   it('separates the shared library, activates its blueprints and remembers independent section folds', async () => {
@@ -282,7 +354,7 @@ describe('ArchitectProjectNavigator search', () => {
       expect(container!.querySelectorAll('[data-blueprint-folder="mobile"] [data-blueprint-locator]')).toHaveLength(placement === 'folder' ? count : 0);
       expect(activate).toHaveBeenLastCalledWith(`fresh-${count}`, expect.objectContaining({ targetBranch: 'develop', scopedProjectIdsHint: ['project-1'] }));
     }
-    expect(planCreator).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'project-1', projectIds: ['project-1'], planKind: 'feature', agsdl: expect.objectContaining({ source: expect.any(String) }) }));
+    expect(planCreator).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'project-1', projectIds: ['project-1'], agsdl: expect.objectContaining({ source: expect.any(String) }) }));
     const saved = await loadPreference<typeof organization>(PREF_KEYS.ARCHITECT_BLUEPRINT_FOLDERS);
     expect(saved.placements[JSON.stringify(['project:project-1', toPlanLocatorKey({ branchName: 'develop', planId: existing.id })])]).toBe('delivery');
     expect(container!.querySelectorAll('[data-blueprint-locator]')).toHaveLength(3);
@@ -437,6 +509,7 @@ describe('ArchitectProjectNavigator search', () => {
     expect(activateArchitectPlan).toHaveBeenCalledWith('deployment', {
       targetBranch: 'develop',
       planSummaryHint: matchingPlan,
+      consolidateBlankPlans: false,
       scopedProjectIdsHint: ['project-1'],
       persistActiveSelection: true,
     });
@@ -548,7 +621,7 @@ describe('ArchitectProjectNavigator search', () => {
     expect(document.body.querySelector('[data-architect-scope-create-menu]')).toBeNull();
   });
 
-  it('opens the compatible plan-kind menu for an editable empty scope', async () => {
+  it('creates an empty AgSDL system even when the project contains a historical plan', async () => {
     useAppStore.setState({
       ...useAppStore.getState(),
       standaloneProjects: [{
@@ -566,13 +639,22 @@ describe('ArchitectProjectNavigator search', () => {
       activePlanContext: null,
     });
 
+    const legacy = { ...plan('legacy', 'Software release'), planKind: 'release' as const, hasAgsdl: false };
+    const catalog: ArchitectPlanSummary[] = [legacy];
+    const activate = mock(async () => true);
+    useAppStore.setState({ activateArchitectPlan: activate });
+    const planCreator = mock(async (input: Parameters<NonNullable<Parameters<typeof ArchitectProjectNavigator>[0]['planCreator']>>[0]) => {
+      const record = { ...plan('new-system', 'New system'), nodes: [], predictedBranches: [], agsdl: { ...input.agsdl!, revision: 1 } };
+      catalog.push({ ...record, planKind: 'feature' });
+      return record;
+    });
     const catalogLoader = mock(async (): Promise<MacroProjectMetadataLoadResult> => ({
       snapshot: {
         branchCatalogByBranch: {},
-        branches: [],
+        branches: [{ branchName: 'develop', activePlanId: 'legacy', plans: catalog, error: null }],
         scannedBranchNames: [],
         scopedProjectIds: ['project-1'],
-        visiblePlans: [],
+        visiblePlans: catalog,
         modernPlanCount: 0,
         selectedPlan: null,
         selectedBranchName: null,
@@ -585,7 +667,7 @@ describe('ArchitectProjectNavigator search', () => {
     }));
 
     await act(async () => {
-      root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} />);
+      root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} planCreator={planCreator} />);
       await flushRender();
     });
 
@@ -610,9 +692,21 @@ describe('ArchitectProjectNavigator search', () => {
     expect(menu).not.toBeNull();
     expect(menu?.querySelector('button')?.textContent).toContain('Create a system');
     expect(menu?.querySelector('button')?.textContent).toContain('Start from scratch or use a blueprint.');
-    const secondary = menu?.querySelector('details');
-    expect(secondary?.open).toBe(false);
-    expect(secondary?.querySelector('summary')?.textContent).toContain('Other plan types');
+    expect(menu?.querySelector('details')).toBeNull();
+    expect(container?.textContent).not.toContain('Software release');
+    await act(async () => {
+      menu?.querySelector('button')?.click();
+      await flushRender();
+    });
+    expect(planCreator).toHaveBeenCalledWith(expect.objectContaining({
+      projectIds: ['project-1'],
+      agsdl: { source: '', annexes: {} },
+    }));
+    expect(activate).toHaveBeenLastCalledWith('new-system', expect.objectContaining({
+      targetBranch: 'develop', planSummaryHint: expect.objectContaining({ hasAgsdl: true }),
+    }));
+    expect(container?.textContent).toContain('New system');
+    expect(catalog[0]).toEqual(legacy);
   });
 
   it('publishes an error when the catalog is only partially loaded', async () => {

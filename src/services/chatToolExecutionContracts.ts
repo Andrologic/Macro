@@ -10,7 +10,7 @@ import type {
 } from "../types";
 import type { Citation, SourcePassageKind } from "../types/citation";
 import type { ProjectExecutionContext } from "./projectExecutionContext";
-import type { handleArchitectToolCall } from "./architectToolRuntime";
+import type { ToolCallResolution } from "./streamingChat";
 import type { resolveExplicitMutatingToolProjectTargets } from "./workspaceToolExecutor";
 import type { TerminalSessionDto } from "./tauriIpc";
 import type { webSearch } from "./webSearch";
@@ -73,7 +73,12 @@ export interface ChatToolExecutionPorts {
     mcp: typeof callScopedMcpTool;
     taskTodo: TaskTool;
     taskArtifact: TaskTool;
-    architect(params: Pick<Parameters<typeof handleArchitectToolCall>[0], "assistantMessageId" | "toolName" | "args" | "turnContext">): ReturnType<typeof handleArchitectToolCall>;
+    architect(params: {
+      conversationId: string;
+      toolName: "agsdl_get" | "agsdl_update";
+      args: Record<string, unknown>;
+      isCurrent: () => boolean;
+    }): Promise<ToolCallResolution | string | void>;
   };
   terminal: {
     cachedSession(id: string): TerminalSessionDto | undefined;

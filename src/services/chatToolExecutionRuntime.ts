@@ -5,7 +5,7 @@ import type { PendingToolApproval } from "../types";
 import type { ChatToolExecutionPorts, PendingToolApprovalResolution } from "./chatToolExecutionContracts";
 import { requestChatToolApproval } from "./chatToolApproval";
 import { executeChatAgentTerminal } from "./chatAgentTerminal";
-import { normalizeArchitectToolId } from "./architectToolNames";
+import { isRetiredArchitectToolId, normalizeArchitectToolId } from "./architectToolNames";
 import { isToolAllowedForImplementAgent } from "./toolModePolicy";
 import { isMCPToolId } from "./mcpToolNames";
 import { applyScopedToolRestrictions, loadScopedTurnConfiguration } from "./configurationClient";
@@ -103,7 +103,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
     const normalizedToolName = normalizeArchitectToolId(toolName);
     const assistantTurnId = operation.turnId;
 
-    if (!operation.allowedToolIds.includes(normalizedToolName)) {
+    if (isRetiredArchitectToolId(normalizedToolName) || !operation.allowedToolIds.includes(normalizedToolName)) {
       return toolFailure(
         `Tool ${normalizedToolName} is not available for this turn.`,
         "permission",
@@ -510,45 +510,37 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       return taskArtifactToolResult;
     }
 
-    const architectToolResult = await ports.handlers.architect({
-      assistantMessageId,
-      toolName: normalizedToolName,
-      args,
-      turnContext: {
-        planId: operation.architectPlanAtSend?.planId ?? null,
-        targetBranch: operation.architectPlanAtSend?.targetBranch ?? executionContext.branchName,
-        projectId: executionContext.focusedProjectId ?? executionContext.projectId,
-        groupId: executionContext.groupId,
+    if (modeAtSend === "Architect" && (normalizedToolName === "agsdl_get" || normalizedToolName === "agsdl_update")) {
+      const result = await ports.handlers.architect({
+        conversationId,
+        toolName: normalizedToolName,
+        args,
         isCurrent: isCurrentOperation,
-      },
-    }).catch((error) => {
-      if (!isCurrentOperation()) return undefined;
-      if (!ports.policy.isPlanReplicaDivergence(error)) {
-        throw error;
-      }
+      }).catch((error) => {
+        if (!isCurrentOperation()) return undefined;
+        if (!ports.policy.isPlanReplicaDivergence(error)) {
+          throw error;
+        }
 
-      return [
-        `Plan metadata replica issue for plan ${error.divergence.planId}: ${error.message}`,
-        '',
-        'Structured context:',
-        JSON.stringify(
-          {
-            error: 'architect_plan_replica_divergence',
-            plan_id: error.divergence.planId,
-            branch_name: error.divergence.branchName,
-            reason: error.divergence.reason,
-            repair_action: 'repair_metadata',
-            replicas: error.divergence.replicas,
-          },
-          null,
-          2
-        ),
-      ].join('\n');
-    });
-
-    if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
-    if (architectToolResult !== undefined) {
-      return architectToolResult;
+        return [
+          `Plan metadata replica issue for plan ${error.divergence.planId}: ${error.message}`,
+          '',
+          'Structured context:',
+          JSON.stringify(
+            {
+              error: 'architect_plan_replica_divergence',
+              plan_id: error.divergence.planId,
+              branch_name: error.divergence.branchName,
+              reason: error.divergence.reason,
+              repair_action: 'repair_metadata',
+              replicas: error.divergence.replicas,
+            },
+            null,
+            2
+          ),
+        ].join('\n');
+      });
+      return isCurrentOperation() ? result : TOOL_EXECUTION_ABORTED_RESULT;
     }
 
     if (AGENT_TERMINAL_TOOL_IDS.has(normalizedToolName)) {

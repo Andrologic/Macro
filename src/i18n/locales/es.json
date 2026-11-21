@@ -2164,7 +2164,7 @@
       "delete": "Eliminar",
       "deleting": "Eliminando…",
       "deleteTitle": "Eliminar plan",
-      "deleteDescription": "El plan «{{name}}» y sus ramas locales de Macro se eliminarán. Esta acción no se puede deshacer.",
+      "deleteDescription": "El plan «{{name}}» se eliminará. Esta acción no se puede deshacer.",
       "editUnavailable": "Este plan ya no se puede editar.",
       "editError": "No se pudo editar el plan.",
       "archiveUnavailable": "Este plan ya no se puede archivar.",
