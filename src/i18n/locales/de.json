@@ -379,8 +379,8 @@
         "body": "Der Composer akzeptiert Text, Erwähnungen und eingefügte Bilder. Die Pfeilschaltfläche sendet oder stoppt die Generierung, wenn eine Antwort läuft."
       },
       "footer": {
-        "title": "Git-Leiste und Benachrichtigungen",
-        "body": "Die untere Leiste fasst globales Projekt, Branches, fetch / pull / push und das Benachrichtigungszentrum zusammen. Achte auf diesen Bereich, wenn Macro eine Synchronisierungsaktion verlangt."
+        "title": "Benachrichtigungen und Updates",
+        "body": "Öffne die Benachrichtigungen über die Glocke am unteren Fensterrand. Wenn ein Update verfügbar ist, erscheint daneben die Update-Schaltfläche."
       },
       "done": {
         "title": "Onboarding neu startbar",

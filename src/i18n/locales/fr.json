@@ -379,8 +379,8 @@
         "body": "La zone de rédaction accepte du texte, des mentions et des images collées. La flèche envoie le message. Pendant un tour actif, elle permet d’orienter ce tour ou de mettre le message en file pour le suivant. Le bouton Arrêter interrompt le tour actif."
       },
       "footer": {
-        "title": "Barre Git et notifications",
-        "body": "La barre du bas résume le groupe, les branches, fetch / pull / push et le centre de notifications. C’est la zone à regarder quand Macro demande une action de synchro."
+        "title": "Notifications et mises à jour",
+        "body": "Ouvrez le centre de notifications avec la cloche en bas de la fenêtre. Le bouton de mise à jour apparaît à côté lorsqu’une mise à jour est disponible."
       },
       "done": {
         "title": "Onboarding relançable",

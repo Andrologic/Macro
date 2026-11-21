@@ -379,8 +379,8 @@
         "body": "The composer accepts text, mentions, and pasted images. The arrow button sends, or stops generation when a response is running."
       },
       "footer": {
-        "title": "Git bar and notifications",
-        "body": "The bottom bar summarizes the group, branches, fetch / pull / push, and the notification center. Watch this area when Macro asks for a sync action."
+        "title": "Notifications and updates",
+        "body": "Open the notification center using the bell at the bottom of the window. The update button appears beside it when an update is available."
       },
       "done": {
         "title": "Restartable onboarding",

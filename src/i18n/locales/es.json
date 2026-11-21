@@ -379,8 +379,8 @@
         "body": "El composer acepta texto, menciones e imágenes pegadas. El botón de flecha envía, o detiene la generación cuando hay una respuesta en curso."
       },
       "footer": {
-        "title": "Barra Git y notificaciones",
-        "body": "La barra inferior resume el proyecto global, las ramas, fetch / pull / push y el centro de notificaciones. Mira esta zona cuando Macro pida una acción de sincronización."
+        "title": "Notificaciones y actualizaciones",
+        "body": "Abre el centro de notificaciones con la campana en la parte inferior de la ventana. Cuando hay una actualización disponible, aparece un botón a su lado."
       },
       "done": {
         "title": "Onboarding reiniciable",

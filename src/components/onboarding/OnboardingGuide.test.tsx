@@ -370,6 +370,7 @@ describe('OnboardingGuide positioning', () => {
           {snapshot.isRightPanelOpen ? (
             <div data-tour-id="right-panel" />
           ) : null}
+          <button data-tour-id="notification-center" type="button">Notifications</button>
           <button data-tour-id="onboarding-help" type="button">Help</button>
           <button data-tour-id="settings-button" type="button">Settings</button>
           <OnboardingGuide />
@@ -414,6 +415,11 @@ describe('OnboardingGuide positioning', () => {
         await flushFrames();
       }
     }
+    clickByText('Next');
+    await flushFrames();
+    expect(document.body.textContent).toContain(fr.onboarding.steps.footer.body);
+    expect(storeSnapshot.mode).toBe('Chat');
+    expect(document.body.textContent).not.toContain(testTranslations['onboarding.fallbackTarget']);
   });
 
   it('measures the target after a step changes the active mode', async () => {

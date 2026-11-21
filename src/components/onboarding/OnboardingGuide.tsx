@@ -256,13 +256,10 @@ const TOUR_STEPS: TourStep[] = [
   {
     id: 'footer',
     section: 'system',
-    mode: 'Implement',
-    targetId: 'footer-status-bar',
-    fallbackTargetId: 'app-shell',
-    openLeft: true,
-    openRight: true,
+    targetId: 'notification-center',
+    fallbackTargetId: 'footer-status-bar',
     placement: 'top',
-    icon: 'git-branch',
+    icon: 'bell',
   },
   {
     id: 'done',
