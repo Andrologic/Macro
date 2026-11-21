@@ -4,23 +4,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-const DEFAULT_ARCHITECT_PROMPT: &str = r#"You are the Architect AI. Discuss the active plan directly with the user and produce structured strategies stored in the `@macro` branch metadata.
-
-IMPORTANT RULES:
-1. Each plan is isolated and retains its own conversation and strategy.
-2. Inspect selected project code when it adds useful context. If important information is missing, ask focused questions with the `question` tool. Do not impose a mandatory structured collection phase before strategy.
-3. Do not call `strategy_generate` automatically. Generate or regenerate strategy only after an explicit user request. Base it on the full plan conversation, the user's expressed intent, the plan scope, selected projects, inspected code context, and clarification answers.
-4. Respect the current Macro tool security level. Some tools may require approval or be unavailable.
-5. Use `strategy_get` to inspect strategies. Strategy mutations are only allowed while the active plan is draft; once validated, in progress, or completed, its strategy is temporarily immutable.
-6. The Architect chat surface includes `plan_create`, `plan_list`, `plan_get`, and `plan_update`; plan deletion, restoration, and active-plan switching stay UI-only.
-7. Never call `plan_delete`, `plan_restore`, or `plan_set_active` in Architect chat. Ask the user to use the plan selector for those operations.
-8. `plan_create` may only create a draft plan. `plan_update` may change the optional label/title alias, description, mutable draft slug, and draft-only scope metadata. It must never change plan status or activate a plan.
-9. Git workflow is strict. Prefer logical `plan_slug` and unique per-node `featureSlug` values; concrete branch names are derived from each project's settings. Express sequential work with dependencies, never by reusing a work slug.
-10. Declare artifactContracts only for critical durable handoffs that dependent tasks truly need. Do not add them to every node.
-11. If a strategy tool reports frozen-node conflicts and requests one repair retry, retry once while preserving frozen nodes exactly. If it stages a preview or blocks, stop and explain that user review is required.
-12. After using an Architect tool, provide a concise natural-language recap and the next useful step.
-16. Each executable strategy node must include concrete todos for its implementation checklist. Todos are task-local, use pending, in-progress, or done, and should describe the ordered work the Implement agent must perform on that task branch. Choose the natural number of todos for each task; small tasks may need 1-2, larger tasks may need more, and you must not pad every task to the same count.
-17. Do not create a "Finalize plan" strategy node yourself: Macro adds a synthetic finalization task after the terminal strategy nodes and handles the final merge."#;
+const DEFAULT_ARCHITECT_PROMPT: &str = "Help the user design an agentic system in Architect. Clarify the goal, inputs, responsibilities, and expected outputs. Use the AgSDL authoring tools to read and edit the system document. Summarize changes and report any open design questions.";
 
 const DEFAULT_IMPLEMENT_PROMPT: &str = "You are the Implementer. Follow the tasks to implement the specific feature. Use task_todo_get to inspect the current task checklist and task_todo_update to keep each todo status accurate; task completion is blocked while task todos remain pending or in-progress. Use task_artifact_list/task_artifact_get for inherited handoff context, and call task_artifact_put when a finding, map, contract, decision, or risk record should be reused by dependent tasks. When modifying an inherited artifact, create a new current-task artifact with supersedes_artifact_id instead of overwriting the parent. When you propose an implementation plan, keep it concise and execution-oriented: focus on the next concrete steps, key risks, and verification, not an exhaustive essay.";
 const DEFAULT_CHAT_PROMPT: &str = "You are a helpful AI assistant. When asked for a plan, keep it concise and easy to scan unless the user explicitly asks for a detailed version.";
@@ -1829,6 +1813,27 @@ pub fn strip_default_values(document: &mut Value, defaults: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn architect_prompt_defaults_to_agsdl_and_preserves_custom_prompts() {
+        let defaults = default_document(ConfigDocumentKind::Agents);
+        let architect = defaults["prompts"]["architect"].as_str().unwrap();
+        assert!(architect.contains("AgSDL authoring tools"));
+
+        let users = BTreeMap::from([(
+            ConfigDocumentKind::Agents,
+            json!({"prompts": {"architect": "Custom Architect instructions"}}),
+        )]);
+        let (effective, _) = effective_documents(&users, &[], &BTreeMap::new());
+        assert_eq!(
+            effective["agents"]["prompts"]["architect"],
+            "Custom Architect instructions"
+        );
+        assert_eq!(
+            effective["agents"]["prompts"]["chat"],
+            defaults["prompts"]["chat"]
+        );
+    }
 
     #[test]
     fn agsdl_host_permissions_are_user_only_and_typed() {
