@@ -2,7 +2,7 @@
 export const TRANSFER_RESOURCES = [
   {
     "path": "bun.lock",
-    "sha256": "27b67270b1b1a712cc401623c4ddbf0a23a3956ebcc00514c1e09712261affed"
+    "sha256": "8af4951c89da1da46bdf4e072bb36495c8cc1ae1368c4bbc67a94a01817257ea"
   },
   {
     "path": "contracts/macro-pilot/v2/portable-chat-history/provider-validator.generated.mjs",
@@ -66,7 +66,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "package.json",
-    "sha256": "9b56734724aa3738c7be3b7fff897e4ff29cbfec32361ac8050e287afb7e924b"
+    "sha256": "c8888868f465fc3ec801ef1bd97a650b36d475111e9e434f388a77a73996c772"
   },
   {
     "path": "src/domains/chat/runtimeState.ts",
@@ -452,5 +452,5 @@ export const TRANSFER_RESOURCES = [
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "1c0156d2926f0bb6896628b444c22ade47c3932e1d0c4fac9a15250c4e545d4a"
+  "preparation_set_sha256": "d2a1e2f32a5bc90abe014bd0f1cfd50b67f02de1640604b7474b338fe2129912"
 } as const;
