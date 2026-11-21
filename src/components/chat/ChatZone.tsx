@@ -109,7 +109,6 @@ import {
 } from '../architect/planSelectorEvents';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { getPlanNodeTodoState } from '../../services/planNodeTodos';
-import { TaskArtifactsButton } from '../implement/TaskArtifactsButton';
 import {
   getDependencyBlockedMessage,
   TaskBlockedState,
@@ -2365,8 +2364,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
     if (mode === 'Implement') {
       return {
-        icon: import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? 'workflow' as const : 'check-square' as const,
-        title: `${t(import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? 'header.operate' : 'header.implement', 'Implement')} - ${(selectedTask ? getPlanFinalizationTaskDisplayTitle(selectedTask, t) : null) || (hasVerifiedConflictContext ? currentConversation?.title : null) || t('implement.selectTaskShort', 'Select a task')}`,
+        icon: 'workflow' as const,
+        title: `${t('header.operate', 'Operate')} - ${(selectedTask ? getPlanFinalizationTaskDisplayTitle(selectedTask, t) : null) || (hasVerifiedConflictContext ? currentConversation?.title : null) || t('implement.selectTaskShort', 'Select a task')}`,
         subtitle: null,
       };
     }
@@ -4001,7 +4000,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             {selectedConversationId && currentConversation?.scope_mode === 'Chat' && !currentConversation.project_id && !currentConversation.group_id && !currentConversation.task_id && (
               <button type="button" className="rounded p-1.5 text-muted-foreground hover:bg-accent" title={t('chat.archive.title')} aria-label={t('chat.archive.title')} onClick={() => setArchiveReaderOpen(true)}><Icon name="archive" size={14} /></button>
             )}
-            {mode === 'Implement' && <TaskArtifactsButton />}
             {currentConversation?.project_id && (
               <GoalAuditArtifactsButton key={`${currentConversation.project_id}:${currentConversation.id}:${activeConversationGoal?.goalId ?? ''}`}
                 projectId={currentConversation.project_id}
@@ -4442,41 +4440,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
             <div className="flex items-center justify-between" data-tour-id="chat-control-row">
               <div className="flex items-center gap-2">
-                {mode === 'Implement' && (
-                  <div
-                    className="inline-flex items-center rounded-lg border border-border bg-muted/60 p-0.5"
-                    data-tour-id="implement-agent-toggle"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setAgentType('plan')}
-                      className={cn(
-                        'inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                        agentType === 'plan'
-                          ? 'bg-primary text-primary-foreground'
-                          : 'text-muted-foreground hover:text-foreground'
-                      )}
-                      title={t('chat.agentTypePlanTitle', 'Plan: read-only investigation')}
-                    >
-                      <Icon name="map" size={12} />
-                      {t('chat.agentTypePlan', 'Plan')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAgentType('build')}
-                      className={cn(
-                        'inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                        agentType === 'build'
-                          ? 'bg-primary text-primary-foreground'
-                          : 'text-muted-foreground hover:text-foreground'
-                      )}
-                      title={t('chat.agentTypeBuildTitle', 'Build: apply changes')}
-                    >
-                      <Icon name="code" size={12} />
-                      {t('chat.agentTypeBuild', 'Build')}
-                    </button>
-                  </div>
-                )}
                 <ModelDropdown
                   isOpen={openModelSelector === 'model'}
                   onOpenChange={(open) => setOpenModelSelector((current) => open ? 'model' : current === 'model' ? null : current)}

@@ -1030,6 +1030,7 @@
     "noContent": "No hay contenido registrado",
     "refresh": "Actualizar observaciones",
     "readFailed": "Error de lectura. Las observaciones anteriores pueden estar desactualizadas.",
+    "selectRun": "Selecciona una instancia de agente para consultar su ejecución.",
     "selectionPending": "La selección inicial espera el historial completo y las esperas humanas verificadas. Puede elegir una ejecución.",
     "summary": "Estado de ejecución",
     "stopLabel": "Parada del sistema",

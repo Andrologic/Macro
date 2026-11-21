@@ -1030,6 +1030,7 @@
     "noContent": "Kein Inhalt erfasst",
     "refresh": "Beobachtungen aktualisieren",
     "readFailed": "Lesen fehlgeschlagen. Bisherige Beobachtungen können veraltet sein.",
+    "selectRun": "Wählen Sie eine Agenteninstanz aus, um ihren Lauf zu prüfen.",
     "selectionPending": "Die erste Auswahl wartet auf den vollständigen Verlauf und belegte menschliche Wartezeiten. Sie können eine Ausführung wählen.",
     "summary": "Ausführungsstatus",
     "stopLabel": "Systemstopp",

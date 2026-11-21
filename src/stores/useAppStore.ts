@@ -1,3 +1,4 @@
+import { isOperateWorkspace } from '../services/operateWorkspace';
 import { resolveTaskReference, taskReferenceMatches } from "../services/durableIdentity";
 import { type LifecycleContext } from '../services/lifecycleScope';
 import type { SettingsTab } from '../domains/shell/settings';
@@ -776,7 +777,7 @@ const restoreProjectContext = async (
   if (contextTaskId) {
     const task = taskStore.getTaskById(contextTaskId);
     if (
-      task &&
+      task && (!isOperateWorkspace(appState.mode) || task.task_source === 'agsdl') &&
       globalProject.subProjectIds.some((projectId) =>
         taskMatchesProjectId(task, projectId),
       )
@@ -2393,7 +2394,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         architectPlanCatalogError: null,
       });
       if (options.refreshTasks) {
-        await useTaskStore.getState().refreshFromPlan({ lifecycle });
+        await useTaskStore.getState().refreshFromPlan({ lifecycle, observeOnly: isOperateWorkspace(get().mode) });
         lifecycle?.assertActive();
       }
       return null;
@@ -2490,7 +2491,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       if (!canPublish()) return null;
       if (options.refreshTasks) {
-        await useTaskStore.getState().refreshFromPlan({ lifecycle });
+        await useTaskStore.getState().refreshFromPlan({ lifecycle, observeOnly: isOperateWorkspace(get().mode) });
         lifecycle?.assertActive();
       }
 

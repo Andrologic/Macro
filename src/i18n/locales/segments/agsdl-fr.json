@@ -1030,6 +1030,7 @@
     "noContent": "Aucun contenu enregistré",
     "refresh": "Actualiser les observations",
     "readFailed": "Échec de lecture. Les observations précédentes peuvent être périmées.",
+    "selectRun": "Sélectionnez une instance d’agent pour consulter son exécution.",
     "selectionPending": "La sélection initiale attend l’historique complet et les attentes humaines attestées. Vous pouvez choisir une exécution.",
     "summary": "État de l’exécution",
     "stopLabel": "Arrêt du système",

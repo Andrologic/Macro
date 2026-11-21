@@ -3,20 +3,20 @@ import { useAgsdlTranslation } from './useAgsdlTranslation';
 import type { RunInspection030 } from '../../services/agsdl/runtimeProjection030';
 import { messagePrompt030, messageTargets030, runMessages030, sendRunMessage030 } from '../../services/agsdl/messages030';
 
-export function Messages030({ run, stale, refresh }: { run: RunInspection030; stale: boolean; refresh: () => void }) {
+export function Messages030({ run, stale, refresh, instanceId }: { instanceId?: string; run: RunInspection030; stale: boolean; refresh: () => void }) {
   const { t } = useAgsdlTranslation();
   const tr = (key: string) => t(`agsdl.messages030.${key}`);
-  const targets = messageTargets030(run);
+  const targets = messageTargets030(run, instanceId);
   const [agent, setAgent] = useState('');
   const [mode, setMode] = useState<'queue' | 'steer'>('steer');
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
-  const messages = runMessages030(run);
+  const messages = runMessages030(run).filter(row => instanceId === undefined || row.instanceId === instanceId);
   useEffect(() => { setError(false); }, [run.state.revision]);
   const send = async () => {
     setBusy(true); setError(false);
-    try { await sendRunMessage030(run, agent || targets[0], mode, prompt); setPrompt(''); refresh(); }
+    try { await sendRunMessage030(run, agent || targets[0], mode, prompt, instanceId); setPrompt(''); refresh(); }
     catch { setError(true); }
     finally { setBusy(false); }
   };
