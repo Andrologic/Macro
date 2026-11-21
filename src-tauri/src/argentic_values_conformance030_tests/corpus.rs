@@ -481,7 +481,12 @@ fn repository(c: &mut Corpus) {
     let mut source_counts = BTreeMap::<&str, usize>::new();
     let mut numbers = BTreeSet::new();
     for path in files {
-        let relative = path.strip_prefix(root).unwrap().to_str().unwrap();
+        let relative = path
+            .strip_prefix(root)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace(std::path::MAIN_SEPARATOR, "/");
         let bytes = std::fs::read(&path).unwrap();
         let category = if relative.contains("/conformance/runs/") {
             "scenarios"
@@ -498,7 +503,7 @@ fn repository(c: &mut Corpus) {
         };
         *source_counts.entry(category).or_default() += 1;
         c.files.push(json!({"path":relative,"category":category,"bytes":bytes.len(),"sha256":digest(&bytes)}));
-        c.parse("scanner-files", relative, &bytes);
+        c.parse("scanner-files", &relative, &bytes);
         if let Ok(parsed) = exact::scan::parse_v030(&bytes) {
             let mut pending = vec![(&parsed.tree, String::new())];
             while let Some((node, pointer)) = pending.pop() {
