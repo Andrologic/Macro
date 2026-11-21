@@ -689,8 +689,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     cancelTaskCommands,
     refreshFromPlan,
     missingBaseBranchIssue,
-    clearMissingBaseBranchIssue,
-    createMissingBaseBranch,
     taskError,
   } = useTaskStore(useShallow((state) => ({
     tasks: state.tasks,
@@ -714,8 +712,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     cancelTaskCommands: state.cancelTaskCommands,
     refreshFromPlan: state.refreshFromPlan,
     missingBaseBranchIssue: state.missingBaseBranchIssue,
-    clearMissingBaseBranchIssue: state.clearMissingBaseBranchIssue,
-    createMissingBaseBranch: state.createMissingBaseBranch,
     taskError: state.lastError,
   })));
   const requestSignature = useChatStore(selectTaskQueueRequestSignature);
@@ -726,7 +722,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   const liveReviewSummary = useFileChangesStore((state) => state.reviewSummary);
   const lastErrorToastRef = useRef<string | null>(null);
   const readOnlyScopeToastRef = useRef<string | null>(null);
-  const missingBaseBranchToastRef = useRef<string | number | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const startingReviewsRef = useRef(new Set<string>());
   const {
@@ -783,91 +778,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     'implement.remoteTaskCommandsUnavailable',
     'Project commands are unavailable in remote mode.'
   );
-
-  useEffect(() => {
-    if (!missingBaseBranchIssue) {
-      if (missingBaseBranchToastRef.current !== null) {
-        notify.dismiss(missingBaseBranchToastRef.current);
-      }
-      missingBaseBranchToastRef.current = null;
-      return;
-    }
-
-    const toastId = [
-      'missing-base-branch',
-      missingBaseBranchIssue.taskId,
-      missingBaseBranchIssue.projectId,
-      missingBaseBranchIssue.missingRef,
-    ].join(':');
-    if (toastId === missingBaseBranchToastRef.current) {
-      return;
-    }
-
-    if (missingBaseBranchToastRef.current !== null) {
-      notify.dismiss(missingBaseBranchToastRef.current);
-    }
-
-    missingBaseBranchToastRef.current = toastId;
-    notify.actionRequired(
-      t(
-        'implement.missingBaseBranchToastTitle',
-        'Branche {{baseBranch}} introuvable',
-        { baseBranch: missingBaseBranchIssue.missingRef }
-      ),
-      {
-        notificationKey: toastId,
-        category: 'task_attention_required',
-        duration: 12000,
-        closeButton: true,
-        tone: 'warning',
-        actions: [
-          {
-            label: t('implement.missingBaseBranchCreateAction', 'Créer'),
-            variant: 'primary',
-            onClick: async () => {
-              setPendingTaskId(missingBaseBranchIssue.taskId);
-              try {
-                await createMissingBaseBranch(missingBaseBranchIssue);
-                notify.success(
-                  t('implement.missingBaseBranchCreated', '{{baseBranch}} créée', {
-                    baseBranch: missingBaseBranchIssue.missingRef,
-                  })
-                );
-              } catch (error) {
-                lastErrorToastRef.current =
-                  error instanceof Error
-                    ? error.message
-                    : t('common.error', 'An error occurred');
-                throw error;
-              } finally {
-                setPendingTaskId((current) =>
-                  current === missingBaseBranchIssue.taskId ? null : current
-                );
-              }
-            },
-          },
-          {
-            label: t('implement.missingBaseBranchEditAction', 'Paramètres'),
-            variant: 'secondary',
-            onClick: () => {
-              setSelectedTask(missingBaseBranchIssue.taskId);
-              setSelectedProject(missingBaseBranchIssue.projectId);
-              openProjectGitFlowModal(missingBaseBranchIssue.projectId);
-              clearMissingBaseBranchIssue();
-            },
-          },
-        ],
-      }
-    );
-  }, [
-    clearMissingBaseBranchIssue,
-    createMissingBaseBranch,
-    missingBaseBranchIssue,
-    openProjectGitFlowModal,
-    setSelectedProject,
-    setSelectedTask,
-    t,
-  ]);
 
   const handleCreateManualFeature = async ({
     projectId,
