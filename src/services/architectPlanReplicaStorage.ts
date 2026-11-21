@@ -285,18 +285,30 @@ export const deleteLocalPlanChat = (branchName: string, planId: string): void =>
   storage.removeItem(localPlanChatKey(branchName, planId));
 };
 
-export const normalizeSummariesForBranch = (
+const readIndexSummariesForBranch = (
+  scope: ArchitectMetadataScope,
   branchName: string,
   summaries: ArchitectPlanSummary[],
+  isLocal: boolean,
   registrySnapshot?: ValidProjectRegistrySnapshot | null,
-  options?: {
-    logContext?: string;
-    scopeKey?: string | null;
-  }
-): ArchitectPlanSummary[] =>
-  summaries.map((summary) =>
-    sanitizeArchitectPlanSummary(branchName, summary, registrySnapshot, options).summary
-  );
+): Promise<ArchitectPlanSummary[]> =>
+  Promise.all(summaries.map(async (summary) => {
+    if (typeof summary.hasAgsdl !== 'boolean' && typeof summary.id === 'string') {
+      const planId = sanitizeId(summary.id);
+      if (planId && planId !== '.' && planId !== '..') {
+        const plan = isLocal
+          ? readLocalPlan(branchName, planId)
+          : await readJsonFileAtScope<ArchitectPlanRecord>(scope, getPlanJsonPath(branchName, planId));
+        if (plan?.id === summary.id && typeof plan.agsdl?.source === 'string') {
+          summary = { ...summary, hasAgsdl: true };
+        }
+      }
+    }
+    return sanitizeArchitectPlanSummary(branchName, summary, registrySnapshot, {
+      logContext: 'index_read',
+      scopeKey: scope.scopeKey,
+    }).summary;
+  }));
 
 export const readIndexAtScope = async (
   scope: ArchitectMetadataScope,
@@ -308,10 +320,7 @@ export const readIndexAtScope = async (
     const local = readLocalIndex(normalized);
     return {
       ...local,
-      plans: normalizeSummariesForBranch(normalized, local.plans, registrySnapshot, {
-        logContext: 'index_read',
-        scopeKey: scope.scopeKey,
-      }),
+      plans: await readIndexSummariesForBranch(scope, normalized, local.plans, true, registrySnapshot),
       reservedPlanSlugs: Array.from(new Set(local.reservedPlanSlugs.map((slug) => slugifyPlanTitle(slug)))),
     };
   }
@@ -329,10 +338,7 @@ export const readIndexAtScope = async (
     return {
       version: parsed.version === 2 ? 2 : 3,
       activePlanId: parsed.activePlanId || null,
-      plans: normalizeSummariesForBranch(normalized, parsed.plans, registrySnapshot, {
-        logContext: 'index_read',
-        scopeKey: scope.scopeKey,
-      }),
+      plans: await readIndexSummariesForBranch(scope, normalized, parsed.plans, false, registrySnapshot),
       reservedPlanSlugs: Array.from(new Set([...reservedPlanSlugs, ...planSlugsFromIndex])),
     };
   }

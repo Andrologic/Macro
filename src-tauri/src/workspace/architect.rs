@@ -59,15 +59,23 @@ struct ArchitectPlanRuntimeBranchIndex {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct ArchitectPlanIndexFile {
+struct ArchitectPlanIndexFile<S = WorkspaceArchitectPlanSummaryDto> {
     #[serde(default)]
     version: u32,
     #[serde(default, rename = "activePlanId")]
     active_plan_id: Option<String>,
     #[serde(default)]
-    plans: Vec<WorkspaceArchitectPlanSummaryDto>,
+    plans: Vec<S>,
     #[serde(default, rename = "reservedPlanSlugs")]
     reserved_plan_slugs: Vec<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct StoredArchitectPlanSummary {
+    #[serde(default, rename = "hasAgsdl")]
+    has_agsdl: Option<Value>,
+    #[serde(flatten)]
+    summary: WorkspaceArchitectPlanSummaryDto,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -838,19 +846,61 @@ fn normalize_project_id_hint(scoped_project_ids_hint: &[String]) -> Vec<String> 
     normalized
 }
 
+async fn read_stored_index(
+    scope: &ArchitectRuntimeScope,
+    branch_name: &str,
+    index_path: &Path,
+) -> Result<Option<ArchitectPlanIndexFile>> {
+    let Some(index) =
+        read_json_file::<ArchitectPlanIndexFile<StoredArchitectPlanSummary>>(index_path).await?
+    else {
+        return Ok(None);
+    };
+    let mut plans = Vec::with_capacity(index.plans.len());
+    for StoredArchitectPlanSummary {
+        has_agsdl,
+        mut summary,
+    } in index.plans
+    {
+        summary.has_agsdl = if let Some(has_agsdl) = has_agsdl.as_ref().and_then(Value::as_bool) {
+            has_agsdl
+        } else {
+            let plan_id = sanitize_id(&summary.id);
+            if plan_id.is_empty() || plan_id == "." || plan_id == ".." {
+                false
+            } else {
+                let path = architect_plan_dir(&scope.metadata_root, branch_name, &plan_id)
+                    .join("plan.json");
+                matches!(
+                    read_json_file::<WorkspaceArchitectPlanRecordDto>(&path).await,
+                    Ok(Some(plan)) if plan.id == summary.id
+                        && plan.agsdl.as_ref().and_then(|doc| doc.get("source")).and_then(Value::as_str).is_some()
+                )
+            }
+        };
+        plans.push(summary);
+    }
+    Ok(Some(ArchitectPlanIndexFile {
+        version: index.version,
+        active_plan_id: index.active_plan_id,
+        plans,
+        reserved_plan_slugs: index.reserved_plan_slugs,
+    }))
+}
+
 async fn read_index_at_scope(
     scope: &ArchitectRuntimeScope,
     branch_name: &str,
 ) -> Result<ArchitectPlanIndexFile> {
     let path = architect_plan_index_path(&scope.metadata_root, branch_name);
-    let index = match read_json_file::<ArchitectPlanIndexFile>(&path).await {
+    let index = match read_stored_index(scope, branch_name, &path).await {
         Ok(Some(index)) => index,
         Ok(None) | Err(_) => {
             // Cache entries vary with the requested project filter, but several entries can
             // point at the same index.json. Serialize only recovery of that physical file.
             let rebuild_lock = architect_index_rebuild_lock(&path).await;
             let _rebuild_guard = rebuild_lock.lock().await;
-            match read_json_file::<ArchitectPlanIndexFile>(&path).await {
+            match read_stored_index(scope, branch_name, &path).await {
                 Ok(Some(index)) => index,
                 Ok(None) => rebuild_index_from_plan_directories(scope, branch_name, &path).await?,
                 Err(index_error) => {
@@ -2009,6 +2059,103 @@ mod tests {
             },
         );
         std_fs::write(plan_dir.join("chat.jsonl"), chat_contents).expect("write chat jsonl");
+    }
+
+    #[tokio::test]
+    async fn lists_and_reopens_agsdl_from_a_readable_legacy_index() {
+        let workspace = TempDir::new().expect("workspace temp dir");
+        let metadata_root = workspace.path().join("metadata");
+        let stamp = "2026-06-01T08:00:00.000Z";
+        let plan_id = "legacy-system";
+        write_plan_replica(
+            &metadata_root,
+            plan_id,
+            "project-1",
+            stamp,
+            stamp,
+            "conversation-system",
+            "Design the system",
+        );
+        let path_for = |id| architect_plan_dir(&metadata_root, "main", id).join("plan.json");
+        let mut plan = plan_record(plan_id, "project-1");
+        let agsdl = serde_json::json!({
+            "source": "{\"contract\":\"agsdl-0.3.0\",\"id\":\"test\",\"agents\":{}}",
+            "annexes": {"note": "Example"},
+            "revision": 1,
+        });
+        plan.agsdl = Some(agsdl.clone());
+        write_json(&path_for(plan_id), &plan);
+        write_json(&path_for("software"), &plan_record("software", "project-1"));
+        write_json(&path_for("ambiguous"), &plan);
+        let mut modern_software = plan.clone();
+        modern_software.id = "modern-software".to_string();
+        write_json(&path_for("modern-software"), &modern_software);
+        let index_path = architect_plan_index_path(&metadata_root, "main");
+        write_json(
+            &index_path,
+            &serde_json::json!({
+                "version": 2,
+                "activePlanId": "software",
+                "reservedPlanSlugs": ["reserved"],
+                "plans": [
+                    {"id": plan_id, "title": plan_id, "label": "New plan", "status": "draft"},
+                    {"id": "software", "status": "draft", "nodeCount": 1},
+                    {"id": "ambiguous", "status": "draft"},
+                    {"id": "missing", "status": "draft"},
+                    {"id": "modern-software", "status": "draft", "hasAgsdl": false},
+                    {"id": "modern-system", "status": "draft", "hasAgsdl": true},
+                ],
+            }),
+        );
+        let previous_index = std_fs::read(&index_path).expect("read fixture index");
+        let previous_plan = std_fs::read(path_for(plan_id)).expect("read fixture plan");
+
+        let listed = list_plans(
+            workspace.path(),
+            &metadata_root,
+            WorkspaceArchitectListPlansRequestDto {
+                request_id: None,
+                branch_name: "main".to_string(),
+                include_deleted: false,
+                include_archived: false,
+                scoped_project_ids_hint: Vec::new(),
+            },
+        )
+        .await
+        .expect("list plans");
+        assert_eq!(listed.active_plan_id.as_deref(), Some("software"));
+        assert_eq!(listed.plans.len(), 6);
+        assert!(listed.plans.iter().all(|summary| {
+            summary.has_agsdl == matches!(summary.id.as_str(), "legacy-system" | "modern-system")
+        }));
+
+        let reopened = activate_plan_head(
+            workspace.path(),
+            &metadata_root,
+            WorkspaceArchitectActivatePlanHeadRequestDto {
+                branch_name: "main".to_string(),
+                plan_id: plan_id.to_string(),
+                summary_hint: None,
+                scoped_project_ids_hint: vec!["project-1".to_string()],
+            },
+        )
+        .await
+        .expect("open AgSDL plan")
+        .expect("activation head");
+        assert_eq!(reopened.resolution_mode, "full");
+        assert_eq!(
+            reopened.conversation_id.as_deref(),
+            Some("conversation-system")
+        );
+        assert_eq!(reopened.plan.agsdl, Some(agsdl));
+        assert_eq!(
+            std_fs::read(index_path).expect("read index"),
+            previous_index
+        );
+        assert_eq!(
+            std_fs::read(path_for(plan_id)).expect("read plan"),
+            previous_plan
+        );
     }
 
     #[tokio::test]
