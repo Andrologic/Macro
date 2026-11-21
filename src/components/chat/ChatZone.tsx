@@ -5,7 +5,6 @@ import { captureComposerSnapshot, hasMultipleAgsdlContexts, rebindAgsdlContextRe
 import type { ContextRefKind } from "../../types";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { AgsdlSentSelection } from "../agsdl/AgsdlChatSelection";
-import { TransferConversationDialog } from '../connect/TransferConversationDialog';
 import { macroPilotNativeClient } from '../../services/macroPilot/nativeClient';
 import { macroConnectReaderPorts } from '../../composition/macroConnectReader';
 import { macroPilotRuntime } from '../../composition/macroPilotDesktop';
@@ -13,7 +12,6 @@ import { usePilotStore } from '../../stores/usePilotStore';
 import type { ConsumerReaderPorts } from '../../services/macroPilot/consumerReader';
 import { ArrowRightLeft } from 'lucide-react';
 import { observeConversationMessage } from '../../services/conversationReadObservation';
-import { ArchiveReaderDialog } from './ArchiveReaderDialog';
 import { HistoricalMessageContent } from './HistoricalMessageContent';
 import { retainArchiveImages } from '../../services/archiveImages';
 import { onArchiveReadersRetiring } from '../../services/conversationPortableArchive';
@@ -196,6 +194,12 @@ const ImagePreviewModal = React.lazy(() =>
   import('../modals/ImagePreviewModal').then((module) => ({
     default: module.ImagePreviewModal,
   })),
+);
+const ArchiveReaderDialog = React.lazy(() =>
+  import('./ArchiveReaderDialog').then((module) => ({ default: module.ArchiveReaderDialog })),
+);
+const TransferConversationDialog = React.lazy(() =>
+  import('../connect/TransferConversationDialog').then((module) => ({ default: module.TransferConversationDialog })),
 );
 const PlanFormModal = React.lazy(() =>
   import('../architect/PlanFormModal').then((module) => ({
@@ -1039,7 +1043,11 @@ export const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                 </div>
               )}
               {message.portable_history && <button type="button" className="mt-2 text-xs text-muted-foreground underline" onClick={() => setArchiveOpen(true)}>{t('chat.archive.resources')}</button>}
-              {archiveOpen && <ArchiveReaderDialog key={`${message.conversation_id}:${message.id}`} conversationId={message.conversation_id} messageId={message.id} onClose={() => setArchiveOpen(false)} />}
+              {archiveOpen && (
+                <Suspense fallback={null}>
+                  <ArchiveReaderDialog key={`${message.conversation_id}:${message.id}`} conversationId={message.conversation_id} messageId={message.id} onClose={() => setArchiveOpen(false)} />
+                </Suspense>
+              )}
               {hasAssistantActivity && (
                 <span
                   data-chat-assistant-activity="true"
@@ -4825,8 +4833,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           />
         </Suspense>
       )}
-      {transferPorts && selectedConversationId && currentConversation && <TransferConversationDialog key={selectedConversationId} ports={transferPorts} source={{ id: selectedConversationId, title: currentConversation.title, providerId: currentConversation.provider_id ?? null, modelId: currentConversation.model_id ?? null }} send={(target, selection) => macroPilotRuntime.sendConversation(selectedConversationId, target, selection)} onClose={() => setTransferPorts(null)} onTransferred={() => { setTransferPorts(null); notify.success(t('chat.transfer.done')); }} />}
-      {archiveReaderOpen && selectedConversationId && <ArchiveReaderDialog key={selectedConversationId} conversationId={selectedConversationId} onClose={() => setArchiveReaderOpen(false)} />}
+      {transferPorts && selectedConversationId && currentConversation && (
+        <Suspense fallback={null}>
+          <TransferConversationDialog key={selectedConversationId} ports={transferPorts} source={{ id: selectedConversationId, title: currentConversation.title, providerId: currentConversation.provider_id ?? null, modelId: currentConversation.model_id ?? null }} send={(target, selection) => macroPilotRuntime.sendConversation(selectedConversationId, target, selection)} onClose={() => setTransferPorts(null)} onTransferred={() => { setTransferPorts(null); notify.success(t('chat.transfer.done')); }} />
+        </Suspense>
+      )}
+      {archiveReaderOpen && selectedConversationId && (
+        <Suspense fallback={null}>
+          <ArchiveReaderDialog key={selectedConversationId} conversationId={selectedConversationId} onClose={() => setArchiveReaderOpen(false)} />
+        </Suspense>
+      )}
 
       {mode === 'Architect' &&
         architectPlanNamingRecovery?.stage === 'manual' && (

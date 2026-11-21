@@ -12,17 +12,18 @@ const BUDGETS = [
   { name: 'native-client', pattern: /^nativeClient-.*\.js$/, limitBytes: 830_000 },
   { name: 'pilot-desktop', pattern: /^macroPilotDesktop-.*\.js$/, limitBytes: 651_000 },
   { name: 'max-chunk', pattern: /\.js$/, limitBytes: 600_000, exclude: /^(?:index|main|nativeClient|macroPilotDesktop)-.*\.js$/ },
-  { name: 'chat-zone', pattern: /^ChatZone-.*\.js$/, limitBytes: 204_000 },
+  // With Connect dialogs loaded on demand, the chat pane measures 208,876 B.
+  { name: 'chat-zone', pattern: /^ChatZone-.*\.js$/, limitBytes: 211_000 },
   // Develop measured TaskQueue at 63,040 B; retain a 160 B margin.
   { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 63_200 },
   { name: 'markdown-rich-content', pattern: /^MarkdownRichContent-.*\.js$/, limitBytes: 70_000 },
-  // Completed Pilot translations in the merged locales measure 157,555 B (es),
-  // 161,171 B (de), 162,175 B (fr), 165,085 B (ko), and 185,153 B (ja).
+  // The locales with Connect transfer and archive copy measure 160,040 B (es),
+  // 163,777 B (de), 164,783 B (fr), 167,673 B (ko), and 188,058 B (ja).
   // Keep about 1% headroom, with the shared fr/ko budget based on ko.
-  { name: 'locale-fragment-es', pattern: /^es-.*\.js$/, limitBytes: 159_200 },
-  { name: 'locale-fragment-de', pattern: /^de-.*\.js$/, limitBytes: 162_800 },
-  { name: 'locale-fragment-fr-ko', pattern: /^(fr|ko)-.*\.js$/, limitBytes: 166_800 },
-  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 187_100 },
+  { name: 'locale-fragment-es', pattern: /^es-.*\.js$/, limitBytes: 161_700 },
+  { name: 'locale-fragment-de', pattern: /^de-.*\.js$/, limitBytes: 165_500 },
+  { name: 'locale-fragment-fr-ko', pattern: /^(fr|ko)-.*\.js$/, limitBytes: 169_400 },
+  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 190_000 },
 ];
 
 const formatKiB = (bytes) => `${(bytes / 1024).toFixed(1)} KiB`;
