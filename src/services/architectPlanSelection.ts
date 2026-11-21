@@ -1,4 +1,4 @@
-import type { ArchitectPlanSummary } from './architectPlanService';
+import type { ArchitectPlanActivationPayload, ArchitectPlanSummary } from './architectPlanService';
 import {
   getArchitectPlanVisibleProjectIdsFromScope,
   normalizeArchitectPlanIdList,
@@ -8,6 +8,29 @@ export interface ArchitectPlanResolutionState {
   visiblePlans: ArchitectPlanSummary[];
   nextActivePlanId: string | null;
 }
+
+export const isActiveArchitectAgsdlPlan = (
+  plan: Pick<ArchitectPlanSummary, 'hasAgsdl' | 'status'>,
+): boolean =>
+  plan.hasAgsdl === true && plan.status !== 'archived' && plan.status !== 'deleted';
+
+export const isExactArchitectAgsdlActivation = (
+  payload: ArchitectPlanActivationPayload | null,
+  planId: string,
+  targetBranch: string,
+  conversationId: string,
+): boolean =>
+  !!payload &&
+  payload.plan.id === planId &&
+  payload.plan.targetBranch === targetBranch &&
+  payload.targetBranch === targetBranch &&
+  payload.plan.conversationId === conversationId &&
+  payload.conversationId === conversationId &&
+  !payload.sharedConversation &&
+  isActiveArchitectAgsdlPlan({
+    status: payload.plan.status,
+    hasAgsdl: typeof payload.plan.agsdl?.source === 'string',
+  });
 
 export const compareArchitectPlanSelectionPriority = (
   left: Pick<ArchitectPlanSummary, 'id' | 'createdAt' | 'updatedAt'>,

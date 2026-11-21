@@ -3,6 +3,7 @@ import { useNotificationCenterStore } from '../../stores/useNotificationCenterSt
 import { openWorkflowNotificationContext } from '../../services/openWorkflowNotificationContext';
 import type { TFunction } from 'i18next';
 import type { ChatMessage, Conversation, PendingToolApproval } from '../../types';
+import type { ArchitectPlanActivationPayload, ArchitectPlanSummary } from '../../services/architectPlanService';
 import type { CatalogedImplementTask } from '../../services/implementTaskCatalog';
 
 type StoreListener<T> = (nextState: T, previousState: T) => void;
@@ -12,13 +13,14 @@ interface TestAppState {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   selectedTaskId: string | null;
+  activeArchitectPlanId: string | null;
+  activePlanContext: { targetBranch: string } | null;
   standaloneProjects: Array<{ id: string }>;
   projectGroups: Array<{ id: string; projects: Array<{ id: string }> }>;
   setMode: ReturnType<typeof mock>;
   setSelectedGroup: ReturnType<typeof mock>;
   setSelectedTask: ReturnType<typeof mock>;
   switchProjectContext: ReturnType<typeof mock>;
-  loadMacroProjectMetadataForSelection: ReturnType<typeof mock>;
   activateArchitectPlan: ReturnType<typeof mock>;
 }
 
@@ -63,6 +65,35 @@ const taskListeners = new Set<StoreListener<TestTaskState>>();
 const notifyActionRequired = mock(
   (_title: string, _options: CapturedNotificationOptions) => undefined,
 );
+const ownerPlan: ArchitectPlanSummary = {
+  id: 'plan-owner',
+  slug: 'plan-owner',
+  title: 'Owner',
+  description: '',
+  targetBranch: 'develop',
+  conversationId: 'conversation-1',
+  status: 'draft',
+  hasAgsdl: true,
+  createdAt: '2026-09-04T10:00:00.000Z',
+  updatedAt: '2026-09-04T10:00:00.000Z',
+  nodeCount: 0,
+};
+const ownerPayload: ArchitectPlanActivationPayload = {
+  plan: { ...ownerPlan, nodes: [], predictedBranches: [], agsdl: { source: '', annexes: {}, revision: 1 } },
+  conversationId: 'conversation-1',
+  chatMessages: [],
+  targetBranch: 'develop',
+  sharedConversation: false,
+  resolutionMode: 'full',
+};
+const readOwner = mock(async (): Promise<ArchitectPlanActivationPayload | null> => ownerPayload);
+const makeCatalog = (plans: readonly ArchitectPlanSummary[]) => ({
+  snapshot: {
+    branches: [{ branchName: 'develop', plans }],
+    visiblePlans: plans,
+  },
+});
+const loadNotificationCatalog = mock(async () => makeCatalog([ownerPlan]));
 
 const useAppStore = Object.assign(() => appState, {
   getState: () => appState,
@@ -85,6 +116,10 @@ const useTaskStore = Object.assign(() => taskState, {
 mock.module('../../stores/useAppStore', () => ({ useAppStore }));
 mock.module('../../stores/useChatStore', () => ({ useChatStore }));
 mock.module('../../stores/useTaskStore', () => ({ useTaskStore }));
+mock.module('../../services/architectPlanService', () => ({ getArchitectPlanActivationPayload: readOwner }));
+mock.module('../../services/macroProjectMetadataLoader', () => ({
+  loadMacroProjectMetadataForSelection: loadNotificationCatalog,
+}));
 mock.module('../ui/toastService', () => ({
   notify: { actionRequired: notifyActionRequired, dismiss: mock(() => undefined) },
 }));
@@ -175,12 +210,18 @@ beforeEach(() => {
   chatListeners.clear();
   taskListeners.clear();
   notifyActionRequired.mockClear();
+  readOwner.mockReset();
+  readOwner.mockResolvedValue(ownerPayload);
+  loadNotificationCatalog.mockReset();
+  loadNotificationCatalog.mockResolvedValue(makeCatalog([ownerPlan]));
   navigationCalls = [];
   appState = {
     mode: 'Chat',
     selectedGroupId: 'group-current',
     selectedTaskId: null,
     selectedProjectId: 'project-current',
+    activeArchitectPlanId: null,
+    activePlanContext: null,
     standaloneProjects: [{ id: 'project-other' }, { id: 'project-current' }],
     projectGroups: [{ id: 'group-other', projects: [{ id: 'project-current' }] }],
     setMode: mock((mode: TestAppState['mode'], _options?: { ensureAutoPlan?: boolean }) => {
@@ -198,30 +239,15 @@ beforeEach(() => {
       navigationCalls.push('setSelectedTask');
       appState.selectedTaskId = taskId;
     }),
-    switchProjectContext: mock(async () => {
+    switchProjectContext: mock(async (projectId: string) => {
       navigationCalls.push('switchProjectContext');
+      appState.selectedGroupId = null;
+      appState.selectedProjectId = projectId;
     }),
-    loadMacroProjectMetadataForSelection: mock(async (options: {
-      hydrateActivePlan?: boolean;
-    }) => {
-      navigationCalls.push(
-        options.hydrateActivePlan === false ? 'loadCatalog' : 'hydratePlan',
-      );
-      return {
-        snapshot: {
-          scopedProjectIds: ['project-current'],
-          visiblePlans: [
-            {
-              id: 'plan-owner',
-              targetBranch: 'develop',
-              conversationId: 'conversation-1',
-            },
-          ],
-        },
-      };
-    }),
-    activateArchitectPlan: mock(async () => {
+    activateArchitectPlan: mock(async (planId: string, options: { targetBranch: string }) => {
       navigationCalls.push('activatePlan');
+      appState.activeArchitectPlanId = planId;
+      appState.activePlanContext = { targetBranch: options.targetBranch };
       return true;
     }),
   };
@@ -245,6 +271,40 @@ beforeEach(() => {
 });
 
 describe('workflow attention notification subscriptions', () => {
+  it.each([
+    { label: 'no owner', plans: [], payload: ownerPayload },
+    { label: 'legacy owner', plans: [{ ...ownerPlan, hasAgsdl: false }], payload: ownerPayload },
+    { label: 'archived owner', plans: [{ ...ownerPlan, status: 'archived' as const }], payload: ownerPayload },
+    { label: 'ambiguous owners', plans: [ownerPlan, { ...ownerPlan, id: 'another' }], payload: ownerPayload },
+    { label: 'unreadable owner', plans: [ownerPlan], payload: null },
+    { label: 'different plan', plans: [ownerPlan], payload: { ...ownerPayload, plan: { ...ownerPayload.plan, id: 'another' } } },
+    { label: 'different branch', plans: [ownerPlan], payload: { ...ownerPayload, plan: { ...ownerPayload.plan, targetBranch: 'main' } } },
+    { label: 'different conversation', plans: [ownerPlan], payload: { ...ownerPayload, conversationId: 'another' } },
+    { label: 'shared conversation', plans: [ownerPlan], payload: { ...ownerPayload, sharedConversation: true } },
+    { label: 'stale AgSDL flag', plans: [ownerPlan], payload: { ...ownerPayload, plan: { ...ownerPayload.plan, agsdl: undefined } } },
+  ])('keeps the current context for an Architect request with $label', async ({ plans, payload }) => {
+    const conversation = makeConversation({ scope_mode: 'Architect', task_id: null, group_id: 'group-other' });
+    chatState.conversations = [conversation];
+    loadNotificationCatalog.mockResolvedValue(makeCatalog(plans));
+    readOwner.mockResolvedValue(payload);
+
+    await openWorkflowNotificationContext({ kind: 'conversation', requestKind: 'approval', conversationId: conversation.id });
+
+    expect(navigationCalls).toEqual([]);
+  });
+
+  it('does not select any conversation if exact Architect activation fails', async () => {
+    const conversation = makeConversation({ scope_mode: 'Architect', task_id: null, group_id: 'group-other' });
+    chatState.conversations = [conversation];
+    appState.activateArchitectPlan.mockResolvedValue(false);
+
+    await openWorkflowNotificationContext({ kind: 'conversation', requestKind: 'approval', conversationId: conversation.id });
+
+    expect(appState.activateArchitectPlan).toHaveBeenCalledTimes(1);
+    expect(chatState.ensureConversationForCurrentMode).not.toHaveBeenCalled();
+    expect(chatState.selectConversation).not.toHaveBeenCalled();
+  });
+
   it('uses the current conversation task identity instead of an obsolete notification context', async () => {
     const conversation = makeConversation();
     chatState.conversations = [conversation];
@@ -661,17 +721,16 @@ describe('workflow attention notification subscriptions', () => {
       expect.objectContaining({
         targetBranch: 'develop',
         allowScopeSwitch: false,
+        expectedAgsdlConversationId: conversation.id,
       }),
     );
     expect(navigationCalls).toEqual([
       'setSelectedGroup',
       'setMode',
-      'loadCatalog',
       'activatePlan',
-      'ensureConversation',
       'selectConversation',
     ]);
-    expect(chatState.ensureConversationForCurrentMode).toHaveBeenCalledTimes(1);
+    expect(chatState.ensureConversationForCurrentMode).not.toHaveBeenCalled();
     expect(chatState.selectConversation).toHaveBeenCalledWith(conversation.id);
     unsubscribe();
   });

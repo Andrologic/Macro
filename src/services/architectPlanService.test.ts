@@ -2527,6 +2527,26 @@ describe('architectPlanService', () => {
     expect(listing.activePlanId).not.toBe(created.id);
   });
 
+  it('can resolve an activation conversation from the stored plan when its summary is stale', async () => {
+    const plan = await service.createArchitectPlan({
+      branchName,
+      planId: 'notification-owner',
+      agsdl: { source: '', annexes: {} },
+    });
+    await service.bindArchitectPlanConversation({ branchName, planId: plan.id, conversationId: 'stored-owner' });
+    const listed = await service.listArchitectPlans(branchName);
+    const summaryHint = {
+      ...listed.plans.find((candidate: ArchitectPlanSummary) => candidate.id === plan.id)!,
+      conversationId: 'stale-owner',
+    };
+    await service.getArchitectPlanActivationPayload(branchName, plan.id, { summaryHint });
+    const payload = await service.getArchitectPlanActivationPayload(branchName, plan.id, {
+      summaryHint,
+      requireStoredConversation: true,
+    });
+    expect(payload?.conversationId).toBe('stored-owner');
+  });
+
   it('persists 0.2 design intent outside the unchanged closed source and includes metadata in size limits', async () => {
     const source = '{"contract":"agsdl-0.2.0","id":"release","agents":{},"configurations":{},"bindings":{}}';
     const design = { version: 1 as const, kind: 'blueprint' as const, purpose: 'Vérifier la release.', context: '', rules: [], requirements: [] };

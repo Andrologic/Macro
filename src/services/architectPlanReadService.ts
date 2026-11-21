@@ -798,6 +798,7 @@ export const buildArchitectPlanActivationSnapshot = async (params: {
   planId: string;
   summary?: ArchitectPlanSummary | null;
   registrySnapshot?: ValidProjectRegistrySnapshot | null;
+  requireStoredConversation?: boolean;
 }): Promise<ArchitectPlanActivationSnapshot | null> => {
   const planResult = await readPlanAtScopeWithDiagnostics(
     params.scope,
@@ -861,7 +862,8 @@ export const buildArchitectPlanActivationSnapshot = async (params: {
     typeof storedManifest.conversation === 'object' &&
     typeof storedManifest.conversation.conversationId === 'string'
       ? storedManifest.conversation.conversationId
-      : params.summary?.conversationId ?? planResult.plan.conversationId ?? null;
+      : (params.requireStoredConversation ? null : params.summary?.conversationId) ??
+        planResult.plan.conversationId ?? null;
   const chatMessageCount =
     typeof params.summary?.chatMessageCount === 'number'
       ? params.summary.chatMessageCount
@@ -1044,6 +1046,7 @@ export const loadArchitectPlanActivationPayloadImpl = async (
           planId: safeId,
           summary,
           registrySnapshot,
+          requireStoredConversation: options.requireStoredConversation,
         })
       )
     )
@@ -1150,7 +1153,7 @@ export const getArchitectPlanActivationPayload = async (
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
 
-  if (isWorkspaceArchitectRuntimeAvailable(deps)) {
+  if (options.requireStoredConversation || isWorkspaceArchitectRuntimeAvailable(deps)) {
     return await loadArchitectPlanActivationPayloadImpl(
       normalizedBranch,
       planId,

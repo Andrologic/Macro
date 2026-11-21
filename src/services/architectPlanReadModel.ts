@@ -306,6 +306,7 @@ export interface ArchitectPlanActivationOptions {
   summaryHint?: ArchitectPlanSummary | null;
   scopedProjectIdsHint?: string[];
   allowIndexFallback?: boolean;
+  requireStoredConversation?: boolean;
 }
 
 export const applyArchitectPlanLifecycleForStatus = <T extends {
