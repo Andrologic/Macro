@@ -43,5 +43,7 @@ it('sends a named instance reply only to its retained selector', async () => {
   const count = requests.length;
   await expect(sendRunMessage030(named, 'worker', 'queue', 'Reply', 'absent')).rejects.toThrow();
   await expect(sendRunMessage030(run, 'worker', 'queue', 'Reply', instance.id)).rejects.toThrow();
+  const flow = inspectionFixture030();
+  await expect(sendRunMessage030({ ...named, capture: flow.capture }, 'worker', 'queue', 'Reply', instance.id)).rejects.toThrow();
   expect(requests).toHaveLength(count);
 });
