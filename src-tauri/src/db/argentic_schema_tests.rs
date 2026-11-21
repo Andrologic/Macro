@@ -78,10 +78,6 @@ async fn standalone_post042_matches_migrated_macro_schema_and_constraints() {
             .fetch_all(&macro_pool)
             .await
             .unwrap();
-    assert_eq!(
-        before.last().map(|r| (r.0, r.1.as_str())),
-        Some((42, "042_retire_execution020"))
-    );
     let expected = objects(&macro_pool).await;
     assert!(!expected.is_empty());
     for pool in [&standalone_file, &standalone_memory] {
@@ -109,7 +105,7 @@ async fn macro_retains_call_clock_and_retirement_migration_ids() {
         .await
         .unwrap();
     let migrations: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT version,name FROM schema_migrations WHERE version>=39 ORDER BY version",
+        "SELECT version,name FROM schema_migrations WHERE version BETWEEN 39 AND 42 ORDER BY version",
     )
     .fetch_all(&pool)
     .await

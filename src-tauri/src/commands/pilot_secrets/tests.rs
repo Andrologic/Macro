@@ -2049,7 +2049,7 @@ async fn global_chat_local_transfer(
             .find(|p| p.is_file())
             .unwrap()
     };
-    let mut relay = tokio::process::Command::new(executable("node"))
+    let mut relay = crate::core::process::background_tokio_command(executable("node"))
         .args([
             "--import",
             &std::env::var("MACRO_CONNECT_RELAY_LOADER").unwrap(),
@@ -2087,7 +2087,7 @@ async fn global_chat_local_transfer(
         .unwrap();
     target.set_ready(target_pool.clone()).await.unwrap();
     let content = "A short answer available on the other computer.";
-    let provenance=tokio::process::Command::new(executable("bun")).args(["-e",r#"
+    let provenance=crate::core::process::background_tokio_command(executable("bun")).args(["-e",r#"
         import {assistantProvenance} from './src/services/macroPilot/assistantProvenance';
         import {buildAssistantChatCompletionProviderItem} from './src/services/ai/chatCompletionsCodec';
         import {buildAssistantProviderInputItemsFromTurn,buildProviderInputItemsFromContent} from './src/services/ai/responsesCodec';
@@ -2181,7 +2181,7 @@ async fn global_chat_local_transfer(
             .await
             .unwrap();
         }
-        let mut process=tokio::process::Command::new(executable("bun")).args(["-e",r#"
+        let mut process=crate::core::process::background_tokio_command(executable("bun")).args(["-e",r#"
             import {mapDbMessageToChatMessage} from './src/services/chatDbMappers';
             import {buildCompactedMessagesForRequest} from './src/services/contextCompaction';
             import {CHECKPOINT_COLUMNS} from './src/test-utils/portableNormalizationRecipe';
@@ -2405,7 +2405,7 @@ async fn global_chat_local_transfer(
     let mut command = match &remote {
         Some((host, binary, remote_directory)) => {
             let port = seed["port"].as_u64().unwrap();
-            let mut command = tokio::process::Command::new("ssh");
+            let mut command = crate::core::process::background_tokio_command("ssh");
             command.args([
                 "-o",
                 "BatchMode=yes",
@@ -2422,7 +2422,8 @@ async fn global_chat_local_transfer(
             command
         }
         None => {
-            let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+            let mut command =
+                crate::core::process::background_tokio_command(std::env::current_exe().unwrap());
             command
                 .args(target_args)
                 .env("MACRO_CONNECT_TEST_INVITATION_PAUSE_MS", pause);
@@ -2825,7 +2826,7 @@ async fn global_chat_local_transfer(
         // compacted source still sends its checkpoint, which is not transferred.
         let next_request = match &remote {
             Some((host, _, remote_directory)) => {
-                tokio::process::Command::new("ssh")
+                crate::core::process::background_tokio_command("ssh")
                     .args([
                         "-o",
                         "BatchMode=yes",
@@ -3009,7 +3010,7 @@ async fn global_chat_local_transfer(
         transferred.unwrap();
     }
     if let Some((host, _, remote_directory)) = &remote {
-        let _ = tokio::process::Command::new("ssh")
+        let _ = crate::core::process::background_tokio_command("ssh")
             .args([
                 "-o",
                 "BatchMode=yes",
@@ -3655,7 +3656,7 @@ async fn global_chat_transfer_target() {
     }
     // Exercise the same historical-message renderer used by ChatZone with
     // the ordinary published rows, rather than displaying archive JSON.
-    let mut renderer=tokio::process::Command::new(std::env::split_paths(&std::env::var_os("PATH").unwrap()).map(|p|p.join("bun")).find(|p|p.is_file()).unwrap())
+    let mut renderer=crate::core::process::background_tokio_command(std::env::split_paths(&std::env::var_os("PATH").unwrap()).map(|p|p.join("bun")).find(|p|p.is_file()).unwrap())
             .args(["-e",r#"
                 import React from 'react';import {renderToStaticMarkup} from 'react-dom/server';
                 import {createInstance} from 'i18next';import {I18nextProvider} from 'react-i18next';
@@ -3805,7 +3806,7 @@ async fn ordinary_next_request(
         .map(|p| p.join("bun"))
         .find(|p| p.is_file())
         .unwrap();
-    let mut driver = tokio::process::Command::new(bun)
+    let mut driver = crate::core::process::background_tokio_command(bun)
         .arg("dev/connect-transfer-next-request.ts")
         .current_dir(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -4155,7 +4156,7 @@ impl DesktopHost<'_> {
             .map(|p| p.join("bun"))
             .find(|p| p.is_file())
             .unwrap();
-        let mut driver = tokio::process::Command::new(bun)
+        let mut driver = crate::core::process::background_tokio_command(bun)
             .arg("dev/connect-transfer-runtime.ts")
             .current_dir(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

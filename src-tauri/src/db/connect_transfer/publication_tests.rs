@@ -454,7 +454,7 @@ async fn connect_local_deletion_process_death_keeps_atomic_disposition() {
         let input = publish_input(&pool, &spec, &allocation).await;
         let published = publish(&pool, &input).await.unwrap();
         pool.close().await;
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
+        let output = crate::core::process::background_command(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "db::connect_transfer::preparation::tests::connect_local_deletion_crash_child",

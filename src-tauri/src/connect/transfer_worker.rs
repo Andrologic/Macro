@@ -1256,7 +1256,8 @@ mod tests {
         // The worker retains a second control reservation before requesting
         // its policy root. Fund that real refusal path and the parent IO.
         let charge = budget.reserve(4 * 1024 * 1024).unwrap();
-        let mut command = Command::new(super::super::runtime::test_bun());
+        let mut command =
+            crate::core::process::background_tokio_command(super::super::runtime::test_bun());
         command
             .arg(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
