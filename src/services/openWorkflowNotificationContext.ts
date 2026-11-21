@@ -1,4 +1,5 @@
 import i18n from '../i18n';
+import { isOperateWorkspace } from './operateWorkspace';
 import { useAppStore } from '../stores/useAppStore';
 import { useChatStore } from '../stores/useChatStore';
 import { useTaskStore } from '../stores/useTaskStore';
@@ -13,11 +14,13 @@ export const openWorkflowNotificationContext = async (
   const chatState = useChatStore.getState();
 
   const taskState = useTaskStore.getState();
-  if (chatState.hydrationStatus === 'idle' || chatState.hydrationStatus === 'hydrating' || taskState.isLoading) {
+  if (navigation.kind === 'review' && isOperateWorkspace('Implement')) return;
+  if (chatState.hydrationStatus === 'idle' || chatState.hydrationStatus === 'hydrating') {
     throw new Error(i18n.t('common.loading', 'Loading...'));
   }
   const tasks = taskState.tasks;
   if (navigation.kind === 'review') {
+    if (taskState.isLoading) throw new Error(i18n.t('common.loading', 'Loading...'));
     const task = resolveTaskReference(tasks, navigation.taskId);
     if (!task) return;
     const conversationId = chatState.conversations.find((conversation) =>
@@ -42,7 +45,8 @@ export const openWorkflowNotificationContext = async (
   }
 
   const conversation = chatState.conversations.find((candidate) => candidate.id === navigation.conversationId);
-  if (!conversation) return;
+  if (!conversation || isOperateWorkspace(conversation.scope_mode)) return;
+  if (conversation.task_id && taskState.isLoading) throw new Error(i18n.t('common.loading', 'Loading...'));
   const task = conversation.task_id ? resolveTaskReference(tasks, conversation.task_id) : undefined;
   if (conversation.task_id && !task) return;
   const event = {

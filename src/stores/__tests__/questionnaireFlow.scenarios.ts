@@ -8,7 +8,6 @@ export const registerQuestionnaireFlowScenarios = (
     appState,
     createConversation,
     createManualFeatureTask,
-    emitTaskStoreUpdate,
     loadChatStore,
     streamChatMock,
     taskStoreState,
@@ -308,95 +307,6 @@ export const registerQuestionnaireFlowScenarios = (
           .find((message: { role: string }) => message.role === 'assistant')?.questionnaire?.questions
           .length
       ).toBe(1);
-    });
-
-    it('reconciles an unresolved questionnaire to AwaitingResponse only once while persistence is pending', async () => {
-      appState.mode = 'Implement';
-      appState.selectedTaskId = 'manual-task-1';
-      taskStoreState.tasks = [
-        createManualFeatureTask({
-          draft: false,
-          title: 'Quick export',
-          status: 'InProgress',
-          feature_slug: 'quick-export',
-          assigned_branch: 'feature/quick-export',
-          branch_name: 'feature/quick-export',
-        }),
-      ];
-
-      const { useChatStore } = await loadChatStore();
-      useChatStore.setState({
-        conversations: [
-          {
-            ...createConversation('manual-conv'),
-            scope_mode: 'Implement',
-            task_id: 'manual-task-1',
-            title: 'Quick export',
-          },
-        ],
-        messages: [
-          {
-            id: 'assistant-questionnaire',
-            task_id: 'manual-task-1',
-            conversation_id: 'manual-conv',
-            role: 'assistant',
-            content: 'Need one blocking choice.',
-            timestamp: '2026-04-14T10:00:00.000Z',
-            questionnaire: {
-              intro: 'Need one blocking choice.',
-              source: 'tool',
-              questions: [
-                {
-                  id: 'scope',
-                  prompt: 'Which scope should I use?',
-                  choices: ['Minimal', 'Balanced', 'Large'],
-                },
-              ],
-            },
-          },
-        ],
-        selectedConversationId: 'manual-conv',
-        selectedConversationIdsByMode: { Implement: 'manual-conv' },
-        isLoading: false,
-        isStreaming: false,
-        sendState: 'idle',
-        lastError: null,
-        abortController: null,
-        messageImagesByMessageId: {},
-        questionnaireDraftsByConversationId: {},
-        composerContextRefs: [],
-      });
-
-      taskStoreState.markTaskAwaitingResponse.mockClear();
-      let resolvePersistence: (() => void) | null = null;
-      taskStoreState.markTaskAwaitingResponse.mockImplementationOnce(async (taskId: string) => {
-        await new Promise<void>((resolve) => {
-          resolvePersistence = resolve;
-        });
-        taskStoreState.tasks = taskStoreState.tasks.map((task) =>
-          task.id === taskId ? { ...task, status: 'AwaitingResponse' } : task
-        );
-      });
-      const previousTasks = taskStoreState.tasks;
-      taskStoreState.tasks = taskStoreState.tasks.map((task) => ({ ...task }));
-      emitTaskStoreUpdate(previousTasks);
-      await Promise.resolve();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-
-      expect(taskStoreState.markTaskAwaitingResponse).toHaveBeenCalledWith('manual-task-1');
-      const tasksBeforeSecondRefresh = taskStoreState.tasks;
-      taskStoreState.tasks = taskStoreState.tasks.map((task) => ({ ...task }));
-      emitTaskStoreUpdate(tasksBeforeSecondRefresh);
-      await Promise.resolve();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-
-      expect(taskStoreState.markTaskAwaitingResponse).toHaveBeenCalledTimes(1);
-      expect(resolvePersistence).toBeDefined();
-      (resolvePersistence as unknown as () => void)();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
-        status: 'AwaitingResponse',
-      });
     });
 
     it('keeps an implement task in progress when the assistant reply has malformed quick replies', async () => {

@@ -1,3 +1,4 @@
+import { demoWorkflowJourney, isOperateWorkspace } from '../services/operateWorkspace';
 import {
   getConversationFallbackTitle,
   getConversationFallbackDescription,
@@ -3334,14 +3335,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return;
       }
 
-      if (
-        task.status === "AwaitingResponse" ||
-        task.status === "Completed" ||
-        task.status === "Failed" ||
-        task.status === "InReview"
-      ) {
-        return;
-      }
+      if (task.status !== "InProgress") return;
 
       taskIdsToMark.add(conversation.task_id);
     });
@@ -3352,20 +3346,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       awaitingResponseReconciliationTaskIds.add(taskId);
       try {
-        const currentTask = taskStore.getTaskById(taskId);
-        if (!currentTask) {
-          continue;
-        }
-
-        if (currentTask.status === "Pending") {
-          await taskStore.startTask(taskId);
-          lifecycle?.assertActive();
-        }
-
-        const refreshedTask = taskStore.getTaskById(taskId);
-        if (!refreshedTask || refreshedTask.status !== "InProgress") {
-          continue;
-        }
+        if (taskStore.getTaskById(taskId)?.status !== "InProgress") continue;
 
         await taskStore.markTaskAwaitingResponse(taskId);
         lifecycle?.assertActive();
@@ -3376,6 +3357,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const scheduleImplementAwaitingResponseReconciliation = () => {
+    if (!demoWorkflowJourney) return;
     const scope = subscriptionScope;
     if (!scope?.isActive()) return;
     if (awaitingResponseReconciliationScheduled) {
@@ -9687,17 +9669,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (
       mode === "Implement" &&
+      getConversationScopeMode(conversation) === "Implement" &&
       conversation.task_id &&
       appState.selectedTaskId !== conversation.task_id
     ) {
       const resolvedTask = resolveImplementTaskForContext({
         selectedTaskId: conversation.task_id,
         tasks: useTaskStore.getState().tasks,
-        standaloneProjects: appState.standaloneProjects,
-        projectGroups: appState.projectGroups,
-        selectedGroupId: appState.selectedGroupId,
-        selectedProjectId: appState.selectedProjectId,
-        localContext: null,
       });
       if (resolvedTask) {
         appState.setSelectedTask(resolvedTask.id);
@@ -10712,6 +10690,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const codeRecoveryKey = getAgentCodeReplayRecoveryKey(conversation.id);
         const codeRecoveryMarker = await tauriIpc.dbGetAppSetting(codeRecoveryKey);
         lifecycle?.assertActive();
+        if (codeRecoveryMarker && getConversationScopeMode(conversation) === "Implement") {
+          replayRecoveryBlockedConversationIds.add(conversation.id);
+          replayRecoveryError =
+            "An interrupted Implement replay was retained without changing its code or transcript.";
+          continue;
+        }
 
         let codeRecovery:
           | {
@@ -11229,8 +11213,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
             selectedProjectId,
           })
         : null;
-    if (mode === 'Implement' && selectedTaskId?.startsWith('task:agsdl:v1:')) return modeFallback(null);
-
     if (
       mode === "Architect" &&
       architectWorkspaceState &&
@@ -11248,6 +11230,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (mode !== "Architect" || !appState.activeArchitectPlanId) {
       clearPendingArchitectConversationsExcept();
     }
+    if (isOperateWorkspace(mode)) return modeFallback(getSelectedConflictInspection());
 
     if (mode === "Architect" && appState.activeArchitectPlanId) {
       const architectResolutionStartedAt = Date.now();
@@ -11593,32 +11576,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         title: task ? `Task - ${task.title}` : "Task Session",
         taskId: selectedTaskId,
         projectId: projectId ?? null,
-        groupId: selectedGroupId,
-        selectConversation: false,
-      });
-      lifecycle?.assertActive();
-      if (!isCurrentRequest()) return modeFallback(null);
-      return modeFallback(created.id);
-    }
-
-    if (mode === "Implement") {
-      const fallbackProjectId =
-        getFocusedProjectForGroup(
-          appState.projectGroups,
-          selectedGroupId,
-          selectedProjectId,
-          localProjectContext,
-        )?.id ??
-        selectedProjectId ??
-        null;
-      const fallbackTitle = fallbackProjectId
-        ? `Repository review`
-        : "Implement Session";
-      const created = await createConversationRecord({
-            lifecycle,
-        title: fallbackTitle,
-        taskId: null,
-        projectId: fallbackProjectId,
         groupId: selectedGroupId,
         selectConversation: false,
       });
@@ -12535,49 +12492,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return get().selectedConversationId;
       }
 
-      let appState = useAppStore.getState();
-      // A verified, currently selected inspection owns the taskless context.
-      // Restoring a remembered task would invalidate that deliberate selection.
-      if (appState.mode === "Implement" && !getSelectedConflictInspection()) {
-        const contextBeforeRead = {
-          mode: appState.mode,
-          selectedGroupId: appState.selectedGroupId,
-          selectedProjectId: appState.selectedProjectId,
-          selectedTaskId: appState.selectedTaskId,
-        };
-        const localContext = appState.selectedGroupId
-          ? await getLocalProjectContextState(appState.selectedGroupId)
-          : null;
-        lifecycle?.assertActive();
-        const currentAppState = useAppStore.getState();
-        if (!isOwnerCurrent() || resolutionGeneration !== conversationResolutionGeneration ||
-          selectionRequestAtStart !== get().selectionRequestId ||
-          currentAppState.mode !== contextBeforeRead.mode ||
-          currentAppState.selectedGroupId !== contextBeforeRead.selectedGroupId ||
-          currentAppState.selectedProjectId !== contextBeforeRead.selectedProjectId ||
-          currentAppState.selectedTaskId !== contextBeforeRead.selectedTaskId) {
-          return get().selectedConversationId;
-        }
-        const resolvedTask = resolveImplementTaskForContext({
-          selectedTaskId: appState.selectedTaskId,
-          tasks: useTaskStore.getState().tasks,
-          standaloneProjects: appState.standaloneProjects,
-          projectGroups: appState.projectGroups,
-          selectedGroupId: appState.selectedGroupId,
-          selectedProjectId: appState.selectedProjectId,
-          localContext,
-        });
-        if (resolvedTask && appState.selectedTaskId !== resolvedTask.id) {
-          appState.setSelectedTask(resolvedTask.id);
-          appState = useAppStore.getState();
-        } else if (!resolvedTask && appState.selectedTaskId) {
-          appState.setSelectedTask(null);
-          appState = useAppStore.getState();
-        }
-      }
-      if (!isOwnerCurrent() || resolutionGeneration !== conversationResolutionGeneration) {
-        return get().selectedConversationId;
-      }
+      const appState = useAppStore.getState();
       const mode = appState.mode;
       const contextKey = buildChatContextKey(appState);
       const stateBeforeResolve = get();

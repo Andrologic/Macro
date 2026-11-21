@@ -890,6 +890,34 @@ describe('useAppStore architect plan resolution', () => {
     expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
   });
 
+  it.each(['Implement', 'Chat', 'Architect'] as const)(
+    'restores project focus and Architect storage in %s without restoring a remembered task',
+    async (mode) => {
+      const plan = buildPlan({ id: 'remembered-plan' });
+      planById.set(plan.id, plan);
+      preferenceValues.lastActiveMode = mode;
+      sessionContext = {
+        globalProjectId: 'group-1', selectedGroupId: 'group-1', selectedProjectId: 'project-1',
+        mode, updatedAt: '2026-10-01T00:00:00.000Z',
+      };
+      const task = { id: 'legacy-task', project_id: 'project-1', status: 'InProgress' };
+      taskStoreState.tasks = [task];
+      projectContexts.set('group-1', buildProjectContext({
+        projectId: 'group-1', groupId: 'group-1', focusProjectId: 'project-1',
+        lastPlanId: plan.id, lastTaskId: task.id,
+      }));
+      const { useAppStore } = await loadIsolatedUseAppStore();
+      await useAppStore.getState().initializeCritical();
+      await useAppStore.getState().resumeAfterInitialize();
+
+      expect(useAppStore.getState()).toMatchObject({ mode, selectedProjectId: 'project-1', selectedTaskId: null });
+      expect(taskStoreState.activateTask).not.toHaveBeenCalled();
+      expect(taskStoreState.refreshFromPlan).toHaveBeenCalledWith(expect.objectContaining({ observeOnly: true }));
+      expect(useAppStore.getState().visibleArchitectPlans.map(plan => plan.id)).toContain(plan.id);
+      if (mode === 'Architect') expect(useAppStore.getState().activeArchitectPlanId).toBe(plan.id);
+    },
+  );
+
   it('keeps the current project and mode when a rename finishes after navigation', async () => {
     const { useAppStore } = await loadIsolatedUseAppStore();
     const projects = ['a', 'b'].map((id) => ({ id, name: id, path: `/synthetic/${id}` }));
