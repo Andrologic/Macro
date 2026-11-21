@@ -184,14 +184,25 @@ Chaque geste a un nom distinct :
 | Terminer | Une exécution | Arrêt définitif, avec confirmation, par le Stop du moteur. |
 | Supprimer | Une exécution terminée | Efface ses threads et son dossier propre. Un dossier choisi par l'utilisateur n'est jamais touché. |
 
-- Le temps machine d'un agent interrompu est suspendu.
-- AgSDL ne définit aujourd'hui qu'une interruption qui fait échouer le travail
-  (`INTERRUPTED`). Interrompre et Mettre en pause demandent un travail dans
-  Argentic et sont soumis aux questions [AgSDL#20](https://github.com/Andrologic/AgSDL/issues/20)
-  et [AgSDL#21](https://github.com/Andrologic/AgSDL/issues/21).
+- Interrompre et Mettre en pause sont des gestes de l'opérateur, propres à
+  Macro. L'auteur ne les écrit pas, et AgSDL n'a pas à les définir
+  ([AgSDL#20](https://github.com/Andrologic/AgSDL/issues/20) et
+  [AgSDL#21](https://github.com/Andrologic/AgSDL/issues/21), fermées). Ils
+  restent compatibles avec la spécification actuelle :
+  - un agent interrompu attend une question présentée à une personne, donc son
+    temps machine ne décompte plus ;
+  - le message de reprise passe par les livraisons `steer` ou `queue` ;
+  - pendant une pause, Macro retarde seulement le démarrage des travaux, les
+    livraisons et le routage.
+- Ces gestes demandent un travail dans Argentic : garder un travail ouvert après
+  l'interruption du tour du harnais, et retenir les démarrages d'une exécution.
+- Pendant une pause, le délai d'une approbation continue de courir, car attendre
+  une personne est le travail même de l'approbation. Macro signale les
+  approbations qui risquent d'expirer avant la reprise.
 - Codex ne reprend pas un travail après un redémarrage. Si Macro se ferme
   pendant une interruption ou une pause, les travaux concernés échouent avec
-  `INTERRUPTED`. Macro prévient à la fermeture.
+  `INTERRUPTED`, selon les règles de reprise d'AgSDL. Macro prévient à la
+  fermeture.
 - Un thread reporté revient dans « À traiter » dès qu'il se passe quelque chose,
   et n'envoie pas de notification entre-temps. Macro prévient si un délai de
   réponse expire avant la fin du report.
@@ -289,10 +300,12 @@ document de conception, avant toute réalisation.
 
 ### Dans AgSDL
 
+Une question relève d'AgSDL si l'auteur doit pouvoir l'écrire dans le document,
+ou si deux applications doivent se comporter de la même façon pour qu'un même
+document garde le même sens. Les gestes de l'opérateur relèvent de Macro.
+
 | Issue | Sujet |
 | --- | --- |
-| [#20](https://github.com/Andrologic/AgSDL/issues/20) | Interrompre un agent sans faire échouer son travail |
-| [#21](https://github.com/Andrologic/AgSDL/issues/21) | Mettre en pause une exécution entière |
 | [#22](https://github.com/Andrologic/AgSDL/issues/22) | Attendre à l'intérieur d'un flow |
 | [#23](https://github.com/Andrologic/AgSDL/issues/23) | Déclarer les entrées d'une exécution |
 | [#24](https://github.com/Andrologic/AgSDL/issues/24) | Déclarer les identifiants et programmes requis |
