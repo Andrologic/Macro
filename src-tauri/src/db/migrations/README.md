@@ -2,7 +2,10 @@
 
 Versions 1, 3 and 4 retain their published SQL. Version 2 was a provider data
 migration removed from the source tree; its existing record remains valid and
-is not recreated. The file `002_agent_runs.sql` implements version 3.
+is not recreated. The file `002_agent_runs.sql` implements version 3. Older
+builds stamped this SQL as `2/002_agent_runs`. The runner saves that original
+stamp in the identity ledger and uses it for version 3 when no version 3 stamp
+already exists.
 
 Version 5, `005_runtime_schema`, freezes the former startup compatibility
 helpers in `reconcile_runtime_schema_v5`. SQLite cannot conditionally add a

@@ -173,6 +173,51 @@ async fn flow_owner_migration_defers_capture_reference_without_accepting_orphans
 }
 
 #[tokio::test]
+async fn normalizes_historical_agent_run_stamp_with_or_without_version_three() {
+    for has_version_three in [false, true] {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("agent-runs.db");
+        let mut old = fixture(&path, true).await;
+        sqlx::raw_sql(
+            "UPDATE schema_migrations SET name = '002_agent_runs', applied_at = 'early' WHERE version = 2;
+             UPDATE schema_migrations SET applied_at = 'later' WHERE version = 3;",
+        )
+        .execute(&mut old)
+        .await
+        .unwrap();
+        if !has_version_three {
+            sqlx::query("DELETE FROM schema_migrations WHERE version = 3")
+                .execute(&mut old)
+                .await
+                .unwrap();
+        }
+        old.close().await.unwrap();
+
+        let pool = create_pool(&path).await.unwrap();
+        let mut connection = pool.acquire().await.unwrap();
+        assert_preserved(&mut connection).await;
+        let active: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT version, name, applied_at FROM schema_migrations WHERE version IN (2, 3)",
+        )
+        .fetch_all(&mut *connection)
+        .await
+        .unwrap();
+        let expected_date = if has_version_three { "later" } else { "early" };
+        assert_eq!(
+            active,
+            vec![(3, "003_agent_runs".into(), expected_date.into())]
+        );
+        let original_date: String = sqlx::query_scalar(
+            "SELECT applied_at FROM migration_identity_history WHERE version = 2 AND name = '002_agent_runs'",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .unwrap();
+        assert_eq!(original_date, "early");
+    }
+}
+
+#[tokio::test]
 async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("develop.db");

@@ -69,6 +69,7 @@ pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {
         return Ok(vec![version]);
     }
     let versions = match (version, name) {
+        (2, "002_agent_runs") => vec![3],
         (5, "005_pilot_tool_trace_revisions") => vec![5, 10],
         (6, "006_pilot_tool_trace_revisions") => vec![10],
         (7, "007_conversation_management") => vec![11],
