@@ -15,7 +15,7 @@ import { prepareChatMessages, isStandaloneImplementTask, sanitizeAssistantConten
 import { activateArchiveReaders, retireArchiveReaders } from '../services/conversationPortableArchive';
 import { copyRestoredImages } from '../services/restoredConversationCopy';
 import { isBrowserRuntimeBridgeEnabled } from '../services/tauriRuntimeBridge';
-import { loadArchiveMessageImages, releaseArchiveImages, archiveImageConversation, prepareArchiveImages, ownArchiveRequestResources } from '../services/archiveImages';
+import { loadArchiveMessageImages, releaseArchiveImages, archiveImageConversation, isArchiveImage, prepareArchiveImages, ownArchiveRequestResources } from '../services/archiveImages';
 import { prepareArchiveContext } from '../services/archiveContext';
 import { buildMessageUpdateParams } from '../services/ipc/conversations';
 import { responseOptions } from '../services/chatResponsePayload';
@@ -6408,20 +6408,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
     let context: Awaited<ReturnType<typeof prepareArchiveContext>>;
     try { context = await prepareArchiveContext(history); }
     catch (error) { admitted.release(); throw error; }
-    const resources = ownArchiveRequestResources(() => { context.release(); admitted.release(); });
+    const hasArchiveResources = context.text.size > 0 ||
+      Object.values(admitted.images).some(attachments => attachments.some(isArchiveImage));
+    const resources = hasArchiveResources
+      ? ownArchiveRequestResources(() => { context.release(); admitted.release(); })
+      : undefined;
     try {
-    const prepared = await prepareChatMessages({
-      conversationId, allowedToolIds, internalAgentProfile, modeAtSend, agentTypeAtSend,
-      messageWithImagesId, skillPermissionSnapshot, executionContextOverride,
-      riskLevelOverride, architectPlanOverride,
-    }, { ...messagePreparationPorts, messageImages: () => admitted.images,
-      archiveContext: id => context.text.get(id) ?? [],
-      orderedMessages: id => {
-      const excluded = queueRuntime?.excludedDirectionMessageIds(id, messageWithImagesId);
-      return getOrderedConversationMessages(id).filter(message => !excluded?.has(message.id));
-    } });
-    return { ...prepared, resources };
-    } catch (error) { resources.release(); throw error; }
+      const prepared = await prepareChatMessages({
+        conversationId, allowedToolIds, internalAgentProfile, modeAtSend, agentTypeAtSend,
+        messageWithImagesId, skillPermissionSnapshot, executionContextOverride,
+        riskLevelOverride, architectPlanOverride,
+      }, {
+        ...messagePreparationPorts,
+        messageImages: () => admitted.images,
+        archiveContext: id => context.text.get(id) ?? [],
+        orderedMessages: id => {
+          const excluded = queueRuntime?.excludedDirectionMessageIds(id, messageWithImagesId);
+          return getOrderedConversationMessages(id).filter(message => !excluded?.has(message.id));
+        },
+      });
+      return { ...prepared, resources };
+    } catch (error) {
+      resources?.release();
+      throw error;
+    }
   };
 
   const buildLiveStreamDiagnosticsPayload = (
