@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { PlanNode, ProjectGitFlowSettings } from '../types';
+import type { ArchitectPlanRecord } from './architectPlanService';
 import { buildImplementTaskCatalog } from './implementTaskCatalog';
 import { toBranchWorktreeKey } from './implementTaskDerivation';
 import {
@@ -387,7 +388,7 @@ const buildPlan = () => ({
       parentBranch: 'plan/checkout',
       projectId: 'web',
       taskIds: ['task-web'],
-      status: 'completed',
+      status: 'merged',
     },
     {
       id: 'branch-api',
@@ -396,10 +397,10 @@ const buildPlan = () => ({
       parentBranch: 'plan/checkout',
       projectId: 'api',
       taskIds: ['task-api'],
-      status: 'completed',
+      status: 'merged',
     },
   ],
-});
+} satisfies ArchitectPlanRecord);
 
 const buildPersistedCleanupResources = () => [
   { projectId: 'web', repoPath: '/repos/web', featureBranch: 'feature/checkout/checkout-web' },
@@ -437,6 +438,7 @@ const persistLifecycleSaga = (overrides: Record<string, unknown> = {}) => {
     phase: 'prepared',
     conversationId: 'conversation-1',
     cleanupResources: buildPersistedCleanupResources(),
+    developmentRecoveryVersion: 1,
     createdAt: '2026-08-13T00:00:00.000Z',
     updatedAt: '2026-08-13T00:00:00.000Z',
     ...overrides,
@@ -775,6 +777,79 @@ describe('architectGitFlowService', () => {
     expect(archiveArchitectPlanMock).not.toHaveBeenCalled();
     expect(restoreArchitectPlanMock).not.toHaveBeenCalled();
     expect(deleteArchitectPlanMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['archive', 'prepared', 'in_progress'],
+    ['archive', 'metadata_commit_pending', 'archived'],
+    ['delete', 'git_cleanup_complete', 'archived'],
+    ['provision', 'prepared', 'validated'],
+    ['finalize', 'prepared', 'in_progress'],
+  ] as const)('keeps the inherited %s journal for an AgSDL blueprint inert', async (operation, phase, status) => {
+    currentPlan = {
+      ...buildPlan(), targetBranch: 'feature/implement', status,
+      agsdl: { source: '{"title":"Preserve this blueprint"}', annexes: { library: '{}' }, revision: 4 },
+    };
+    const originalPlan = structuredClone(currentPlan);
+    persistLifecycleSaga({
+      operation, phase, developmentRecoveryVersion: undefined,
+      ...(operation === 'finalize' ? { finalizationRepositories: [] } : {}),
+    });
+    const before = persistedPlanLifecycleSagas;
+    await architectGitFlowService.resumePlanLifecycleSagas();
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(currentPlan).toEqual(originalPlan);
+    expect(persistedPlanLifecycleSagas).toBe(before);
+    expect(gitBranchListMock).not.toHaveBeenCalled();
+    expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
+    expect(gitBranchCreateMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(gitMergeMock).not.toHaveBeenCalled();
+    expect(archiveArchitectPlanMock).not.toHaveBeenCalled();
+    expect(deleteArchitectPlanMock).not.toHaveBeenCalled();
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+    expect(commitArchitectPlanMetadataMock).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('blocks implicit inherited provision recovery even when the plan is missing (%s)', async (missing) => {
+    const plan = { ...buildPlan(), targetBranch: 'feature/implement', status: 'validated' as const };
+    currentPlan = missing ? null : plan;
+    persistLifecycleSaga({ operation: 'provision', developmentRecoveryVersion: undefined, generation: 7 });
+    const before = persistedPlanLifecycleSagas;
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+    await expect(architectGitFlowService.provisionPlanBranches(plan)).rejects.toThrow('manual inspection');
+
+    expect(persistedPlanLifecycleSagas).toBe(before);
+    expect(gitBranchListMock).not.toHaveBeenCalled();
+    expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(gitBranchCreateMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitWorktreeCreateMock).not.toHaveBeenCalled();
+  });
+
+  it('does not enter Git on explicit retry of unmarked archive, delete or finalization', async () => {
+    const target = { branchName: 'feature/implement', planId: 'plan-1' };
+    currentPlan = { ...buildPlan(), status: 'archived' };
+    persistLifecycleSaga({ operation: 'delete', developmentRecoveryVersion: undefined });
+    await expect(architectGitFlowService.deletePlanAndCleanupBranches(target)).rejects.toThrow('manual inspection');
+    currentPlan = { ...currentPlan, status: 'in_progress' };
+    persistLifecycleSaga({ operation: 'archive', developmentRecoveryVersion: undefined });
+    await expect(architectGitFlowService.archivePlanAndCleanupBranches(target)).rejects.toThrow('manual inspection');
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch(target)).rejects.toThrow('manual inspection');
+    persistLifecycleSaga({ operation: 'finalize', developmentRecoveryVersion: undefined, finalizationRepositories: [] });
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
+      ...target, completePendingMerges: true,
+    })).rejects.toThrow('manual inspection');
+
+    expect(gitBranchListMock).not.toHaveBeenCalled();
+    expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
+    expect(gitGuardedMergeStateMock).not.toHaveBeenCalled();
+    expect(deleteArchitectPlanMock).not.toHaveBeenCalled();
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
   });
 
   it('validates a direct-only plan without invoking Git', async () => {
@@ -1312,6 +1387,7 @@ describe('architectGitFlowService', () => {
     currentPlan.status = 'draft';
     persistedPlanLifecycleSagas = JSON.stringify([{
       planId: 'plan-1', branchName: 'feature/implement', operation: 'provision', phase: 'prepared',
+      developmentRecoveryVersion: 1,
       createdAt: '2026-09-16T00:00:00Z', updatedAt: '2026-09-16T00:00:00Z', cleanupResources: [
         { kind: 'branch', projectId: 'web', repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web', expectedCommit: 'head' },
         { kind: 'worktree', projectId: 'web', repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web',
@@ -3123,7 +3199,10 @@ describe('architectGitFlowService', () => {
   });
 
   it('resumes metadata_commit_pending without replaying cleanup', async () => {
-    persistLifecycleSaga({ operation: 'archive', phase: 'metadata_commit_pending', requiresMetadataCommit: true });
+    persistLifecycleSaga({
+      operation: 'archive', phase: 'metadata_commit_pending', requiresMetadataCommit: true,
+      developmentRecoveryVersion: undefined,
+    });
 
     await architectGitFlowService.resumePlanLifecycleSagas();
 
