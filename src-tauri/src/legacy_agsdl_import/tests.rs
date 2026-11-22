@@ -380,13 +380,30 @@ fn reads_recoverable_registry_without_promoting_or_repairing_files() {
     let incomplete = root.join(".workspace.json.macro-tmp-incomplete");
     fs::write(&incomplete, corrupt).unwrap();
     let input = profile(dir.path());
+    put(
+        &incomplete,
+        &json!({"workspaceRevision": 10, "plan_nodes": "invalid"}),
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = fs::metadata(&incomplete).unwrap().permissions();
+        fs::set_permissions(&incomplete, fs::Permissions::from_mode(0)).unwrap();
+        if fs::read(&incomplete).is_err() {
+            assert!(!discover_legacy_agsdl(&input).issues.is_empty());
+        }
+        fs::set_permissions(&incomplete, permissions).unwrap();
+    }
     let from_backup = discover_legacy_agsdl(&input);
     assert!(from_backup.issues.is_empty(), "{:?}", from_backup.issues);
     assert_eq!(from_backup.blueprints[0].plan_id, "backup");
 
     put(
         &temporary,
-        &json!({"workspaceRevision": 3, "standaloneProjects": [{"id": "tools", "path": "projects/tools"}]}),
+        &json!({"workspaceRevision": 3, "standaloneProjects": [{"id": "tools", "name": "Tools", "path": "projects/tools", "status": "active",
+        "created_at": "2026-01-01T00:00:00Z", "metadata": {
+            "description": "", "tags": [], "team_members": [], "api_contracts": [], "dependencies": []
+        }}]}),
     );
     let expected_files: BTreeMap<_, _> = fs::read_dir(&root)
         .unwrap()

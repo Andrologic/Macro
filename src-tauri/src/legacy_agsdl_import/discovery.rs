@@ -324,26 +324,50 @@ impl Scan {
         let registry = read(&primary);
         if let Root::Directory(dir) = root {
             // Match the writer's revision, modification time and name ordering.
-            let temporary = root
+            let mut candidates = Vec::new();
+            for (name, kind) in root
                 .children(prefix)
                 .map_err(|error| (prefix.to_owned(), error))?
-                .into_iter()
-                .filter(|(name, kind)| {
-                    *kind == EntryKind::File && name.starts_with(".workspace.json.macro-tmp-")
-                })
-                .filter_map(|(name, _)| {
-                    let path = prefix.join(&name);
-                    let state = read(&path).ok()??;
-                    let modified = fs::symlink_metadata(dir.join(path)).ok()?.modified().ok()?;
-                    Some((state, modified, name))
-                })
-                .max_by(|left, right| {
-                    (&left.0.revision, &left.1, &left.2).cmp(&(
-                        &right.0.revision,
-                        &right.1,
-                        &right.2,
-                    ))
-                });
+            {
+                if kind != EntryKind::File || !name.starts_with(".workspace.json.macro-tmp-") {
+                    continue;
+                }
+                let path = prefix.join(&name);
+                let text = root
+                    .read(&path)
+                    .map_err(|error| (path.clone(), error))?
+                    .ok_or_else(|| (path.clone(), "Temporary registry disappeared".to_string()))?;
+                // Only complete snapshots produced by the workspace writer can supersede the primary.
+                let Ok(state) =
+                    serde_json::from_str::<crate::workspace::metadata::WorkspaceState>(&text)
+                else {
+                    continue;
+                };
+                let modified = fs::symlink_metadata(dir.join(&path))
+                    .and_then(|metadata| metadata.modified())
+                    .map_err(|error| (path, error.to_string()))?;
+                let project = |p: crate::workspace::metadata::ProjectDto| RegistryProject {
+                    id: p.id,
+                    name: p.name,
+                    path: p.path,
+                };
+                let state = Registry {
+                    _version: state.version,
+                    revision: state.workspace_revision,
+                    standalone: state.standalone_projects.into_iter().map(project).collect(),
+                    project_groups: state
+                        .project_groups
+                        .into_iter()
+                        .map(|group| RegistryGroup {
+                            projects: group.projects.into_iter().map(project).collect(),
+                        })
+                        .collect(),
+                };
+                candidates.push((state, modified, name));
+            }
+            let temporary = candidates.into_iter().max_by(|left, right| {
+                (&left.0.revision, &left.1, &left.2).cmp(&(&right.0.revision, &right.1, &right.2))
+            });
             if let Some((state, _, _)) = temporary {
                 if !matches!(&registry, Ok(Some(primary)) if primary.revision >= state.revision) {
                     return Ok(Some(state));
