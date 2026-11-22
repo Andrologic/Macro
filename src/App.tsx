@@ -477,7 +477,17 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
       notificationKey: "architect-library-import",
       actions: [{
         label: t("common.retry", "Retry"),
-        onClick: () => appBootstrapRef.current?.retryArchitectLibrary(),
+        onClick: async () => {
+          const controller = appBootstrapRef.current;
+          if (!controller?.getSnapshot().warnings[ARCHITECT_LIBRARY_IMPORT_STEP]) return;
+          await controller.retryArchitectLibrary();
+          if (controller.getSnapshot().warnings[ARCHITECT_LIBRARY_IMPORT_STEP]) return;
+          const { useArchitectLibraryStore } = await import("./stores/useArchitectLibraryStore");
+          const library = useArchitectLibraryStore.getState();
+          if (library.projects.status !== "idle") {
+            await Promise.all([library.refreshProjects(), library.refreshBlueprints()]);
+          }
+        },
       }],
     });
   }, [initStatus.critical, architectImportWarning, t]);

@@ -344,7 +344,23 @@ describe('App layout containment', () => {
     expect(notification).toHaveBeenCalledTimes(1);
     const [, options] = notification.mock.calls[0];
     expect(options.description).toBe('workspace.json: Unreadable registry');
-    await act(async () => options.actions[0].onClick());
+    const { useArchitectLibraryStore } = await import('./stores/useArchitectLibraryStore');
+    const { architectLibrary } = await import('./services/ipc/architectLibrary');
+    const project = { id: 'project', name: 'Notes' };
+    const blueprint = { id: 'imported', projectId: project.id, name: 'Actions', revision: 1,
+      archived: false, conversationId: null, origin: null };
+    spyOn(architectLibrary, 'listProjects').mockResolvedValue([project]);
+    spyOn(architectLibrary, 'listBlueprints').mockResolvedValue([blueprint]);
+    const previous = useArchitectLibraryStore.getState();
+    useArchitectLibraryStore.setState({ projectId: project.id, projects: { status: 'ready', value: [project] },
+      blueprints: { status: 'ready', value: [] } });
+    retryArchitectLibraryMock.mockImplementationOnce(async () => { appBootstrapSnapshot.warnings = {}; });
+    try {
+      await act(async () => options.actions[0].onClick());
+      expect(useArchitectLibraryStore.getState().blueprints).toEqual({ status: 'ready', value: [blueprint] });
+    } finally {
+      useArchitectLibraryStore.setState(previous, true);
+    }
     expect(retryArchitectLibraryMock).toHaveBeenCalledTimes(1);
     expect(restartBootstrapMock).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="panel-center"]')).not.toBeNull();
