@@ -2238,7 +2238,7 @@ fn workspace_bootstrap_from_state(state: WorkspaceState) -> WorkspaceBootstrapDt
 
 // Startup and observers can consult legacy data without repairing its files or
 // creating a metadata worktree. An empty workspace has no legacy registry.
-async fn read_existing_workspace_state(workspace_path: &Path) -> Result<WorkspaceState> {
+pub(crate) async fn read_existing_workspace_state(workspace_path: &Path) -> Result<WorkspaceState> {
     let workspace = workspace_path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let root = crate::git::find_existing_macro_metadata_worktree_root(&workspace)
@@ -2271,13 +2271,13 @@ async fn read_existing_workspace_state(workspace_path: &Path) -> Result<Workspac
 
 fn read_committed_workspace_state(workspace: &Path) -> Result<Option<WorkspaceState>> {
     use crate::git::metadata_read::{
-        local_macro_tree, macro_metadata_checkouts, open_git_workspace, read_tree_file,
+        local_macro_tree, open_unchecked_out_macro_repo, read_tree_file,
     };
 
     let Ok(workspace) = workspace.canonicalize() else {
         return Ok(None);
     };
-    let repo = match open_git_workspace(&workspace) {
+    let repo = match open_unchecked_out_macro_repo(&workspace) {
         Ok(Some(repo)) => repo,
         Ok(None) => return Ok(None),
         Err(error) => {
@@ -2285,14 +2285,6 @@ fn read_committed_workspace_state(workspace: &Path) -> Result<Option<WorkspaceSt
             return Ok(None);
         }
     };
-    let checkouts = macro_metadata_checkouts(&repo).map_err(BackendError::Validation)?;
-    if checkouts
-        .iter()
-        .any(|(_, result)| !matches!(result, Ok(false)))
-    {
-        // A checkout still on disk can contain edits or deletions newer than its tip.
-        return Ok(None);
-    }
     let Some((tip, tree)) = local_macro_tree(&repo).map_err(BackendError::Validation)? else {
         return Ok(None);
     };

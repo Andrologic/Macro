@@ -106,7 +106,7 @@ fn expected_workspace_root_identity(workspace: &Path) -> Option<WorkspaceRootIde
 }
 
 // Constants
-const MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
+pub(crate) const MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 pub(crate) const MAX_WRITE_SIZE_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
 const MAX_FILE_SEARCH_RESULTS: usize = 100;
 const MAX_FILE_SEARCH_CANDIDATES: usize = 600;
@@ -235,7 +235,7 @@ else
   rm -f -- "$p"
 fi
 "#;
-const DIRECTORY_LIST_LIMIT: usize = 20_000;
+pub(crate) const DIRECTORY_LIST_LIMIT: usize = 20_000;
 const WSL_DEFAULT_RECURSIVE_DEPTH: u32 = 8;
 const WSL_MAX_RECURSIVE_DEPTH: u32 = 32;
 

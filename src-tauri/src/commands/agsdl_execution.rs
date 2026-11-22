@@ -238,7 +238,7 @@ pub(crate) async fn list_runs030_scoped(
     workspace: &std::path::Path,
     request: repository::discovery030::RunListRequest030,
 ) -> repository::Result<repository::discovery030::RunPage030> {
-    let metadata = crate::agsdl_host_capture::metadata_root(&workspace)?;
+    let metadata = crate::workspace::architect::execution_history_metadata_root(workspace);
     let _scope = crate::workspace::architect::lock_execution_history_owner(
         workspace,
         &metadata,
@@ -340,8 +340,35 @@ pub async fn execution_read_run_correlation030(
     scope: ExecutionIntentScope,
     system_start_id: String,
 ) -> IntentResult<ExecutionRunCorrelation030> {
-    let _guard = intent_scope(&app, &scope).await?;
-    intents::read_run_correlation030(&intent_pool(&app).await?, &scope, &system_start_id).await
+    let workspace = app
+        .state::<crate::WorkspaceMetadataRoot>()
+        .0
+        .read()
+        .await
+        .clone();
+    read_run_correlation030_scoped(
+        &intent_pool(&app).await?,
+        &workspace,
+        &scope,
+        &system_start_id,
+    )
+    .await
+}
+
+pub(crate) async fn read_run_correlation030_scoped(
+    pool: &sqlx::SqlitePool,
+    workspace: &std::path::Path,
+    scope: &ExecutionIntentScope,
+    system_start_id: &str,
+) -> IntentResult<ExecutionRunCorrelation030> {
+    intents::validate_key(&ExecutionIntentKey {
+        scope: scope.clone(),
+        intent_id: system_start_id.into(),
+    })?;
+    let _guard = crate::workspace::architect::lock_execution_correlation_scope(workspace, scope)
+        .await
+        .map_err(intent_failure)?;
+    intents::read_run_correlation030(pool, scope, system_start_id).await
 }
 #[tauri::command]
 pub async fn execution_read_intent(

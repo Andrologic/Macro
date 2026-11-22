@@ -883,6 +883,179 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
     .await
     .unwrap();
     assert!(host.inspect_start_session().await.is_err());
+    // Model a restarted workspace where the registry and plan exist only at
+    // the local Macro tips. Keep the existing database and retained run.
+    fn commit_metadata(repo: &git2::Repository, files: &[(&str, &[u8])]) -> git2::Oid {
+        let mut index = git2::Index::new().unwrap();
+        for (path, content) in files {
+            index
+                .add(&git2::IndexEntry {
+                    ctime: git2::IndexTime::new(0, 0),
+                    mtime: git2::IndexTime::new(0, 0),
+                    dev: 0,
+                    ino: 0,
+                    mode: 0o100644,
+                    uid: 0,
+                    gid: 0,
+                    file_size: content.len() as u32,
+                    id: repo.blob(content).unwrap(),
+                    flags: 0,
+                    flags_extended: 0,
+                    path: path.as_bytes().to_vec(),
+                })
+                .unwrap();
+        }
+        let tree = repo.find_tree(index.write_tree_to(repo).unwrap()).unwrap();
+        let signature = git2::Signature::now("Macro Tests", "macro@example.invalid").unwrap();
+        repo.commit(
+            Some("refs/heads/@macro"),
+            &signature,
+            &signature,
+            "Metadata",
+            &tree,
+            &[],
+        )
+        .unwrap()
+    }
+
+    state.standalone_projects[0].git_setup_state = "ready".into();
+    let workspace_repo = git2::Repository::init(&workspace).unwrap();
+    let registry = serde_json::to_vec(&state).unwrap();
+    let workspace_tip = commit_metadata(&workspace_repo, &[(".macro/workspace.json", &registry)]);
+    let project_repo = git2::Repository::init(&project).unwrap();
+    let plan = serde_json::to_vec(&json!({
+        "id":"source", "projectIds":["project"], "revision":1, "updatedAt":"time",
+        "status":"Validated", "targetBranch":"develop", "conversationId":"conversation",
+        "agsdl":{"source":authored}
+    }))
+    .unwrap();
+    let manifest = std::fs::read(dir.join("manifest.json")).unwrap();
+    let index =
+        br#"{"version":3,"activePlanId":"source","plans":[{"id":"source","hasAgsdl":true}]}"#;
+    let runtime = br#"{"schemaVersion":1,"planId":"source","updatedAt":"time","mergeWorkflows":{},"strategyPreview":null}"#;
+    let project_tip = commit_metadata(
+        &project_repo,
+        &[
+            (".macro/branches/develop/plans/index.json", index),
+            (".macro/branches/develop/plans/source/plan.json", &plan),
+            (
+                ".macro/branches/develop/plans/source/manifest.json",
+                &manifest,
+            ),
+            (".macro/branches/develop/plans/source/runtime.json", runtime),
+            (
+                ".macro/branches/develop/plans/source/chat.jsonl",
+                b"private fixture",
+            ),
+        ],
+    );
+    std::fs::remove_dir_all(&metadata).unwrap();
+    std::fs::remove_dir_all(project.join(".macro")).unwrap();
+    let app = tauri::test::mock_builder()
+        .manage(Arc::new(tokio::sync::RwLock::new(workspace.clone())))
+        .manage(crate::WorkspaceMetadataRoot(Arc::new(
+            tokio::sync::RwLock::new(workspace.clone()),
+        )))
+        .manage(crate::git::GitState::new())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let read = |path: &str| {
+        crate::commands::fs::fs_read_file(
+            app.state(),
+            app.state(),
+            app.state(),
+            path.to_string(),
+            Some(false),
+            Some("metadata_existing".into()),
+            Some(project.to_string_lossy().into_owned()),
+        )
+    };
+    let entries = crate::commands::fs::fs_list_dir(
+        app.state(),
+        app.state(),
+        app.state(),
+        "branches".into(),
+        Some(true),
+        Some(true),
+        None,
+        Some(false),
+        Some("metadata_existing".into()),
+        Some(project.to_string_lossy().into_owned()),
+    )
+    .await
+    .unwrap();
+    assert!(entries
+        .iter()
+        .any(|entry| entry.relative_path == "develop/plans/index.json"));
+    assert_eq!(
+        read("branches/develop/plans/index.json")
+            .await
+            .unwrap()
+            .content
+            .as_bytes(),
+        index
+    );
+    assert_eq!(
+        read("branches/develop/plans/source/plan.json")
+            .await
+            .unwrap()
+            .content
+            .as_bytes(),
+        plan
+    );
+    assert_eq!(
+        read("branches/develop/plans/source/runtime.json")
+            .await
+            .unwrap()
+            .revision,
+        crate::fs::operations::content_revision(runtime)
+    );
+    assert!(read("branches/develop/plans/source/chat.jsonl")
+        .await
+        .is_err());
+    let history = repository::discovery030::RunListRequest030 {
+        owner: request.source.owner.clone(),
+        after: None,
+        limit: Some(10),
+    };
+    let page =
+        crate::commands::agsdl_execution::list_runs030_scoped(&pool, &workspace, history.clone())
+            .await
+            .unwrap();
+    let system = &retained.receipt.identity.system_start_id;
+    assert_eq!(page.runs[0].system_start_id, *system);
+    let correlation = crate::commands::agsdl_execution::read_run_correlation030_scoped(
+        &pool,
+        &workspace,
+        &intent.key.scope,
+        system,
+    )
+    .await
+    .unwrap();
+    assert_eq!(correlation.receipt.system_start_id, *system);
+    assert!(!metadata.exists());
+    assert!(!project.join(".macro").exists());
+    for (repo, tip) in [
+        (&workspace_repo, workspace_tip),
+        (&project_repo, project_tip),
+    ] {
+        assert!(repo.worktrees().unwrap().is_empty());
+        assert_eq!(repo.refname_to_id("refs/heads/@macro").unwrap(), tip);
+        assert!(!repo
+            .path()
+            .join(crate::git::MACRO_WORKTREE_DIR_NAME)
+            .exists());
+    }
+    std::fs::create_dir_all(project.join(".macro")).unwrap();
+    assert!(read("branches/develop/plans/source/plan.json")
+        .await
+        .is_err());
+    assert!(
+        crate::commands::agsdl_execution::list_runs030_scoped(&pool, &workspace, history)
+            .await
+            .is_err()
+    );
+
     // Model on-disk corruption by bypassing the immutable-record trigger only
     // in this disposable database; the public reader must fail closed.
     sqlx::query("DROP TRIGGER engine_start030_immutable")

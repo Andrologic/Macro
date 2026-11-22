@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::core::error::{BackendError, Result};
 
 pub mod dto;
+pub(crate) mod plan_catalog;
 pub mod watcher;
 
 // Core Path Validation and Normalization Functions

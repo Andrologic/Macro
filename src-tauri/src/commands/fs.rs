@@ -4,12 +4,13 @@ use crate::core::tool_policy::is_macro_scoped_path;
 use crate::fs::dto::*;
 pub use crate::fs::operations::*;
 use crate::git::GitState;
-use crate::WorkspaceRoot;
+use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
 use std::path::PathBuf;
 
 #[tauri::command]
 pub async fn fs_read_file(
     workspace_root: tauri::State<'_, WorkspaceRoot>,
+    registry_root: tauri::State<'_, WorkspaceMetadataRoot>,
     git_state: tauri::State<'_, GitState>,
     path: String,
     allow_outside_workspace: Option<bool>,
@@ -22,16 +23,43 @@ pub async fn fs_read_file(
         path.clone()
     };
     let workspace = workspace_root.inner().read().await.clone();
-    let workspace = resolve_workspace_for_path(
-        workspace,
+    let workspace_path = workspace_path.map(PathBuf::from);
+    let resolved = resolve_workspace_for_path(
+        workspace.clone(),
         git_state.inner().clone(),
-        workspace_path.map(PathBuf::from),
+        workspace_path.clone(),
         &path,
         allow_outside_workspace,
         workspace_scope.as_deref(),
     )
-    .await?;
-    read_file_internal(&workspace, effective_path, allow_outside_workspace).await
+    .await;
+    if catalog_fallback(
+        &resolved,
+        workspace_scope.as_deref(),
+        allow_outside_workspace,
+    ) {
+        let registry_root = registry_root.0.read().await.clone();
+        if let Some(file) = crate::fs::plan_catalog::read_file(
+            &registry_root,
+            workspace_path.unwrap_or(workspace),
+            effective_path.clone(),
+        )
+        .await?
+        {
+            return Ok(file);
+        }
+    }
+    read_file_internal(&resolved?, effective_path, allow_outside_workspace).await
+}
+
+fn catalog_fallback(
+    resolved: &Result<PathBuf, BackendError>,
+    workspace_scope: Option<&str>,
+    allow_outside_workspace: Option<bool>,
+) -> bool {
+    matches!(resolved, Err(BackendError::FilesystemNotFound { .. }))
+        && workspace_scope == Some("metadata_existing")
+        && !allow_outside_workspace.unwrap_or(false)
 }
 
 #[tauri::command]
@@ -114,6 +142,7 @@ pub async fn fs_search_files(
 #[allow(clippy::too_many_arguments)]
 pub async fn fs_list_dir(
     workspace_root: tauri::State<'_, WorkspaceRoot>,
+    registry_root: tauri::State<'_, WorkspaceMetadataRoot>,
     git_state: tauri::State<'_, GitState>,
     path: String,
     recursive: Option<bool>,
@@ -129,17 +158,39 @@ pub async fn fs_list_dir(
         path.clone()
     };
     let workspace = workspace_root.inner().read().await.clone();
-    let workspace = resolve_workspace_for_path(
-        workspace,
+    let workspace_path = workspace_path.map(PathBuf::from);
+    let resolved = resolve_workspace_for_path(
+        workspace.clone(),
         git_state.inner().clone(),
-        workspace_path.map(PathBuf::from),
+        workspace_path.clone(),
         &path,
         allow_outside_workspace,
         workspace_scope.as_deref(),
     )
-    .await?;
+    .await;
+    if catalog_fallback(
+        &resolved,
+        workspace_scope.as_deref(),
+        allow_outside_workspace,
+    ) {
+        let registry_root = registry_root.0.read().await.clone();
+        if let Some(entries) = crate::fs::plan_catalog::list_dir(
+            &registry_root,
+            workspace_path.unwrap_or(workspace),
+            effective_path.clone(),
+            recursive.unwrap_or(false),
+            max_depth,
+        )
+        .await?
+        {
+            return Ok(entries
+                .into_iter()
+                .filter(|entry| include_hidden.unwrap_or(false) || !entry.is_hidden)
+                .collect());
+        }
+    }
     list_dir_internal(
-        &workspace,
+        &resolved?,
         effective_path,
         recursive,
         include_hidden,

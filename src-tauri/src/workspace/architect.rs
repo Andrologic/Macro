@@ -689,6 +689,7 @@ async fn resolve_project_scopes(
         scoped_project_ids_hint,
         &state,
         true,
+        false,
     )
     .await
 }
@@ -699,6 +700,7 @@ async fn resolve_project_scopes_observed(
     scoped_project_ids_hint: &[String],
     state: &super::WorkspaceState,
     allow_repair: bool,
+    allow_committed: bool,
 ) -> Result<Vec<ArchitectRuntimeScope>> {
     let mut scopes = Vec::new();
     let mut seen_scope_keys = HashSet::new();
@@ -741,7 +743,11 @@ async fn resolve_project_scopes_observed(
                 if parse_wsl_unc_path(&project_path).is_some() {
                     return Ok::<_, BackendError>(Vec::new());
                 }
-                let resolved_repo_path = PathBuf::from(project_path);
+                let resolved_repo_path = if allow_committed {
+                    super::resolve_project_path(workspace_path, &project_path)
+                } else {
+                    PathBuf::from(project_path)
+                };
                 let direct_metadata_root = resolved_repo_path.join(".macro");
                 let direct_scope = ArchitectRuntimeScope {
                     scope_key: format!("direct:{}", resolved_repo_path.to_string_lossy()),
@@ -774,6 +780,7 @@ async fn resolve_project_scopes_observed(
                             git_state.resolve_macro_metadata_root(&repo_path)
                         } else {
                             crate::git::find_existing_macro_metadata_worktree_root(&repo_path)
+                                .or_else(|| allow_committed.then(|| repo_path.join(".macro")))
                                 .ok_or_else(|| {
                                     BackendError::Validation(
                                         "Execution metadata worktree is unavailable".into(),
@@ -2966,7 +2973,9 @@ mod tests {
         std_fs::write(metadata.join("workspace.json"), b"{corrupt").unwrap();
         let backup = serde_json::to_vec(&WorkspaceState::default()).unwrap();
         std_fs::write(metadata.join("workspace.json.bak"), &backup).unwrap();
-        assert!(read_execution_registry(&metadata).await.is_err());
+        assert!(read_execution_registry(temp.path(), &metadata, false)
+            .await
+            .is_err());
         assert_eq!(
             std_fs::read(metadata.join("workspace.json")).unwrap(),
             b"{corrupt"
@@ -2993,7 +3002,8 @@ mod tests {
             &temp.path().join(".macro"),
             &["project".into()],
             &state,
-            false
+            false,
+            false,
         )
         .await
         .is_err());
@@ -3275,9 +3285,27 @@ pub(crate) async fn lock_execution_source(
 }
 
 async fn read_execution_registry(
+    workspace_path: &Path,
     metadata_root: &Path,
+    allow_committed: bool,
 ) -> crate::db::agsdl_execution::Result<super::WorkspaceState> {
     use crate::db::agsdl_execution::failure;
+    if allow_committed && metadata_root_absent(metadata_root) {
+        let workspace = workspace_path.to_path_buf();
+        return tokio::task::spawn_blocking(move || {
+            super::read_committed_workspace_state(&workspace)
+        })
+        .await
+        .ok()
+        .and_then(|result| result.ok().flatten())
+        .ok_or_else(|| {
+            failure(
+                "SOURCE_UNAVAILABLE",
+                "source.owner",
+                "Committed project registry is unavailable",
+            )
+        });
+    }
     let bytes = tokio::fs::read(super::workspace_state_path(metadata_root))
         .await
         .map_err(|_| {
@@ -3294,6 +3322,58 @@ async fn read_execution_registry(
             "Canonical project registry is invalid",
         )
     })
+}
+
+fn metadata_root_absent(root: &Path) -> bool {
+    matches!(root.symlink_metadata(), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+}
+
+pub(crate) fn execution_history_metadata_root(workspace: &Path) -> PathBuf {
+    crate::git::find_existing_macro_metadata_worktree_root(workspace)
+        .unwrap_or_else(|| workspace.join(".macro"))
+}
+
+async fn read_committed_execution_plan(
+    repo_path: PathBuf,
+    branch: &str,
+    plan_id: &str,
+    read_manifest: bool,
+) -> crate::db::agsdl_execution::Result<Option<(String, Option<String>)>> {
+    use crate::db::agsdl_execution::failure;
+    use crate::git::metadata_read::{
+        local_macro_tree, open_unchecked_out_macro_repo, read_macro_plan_file,
+    };
+    let path = architect_plan_dir(Path::new(""), branch, plan_id);
+    let unavailable = |_| {
+        failure(
+            "SOURCE_UNAVAILABLE",
+            "source",
+            "Cannot read committed plan metadata",
+        )
+    };
+    tokio::task::spawn_blocking(move || {
+        let Ok(repo_path) = repo_path.canonicalize() else {
+            return Ok(None);
+        };
+        let Some(repo) = open_unchecked_out_macro_repo(&repo_path).map_err(unavailable)? else {
+            return Ok(None);
+        };
+        let Some((_, tree)) = local_macro_tree(&repo).map_err(unavailable)? else {
+            return Ok(None);
+        };
+        let read = |file| read_macro_plan_file(&repo, &tree, &path.join(file)).map_err(unavailable);
+        let Some(plan) = read("plan.json")? else {
+            return Ok(None);
+        };
+        let manifest = if read_manifest {
+            read("manifest.json")?
+        } else {
+            None
+        };
+        Ok(Some((plan, manifest)))
+    })
+    .await
+    .map_err(|_| failure("SOURCE_UNAVAILABLE", "source", "Committed plan read failed"))?
 }
 
 fn execution_project<'a>(
@@ -3332,7 +3412,17 @@ pub(crate) async fn lock_execution_source_owner(
     owner: &crate::db::agsdl_execution::dto::EngineSourceOwner,
     expected: Option<&crate::db::agsdl_execution::dto::EngineSourceRevision>,
 ) -> crate::db::agsdl_execution::Result<LockedExecutionSource> {
-    match lock_execution_owner(workspace_path, metadata_root, owner, expected, None, false).await? {
+    match lock_execution_owner(
+        workspace_path,
+        metadata_root,
+        owner,
+        expected,
+        None,
+        false,
+        false,
+    )
+    .await?
+    {
         LockedExecutionOwnerResult::Source(source) => Ok(source),
         LockedExecutionOwnerResult::Owner(_) => unreachable!("source lock returned owner only"),
     }
@@ -3345,7 +3435,8 @@ pub(crate) async fn lock_execution_history_owner(
     metadata_root: &Path,
     owner: &crate::db::agsdl_execution::dto::EngineSourceOwner,
 ) -> crate::db::agsdl_execution::Result<LockedExecutionHistoryOwner> {
-    match lock_execution_owner(workspace_path, metadata_root, owner, None, None, true).await? {
+    match lock_execution_owner(workspace_path, metadata_root, owner, None, None, true, true).await?
+    {
         LockedExecutionOwnerResult::Owner(owner) => Ok(owner),
         LockedExecutionOwnerResult::Source(_) => unreachable!("history lock returned source"),
     }
@@ -3358,6 +3449,24 @@ pub(crate) async fn lock_execution_intent_scope(
     scope: &crate::db::agsdl_execution::intents::ExecutionIntentScope,
     expected: Option<&crate::db::agsdl_execution::dto::EngineSourceRevision>,
 ) -> crate::db::agsdl_execution::Result<LockedExecutionSource> {
+    lock_execution_conversation_scope(workspace_path, metadata_root, scope, expected, false).await
+}
+
+pub(crate) async fn lock_execution_correlation_scope(
+    workspace_path: &Path,
+    scope: &crate::db::agsdl_execution::intents::ExecutionIntentScope,
+) -> crate::db::agsdl_execution::Result<LockedExecutionSource> {
+    let root = execution_history_metadata_root(workspace_path);
+    lock_execution_conversation_scope(workspace_path, &root, scope, None, true).await
+}
+
+async fn lock_execution_conversation_scope(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    scope: &crate::db::agsdl_execution::intents::ExecutionIntentScope,
+    expected: Option<&crate::db::agsdl_execution::dto::EngineSourceRevision>,
+    allow_committed: bool,
+) -> crate::db::agsdl_execution::Result<LockedExecutionSource> {
     lock_execution_owner(
         workspace_path,
         metadata_root,
@@ -3365,6 +3474,7 @@ pub(crate) async fn lock_execution_intent_scope(
         expected,
         Some(&scope.conversation_id),
         false,
+        allow_committed,
     )
     .await
     .and_then(|locked| match locked {
@@ -3390,6 +3500,7 @@ async fn lock_execution_owner(
     expected: Option<&crate::db::agsdl_execution::dto::EngineSourceRevision>,
     conversation_id: Option<&str>,
     owner_only: bool,
+    allow_committed: bool,
 ) -> crate::db::agsdl_execution::Result<LockedExecutionOwnerResult> {
     use crate::db::agsdl_execution::failure;
     use sha2::{Digest, Sha256};
@@ -3413,6 +3524,7 @@ async fn lock_execution_owner(
         agsdl: Option<Box<serde_json::value::RawValue>>,
         conversation_id: Option<String>,
         updated_at: Option<String>,
+        target_branch: Option<String>,
     }
     if expected.is_some_and(|value| &value.owner != owner) {
         return Err(failure(
@@ -3423,6 +3535,8 @@ async fn lock_execution_owner(
     }
     let valid_component = |name: &str| {
         !name.is_empty()
+            && !name.contains(['\\', ':', '\0'])
+            && name.split('/').all(|part| !matches!(part, "" | "." | ".."))
             && Path::new(name)
                 .components()
                 .all(|c| matches!(c, std::path::Component::Normal(_)))
@@ -3440,7 +3554,7 @@ async fn lock_execution_owner(
     }
     // Project identity comes from the native workspace registry, not the
     // caller's hint that resolve_project_scopes may attach to workspace roots.
-    let state = read_execution_registry(metadata_root).await?;
+    let state = read_execution_registry(workspace_path, metadata_root, allow_committed).await?;
     let initial_project =
         execution_project(&state, &owner.project_id, owner_only).map_err(|mut error| {
             if conversation_id.is_some() {
@@ -3463,6 +3577,7 @@ async fn lock_execution_owner(
         std::slice::from_ref(&owner.project_id),
         &state,
         false,
+        allow_committed,
     )
     .await
     .map_err(|_| {
@@ -3540,24 +3655,38 @@ async fn lock_execution_owner(
     }
     let state_guard = super::lock_workspace_state(metadata_root).await;
     let locked_root = metadata_root.to_path_buf();
-    let file_guard =
-        tokio::task::spawn_blocking(move || super::lock_workspace_state_file(&locked_root))
-            .await
-            .map_err(|_| {
-                failure(
-                    "SOURCE_UNAVAILABLE",
-                    "source.owner",
-                    "Cannot acquire project registry lock",
-                )
-            })?
-            .map_err(|_| {
-                failure(
-                    "SOURCE_UNAVAILABLE",
-                    "source.owner",
-                    "Cannot lock project registry",
-                )
-            })?;
-    let current = read_execution_registry(metadata_root).await?;
+    let committed_registry = allow_committed && metadata_root_absent(metadata_root);
+    let file_guard = if committed_registry {
+        None
+    } else {
+        Some(
+            tokio::task::spawn_blocking(move || super::lock_workspace_state_file(&locked_root))
+                .await
+                .map_err(|_| {
+                    failure(
+                        "SOURCE_UNAVAILABLE",
+                        "source.owner",
+                        "Cannot acquire project registry lock",
+                    )
+                })?
+                .map_err(|_| {
+                    failure(
+                        "SOURCE_UNAVAILABLE",
+                        "source.owner",
+                        "Cannot lock project registry",
+                    )
+                })?,
+        )
+    };
+    let current =
+        read_execution_registry(workspace_path, metadata_root, committed_registry).await?;
+    if committed_registry && !metadata_root_absent(metadata_root) {
+        return Err(failure(
+            "SOURCE_UNAVAILABLE",
+            "source.owner",
+            "Project registry appeared during observation",
+        ));
+    }
     let current_project =
         execution_project(&current, &owner.project_id, owner_only).map_err(|mut error| {
             if conversation_id.is_some() {
@@ -3594,15 +3723,33 @@ async fn lock_execution_owner(
                 "Canonical plan path changed during capture",
             ));
         }
-        let contents = match fs::read_to_string(&path).await {
-            Ok(contents) => contents,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => {
-                return Err(failure(
-                    "SOURCE_UNAVAILABLE",
-                    "source",
-                    "Cannot read canonical plan",
-                ))
+        let committed = allow_committed && metadata_root_absent(&scope.metadata_root);
+        let (contents, committed_manifest) = if committed {
+            let Some(repo_path) = scope.repo_path else {
+                continue;
+            };
+            let Some(snapshot) = read_committed_execution_plan(
+                repo_path,
+                &owner.branch,
+                &owner.plan_id,
+                conversation_id.is_some(),
+            )
+            .await?
+            else {
+                continue;
+            };
+            snapshot
+        } else {
+            match fs::read_to_string(&path).await {
+                Ok(contents) => (contents, None),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => {
+                    return Err(failure(
+                        "SOURCE_UNAVAILABLE",
+                        "source",
+                        "Cannot read canonical plan",
+                    ))
+                }
             }
         };
         let plan: SourcePlan = serde_json::from_str(&contents)
@@ -3640,7 +3787,14 @@ async fn lock_execution_owner(
                 "Canonical plan is archived or deleted",
             ));
         }
-        if plan.id != owner.plan_id || plan.revision.unwrap_or(1) < 0 {
+        if plan.id != owner.plan_id
+            || plan.revision.unwrap_or(1) < 0
+            || (committed
+                && plan
+                    .target_branch
+                    .as_deref()
+                    .is_some_and(|branch| !stored_plan_branch_matches(branch, &owner.branch)))
+        {
             return Err(failure(
                 "CORRELATION",
                 "source",
@@ -3670,17 +3824,23 @@ async fn lock_execution_owner(
                     "Canonical manifest path changed",
                 ));
             }
-            let manifest_raw = fs::read_to_string(&manifest_path).await.map_err(|error| {
-                failure(
-                    if error.kind() == std::io::ErrorKind::NotFound {
-                        "INTENT_SCOPE_INVALID"
-                    } else {
-                        "SOURCE_UNAVAILABLE"
-                    },
-                    "",
-                    "Canonical manifest unavailable",
-                )
-            })?;
+            let manifest_raw = if committed {
+                committed_manifest.ok_or_else(|| {
+                    failure("INTENT_SCOPE_INVALID", "", "Committed manifest unavailable")
+                })?
+            } else {
+                fs::read_to_string(&manifest_path).await.map_err(|error| {
+                    failure(
+                        if error.kind() == std::io::ErrorKind::NotFound {
+                            "INTENT_SCOPE_INVALID"
+                        } else {
+                            "SOURCE_UNAVAILABLE"
+                        },
+                        "",
+                        "Canonical manifest unavailable",
+                    )
+                })?
+            };
             let manifest: ArchitectPlanManifestDto = serde_json::from_str(&manifest_raw)
                 .map_err(|_| failure("INTENT_SCOPE_INVALID", "", "Invalid canonical manifest"))?;
             if manifest.plan_id != owner.plan_id
@@ -3794,7 +3954,7 @@ pub(crate) struct LockedExecutionHistoryOwner {
     _guards: Vec<super::PlanLifecycleGuard>,
     _content_guards: Vec<tokio::sync::OwnedMutexGuard<()>>,
     _state_guard: tokio::sync::OwnedMutexGuard<()>,
-    _file_guard: super::WorkspaceFileLock,
+    _file_guard: Option<super::WorkspaceFileLock>,
 }
 
 /// Held by CaptureAuthority::CommitGuard through the repository commit.
@@ -3811,5 +3971,5 @@ pub(crate) struct LockedExecutionSource {
     _guards: Vec<super::PlanLifecycleGuard>,
     _content_guards: Vec<tokio::sync::OwnedMutexGuard<()>>,
     _state_guard: tokio::sync::OwnedMutexGuard<()>,
-    _file_guard: super::WorkspaceFileLock,
+    _file_guard: Option<super::WorkspaceFileLock>,
 }

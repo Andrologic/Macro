@@ -249,6 +249,43 @@ pub(crate) fn local_macro_tree(repo: &Repository) -> ReadResult<Option<(Oid, Tre
     Ok(Some((tip, tree)))
 }
 
+pub(crate) fn open_unchecked_out_macro_repo(path: &Path) -> ReadResult<Option<Repository>> {
+    if disk_kind(&path.join(".macro"))?.is_some() {
+        return Ok(None);
+    }
+    let Some(repo) = open_git_workspace(path)? else {
+        return Ok(None);
+    };
+    if macro_metadata_checkouts(&repo)?
+        .iter()
+        .any(|(_, checked)| !matches!(checked, Ok(false)))
+    {
+        return Ok(None);
+    }
+    Ok(Some(repo))
+}
+
+// The legacy layout migrated into the root without replacing files already there.
+pub(crate) fn read_macro_plan_file(
+    repo: &Repository,
+    tree: &Tree<'_>,
+    path: &Path,
+) -> ReadResult<Option<String>> {
+    for parent in path
+        .ancestors()
+        .skip(1)
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        if tree_entry(tree, parent)?.is_some_and(|entry| entry.filemode() != 0o040000) {
+            return Err("Expected a Git tree above the plan file".into());
+        }
+    }
+    match read_tree_file(repo, tree, path)? {
+        Some(contents) => Ok(Some(contents)),
+        None => read_tree_file(repo, tree, &Path::new(".macro").join(path)),
+    }
+}
+
 pub(crate) fn read_tree_file(
     repo: &Repository,
     tree: &Tree<'_>,
