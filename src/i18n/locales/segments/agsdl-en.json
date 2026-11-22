@@ -22,7 +22,12 @@
     "backToDraft": "Back to draft",
     "backToArchive": "Back to archive",
     "origin": "Adapted from version {{number}} of {{blueprint}}",
-    "revisionConflict": "The draft changed elsewhere. Your edits are still in this window."
+    "revisionConflict": "The draft changed elsewhere. Resolve the conflict in the editor before saving.",
+    "conflictViewing": "You are viewing the local draft based on revision {{revision}}.",
+    "conflictSaved": "Latest saved revision read: {{revision}}.",
+    "useSavedDraft": "Use saved draft and discard local edits",
+    "replaceSavedDraft": "Apply local edits and replace saved draft",
+    "readSavedDraft": "Read saved draft"
   },
   "unsupportedEdition020": "AgSDL 0.2 is no longer supported. This document cannot be edited or run.",
   "edition030": {

@@ -22,7 +22,12 @@
     "backToDraft": "Volver al borrador",
     "backToArchive": "Volver al archivo",
     "origin": "Adaptado de la versión {{number}} de {{blueprint}}",
-    "revisionConflict": "El borrador cambió en otro lugar. Tus cambios siguen en esta ventana."
+    "revisionConflict": "El borrador cambió en otro lugar. Resuelve el conflicto en el editor antes de guardar.",
+    "conflictViewing": "Estás viendo el borrador local basado en la revisión {{revision}}.",
+    "conflictSaved": "Última revisión guardada que se ha leído: {{revision}}.",
+    "useSavedDraft": "Usar el borrador guardado y descartar los cambios locales",
+    "replaceSavedDraft": "Aplicar los cambios locales y reemplazar el borrador guardado",
+    "readSavedDraft": "Leer el borrador guardado"
   },
   "unsupportedEdition020": "AgSDL 0.2 ya no es compatible. Este documento no se puede editar ni ejecutar.",
   "edition030": {

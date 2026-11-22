@@ -22,7 +22,12 @@
     "backToDraft": "Zurück zum Entwurf",
     "backToArchive": "Zurück zum Archiv",
     "origin": "Übernommen aus Version {{number}} von {{blueprint}}",
-    "revisionConflict": "Der Entwurf wurde an anderer Stelle geändert. Deine Änderungen sind noch in diesem Fenster."
+    "revisionConflict": "Der Entwurf wurde an anderer Stelle geändert. Löse den Konflikt vor dem Speichern im Editor.",
+    "conflictViewing": "Du siehst den lokalen Entwurf auf Basis von Revision {{revision}}.",
+    "conflictSaved": "Zuletzt gelesene gespeicherte Revision: {{revision}}.",
+    "useSavedDraft": "Gespeicherten Entwurf übernehmen und lokale Änderungen verwerfen",
+    "replaceSavedDraft": "Lokale Änderungen anwenden und gespeicherten Entwurf ersetzen",
+    "readSavedDraft": "Gespeicherten Entwurf lesen"
   },
   "unsupportedEdition020": "AgSDL 0.2 wird nicht mehr unterstützt. Dieses Dokument kann nicht bearbeitet oder ausgeführt werden.",
   "edition030": {

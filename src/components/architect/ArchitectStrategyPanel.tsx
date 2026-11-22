@@ -72,12 +72,12 @@ function ArchitectViewer({ target, planStatus, canSaveVersion, adaptation }: {
   const { t } = useAgsdlTranslation();
   const blueprintId = "blueprintId" in target ? target.blueprintId : undefined;
   const number = "blueprintId" in target ? target.number : undefined;
-  const busy = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]?.saving);
+  const session = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]);
   const [expanded, setExpanded] = useState(false);
   const [versionDialog, setVersionDialog] = useState(false);
   const [adaptDialog, setAdaptDialog] = useState(false);
   const actions = <>
-    {canSaveVersion && <button type="button" className="agsdl-icon-button" disabled={busy}
+    {canSaveVersion && <button type="button" className="agsdl-icon-button" disabled={session?.saving || !!session?.draftConflict}
       title={t("agsdl.library.saveVersion")} aria-label={t("agsdl.library.saveVersion")} onClick={() => setVersionDialog(true)}><Save size={14} /></button>}
     {adaptation && <button type="button" className="agsdl-icon-button"
       title={t("agsdl.library.adaptVersion")} aria-label={t("agsdl.library.adaptVersion")} onClick={() => setAdaptDialog(true)}><CopyPlus size={14} /></button>}

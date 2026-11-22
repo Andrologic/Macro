@@ -22,7 +22,12 @@
     "backToDraft": "초안으로 돌아가기",
     "backToArchive": "보관함으로 돌아가기",
     "origin": "{{blueprint}}의 버전 {{number}}에서 생성됨",
-    "revisionConflict": "다른 곳에서 초안이 변경되었습니다. 이 창의 변경 사항은 그대로 남아 있습니다."
+    "revisionConflict": "다른 곳에서 초안이 변경되었습니다. 저장하기 전에 편집기에서 충돌을 해결하세요.",
+    "conflictViewing": "리비전 {{revision}}을 기반으로 한 로컬 초안을 보고 있습니다.",
+    "conflictSaved": "마지막으로 읽은 저장된 리비전: {{revision}}.",
+    "useSavedDraft": "저장된 초안 사용 및 로컬 변경 사항 버리기",
+    "replaceSavedDraft": "로컬 변경 사항을 적용하여 저장된 초안 교체",
+    "readSavedDraft": "저장된 초안 읽기"
   },
   "unsupportedEdition020": "AgSDL 0.2는 더 이상 지원되지 않습니다. 이 문서는 편집하거나 실행할 수 없습니다.",
   "edition030": {

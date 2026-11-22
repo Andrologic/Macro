@@ -22,7 +22,12 @@
     "backToDraft": "下書きに戻る",
     "backToArchive": "アーカイブに戻る",
     "origin": "{{blueprint}} のバージョン {{number}} を元に作成",
-    "revisionConflict": "下書きが別の場所で変更されました。このウィンドウの変更内容は残っています。"
+    "revisionConflict": "下書きが別の場所で変更されました。保存する前にエディターで競合を解決してください。",
+    "conflictViewing": "リビジョン {{revision}} を元にしたローカルの下書きを表示しています。",
+    "conflictSaved": "最後に読み込んだ保存済みリビジョン：{{revision}}。",
+    "useSavedDraft": "保存済みの下書きを使用し、ローカルの変更を破棄",
+    "replaceSavedDraft": "ローカルの変更を適用し、保存済みの下書きを置き換え",
+    "readSavedDraft": "保存済みの下書きを読み込む"
   },
   "unsupportedEdition020": "AgSDL 0.2 はサポートされていません。このドキュメントは編集・実行できません。",
   "edition030": {

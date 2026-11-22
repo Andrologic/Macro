@@ -22,7 +22,12 @@
     "backToDraft": "Retour au brouillon",
     "backToArchive": "Retour à l’archive",
     "origin": "Adapté de la version {{number}} de {{blueprint}}",
-    "revisionConflict": "Le brouillon a été modifié ailleurs. Vos modifications sont toujours dans cette fenêtre."
+    "revisionConflict": "Le brouillon a été modifié ailleurs. Résolvez le conflit dans l’éditeur avant d’enregistrer.",
+    "conflictViewing": "Vous consultez le brouillon local basé sur la révision {{revision}}.",
+    "conflictSaved": "Dernière révision enregistrée consultée : {{revision}}.",
+    "useSavedDraft": "Reprendre le brouillon enregistré et abandonner les modifications locales",
+    "replaceSavedDraft": "Réappliquer les modifications locales et remplacer le brouillon enregistré",
+    "readSavedDraft": "Relire le brouillon enregistré"
   },
   "unsupportedEdition020": "L’édition AgSDL 0.2 n’est plus prise en charge. Ce document ne peut être ni modifié ni exécuté.",
   "edition030": {

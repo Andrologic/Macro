@@ -49,6 +49,7 @@ export const AgsdlEditor: React.FC<{
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [issuesOpen, setIssuesOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState<{ value: string; version: string }>();
+  const [nameError, setNameError] = useState("");
   const [saveOpen, setSaveOpen] = useState(false);
   const [error, setError] = useState("");
   const [library, setLibrary] = useState<"start" | "blueprint" | "system">();
@@ -296,6 +297,42 @@ export const AgsdlEditor: React.FC<{
       </>}
     </>
   );
+  const conflict = session?.draftConflict;
+  const conflictTarget = "blueprintId" in target && target.number === undefined ? target : undefined;
+  const savedDraft = conflict?.saved;
+  const canvasError = error || (session?.error && agsdlErrorText(session.error, t));
+  const recoveryError = settingsOpen ? nameError : error;
+  const resolveConflict = async (choice: "saved" | "local") => {
+    if (!conflictTarget || !savedDraft || !session) return;
+    try {
+      await useAgsdlStore.getState().resolveDraftConflict(conflictTarget, session.version, savedDraft.revision, choice);
+      if (choice === "saved") setNameDraft(undefined);
+      setNameError("");
+      setError("");
+    } catch (failure) {
+      (settingsOpen ? setNameError : setError)(agsdlErrorText(failure, t));
+    }
+  };
+  const conflictNotice = conflict && conflictTarget && <div role="alert" className="agsdl-error">
+    <p>{t("agsdl.library.revisionConflict")}</p>
+    {recoveryError && recoveryError !== t("agsdl.library.revisionConflict") && <p>{recoveryError}</p>}
+    <p>{t("agsdl.library.conflictViewing", { revision: session.persistedRevision })}</p>
+    {savedDraft ? <>
+      <p>{t("agsdl.library.conflictSaved", { revision: savedDraft.revision })}</p>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className="agsdl-link" disabled={session.saving} onClick={() => void resolveConflict("saved")}>
+          {t("agsdl.library.useSavedDraft")}
+        </button>
+        {session.dirty && !savedDraft.archived && <button type="button" className="agsdl-link" disabled={session.saving} onClick={() => void resolveConflict("local")}>
+          {t("agsdl.library.replaceSavedDraft")}
+        </button>}
+      </div>
+    </> : <button type="button" className="agsdl-link" disabled={session.saving} onClick={() => {
+      void useAgsdlStore.getState().refreshDraftConflict(conflictTarget).catch(failure =>
+        (settingsOpen ? setNameError : setError)(agsdlErrorText(failure, t)));
+    }}>{t("agsdl.library.readSavedDraft")}</button>}
+  </div>;
+
   return (
     <div className="agsdl-viewer" data-agsdl-plan={legacyTarget?.planId} data-agsdl-blueprint={"blueprintId" in target ? target.blueprintId : undefined} aria-label={t("agsdl.editor")} onKeyDown={event => { if (event.key === "Escape" && !selectedCard && !selectedEdge) { setSelection(undefined); } }}>
       <header className="agsdl-viewer-header">
@@ -346,7 +383,8 @@ export const AgsdlEditor: React.FC<{
 
           {session && <form onSubmit={event => {
             event.preventDefault();
-            if (!nameDraft) return;
+            if (!nameDraft || session.saving || conflict) return;
+            setNameError("");
             try {
               const store = useAgsdlStore.getState();
               if (edition030) {
@@ -356,20 +394,27 @@ export const AgsdlEditor: React.FC<{
                     { design: session.design, display: { ...session.display, title: nameDraft.value }, migration: session.migration });
                 } else store.edit(target, changes, nameDraft.version);
               } else store.replace(target, session.source, undefined, nameDraft.version, { design: session.design, display: { ...session.display, title: nameDraft.value }, migration: session.migration });
-              void store.save(target).then(() => setNameDraft(undefined)).catch(error => setError(agsdlErrorText(error, t)));
-            } catch (error) { setError(agsdlErrorText(error, t)); }
-          }}><label className="agsdl-edit-field">{t("agsdl.design.name")}<input value={nameDraft?.value ?? document?.title ?? ""} disabled={session.status !== "draft" || session.saving || (!!planStatus && planStatus !== "draft")} onChange={event => setNameDraft({ value: event.target.value, version: nameDraft?.version ?? session.version })} /></label>
-            <button type="submit" className="agsdl-link" disabled={!nameDraft || session.saving}>{t("agsdl.save")}</button>
+              setNameDraft({ ...nameDraft, version: useAgsdlStore.getState().sessions[key].version });
+              void store.save(target).then(() => {
+                setNameDraft(undefined);
+                setError("");
+              }).catch(error => setNameError(agsdlErrorText(error, t)));
+            } catch (error) { setNameError(agsdlErrorText(error, t)); }
+          }}><label className="agsdl-edit-field">{t("agsdl.design.name")}<input value={nameDraft?.value ?? document?.title ?? ""} disabled={session.status !== "draft" || session.saving || !!conflict || (!!planStatus && planStatus !== "draft")} onChange={event => setNameDraft({ value: event.target.value, version: nameDraft?.version ?? session.version })} /></label>
+            <button type="submit" className="agsdl-link" disabled={!nameDraft || session.saving || !!conflict}>{t("agsdl.save")}</button>
           </form>}
+          {conflictNotice}
+          {!conflict && nameError && <p role="alert" className="agsdl-unresolved">{nameError}</p>}
         </div>
       </Dialog>}
       {issuesOpen && <Dialog title={t("agsdl.authoring030.diagnostics.title")} onClose={() => setIssuesOpen(false)} closeOnBackdropClick panelClassName="agsdl-detail-modal">
         <header><strong>{t("agsdl.authoring030.diagnostics.title")}</strong><button className="agsdl-icon-button" aria-label={t("agsdl.close")} onClick={() => setIssuesOpen(false)}><X size={14} /></button></header>
         <Diagnostics030 issues={diagnostics} onSelect={issue => { setIssuesOpen(false); openDiagnostic(issue); }} onAttach={canAttach ? attachDiagnostic : undefined} busy={attaching} error={diagnosticError} />
       </Dialog>}
-      {(error || session?.error || parsed.error) && (
+      {!settingsOpen && conflictNotice}
+      {!conflict && ((!settingsOpen && canvasError) || parsed.error) && (
         <div role="alert" className="agsdl-error">
-          {error || (session?.error && agsdlErrorText(session.error, t)) || (
+          {(!settingsOpen && canvasError) || (
             <>
               <p>{t(parsed.error?.includes("agsdl.unsupportedEdition020") ? "agsdl.unsupportedEdition020" : "agsdl.viewer.unreadable")}</p>
               <details className="agsdl-details">
@@ -378,7 +423,7 @@ export const AgsdlEditor: React.FC<{
               </details>
             </>
           )}
-          {(error || session?.error) && (
+          {!settingsOpen && canvasError && (
             <button
               className="agsdl-link"
               disabled={session?.saving}
@@ -445,7 +490,7 @@ export const AgsdlEditor: React.FC<{
       {showChanges && <div className="agsdl-change-notice"><button onClick={() => setChangesOpen(true)}>{t("agsdl.design.changes")}</button><button className="agsdl-icon-button" onClick={() => setDismissedVersion(session!.version)} aria-label={t("agsdl.design.dismissChanges")}><X size={12} /></button></div>}
       {(session?.saving || session?.dirty) && <footer className="agsdl-canvas-notice" role="status">
         {t(session.saving ? "agsdl.saving" : "agsdl.unsaved")}
-        {session.dirty && <button className="agsdl-link ml-2" disabled={session.saving} onClick={() => { void useAgsdlStore.getState().save(target).catch(error => setError(agsdlErrorText(error, t))); }}>{t("agsdl.authoring030.saveDraft")}</button>}
+        {session.dirty && !conflict && <button className="agsdl-link ml-2" disabled={session.saving} onClick={() => { void useAgsdlStore.getState().save(target).catch(error => setError(agsdlErrorText(error, t))); }}>{t("agsdl.authoring030.saveDraft")}</button>}
       </footer>}
     </div>
   );

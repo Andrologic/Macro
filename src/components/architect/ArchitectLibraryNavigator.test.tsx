@@ -248,3 +248,214 @@ it("retains local edits and refuses a new version when the stored draft revision
   expect(session.dirty).toBe(true);
   expect(JSON.parse(session.source).title).toBe("Local edits");
 });
+
+it("retries a transient title write failure in the same dialog", async () => {
+  const port = libraryPort();
+  const project = port.createProject("Project");
+  const blueprint = port.createDraft(project.id, "Original", createExampleDocument("feature"));
+  const invoke = port.invoke;
+  let attempts = 0;
+  port.invoke = async (command, args) => {
+    if (command === "architect_save_draft" && ++attempts === 1) throw new Error("Temporary failure");
+    return invoke(command, args);
+  };
+  await mount(port);
+  await pick(projectPicker, project.id);
+  await click('nav button[title="Original"]');
+  await editDocument();
+  await fill('[role="dialog"] input', "Renamed");
+  await submit();
+  expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain("Try again");
+  await submit();
+  expect(attempts).toBe(2);
+  expect(JSON.parse(port.drafts.get(blueprint.id)!.document.source).title).toBe("Renamed");
+  expect(document.querySelector('[role="dialog"] [role="alert"]')).toBeNull();
+});
+
+it("an intervening edit during save prevents versioning and survives a draft switch", async () => {
+  const port = libraryPort();
+  const project = port.createProject("Project");
+  const blueprint = port.createDraft(project.id, "Original", createExampleDocument("feature"));
+  port.createDraft(project.id, "Other", createExampleDocument("feature"));
+  const release = Promise.withResolvers<void>();
+  const invoke = port.invoke;
+  port.invoke = async (command, args) => {
+    if (command === "architect_save_draft") await release.promise;
+    return invoke(command, args);
+  };
+  await mount(port);
+  await pick(projectPicker, project.id);
+  await click('nav button[title="Original"]');
+  const target = { blueprintId: blueprint.id };
+  const rename = (name: string) => useAgsdlStore.getState().edit(target, [{ op: "set", path: "/title", valueJson: JSON.stringify(name) }]);
+  act(() => rename("First edit"));
+  await click('aside button[aria-label="Save version"]');
+  await submit();
+  expect(useAgsdlStore.getState().sessions[agsdlSessionKey(target)].saving).toBe(true);
+  act(() => rename("Second edit"));
+  await act(async () => release.resolve());
+  expect(port.versions.get(blueprint.id)).toBeUndefined();
+  expect(JSON.parse(port.drafts.get(blueprint.id)!.document.source).title).toBe("First edit");
+  await buttonByText('[role="dialog"] button', "Cancel");
+  await click('nav button[title="Other"]');
+  await click('nav button[title="Original"]');
+  const session = useAgsdlStore.getState().sessions[agsdlSessionKey(target)];
+  expect(session.dirty).toBe(true);
+  expect(session.persistedRevision).toBe(2);
+  expect(JSON.parse(session.source).title).toBe("Second edit");
+});
+
+it("requires a fresh decision after each CAS conflict and preserves edits made during the reread", async () => {
+  const port = libraryPort();
+  const project = port.createProject("Project");
+  const blueprint = port.createDraft(project.id, "Original", createExampleDocument("feature"));
+  port.createDraft(project.id, "Other", createExampleDocument("feature"));
+  const target = { blueprintId: blueprint.id };
+  const local = () => useAgsdlStore.getState().sessions[agsdlSessionKey(target)];
+  const rename = (name: string) => useAgsdlStore.getState().edit(target, [{ op: "set", path: "/title", valueJson: JSON.stringify(name) }]);
+  const external = (revision: number, title: string) => ({
+    ...blueprint, revision, document: { ...blueprint.document, source: JSON.stringify({ ...JSON.parse(blueprint.document.source), title }) },
+  });
+  await mount(port);
+  await pick(projectPicker, project.id);
+  await click('nav button[title="Original"]');
+  const release = Promise.withResolvers<BlueprintDraft>();
+  port.delayedReads.set(blueprint.id, release.promise);
+  const saved = external(2, "Saved elsewhere");
+  port.drafts.set(blueprint.id, saved);
+  await editDocument();
+  await fill('[role="dialog"] input', "Local title");
+  await submit();
+  expect(local().saving).toBe(true);
+  act(() => rename("Intervening edit"));
+  await act(async () => release.resolve(saved));
+  port.delayedReads.delete(blueprint.id);
+  expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain("revision 1");
+  expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain("revision read: 2");
+  await click('[role="dialog"] button[aria-label="Close"]');
+  await click('nav button[title="Other"]');
+  await click('nav button[title="Original"]');
+  expect(JSON.parse(local().source).title).toBe("Intervening edit");
+  expect(port.writes.map(write => write.expectedRevision)).toEqual([1]);
+
+  port.drafts.set(blueprint.id, external(3, "Newer saved draft"));
+  await buttonByText('aside [role="alert"] button', "Apply local edits and replace saved draft");
+  expect(panel().textContent).toContain("revision read: 3");
+  expect(port.writes.map(write => write.expectedRevision)).toEqual([1, 2]);
+  expect(JSON.parse(port.drafts.get(blueprint.id)!.document.source).title).toBe("Newer saved draft");
+  await buttonByText('aside [role="alert"] button', "Apply local edits and replace saved draft");
+  expect(port.writes.map(write => write.expectedRevision)).toEqual([1, 2, 3]);
+  expect(local()).toMatchObject({ persistedRevision: 4, dirty: false, error: null });
+  expect(JSON.parse(port.drafts.get(blueprint.id)!.document.source).title).toBe("Intervening edit");
+  expect(panel().querySelector('[role="alert"]')).toBeNull();
+});
+
+it("retries a failed conflict read and can adopt the saved draft without writing", async () => {
+  const port = libraryPort();
+  const project = port.createProject("Project");
+  const blueprint = port.createDraft(project.id, "Original", createExampleDocument("feature"));
+  const target = { blueprintId: blueprint.id };
+  const invoke = port.invoke;
+  let failRead = false;
+  port.invoke = (command, args) => command === "architect_get_draft" && failRead
+    ? Promise.reject(new Error("Temporary read failure"))
+    : invoke(command, args);
+  await mount(port);
+  await pick(projectPicker, project.id);
+  await click('nav button[title="Original"]');
+  port.drafts.set(blueprint.id, { ...blueprint, revision: 2 });
+  failRead = true;
+  await editDocument();
+  await fill('[role="dialog"] input', "Local title");
+  await submit();
+  const local = () => useAgsdlStore.getState().sessions[agsdlSessionKey(target)];
+  expect(JSON.parse(local().source).title).toBe("Local title");
+  expect(local().draftConflict?.saved).toBeNull();
+  failRead = false;
+  await buttonByText('[role="dialog"] button', "Read saved draft");
+  await buttonByText('[role="dialog"] button', "Use saved draft and discard local edits");
+  expect(local()).toMatchObject({ persistedRevision: 2, dirty: false, source: blueprint.document.source });
+  expect(port.writes.map(write => write.expectedRevision)).toEqual([1]);
+  expect(document.querySelector('[role="dialog"] [role="alert"]')).toBeNull();
+});
+
+it("reloads a clean draft on return from a version and keeps a dirty draft", async () => {
+  const port = libraryPort();
+  const project = port.createProject("Project");
+  const blueprint = port.createDraft(project.id, "Original", createExampleDocument("feature"));
+  port.freeze(blueprint, null);
+  const target = { blueprintId: blueprint.id };
+  const local = () => useAgsdlStore.getState().sessions[agsdlSessionKey(target)];
+  await mount(port);
+  await pick(projectPicker, project.id);
+  await click('nav button[title="Original"]');
+  await buttonByText('nav [aria-label="Versions"] button', "Version 1");
+  port.drafts.set(blueprint.id, { ...blueprint, revision: 2 });
+  await buttonByText("aside button", "Back to draft");
+  expect(local().persistedRevision).toBe(2);
+  await buttonByText('nav [aria-label="Versions"] button', "Version 1");
+  act(() => useAgsdlStore.getState().edit(target, [{ op: "set", path: "/title", valueJson: '"Dirty draft"' }]));
+  port.drafts.set(blueprint.id, { ...blueprint, revision: 3 });
+  await buttonByText("aside button", "Back to draft");
+  expect(local()).toMatchObject({ persistedRevision: 2, dirty: true });
+  expect(JSON.parse(local().source).title).toBe("Dirty draft");
+});
+
+it("ignores a delayed return-to-draft read after a newer version selection", async () => {
+  const port = libraryPort();
+  const project = port.createProject("Project");
+  const blueprint = port.createDraft(project.id, "Original", createExampleDocument("feature"));
+  port.freeze(blueprint, null);
+  port.freeze(blueprint, null);
+  await mount(port);
+  await pick(projectPicker, project.id);
+  await click('nav button[title="Original"]');
+  await buttonByText('nav [aria-label="Versions"] button', "Version 1");
+  const release = Promise.withResolvers<BlueprintDraft>();
+  port.delayedReads.set(blueprint.id, release.promise);
+  await buttonByText("aside button", "Back to draft");
+  await buttonByText('nav [aria-label="Versions"] button', "Version 2");
+  await act(async () => release.resolve({ ...blueprint, revision: 2 }));
+  expect(useArchitectLibraryStore.getState()).toMatchObject({ versionNumber: 2, draftStatus: "idle" });
+  expect(panel().textContent).toContain("Version 2");
+});
+
+it("keeps a local edit made after a return-to-draft read has started", async () => {
+  const port = libraryPort();
+  const project = port.createProject("Project");
+  const blueprint = port.createDraft(project.id, "Original", createExampleDocument("feature"));
+  port.freeze(blueprint, null);
+  const target = { blueprintId: blueprint.id };
+  await mount(port);
+  await pick(projectPicker, project.id);
+  await click('nav button[title="Original"]');
+  await buttonByText('nav [aria-label="Versions"] button', "Version 1");
+  const release = Promise.withResolvers<BlueprintDraft>();
+  port.delayedReads.set(blueprint.id, release.promise);
+  await buttonByText("aside button", "Back to draft");
+  act(() => useAgsdlStore.getState().edit(target, [{ op: "set", path: "/title", valueJson: '"Edit during reload"' }]));
+  await act(async () => release.resolve({ ...blueprint, revision: 2 }));
+  const session = useAgsdlStore.getState().sessions[agsdlSessionKey(target)];
+  expect(session).toMatchObject({ persistedRevision: 1, dirty: true, draftConflict: { saved: { revision: 2 } } });
+  expect(JSON.parse(session.source).title).toBe("Edit during reload");
+});
+
+it("requires adopting the saved revision before retrying a conflicting version save on a clean draft", async () => {
+  const port = libraryPort();
+  const project = port.createProject("Project");
+  const blueprint = port.createDraft(project.id, "Original", createExampleDocument("feature"));
+  await mount(port);
+  await pick(projectPicker, project.id);
+  await click('nav button[title="Original"]');
+  port.drafts.set(blueprint.id, { ...blueprint, revision: 2 });
+  await click('aside button[aria-label="Save version"]');
+  await submit();
+  expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain("The draft changed elsewhere");
+  expect(port.versions.get(blueprint.id)).toBeUndefined();
+  await buttonByText('[role="dialog"] button', "Cancel");
+  await buttonByText('aside [role="alert"] button', "Use saved draft and discard local edits");
+  await click('aside button[aria-label="Save version"]');
+  await submit();
+  expect(port.versions.get(blueprint.id)?.[0].revision).toBe(2);
+  expect(port.writes).toEqual([]);
+});
