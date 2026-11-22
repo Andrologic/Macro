@@ -200,6 +200,25 @@ pub(crate) async fn configured_roots(
     Ok(roots)
 }
 
+async fn record_legacy_chat_claims(db: &mut sqlx::SqliteConnection) -> crate::db::DbResult<()> {
+    // Only the complete profile scan can establish a sole historical claimant.
+    // A standalone import can be followed by another replica citing the same chat.
+    sqlx::query(
+        "INSERT OR IGNORE INTO app_settings(key,value_json,updated_at)
+         SELECT 'architect:legacy-chat-claim:' || conversation_id,json_quote(id),CURRENT_TIMESTAMP
+         FROM architect_blueprints AS b
+         WHERE conversation_id=json_extract(history,'$.legacyConversationId')
+           AND NOT EXISTS (SELECT 1 FROM architect_blueprints AS other WHERE other.id<>b.id
+             AND (other.conversation_id=b.conversation_id
+                  OR json_extract(other.history,'$.legacyConversationId')=b.conversation_id))",
+    )
+    .execute(&mut *db)
+    .await?;
+    sqlx::query("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('architect:legacy-chat-claims-complete','true',CURRENT_TIMESTAMP)")
+        .execute(db).await?;
+    Ok(())
+}
+
 /// Read the native profile and publish its entire legacy library once. The write
 /// lock also serializes a second bootstrap and the conversation-link snapshot.
 pub(crate) async fn migrate_profile(
@@ -216,6 +235,14 @@ pub(crate) async fn migrate_profile(
     .fetch_optional(&mut *tx)
     .await?;
     if let Some((discovered, divergent_plans)) = finished {
+        // Older completed batches predate conversation attribution. Their rows
+        // are sufficient for the backfill even when the original files are gone.
+        let claims_recorded: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM app_settings WHERE key='architect:legacy-chat-claims-complete')",
+        ).fetch_one(&mut *tx).await?;
+        if !claims_recorded {
+            record_legacy_chat_claims(&mut tx).await?;
+        }
         tx.commit().await?;
         return Ok(LegacyImportReport {
             status: LegacyImportStatus::Complete,
@@ -334,19 +361,7 @@ pub(crate) async fn migrate_profile(
             Err(error) => return Err(error),
         }
     }
-    // Only the complete profile scan can establish a sole historical claimant.
-    // A standalone import can be followed by another replica citing the same chat.
-    sqlx::query(
-        "INSERT OR IGNORE INTO app_settings(key,value_json,updated_at)
-         SELECT 'architect:legacy-chat-claim:' || conversation_id,json_quote(id),CURRENT_TIMESTAMP
-         FROM architect_blueprints AS b
-         WHERE conversation_id=json_extract(history,'$.legacyConversationId')
-           AND NOT EXISTS (SELECT 1 FROM architect_blueprints AS other WHERE other.id<>b.id
-             AND (other.conversation_id=b.conversation_id
-                  OR json_extract(other.history,'$.legacyConversationId')=b.conversation_id))",
-    )
-    .execute(&mut *tx)
-    .await?;
+    record_legacy_chat_claims(&mut tx).await?;
     sqlx::query(
         "INSERT INTO architect_legacy_import(singleton,discovered,divergent_plans) VALUES(1,?,?)",
     )

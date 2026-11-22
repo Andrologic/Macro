@@ -399,12 +399,9 @@ pub(crate) async fn ensure_conversation(
     }
     let transcript = archived_transcript(&draft)?;
     let mut already_restored = false;
-    if let Some(id) = candidate
-        .as_ref()
-        .filter(|id| !transcript.is_empty() && Some(id.as_str()) != legacy_id)
-    {
-        // A verified marker from before ownership tracking is usable on a
-        // private binding, including if its messages have since been edited.
+    if let Some(id) = candidate.as_ref().filter(|_| !transcript.is_empty()) {
+        // The binding above is exclusive. Migration 047 also copied private IDs
+        // into historical provenance, so equality with legacy_id is immaterial.
         already_restored =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app_settings WHERE key IN (?,?))")
                 .bind(format!("architect:verified-transcript:{blueprint_id}:{id}"))
