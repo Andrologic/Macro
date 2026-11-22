@@ -1,6 +1,3 @@
-import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { ChatToolExecutionPorts } from "./chatToolExecutionContracts";
 import type { FrozenToolCallContext } from "./chatStreamContracts";
 import type { AgentCodeCheckpointFile, ChatMessage } from "../types";
@@ -3639,23 +3636,14 @@ describe("tool catalogue to workspace execution", () => {
   });
 });
 // Full conversation routing, with native IPC and persistence as controlled IO.
-// No provider or language server is called by these frontend fixtures.
-async function lspConversationFixture(params: {
-  virtual?: boolean; status?: string; refuse?: boolean; checkpointFailure?: boolean;
-  mutateDuringCheckpoint?: boolean; holdNative?: boolean; readOnly?: boolean; holdFreshness?: boolean;
-  realRoot?: string; replaceRoot?: boolean; secondRoot?: string;
-  missingIdentity?: "observation" | "read"; failedFreshness?: boolean;
+async function checkpointConversationFixture(params: {
+  virtual?: boolean; refuse?: boolean; checkpointFailure?: boolean;
+  mutateDuringCheckpoint?: boolean; holdNative?: boolean; readOnly?: boolean;
+  secondRoot?: string;
 } = {}) {
   let content = "export const value: string = 'old';\n";
   let revision = "before";
-  const root = params.realRoot ?? "C:/dev/macro-web";
-  if (params.realRoot) writeFileSync(join(root, "sample.ts"), content);
-  if (params.secondRoot) writeFileSync(join(params.secondRoot, "sample.ts"), content);
-  const rootIdentity = (workspace = root) => {
-    if (!params.realRoot) return "fixture-root-identity";
-    const stat = statSync(workspace, {bigint: true});
-    return `unix:${stat.dev.toString(16)}:${stat.ino.toString(16)}`;
-  };
+  const root = "C:/dev/macro-web";
   const filePath = params.virtual ? "web/sample.ts" : "sample.ts";
   const nativeCalls: Array<Record<string, unknown>> = [];
   const checkpoints: AgentCodeCheckpointFile[][] = [];
@@ -3663,8 +3651,6 @@ async function lspConversationFixture(params: {
   let cancellations = 0;
   let started!: () => void;
   const nativeStarted = new Promise<void>((resolve) => { started = resolve; });
-  let readingFreshness!: () => void;
-  const freshnessStarted = new Promise<void>((resolve) => { readingFreshness = resolve; });
   let release!: () => void;
   const nativeRelease = new Promise<void>((resolve) => { release = resolve; });
   const controller = new AbortController();
@@ -3673,18 +3659,10 @@ async function lspConversationFixture(params: {
     tauriModule: {
       isTauriAvailable: () => true,
       fsExists: async () => true,
-      fsReadFileWithOptions: async (request: {path: string; workspacePath?: string}) => {
-        if (params.holdFreshness && checkpoints.length > 0) {
-          readingFreshness();
-          await new Promise(() => {});
-        }
-        if (params.failedFreshness && checkpoints.length > 0) throw new Error("Identity read failed");
-        const workspace = params.secondRoot && (request.workspacePath === params.secondRoot || request.path.startsWith(params.secondRoot + "/"))
-          ? params.secondRoot : root;
-        const readContent = params.realRoot ? readFileSync(join(workspace, "sample.ts"), "utf8") : content;
-        return { content: readContent, revision, language: "typescript", is_binary: false, size: content.length, encoding: "utf-8", unix_mode: 0o755,
-          workspace_identity: params.missingIdentity === "read" ? undefined : rootIdentity(workspace) };
-      },
+      fsReadFileWithOptions: async () => ({
+        content, revision, language: "typescript", is_binary: false,
+        size: content.length, encoding: "utf-8", unix_mode: 0o755,
+      }),
       fsWriteFile: async (args: {path: string; content: string; expectedRevision?: string; unixMode?: number}) => {
         expect(args.expectedRevision).toBe("applied");
         expect(args.unixMode).toBe(0o755);
@@ -3705,17 +3683,11 @@ async function lspConversationFixture(params: {
           content = String(args.content);
         }
         revision = nativeCalls.length === 1 ? "applied" : `applied-${nativeCalls.length}`;
-        if (params.realRoot) writeFileSync(join(root, "sample.ts"), content);
-        if (params.secondRoot) writeFileSync(join(params.secondRoot, "sample.ts"), content);
         started();
         if (params.holdNative) await nativeRelease;
-        const status = cancellations ? "cancelled" : params.status ?? "ready";
         return JSON.stringify({ok: true, path: `${root}/sample.ts`, created: false, bytes_written: content.length,
           files: [filePath, ...(params.secondRoot ? ["api/sample.ts"] : [])].map(path => ({path, validation: {revision, unix_mode: 0o755}})),
-          diagnostics: [root, ...(params.secondRoot ? [params.secondRoot] : [])].map(workspace => ({
-            path: "sample.ts", root: workspace, workspace_path: workspace, document_path: `${workspace}/sample.ts`,
-            root_identity: params.missingIdentity === "observation" ? undefined : rootIdentity(workspace), uri: `file://${workspace}/sample.ts`, revision,
-            session: `fixture-session-${nativeCalls.length}`, version: 1, status, items: status === "ready" && content.includes("= 42") ? [{code: 2322, message: "Type number is not assignable to string"}] : []})),
+          diagnostics: [{status: "ready"}],
         });
       },
       cancelWorkspaceTool: async (id: string) => {
@@ -3750,12 +3722,6 @@ async function lspConversationFixture(params: {
     terminal: {cachedSession: () => undefined, createSession: unexpected, readSession: unexpected, runCommand: unexpected, killSession: unexpected},
     workspace: {executor: async () => executor, resolvePromotion: () => ({task: undefined, projectIds: [], unavailableResult: null}), promote: async () => null,
       recordCheckpoint: async (checkpoint) => {
-        if (params.replaceRoot) {
-          renameSync(root, `${root}-old`);
-          mkdirSync(root);
-          writeFileSync(join(root, "sample.ts"), content);
-          writeFileSync(join(root, "tsconfig.json"), '{"compilerOptions":{"strict":false}}');
-        }
         if (params.mutateDuringCheckpoint) {content = "external edit"; revision = "external";}
         if (params.checkpointFailure) throw new Error("checkpoint unavailable");
         checkpoints.push(checkpoint.files);
@@ -3782,61 +3748,53 @@ async function lspConversationFixture(params: {
     // The actual provider codec projects the text supplied on the next request.
     return {result, nextTurn: buildToolChatCompletionProviderItem(result.tool_call_id, result.content, result.tool_name)};
   };
-  return {run, argsFor, executor, operation, ports, controller, nativeStarted, release,
-    nativeCalls, checkpoints, freshnessStarted, state: () => ({content, revision, filesystemWrites, cancellations})};
+  return {run, controller, nativeStarted, release,
+    nativeCalls, checkpoints, state: () => ({content, revision, filesystemWrites, cancellations})};
 }
 
-describe("conversation checkpoint diagnostics reach the next provider request", () => {
+describe("workspace checkpoints through chat and provider projection", () => {
   for (const virtual of [false, true]) {
     for (const tool of ["write", "edit", "apply_patch"]) {
-      it(`${tool}, ${virtual ? "virtual" : "direct"}: preserves checkpoint and diagnostics through chat and provider projection`, async () => {
-        const f = await lspConversationFixture({virtual});
+      it(`${tool}, ${virtual ? "virtual" : "direct"}: returns the applied revision and saves the checkpoint`, async () => {
+        const f = await checkpointConversationFixture({virtual});
         const {result, nextTurn} = await f.run(tool);
         expect(result.is_error).toBe(false);
         const output = JSON.parse(String(nextTurn.content));
-        expect(output.diagnostics[0]).toMatchObject({status: "ready", revision: "applied", items: [{code: 2322}]});
+        expect(output.files[0].validation.revision).toBe("applied");
+        expect(output.diagnostics).toEqual([]);
         expect(f.nativeCalls).toHaveLength(1);
         expect(f.nativeCalls[0].executionId).toEqual(expect.any(String));
         expect(f.checkpoints).toHaveLength(1);
         expect(f.checkpoints[0][0]).toMatchObject({before: {revision: "before", content: "export const value: string = 'old';\n"}, after: {revision: "applied", content: "export const value: string = 42;\n"}});
         expect(f.state().filesystemWrites).toBe(0);
       });
-      it(`${tool}, ${virtual ? "virtual" : "direct"}: checkpoint failure restores the applied revision and discards diagnostics`, async () => {
-        const f = await lspConversationFixture({virtual, checkpointFailure: true});
+      it(`${tool}, ${virtual ? "virtual" : "direct"}: checkpoint failure restores the applied revision`, async () => {
+        const f = await checkpointConversationFixture({virtual, checkpointFailure: true});
         const {result} = await f.run(tool);
         expect(result.is_error).toBe(true);
         expect(result.error_kind).toBe("uncertain");
         expect(result.content).toContain("reverted");
-        expect(result.content).not.toContain("fixture-session");
         expect(f.state()).toMatchObject({content: "export const value: string = 'old';\n", filesystemWrites: 1});
         expect(f.checkpoints).toHaveLength(0);
       });
       it(`${tool}, ${virtual ? "virtual" : "direct"}: rollback preserves a concurrent writer after checkpoint failure`, async () => {
-        const f = await lspConversationFixture({virtual, checkpointFailure: true, mutateDuringCheckpoint: true});
+        const f = await checkpointConversationFixture({virtual, checkpointFailure: true, mutateDuringCheckpoint: true});
         const {result} = await f.run(tool);
         expect(result.is_error).toBe(true);
         expect(result.content).toContain("rollback failed");
-        expect(result.content).not.toContain("fixture-session");
         expect(f.state()).toMatchObject({content: "external edit", revision: "external", filesystemWrites: 0});
         expect(f.checkpoints).toHaveLength(0);
       });
-      it(`${tool}, ${virtual ? "virtual" : "direct"}: native refusal cannot publish a checkpoint or diagnostics`, async () => {
-        const f = await lspConversationFixture({virtual, refuse: true});
+      it(`${tool}, ${virtual ? "virtual" : "direct"}: native refusal leaves the file and checkpoint untouched`, async () => {
+        const f = await checkpointConversationFixture({virtual, refuse: true});
         const {result} = await f.run(tool);
         expect(result.is_error).toBe(true);
         expect(result.content).toContain("Revision conflict");
-        expect(result.content).not.toContain("fixture-session");
         expect(f.state()).toMatchObject({revision: "before", filesystemWrites: 0});
         expect(f.checkpoints).toHaveLength(0);
       });
-      it(`${tool}, ${virtual ? "virtual" : "direct"}: checkpoint wait invalidates observations changed by another writer`, async () => {
-        const f = await lspConversationFixture({virtual, mutateDuringCheckpoint: true});
-        const {result} = await f.run(tool);
-        expect(JSON.parse(result.content).diagnostics[0]).toMatchObject({status: "stale", items: []});
-        expect(f.state()).toMatchObject({revision: "external", filesystemWrites: 0});
-      });
-      it(`${tool}, ${virtual ? "virtual" : "direct"}: stop cancels observation, keeps the transaction and checkpoint, suppresses the next turn`, async () => {
-        const f = await lspConversationFixture({virtual, holdNative: true});
+      it(`${tool}, ${virtual ? "virtual" : "direct"}: stop waits for the mutation receipt and suppresses the next turn`, async () => {
+        const f = await checkpointConversationFixture({virtual, holdNative: true});
         const running = f.run(tool);
         await f.nativeStarted;
         f.controller.abort();
@@ -3845,57 +3803,20 @@ describe("conversation checkpoint diagnostics reach the next provider request", 
         expect(f.checkpoints).toHaveLength(1);
       });
     }
-    it(`write then edit, ${virtual ? "virtual" : "direct"}: correction replaces the next-turn diagnostics`, async () => {
-      const f = await lspConversationFixture({virtual});
-      const first = await f.run("write");
-      const error = JSON.parse(String(first.nextTurn.content)).diagnostics[0];
-      expect(error.items[0].code).toBe(2322);
-      const corrected = await f.run("edit", {
-        path: virtual ? "web/sample.ts" : "sample.ts", old_text: "42", new_text: "'fixed'",
-      });
-      const observation = JSON.parse(String(corrected.nextTurn.content)).diagnostics[0];
-      expect(observation).toMatchObject({status: "ready", items: [], revision: "applied-2"});
-      expect(observation.session).not.toBe(error.session);
-      expect(f.checkpoints).toHaveLength(2);
-      expect(f.state().content).toBe("export const value: string = 'fixed';\n");
-    });
-    for (const status of ["pending", "unavailable", "stale", "cancelled", "disabled", "timeout", "failed"]) {
-      it(`apply_patch ${virtual ? "virtual" : "direct"}: preserves native ${status}`, async () => {
-        const f = await lspConversationFixture({virtual, status});
-        const {result} = await f.run("apply_patch");
-        expect(JSON.parse(result.content).diagnostics[0]).toMatchObject({status, items: [], revision: "applied"});
-      });
-    }
   }
-  it("bounds post-checkpoint freshness IO without rolling back a committed write", async () => {
-    const f = await lspConversationFixture({holdFreshness: true});
-    const {result} = await f.run("write");
-    expect(JSON.parse(result.content).diagnostics[0]).toMatchObject({status: "stale", items: []});
-    expect(f.state()).toMatchObject({revision: "applied", filesystemWrites: 0});
-    expect(f.checkpoints).toHaveLength(1);
-  });
-  it("stop also cuts post-checkpoint freshness observation", async () => {
-    const f = await lspConversationFixture({holdFreshness: true});
-    const running = f.run("write");
-    await f.freshnessStarted;
-    f.controller.abort();
-    await expect(running).rejects.toMatchObject({name: "AbortError"});
-    expect(f.state()).toMatchObject({revision: "applied", filesystemWrites: 0});
-    expect(f.checkpoints).toHaveLength(1);
-  });
   it("keeps the captured root when the selection changes during the native wait", async () => {
-    const f = await lspConversationFixture({holdNative: true});
+    const f = await checkpointConversationFixture({holdNative: true});
     const running = f.run("write");
     await f.nativeStarted;
     const {useAppStore} = await import("../stores/useAppStore");
     useAppStore.setState({selectedProjectId: "api"});
     f.release();
     const {result} = await running;
-    expect(JSON.parse(result.content).diagnostics[0].root).toBe("C:/dev/macro-web");
+    expect(result.is_error).toBe(false);
     expect(f.checkpoints[0][0].workspacePath).toBe("C:/dev/macro-web");
   });
   it("refuses a read-only virtual mount before native execution", async () => {
-    const f = await lspConversationFixture({virtual: true, readOnly: true});
+    const f = await checkpointConversationFixture({virtual: true, readOnly: true});
     const {result} = await f.run("write");
     expect(result.is_error).toBe(true);
     expect(result.content).toContain("read-only");
@@ -3905,72 +3826,14 @@ describe("conversation checkpoint diagnostics reach the next provider request", 
 });
 
 
-describe("native root identity remains bound through conversation checkpoints", () => {
-  for (const virtual of [false, true]) {
-    for (const tool of ["write", "edit", "apply_patch"]) {
-      for (const replaceRoot of [false, true]) {
-        it(`${tool}, virtual=${virtual}, replacement=${replaceRoot}: compares native identities for identical bytes`, async () => {
-          const temporary = mkdtempSync(join(tmpdir(), "macro-lsp-root-"));
-          try {
-            const root = join(temporary, "workspace").replaceAll("\\", "/");
-            mkdirSync(root);
-            const before = statSync(root, {bigint: true});
-            const f = await lspConversationFixture({virtual, realRoot: root, replaceRoot});
-            const {result, nextTurn} = await f.run(tool);
-            const after = statSync(root, {bigint: true});
-            expect(after.ino === before.ino).toBe(!replaceRoot);
-            expect(result.is_error).toBe(false);
-            const observation = JSON.parse(String(nextTurn.content)).diagnostics[0];
-            expect(observation.status).toBe(replaceRoot ? "stale" : "ready");
-            if (replaceRoot) expect(observation.items).toEqual([]);
-            else expect(observation.items[0].code).toBe(2322);
-            expect(f.checkpoints).toHaveLength(1);
-            expect(f.state()).toMatchObject({revision: "applied", filesystemWrites: 0});
-            expect(readFileSync(join(root, "sample.ts"), "utf8")).toBe("export const value: string = 42;\n");
-            if (replaceRoot) expect(readFileSync(join(`${root}-old`, "sample.ts"), "utf8")).toBe(readFileSync(join(root, "sample.ts"), "utf8"));
-          } finally {
-            rmSync(temporary, {recursive: true, force: true});
-          }
-        });
-      }
-      for (const failure of ["observation", "read", "failed"] as const) {
-        it(`${tool}, virtual=${virtual}: unknown or failed identity ${failure} invalidates only observation`, async () => {
-          const f = await lspConversationFixture({virtual,
-            missingIdentity: failure === "failed" ? undefined : failure,
-            failedFreshness: failure === "failed",
-          });
-          const {result} = await f.run(tool);
-          expect(result.is_error).toBe(false);
-          expect(JSON.parse(result.content).diagnostics[0]).toMatchObject({status: "stale", items: []});
-          expect(f.checkpoints).toHaveLength(1);
-          expect(f.state()).toMatchObject({revision: "applied", filesystemWrites: 0});
-        });
-      }
-    }
-  }
-});
-
-
-it("keeps each native observation bound to its own root in a multi-mount checkpoint", async () => {
-  const temporary = mkdtempSync(join(tmpdir(), "macro-lsp-mounts-"));
-  try {
-    const root = join(temporary, "web").replaceAll("\\", "/");
-    const secondRoot = join(temporary, "api").replaceAll("\\", "/");
-    mkdirSync(root);
-    mkdirSync(secondRoot);
-    const f = await lspConversationFixture({virtual: true, realRoot: root, secondRoot, replaceRoot: true});
-    const {result} = await f.run("apply_patch");
-    expect(result.is_error).toBe(false);
-    const observations = JSON.parse(result.content).diagnostics;
-    expect(observations).toHaveLength(2);
-    expect(observations[0]).toMatchObject({workspace_path: root, status: "stale", items: []});
-    expect(observations[1]).toMatchObject({workspace_path: secondRoot, status: "ready", items: [{code: 2322}]});
-    expect(f.checkpoints).toHaveLength(1);
-    expect(f.checkpoints[0]).toHaveLength(2);
-    expect(f.state().filesystemWrites).toBe(0);
-  } finally {
-    rmSync(temporary, {recursive: true, force: true});
-  }
+it("records both roots in a multi-mount patch checkpoint", async () => {
+  const secondRoot = "C:/dev/macro-api";
+  const fixture = await checkpointConversationFixture({virtual: true, secondRoot});
+  const {result} = await fixture.run("apply_patch");
+  expect(result.is_error).toBe(false);
+  expect(fixture.checkpoints).toHaveLength(1);
+  expect(fixture.checkpoints[0].map(file => file.workspacePath)).toEqual(["C:/dev/macro-web", secondRoot]);
+  expect(fixture.state().filesystemWrites).toBe(0);
 });
 
 // Regression of the independent audit: actual workspace adapter plus dispatch.

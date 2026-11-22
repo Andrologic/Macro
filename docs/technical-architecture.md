@@ -1101,7 +1101,6 @@ Les blocs principaux sont :
 - `config/`
 - `secrets/`
 - `ipc_contracts/`
-- `lsp/`
 - `db/`
 - `fs/`
 - `git/`

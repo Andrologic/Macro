@@ -168,7 +168,6 @@ mod state_manager;
 // Placeholder modules for critical manual implementation
 pub mod fs;
 pub mod git;
-pub mod lsp;
 
 mod ai;
 mod project_icon;

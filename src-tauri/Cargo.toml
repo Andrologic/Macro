@@ -24,11 +24,6 @@ path = "examples/performance-sqlite/main.rs"
 required-features = ["performance-sqlite"]
 
 [[test]]
-name = "lsp_core"
-path = "tests/lsp_core.rs"
-harness = false
-
-[[test]]
 name = "process_containment"
 path = "tests/process_containment.rs"
 

@@ -1,7 +1,7 @@
 use super::registry::{
-    apply_modes_for_paths, classify_sensitive_paths, collect_leaf_pointers, default_document,
-    effective_documents, project_overlay_is_restrictive, schema_map, sparse_document,
-    strip_default_values, validate_document,
+    active_document, apply_modes_for_paths, classify_sensitive_paths, collect_leaf_pointers,
+    default_document, effective_documents, project_overlay_is_restrictive, schema_map,
+    sparse_document, strip_default_values, validate_document, LEGACY_LANGUAGE_SERVER,
 };
 use super::types::*;
 use chrono::Utc;
@@ -10,6 +10,7 @@ use json_patch::Patch;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(unix)]
 use std::fs::File;
@@ -78,6 +79,10 @@ struct PendingRootBinding {
 #[serde(rename_all = "camelCase")]
 struct DurablePendingSensitiveChange {
     pending: PendingSensitiveConfigChange,
+    // Older readers compare pending.proposedEtag with the raw file. A proposal
+    // that excludes an unapproved legacy value must be reclassified by them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    canonical_proposal: Option<Value>,
     // Legacy project proposals have no binding and require a fresh approval ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project_root: Option<PendingRootBinding>,
@@ -87,6 +92,42 @@ struct DurablePendingSensitiveChange {
     approved_etag: String,
     all_changed_paths: Vec<String>,
     apply_modes: Vec<String>,
+}
+
+impl DurablePendingSensitiveChange {
+    fn preserve_legacy_consent(mut self, approved: &Value) -> Self {
+        let safe = with_approved_legacy(
+            self.pending.document,
+            &self.pending.proposed_document,
+            approved,
+        );
+        if let Cow::Owned(safe) = safe {
+            self.pending.proposed_etag = etag(&safe);
+            self.canonical_proposal =
+                Some(std::mem::replace(&mut self.pending.proposed_document, safe));
+        }
+        self
+    }
+
+    fn canonical_document(&self) -> &Value {
+        self.canonical_proposal
+            .as_ref()
+            .unwrap_or(&self.pending.proposed_document)
+    }
+
+    fn matches_canonical(&self, value: &Value, value_etag: &str) -> bool {
+        self.canonical_document() == value
+            && (self.canonical_proposal.is_some() || self.pending.proposed_etag == value_etag)
+    }
+
+    fn public_pending(&self) -> PendingSensitiveConfigChange {
+        let mut pending = self.pending.clone();
+        if let Some(canonical) = &self.canonical_proposal {
+            pending.proposed_etag = etag(canonical);
+            pending.proposed_document = canonical.clone();
+        }
+        pending
+    }
 }
 
 // The only transition authority: one current intent in private runtime storage.
@@ -107,6 +148,10 @@ struct DurableConfigPublication {
     previous_document: Value,
     previous_etag: String,
     proposed_etag: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous_canonical_document: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proposed_approved_etag: Option<String>,
 }
 
 // Resolution is work owned by the request, not by the latest diagnostic.
@@ -1243,49 +1288,70 @@ impl ConfigManager {
                 if let Some(diagnostic) = cleanup_committed_pending(&pending_path, &key) {
                     runtime_diagnostics.push(diagnostic);
                 }
-            } else if durable_pending.as_ref().is_some_and(|pending| {
-                pending.approved_etag == approved_etag
-                    && pending.pending.proposed_etag == document_etag
-                    && pending.pending.document == kind
-                    && pending.pending.scope == key.scope
-            }) {
-                // The durable proposal is still current. Keep the approved baseline effective.
             } else {
-                let changed_paths = diff_leaf_paths(&approved, &value);
+                let changed_paths = diff_active_paths(kind, &approved, &value);
                 let (sensitive_paths, reasons) = classify_sensitive_paths(kind, &changed_paths);
                 if sensitive_paths.is_empty() {
-                    write_runtime_json(&approved_path, &value, &key.scope).map_err(|error| {
-                        ConfigApiError::new(
-                            "config.approved.write_failed",
-                            format!("Failed to promote configuration: {error}"),
-                        )
-                    })?;
-                    approved = value.clone();
+                    let safe = with_approved_legacy(kind, &value, &approved);
+                    if *safe != approved {
+                        write_approved_document(&approved_path, &safe, &key.scope).map_err(
+                            |error| {
+                                ConfigApiError::new(
+                                    "config.approved.write_failed",
+                                    format!("Failed to promote configuration: {error}"),
+                                )
+                            },
+                        )?;
+                        approved = safe.into_owned();
+                    }
                     durable_pending = None;
-                    remove_file_if_exists(&pending_path)?;
+                    if let Some(diagnostic) = cleanup_committed_pending(&pending_path, &key) {
+                        runtime_diagnostics.push(diagnostic);
+                    }
                 } else {
-                    let pending = DurablePendingSensitiveChange {
-                        pending: PendingSensitiveConfigChange {
-                            id: Uuid::new_v4().to_string(),
-                            document: kind,
-                            scope: key.scope.clone(),
-                            source: ConfigChangeSource::ExternalEditor,
-                            changed_paths: sensitive_paths,
-                            reasons,
-                            proposed_document: value.clone(),
-                            proposed_etag: document_etag.clone(),
-                            created_at: Utc::now().to_rfc3339(),
-                        },
-                        project_root,
-                        last_root_transition: None,
-                        approved_etag,
-                        all_changed_paths: changed_paths.clone(),
-                        apply_modes: apply_modes_for_paths(kind, &changed_paths)
-                            .into_iter()
-                            .collect(),
-                    };
-                    write_durable_pending(&pending_path, &pending)?;
-                    durable_pending = Some(pending);
+                    let apply_modes = apply_modes_for_paths(kind, &changed_paths)
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    // The same raw documents can require different consent after an upgrade.
+                    let current = durable_pending.as_ref().filter(|pending| {
+                        pending.approved_etag == approved_etag
+                            && pending.matches_canonical(&value, &document_etag)
+                    });
+                    let safe = with_approved_legacy(kind, &value, &approved);
+                    if !current.is_some_and(|pending| {
+                        pending.pending.changed_paths == sensitive_paths
+                            && pending.pending.reasons == reasons
+                            && pending.all_changed_paths == changed_paths
+                            && pending.apply_modes == apply_modes
+                            && pending.pending.proposed_document == *safe
+                            && pending.pending.proposed_etag == etag(&safe)
+                    }) {
+                        let pending = DurablePendingSensitiveChange {
+                            pending: PendingSensitiveConfigChange {
+                                id: Uuid::new_v4().to_string(),
+                                document: kind,
+                                scope: key.scope.clone(),
+                                source: current.map_or(ConfigChangeSource::ExternalEditor, |p| {
+                                    p.pending.source
+                                }),
+                                changed_paths: sensitive_paths,
+                                reasons,
+                                proposed_document: value.clone(),
+                                proposed_etag: document_etag.clone(),
+                                created_at: Utc::now().to_rfc3339(),
+                            },
+                            project_root,
+                            last_root_transition: current
+                                .and_then(|pending| pending.last_root_transition.clone()),
+                            approved_etag,
+                            all_changed_paths: changed_paths,
+                            apply_modes,
+                            canonical_proposal: None,
+                        }
+                        .preserve_legacy_consent(&approved);
+                        write_durable_pending(&pending_path, &pending)?;
+                        durable_pending = Some(pending);
+                    }
                 }
             }
         }
@@ -1744,7 +1810,9 @@ impl ConfigManager {
             self.require_current_project_root(project_id).await?;
         }
         let project_root = self.pending_root_binding(&key.scope).await?;
-        let (approved, disk_pending) = self.read_runtime_state(&key, project_root.as_ref()).await?;
+        let (approved, disk_pending) = self
+            .read_runtime_state(&key, project_root.as_ref(), &stored.path)
+            .await?;
         if let ConfigScope::Project { project_id } = &key.scope {
             self.require_current_project_root(project_id).await?;
         }
@@ -1832,6 +1900,11 @@ impl ConfigManager {
                 format!("Invalid RFC 6902 JSON patch: {error}"),
             )
         })?;
+        let previous_canonical_document =
+            match with_approved_legacy(key.kind, &approved, &current_disk) {
+                Cow::Owned(_) => Some(current_disk.clone()),
+                Cow::Borrowed(_) => None,
+            };
         let mut proposed = current_disk;
         json_patch::patch(&mut proposed, &patch).map_err(|error| {
             ConfigApiError::new(
@@ -1861,29 +1934,34 @@ impl ConfigManager {
 
         // Classify the actual semantic diff, not the patch envelope. In particular,
         // a root-level replacement must not hide sensitive descendant changes.
-        let changed_paths = diff_leaf_paths(&approved, &proposed);
+        let changed_paths = diff_active_paths(request.kind, &approved, &proposed);
         let (sensitive_paths, reasons) = classify_sensitive_paths(request.kind, &changed_paths);
         let apply_modes = apply_modes_for_paths(request.kind, &changed_paths);
         let needs_approval =
             request.source != ConfigChangeSource::UserInterface && !sensitive_paths.is_empty();
         let new_etag = etag(&proposed);
-        let durable_pending = needs_approval.then(|| DurablePendingSensitiveChange {
-            pending: PendingSensitiveConfigChange {
-                id: Uuid::new_v4().to_string(),
-                document: request.kind,
-                scope: request.scope.clone(),
-                source: request.source,
-                changed_paths: sensitive_paths,
-                reasons,
-                proposed_document: proposed.clone(),
-                proposed_etag: new_etag.clone(),
-                created_at: Utc::now().to_rfc3339(),
-            },
-            project_root,
-            last_root_transition: None,
-            approved_etag: etag(&approved),
-            all_changed_paths: changed_paths.clone(),
-            apply_modes: apply_modes.iter().map(|mode| (*mode).to_string()).collect(),
+        let safe = with_approved_legacy(key.kind, &proposed, &approved);
+        let durable_pending = needs_approval.then(|| {
+            (DurablePendingSensitiveChange {
+                pending: PendingSensitiveConfigChange {
+                    id: Uuid::new_v4().to_string(),
+                    document: request.kind,
+                    scope: request.scope.clone(),
+                    source: request.source,
+                    changed_paths: sensitive_paths,
+                    reasons,
+                    proposed_document: proposed.clone(),
+                    proposed_etag: new_etag.clone(),
+                    created_at: Utc::now().to_rfc3339(),
+                },
+                project_root,
+                last_root_transition: None,
+                approved_etag: etag(&approved),
+                all_changed_paths: changed_paths.clone(),
+                apply_modes: apply_modes.iter().map(|mode| (*mode).to_string()).collect(),
+                canonical_proposal: None,
+            })
+            .preserve_legacy_consent(&approved)
         });
         let durable_publication = (!needs_approval).then(|| DurableConfigPublication {
             document: request.kind,
@@ -1891,6 +1969,8 @@ impl ConfigManager {
             previous_document: approved.clone(),
             previous_etag: etag(&approved),
             proposed_etag: new_etag.clone(),
+            previous_canonical_document,
+            proposed_approved_etag: matches!(safe, Cow::Owned(_)).then(|| etag(&safe)),
         });
         let pending_path = pending_document_path(self.root(), &key);
         let approved_path = approved_document_path(self.root(), &key);
@@ -1931,7 +2011,7 @@ impl ConfigManager {
             ));
         }
         if let Some(publication) = &durable_publication {
-            let publication_result = write_approved_document(&approved_path, &proposed, &key.scope)
+            let publication_result = write_approved_document(&approved_path, &safe, &key.scope)
                 .map_err(|error| {
                     ConfigApiError::new(
                         "config.approved.write_failed",
@@ -1955,7 +2035,7 @@ impl ConfigManager {
                 return Err(error);
             }
         }
-        let pending = durable_pending.as_ref().map(|entry| entry.pending.clone());
+        let pending = durable_pending.as_ref().map(|entry| entry.public_pending());
         let restart_required = !needs_approval && apply_modes.contains("restart");
 
         let mut state = self.state.write().await;
@@ -1972,7 +2052,7 @@ impl ConfigManager {
             stored.diagnostics.clear();
             stored.invalid = false;
             if !needs_approval {
-                stored.last_valid_value = proposed;
+                stored.last_valid_value = safe.into_owned();
             }
             to_document(&key, stored)
         };
@@ -2083,7 +2163,10 @@ impl ConfigManager {
             kind,
             scope: ConfigScope::User,
         }) {
-            super::registry::merge_values(&mut effective, &stored.last_valid_value);
+            super::registry::merge_values(
+                &mut effective,
+                &active_document(kind, &stored.last_valid_value),
+            );
         }
         effective
     }
@@ -2169,7 +2252,9 @@ impl ConfigManager {
             self.require_current_project_root(project_id).await?;
         }
         let project_root = self.pending_root_binding(&key.scope).await?;
-        let (approved, disk_pending) = self.read_runtime_state(&key, project_root.as_ref()).await?;
+        let (approved, disk_pending) = self
+            .read_runtime_state(&key, project_root.as_ref(), &current.path)
+            .await?;
         if let ConfigScope::Project { project_id } = &key.scope {
             self.require_current_project_root(project_id).await?;
         }
@@ -2188,14 +2273,15 @@ impl ConfigManager {
             .as_ref()
             .map(etag)
             .unwrap_or_else(|_| etag_bytes(&raw));
-        if let Some(durable) = disk_pending
-            .as_ref()
-            .filter(|pending| pending.pending.proposed_etag == proposed_etag)
-        {
+        if let Some(durable) = disk_pending.as_ref().filter(|pending| {
+            parsed
+                .as_ref()
+                .is_ok_and(|value| pending.matches_canonical(value, &proposed_etag))
+        }) {
             let mut state = self.state.write().await;
             let document = {
                 let stored = state.documents.get_mut(&key).expect("loaded document");
-                stored.disk_value = durable.pending.proposed_document.clone();
+                stored.disk_value = durable.canonical_document().clone();
                 stored.etag = proposed_etag;
                 stored.last_valid_value = approved;
                 stored.invalid = false;
@@ -2210,7 +2296,7 @@ impl ConfigManager {
             return Ok(ReloadOutcome {
                 changed: current.etag != document.etag,
                 invalid: false,
-                pending: Some(durable.pending.clone()),
+                pending: Some(durable.public_pending()),
                 restart_required: false,
                 document,
             });
@@ -2336,43 +2422,50 @@ impl ConfigManager {
             }
         }
 
-        let changed_paths = diff_leaf_paths(&approved, &proposed);
+        let changed_paths = diff_active_paths(kind, &approved, &proposed);
         let (sensitive_paths, reasons) = classify_sensitive_paths(kind, &changed_paths);
         let apply_modes = apply_modes_for_paths(kind, &changed_paths);
         let durable_pending = (source != ConfigChangeSource::UserInterface
             && !sensitive_paths.is_empty())
-        .then(|| DurablePendingSensitiveChange {
-            pending: PendingSensitiveConfigChange {
-                id: Uuid::new_v4().to_string(),
-                document: kind,
-                scope: key.scope.clone(),
-                source,
-                changed_paths: sensitive_paths,
-                reasons,
-                proposed_document: proposed.clone(),
-                proposed_etag: proposed_etag.clone(),
-                created_at: Utc::now().to_rfc3339(),
-            },
-            project_root,
-            last_root_transition: None,
-            approved_etag: etag(&approved),
-            all_changed_paths: changed_paths.clone(),
-            apply_modes: apply_modes.iter().map(|mode| (*mode).to_string()).collect(),
+        .then(|| {
+            (DurablePendingSensitiveChange {
+                pending: PendingSensitiveConfigChange {
+                    id: Uuid::new_v4().to_string(),
+                    document: kind,
+                    scope: key.scope.clone(),
+                    source,
+                    changed_paths: sensitive_paths,
+                    reasons,
+                    proposed_document: proposed.clone(),
+                    proposed_etag: proposed_etag.clone(),
+                    created_at: Utc::now().to_rfc3339(),
+                },
+                project_root,
+                last_root_transition: None,
+                approved_etag: etag(&approved),
+                all_changed_paths: changed_paths.clone(),
+                apply_modes: apply_modes.iter().map(|mode| (*mode).to_string()).collect(),
+                canonical_proposal: None,
+            })
+            .preserve_legacy_consent(&approved)
         });
         let pending_path = pending_document_path(self.root(), &key);
         let approved_path = approved_document_path(self.root(), &key);
         if let Some(pending) = &durable_pending {
             write_durable_pending(&pending_path, pending)?;
         } else {
-            write_runtime_json(&approved_path, &proposed, &key.scope).map_err(|error| {
-                ConfigApiError::new(
-                    "config.approved.write_failed",
-                    format!("Failed to promote configuration: {error}"),
-                )
-            })?;
+            let safe = with_approved_legacy(key.kind, &proposed, &approved);
+            if *safe != approved {
+                write_approved_document(&approved_path, &safe, &key.scope).map_err(|error| {
+                    ConfigApiError::new(
+                        "config.approved.write_failed",
+                        format!("Failed to promote configuration: {error}"),
+                    )
+                })?;
+            }
             remove_file_if_exists(&pending_path)?;
         }
-        let pending = durable_pending.as_ref().map(|entry| entry.pending.clone());
+        let pending = durable_pending.as_ref().map(|entry| entry.public_pending());
         let restart_required = durable_pending.is_none() && apply_modes.contains("restart");
 
         let mut state = self.state.write().await;
@@ -2384,7 +2477,8 @@ impl ConfigManager {
             stored.read_only = validation.read_only;
             stored.diagnostics = validation.diagnostics;
             if pending.is_none() {
-                stored.last_valid_value = proposed;
+                stored.last_valid_value =
+                    with_approved_legacy(key.kind, &proposed, &approved).into_owned();
             }
             to_document(&key, stored)
         };
@@ -2415,8 +2509,46 @@ impl ConfigManager {
         &self,
         key: &DocumentKey,
         project_root: Option<&PendingRootBinding>,
+        canonical_path: &Path,
     ) -> Result<(Value, Option<DurablePendingSensitiveChange>), ConfigApiError> {
-        let (approved, pending) = read_runtime_state(self.root(), key, project_root)?;
+        let (approved, mut pending) = read_runtime_state(self.root(), key, project_root)?;
+        // An older process can publish a user LSP request after startup.
+        // Reclassify only a current request, under the canonical file lock.
+        if let Some(legacy) = pending.as_mut().filter(|entry| {
+            key.kind == ConfigDocumentKind::Tools
+                && key.scope == ConfigScope::User
+                && entry.canonical_proposal.is_none()
+                && entry.canonical_document().get(LEGACY_LANGUAGE_SERVER)
+                    != approved.get(LEGACY_LANGUAGE_SERVER)
+                && entry.approved_etag == etag(&approved)
+        }) {
+            let path = pending_document_path(self.root(), key);
+            if let Ok(canonical) = read_json_value(canonical_path) {
+                let validation = validate_document(key.kind, &key.scope, &canonical);
+                if validation.valid
+                    && !validation.read_only
+                    && legacy.matches_canonical(&canonical, &etag(&canonical))
+                {
+                    let all_changed_paths = diff_active_paths(key.kind, &approved, &canonical);
+                    let (paths, reasons) = classify_sensitive_paths(key.kind, &all_changed_paths);
+                    if paths.is_empty() {
+                        remove_file_if_exists(&path)?;
+                        pending = None;
+                    } else {
+                        legacy.pending.id = Uuid::new_v4().to_string();
+                        legacy.pending.created_at = Utc::now().to_rfc3339();
+                        legacy.pending.changed_paths = paths;
+                        legacy.pending.reasons = reasons;
+                        legacy.apply_modes = apply_modes_for_paths(key.kind, &all_changed_paths)
+                            .into_iter()
+                            .collect();
+                        legacy.all_changed_paths = all_changed_paths;
+                        *legacy = legacy.clone().preserve_legacy_consent(&approved);
+                        write_durable_pending(&path, legacy)?;
+                    }
+                }
+            }
+        }
         let active_pending = pending
             .as_ref()
             .filter(|pending| pending.pending.proposed_document != approved);
@@ -2479,7 +2611,9 @@ impl ConfigManager {
             self.require_current_project_root(project_id).await?;
         }
         let project_root = self.pending_root_binding(&key.scope).await?;
-        let (approved, disk_pending) = self.read_runtime_state(&key, project_root.as_ref()).await?;
+        let (approved, disk_pending) = self
+            .read_runtime_state(&key, project_root.as_ref(), &stored.path)
+            .await?;
         if let ConfigScope::Project { project_id } = &key.scope {
             self.require_current_project_root(project_id).await?;
         }
@@ -2493,9 +2627,7 @@ impl ConfigManager {
             })?;
         let canonical = read_json_value(&stored.path)?;
         let canonical_etag = etag(&canonical);
-        if canonical_etag != durable.pending.proposed_etag
-            || canonical != durable.pending.proposed_document
-        {
+        if !durable.matches_canonical(&canonical, &canonical_etag) {
             return Err(ConfigApiError::new(
                 "config.etag.conflict",
                 "The file has changed since approval was requested.",
@@ -2508,6 +2640,15 @@ impl ConfigManager {
             return Err(ConfigApiError::new(
                 "config.pending.baseline_conflict",
                 "The approved copy has changed since approval was requested.",
+            ));
+        }
+        if etag(&durable.pending.proposed_document) != durable.pending.proposed_etag
+            || *with_approved_legacy(key.kind, &canonical, &approved)
+                != durable.pending.proposed_document
+        {
+            return Err(ConfigApiError::new(
+                "config.pending.conflict",
+                "The persisted sensitive change requires a new approval.",
             ));
         }
         if !approved_matches_proposal {
@@ -2605,7 +2746,9 @@ impl ConfigManager {
             self.require_current_project_root(project_id).await?;
         }
         let project_root = self.pending_root_binding(&key.scope).await?;
-        let (approved, disk_pending) = self.read_runtime_state(&key, project_root.as_ref()).await?;
+        let (approved, disk_pending) = self
+            .read_runtime_state(&key, project_root.as_ref(), &stored.path)
+            .await?;
         if let ConfigScope::Project { project_id } = &key.scope {
             self.require_current_project_root(project_id).await?;
         }
@@ -2623,7 +2766,15 @@ impl ConfigManager {
                 "The approved copy has changed since approval was requested.",
             ));
         }
-        atomic_write_json_locked(&stored.path, &approved).map_err(|error| {
+        let restored = if key.kind == ConfigDocumentKind::Tools {
+            match read_json_value(&stored.path) {
+                Ok(canonical) => with_approved_legacy(key.kind, &approved, &canonical).into_owned(),
+                Err(_) => approved.clone(),
+            }
+        } else {
+            approved.clone()
+        };
+        atomic_write_json_locked(&stored.path, &restored).map_err(|error| {
             ConfigApiError::new(
                 "config.document.restore_failed",
                 format!("Failed to restore approved version: {error}"),
@@ -2638,7 +2789,7 @@ impl ConfigManager {
                 "The document associated with this change was not found.",
             )
         })?;
-        stored.disk_value = approved.clone();
+        stored.disk_value = restored;
         stored.last_valid_value = approved;
         stored.etag = etag(&stored.disk_value);
         stored.last_internal_hash = Some(stored.etag.clone());
@@ -2661,7 +2812,7 @@ impl ConfigManager {
                         && matches!(read_project_transition(self.root(), project_id), Ok(None))
                 }
             })
-            .map(|pending| pending.pending.clone())
+            .map(DurablePendingSensitiveChange::public_pending)
             .collect()
     }
 
@@ -2669,16 +2820,19 @@ impl ConfigManager {
         let state = self.state.read().await;
         let mut documents = state
             .documents
-            .values()
-            .map(|stored| stored.last_valid_value.clone())
+            .iter()
+            .map(|(key, stored)| active_document(key.kind, &stored.last_valid_value).into_owned())
             .collect::<Vec<_>>();
-        documents.extend(state.session_documents.values().cloned());
         documents.extend(
             state
-                .pending_changes
-                .values()
-                .map(|pending| pending.pending.proposed_document.clone()),
+                .session_documents
+                .iter()
+                .map(|(&kind, document)| active_document(kind, document).into_owned()),
         );
+        documents.extend(state.pending_changes.values().map(|change| {
+            let pending = &change.pending;
+            active_document(pending.document, &pending.proposed_document).into_owned()
+        }));
         documents
     }
 
@@ -3176,9 +3330,14 @@ fn rollback_config_publication(
         .with_diagnostics(validation.diagnostics));
     }
 
+    let previous_canonical = publication
+        .previous_canonical_document
+        .as_ref()
+        .unwrap_or(&publication.previous_document);
+    let previous_canonical_etag = etag(previous_canonical);
     let current_document = read_json_value(canonical_path)?;
     let current_etag = etag(&current_document);
-    if current_etag != publication.previous_etag && current_etag != publication.proposed_etag {
+    if current_etag != previous_canonical_etag && current_etag != publication.proposed_etag {
         return Err(ConfigApiError::new(
             "config.publication.conflict",
             "The canonical document has changed since the interrupted publication. Macro retains this version and the journal for explicit recovery.",
@@ -3187,7 +3346,11 @@ fn rollback_config_publication(
 
     let approved_path = approved_document_path(root, key);
     let approved_etag = etag(&read_json_value(&approved_path)?);
-    if approved_etag != publication.previous_etag && approved_etag != publication.proposed_etag {
+    let proposed_approved_etag = publication
+        .proposed_approved_etag
+        .as_ref()
+        .unwrap_or(&publication.proposed_etag);
+    if approved_etag != publication.previous_etag && &approved_etag != proposed_approved_etag {
         return Err(ConfigApiError::new(
             "config.publication.conflict",
             "The approved copy has changed since the interrupted publication. Macro retains this version and the journal for explicit recovery.",
@@ -3201,15 +3364,13 @@ fn rollback_config_publication(
             "Injected failure during publication rollback.",
         ));
     }
-    if current_etag != publication.previous_etag {
-        atomic_write_json_locked(canonical_path, &publication.previous_document).map_err(
-            |error| {
-                ConfigApiError::new(
-                    "config.publication.rollback_failed",
-                    format!("Failed to restore canonical document: {error}"),
-                )
-            },
-        )?;
+    if current_etag != previous_canonical_etag {
+        atomic_write_json_locked(canonical_path, previous_canonical).map_err(|error| {
+            ConfigApiError::new(
+                "config.publication.rollback_failed",
+                format!("Failed to restore canonical document: {error}"),
+            )
+        })?;
     }
     #[cfg(test)]
     if canonical_path
@@ -3456,15 +3617,40 @@ fn etag_bytes(bytes: &[u8]) -> String {
     format!("sha256:{digest:x}")
 }
 
-fn diff_leaf_paths(before: &Value, after: &Value) -> Vec<String> {
-    let mut paths = collect_leaf_pointers(before);
-    paths.extend(collect_leaf_pointers(after));
+fn diff_active_paths(kind: ConfigDocumentKind, before: &Value, after: &Value) -> Vec<String> {
+    let before = active_document(kind, before);
+    let after = active_document(kind, after);
+    let mut paths = collect_leaf_pointers(&before);
+    paths.extend(collect_leaf_pointers(&after));
     paths.sort();
     paths.dedup();
     paths
         .into_iter()
         .filter(|path| before.pointer(path) != after.pointer(path))
         .collect()
+}
+
+// Preserve the last approved legacy value for older readers of the profile.
+// Absence in the approved copy also carries consent information.
+fn with_approved_legacy<'a>(
+    kind: ConfigDocumentKind,
+    proposed: &'a Value,
+    approved: &Value,
+) -> Cow<'a, Value> {
+    if kind != ConfigDocumentKind::Tools
+        || proposed.get(LEGACY_LANGUAGE_SERVER) == approved.get(LEGACY_LANGUAGE_SERVER)
+    {
+        return Cow::Borrowed(proposed);
+    }
+    let mut projected = proposed.clone();
+    if let Some(object) = projected.as_object_mut() {
+        if let Some(legacy) = approved.get(LEGACY_LANGUAGE_SERVER) {
+            object.insert(LEGACY_LANGUAGE_SERVER.into(), legacy.clone());
+        } else {
+            object.remove(LEGACY_LANGUAGE_SERVER);
+        }
+    }
+    Cow::Owned(projected)
 }
 
 // Project callers hold lock_project_runtime_files; user callers retain the
@@ -4334,55 +4520,300 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lsp_configuration_requires_approval_and_survives_restart() {
+    async fn legacy_language_server_settings_do_not_invalidate_tools_or_approvals() {
         let (_temp, manager) = manager().await;
         let root = manager.root().to_path_buf();
-        let server = json!({
-            "enabled": true, "executable": root.join("language-server"),
-            "arguments": ["--stdio"], "workspaceRoots": [root.join("workspace")], "waitMs": 4000
+        let key = DocumentKey {
+            kind: ConfigDocumentKind::Tools,
+            scope: ConfigScope::User,
+        };
+        let mut legacy = sparse_document(key.kind);
+        legacy["languageServer"] = json!({
+            "enabled": true,
+            "executable": root.join("language-server"),
+            "arguments": ["--stdio"],
+            "workspaceRoots": [root.join("workspace")],
+            "waitMs": 4000,
         });
+        legacy["riskLevel"] = json!("strict");
+        legacy["builtIn"] = json!({"write": false});
+        legacy["agsdlHostPermissions"] = json!("workspace");
+        let path = root.join(key.kind.file_name());
+        atomic_write_json(&path, &legacy).unwrap();
+        write_runtime_json(&approved_document_path(&root, &key), &legacy, &key.scope).unwrap();
+        drop(manager);
+
+        let manager = ConfigManager::initialize(root.clone()).await.unwrap();
+        let snapshot = manager.get_snapshot(&[]).await.unwrap();
+        let effective = &snapshot.effective["tools"];
+        assert_eq!(effective["riskLevel"], "strict");
+        assert_eq!(effective["builtIn"]["write"], false);
+        assert_eq!(effective["agsdlHostPermissions"], "workspace");
+        assert!(effective.get("languageServer").is_none());
+        assert_eq!(read_json_value(&path).unwrap(), legacy);
+
         let document = manager
-            .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+            .get_document(key.kind, key.scope.clone())
             .await
             .unwrap();
-        let pending = manager
+        let result = manager
             .apply_patch(ConfigPatchRequest {
-                kind: ConfigDocumentKind::Tools,
-                scope: ConfigScope::User,
+                kind: key.kind,
+                scope: key.scope.clone(),
                 expected_etag: document.etag,
                 patch: vec![JsonPatchOperation {
-                    op: "add".into(),
-                    path: "/languageServer".into(),
+                    op: "replace".into(),
+                    path: "/riskLevel".into(),
                     from: None,
-                    value: Some(server.clone()),
+                    value: Some(json!("yolo")),
                 }],
                 source: ConfigChangeSource::Agent,
             })
             .await
             .unwrap();
-        assert_eq!(pending.status, "pendingApproval");
-        let pending_id = pending.pending_change.unwrap().id;
-        assert!(manager
-            .effective_user_document(ConfigDocumentKind::Tools)
-            .await
-            .get("languageServer")
-            .is_none());
+        assert_eq!(result.status, "pendingApproval");
+        let pending = result.pending_change.unwrap();
+        assert_eq!(pending.changed_paths, ["/riskLevel"]);
         drop(manager);
-        let manager = ConfigManager::initialize(root.clone()).await.unwrap();
-        assert!(manager
-            .effective_user_document(ConfigDocumentKind::Tools)
-            .await
-            .get("languageServer")
-            .is_none());
-        manager.accept_pending_change(&pending_id).await.unwrap();
-        drop(manager);
+
         let manager = ConfigManager::initialize(root).await.unwrap();
         assert_eq!(
-            manager
-                .effective_user_document(ConfigDocumentKind::Tools)
-                .await["languageServer"],
-            server
+            manager.effective_user_document(key.kind).await["riskLevel"],
+            "strict"
         );
+        manager.accept_pending_change(&pending.id).await.unwrap();
+        let effective = manager.effective_user_document(key.kind).await;
+        assert_eq!(effective["riskLevel"], "yolo");
+        assert_eq!(effective["agsdlHostPermissions"], "workspace");
+        assert!(effective.get("languageServer").is_none());
+        assert_eq!(
+            read_json_value(&approved_document_path(manager.root(), &key)).unwrap()
+                ["languageServer"],
+            legacy["languageServer"]
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_reclassifies_persisted_language_server_approvals() {
+        for mixed in [false, true] {
+            let (_temp, manager) = manager().await;
+            let root = manager.root().to_path_buf();
+            let key = DocumentKey {
+                kind: ConfigDocumentKind::Tools,
+                scope: ConfigScope::User,
+            };
+            let path = root.join(key.kind.file_name());
+            let approved_path = approved_document_path(&root, &key);
+            let pending_path = pending_document_path(&root, &key);
+            let mut approved = read_json_value(&approved_path).unwrap();
+            if mixed {
+                approved["languageServer"] = json!({
+                    "enabled": false,
+                    "executable": root.join("previous-language-server"),
+                });
+                atomic_write_json(&approved_path, &approved).unwrap();
+            }
+            let mut proposed = approved.clone();
+            proposed["languageServer"] = json!({
+                "enabled": true,
+                "executable": root.join("language-server"),
+                "arguments": ["macro-secret://web-search/brave"],
+            });
+            let mut paths = vec![
+                "/languageServer/arguments/0",
+                "/languageServer/enabled",
+                "/languageServer/executable",
+            ];
+            let mut reasons = vec!["/languageServer exige une approbation utilisateur."];
+            if mixed {
+                proposed["riskLevel"] = json!("yolo");
+                paths.push("/riskLevel");
+                reasons.push("/riskLevel exige une approbation utilisateur.");
+            }
+            let proposed_etag = etag(&proposed);
+            let old_id = Uuid::new_v4().to_string();
+            atomic_write_json(&path, &proposed).unwrap();
+            let raw = fs::read(&path).unwrap();
+            atomic_write_json(
+                &pending_path,
+                &json!({
+                    "pending": {
+                        "id": old_id,
+                        "document": "tools",
+                        "scope": {"type": "user"},
+                        "source": "agent",
+                        "changedPaths": paths,
+                        "reasons": reasons,
+                        "proposedDocument": proposed,
+                        "proposedEtag": proposed_etag,
+                        "createdAt": Utc::now().to_rfc3339(),
+                    },
+                    "approvedEtag": etag(&approved),
+                    "allChangedPaths": paths,
+                    "applyModes": ["live"],
+                }),
+            )
+            .unwrap();
+            let legacy_pending_bytes = fs::read(&pending_path).unwrap();
+            drop(manager);
+
+            let manager = ConfigManager::initialize(root.clone()).await.unwrap();
+            let document = manager
+                .get_document(key.kind, key.scope.clone())
+                .await
+                .unwrap();
+            assert_eq!(fs::read(&path).unwrap(), raw);
+            assert_eq!(document.value, proposed);
+            assert_eq!(document.etag, proposed_etag);
+            let effective = manager.effective_user_document(key.kind).await;
+            assert!(effective.get("languageServer").is_none());
+            assert_eq!(effective["riskLevel"], "balanced");
+            assert!(manager
+                .secret_reference_documents()
+                .await
+                .iter()
+                .all(|document| document.get("languageServer").is_none()));
+            assert_eq!(
+                manager
+                    .accept_pending_change(&old_id)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "config.pending.not_found"
+            );
+
+            let patch = ConfigPatchRequest {
+                kind: key.kind,
+                scope: key.scope.clone(),
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".into(),
+                    path: "/extensions".into(),
+                    from: None,
+                    value: Some(json!({"example": true})),
+                }],
+                source: ConfigChangeSource::UserInterface,
+            };
+            if !mixed {
+                assert!(manager.list_pending_changes().await.is_empty());
+                assert!(!pending_path.exists());
+                assert_eq!(read_json_value(&approved_path).unwrap(), approved);
+                fs::write(approved_path.with_extension("fail-write-once"), b"fail").unwrap();
+                assert_eq!(
+                    manager.apply_patch(patch.clone()).await.unwrap_err().code,
+                    "config.approved.write_failed"
+                );
+                assert_eq!(read_json_value(&path).unwrap(), proposed);
+                assert_eq!(read_json_value(&approved_path).unwrap(), approved);
+                let result = manager.apply_patch(patch).await.unwrap();
+                assert_eq!(result.status, "applied");
+                assert_eq!(
+                    result.document.value["languageServer"],
+                    proposed["languageServer"]
+                );
+                let mut later = result.document.value;
+                later["riskLevel"] = json!("yolo");
+                let reloaded = ConfigManager::initialize(root).await.unwrap();
+                let pending = reloaded
+                    .apply_patch(ConfigPatchRequest {
+                        kind: key.kind,
+                        scope: key.scope.clone(),
+                        expected_etag: result.document.etag,
+                        patch: vec![JsonPatchOperation {
+                            op: "replace".into(),
+                            path: "".into(),
+                            from: None,
+                            value: Some(later.clone()),
+                        }],
+                        source: ConfigChangeSource::Agent,
+                    })
+                    .await
+                    .unwrap()
+                    .pending_change
+                    .unwrap();
+                assert_eq!(pending.changed_paths, ["/riskLevel"]);
+                reloaded.accept_pending_change(&pending.id).await.unwrap();
+                let mut safe = later.clone();
+                safe.as_object_mut().unwrap().remove("languageServer");
+                assert_eq!(read_json_value(&approved_path).unwrap(), safe);
+                assert_eq!(read_json_value(&path).unwrap(), later);
+                continue;
+            }
+
+            assert_eq!(read_json_value(&approved_path).unwrap(), approved);
+            assert_eq!(
+                manager.apply_patch(patch).await.unwrap_err().code,
+                "config.pending.unresolved"
+            );
+            let pending = manager.list_pending_changes().await.pop().unwrap();
+            assert_ne!(pending.id, old_id);
+            assert_eq!(pending.source, ConfigChangeSource::Agent);
+            assert_eq!(pending.changed_paths, ["/riskLevel"]);
+            assert_eq!(
+                pending.reasons,
+                ["/riskLevel exige une approbation utilisateur."]
+            );
+            assert_eq!(pending.proposed_document, proposed);
+            assert_eq!(pending.proposed_etag, proposed_etag);
+            let persisted = read_json_value(&pending_path).unwrap();
+            assert_eq!(persisted["canonicalProposal"], proposed);
+            assert_ne!(persisted["pending"]["proposedEtag"], proposed_etag);
+            assert_eq!(
+                persisted["pending"]["proposedDocument"]["languageServer"],
+                approved["languageServer"]
+            );
+            drop(manager);
+
+            let manager = ConfigManager::initialize(root).await.unwrap();
+            assert_eq!(manager.list_pending_changes().await[0].id, pending.id);
+            // An older process can recreate its mixed request while this manager is open.
+            fs::write(&pending_path, &legacy_pending_bytes).unwrap();
+            let reloaded = manager
+                .reload(
+                    key.kind,
+                    key.scope.clone(),
+                    ConfigChangeSource::ExternalEditor,
+                )
+                .await
+                .unwrap();
+            let renewed = reloaded.pending.unwrap();
+            assert_ne!(renewed.id, old_id);
+            assert_ne!(renewed.id, pending.id);
+            assert_eq!(renewed.changed_paths, pending.changed_paths);
+            assert_eq!(renewed.proposed_etag, proposed_etag);
+            let pending = renewed;
+            let mut edited = proposed.clone();
+            edited["languageServer"]["enabled"] = json!(false);
+            atomic_write_json(&path, &edited).unwrap();
+            assert_eq!(
+                manager
+                    .accept_pending_change(&pending.id)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "config.etag.conflict"
+            );
+            fs::write(&path, &raw).unwrap();
+            let mut edited_baseline = approved.clone();
+            edited_baseline["extensions"] = json!({"example": true});
+            atomic_write_json(&approved_path, &edited_baseline).unwrap();
+            assert_eq!(
+                manager
+                    .accept_pending_change(&pending.id)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "config.pending.baseline_conflict"
+            );
+            atomic_write_json(&approved_path, &approved).unwrap();
+            manager.accept_pending_change(&pending.id).await.unwrap();
+            let effective = manager.effective_user_document(key.kind).await;
+            assert_eq!(effective["riskLevel"], "yolo");
+            assert!(effective.get("languageServer").is_none());
+            approved["riskLevel"] = json!("yolo");
+            assert_eq!(read_json_value(&approved_path).unwrap(), approved);
+            assert_eq!(fs::read(&path).unwrap(), raw);
+        }
     }
 
     #[tokio::test]
