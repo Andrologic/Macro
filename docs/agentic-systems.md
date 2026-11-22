@@ -1,7 +1,9 @@
 # Systèmes agentiques : cahier des charges
 
-Statut : décisions produit du 22 novembre 2026, avant réalisation. Base de code
-de référence : `main` à la révision `7523ec54`.
+Statut : décisions produit du 22 novembre 2026, recalibrées le 23 novembre
+après la publication d'AgSDL 0.4.0 et 0.5.0 et l'ouverture des projets et des
+archives par Argentic. Base de code de référence : `main` à la révision
+`7523ec54`.
 
 Ce document fixe la cible de Macro après son recentrage sur les systèmes
 agentiques AgSDL. Il prévaut sur la [spécification fonctionnelle](functional-spec.md)
@@ -34,10 +36,12 @@ Le mode Implement disparaît : Operate le remplace.
 
 | Terme | Sens |
 | --- | --- |
-| Projet | Dossier d'Architect qui range des blueprints et leurs versions. Il n'est lié ni à un dépôt de code ni à un dossier du disque. |
+| Projet | Dossier d'Architect qui range des blueprints et leurs versions. Il n'est lié ni à un dépôt de code ni à un dossier choisi par l'utilisateur. |
 | Blueprint | Un système agentique en cours de conception : un brouillon modifiable et la liste de ses versions. |
-| Version | Un état figé et numéroté d'un blueprint (v1, v2…), avec une note facultative. Elle prend la forme d'un paquet. |
-| Paquet | L'archive zip d'une version, qui contient tout ce qui doit voyager avec le système. |
+| Brouillon | Un dossier de projet AgSDL (`agsdl-project-1`) rangé dans les données de Macro : le manifeste `agsdl.json` et les fichiers des agents, du flow, des skills et des serveurs MCP. |
+| Version | Un état figé et numéroté d'un blueprint (v1, v2…), avec une note facultative. Elle prend la forme d'une archive. |
+| Archive | Le fichier `.agsdl` (`agsdl-archive-1`) d'une version : un zip standard qui contient tout ce qui doit voyager avec le système, avec un inventaire et une empreinte par fichier. |
+| Réglages Macro | Ce que l'auteur règle pour Macro sans changer le document : threads masqués, indication du message de départ, mode de dossier, champs de lancement. Ils accompagnent chaque version dans un fichier propre à Macro. |
 | Exécution | Un lancement d'une version, sur une machine. Plusieurs exécutions d'un même blueprint peuvent tourner en parallèle. |
 | Thread | La conversation d'une instance d'agent dans une exécution. |
 | Configuration de lancement | Les réglages propres à la machine qui lance un blueprint : dossier, modèles de remplacement, secrets, accord sur les permissions. |
@@ -50,9 +54,15 @@ Le mode Implement disparaît : Operate le remplace.
 
 - Macro stocke lui-même les blueprints et leurs versions dans ses données
   locales, sans Git. Une base locale indexe les blueprints, leurs versions et
-  les exécutions et programmations qui les utilisent.
-- Architect modifie un brouillon. « Enregistrer une version » le fige. Une
-  version n'est plus modifiable.
+  les exécutions et programmations qui les utilisent. Elle ne contient pas le
+  système lui-même.
+- Le brouillon est un dossier de projet AgSDL. C'est le seul format qui contient
+  des skills complètes et les fichiers des serveurs MCP locaux.
+- Architect modifie le brouillon. « Enregistrer une version » produit une
+  archive `.agsdl` figée et une copie des réglages Macro. Une version n'est plus
+  modifiable.
+- Macro numérote lui-même ses versions. L'archive ne contient pas d'historique
+  Git ; l'export avec historique, prévu par le format, viendra plus tard.
 - Une version utilisée par une exécution ou une programmation ne peut pas être
   supprimée.
 - Une exécution reste sur la version avec laquelle elle a été lancée. Un nouveau
@@ -94,21 +104,30 @@ stockage. Les autres données de développement sont abandonnées.
 Si AgSDL définit plus tard des mécanismes comparables aux worktrees, ils seront
 traités dans ce cadre.
 
-### 3.3 Le paquet
+### 3.3 L'archive
 
-Le paquet est une archive zip, immuable, qui représente une version. C'est le
-même fichier qu'on lance, qu'on exporte et qu'on envoie à une autre machine.
+Une version prend la forme d'une archive `.agsdl`, le format standard
+d'AgSDL 0.5.0. C'est le même fichier qu'on lance, qu'on exporte et qu'on envoie
+à une autre machine. Macro ne définit pas de format de paquet propre.
 
 | Statut | Contenu |
 | --- | --- |
-| Inclus | Document AgSDL exact ; contenus désignés par un chemin relatif ; skills complètes, avec tous leurs fichiers ; scripts des serveurs MCP locaux ; métadonnées Macro (affichage, threads masqués, mode de dossier, objectif et contexte de conception) ; fiche d'identité (nom, numéro, note, auteur, date, empreinte). |
-| Déclaré, non inclus | Harnais et versions, modèles, programmes requis par les serveurs MCP, noms des secrets attendus, contenus désignés par une adresse absolue. |
-| Hors paquet | Valeurs des secrets, comptes des fournisseurs, dossier de travail et données de l'utilisateur, historique des exécutions, préférences d'affichage locales. |
+| Dans l'archive | Manifeste et fichiers du projet ; contenus désignés par un chemin relatif ; skills complètes, avec tous leurs fichiers ; fichiers déclarés des serveurs MCP locaux ; noms des secrets attendus par chaque serveur. |
+| À côté de l'archive, dans Macro | Réglages Macro de la version ; fiche d'identité (nom, numéro, note, date). |
+| Déclaré, non inclus | Harnais et versions, modèles, programmes requis par les serveurs MCP, contenus désignés par une adresse absolue. |
+| Jamais transmis | Valeurs des secrets, comptes des fournisseurs, dossier de travail et données de l'utilisateur, historique des exécutions, préférences d'affichage locales. |
 
+- Argentic lit l'archive, vérifie son inventaire et ses empreintes, et garde une
+  copie privée pour chaque exécution. Un agent relit donc les mêmes contenus
+  même après un redémarrage.
 - Les skills sont toujours copiées et figées. Modifier une skill impose une
   nouvelle version.
 - Les programmes externes sont vérifiés au lancement, jamais installés.
-- Avant la première exécution d'un paquet importé, Macro montre ce qu'il va
+- Le format 1 n'a pas de place pour les réglages d'une application. Un
+  blueprint exporté voyage donc sans ses réglages Macro, et un blueprint
+  importé reprend les valeurs par défaut. La question est posée dans
+  [AgSDL#32](https://github.com/Andrologic/AgSDL/issues/32).
+- Avant la première exécution d'une archive importée, Macro montre ce qu'elle va
   lancer et avec quelles permissions.
 
 ### 3.4 Ce qui se complète au lancement
@@ -116,12 +135,21 @@ même fichier qu'on lance, qu'on exporte et qu'on envoie à une autre machine.
 - **Dossier de travail.** L'auteur choisit le mode dans Architect. Par défaut,
   chaque exécution reçoit un dossier propre créé par Macro, consultable depuis
   Operate. L'auteur peut demander un dossier choisi au lancement. Macro prévient
-  si une autre exécution l'utilise déjà. Ce réglage est une métadonnée Macro.
+  si une autre exécution l'utilise déjà. Ce réglage fait partie des réglages
+  Macro.
 - **Harnais et modèles.** Macro vérifie que les harnais sont installés et
   connectés. Si un modèle manque, l'utilisateur choisit un remplaçant pour cet
   agent. Ce choix est enregistré dans l'exécution, pas dans la version.
-- **Secrets.** Demandés au premier lancement et rangés dans le coffre local,
-  associés au blueprint et non à une version. Ils sont modifiables depuis Operate.
+- **Secrets.** Leurs noms viennent des déclarations du projet. Macro ne demande
+  que ceux des serveurs MCP réellement utilisables par le flow, compte tenu des
+  permissions des agents et des appels directs. Un serveur déclaré mais
+  inutilisé ne demande rien. Les valeurs sont demandées au premier lancement et
+  rangées dans le coffre local, associées au blueprint et non à une version.
+  Elles sont modifiables depuis Operate.
+- **Serveurs MCP locaux.** Macro vérifie les programmes qu'ils requièrent. Il
+  lance leurs scripts depuis la copie qu'Argentic garde de la version, en
+  lecture seule, avec le dossier de l'exécution comme dossier de travail. Un
+  agent ne peut donc pas modifier ces scripts.
 - **Permissions.** Au premier lancement d'une version, Macro affiche un résumé
   lisible de ce que le système pourra faire. L'accord est redemandé seulement si
   une nouvelle version élargit les permissions.
@@ -182,7 +210,7 @@ Chaque geste a un nom distinct :
 | Suspendre | Une programmation | Plus aucun lancement ne part. La programmation est conservée. |
 | Reporter | Un thread | Le thread passe dans « Reportés » jusqu'au moment choisi. L'exécution n'est pas affectée. |
 | Terminer | Une exécution | Arrêt définitif, avec confirmation, par le Stop du moteur. |
-| Supprimer | Une exécution terminée | Efface ses threads et son dossier propre. Un dossier choisi par l'utilisateur n'est jamais touché. |
+| Supprimer | Une exécution terminée | Efface ses threads, son dossier propre et la copie de la version gardée par Argentic si plus aucune exécution ne l'utilise. Un dossier choisi par l'utilisateur n'est jamais touché. |
 
 - Interrompre et Mettre en pause sont des gestes de l'opérateur, propres à
   Macro. L'auteur ne les écrit pas, et AgSDL n'a pas à les définir
@@ -211,8 +239,8 @@ Chaque geste a un nom distinct :
 
 - L'auteur masque un agent, avec toutes ses instances, par une case de sa fiche
   dans Architect. Un agent est visible par défaut.
-- Le réglage est une métadonnée Macro du paquet, indexée par pointeur JSON. La
-  source AgSDL ne change pas.
+- Le réglage fait partie des réglages Macro de la version et désigne l'agent
+  par son identifiant logique. La source AgSDL ne change pas.
 - Un thread masqué qui a besoin de l'utilisateur remonte dans « À traiter » avec
   une icône, puis redisparaît. Ses notifications suivent la même règle.
 - On y accède par le graphe de l'exécution, où les agents masqués portent une
@@ -247,7 +275,7 @@ Chaque geste a un nom distinct :
   connectées : cet ordinateur, le serveur, un autre ordinateur.
 - Une exécution vit sur la machine qui la fait tourner, conformément au principe
   de Connect. Operate lit son contenu à distance.
-- Un lancement distant envoie le paquet, la configuration de lancement, les
+- Un lancement distant envoie l'archive, les réglages Macro, la configuration de lancement, les
   secrets nécessaires, rangés dans le coffre de la machine cible, et l'accord sur
   les permissions.
 - Sur un serveur, seul le dossier propre à l'exécution est disponible.
@@ -261,7 +289,7 @@ Chaque geste a un nom distinct :
 ### 3.11 Champs précis au lancement
 
 Un prototype permet à l'auteur de déclarer des champs de lancement. Le schéma
-est d'abord une métadonnée Macro. Operate affiche un formulaire et envoie la
+fait d'abord partie des réglages Macro. Operate affiche un formulaire et envoie la
 valeur en JSON dans le message de départ. Le schéma passera dans le document si
 [AgSDL#23](https://github.com/Andrologic/AgSDL/issues/23) aboutit.
 
@@ -271,19 +299,22 @@ Chaque étape fait l'objet d'au moins une pull request. À chaque étape,
 l'application compile, les tests passent et l'état modifié est vérifié
 visuellement.
 
-| Étape | Contenu | Sections |
-| --- | --- | --- |
-| 0. Retrait | Tout ce qui relève du code, sauf le stockage : tâches de code, fichiers modifiés, Git dans l'interface, éditeur, LSP, worktrees, terminal. Le mode Implement disparaît. | 3.2 |
-| 1. Blueprints et versions | Stockage local, projets d'Architect, « Enregistrer une version », import unique. Ensuite seulement, retrait de `@macro`, de `.macro` et du panneau d'exécution d'Architect. | 3.1, 3.2 |
-| 2. Paquet | Format zip et manifeste, collecte des références, import et export, vérification des prérequis, résumé des permissions d'un paquet importé. | 3.3 |
-| 3. Lancement | Configuration de lancement, fenêtre compacte, raccourci depuis Architect. | 3.4, 3.5 |
-| 4. Operate | Colonne de gauche, ligne « système · exécution », lien vers le graphe, filtre, threads masqués, Reporter, Terminer, Supprimer, Interrompre avec son travail dans Argentic. | 3.6 à 3.8 |
-| 5. Programmations | Planificateur local, section « Programmés », Suspendre, rattrapage et chevauchement, alerte de nouvelle version. | 3.7, 3.9 |
-| 6. Pause d'exécution | « Mettre en pause » depuis le menu du graphe, avec son travail dans Argentic. | 3.7 |
-| 7. Champs de lancement | Prototype de formulaire déclaré par l'auteur. | 3.11 |
+Les deux premières étapes sont réalisées. Le plan a été recalibré ensuite :
+AgSDL 0.5.0 définit les dossiers de projet et les archives, et Argentic sait
+les ouvrir. Le paquet maison prévu à l'origine disparaît.
 
-Le retrait se fait en deux temps parce qu'Architect enregistre aujourd'hui ses
-blueprints dans `@macro`. L'ancien stockage disparaît une fois le nouveau en place.
+| Étape | Contenu | Sections | État |
+| --- | --- | --- | --- |
+| 0. Retrait | Tout ce qui relève du code, sauf le stockage : tâches de code, fichiers modifiés, Git dans l'interface, éditeur, LSP, worktrees, terminal. Le mode Implement disparaît au profit d'Operate. | 3.2 | Réalisée |
+| 1. Blueprints et versions | Stockage local, projets d'Architect, « Enregistrer une version », import unique des blueprints de `@macro`. Les versions sont encore des documents JSON. | 3.1, 3.2 | Réalisée |
+| A. Intégration | Pull requests des étapes 0 et 1, après correction des tests qui échouent en parallèle et du budget de taille de `ChatZone`. | | |
+| B. AgSDL 0.4.0 | Argentic à la révision `826170f`. L'éditeur et l'agent d'Architect produisent et valident des documents 0.4.0. Un blueprint 0.3.0 est converti au prochain enregistrement. Vérification sous macOS de l'ouverture d'un dossier et d'une archive, puis d'une exécution Codex réelle. | 3.1 | |
+| C. Projet et archive | Le brouillon devient un dossier de projet, la version une archive `.agsdl` accompagnée des réglages Macro. Conversion des versions existantes. Import et export de dossiers et d'archives. Retrait de `@macro`, de `.macro` et du panneau d'exécution d'Architect. | 3.1 à 3.3 | |
+| D. Lancement | Lancement d'une version depuis son archive. Configuration de lancement, fenêtre compacte, raccourci depuis Architect, secrets filtrés, serveurs MCP locaux lancés depuis la copie d'Argentic, accord sur les permissions. | 3.4, 3.5 | |
+| E. Operate | Colonne de gauche, ligne « système · exécution », lien vers le graphe, filtre, threads masqués, Reporter, Terminer, Supprimer avec le nettoyage des copies d'Argentic, Interrompre avec son travail dans Argentic. | 3.6 à 3.8 | |
+| F. Programmations | Planificateur local, section « Programmés », Suspendre, rattrapage et chevauchement, alerte de nouvelle version. | 3.7, 3.9 | |
+| G. Pause d'exécution | « Mettre en pause » depuis le menu du graphe, avec son travail dans Argentic. | 3.7 | |
+| H. Champs de lancement | Prototype de formulaire déclaré par l'auteur. | 3.11 | |
 
 La conception du serveur (section 3.10) avance en parallèle, sous forme d'un
 document de conception, avant toute réalisation.
@@ -304,18 +335,17 @@ Une question relève d'AgSDL si l'auteur doit pouvoir l'écrire dans le document
 ou si deux applications doivent se comporter de la même façon pour qu'un même
 document garde le même sens. Les gestes de l'opérateur relèvent de Macro.
 
-| Issue | Sujet |
-| --- | --- |
-| [#22](https://github.com/Andrologic/AgSDL/issues/22) | Attendre à l'intérieur d'un flow |
-| [#23](https://github.com/Andrologic/AgSDL/issues/23) | Déclarer les entrées d'une exécution |
-| [#24](https://github.com/Andrologic/AgSDL/issues/24) | Déclarer les identifiants et programmes requis |
-| [#25](https://github.com/Andrologic/AgSDL/issues/25) | Paquet portable |
-| [#26](https://github.com/Andrologic/AgSDL/issues/26) | Métadonnées d'application qui voyagent avec un document |
+| Issue | Sujet | État |
+| --- | --- | --- |
+| [#22](https://github.com/Andrologic/AgSDL/issues/22) | Attendre à l'intérieur d'un flow | Ouverte |
+| [#23](https://github.com/Andrologic/AgSDL/issues/23) | Déclarer les entrées d'une exécution | Ouverte |
+| [#24](https://github.com/Andrologic/AgSDL/issues/24) | Déclarer les identifiants et programmes requis | Fermée : les déclarations du projet 0.5.0 suffisent |
+| [#25](https://github.com/Andrologic/AgSDL/issues/25) | Paquet portable | Réalisée : archive `.agsdl` |
+| [#26](https://github.com/Andrologic/AgSDL/issues/26) | Métadonnées d'application qui voyagent avec un document | Fermée : chaque application garde ses réglages dans son propre fichier |
+| [#32](https://github.com/Andrologic/AgSDL/issues/32) | Réglages d'une application dans une archive | Ouverte |
 
 ### Côté produit
 
 - Structure exacte des projets d'Architect.
-- Inventaire précis du retrait, établi au début de l'étape 0.
-- Extension du fichier paquet.
 - Ce qu'on garde de l'interface actuelle et les régressions introduites par
   l'intégration d'AgSDL, à examiner en direct dans l'application.
