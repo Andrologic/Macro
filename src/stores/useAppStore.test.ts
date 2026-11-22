@@ -913,7 +913,7 @@ describe('useAppStore architect plan resolution', () => {
       expect(useAppStore.getState()).toMatchObject({ mode, selectedProjectId: 'project-1', selectedTaskId: null });
       expect(taskStoreState.activateTask).not.toHaveBeenCalled();
       expect(taskStoreState.refreshFromPlan).toHaveBeenCalledWith(expect.objectContaining({ observeOnly: true }));
-      expect(useAppStore.getState().visibleArchitectPlans.map(plan => plan.id)).toContain(plan.id);
+      expect(useAppStore.getState().visibleArchitectPlans).toContainEqual(expect.objectContaining({ id: plan.id }));
       if (mode === 'Architect') expect(useAppStore.getState().activeArchitectPlanId).toBe(plan.id);
     },
   );

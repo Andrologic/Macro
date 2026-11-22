@@ -25,9 +25,9 @@ import { WorkflowRunView030 } from '../architect/ArchitectStrategyPanel';
 import { Dialog } from '../ui/Dialog';
 import { getWorkflowRunAccess030, subscribeWorkflowRunAccess030, workflowRunAccessSnapshot030,
   subscribeWorkflowRunTarget030, workflowRunTargetSnapshot030, openWorkflowRun030, type WorkflowRunRegistration030 } from '../../services/workflowAgentTasks';
-import { humanRequestKey030 } from '../../services/agsdl/humanRequests030';
+import { humanRequestKey030, sameHumanScope030 } from '../../services/agsdl/humanRequests030';
+import { retainedRunValue030 } from '../../services/agsdl/runtimeProjection030';
 import type { RunHumanRequest030 } from '../../types/agsdlRunUi030';
-import { sameWorkflowSource030 as sameSource } from '../../services/workflowAgentTasks';
 
 export function emitRunAttentionNotification030(request: RunHumanRequest030, t: TFunction, conversationId?: string): void {
   if (!claimHumanAttention030(request)) return;
@@ -244,10 +244,15 @@ export const WorkflowAttentionNotifications = () => {
   const target = useSyncExternalStore(subscribeWorkflowRunTarget030, workflowRunTargetSnapshot030, workflowRunTargetSnapshot030);
   useEffect(() => subscribeToWorkflowAttentionNotifications(t), [t]);
   useEffect(() => subscribeRunAttention030(registrations, runT), [registrations, runT]);
-  const bundle = target ? (registrations.find(item => Object.values(item.access.getSnapshot().runs).some(read =>
-    read.kind === 'ready' && read.value.capture.systemStartId === target.scope.systemStartId && sameSource(read.value.capture.source, target.scope.source)))
-    ?? registrations.find(item => item.scope.owner.projectId === target?.scope.source.owner.projectId && item.scope.owner.planId === target.scope.source.owner.planId &&
-      item.scope.owner.branch === target.scope.source.owner.branch && item.scope.conversationId === target.conversationId)) : undefined;
+  const owner = target?.scope.source.owner;
+  const candidates = target && owner ? registrations.filter(({ scope }) => scope.owner.projectId === owner.projectId &&
+    scope.owner.planId === owner.planId && scope.owner.branch === owner.branch &&
+    (target.conversationId === undefined || scope.conversationId === target.conversationId)) : [];
+  const bundle = target ? candidates.find(({ access }) => {
+    const read = access.getSnapshot().runs[target.scope.systemStartId];
+    const run = read && retainedRunValue030(read);
+    return run && sameHumanScope030(run.capture, target.scope) && sameHumanScope030(run.state.scope, target.scope);
+  }) ?? candidates.find(({ scope }) => scope.conversationId === target.conversationId) : undefined;
   useEffect(() => { if (target && !bundle) { try { getWorkflowRunAccess030({ owner: target.scope.source.owner, conversationId: target.conversationId }); } catch { /* The dedicated view reports unavailable access. */ } } }, [target, bundle]);
   return target ? <Dialog title={runT('agsdl.shell030.executions')} onClose={() => openWorkflowRun030(null)} closeOnBackdropClick
     panelClassName="flex h-[min(90vh,960px)] w-[min(94vw,1000px)] min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">

@@ -975,6 +975,10 @@
     }
   },
   "run030": {
+    "instanceActivity": "インスタンスのアクティビティ",
+    "instance": "エージェントインスタンス",
+    "openRunInspector": "実行インスペクターを開く",
+    "instanceRequestLinksUnavailable": "一部のリクエストはここではアクティベーションに関連付けられません。実行インスペクターで確認できます。",
     "staleShort": "古い情報",
     "mappingUnavailable": "実行箇所との関連付けは利用できません",
     "monitor": "実行",
@@ -1183,6 +1187,10 @@
     "close": "閉じる"
   },
   "messages030": {
+    "instanceTrace": "インスタンスのメッセージ",
+    "traceLimit": "ランタイムは配信記録と作業の最終テキストを提供します。会話の全履歴は利用できません。",
+    "traceUnavailable": "このインスタンスのメッセージはランタイムから取得できません。",
+    "workText": "作業の最終テキスト",
     "title": "メッセージ",
     "agent": "エージェント",
     "delivery": "配信",

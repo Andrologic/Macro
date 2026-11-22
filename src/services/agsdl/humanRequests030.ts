@@ -157,6 +157,26 @@ export function createHumanRequestClient030({ submit, read, storage }: {
   submit: SubmitHuman030; read: ReadHuman030; storage: HumanDraftStorage030;
 }) {
   const pending = new Map<string, Promise<HumanSendOutcome030>>();
+  // The shared client outlives views for individual instances. Apply readbacks
+  // before filtering by instance, since a read can change the request's links.
+  const readbacks = new Map<string, RunHumanRequest030>();
+  const listeners = new Set<() => void>();
+  let readbackVersion = 0;
+  const readbackKey = (request: RunHumanRequest030, captureKey?: string) =>
+    JSON.stringify([captureKey ?? null, humanRequestKey030(request)]);
+  const currentRequest = (request: RunHumanRequest030, captureKey?: string) => {
+    const cached = readbacks.get(readbackKey(request, captureKey));
+    return cached && BigInt(cached.revision) >= BigInt(request.revision) ? cached : request;
+  };
+  const retainReadback = (request: RunHumanRequest030, captureKey?: string) => {
+    const current = currentRequest(request, captureKey);
+    if (BigInt(current.revision) > BigInt(request.revision) ||
+        (current.revision === request.revision && current.state.kind !== 'open' && request.state.kind === 'open')) return current;
+    readbacks.set(readbackKey(request, captureKey), request);
+    readbackVersion++;
+    listeners.forEach(listener => listener());
+    return request;
+  };
   const key = (request: RunHumanRequest030, suffix: string) => `macro.human030.${suffix}.${humanRequestKey030(request)}`;
   const draftRecord = (request: RunHumanRequest030): Record<string, unknown> => {
     const raw = storage.getItem(key(request, 'draft'));
@@ -182,13 +202,20 @@ export function createHumanRequestClient030({ submit, read, storage }: {
     const minimum = previous !== null && BigInt(previous) > BigInt(revision) ? previous : revision;
     storage.setItem(key(request, 'draft'), JSON.stringify({ ...draftRecord(request), minimumRevision: minimum }));
   };
-  const readCurrent = async (request: RunHumanRequest030) => {
+  const readCurrent = async (request: RunHumanRequest030, captureKey?: string) => {
     const current = await read({ scope: request.scope, requestId: request.id });
     if (humanRequestKey030(current) !== humanRequestKey030(request)) throw new Error('CORRELATION');
-    if (BigInt(current.revision) < BigInt(request.revision) || stale(current)) throw new Error('REVISION_CONFLICT');
+    if (BigInt(current.revision) < BigInt(currentRequest(request, captureKey).revision) || stale(current))
+      throw new Error('REVISION_CONFLICT');
     return current;
   };
   return {
+    currentRequest,
+    readbackVersion: () => readbackVersion,
+    subscribeReadbacks(listener: () => void) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
     loadDraft(request: RunHumanRequest030): HumanFormDraft030 | null {
       const raw = storage.getItem(key(request, 'draft'));
       if (!raw) return null;
@@ -205,19 +232,20 @@ export function createHumanRequestClient030({ submit, read, storage }: {
     },
     stale,
     blocked(request: RunHumanRequest030) { return storage.getItem(key(request, 'attempt')) !== null; },
-    async refresh(request: RunHumanRequest030) {
-      const current = await readCurrent(request);
+    async refresh(request: RunHumanRequest030, captureKey?: string) {
+      const current = await readCurrent(request, captureKey);
       if (storage.getItem(key(request, 'attempt')) === 'refused') storage.removeItem(key(request, 'attempt'));
-      return current;
+      return retainReadback(current, captureKey);
     },
-    send(request: RunHumanRequest030, answer: ExecutionHumanAnswer): Promise<HumanSendOutcome030> {
+    send(request: RunHumanRequest030, answer: ExecutionHumanAnswer, captureKey?: string): Promise<HumanSendOutcome030> {
       const identity = humanRequestKey030(request);
       const inflight = pending.get(identity);
       if (inflight) return inflight;
       const input: RunHumanSubmission030 = { scope: request.scope, requestId: request.id,
         expectedRevision: request.revision, answer: runHumanAnswer030(request, answer) };
       // Persist before calling transport. Failure to persist must prevent sending.
-      const blocked = storage.getItem(key(request, 'attempt')) !== null || stale(request);
+      const blocked = storage.getItem(key(request, 'attempt')) !== null || stale(request) ||
+        currentRequest(request, captureKey) !== request;
       if (!blocked) storage.setItem(key(request, 'attempt'), 'pending');
       const operation = (async (): Promise<HumanSendOutcome030> => {
         let result: HumanSendOutcome030['result'] = null;
@@ -236,13 +264,13 @@ export function createHumanRequestClient030({ submit, read, storage }: {
           storage.setItem(key(request, 'attempt'), result.kind);
         }
         try {
-          const current = await readCurrent(request);
+          const current = await readCurrent(request, captureKey);
           if (fallback && (BigInt(current.revision) < BigInt(fallback.revision) ||
               (current.state.kind === 'open' && fallback.state.kind !== 'open')))
-            return { result, current: fallback, readFailed: true };
+            return { result, current: retainReadback(fallback, captureKey), readFailed: true };
           if (storage.getItem(key(request, 'attempt')) === 'refused') storage.removeItem(key(request, 'attempt'));
-          return { result, current, readFailed: false };
-        } catch { return { result, current: fallback, readFailed: true }; }
+          return { result, current: retainReadback(current, captureKey), readFailed: false };
+        } catch { return { result, current: fallback && retainReadback(fallback, captureKey), readFailed: true }; }
       })();
       pending.set(identity, operation);
       void operation.finally(() => pending.delete(identity)).catch(() => {});

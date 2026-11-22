@@ -975,6 +975,10 @@
     }
   },
   "run030": {
+    "instanceActivity": "Instance activity",
+    "instance": "Agent instance",
+    "openRunInspector": "Open run inspector",
+    "instanceRequestLinksUnavailable": "Some requests cannot be linked to an activation here. They are available in the run inspector.",
     "staleShort": "Out of date",
     "mappingUnavailable": "Occurrence association not available",
     "monitor": "Runs",
@@ -1183,6 +1187,10 @@
     "close": "Close"
   },
   "messages030": {
+    "instanceTrace": "Instance exchanges",
+    "traceLimit": "The runtime provides delivery and final work traces. The full transcript is unavailable.",
+    "traceUnavailable": "No exchanges are available from the runtime for this instance.",
+    "workText": "Final work text",
     "title": "Messages",
     "agent": "Agent",
     "delivery": "Delivery",
