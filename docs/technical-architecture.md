@@ -776,7 +776,6 @@ reprise après effets durables et les responsabilités qui restent dans l'UI.
 D'autres stores portent des responsabilités ciblées :
 
 - `useGitStore` pour arbres et commits Git
-- `useFileChangesStore` pour la review de changements
 - `useProviderStore` pour les providers et modèles IA
 - `useSpeechToTextStore` pour les fournisseurs vocaux et les préférences de dictée
 - `useToolsStore` pour les outils internes et MCP
@@ -1791,11 +1790,11 @@ La frontière frontend qui remet les résultats d'outils au flux applique une d�
 
 ### 13.6 Terminal agentique indépendant des projets
 
-Les quatre appels techniques `terminal_create_session`, `terminal_run`, `terminal_read` et `terminal_kill` forment l'outil terminal agentique et partagent un seul interrupteur visible. Ce terminal ne passe pas par l'exécuteur de workspace et son schéma n'expose aucun `project_id`. Le frontend crée toujours ses sessions avec `project_id: null`; son répertoire initial est le dossier personnel ou tout répertoire existant demandé. Une session rattachée à un projet par le terminal manuel de l'application est refusée par l'outil agentique.
+Les quatre appels techniques `terminal_create_session`, `terminal_run`, `terminal_read` et `terminal_kill` forment l'outil terminal agentique et partagent un seul interrupteur visible. Ce terminal ne passe pas par l'exécuteur de workspace et son schéma n'expose aucun `project_id`. Le frontend crée toujours ses sessions avec `project_id: null`; son répertoire initial est le dossier personnel ou tout répertoire existant demandé. L’outil agentique refuse les sessions rattachées à un projet.
 
 Dans chaque mode qui expose l'outil, `toolSecurityPolicy` force chaque `terminal_run` à demander une approbation avant l'exécution, quel que soit le niveau de risque, y compris YOLO et Strict. Cette décision précède l'évaluation habituelle du niveau de risque, ignore les autorisations mémorisées et désactive l'action qui autorise des appels similaires pour toute la conversation. La création, la lecture et l'arrêt d'une session agentique restent des opérations d'observation. Le bridge Copilot relaie les quatre appels au frontend afin qu'ils traversent le même contrôle. Le tool host natif refuse explicitement les appels terminal directs, car ce chemin ne possède pas de mécanisme de review utilisateur.
 
-Le terminal manuel reste un sous-système distinct et peut conserver un rattachement à la tâche, au projet et au worktree pour la navigation de l'interface.
+Les commandes projet et la préparation des worktrees utilisent leurs propres sessions PTY. Le store Terminal peut encore lire les onglets persistés par les versions précédentes.
 
 ### 13.7 Instructions `AGENTS.md` des dépôts
 
@@ -2490,17 +2489,11 @@ ne constitue pas un retour arrière d'une écriture durable.
   l'envoi au fournisseur. La fin d'une ancienne dictée ne réinitialise pas celle
   du contexte suivant. Les nettoyages existants des fenêtres et de CodeMirror
   restent en place, ainsi que la barrière globale de fermeture de page.
-- **Terminaux.** La composition injecte un port de rendu typé dans le store,
-  sans import du rendu depuis le store. Les fermetures locales et événements
-  natifs passent par une finalisation commune. Les réponses tardives ne peuvent
-  pas recréer un onglet fermé. L'arrêt frontend libère les listeners, timers,
-  observers et ressources xterm et attend les appels admis, sans fermer les PTY
-  natifs. Le détachement d'une vue conserve au plus six rendus détachés ; il
-  n'introduit aucune expiration de session native.
-  La composition d'entrée installe un port léger. Le renderer et xterm restent
-  chargés avec le panneau Terminal ; le premier attachement acquiert ce port.
-  Après l'arrêt de l'application, un attachement tardif est refusé avant toute
-  création xterm. Le nettoyage d'un onglet non rendu ne charge pas le renderer.
+- **Terminaux.** Le store suit les sessions de Chat et les onglets utilisés
+  par les commandes de tâche. Les fermetures locales et les événements natifs
+  passent par une finalisation commune. Une réponse tardive ne peut pas recréer
+  un onglet fermé. À l’arrêt de l’application, le store libère les abonnements
+  et les timers et attend les appels admis. Les PTY natifs restent en vie.
 - **Caches.** L'identité de la requête protège les publications des caches Plans
   et panneaux après invalidation. Le registre des projets possède l'éviction
   ciblée des caches Git frontend lorsqu'un projet disparaît ou change de chemin.

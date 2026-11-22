@@ -50,7 +50,7 @@ describe('frontendDiagnostics', () => {
     });
     Object.defineProperty(error, 'filename', {
       configurable: true,
-      value: 'http://localhost:1422/assets/ImplementCenter.js',
+      value: 'http://localhost:1422/assets/OperateCenter.js',
     });
     Object.defineProperty(error, 'error', {
       configurable: true,
@@ -66,7 +66,7 @@ describe('frontendDiagnostics', () => {
       scope: 'frontend',
     });
     expect(forwardedLogs[0].message).toContain('Importing a module script failed.');
-    expect(forwardedLogs[0].message).toContain('ImplementCenter.js');
+    expect(forwardedLogs[0].message).toContain('OperateCenter.js');
     expect(consoleError.mock.calls.length).toBe(1);
   });
 

@@ -1,7 +1,7 @@
 import { startGitCacheComposition } from './composition/gitCacheComposition';
 import { getPageLifecycleSignal } from './utils/pageLifecycle';
 import { createApplicationStartup, type ApplicationStartup } from './services/applicationStartup';
-import { createTerminalComposition } from './composition/terminalComposition';
+import { useTerminalStore } from './stores/useTerminalStore';
 import { createLifecycleScope, type LifecycleScope } from './services/lifecycleScope';
 import { startNotificationComposition } from './composition/notificationComposition';
 import { startPlansComposition } from './composition/plansComposition';
@@ -22,7 +22,6 @@ import { installConfigRuntimeEffects } from "./services/configRuntimeEffects";
 import { useAppStore } from "./stores/useAppStore";
 import { initializeConfigRuntime, stopConfigRuntime } from "./stores/useConfigStore";
 import { isDevelopmentBuild } from "./utils/devLogger";
-import "xterm/css/xterm.css";
 import "./index.css";
 import "./styles/highlight.css";
 
@@ -118,8 +117,7 @@ const application = createApplicationStartup({
       ports.own(startPlansComposition());
       owner.own(startNotificationComposition());
       owner.own(startGitCacheComposition());
-      const terminal = createTerminalComposition();
-      owner.own(() => { void owner.track(terminal.stop()); });
+      owner.own(() => { void owner.track(useTerminalStore.getState().stopRuntime()); });
       owner.own(() => { void owner.track(stopConfigRuntime()); });
       owner.own(() => macroWindow.__MACRO_REACT_ROOT__?.render(null));
       const stopOnPageHide = () => {

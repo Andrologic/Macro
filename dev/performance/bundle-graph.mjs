@@ -7,7 +7,7 @@ export function deferredStartupViolations(graph) {
   return graph.entries.flatMap(entry => entry.staticClosure.flatMap(name => {
     const chunk = chunks.get(name);
     if (!chunk) throw new Error(`Missing static chunk: ${name}`);
-    return chunk.modules.filter(module => /(?:^|\/)node_modules\/(?:mermaid\/|xterm\/lib\/|xterm-addon-fit\/lib\/)/.test(module.id) || /^src\/services\/(?:streamingChatExecution|chatToolExecutionRuntime|architectToolRuntime)\.ts$/.test(module.id))
+    return chunk.modules.filter(module => /(?:^|\/)node_modules\/mermaid\//.test(module.id) || /^src\/services\/(?:streamingChatExecution|chatToolExecutionRuntime|architectToolRuntime)\.ts$/.test(module.id))
       .map(module => ({ entry: entry.name, chunk: name, module: module.id }));
   }));
 }

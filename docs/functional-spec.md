@@ -1067,7 +1067,7 @@ Une mutation qui repose sur une lecture préparatoire doit réutiliser la révis
 
 Une limite de sécurité interne atteinte pendant l'énumération doit produire une erreur récupérable qui invite à réduire le périmètre. Macro ne doit jamais convertir une énumération interne incomplète en `total_count`, `scan_complete` ou `total_is_exact` affirmatif.
 
-Les commandes lancées par les outils terminal doivent borner leur durée, leur mémoire de sortie et le temps consacré au drainage final de stdout/stderr. Une sortie tronquée conserve un début et une fin identifiables, avec le volume omis. L'annulation de la génération doit terminer le groupe de processus et ses descendants, y compris lorsqu'elle arrive pendant le démarrage, sans interrompre les terminaux interactifs ouverts par l'utilisateur.
+Les commandes lancées par les outils terminal doivent borner leur durée, leur mémoire de sortie et le temps consacré au drainage final de stdout/stderr. Une sortie tronquée conserve un début et une fin identifiables, avec le volume omis. L'annulation de la génération doit terminer le groupe de processus et ses descendants, y compris lorsqu'elle arrive pendant le démarrage, sans interrompre les sessions PTY des commandes de tâche.
 
 Tout résultat textuel d'outil dépassant 50 Kio doit être remplacé dans le contexte par un aperçu borné conservant son début et sa fin. Le contenu complet ne peut être annoncé sous une adresse `tool-output://…` qu'après sa persistance durable comme pièce jointe de la conversation ; il peut alors être relu par pages avec `read_file`. Si cette persistance échoue, l'aperçu doit rester borné sans exposer d'adresse inutilisable. Les fichiers joints et ces sorties récupérables doivent exposer des pages numérotées et un curseur opaque ; le mode brut paginé doit permettre de récupérer sans perte les contenus constitués d'une seule ligne très longue.
 
@@ -1224,7 +1224,7 @@ Le mode Chat peut accéder :
 
 La disponibilité de ces outils doit être configurable. Le terminal apparaît comme un seul outil dans l'interface, même si son contrat technique distingue la création de session, l'exécution, la lecture et l'arrêt. L'outil terminal agentique n'a aucune identité de projet ou de workspace dans son contrat. Il peut démarrer dans n'importe quel répertoire existant, que la conversation possède ou non un workspace de contexte. Chaque commande exige une approbation explicite et distincte dans tous les modes où l'outil est disponible, y compris au niveau de risque YOLO. Une approbation terminal ne peut jamais être mémorisée pour la conversation.
 
-Le terminal manuel de l'application est une fonctionnalité distincte. Il peut rester rattaché à une tâche et à un projet pour les besoins de navigation de l'interface, mais ses sessions ne sont pas utilisables par l'outil terminal agentique.
+Les commandes projet et la préparation des worktrees utilisent des sessions PTY liées à une tâche. Ces sessions sont distinctes de celles de l’outil terminal agentique.
 
 ---
 
@@ -1594,7 +1594,7 @@ Les règles suivantes sont fondatrices :
 - Une review humaine est obligatoire à la fin de chaque tâche.
 - Pour un plan historique, une tâche de finalisation synthétique converge
   depuis les feuilles de la stratégie et pilote l'intégration finale.
-- L'édition manuelle du code existe, mais comme mécanisme secondaire d'ajustement en review.
+- L’édition manuelle du code est prévue comme mécanisme secondaire d’ajustement en revue.
 - Les skills guident l'agent sans contourner la politique d'outils.
 - Le support du kernel distant fait partie de la cible produit.
 

@@ -10,14 +10,12 @@ import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { getServiceRuntimeCapabilities } from '../../services';
-import { buildFileChangesRepositoryId, getFileChangesExecutionTargets } from '../../services/fileChangesReviewScope';
 import { useChatStore } from '../../stores/useChatStore';
 import {
   getTaskLifecycleCapabilities,
   useTaskStore,
   type ImplementTask,
 } from '../../stores/useTaskStore';
-import { useFileChangesStore } from '../../stores/useFileChangesStore';
 import {
   ALL_PROJECTS_FILTER,
   resolveAvailableProjectFilter,
@@ -50,9 +48,6 @@ import {
 } from '../../services/projectWorkspaceState';
 import {
   getTaskRepositoryDescriptors,
-  type ReviewRepositoryUiState,
-  type ReviewTaskSummary,
-  type TaskRepositoryDescriptor,
 } from '../../services/implementMultiRepoSummary';
 import {
   getTaskProjectCommand,
@@ -69,7 +64,6 @@ import type { MergeWorkflowRuntimeState } from '../../services/mergeWorkflow';
 import {
   resolveTaskMergeWorkflowNextActionLabel,
   resolveTaskMergeWorkflowPresentationState,
-  resolveTaskMergeWorkflowProgressLabel,
 } from '../../services/taskMergeWorkflowPresentation';
 import { SidebarMenu, sidebarMenuPosition, isSidebarTextInput, type SidebarMenuPosition } from '../ui/SidebarMenu';
 import { Icon, IconName } from '../ui/Icon';
@@ -209,14 +203,6 @@ const getTaskMenuPosition = (
 };
 
 interface MultiRepoTaskPresentation {
-  repositories: Array<{
-    id: string;
-    label: string;
-    title: string;
-    state: ReviewRepositoryUiState | null;
-    isNext: boolean;
-  }>;
-  progressLabel: string;
   nextActionLabel: string;
 }
 
@@ -715,11 +701,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     taskError: state.lastError,
   })));
   const requestSignature = useChatStore(selectTaskQueueRequestSignature);
-  const reviewRepositoryModes = useFileChangesStore(useShallow((state) => Object.fromEntries(state.repositories.map((repository) => [repository.id, repository.executionMode]))));
-  const reviewCurrentTaskId = useFileChangesStore((state) => state.currentTaskId);
-  const reviewLoadState = useFileChangesStore((state) => state.currentTaskLoadState);
-  const reviewIsLoading = useFileChangesStore((state) => state.isLoading);
-  const liveReviewSummary = useFileChangesStore((state) => state.reviewSummary);
   const lastErrorToastRef = useRef<string | null>(null);
   const readOnlyScopeToastRef = useRef<string | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
@@ -1040,8 +1021,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   const standalonePlanLabel = t('implement.planFilterStandalone', 'No plan / standalone');
 
   const buildMultiRepoPresentation = useCallback((
-    task: ImplementTask,
-    reviewSummary: ReviewTaskSummary | null
+    task: ImplementTask
   ): MultiRepoTaskPresentation | null => {
     const mergeWorkflowRuntime = mergeWorkflowRuntimeByTaskId[task.id] ?? null;
     const mergeWorkflowPresentation = resolveTaskMergeWorkflowPresentationState(
@@ -1058,43 +1038,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
       return null;
     }
 
-    const targets = getFileChangesExecutionTargets(task);
-    const repositoryId = (descriptor: TaskRepositoryDescriptor): string | undefined => {
-      const target = targets.find((target) => target.projectId === descriptor.projectId && target.branchName === descriptor.branchName);
-      return target ? buildFileChangesRepositoryId(target) : undefined;
-    };
-    const reviewSummaryByKey = new Map(
-      (reviewSummary?.repositories || []).map((repository) => [
-        repository.id,
-        repository,
-      ])
-    );
-    const repositoryLabelForSummary = (descriptor: TaskRepositoryDescriptor): string =>
-      descriptor.projectName ||
-      descriptor.repoPath?.replace(/\\/g, '/').split('/').filter(Boolean).pop() ||
-      descriptor.projectId;
-    const nextRepositoryDescriptor =
-      reviewSummary?.nextRepositoryId
-        ? repositoryDescriptors.find((descriptor) => {
-          const repositorySummary = reviewSummaryByKey.get(repositoryId(descriptor) ?? '');
-          return repositorySummary?.id === reviewSummary.nextRepositoryId;
-        }) ?? null
-        : null;
-
-    const repositories = repositoryDescriptors.map((descriptor) => {
-      const repositorySummary = reviewSummaryByKey.get(repositoryId(descriptor) ?? '') ?? null;
-      return {
-        id: descriptor.id,
-        label: descriptor.label,
-        title: descriptor.repoPath || descriptor.label,
-        state: repositorySummary?.state ?? null,
-        isNext: repositorySummary?.id === reviewSummary?.nextRepositoryId,
-      };
-    });
-
-    let progressLabel = t(repositoryDescriptors.length === 1 ? 'implement.repositoryCountInlineSingle' : 'implement.repositoryCountInline', repositoryDescriptors.length === 1 ? '{{count}} project involved' : '{{count}} projects involved', {
-      count: repositoryDescriptors.length,
-    });
     let nextActionLabel = t('implement.taskNextActionStart', 'Next: start implementation');
     const resolvedStatusGroup = resolveTaskQueueStatusGroup(
       task.status,
@@ -1105,10 +1048,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     if (resolvedStatusGroup === 'blocked' && task.is_blocked) {
       nextActionLabel = t('implement.taskNextActionBlocked', 'Next: unblock task dependencies');
     } else if (mergeWorkflowPresentation) {
-      progressLabel = resolveTaskMergeWorkflowProgressLabel(
-        mergeWorkflowPresentation,
-        t
-      );
       nextActionLabel = resolveTaskMergeWorkflowNextActionLabel(
         mergeWorkflowPresentation,
         t,
@@ -1118,39 +1057,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
       );
     } else if (isPlanFinalizationTask(task)) {
       nextActionLabel = t('implement.taskNextActionFinalizePlan', 'Next: finalize the plan');
-    } else if (reviewSummary && reviewSummary.repositoryCount > 0 && task.status === 'InReview') {
-      const resolvedCount = reviewSummary.stateCounts.committed + reviewSummary.stateCounts.no_changes;
-      progressLabel = t(reviewSummary.repositoryCount === 1 ? 'implement.taskValidationProgressSingle' : 'implement.taskValidationProgress', reviewSummary.repositoryCount === 1 ? '{{resolved}}/{{total}} project resolved' : '{{resolved}}/{{total}} projects resolved', {
-        resolved: resolvedCount,
-        total: reviewSummary.repositoryCount,
-      });
-
-      if (reviewSummary.repositories.some((repository) => repository.isCommitting)) {
-        nextActionLabel = t('implement.taskNextActionOpenReview', 'Next: open the review');
-      } else if (reviewSummary.nextAction === 'commit_repository' && nextRepositoryDescriptor) {
-        const mode = reviewRepositoryModes[repositoryId(nextRepositoryDescriptor) ?? ''] ?? targets.find(
-          (target) => buildFileChangesRepositoryId(target) === repositoryId(nextRepositoryDescriptor)
-        )?.executionMode;
-        const isDirect = mode === 'direct';
-        nextActionLabel = isDirect
-          ? t('implement.taskNextActionAcceptRepository', 'Next: accept changes in {{repository}}', {
-            repository: repositoryLabelForSummary(nextRepositoryDescriptor),
-          })
-          : t('implement.taskNextActionCommitRepository', 'Next: commit {{repository}}', {
-            repository: repositoryLabelForSummary(nextRepositoryDescriptor),
-          });
-      } else if (reviewSummary.nextAction === 'validate_repository' && nextRepositoryDescriptor) {
-        nextActionLabel = t('implement.taskNextActionValidateRepository', 'Next: validate {{repository}}', {
-          repository: repositoryLabelForSummary(nextRepositoryDescriptor),
-        });
-      } else if (reviewSummary.nextAction === 'complete_without_code_changes' || reviewSummary.nextAction === 'complete_task') {
-        nextActionLabel = t('implement.taskNextActionOpenReview', 'Next: open the review');
-      } else {
-        nextActionLabel = t(
-          'implement.taskNextActionValidateAllRepositories',
-          'Next: validate and resolve the remaining projects'
-        );
-      }
     } else if (task.status === 'InProgress') {
       nextActionLabel = t('implement.taskNextActionContinueImplementation', 'Next: continue implementation');
     } else if (task.status === 'AwaitingResponse') {
@@ -1169,11 +1075,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     }
 
     return {
-      repositories,
-      progressLabel,
       nextActionLabel,
     };
-  }, [getProjectById, mergeWorkflowRuntimeByTaskId, reviewRepositoryModes, t]);
+  }, [getProjectById, mergeWorkflowRuntimeByTaskId, t]);
 
   const availableProjects = useMemo(
     () => getAllProjects(projectGroups, standaloneProjects).filter(project => !excludedProjectIds.includes(project.id)),
@@ -1906,16 +1810,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   const multiRepoPresentationByTaskId = useMemo(() => {
     const map = new Map<string, MultiRepoTaskPresentation | null>();
     searchedTasks.forEach((task) => {
-      map.set(
-        task.id,
-        buildMultiRepoPresentation(
-          task,
-          reviewCurrentTaskId === task.id && reviewLoadState === 'ready' && !reviewIsLoading ? liveReviewSummary : null
-        )
-      );
+      map.set(task.id, buildMultiRepoPresentation(task));
     });
     return map;
-  }, [buildMultiRepoPresentation, liveReviewSummary, reviewCurrentTaskId, reviewLoadState, reviewIsLoading, searchedTasks]);
+  }, [buildMultiRepoPresentation, searchedTasks]);
   const taskListRows = useMemo<TaskListRow[]>(() => {
     const orderedTasks = [...draftTasks, ...TASK_QUEUE_LANES.flatMap(lane => tasksByStatusGroup[lane])];
     return orderedTasks.map(task => ({

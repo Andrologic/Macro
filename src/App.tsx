@@ -37,7 +37,6 @@ import { BROWSER_RUNTIME_SESSION_REPLACED_EVENT } from "./services/browserRuntim
 // =============================================================================
 // These modals are not needed immediately on startup and can be loaded on-demand
 
-const DiffModal = lazy(() => import("./components/modals/DiffModal"));
 const SettingsModal = lazy(() => import("./components/settings/SettingsModal"));
 const ProjectModal = lazy(() => import("./components/modals/ProjectModal"));
 const ProjectNavigator = lazy(() =>
@@ -643,7 +642,6 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
 
       {/* Modals - Lazy Loaded with Suspense */}
       <Suspense fallback={null}>
-        <DiffModal />
         <SettingsModal />
         <ProjectModal />
         {projectNavigatorOpen ? (

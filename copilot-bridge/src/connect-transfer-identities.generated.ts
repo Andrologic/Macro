@@ -2,7 +2,7 @@
 export const TRANSFER_RESOURCES = [
   {
     "path": "bun.lock",
-    "sha256": "8af4951c89da1da46bdf4e072bb36495c8cc1ae1368c4bbc67a94a01817257ea"
+    "sha256": "32ee8ffef193a0c5f1c3898d7e54f9054bbb2905bddf4903c3879a9761915183"
   },
   {
     "path": "contracts/macro-pilot/v2/portable-chat-history/provider-validator.generated.mjs",
@@ -66,7 +66,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "package.json",
-    "sha256": "c8888868f465fc3ec801ef1bd97a650b36d475111e9e434f388a77a73996c772"
+    "sha256": "c35c32e9051a5231a98e6a083e483973083311cc89c892d002ce79bed8f48288"
   },
   {
     "path": "src/domains/chat/runtimeState.ts",
@@ -145,8 +145,12 @@ export const TRANSFER_RESOURCES = [
     "sha256": "e3e9948369bfab05682db67645c9d13d338ac412191dfb70a03f485727baa62b"
   },
   {
+    "path": "src/services/architectToolNames.ts",
+    "sha256": "eca7b7a9dd7c4e4eb59d9998862302a4e1dd0dc789fcb892dc76c6df91aef25c"
+  },
+  {
     "path": "src/services/architectToolSurface.ts",
-    "sha256": "dcf3694e9c6155796e1013d670feb5a78600af53bc3a6fd8a88931a89ecd14fc"
+    "sha256": "b76714608b890312f01d0ffb3e60c8ca555a873c42282a6625329129c3a6c193"
   },
   {
     "path": "src/services/chatDbMappers.ts",
@@ -154,7 +158,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/chatMessagePreparation.ts",
-    "sha256": "13aef9ae2bce26cbf0e0699391b41f0ec5ab42934ff7c6b3517b7a9b35c0f229"
+    "sha256": "3fed422bedfb3235a7a9e6749bb6bebfae5162fc883b4b941377fb56ccda49f2"
   },
   {
     "path": "src/services/chatQuestionnaires.ts",
@@ -452,5 +456,5 @@ export const TRANSFER_RESOURCES = [
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "f4f929b7ab482689a685f6350405a5dd4518d52880251bc9f5f7d07d61bd0f5e"
+  "preparation_set_sha256": "29797d9446ff47db03047601f51c192e9606f5e2e997a96e8600331b795a386f"
 } as const;

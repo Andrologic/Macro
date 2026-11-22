@@ -135,10 +135,6 @@ const registerAppMocks = () => {
     },
   }));
 
-  mock.module('./components/modals/DiffModal', () => ({
-    default: () => null,
-  }));
-
   mock.module('./components/settings/SettingsModal', () => ({
     default: () => null,
   }));

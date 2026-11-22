@@ -252,32 +252,12 @@ describe("toolSecurityPolicy", () => {
     expect(granted.decision).toBe("allow");
   });
 
-  it("allows additive Architect actions in balanced mode", () => {
-    const planResult = evaluateToolSecurity(
-      "plan_create",
-      { label: "Onboarding refresh" },
-      {
-        mode: "Architect",
-        riskLevel: "balanced",
-        workspacePath: "/repo",
-      },
-    );
-
-    expect(planResult.decision).toBe("allow");
-  });
-
-  it("denies the retired strategy generator in Architect mode", () => {
-    const strategyResult = evaluateToolSecurity(
-      "strategy_generate",
-      { nodes: [{ title: "New plan", type: "task" }] },
-      {
-        mode: "Architect",
-        riskLevel: "balanced",
-        workspacePath: "/repo",
-      },
-    );
-
-    expect(strategyResult.decision).toBe("deny");
+  it.each([
+    ["plan_create", { label: "Onboarding refresh" }],
+    ["strategy_generate", { nodes: [{ title: "New plan", type: "task" }] }],
+  ] as const)("denies retired Architect tool %s", (toolId, args) => {
+    const result = evaluateToolSecurity(toolId, args, { mode: "Architect", riskLevel: "balanced" });
+    expect(result.decision).toBe("deny");
   });
 
   it("ignores remembered grants for terminal commands", () => {

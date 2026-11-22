@@ -111,7 +111,7 @@ commands, read [INSTALL.md](INSTALL.md).
 Start with the [documentation hub](docs/README.md):
 
 - [User guide](docs/user-guide/README.md), including a
-  [first-change walkthrough](docs/user-guide/getting-started.md).
+  [first AgSDL system walkthrough](docs/user-guide/getting-started.md).
 - [Agent documentation](docs/agents/README.md), including the
   [execution and verification protocol](docs/agents/getting-started.md).
 

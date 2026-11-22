@@ -4,11 +4,10 @@ import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { buildChatTranscriptItems } from '../../src/components/chat/transcriptItems';
-import { findTerminalSearchMatches } from '../../src/services/terminalSearch';
 import { createArchitectSwitchPerfRuntime } from '../../src/services/architectSwitchPerf';
 import { usePerformanceMonitor } from '../../src/hooks/usePerformanceMonitor';
 import { benchmark } from './stats';
-import { fixtureSizes, messages, terminal } from './fixtures';
+import { fixtureSizes, messages } from './fixtures';
 import { sqliteBaseline } from './sqlite';
 
 const root = new URL('../../', import.meta.url);
@@ -36,10 +35,7 @@ const rows = fixtureSizes.map((size) => {
     id: `event-${i}`, status: 'completed' as const, displayAfterMessageId: message.id,
   }));
   assert.equal(buildChatTranscriptItems(input, { compactionEvents }).length, size + compactionEvents.length);
-  const buffer = terminal(size);
-  assert.equal(findTerminalSearchMatches(buffer, 'match').length, size);
   return { size, transcript: benchmark(() => { sink += buildChatTranscriptItems(input, { compactionEvents }).length; }),
-    terminalSearch: benchmark(() => { sink += findTerminalSearchMatches(buffer, 'match').length; }),
     sqlite: sqliteBaseline(size) };
 });
 console.log(JSON.stringify({ schema: 1, kind: 'synthetic-product-microbenchmarks',
@@ -48,13 +44,13 @@ console.log(JSON.stringify({ schema: 1, kind: 'synthetic-product-microbenchmarks
     memoryGiB: totalmem() / 2 ** 30, head: git('rev-parse', 'HEAD'),
     dirty: Boolean(git('status', '--porcelain', '--untracked-files=normal')) },
   protocol: { warmup: 10, samples: 100, percentile: 'nearest-rank', sequential: true,
-    messageBytes: 256, terminalColumns: 120, compactionEvery: 100 }, rows,
+    messageBytes: 256, compactionEvery: 100 }, rows,
   instrumentation: { batchCalls: 10_000, direct: benchmark(batch(callback)),
     architectDisabled: benchmark(batch(() => disabled.measureSwitchPhase(1, 'app_prehydrate', callback))),
     emptySSR: benchmark(() => renderToString(createElement(Empty))),
     monitorDisabledSSR: benchmark(() => renderToString(createElement(Monitor))),
     caveat: 'SSR includes React and assertions; no browser effects, not a production render timing.' },
-  unavailable: ['workspace/chat/terminal visual navigation', 'native IPC volumes and latency',
+  unavailable: ['workspace/chat visual navigation', 'native IPC volumes and latency',
     'catalog invalidation fanout', 'SQLite disk/SQLx/metadata refresh', 'bundle sizes: run bundle command separately'],
   sink,
 }, null, 2));

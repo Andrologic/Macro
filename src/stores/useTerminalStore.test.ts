@@ -259,11 +259,6 @@ const terminalStartCommandTabMock = mock(
     }),
   })
 );
-const terminalReconnectTabMock = mock(async (tabId: string): Promise<TerminalTabDto> => ({
-  ...buildManualTabDto({ id: tabId }),
-  has_live_session: true,
-  is_restored: false,
-}));
 const terminalReadTabMock = mock(async (tabId: string): Promise<TerminalTabDto> => ({
   ...buildTaskTabDto({ id: tabId }),
 }));
@@ -294,19 +289,6 @@ const terminalUpdateTabMetadataMock = mock(
       branchLabel?: string | null;
     } | null;
   }): Promise<TerminalTabDto> => buildUpdatedTabDto(params)
-);
-const terminalInterruptMock = mock(async (tabId: string): Promise<TerminalTabDto> =>
-  buildManualTabDto({
-    id: tabId,
-    status: 'idle',
-    last_exit_code: 130,
-  })
-);
-const terminalClearTabMock = mock(async (tabId: string): Promise<TerminalTabDto> =>
-  buildManualTabDto({
-    id: tabId,
-    snapshot: '',
-  })
 );
 const terminalCloseTabMock = mock(async () => undefined);
 const terminalCreateSessionMock = mock(
@@ -384,11 +366,8 @@ const registerUseTerminalStoreMocks = async (counter: number) => {
     terminalListTabs: terminalListTabsMock,
     terminalCreateTab: terminalCreateTabMock,
     terminalStartCommandTab: terminalStartCommandTabMock,
-    terminalReconnectTab: terminalReconnectTabMock,
     terminalReadTab: terminalReadTabMock,
     terminalUpdateTabMetadata: terminalUpdateTabMetadataMock,
-    terminalInterrupt: terminalInterruptMock,
-    terminalClearTab: terminalClearTabMock,
     terminalCloseTab: terminalCloseTabMock,
   }));
 
@@ -499,11 +478,8 @@ describe('useTerminalStore', () => {
     terminalCreateSessionMock.mockReset();
     terminalCreateTabMock.mockReset();
     terminalStartCommandTabMock.mockReset();
-    terminalReconnectTabMock.mockReset();
     terminalReadTabMock.mockReset();
     terminalUpdateTabMetadataMock.mockReset();
-    terminalInterruptMock.mockReset();
-    terminalClearTabMock.mockReset();
     terminalCloseTabMock.mockReset();
     terminalCloseTabMock.mockImplementation(async () => undefined);
     loadPreferenceMock.mockReset();
@@ -617,32 +593,13 @@ describe('useTerminalStore', () => {
           output_sequence: 1,
         })
     );
-    terminalReconnectTabMock.mockImplementation(async (tabId: string) => ({
-      ...buildManualTabDto({ id: tabId }),
-      has_live_session: true,
-      is_restored: false,
-    }));
     terminalReadTabMock.mockImplementation(async (tabId: string) => ({
       ...buildTaskTabDto({ id: tabId }),
     }));
     terminalUpdateTabMetadataMock.mockImplementation(async (params) => ({
       ...buildUpdatedTabDto(params),
     }));
-    terminalInterruptMock.mockImplementation(async (tabId: string) =>
-      buildManualTabDto({
-        id: tabId,
-        status: 'idle',
-        last_exit_code: 130,
-      })
-    );
-    terminalClearTabMock.mockImplementation(async (tabId: string) =>
-      buildManualTabDto({
-        id: tabId,
-        snapshot: '',
-      })
-    );
     loadPreferenceMock.mockImplementation(async (key: string) => {
-      if (key === 'terminalPanelHeight') return 320;
       if (key === 'terminalActiveTabId') return null;
       if (key === 'terminalLastManualProjectByTask') return {};
       return actualLoadPreference(key as any);
@@ -664,26 +621,23 @@ describe('useTerminalStore', () => {
     );
   });
 
-  it('centralizes close for simultaneous callers and ignores a late reconnect DTO', async () => {
+  it('centralizes close for simultaneous callers and ignores a late native tab event', async () => {
     const { createTerminalStore } = await loadTerminalStore();
-    const port = { disposeTab: mock(() => undefined), disposeAll: mock(() => undefined) };
-    const store = createTerminalStore(port);
-    const tab = await store.getState().createManualTab();
-    let finishReconnect!: (dto: TerminalTabDto) => void;
+    const store = createTerminalStore();
+    const dto = buildManualTabDto({ id: 'restored-tab' });
+    terminalListTabsMock.mockResolvedValueOnce([dto]);
+    await store.getState().initialize();
+    const tab = store.getState().tabs[dto.id];
     let finishClose!: () => void;
-    terminalReconnectTabMock.mockImplementationOnce(() => new Promise((resolve) => { finishReconnect = resolve; }));
     terminalCloseTabMock.mockImplementationOnce(() => new Promise((resolve) => { finishClose = () => resolve(undefined); }));
-    const reconnect = store.getState().reconnectTab(tab.id);
     await new Promise((resolve) => setTimeout(resolve, 0));
     const close = store.getState().closeTab(tab.id);
     expect(store.getState().closeTab(tab.id)).toBe(close);
     eventHandlers['terminal:closed']?.({ payload: { tab_id: tab.id } });
     finishClose();
     await close;
-    finishReconnect(buildManualTabDto({ id: tab.id }));
-    await reconnect;
+    eventHandlers['terminal:tab']?.({ payload: { ...dto, generation: 2 } });
     expect(terminalCloseTabMock).toHaveBeenCalledTimes(1);
-    expect(port.disposeTab).toHaveBeenCalledTimes(1);
     expect(store.getState().tabs[tab.id]).toBeUndefined();
     await store.getState().stopRuntime();
   });
@@ -693,8 +647,7 @@ describe('useTerminalStore', () => {
     const releases: Array<ReturnType<typeof mock>> = [];
     const registrations: Array<(release: () => void) => void> = [];
     listenMock.mockImplementation(() => new Promise((resolve) => { registrations.push(resolve); }));
-    const port = { disposeTab: mock(() => undefined), disposeAll: mock(() => undefined) };
-    const store = createTerminalStore(port);
+    const store = createTerminalStore();
     const starting = store.getState().initialize().catch(() => undefined);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(registrations).toHaveLength(3);
@@ -709,7 +662,6 @@ describe('useTerminalStore', () => {
     }
     await Promise.all([starting, stopping]);
     await store.getState().stopRuntime();
-    expect(port.disposeAll).toHaveBeenCalledTimes(1);
     for (const release of releases) expect(release).toHaveBeenCalledTimes(1);
     expect(terminalCloseTabMock).not.toHaveBeenCalled();
     expect(store.getState().initialized).toBe(false);
@@ -728,7 +680,10 @@ describe('useTerminalStore', () => {
 
   it('keeps a closed tab absent after a delayed metadata response', async () => {
     const { useTerminalStore } = await loadTerminalStore();
-    const tab = await useTerminalStore.getState().createManualTab();
+    const dto = buildManualTabDto({ id: 'restored-tab' });
+    terminalListTabsMock.mockResolvedValueOnce([dto]);
+    await useTerminalStore.getState().initialize();
+    const tab = useTerminalStore.getState().tabs[dto.id];
     let finish!: (dto: TerminalTabDto) => void;
     terminalUpdateTabMetadataMock.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     const syncing = useTerminalStore.getState().syncTerminalDisplayMetadata();
@@ -739,22 +694,6 @@ describe('useTerminalStore', () => {
     expect(useTerminalStore.getState().tabs[tab.id]).toBeUndefined();
     expect(useTerminalStore.getState().tabOrder).not.toContain(tab.id);
     expect(useTerminalStore.getState().activeTabId).not.toBe(tab.id);
-  });
-
-  it('preserves the newest manual selection when creation replies arrive out of order', async () => {
-    const { useTerminalStore } = await loadTerminalStore();
-    await useTerminalStore.getState().initialize();
-    const replies: Array<(dto: TerminalTabDto) => void> = [];
-    terminalCreateTabMock.mockImplementation(() => new Promise((resolve) => { replies.push(resolve); }));
-    const first = useTerminalStore.getState().openManualTabForProject({ projectId: 'project-1' });
-    const second = useTerminalStore.getState().openManualTabForProject({ projectId: 'project-2' });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    replies[1](buildManualTabDto({ id: 'api', project_id: 'project-2' }));
-    await second;
-    replies[0](buildManualTabDto({ id: 'web' }));
-    await first;
-    expect(useTerminalStore.getState().activeTabId).toBe('api');
-    expect(useTerminalStore.getState().lastManualProjectIdByTaskId['task-1']).toBe('project-2');
   });
 
   it('subscribes before listing tabs and replays events over the initial snapshot', async () => {
@@ -772,42 +711,43 @@ describe('useTerminalStore', () => {
     expect(useTerminalStore.getState().tabs.created).toBeDefined();
   });
 
-  for (const kind of ['task', 'manual'] as const) {
-    it(`deduplicates concurrent ${kind} tab creation and permits later calls`, async () => {
-      const { useTerminalStore } = await loadTerminalStore();
-      await useTerminalStore.getState().initialize();
-      let finish!: (dto: TerminalTabDto) => void;
-      terminalCreateTabMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
-      const open = (reveal = false) => kind === 'task'
-        ? useTerminalStore.getState().ensureTaskTab({ taskId: 'task-1', projectId: 'project-1', cwd: '/synthetic', title: 'fixture', reveal })
-        : useTerminalStore.getState().openManualTabForProject({ projectId: 'project-1' });
-      const first = open();
-      const second = open(true);
-      await new Promise(resolve => setTimeout(resolve, 0));
-      expect(terminalCreateTabMock).toHaveBeenCalledTimes(1);
-      finish(kind === 'task' ? buildTaskTabDto({ has_live_session: true }) : buildManualTabDto());
-      const [a, b] = await Promise.all([first, second]);
-      expect(a.id).toBe(b.id);
-      expect(useTerminalStore.getState().activeTabId).toBe(a.id);
-      await open();
-      expect(terminalCreateTabMock).toHaveBeenCalledTimes(kind === 'task' ? 1 : 2);
+  it('deduplicates concurrent task tab creation and reuses the live tab', async () => {
+    const { useTerminalStore } = await loadTerminalStore();
+    await useTerminalStore.getState().initialize();
+    let finish!: (dto: TerminalTabDto) => void;
+    terminalCreateTabMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const open = (reveal = false) => useTerminalStore.getState().ensureTaskTab({
+      taskId: 'task-1', projectId: 'project-1', cwd: '/synthetic', title: 'fixture', reveal,
     });
+    const first = open();
+    const second = open(true);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(terminalCreateTabMock).toHaveBeenCalledTimes(1);
+    finish(buildTaskTabDto({ has_live_session: true }));
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.id).toBe(b.id);
+    expect(useTerminalStore.getState().activeTabId).toBe(a.id);
+    await open();
+    expect(terminalCreateTabMock).toHaveBeenCalledTimes(1);
+  });
 
-    it(`releases a rejected ${kind} opening so it can be retried`, async () => {
-      const { useTerminalStore } = await loadTerminalStore();
-      const open = () => kind === 'task'
-        ? useTerminalStore.getState().ensureTaskTab({ taskId: 'task-1', projectId: 'project-1', cwd: '/synthetic', title: 'fixture' })
-        : useTerminalStore.getState().openManualTabForProject({ projectId: 'project-1' });
-      terminalCreateTabMock.mockImplementationOnce(async () => { throw new Error('offline'); });
-      await expect(open()).rejects.toThrow('offline');
-      await expect(open()).resolves.toBeDefined();
-      expect(terminalCreateTabMock).toHaveBeenCalledTimes(2);
+  it('releases a rejected task tab opening so it can be retried', async () => {
+    const { useTerminalStore } = await loadTerminalStore();
+    const open = () => useTerminalStore.getState().ensureTaskTab({
+      taskId: 'task-1', projectId: 'project-1', cwd: '/synthetic', title: 'fixture', reveal: false,
     });
-  }
+    terminalCreateTabMock.mockImplementationOnce(async () => { throw new Error('offline'); });
+    await expect(open()).rejects.toThrow('offline');
+    await expect(open()).resolves.toBeDefined();
+    expect(terminalCreateTabMock).toHaveBeenCalledTimes(2);
+  });
 
   it('coalesces output by generation before sequence', async () => {
     const { useTerminalStore } = await loadTerminalStore();
-    const tab = await useTerminalStore.getState().createManualTab();
+    const dto = buildManualTabDto({ id: 'restored-tab' });
+    terminalListTabsMock.mockResolvedValueOnce([dto]);
+    await useTerminalStore.getState().initialize();
+    const tab = useTerminalStore.getState().tabs[dto.id];
     eventHandlers['terminal:output']?.({ payload: { tab_id: tab.id, generation: 20, sequence: 101, snapshot: 'old' } });
     eventHandlers['terminal:tab']?.({ payload: buildManualTabDto({ id: tab.id, generation: 21, snapshot: 'base' }) });
     eventHandlers['terminal:output']?.({ payload: { tab_id: tab.id, generation: 21, sequence: 1, snapshot: 'PROMPT' } });
@@ -837,29 +777,6 @@ describe('useTerminalStore', () => {
         expect(tab.hasLiveSession).toBe(false);
       }
     }
-  });
-
-  it('creates a manual terminal for the selected task and selected project', async () => {
-    const { useTerminalStore } = await loadTerminalStore();
-
-    await useTerminalStore.getState().togglePanel();
-
-    const state = useTerminalStore.getState();
-    expect(terminalCreateTabMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: 'manual',
-        taskId: 'task-1',
-        projectId: 'project-1',
-        title: 'web - Refactor compiler',
-        promptContext: {
-          projectLabel: 'web',
-          taskLabel: 'Refactor compiler',
-          branchLabel: null,
-        },
-      })
-    );
-    expect(state.panelOpen).toBe(true);
-    expect(state.lastManualProjectIdByTaskId).toEqual({ 'task-1': 'project-1' });
   });
 
   it('creates terminal sessions in the selected task worktree by default', async () => {
@@ -996,108 +913,6 @@ describe('useTerminalStore', () => {
     expect(session.cwd).toBe('C:/repos/web');
   });
 
-  it('uses the remembered manual project for the current task when available', async () => {
-    loadPreferenceMock.mockImplementation(async (key: string) => {
-      if (key === 'terminalLastManualProjectByTask') {
-        return { 'task-1': 'project-2' };
-      }
-      if (key === 'terminalPanelHeight') return 320;
-      if (key === 'terminalActiveTabId') return null;
-      return actualLoadPreference(key as any);
-    });
-
-    const { useTerminalStore } = await loadTerminalStore();
-
-    await useTerminalStore.getState().createManualTab();
-
-    expect(terminalCreateTabMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: 'manual',
-        taskId: 'task-1',
-        projectId: 'project-2',
-        title: 'api - Refactor compiler',
-        promptContext: {
-          projectLabel: 'api',
-          taskLabel: 'Refactor compiler',
-          branchLabel: null,
-        },
-      })
-    );
-    expect(useTerminalStore.getState().lastManualProjectIdByTaskId).toEqual({ 'task-1': 'project-2' });
-  });
-
-  it('falls back to the selected project when the remembered task project is invalid', async () => {
-    loadPreferenceMock.mockImplementation(async (key: string) => {
-      if (key === 'terminalLastManualProjectByTask') {
-        return { 'task-1': 'missing-project' };
-      }
-      if (key === 'terminalPanelHeight') return 320;
-      if (key === 'terminalActiveTabId') return null;
-      return actualLoadPreference(key as any);
-    });
-
-    const { useTerminalStore } = await loadTerminalStore();
-
-    await useTerminalStore.getState().createManualTab();
-
-    expect(terminalCreateTabMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        taskId: 'task-1',
-        projectId: 'project-1',
-      })
-    );
-  });
-
-  it('reuses an existing manual tab only when task and project both match', async () => {
-    terminalListTabsMock.mockImplementationOnce(async () => [
-      buildManualTabDto({
-        id: 'manual-tab-task-2-project-1',
-        task_id: 'task-2',
-        project_id: 'project-1',
-      }),
-      buildManualTabDto({
-        id: 'manual-tab-task-1-project-1',
-        task_id: 'task-1',
-        project_id: 'project-1',
-      }),
-    ]);
-
-    const { useTerminalStore } = await loadTerminalStore();
-
-    await useTerminalStore.getState().createManualTab();
-
-    expect(terminalCreateTabMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        taskId: 'task-1',
-        projectId: 'project-1',
-        title: 'web - Refactor compiler #2',
-      })
-    );
-  });
-
-  it('creates a new manual tab even when another task already has one', async () => {
-    terminalListTabsMock.mockImplementationOnce(async () => [
-      buildManualTabDto({
-        id: 'manual-tab-task-2-project-1',
-        task_id: 'task-2',
-        project_id: 'project-1',
-      }),
-    ]);
-
-    const { useTerminalStore } = await loadTerminalStore();
-
-    await useTerminalStore.getState().createManualTab();
-
-    expect(terminalCreateTabMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: 'manual',
-        taskId: 'task-1',
-        projectId: 'project-1',
-        title: 'web - Refactor compiler',
-      })
-    );
-  });
-
   it('filters visible tabs by selected task and selected project', async () => {
     terminalListTabsMock.mockImplementationOnce(async () => [
       buildManualTabDto({ id: 'manual-task-1-web', task_id: 'task-1', project_id: 'project-1' }),
@@ -1120,23 +935,6 @@ describe('useTerminalStore', () => {
       'manual-task-1-api',
     ]);
     expect(useTerminalStore.getState().hasAnyTabForTask('task-1')).toBe(true);
-  });
-
-  it('keeps manual-project memory isolated per task', async () => {
-    const { useTerminalStore } = await loadTerminalStore();
-
-    useTerminalStore.getState().rememberManualProjectForTask('task-1', 'project-2');
-    appStoreState.selectedTaskId = 'task-2';
-
-    await useTerminalStore.getState().createManualTab();
-
-    expect(terminalCreateTabMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        taskId: 'task-2',
-        projectId: 'project-2',
-        title: 'api - Task 2',
-      })
-    );
   });
 
   it('does not update the manual-project memory when creating task tabs', async () => {
@@ -1346,27 +1144,6 @@ describe('useTerminalStore', () => {
     );
   });
 
-  it('blocks manual terminals for uninitialized manual drafts', async () => {
-    taskStoreState.tasks = [
-      {
-        ...buildTasks()[0],
-        task_source: 'standalone',
-        standalone_kind: 'manual_feature',
-        draft: true,
-        title: 'New feature',
-      },
-      buildTasks()[1],
-    ];
-
-    const { useTerminalStore } = await loadTerminalStore();
-
-    expect(useTerminalStore.getState().getSelectedTaskTerminalScope()).toBeNull();
-    await expect(useTerminalStore.getState().createManualTab()).rejects.toThrow(
-      'Send a first message to name this feature and initialize its terminal.'
-    );
-    expect(terminalCreateTabMock).not.toHaveBeenCalled();
-  });
-
   it('starts a guarded command without synchronizing unrelated restored terminal metadata', async () => {
     terminalListTabsMock.mockImplementationOnce(async () => [buildManualTabDto({
       id: 'unrelated-tab', task_id: 'other-task', project_id: 'project-1', title: 'Old title',
@@ -1408,21 +1185,12 @@ describe('useTerminalStore', () => {
     });
   });
 
-  it('interrupts a live terminal tab through the Tauri command and updates the tab', async () => {
-    const { useTerminalStore } = await loadTerminalStore();
-
-    await useTerminalStore.getState().createManualTab();
-    const tab = await useTerminalStore.getState().interruptTab('manual-tab-task-1-project-1');
-
-    expect(terminalInterruptMock).toHaveBeenCalledWith('manual-tab-task-1-project-1');
-    expect(tab.lastExitCode).toBe(130);
-    expect(useTerminalStore.getState().tabs['manual-tab-task-1-project-1']?.lastExitCode).toBe(130);
-  });
-
   it('ignores a terminal tab event from an older runtime generation', async () => {
     const { useTerminalStore } = await loadTerminalStore();
+    const dto = buildManualTabDto({ id: 'restored-tab' });
+    terminalListTabsMock.mockResolvedValueOnce([dto]);
     await useTerminalStore.getState().initialize();
-    const tab = await useTerminalStore.getState().createManualTab();
+    const tab = useTerminalStore.getState().tabs[dto.id];
 
     eventHandlers['terminal:tab']?.({
       payload: buildManualTabDto({
@@ -1447,8 +1215,10 @@ describe('useTerminalStore', () => {
 
   it('ignores terminal output from an older runtime generation', async () => {
     const { useTerminalStore } = await loadTerminalStore();
+    const dto = buildManualTabDto({ id: 'restored-tab' });
+    terminalListTabsMock.mockResolvedValueOnce([dto]);
     await useTerminalStore.getState().initialize();
-    const tab = await useTerminalStore.getState().createManualTab();
+    const tab = useTerminalStore.getState().tabs[dto.id];
 
     eventHandlers['terminal:tab']?.({
       payload: buildManualTabDto({
@@ -1472,37 +1242,6 @@ describe('useTerminalStore', () => {
 
     expect(useTerminalStore.getState().tabs[tab.id]?.snapshot).toBe('current snapshot');
     expect(useTerminalStore.getState().tabs[tab.id]?.generation).toBe(2);
-  });
-
-  it('clears a terminal tab through the Tauri command and resets unread output', async () => {
-    terminalClearTabMock.mockImplementationOnce(async (tabId: string) =>
-      buildManualTabDto({
-        id: tabId,
-        snapshot: '',
-        updated_at: '2026-03-26T10:10:00.000Z',
-      })
-    );
-    const { useTerminalStore } = await loadTerminalStore();
-
-    await useTerminalStore.getState().createManualTab();
-    const tabId = 'manual-tab-task-1-project-1';
-    useTerminalStore.setState((state: ReturnType<typeof useTerminalStore.getState>) => ({
-      tabs: {
-        ...state.tabs,
-        [tabId]: {
-          ...state.tabs[tabId],
-          snapshot: 'clear me',
-          hasUnreadOutput: true,
-        },
-      },
-    }));
-
-    const tab = await useTerminalStore.getState().clearTab(tabId);
-
-    expect(terminalClearTabMock).toHaveBeenCalledWith(tabId);
-    expect(tab.snapshot).toBe('');
-    expect(useTerminalStore.getState().tabs[tabId]?.snapshot).toBe('');
-    expect(useTerminalStore.getState().tabs[tabId]?.hasUnreadOutput).toBe(false);
   });
 
   it('closes task command tabs through Tauri and clears the associated task command run', async () => {

@@ -215,6 +215,6 @@ if (import.meta.main) {
       boundary: 'JSON.parse in Bun, production persistence mapping with immediate synthetic IPC adapter, production indexes and transcript items measured separately; excludes native transport/React/layout',
       gc: 'No forced GC in timings; forced full Bun GC at retention checkpoints only; RSS includes allocator/JIT/runtime and is not retained-object size' },
     rows, retention,
-    unavailable: ['Tauri IPC encode/transport/decode', 'WebView heap/DOM/native resources', 'actual PTY/process lifecycle', 'real browser listeners and xterm runtime', 'React rendering and visual readiness'],
+    unavailable: ['Tauri IPC encode/transport/decode', 'WebView heap/DOM/native resources', 'actual PTY/process lifecycle', 'real browser listeners', 'React rendering and visual readiness'],
   }, null, 2));
 }
