@@ -1802,6 +1802,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       getConflictAssistantContext(id), conflictAssistantSelection(id),
     ) ? id : null;
   };
+  const assertBlueprintAttachment = async (conversationId: string, refs: ChatMessage["context_refs"]) => {
+    const ref = refs?.find(item => item.kind === "agsdl")?.agsdl;
+    if (ref?.blueprintId === undefined) return;
+    const { isAgsdlChatContextCurrent } = await import("./agsdl/chatContext");
+    if (useAppStore.getState().mode !== "Architect" || ref.conversationId !== conversationId ||
+        selectedBlueprintForConversation(conversationId)?.id !== ref.blueprintId || !isAgsdlChatContextCurrent(ref))
+      throw buildSendError(i18n.t("agsdl.staleChatSelection", { ns: "agsdl" }));
+  };
+
   const assertImplementConversationContext = (conversationId: string) => {
     const conversation = get().conversations.find(conversation => conversation.id === conversationId);
     if (!demoWorkflowJourney && conversation?.scope_mode === "Architect" &&
@@ -13705,6 +13714,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (hasMultipleAgsdlContexts(capturedContextRefs)) {
         throw buildSendError(i18n.t('agsdl.multipleChatSelections', { ns: 'agsdl', defaultValue: 'Keep only one AgSDL selection before sending.' }));
       }
+      await assertBlueprintAttachment(payload.conversationId, capturedContextRefs);
       payload.hiddenContext = submissionHiddenContext(capturedContextRefs, payload.hiddenContext);
       if (capturedContextRefs?.some(ref => ref.agsdl?.contextKind === "runtime")) await assertRuntimeSelectionDestination(capturedContextRefs, payload.conversationId, {
         conversation: () => get().conversations.find(item => item.id === payload.conversationId), plan: getArchitectPlan,
@@ -13936,6 +13946,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       if (payload.contextRefs !== undefined) payload = { ...payload, contextRefs: resolvedRefs };
       else snapshot = { ...snapshot, composerContextRefs: resolvedRefs };
+      await assertBlueprintAttachment(payload.conversationId, resolvedRefs);
       payload.hiddenContext = submissionHiddenContext(resolvedRefs, payload.hiddenContext);
       if (resolvedRefs?.some(ref => ref.agsdl?.contextKind === "runtime")) await assertRuntimeSelectionDestination(resolvedRefs, payload.conversationId, {
         conversation: () => get().conversations.find(item => item.id === payload.conversationId), plan: getArchitectPlan,
@@ -14429,6 +14440,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const validatedHiddenContext = submissionHiddenContext(editContextRefs, editedHiddenContext);
       options = { ...options, hiddenContext: validatedHiddenContext };
       const editedDestination = get().messages.find(message => message.id === messageId)?.conversation_id;
+      if (editedDestination) await assertBlueprintAttachment(editedDestination, editContextRefs);
       if (editedDestination && editContextRefs?.some(ref => ref.agsdl?.contextKind === "runtime")) await assertRuntimeSelectionDestination(editContextRefs, editedDestination, {
         conversation: () => get().conversations.find(item => item.id === editedDestination), plan: getArchitectPlan,
       });

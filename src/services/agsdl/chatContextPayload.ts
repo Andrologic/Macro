@@ -16,9 +16,10 @@ export interface AgsdlSelectionPayload {
   diagnostic?: string;
 }
 
-interface AgsdlTargetPayload extends AgsdlSelectionPayload {
-  plan_id: string;
-  target_branch: string;
+type AgsdlTargetPayload = AgsdlSelectionPayload & (
+  { blueprint_id: string; plan_id?: never; target_branch?: never } |
+  { blueprint_id?: never; plan_id: string; target_branch: string }
+) & {
   revision: string;
   path: string;
 }
@@ -74,7 +75,7 @@ export function agsdlContextForModel(hiddenContext: string | undefined, refs?: r
   const payload = readAgsdlSelectionPayload(hiddenContext, true);
   if (!payload) return undefined;
   const selection: AgsdlSelectionReference = {
-    id: '', conversationId: '', ...(payload.blueprint_id ? { blueprintId: payload.blueprint_id } : { planId: payload.plan_id, branchName: payload.target_branch }),
+    id: '', conversationId: '', ...(payload.blueprint_id !== undefined ? { blueprintId: payload.blueprint_id } : { planId: payload.plan_id, branchName: payload.target_branch }),
     document: payload.document, version: payload.revision, persistedRevision: payload.persisted_revision ?? 0,
     path: payload.path, relatedPaths: payload.related_paths, title: payload.title, diagnostic: payload.diagnostic,
   };

@@ -106,7 +106,7 @@ export function legacyAgsdlReference(hiddenContext: string | undefined, conversa
   if (!value) return undefined;
   const context: AgsdlChatContext = {
     id: `legacy-agsdl:${messageId}`, conversationId, document: 'agsdl',
-    ...(value.blueprint_id ? { blueprintId: value.blueprint_id } : { planId: value.plan_id, branchName: value.target_branch }),
+    ...(value.blueprint_id !== undefined ? { blueprintId: value.blueprint_id } : { planId: value.plan_id, branchName: value.target_branch }),
     version: value.revision, persistedRevision: value.persisted_revision ?? 0,
     path: value.path, title: value.title, diagnostic: value.diagnostic, relatedPaths: value.related_paths,
   };
