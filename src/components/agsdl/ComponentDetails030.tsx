@@ -3,7 +3,7 @@ import { ArrowLeft, Pencil, X } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
 import { DiscardChangesDialog } from "./DiscardChangesDialog";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
-import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../../stores/useAgsdlStore";
+import { agsdlSessionKey, useAgsdlStore, type AgsdlDocumentTarget } from "../../stores/useAgsdlStore";
 import { agentPropertyLocks030, componentProperties, propertyChanges, type ComponentProperties } from "../../services/agsdl/componentProperties";
 import { object, pointerPart, scanSource } from "../../services/agsdl/document";
 import { authoringFields030, authoringValues030, patchAuthoringValue030, updateAuthoringField030, type AuthoringField030 } from "../../services/agsdl/authoringFields030";
@@ -11,7 +11,7 @@ import { DisclosureSummary } from "./DisclosureSummary";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 
 export function ComponentDetails030({ title, target, card, canEdit = true, children, onClose, onAttach, onBack }: {
-  title: string; target: AgsdlTarget; card?: ViewerCard; canEdit?: boolean; children: ReactNode; onClose: () => void; onAttach?: () => Promise<void>; onBack?: () => void;
+  title: string; target: AgsdlDocumentTarget; card?: ViewerCard; canEdit?: boolean; children: ReactNode; onClose: () => void; onAttach?: () => Promise<void>; onBack?: () => void;
 }) {
   const { t } = useAgsdlTranslation();
   const session = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]);

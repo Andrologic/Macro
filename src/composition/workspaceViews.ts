@@ -21,7 +21,7 @@ const architectProjectNavigatorLoader = createModePanelLoader({
   mode: 'Architect',
   panel: 'left',
   importComponent: async () =>
-    demoJourney ? (await import('../demo/DemoArchitectNavigator')).default : (await import('../components/architect/ArchitectProjectNavigator')).default,
+    demoJourney ? (await import('../demo/DemoArchitectNavigator')).default : (await import('../components/architect/ArchitectLibraryNavigator')).default,
 });
 
 const operateNavigatorLoader = createModePanelLoader({

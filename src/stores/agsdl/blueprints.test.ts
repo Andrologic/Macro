@@ -1,7 +1,7 @@
 import { describe,expect,it } from 'bun:test';
 import { readDesign } from '../../services/agsdl/design';
 import type { ArchitectPlanRecord } from '../../services/architectPlanService';
-import { agsdlSessionKey,type AgsdlSession,type useAgsdlStore } from '../useAgsdlStore';
+import { agsdlSessionKey,type AgsdlSession,useAgsdlStore } from '../useAgsdlStore';
 import { builtInDesignSources,instantiateDesign,listDesignSources,saveBlueprint,type BlueprintDependencies } from './blueprints';
 
 const target = { branchName: 'feature/design', planId: 'source' };
@@ -11,6 +11,7 @@ function harness(source = '') {
   let saved = 0;
   let created: Parameters<BlueprintDependencies['createPlan']>[0] | undefined;
   const state: ReturnType<typeof useAgsdlStore.getState> = {
+    ...useAgsdlStore.getState(),
     sessions: { [agsdlSessionKey(target)]: session },
     load: async () => session,
     replace: (_target, next, annexes, version, metadata) => {

@@ -3,7 +3,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { retainedRunValue030 } from '../../services/agsdl/runtimeProjection030';
 import { isWorkflowAgentTask, sameWorkflowSource030, subscribeWorkflowRunAccess030, workflowRunAccessSnapshot030 } from '../../services/workflowAgentTasks';
-import { WorkflowRunView030 } from '../architect/ArchitectStrategyPanel';
+import { WorkflowRunView030 } from '../agsdl/WorkflowRunView030';
 import { useAgsdlTranslation } from '../agsdl/useAgsdlTranslation';
 
 export default function OperateCenter() {

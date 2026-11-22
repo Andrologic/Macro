@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { WorkflowRunView030 } from './ArchitectStrategyPanel';
+import { WorkflowRunView030 } from '../agsdl/WorkflowRunView030';
 import { createRunInspectionAccess030 } from '../../services/agsdl/runAccess030';
 import { nativeAgentRunFixture030, nativeTransportFor030 } from '../../services/agsdl/runAccess030.testSupport';
 import { RunInspectionDouble030 } from '../../services/agsdl/runInspection030.testSupport';

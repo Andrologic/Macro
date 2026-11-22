@@ -1,5 +1,9 @@
 {
   "fr": {
+    "agsdl.library.blueprints": "Blueprints",
+    "agsdl.library.archives": "Archives",
+    "agsdl.library.versions": "Versions",
+    "agsdl.library.version": "Version {{number}}",
     "updates.agentActivity": "Agent",
     "common.version": "Version",
     "common.build": "Build",
@@ -186,6 +190,8 @@
     "agsdl.messages030.prompt": "Message"
   },
   "de": {
+    "agsdl.library.blueprints": "Blueprints",
+    "agsdl.library.version": "Version {{number}}",
     "mcpForm.server": "Server",
     "mcpForm.minValue": "Minimum: {{value}}",
     "mcpForm.maxValue": "Maximum: {{value}}",
@@ -331,6 +337,7 @@
     "agsdl.messages030.agent": "Agent"
   },
   "es": {
+    "agsdl.library.blueprints": "Blueprints",
     "mcpForm.no": "No",
     "header.architect": "Architect",
     "header.implement": "Operate",

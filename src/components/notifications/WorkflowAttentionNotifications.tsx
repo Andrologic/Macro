@@ -21,7 +21,7 @@ import { openWorkflowNotificationContext } from '../../services/openWorkflowNoti
 import type { WorkflowNotificationNavigation } from '../../services/workflowNotificationNavigation';
 import { notify } from '../ui/toastService';
 import { useAgsdlTranslation } from '../agsdl/useAgsdlTranslation';
-import { WorkflowRunView030 } from '../architect/ArchitectStrategyPanel';
+import { WorkflowRunView030 } from '../agsdl/WorkflowRunView030';
 import { Dialog } from '../ui/Dialog';
 import { getWorkflowRunAccess030, subscribeWorkflowRunAccess030, workflowRunAccessSnapshot030,
   subscribeWorkflowRunTarget030, workflowRunTargetSnapshot030, workflowRunOpenSequence030, openWorkflowRun030, type WorkflowRunRegistration030 } from '../../services/workflowAgentTasks';

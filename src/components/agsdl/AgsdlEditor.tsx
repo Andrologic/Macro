@@ -1,5 +1,6 @@
 import { AlertTriangle,Download,Maximize2,Redo2,Save,Settings2,Undo2,X } from "lucide-react";
 import React,{ useEffect,useMemo,useState } from "react";
+import { applyChanges } from "../../services/agsdl/document";
 import { reviewDesignChanges } from "../../services/agsdl/designReview";
 import { diagnosticOwner030,localizeDiagnostics,type LocalizedDiagnostic } from "../../services/agsdl/diagnostics";
 import { projectSystemOverview } from "../../services/agsdl/systemOverview";
@@ -13,7 +14,7 @@ import { prepareAgsdlChatContext } from "../../stores/agsdl/chatContext";
 import {
 agsdlSessionKey,
 useAgsdlStore,
-type AgsdlTarget,
+type AgsdlDocumentTarget,
 } from "../../stores/useAgsdlStore";
 import { Dialog } from "../ui/Dialog";
 import { AgentDetails } from "./AgentDetails";
@@ -31,15 +32,18 @@ import { useAgsdlTranslation } from "./useAgsdlTranslation";
 
 // Chat and focused component edits share the same versioned document store.
 export const AgsdlEditor: React.FC<{
-  target: AgsdlTarget;
+  target: AgsdlDocumentTarget;
+  onAttachContext?: (selection: Parameters<typeof prepareAgsdlChatContext>[1]) => Promise<void>;
   planStatus?: string;
   expanded?: boolean;
   onExpand?: () => void;
   canvasActions?: React.ReactNode;
-}> = ({ target, planStatus, expanded, onExpand, canvasActions }) => {
+}> = ({ target, planStatus, expanded, onExpand, canvasActions, onAttachContext }) => {
   const { t } = useAgsdlTranslation();
   const demoJourney = import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1';
   const persistenceTitle = t(demoJourney ? 'agsdl.persistence.export' : 'agsdl.persistence.title');
+  const legacyTarget = "planId" in target ? target : undefined;
+  const canAttach = !!legacyTarget || !!onAttachContext;
   const key = agsdlSessionKey(target);
   const session = useAgsdlStore((state) => state.sessions[key]);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -154,11 +158,12 @@ export const AgsdlEditor: React.FC<{
     setDiagnosticError("");
   };
   const attachContext = async (selection: Parameters<typeof prepareAgsdlChatContext>[1]) => {
-    await prepareAgsdlChatContext(target, selection);
+    if (legacyTarget) await prepareAgsdlChatContext(legacyTarget, selection);
+    else await onAttachContext?.(selection);
     setSelection(undefined);
     if (expanded) onExpand?.();
   };
-  const diagnosticAction = (issues: LocalizedDiagnostic[], path: string, title: string) => issues.length > 0 && <button className="agsdl-link" disabled={attaching} onClick={() => {
+  const diagnosticAction = (issues: LocalizedDiagnostic[], path: string, title: string) => canAttach && issues.length > 0 && <button className="agsdl-link" disabled={attaching} onClick={() => {
     setAttaching(true); setDiagnosticError("");
     void attachContext({ path: issues.length === 1 ? issues[0].path ?? path : path, title, diagnostic: issues.map(issue => `${issue.rule}: ${issue.details}`).join("\n") })
       .catch((error: unknown) => {
@@ -244,7 +249,7 @@ export const AgsdlEditor: React.FC<{
   );
   const inspect = (item: ViewerCard) => (
     <>
-      {item.edition030 && <Diagnostics030 issues={diagnostics.filter(issue => issue.targets.includes(item.path) || diagnosticOwner030(source!, issue, allCards).path === item.path)} onSelect={openDiagnostic} onAttach={attachDiagnostic} busy={attaching} error={diagnosticError} />}
+      {item.edition030 && <Diagnostics030 issues={diagnostics.filter(issue => issue.targets.includes(item.path) || diagnosticOwner030(source!, issue, allCards).path === item.path)} onSelect={openDiagnostic} onAttach={canAttach ? attachDiagnostic : undefined} busy={attaching} error={diagnosticError} />}
       {!item.edition030 && ["Agent", "invoke", "agent"].includes(item.kind)
         ? <AgentDetails card={item} cards={[...(document?.graphs.flatMap(graph => graph.cards) ?? []), ...(document?.declarations ?? []), ...(document?.legacyCards ?? [])]} source={source!} onSelect={select} />
         : !item.edition030 && item.mission && <p className="agsdl-mission">{item.mission}</p>}
@@ -292,14 +297,14 @@ export const AgsdlEditor: React.FC<{
     </>
   );
   return (
-    <div className="agsdl-viewer" data-agsdl-plan={target.planId} aria-label={t("agsdl.editor")} onKeyDown={event => { if (event.key === "Escape" && !selectedCard && !selectedEdge) { setSelection(undefined); } }}>
+    <div className="agsdl-viewer" data-agsdl-plan={legacyTarget?.planId} data-agsdl-blueprint={"blueprintId" in target ? target.blueprintId : undefined} aria-label={t("agsdl.editor")} onKeyDown={event => { if (event.key === "Escape" && !selectedCard && !selectedEdge) { setSelection(undefined); } }}>
       <header className="agsdl-viewer-header">
         <div className="agsdl-header-actions">
           {source && <>
             <button className="agsdl-icon-button" aria-label={t("agsdl.authoring030.undo")} title={t("agsdl.authoring030.undo")} disabled={session?.status !== "draft" || !!session?.saving || !session?.history.length || (!!planStatus && planStatus !== "draft")} onClick={() => void changeHistory()}><Undo2 size={14} /></button>
             <button className="agsdl-icon-button" aria-label={t("agsdl.authoring030.redo")} title={t("agsdl.authoring030.redo")} disabled={session?.status !== "draft" || !!session?.saving || !session?.future.length || (!!planStatus && planStatus !== "draft")} onClick={() => void changeHistory(true)}><Redo2 size={14} /></button>
           </>}
-          {source && <button className="agsdl-icon-button" title={persistenceTitle} aria-label={persistenceTitle} onClick={() => setSaveOpen(true)}>{demoJourney ? <Download size={14} /> : <Save size={14} />}</button>}
+          {source && legacyTarget && <button className="agsdl-icon-button" title={persistenceTitle} aria-label={persistenceTitle} onClick={() => setSaveOpen(true)}>{demoJourney ? <Download size={14} /> : <Save size={14} />}</button>}
           {onExpand && <button className="agsdl-icon-button" onClick={onExpand}
             aria-label={t(expanded ? "agsdl.shrink" : "agsdl.expand")}
             title={t(expanded ? "agsdl.shrink" : "agsdl.expand")}>
@@ -344,8 +349,13 @@ export const AgsdlEditor: React.FC<{
             if (!nameDraft) return;
             try {
               const store = useAgsdlStore.getState();
-              if (edition030) store.edit(target, [{ op: "set", path: "/title", valueJson: JSON.stringify(nameDraft.value) }], nameDraft.version);
-              else store.replace(target, session.source, undefined, nameDraft.version, { design: session.design, display: { ...session.display, title: nameDraft.value }, migration: session.migration });
+              if (edition030) {
+                const changes = [{ op: "set" as const, path: "/title", valueJson: JSON.stringify(nameDraft.value) }];
+                if (!legacyTarget && session.display?.title) {
+                  store.replace(target, applyChanges(session.source, changes), undefined, nameDraft.version,
+                    { design: session.design, display: { ...session.display, title: nameDraft.value }, migration: session.migration });
+                } else store.edit(target, changes, nameDraft.version);
+              } else store.replace(target, session.source, undefined, nameDraft.version, { design: session.design, display: { ...session.display, title: nameDraft.value }, migration: session.migration });
               void store.save(target).then(() => setNameDraft(undefined)).catch(error => setError(agsdlErrorText(error, t)));
             } catch (error) { setError(agsdlErrorText(error, t)); }
           }}><label className="agsdl-edit-field">{t("agsdl.design.name")}<input value={nameDraft?.value ?? document?.title ?? ""} disabled={session.status !== "draft" || session.saving || (!!planStatus && planStatus !== "draft")} onChange={event => setNameDraft({ value: event.target.value, version: nameDraft?.version ?? session.version })} /></label>
@@ -355,11 +365,11 @@ export const AgsdlEditor: React.FC<{
       </Dialog>}
       {issuesOpen && <Dialog title={t("agsdl.authoring030.diagnostics.title")} onClose={() => setIssuesOpen(false)} closeOnBackdropClick panelClassName="agsdl-detail-modal">
         <header><strong>{t("agsdl.authoring030.diagnostics.title")}</strong><button className="agsdl-icon-button" aria-label={t("agsdl.close")} onClick={() => setIssuesOpen(false)}><X size={14} /></button></header>
-        <Diagnostics030 issues={diagnostics} onSelect={issue => { setIssuesOpen(false); openDiagnostic(issue); }} onAttach={attachDiagnostic} busy={attaching} error={diagnosticError} />
+        <Diagnostics030 issues={diagnostics} onSelect={issue => { setIssuesOpen(false); openDiagnostic(issue); }} onAttach={canAttach ? attachDiagnostic : undefined} busy={attaching} error={diagnosticError} />
       </Dialog>}
       {(error || session?.error || parsed.error) && (
         <div role="alert" className="agsdl-error">
-          {error || (session?.error && t("agsdl.actionFailed")) || (
+          {error || (session?.error && agsdlErrorText(session.error, t)) || (
             <>
               <p>{t(parsed.error?.includes("agsdl.unsupportedEdition020") ? "agsdl.unsupportedEdition020" : "agsdl.viewer.unreadable")}</p>
               <details className="agsdl-details">
@@ -387,13 +397,13 @@ export const AgsdlEditor: React.FC<{
         </div>
       )}
       {!session ? <div className="agsdl-empty">{t("agsdl.loading")}</div>
-        : !source ? session.status === "draft" && (!planStatus || planStatus === "draft") ? <DesignStart onChoose={setLibrary} /> : <div className="agsdl-empty">{t("agsdl.emptyTitle")}</div>
+        : !source ? legacyTarget && session.status === "draft" && (!planStatus || planStatus === "draft") ? <DesignStart onChoose={setLibrary} /> : <div className="agsdl-empty">{t("agsdl.emptyTitle")}</div>
         : document && <>
           {cards.length > 0 ? <WorkflowGraph
             key={`${key}:${graph?.path ?? "declarations"}`}
             cards={cards} edges={system.edges} entry={system.entry} compositions={document.graphs} declarations={document.declarations} selected={selected}
             select={select} title={nodeTitle} source={source}
-            onAttach={!attaching ? path => {
+            onAttach={canAttach && !attaching ? path => {
               const card = cards.find(item => item.path === path);
               if (!card) return;
               setAttaching(true);
@@ -408,7 +418,7 @@ export const AgsdlEditor: React.FC<{
             title={selectedCard ? nodeTitle(selectedCard) : selectedEdge ? t(selectedEdge.dependency ? "agsdl.viewer.dependencies" : "agsdl.viewer.connection") : document.title}
             card={selectedCard ?? routeCard} canEdit={!attaching && (selectedCard === currentCard || !!routeCard || selectedCard?.kind === "Route") && (!planStatus || planStatus === "draft")} target={target}
             onBack={previousSelection ? goBack : undefined}
-            onAttach={!attaching && ((selectedCard && selectedCard === currentCard) || selectedEdge) ? () => attachContext(selectedEdge
+            onAttach={canAttach && !attaching && ((selectedCard && selectedCard === currentCard) || selectedEdge) ? () => attachContext(selectedEdge
               ? { path: selectedEdge.route030?.path ?? selectedEdge.source, relatedPaths: [selectedEdge.source, selectedEdge.target], title: `${selectedEdge.label}: ${nodeTitle(cards.find(card => card.path === selectedEdge.source)!)} → ${nodeTitle(cards.find(card => card.path === selectedEdge.target)!)}` }
               : selectedCard ? { path: selectedCard.edition030?.ownerPath ?? selectedCard.path, title: nodeTitle(selectedCard) }
               : { path: "", title: document.title }) : undefined}
@@ -423,10 +433,10 @@ export const AgsdlEditor: React.FC<{
           </ComponentDetailsDialog>}
         </>}
       {!document && selectedCard && <ComponentDetailsDialog title={t("agsdl.authoring030.document")} target={target} card={selectedCard} canEdit={false} onClose={() => setSelection(undefined)}>
-        <Diagnostics030 issues={diagnostics} onSelect={openDiagnostic} onAttach={attachDiagnostic} busy={attaching} error={diagnosticError} />
+        <Diagnostics030 issues={diagnostics} onSelect={openDiagnostic} onAttach={canAttach ? attachDiagnostic : undefined} busy={attaching} error={diagnosticError} />
       </ComponentDetailsDialog>}
-      {saveOpen && session && <SaveSystemDialog target={target} title={document?.title || ""} onClose={() => setSaveOpen(false)} />}
-      {library && session && <DesignLibraryDialog key={`${key}:${library}`} target={target} mode={library} onClose={() => setLibrary(undefined)} />}
+      {saveOpen && session && legacyTarget && <SaveSystemDialog target={legacyTarget} title={document?.title || ""} onClose={() => setSaveOpen(false)} />}
+      {library && session && legacyTarget && <DesignLibraryDialog key={`${key}:${library}`} target={legacyTarget} mode={library} onClose={() => setLibrary(undefined)} />}
       {changesOpen && review && <DesignChangesDialog review={review} onClose={() => setChangesOpen(false)} onSelect={path => {
         const index = document?.graphs.findIndex(graph => graph.cards.some(card => card.path === path)) ?? -1;
         if (index >= 0) setGraphIndex(index);

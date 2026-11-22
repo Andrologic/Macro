@@ -6,7 +6,7 @@ import { macroAgentConfiguration,macroConfigurationChanges,type MacroConfigurati
 import { AgsdlUserError } from "../../services/agsdl/userErrors";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 import { qualifiedModel,useAgsdlModelCatalogue } from "../../stores/useAgsdlModelCatalogue";
-import { agsdlSessionKey,useAgsdlStore,type AgsdlTarget } from "../../stores/useAgsdlStore";
+import { agsdlSessionKey,useAgsdlStore,type AgsdlDocumentTarget } from "../../stores/useAgsdlStore";
 import { Dialog } from "../ui/Dialog";
 import { ComponentDetails030 } from "./ComponentDetails030";
 import { DiscardChangesDialog } from "./DiscardChangesDialog";
@@ -20,7 +20,7 @@ export function ComponentDetailsDialog(props: Parameters<typeof HistoricalCompon
 }
 
 function HistoricalComponentDetailsDialog({ title, target, card, canEdit = true, children, onClose, onAttach, onBack }: {
-  title: string; target: AgsdlTarget; card?: ViewerCard; canEdit?: boolean; children: ReactNode; onClose: () => void; onAttach?: () => Promise<void>; onBack?: () => void;
+  title: string; target: AgsdlDocumentTarget; card?: ViewerCard; canEdit?: boolean; children: ReactNode; onClose: () => void; onAttach?: () => Promise<void>; onBack?: () => void;
 }) {
   const { t } = useAgsdlTranslation();
   const session = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]);
