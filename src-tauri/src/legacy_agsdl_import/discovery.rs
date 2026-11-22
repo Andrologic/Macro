@@ -132,20 +132,36 @@ impl Root<'_> {
         }
     }
 
-    fn read_scoped(&self, path: &Path) -> ReadResult<Option<String>> {
-        // The regular scan has already checked each directory when it reads a file.
-        // Applied-journal verification starts with a relative path instead.
-        if let Self::Directory(root) = self {
-            let mut parent = root.to_path_buf();
-            for part in path.parent().into_iter().flat_map(Path::iter) {
-                parent.push(part);
-                match disk_kind(&parent)? {
-                    None => return Ok(None),
-                    Some(EntryKind::Directory) => {}
-                    _ => return Err("Unsupported parent in journal path".into()),
+    fn check_journal_file(&self, path: &Path) -> ReadResult<()> {
+        let mut prefix = PathBuf::new();
+        for part in path {
+            prefix.push(part);
+            let kind = match self {
+                Self::Empty => None,
+                Self::Directory(root) => disk_kind(&root.join(&prefix))?,
+                Self::Commit(_, tree) => {
+                    tree_entry(tree, &prefix)?.map(|entry| match entry.filemode() {
+                        0o040000 => EntryKind::Directory,
+                        0o100644 | 0o100755 => EntryKind::File,
+                        _ => EntryKind::Unsupported,
+                    })
                 }
+                Self::Overlay(..) => unreachable!("journal checks use the underlying replica"),
+            };
+            let Some(kind) = kind else { return Ok(()) };
+            if prefix == path {
+                if kind != EntryKind::File {
+                    return Err("Unexpected file type at recovery target".into());
+                }
+            } else if kind != EntryKind::Directory {
+                return Err("Expected a directory above recovery target".into());
             }
         }
+        Ok(())
+    }
+
+    fn read_scoped(&self, path: &Path) -> ReadResult<Option<String>> {
+        self.check_journal_file(path)?;
         self.read(path)
     }
 
@@ -1124,7 +1140,7 @@ impl Scan {
                 self.visited_targets.insert(key);
                 if changes.is_some() {
                     self.result::<()>(
-                        journal::KEY,
+                        &scope.location,
                         Err(
                             "Multiple recovery scopes resolve to the same metadata directory"
                                 .into(),
@@ -1175,6 +1191,14 @@ impl Scan {
                     }
                 }
             }
+            for path in changes.files.keys() {
+                if self
+                    .result(scope.path(path), root.check_journal_file(path))
+                    .is_none()
+                {
+                    return;
+                }
+            }
             // Artifact recovery rolls back before the files_applied marker and
             // checks the after-images from that point onward.
             for (path, check) in &changes.artifacts {
@@ -1187,13 +1211,13 @@ impl Scan {
                         Err(format!("Artifact recovery conflict: {}", path.display()))
                     }
                 });
-                self.result(journal::KEY, checked);
+                self.result(scope.path(path), checked);
             }
             for (path, expected) in &changes.applied {
                 let checked = root
                     .read_scoped(path)
-                    .and_then(|text| journal::verify_applied(path, text.as_deref(), expected));
-                self.result(journal::KEY, checked);
+                    .and_then(|text| journal::verify_applied(text.as_deref(), expected));
+                self.result(scope.path(path), checked);
             }
             self.branches(&Root::Overlay(root, &changes), scope, prefix);
         } else {
@@ -1240,7 +1264,7 @@ impl Scan {
                         .insert((path.clone(), direct), changes)
                         .is_some()
                     {
-                        self.result::<()>(journal::KEY, Err("Aliased replica targets".into()));
+                        self.result::<()>(&scope.location, Err("Aliased replica targets".into()));
                     }
                 }
             }
@@ -1411,31 +1435,38 @@ pub(super) fn discover(profile: &LegacyProfile, journal: journal::Journal) -> Le
         // Keep distinct scope provenance when the workspace is also a registered project.
         scan.physical_scope(&path, "project", project_ids.into_iter().collect());
     }
-    if !scan.journal.owners.is_empty()
-        || scan
-            .journal
-            .disk
-            .keys()
-            .any(|key| !scan.visited_targets.contains(key))
+    for owner in &scan.journal.owners {
+        scan.issues.push(LegacyImportIssue {
+            location: owner.display().to_string(),
+            message: "Recovery workspace is unavailable".into(),
+        });
+    }
+    for (owner, direct) in scan
+        .journal
+        .disk
+        .keys()
+        .filter(|key| !scan.visited_targets.contains(key))
     {
-        scan.result::<()>(
-            journal::KEY,
-            Err("Recovery workspace or metadata checkout is unavailable".into()),
-        );
+        scan.issues.push(LegacyImportIssue {
+            location: owner.display().to_string(),
+            message: format!(
+                "Recovery {} replica is unavailable",
+                if *direct { "direct" } else { "metadata" }
+            ),
+        });
     }
     if scan.journal.local.files.is_empty() && scan.journal.local.applied.is_empty() {
         scan.local(&profile.local_storage);
     } else if let LegacyLocalStorage::Snapshot(entries) = &profile.local_storage {
         for (path, expected) in &scan.journal.local.applied {
             if let Err(message) = journal::verify_applied(
-                path,
                 entries
                     .get(path.to_str().expect("local key"))
                     .map(String::as_str),
                 expected,
             ) {
                 scan.issues.push(LegacyImportIssue {
-                    location: journal::KEY.into(),
+                    location: path.display().to_string(),
                     message,
                 });
             }
@@ -1455,7 +1486,7 @@ pub(super) fn discover(profile: &LegacyProfile, journal: journal::Journal) -> Le
         scan.local(&LegacyLocalStorage::Snapshot(entries));
     } else {
         scan.result::<()>(
-            journal::KEY,
+            "localStorage",
             Err("Recovery requires the local storage snapshot".into()),
         );
     }

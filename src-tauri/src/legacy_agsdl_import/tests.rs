@@ -1121,7 +1121,7 @@ async fn pending_local_archive_and_remove_replace_the_stale_snapshot_only_after_
     assert!(failed
         .issues
         .iter()
-        .any(|issue| issue.location == journal::KEY));
+        .any(|issue| issue.location == "/foreign"));
     let marker: i64 = sqlx::query_scalar("SELECT count(*) FROM architect_legacy_import")
         .fetch_one(&pool)
         .await
@@ -1190,4 +1190,173 @@ async fn artifact_journal_uses_the_old_commit_point_and_preserves_conflicts_for_
         assert_eq!(done.inserted, count);
         assert_eq!(fs::read_to_string(dir.join(path)).unwrap(), after);
     }
+}
+
+// Start with the real update envelope and select a single writer destination.
+fn chat_journal(root: &Path, local: bool, phase: &str, messages: &Value) -> Value {
+    let mut entry = interrupted_journal(root)[0].clone();
+    entry["workspaceKey"] = if local {
+        json!("local:local")
+    } else {
+        json!(root)
+    };
+    entry["phase"] = json!(phase);
+    entry["operation"] = json!("chat");
+    let targets = entry["payload"]["targets"].as_array_mut().unwrap();
+    targets.truncate(1);
+    let target = &mut targets[0];
+    target["scope"] = if local {
+        json!({"scopeKey":"local","source":"local"})
+    } else {
+        json!({"scopeKey":format!("repo:{}",root.display()),"source":"workspace","workspacePath":root,"repoPath":root,"workspaceScope":"direct"})
+    };
+    target["chatMessages"] = messages.clone();
+    target["index"]["plans"][0]["chatMessageCount"] = json!(messages.as_array().unwrap().len());
+    entry
+}
+
+#[test]
+fn applied_chat_checks_each_line_and_distinguishes_empty_from_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let dir = root.join(".macro/branches/develop/plans");
+    let chat = dir.join("plan-1/chat.jsonl");
+    let key = "macro_architect_plan_chat:develop:plan-1";
+    let message = json!({"id":"m1","role":"user","content":"confidential-chat-body\nmessage","createdAt":"2026-03-15T00:00:00.000Z"});
+    let mut second = message.clone();
+    second["id"] = json!("m2");
+    let jsonl = format!("{message}\n{second}");
+    for local in [true, false] {
+        for (phase, messages, actual, valid) in [
+            ("files_applied", json!([message, second]), None, false),
+            (
+                "committing",
+                json!([message, second]),
+                Some(message.to_string()),
+                false,
+            ),
+            (
+                "files_applied",
+                json!([message, second]),
+                Some(jsonl.clone()),
+                true,
+            ),
+            ("files_applied", json!([]), None, false),
+            ("committing", json!([]), Some(String::new()), true),
+        ] {
+            let entry = chat_journal(&root, local, phase, &messages);
+            let target = &entry["payload"]["targets"][0];
+            let mut snapshot = BTreeMap::new();
+            let location = if local {
+                snapshot.insert(
+                    "macro_architect_plan:develop:plan-1".into(),
+                    target["plan"].to_string(),
+                );
+                snapshot.insert(
+                    "macro_architect_plan_index:develop".into(),
+                    target["index"].to_string(),
+                );
+                if let Some(text) = &actual {
+                    snapshot.insert(key.into(), text.clone());
+                }
+                key.to_string()
+            } else {
+                put(&dir.join("plan-1/plan.json"), &target["plan"]);
+                put(&dir.join("index.json"), &target["index"]);
+                if let Some(text) = &actual {
+                    fs::write(&chat, text).unwrap();
+                } else if chat.exists() {
+                    fs::remove_file(&chat).unwrap();
+                }
+                chat.display().to_string()
+            };
+            let found = discovery::discover(
+                &LegacyProfile {
+                    workspace_paths: if local { vec![] } else { vec![root.clone()] },
+                    projects: vec![],
+                    conversation_links: vec![],
+                    local_storage: LegacyLocalStorage::Snapshot(snapshot),
+                },
+                journal::Journal::parse(Some(&json!([entry]).to_string())).unwrap(),
+            );
+            if valid {
+                assert!(found.issues.is_empty(), "{:?}", found.issues);
+                assert_eq!(
+                    found.blueprints[0].origins.first().unwrap().transcript,
+                    actual
+                );
+            } else {
+                assert!(
+                    found.issues.iter().any(|issue| issue.location == location),
+                    "{:?}",
+                    found.issues
+                );
+                assert!(!format!("{:?}", found.issues).contains("confidential-chat-body"));
+            }
+        }
+    }
+}
+
+#[test]
+fn recovery_across_workspace_keys_requires_independent_replicas() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let applied = chat_journal(&root, false, "committing", &json!([]));
+    let mut older = applied.clone();
+    older["id"] = json!("older");
+    older["workspaceKey"] = json!(format!(
+        "{}|{}",
+        root.display(),
+        root.join("other").display()
+    ));
+    older["phase"] = json!("applying");
+    older["payload"]["targets"][0]["plan"]["status"] = json!("archived");
+    older["payload"]["targets"][0]["index"]["plans"][0]["status"] = json!("archived");
+    for entries in [json!([older, applied]), json!([applied, older])] {
+        let error = journal::Journal::parse(Some(&entries.to_string()))
+            .err()
+            .unwrap();
+        assert!(
+            error.contains(root.to_str().unwrap())
+                && error.contains("branches/develop/plans/index.json"),
+            "{error}"
+        );
+    }
+    older["payload"]["targets"][0]["scope"] =
+        chat_journal(&root, true, "applying", &json!([]))["payload"]["targets"][0]["scope"].clone();
+    assert!(journal::Journal::parse(Some(&json!([older, applied]).to_string())).is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn replay_rejects_directory_and_symlink_targets_before_overlay() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let plan = root.join(".macro/branches/develop/plans/plan-1/plan.json");
+    fs::create_dir_all(&plan).unwrap();
+    let sentinel = root.join("outside");
+    fs::write(&sentinel, "unchanged").unwrap();
+    for phase in ["prepared", "applying"] {
+        if phase == "applying" {
+            fs::remove_dir(&plan).unwrap();
+            std::os::unix::fs::symlink(&sentinel, &plan).unwrap();
+        }
+        let entry = chat_journal(&root, false, phase, &json!([]));
+        let found = discovery::discover(
+            &LegacyProfile {
+                workspace_paths: vec![root.clone()],
+                projects: vec![],
+                conversation_links: vec![],
+                local_storage: LegacyLocalStorage::NotApplicable,
+            },
+            journal::Journal::parse(Some(&json!([entry]).to_string())).unwrap(),
+        );
+        assert!(found
+            .issues
+            .iter()
+            .any(|issue| issue.location == plan.display().to_string()));
+        assert!(found.blueprints.is_empty());
+    }
+    assert!(plan.is_symlink());
+    assert_eq!(fs::read_to_string(sentinel).unwrap(), "unchanged");
 }

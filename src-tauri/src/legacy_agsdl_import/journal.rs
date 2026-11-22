@@ -9,9 +9,19 @@ pub(super) const KEY: &str = "pendingArchitectPlanReplicaMutations:v1";
 pub(super) struct Changes {
     pub files: BTreeMap<PathBuf, Option<String>>,
     /// The old recovery commits files_applied/committing entries without replaying files.
-    pub applied: BTreeMap<PathBuf, Option<Value>>,
+    pub applied: BTreeMap<PathBuf, Applied>,
+    // Each replica mutation writes the whole branch index under its workspace lock.
+    index_locks: BTreeMap<PathBuf, String>,
     pub artifacts: BTreeMap<PathBuf, ArtifactCheck>,
     pub removed_dirs: BTreeSet<PathBuf>,
+}
+
+#[derive(Clone)]
+pub(super) enum Applied {
+    Index(Value),
+    Plan(Value),
+    Chat(Vec<Value>),
+    Absent,
 }
 
 #[derive(Default)]
@@ -220,7 +230,10 @@ impl Entry {
                 };
                 journal.disk.entry((path.clone(), direct)).or_default()
             };
-            target.project(changes, branch, id, local, replay)?;
+            let replica = scope.scope_key.clone();
+            target
+                .project(changes, branch, id, local, replay, &self.workspace_key)
+                .map_err(|message| format!("{replica}: {message}"))?;
         }
         Ok(())
     }
@@ -299,6 +312,7 @@ impl Target {
         id: &str,
         local: bool,
         replay: bool,
+        workspace_key: &str,
     ) -> Result<(), String> {
         if self
             .execution_modes_by_project_id
@@ -363,20 +377,40 @@ impl Target {
             directory.join("index.json"),
             format!("macro_architect_plan_index:{branch}"),
         );
+        if changes
+            .index_locks
+            .insert(index.clone(), workspace_key.to_owned())
+            .is_some_and(|previous| previous != workspace_key)
+        {
+            return Err(format!(
+                "Conflicting recovery workspace keys for {}",
+                index.display()
+            ));
+        }
         if !replay {
             changes
                 .applied
-                .insert(index.clone(), Some(self.index.clone()));
+                .insert(index.clone(), Applied::Index(self.index.clone()));
             if self.action != "index" {
                 changes.applied.insert(
                     plan.clone(),
-                    (!self.plan.is_null()).then(|| self.plan.clone()),
+                    if self.plan.is_null() {
+                        Applied::Absent
+                    } else {
+                        Applied::Plan(self.plan.clone())
+                    },
                 );
             }
         }
         match self.action.as_str() {
             "upsert" if indexed && self.plan["id"] == id && self.plan["targetBranch"] == branch => {
-                if replay {
+                if !replay {
+                    if let Some(messages) = self.chat_messages {
+                        changes.applied.insert(chat, Applied::Chat(messages));
+                    } else if self.replace_plan_directory {
+                        changes.applied.insert(chat, Applied::Absent);
+                    }
+                } else {
                     changes.files.insert(plan, Some(self.plan.to_string()));
                     if !local {
                         changes.files.insert(manifest, None);
@@ -405,6 +439,8 @@ impl Target {
                     if !local {
                         changes.removed_dirs.insert(plan_dir);
                     }
+                } else {
+                    changes.applied.insert(chat, Applied::Absent);
                 }
             }
             "index" if self.plan.is_null() => {}
@@ -419,42 +455,53 @@ impl Target {
 
 // Plan writes may add derived fields. Compare the fields used by the library,
 // while indexes must match the committed snapshot.
-pub(super) fn verify_applied(
-    path: &Path,
-    actual: Option<&str>,
-    expected: &Option<Value>,
-) -> Result<(), String> {
-    let actual = actual
-        .map(serde_json::from_str::<Value>)
-        .transpose()
-        .map_err(|e| e.to_string())?;
-    let matches = match (&actual, expected) {
-        (Some(actual), Some(expected)) if expected.get("plans").is_none() => [
-            "id",
-            "targetBranch",
-            "agsdl",
-            "status",
-            "title",
-            "label",
-            "description",
-            "icon",
-            "archivedAt",
-            "archivedFromStatus",
-            "createdAt",
-            "projectId",
-            "projectIds",
-            "conversationId",
-        ]
-        .iter()
-        .all(|key| actual[*key] == expected[*key]),
-        _ => actual == *expected,
+pub(super) fn verify_applied(actual: Option<&str>, expected: &Applied) -> Result<(), String> {
+    let matches = match (actual, expected) {
+        (None, Applied::Absent) => true,
+        (Some(text), Applied::Chat(messages)) => {
+            // Both storage writers use one JSON object per line, joined with LF.
+            // An empty transcript is a present, zero-length value.
+            (messages.is_empty() && text.is_empty())
+                || text
+                    .split('\n')
+                    .map(|line| serde_json::from_str::<Value>(line).ok())
+                    .eq(messages.iter().cloned().map(Some))
+        }
+        (Some(text), Applied::Index(index)) => {
+            serde_json::from_str::<Value>(text).ok().as_ref() == Some(index)
+        }
+        (Some(text), Applied::Plan(expected)) => {
+            serde_json::from_str::<Value>(text).is_ok_and(|actual| {
+                [
+                    "id",
+                    "targetBranch",
+                    "agsdl",
+                    "status",
+                    "title",
+                    "label",
+                    "description",
+                    "icon",
+                    "archivedAt",
+                    "archivedFromStatus",
+                    "createdAt",
+                    "projectId",
+                    "projectIds",
+                    "conversationId",
+                ]
+                .iter()
+                .all(|key| actual[*key] == expected[*key])
+            })
+        }
+        _ => false,
     };
     if matches {
         Ok(())
     } else {
-        Err(format!(
-            "Applied replica mutation disagrees with {}",
-            path.display()
-        ))
+        Err(if actual.is_none() {
+            "Applied replica value is missing"
+        } else {
+            "Applied replica value differs from the journal"
+        }
+        .into())
     }
 }
