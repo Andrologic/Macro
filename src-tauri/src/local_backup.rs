@@ -2766,6 +2766,15 @@ mod tests {
     #[tokio::test]
     async fn portable_restore_detaches_provider_secrets_and_keeps_them_in_rollback() {
         let (_temp, data, config) = profile().await;
+        let legacy_tools = br#"{
+  "$schema": "./schemas/v1/tools.schema.json",
+  "schemaVersion": 1,
+  "languageServer": {
+    "executable": "/example/language-server",
+    "arguments": ["macro-secret://providers/synthetic-provider"]
+  }
+}"#;
+        fs::write(config.join("tools.json"), legacy_tools).unwrap();
         let provider_document = |base_url: &str| {
             serde_json::json!({
                 "$schema": "providers.schema.json",
@@ -2849,6 +2858,12 @@ mod tests {
             restored.pointer("/providers/synthetic-provider/baseUrl"),
             Some(&serde_json::json!("https://restored.invalid/v1"))
         );
+        let restored_tools: serde_json::Value =
+            serde_json::from_slice(&fs::read(config.join("tools.json")).unwrap()).unwrap();
+        assert_eq!(
+            restored_tools,
+            serde_json::from_slice::<serde_json::Value>(legacy_tools).unwrap()
+        );
 
         let dir = data.join("local-backup");
         let preserved = fs::read_dir(&dir)
@@ -2887,6 +2902,12 @@ mod tests {
                 .decode(&rollback.files["data/provider-secrets.migration-pending.json"].data)
                 .unwrap(),
             migration_journal_bytes
+        );
+        assert_eq!(
+            STANDARD
+                .decode(&rollback.files["config/tools.json"].data)
+                .unwrap(),
+            legacy_tools
         );
 
         apply_files(&rollback, &data, &config, true).unwrap();

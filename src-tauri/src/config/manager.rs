@@ -1243,15 +1243,8 @@ impl ConfigManager {
                 if let Some(diagnostic) = cleanup_committed_pending(&pending_path, &key) {
                     runtime_diagnostics.push(diagnostic);
                 }
-            } else if durable_pending.as_ref().is_some_and(|pending| {
-                pending.approved_etag == approved_etag
-                    && pending.pending.proposed_etag == document_etag
-                    && pending.pending.document == kind
-                    && pending.pending.scope == key.scope
-            }) {
-                // The durable proposal is still current. Keep the approved baseline effective.
             } else {
-                let changed_paths = diff_leaf_paths(&approved, &value);
+                let changed_paths = diff_active_paths(kind, &approved, &value);
                 let (sensitive_paths, reasons) = classify_sensitive_paths(kind, &changed_paths);
                 if sensitive_paths.is_empty() {
                     write_runtime_json(&approved_path, &value, &key.scope).map_err(|error| {
@@ -1262,30 +1255,49 @@ impl ConfigManager {
                     })?;
                     approved = value.clone();
                     durable_pending = None;
-                    remove_file_if_exists(&pending_path)?;
+                    if let Some(diagnostic) = cleanup_committed_pending(&pending_path, &key) {
+                        runtime_diagnostics.push(diagnostic);
+                    }
                 } else {
-                    let pending = DurablePendingSensitiveChange {
-                        pending: PendingSensitiveConfigChange {
-                            id: Uuid::new_v4().to_string(),
-                            document: kind,
-                            scope: key.scope.clone(),
-                            source: ConfigChangeSource::ExternalEditor,
-                            changed_paths: sensitive_paths,
-                            reasons,
-                            proposed_document: value.clone(),
-                            proposed_etag: document_etag.clone(),
-                            created_at: Utc::now().to_rfc3339(),
-                        },
-                        project_root,
-                        last_root_transition: None,
-                        approved_etag,
-                        all_changed_paths: changed_paths.clone(),
-                        apply_modes: apply_modes_for_paths(kind, &changed_paths)
-                            .into_iter()
-                            .collect(),
-                    };
-                    write_durable_pending(&pending_path, &pending)?;
-                    durable_pending = Some(pending);
+                    let apply_modes = apply_modes_for_paths(kind, &changed_paths)
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    // The same raw documents can require different consent after an upgrade.
+                    let current = durable_pending.as_ref().filter(|pending| {
+                        pending.approved_etag == approved_etag
+                            && pending.pending.proposed_etag == document_etag
+                            && pending.pending.proposed_document == value
+                    });
+                    if !current.is_some_and(|pending| {
+                        pending.pending.changed_paths == sensitive_paths
+                            && pending.pending.reasons == reasons
+                            && pending.all_changed_paths == changed_paths
+                            && pending.apply_modes == apply_modes
+                    }) {
+                        let pending = DurablePendingSensitiveChange {
+                            pending: PendingSensitiveConfigChange {
+                                id: Uuid::new_v4().to_string(),
+                                document: kind,
+                                scope: key.scope.clone(),
+                                source: current.map_or(ConfigChangeSource::ExternalEditor, |p| {
+                                    p.pending.source
+                                }),
+                                changed_paths: sensitive_paths,
+                                reasons,
+                                proposed_document: value.clone(),
+                                proposed_etag: document_etag.clone(),
+                                created_at: Utc::now().to_rfc3339(),
+                            },
+                            project_root,
+                            last_root_transition: current
+                                .and_then(|pending| pending.last_root_transition.clone()),
+                            approved_etag,
+                            all_changed_paths: changed_paths,
+                            apply_modes,
+                        };
+                        write_durable_pending(&pending_path, &pending)?;
+                        durable_pending = Some(pending);
+                    }
                 }
             }
         }
@@ -1861,7 +1873,7 @@ impl ConfigManager {
 
         // Classify the actual semantic diff, not the patch envelope. In particular,
         // a root-level replacement must not hide sensitive descendant changes.
-        let changed_paths = diff_leaf_paths(&approved, &proposed);
+        let changed_paths = diff_active_paths(request.kind, &approved, &proposed);
         let (sensitive_paths, reasons) = classify_sensitive_paths(request.kind, &changed_paths);
         let apply_modes = apply_modes_for_paths(request.kind, &changed_paths);
         let needs_approval =
@@ -2339,7 +2351,7 @@ impl ConfigManager {
             }
         }
 
-        let changed_paths = diff_leaf_paths(&approved, &proposed);
+        let changed_paths = diff_active_paths(kind, &approved, &proposed);
         let (sensitive_paths, reasons) = classify_sensitive_paths(kind, &changed_paths);
         let apply_modes = apply_modes_for_paths(kind, &changed_paths);
         let durable_pending = (source != ConfigChangeSource::UserInterface
@@ -2672,16 +2684,19 @@ impl ConfigManager {
         let state = self.state.read().await;
         let mut documents = state
             .documents
-            .values()
-            .map(|stored| stored.last_valid_value.clone())
+            .iter()
+            .map(|(key, stored)| active_document(key.kind, &stored.last_valid_value).into_owned())
             .collect::<Vec<_>>();
-        documents.extend(state.session_documents.values().cloned());
         documents.extend(
             state
-                .pending_changes
-                .values()
-                .map(|pending| pending.pending.proposed_document.clone()),
+                .session_documents
+                .iter()
+                .map(|(&kind, document)| active_document(kind, document).into_owned()),
         );
+        documents.extend(state.pending_changes.values().map(|change| {
+            let pending = &change.pending;
+            active_document(pending.document, &pending.proposed_document).into_owned()
+        }));
         documents
     }
 
@@ -3459,9 +3474,11 @@ fn etag_bytes(bytes: &[u8]) -> String {
     format!("sha256:{digest:x}")
 }
 
-fn diff_leaf_paths(before: &Value, after: &Value) -> Vec<String> {
-    let mut paths = collect_leaf_pointers(before);
-    paths.extend(collect_leaf_pointers(after));
+fn diff_active_paths(kind: ConfigDocumentKind, before: &Value, after: &Value) -> Vec<String> {
+    let before = active_document(kind, before);
+    let after = active_document(kind, after);
+    let mut paths = collect_leaf_pointers(&before);
+    paths.extend(collect_leaf_pointers(&after));
     paths.sort();
     paths.dedup();
     paths
@@ -4403,6 +4420,164 @@ mod tests {
         assert_eq!(effective["riskLevel"], "yolo");
         assert_eq!(effective["agsdlHostPermissions"], "workspace");
         assert!(effective.get("languageServer").is_none());
+    }
+
+    #[tokio::test]
+    async fn restart_reclassifies_persisted_language_server_approvals() {
+        for mixed in [false, true] {
+            let (_temp, manager) = manager().await;
+            let root = manager.root().to_path_buf();
+            let key = DocumentKey {
+                kind: ConfigDocumentKind::Tools,
+                scope: ConfigScope::User,
+            };
+            let path = root.join(key.kind.file_name());
+            let approved_path = approved_document_path(&root, &key);
+            let pending_path = pending_document_path(&root, &key);
+            let approved = read_json_value(&approved_path).unwrap();
+            assert!(approved.get("languageServer").is_none());
+            let mut proposed = approved.clone();
+            proposed["languageServer"] = json!({
+                "enabled": true,
+                "executable": root.join("language-server"),
+                "arguments": ["macro-secret://web-search/brave"],
+            });
+            let mut paths = vec![
+                "/languageServer/arguments/0",
+                "/languageServer/enabled",
+                "/languageServer/executable",
+            ];
+            let mut reasons = vec!["/languageServer exige une approbation utilisateur."];
+            if mixed {
+                proposed["riskLevel"] = json!("yolo");
+                paths.push("/riskLevel");
+                reasons.push("/riskLevel exige une approbation utilisateur.");
+            }
+            let proposed_etag = etag(&proposed);
+            let old_id = Uuid::new_v4().to_string();
+            atomic_write_json(&path, &proposed).unwrap();
+            let raw = fs::read(&path).unwrap();
+            atomic_write_json(
+                &pending_path,
+                &json!({
+                    "pending": {
+                        "id": old_id,
+                        "document": "tools",
+                        "scope": {"type": "user"},
+                        "source": "agent",
+                        "changedPaths": paths,
+                        "reasons": reasons,
+                        "proposedDocument": proposed,
+                        "proposedEtag": proposed_etag,
+                        "createdAt": Utc::now().to_rfc3339(),
+                    },
+                    "approvedEtag": etag(&approved),
+                    "allChangedPaths": paths,
+                    "applyModes": ["live"],
+                }),
+            )
+            .unwrap();
+            drop(manager);
+
+            let manager = ConfigManager::initialize(root.clone()).await.unwrap();
+            let document = manager
+                .get_document(key.kind, key.scope.clone())
+                .await
+                .unwrap();
+            assert_eq!(fs::read(&path).unwrap(), raw);
+            assert_eq!(document.value, proposed);
+            assert_eq!(document.etag, proposed_etag);
+            let effective = manager.effective_user_document(key.kind).await;
+            assert!(effective.get("languageServer").is_none());
+            assert_eq!(effective["riskLevel"], "balanced");
+            assert!(manager
+                .secret_reference_documents()
+                .await
+                .iter()
+                .all(|document| document.get("languageServer").is_none()));
+            assert_eq!(
+                manager
+                    .accept_pending_change(&old_id)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "config.pending.not_found"
+            );
+
+            let patch = ConfigPatchRequest {
+                kind: key.kind,
+                scope: key.scope.clone(),
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".into(),
+                    path: "/extensions".into(),
+                    from: None,
+                    value: Some(json!({"example": true})),
+                }],
+                source: ConfigChangeSource::UserInterface,
+            };
+            if !mixed {
+                assert!(manager.list_pending_changes().await.is_empty());
+                assert!(!pending_path.exists());
+                assert_eq!(read_json_value(&approved_path).unwrap(), proposed);
+                let result = manager.apply_patch(patch).await.unwrap();
+                assert_eq!(result.status, "applied");
+                assert_eq!(
+                    result.document.value["languageServer"],
+                    proposed["languageServer"]
+                );
+                continue;
+            }
+
+            assert_eq!(read_json_value(&approved_path).unwrap(), approved);
+            assert_eq!(
+                manager.apply_patch(patch).await.unwrap_err().code,
+                "config.pending.unresolved"
+            );
+            let pending = manager.list_pending_changes().await.pop().unwrap();
+            assert_ne!(pending.id, old_id);
+            assert_eq!(pending.source, ConfigChangeSource::Agent);
+            assert_eq!(pending.changed_paths, ["/riskLevel"]);
+            assert_eq!(
+                pending.reasons,
+                ["/riskLevel exige une approbation utilisateur."]
+            );
+            assert_eq!(pending.proposed_document, proposed);
+            assert_eq!(pending.proposed_etag, proposed_etag);
+            drop(manager);
+
+            let manager = ConfigManager::initialize(root).await.unwrap();
+            assert_eq!(manager.list_pending_changes().await[0].id, pending.id);
+            let mut edited = proposed.clone();
+            edited["languageServer"]["enabled"] = json!(false);
+            atomic_write_json(&path, &edited).unwrap();
+            assert_eq!(
+                manager
+                    .accept_pending_change(&pending.id)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "config.etag.conflict"
+            );
+            fs::write(&path, &raw).unwrap();
+            let mut edited_baseline = approved.clone();
+            edited_baseline["extensions"] = json!({"example": true});
+            atomic_write_json(&approved_path, &edited_baseline).unwrap();
+            assert_eq!(
+                manager
+                    .accept_pending_change(&pending.id)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "config.pending.baseline_conflict"
+            );
+            atomic_write_json(&approved_path, &approved).unwrap();
+            manager.accept_pending_change(&pending.id).await.unwrap();
+            let effective = manager.effective_user_document(key.kind).await;
+            assert_eq!(effective["riskLevel"], "yolo");
+            assert!(effective.get("languageServer").is_none());
+            assert_eq!(fs::read(&path).unwrap(), raw);
+        }
     }
 
     #[tokio::test]

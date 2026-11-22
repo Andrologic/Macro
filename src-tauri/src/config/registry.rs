@@ -194,13 +194,28 @@ pub fn default_document(kind: ConfigDocumentKind) -> Value {
     }
 }
 
+const LEGACY_LANGUAGE_SERVER: &str = "languageServer";
+
 pub fn schema_for_kind(kind: ConfigDocumentKind) -> RootSchema {
     match kind {
         ConfigDocumentKind::Runtime => schema_for!(RuntimeDocument),
         ConfigDocumentKind::Settings => schema_for!(SettingsDocument),
         ConfigDocumentKind::Agents => schema_for!(AgentsDocument),
         ConfigDocumentKind::Providers => schema_for!(ProvidersDocument),
-        ConfigDocumentKind::Tools => schema_for!(ToolsDocument),
+        ConfigDocumentKind::Tools => {
+            let mut schema = schema_for!(ToolsDocument);
+            // Match active_document: old profiles may carry any value here.
+            schema
+                .schema
+                .object
+                .get_or_insert_with(Default::default)
+                .properties
+                .insert(
+                    LEGACY_LANGUAGE_SERVER.into(),
+                    schemars::schema::Schema::Bool(true),
+                );
+            schema
+        }
         ConfigDocumentKind::Skills => schema_for!(SkillsDocument),
         ConfigDocumentKind::Git => schema_for!(GitDocument),
     }
@@ -578,10 +593,10 @@ fn validate_skill_paths(value: &Value, scope: &ConfigScope) -> Vec<(String, Stri
 
 // Keep raw profile values and etags available for edits and pending approvals.
 pub(super) fn active_document(kind: ConfigDocumentKind, value: &Value) -> Cow<'_, Value> {
-    if kind == ConfigDocumentKind::Tools && value.get("languageServer").is_some() {
+    if kind == ConfigDocumentKind::Tools && value.get(LEGACY_LANGUAGE_SERVER).is_some() {
         let mut active = value.clone();
         if let Some(fields) = active.as_object_mut() {
-            fields.remove("languageServer");
+            fields.remove(LEGACY_LANGUAGE_SERVER);
         }
         Cow::Owned(active)
     } else {
@@ -2589,7 +2604,8 @@ mod tests {
                     !matches!(
                         property.as_str(),
                         "$schema" | "schemaVersion" | "extensions"
-                    )
+                    ) && !(kind == ConfigDocumentKind::Tools
+                        && property.as_str() == LEGACY_LANGUAGE_SERVER)
                 })
                 .cloned()
                 .collect::<BTreeSet<_>>();

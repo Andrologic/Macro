@@ -33,6 +33,7 @@
       ],
       "additionalProperties": true
     },
+    "languageServer": true,
     "mcpServers": {
       "type": [
         "object",
