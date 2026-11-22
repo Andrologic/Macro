@@ -2,7 +2,7 @@
 
 ## 1. Objet du document
 
-La [spécification des systèmes agentiques](agentic-systems.md) décrit la direction actuelle de Macro et le calendrier de livraison. À l’étape 0, Architect construit les systèmes AgSDL, Operate supervise leurs exécutions et Chat reste accessible indépendamment. Le lancement depuis Architect et le stockage des blueprints dans les métadonnées des projets restent en service pendant cette transition.
+La [spécification des systèmes agentiques](agentic-systems.md) décrit la direction actuelle de Macro et le calendrier de livraison. À l’étape 1, un projet d’Architect regroupe des blueprints dans la bibliothèque locale de Macro. Chaque blueprint possède un brouillon modifiable et des versions numérotées, consultables en lecture seule. Adapter une version crée un nouveau blueprint et conserve sa provenance. Operate supervise les exécutions et Chat garde ses conversations indépendantes. Le lanceur de versions dans Operate relève de l’étape 3.
 
 Les descriptions de développement logiciel, de tâches de code et de revue Git ci-dessous documentent la version antérieure de Macro. Elles servent de référence pour lire les anciens profils et maintenir les clients historiques de Macro Pilot.
 
