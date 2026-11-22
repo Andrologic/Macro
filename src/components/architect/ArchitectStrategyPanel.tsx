@@ -18,8 +18,7 @@ import { getWorkflowRunAccess030, subscribeWorkflowRunAccess030, workflowRunAcce
 import { retainedRunValue030 } from "../../services/agsdl/runtimeProjection030";
 import { runCaptureKey030 } from "../../services/agsdl/runGraphProjection030";
 import { sameHumanScope030 } from "../../services/agsdl/humanRequests030";
-import type { RunHumanOccurrence030 } from "../../types/agsdlRunUi030";
-import { sameWorkflowSource030 as sameSource } from "../../services/workflowAgentTasks";
+import type { RunHumanOccurrence030, RunHumanRequest030 } from "../../types/agsdlRunUi030";
 import { useAgsdlExecutionStore } from "../../stores/useAgsdlExecutionStore";
 import { readDocument } from "../../services/agsdl/document";
 import { useChatStore } from "../../stores/useChatStore";
@@ -41,12 +40,12 @@ export function WorkflowRunView030({ bundle, currentSource, target, initialInsta
   }, [access, targetRunId]);
   const read = target && snapshot.runs[target.scope.systemStartId];
   const inspection = read ? retainedRunValue030(read) : null;
-  const history = retainedRunValue030(snapshot.history);
-  const exact = !target || (inspection && inspection.capture.systemStartId === target.scope.systemStartId && sameSource(inspection.capture.source, target.scope.source) &&
-    (initialInstanceId ? inspection.state.instances.some(instance => instance.id === initialInstanceId) :
-      history?.some(item => item.scope.systemStartId === target.scope.systemStartId && sameSource(item.capture.source, target.scope.source))));
+  const exact = !target || (inspection && sameHumanScope030(inspection.capture, target.scope) &&
+    sameHumanScope030(inspection.state.scope, target.scope) &&
+    (!initialInstanceId || inspection.state.instances.some(instance => instance.id === initialInstanceId)));
   const focusKey = target?.requestId ? JSON.stringify([target.scope, target.requestId]) : undefined;
-  const requestVisible = !!target && !!inspection && retainedRunValue030(inspection.state.humans)?.some(request => request.id === target.requestId);
+  const requestVisible = !!target && !!inspection && retainedRunValue030(inspection.state.humans)?.some(request =>
+    request.id === target.requestId && sameHumanScope030(request.scope, target.scope));
   useEffect(() => {
     if (!exact || !focusKey || !requestVisible || focusedTarget.current === focusKey) return;
     const card = [...(host.current?.querySelectorAll<HTMLElement>('[data-human-request]') ?? [])].find(item => item.dataset.humanRequest === target?.requestId);
@@ -69,9 +68,11 @@ export function WorkflowRunView030({ bundle, currentSource, target, initialInsta
     const captureKey = runCaptureKey030(runScope);
     const belongsToInstance = ({ activation }: RunHumanOccurrence030) => activation.kind === 'available' &&
       runCaptureKey030(activation.scope) === captureKey && !!instanceActivationIds?.has(activation.activationId);
-    const runRequests = initialInstanceId ? items.filter(request => sameHumanScope030(request.scope, runScope)) : items;
+    const showRequest = initialInstanceId ? (request: RunHumanRequest030) => sameHumanScope030(request.scope, runScope) &&
+      request.occurrences.some(belongsToInstance) : undefined;
+    const runRequests = items.filter(request => sameHumanScope030(request.scope, runScope));
     const visible = runRequests.filter(request => (!pendingOnly || request.state.kind === 'open') &&
-      (!initialInstanceId || request.occurrences.some(belongsToInstance)));
+      (!showRequest || showRequest(request)));
     const occurrenceRead = run.state.occurrences;
     const knownActivations = initialInstanceId && occurrenceRead.kind === 'ready' && occurrenceRead.revision === run.state.revision
       ? new Set(occurrenceRead.value.filter(item => runCaptureKey030(item.scope) === captureKey).map(item => item.activation.id)) : undefined;
@@ -80,12 +81,12 @@ export function WorkflowRunView030({ bundle, currentSource, target, initialInsta
         runCaptureKey030(activation.scope) !== captureKey || !knownActivations?.has(activation.activationId))));
     const filtered = requests.kind === "ready"
       ? missingLinks && visible.length === 0 ? { kind: 'unavailable' as const, gap: 'human-occurrence-mapping' as const } : { ...requests, value: visible }
-      : requests.kind === "stale" || requests.kind === "loading" ? { ...requests, retained: retainedRunValue030(requests) === null ? null : visible } : requests;
+      : requests.kind === "stale" || (requests.kind === "loading" && requests.retained !== null) ? { ...requests, retained: visible } : requests;
     return humanClient
       ? <>
         {missingLinks && <p role="status">{t('agsdl.run030.instanceRequestLinksUnavailable')}</p>}
         <HumanRequests030 requests={filtered} client={humanClient} onOpenRequest={request => openWorkflowRun030({ ...request, conversationId: registration?.scope.conversationId })}
-          onOpenOccurrence={activation => openOccurrence?.(activation)} showOccurrence={initialInstanceId ? belongsToInstance : undefined} />
+          onOpenOccurrence={activation => openOccurrence?.(activation)} showRequest={showRequest} showOccurrence={initialInstanceId ? belongsToInstance : undefined} />
       </>
       : <p role="status">{t('agsdl.shell030.humanUnavailable')}</p>;
   };
@@ -95,10 +96,10 @@ export function WorkflowRunView030({ bundle, currentSource, target, initialInsta
         <p>{bundle.catalogError.code}: {bundle.catalogError.message}</p></details>
     </div>}
     {exact ? <ExecutionMonitor030 key={target ? JSON.stringify(target) : `${access.scopeKey}:${initialRunId ?? ""}`} access={access}
-      onSelection={onSelection} initialInstanceId={initialInstanceId} initialRunId={target?.scope.systemStartId ?? initialRunId} currentSource={currentSource} canvas={canvas} controls={controls} capturedControls={onExpand && <button className="agsdl-icon-button" aria-label={t(expanded ? "agsdl.shrink" : "agsdl.expand")} title={t(expanded ? "agsdl.shrink" : "agsdl.expand")} onClick={onExpand}>{expanded ? <X size={14} /> : <Maximize2 size={14} />}</button>} projectPicker={projectPicker} renderHumans={humans} renderGraph={value => <CapturedRunGraph030 bridge={value} currentSource={currentSource} onInspect={value.inspect} />}
+      onSelection={onSelection} initialInstanceId={initialInstanceId} initialRunId={targetRunId ?? initialRunId} exactInitialRun={!!target} currentSource={currentSource} canvas={canvas} controls={controls} capturedControls={onExpand && <button className="agsdl-icon-button" aria-label={t(expanded ? "agsdl.shrink" : "agsdl.expand")} title={t(expanded ? "agsdl.shrink" : "agsdl.expand")} onClick={onExpand}>{expanded ? <X size={14} /> : <Maximize2 size={14} />}</button>} projectPicker={projectPicker} renderHumans={humans} renderGraph={value => <CapturedRunGraph030 bridge={value} currentSource={currentSource} onInspect={value.inspect} />}
       openRun={initialInstanceId && target ? () => openWorkflowRun030(target) : undefined} />
       : <p role="status" className="p-3 text-xs">{t('agsdl.shell030.exactUnavailable')}</p>}
-    {target?.requestId && exact && inspection && !retainedRunValue030(inspection.state.humans)?.some(request => request.id === target.requestId && sameSource(request.scope.source, target.scope.source)) &&
+    {target?.requestId && exact && !requestVisible &&
       <p role="status" className="p-3 text-xs">{t('agsdl.shell030.requestUnavailable')}</p>}
   </div>;
 }

@@ -16,6 +16,8 @@ export interface ExecutionMonitorProps030 {
   readonly projectPicker?: ReactNode;
   readonly access: RunInspectionAccess030;
   readonly initialRunId?: string;
+  /** Keep the requested run selected even when it is absent from history. */
+  readonly exactInitialRun?: boolean;
   readonly initialInstanceId?: string;
   readonly onSelection?: (id: string | undefined, active: boolean, viewingRun: boolean) => void;
   readonly currentSource?: string;
@@ -31,7 +33,7 @@ function retainedInspection(read: ReturnType<RunInspectionAccess030['getSnapshot
 export function ExecutionMonitor030(props: ExecutionMonitorProps030) {
   return <ScopedMonitor030 key={props.access.scopeKey} {...props} />;
 }
-function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, access, initialRunId, initialInstanceId, onSelection, currentSource, renderGraph, refreshIntervalMs = 5000, renderHumans, openRun }: ExecutionMonitorProps030) {
+function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, access, initialRunId, exactInitialRun, initialInstanceId, onSelection, currentSource, renderGraph, refreshIntervalMs = 5000, renderHumans, openRun }: ExecutionMonitorProps030) {
   const { t } = useAgsdlTranslation();
   const tr = (key: string) => t(`agsdl.run030.${key}`);
   const subscribe = useCallback((listener: () => void) => access.subscribe(listener), [access]);
@@ -42,7 +44,7 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
   const [explicit, setExplicit] = useState(initialRunId);
   const [automatic, setAutomatic] = useState<string>();
   const preferred = explicit ?? automatic;
-  const selected = initialInstanceId ? initialRunId : snapshot.history.kind === 'ready' ? initialRunSelection030(snapshot, preferred)
+  const selected = initialInstanceId || (exactInitialRun && preferred === initialRunId) ? initialRunId : snapshot.history.kind === 'ready' ? initialRunSelection030(snapshot, preferred)
     : preferred ?? initialRunSelection030(snapshot);
   useEffect(() => { if (initialRunId) { setExplicit(initialRunId); setDesign(false); } }, [initialRunId]);
   const [comparison, setComparison] = useState<string>();
@@ -80,7 +82,7 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
   const readState = selected ? snapshot.runs[selected] : undefined;
   const inspection = readState ? retainedInspection(readState) : null;
   const identity = inspection ? runCaptureKey030(inspection.state.scope) : '';
-  const initialInstance = selected === initialRunId && inspection?.state.instances.find(item => item.id === initialInstanceId);
+  const initialInstance = selected === initialRunId ? inspection?.state.instances.find(item => item.id === initialInstanceId) : undefined;
   const selection = selections[identity] ?? { runtime: initialInstance ? { kind: 'instance' as const, id: initialInstance.id } : undefined };
   const choose = (value: Partial<typeof selection>) => setSelections(previous => ({ ...previous, [identity]: { ...previous[identity], ...value } }));
   const left = history.find(run => run.scope.systemStartId === selected);
@@ -100,6 +102,7 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
     const occurrence = candidates?.find(item => item.activation.id === activation.activationId && runCaptureKey030(item.scope) === identity);
     if (!occurrence) return;
     if (initialInstanceId) {
+      if (stale) return;
       choose({ runtime: { kind: 'activation', id: occurrence.activation.id } });
       setInstanceDetailsOpen(true);
       return;
@@ -173,7 +176,7 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
         {state.humans.kind === 'ready' ? state.humans.value.some(request => request.state.kind === 'open') && <p>{tr('waitingHuman')}</p> : <p>{tr('humanUnknown')}</p>}
         {renderHumans?.(inspection, false, openOccurrence)}
         {state.uncertainties.kind === 'available' ? state.uncertainties.value.map(item => <details key={item.id}><summary>{tr(`uncertainty.${item.state}`)}</summary><pre className="whitespace-pre-wrap break-all">{JSON.stringify(item, null, 2)}</pre></details>) : <p>{tr('uncertaintyUnavailable')}</p>}
-        <details><summary>{tr('captureDetails')}</summary><pre className="whitespace-pre-wrap break-all">{JSON.stringify({ source: inspection.capture.source, versions: inspection.capture.versions, chronology: state.chronology, stop: state.stop }, null, 2)}</pre></details>
+        <details><summary>{tr('captureDetails')}</summary><pre className="whitespace-pre-wrap break-all">{JSON.stringify({ systemStartId: state.scope.systemStartId, snapshotId: state.scope.snapshotId, source: inspection.capture.source, versions: inspection.capture.versions, chronology: state.chronology, stop: state.stop }, null, 2)}</pre></details>
         <ExactContent label={tr('capturedSource')} value={inspection.capture.authoredSource} />
         {currentSource !== undefined && <ExactContent label={tr('currentDocument')} value={currentSource} />}
       </section>

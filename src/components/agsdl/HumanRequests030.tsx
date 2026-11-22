@@ -15,6 +15,7 @@ export interface HumanRequests030Props {
   /** Navigate to this exact scope/request, including from the notification centre. */
   onOpenRequest: (target: Parameters<ReadHuman030>[0]) => void | Promise<void>;
   onOpenOccurrence: (activation: Extract<RunHumanOccurrence030['activation'], { kind: 'available' }>) => void;
+  showRequest?: (request: RunHumanRequest030) => boolean;
   showOccurrence?: (occurrence: RunHumanOccurrence030) => boolean;
 }
 
@@ -32,10 +33,11 @@ function AttestedAnswer({ answer }: { answer: RunAttestedHumanAnswer030 }) {
   </div>;
 }
 
-function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, onOpenOccurrence, showOccurrence }: {
+function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, onOpenOccurrence, showRequest, showOccurrence }: {
   request: RunHumanRequest030; client: HumanRequestClient030; fresh: boolean;
   onOpenRequest: HumanRequests030Props['onOpenRequest'];
   onOpenOccurrence: HumanRequests030Props['onOpenOccurrence'];
+  showRequest: HumanRequests030Props['showRequest'];
   showOccurrence: HumanRequests030Props['showOccurrence'];
 }) {
   const { t } = useAgsdlTranslation();
@@ -43,6 +45,7 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
   const card = useRef<HTMLElement>(null);
   const [readback, setReadback] = useState<{ basis: RunHumanRequest030; current: RunHumanRequest030 }>();
   const request = readback && (readback.basis === observed || BigInt(readback.current.revision) > BigInt(observed.revision)) ? readback.current : observed;
+  const visible = !showRequest || showRequest(request);
   const [draft, setDraft] = useState<HumanFormDraft030>(() => {
     try { return client.loadDraft(observed) ?? { choice: null, text: '' }; }
     catch { return { choice: null, text: '' }; }
@@ -59,11 +62,11 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
   const content = request.content;
   const command = content.kind === 'actionApproval' ? nativeCommandSummary030(content.actionJson) : null;
   const qualified = content.kind !== 'unclassified' && (content.kind !== 'question' || content.answerContract.kind === 'available');
-  const open = request.state.kind === 'open' && fresh && !readFailed && !revisionStale && !blocked && !storageFailed && !storageUnavailable && qualified && !busy;
+  const open = visible && request.state.kind === 'open' && fresh && !readFailed && !revisionStale && !blocked && !storageFailed && !storageUnavailable && qualified && !busy;
   const view = runHumanView030(request, { plan: t('agsdl.human030.plan'), question: t('agsdl.human030.question'), unknown: t('agsdl.human030.unknown') });
 
   useEffect(() => {
-    if (!fresh || request.state.kind !== 'open' || !qualified) return;
+    if (!visible || !fresh || request.state.kind !== 'open' || !qualified) return;
     if (!claimHumanAttention030(request)) return;
     notify.actionRequired(t('agsdl.human030.notification'), {
       description: view.title,
@@ -74,7 +77,11 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
         card.current?.scrollIntoView?.({ block: 'nearest' });
       } }],
     });
-  }, [fresh, request, qualified, view.title, onOpenRequest, t]);
+  }, [visible, fresh, request, qualified, view.title, onOpenRequest, t]);
+
+  // Readback can move the same request ID to a different instance. Keep the
+  // observation while this card is mounted so the previous response stays closed.
+  if (!visible) return null;
 
   const saveDraft = (next: HumanFormDraft030) => {
     setDraft(next);
@@ -142,7 +149,7 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
       if (showOccurrence && !showOccurrence(occurrence)) return null;
       const activation = occurrence.activation;
       return <p key={occurrence.workId}>{activation.kind === 'available'
-        ? <button type="button" className="underline" onClick={() => onOpenOccurrence(activation)}>{t('agsdl.human030.openOccurrence', { number: index + 1 })}</button>
+        ? <button type="button" className="underline disabled:opacity-50" disabled={!!showOccurrence && !fresh} onClick={() => onOpenOccurrence(activation)}>{t('agsdl.human030.openOccurrence', { number: index + 1 })}</button>
         : t('agsdl.human030.occurrenceUnavailable', { number: index + 1 })}</p>;
     })}
     {content.kind === 'actionApproval' && <p className="text-muted-foreground">{t('agsdl.human030.askHint')}</p>}
@@ -174,7 +181,7 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
 
 /** Receives only a complete typed read. Retained stale requests remain readable
  * but cannot be answered. The execution store and IPC stay outside this view. */
-export function HumanRequests030({ requests, client, onOpenRequest, onOpenOccurrence, showOccurrence }: HumanRequests030Props) {
+export function HumanRequests030({ requests, client, onOpenRequest, onOpenOccurrence, showRequest, showOccurrence }: HumanRequests030Props) {
   const { t } = useAgsdlTranslation();
   const items = requests.kind === 'ready' ? requests.value : requests.kind === 'loading' || requests.kind === 'stale' ? requests.retained : null;
   return <section className="min-w-0 space-y-2 text-xs" aria-label={t('agsdl.human030.title')}>
@@ -184,6 +191,6 @@ export function HumanRequests030({ requests, client, onOpenRequest, onOpenOccurr
     {requests.kind === 'loading' && <p role="status">{t('agsdl.human030.loading')}</p>}
     {requests.kind === 'stale' && <p role="alert">{t('agsdl.human030.stale')}</p>}
     {requests.kind === 'ready' && items?.length === 0 && <p>{t('agsdl.human030.empty')}</p>}
-    {items?.map(request => <HumanRequestCard030 key={humanRequestKey030(request)} request={request} client={client} fresh={requests.kind === 'ready'} onOpenRequest={onOpenRequest} onOpenOccurrence={onOpenOccurrence} showOccurrence={showOccurrence} />)}
+    {items?.map(request => <HumanRequestCard030 key={humanRequestKey030(request)} request={request} client={client} fresh={requests.kind === 'ready'} onOpenRequest={onOpenRequest} onOpenOccurrence={onOpenOccurrence} showRequest={showRequest} showOccurrence={showOccurrence} />)}
   </section>;
 }
