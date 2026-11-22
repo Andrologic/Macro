@@ -41,4 +41,6 @@ Cliquez sur **Enregistrer une version**. Vous pouvez ajouter une note, par exemp
 
 Choisissez **Retour au brouillon** pour poursuivre la conception. Les modifications suivantes touchent le brouillon. Après avoir rouvert Macro, vous pouvez retrouver la première définition dans **Versions**. Pour essayer une autre conception dans un blueprint distinct, ouvrez la version souhaitée puis choisissez **Adapter cette version**.
 
+Si deux fenêtres modifient le même brouillon, Architect affiche le numéro de la révision que vous avez ouverte et celui de la dernière révision enregistrée. Reprendre le brouillon enregistré abandonne les modifications de votre fenêtre. Réappliquer vos modifications remplace le brouillon enregistré en entier, annexes comprises.
+
 [Sommaire du guide](README.md) · [Protocole de vérification pour les agents](../agents/getting-started.md)
