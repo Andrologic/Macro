@@ -984,3 +984,210 @@ fn preserves_historical_frontend_id_normalization() {
         Some("transcript")
     );
 }
+
+// Captured from updateArchitectPlan after interrupting its first replica write
+// in architectPlanReplicas.test.ts. Substitute only the fixture's project roots.
+fn interrupted_journal(root: &Path) -> Value {
+    serde_json::from_str(
+        &include_str!("interrupted-update.json")
+            .replace("/repos/", &format!("{}/", root.display())),
+    )
+    .unwrap()
+}
+
+async fn set_pending(pool: &sqlx::SqlitePool, entries: &Value) {
+    sqlx::query("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES(?,?,'now')")
+        .bind(journal::KEY)
+        .bind(entries.to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn interrupted_replica_update_survives_import_rollback_and_ack_loss() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let db = root.join("profile.db");
+    let pool = crate::db::create_pool(&db).await.unwrap();
+    let entries = interrupted_journal(&root);
+    let final_plan = &entries[0]["payload"]["targets"][0]["plan"];
+    let mut stale = final_plan.clone();
+    stale["description"] = json!("before the crash");
+    stale["agsdl"]["source"] = json!(EXACT_SOURCE);
+    put(
+        &root.join(".macro/workspace.json"),
+        &json!({"standaloneProjects":[{"id":"api","path":"api"},{"id":"web","path":"web"}]}),
+    );
+    let old_path = store(&root.join("api/.macro"), "develop", &stale);
+    // One plan.json was already written, but both indexes and the second replica are stale.
+    let repo = git2::Repository::init(root.join("web")).unwrap();
+    let metadata_root = metadata_checkout(&repo);
+    let initial_head = repo.refname_to_id("refs/heads/@macro").unwrap();
+    store(&metadata_root, "develop", final_plan);
+    set_pending(&pool, &entries).await;
+    let migrate = |pool: sqlx::SqlitePool, root: PathBuf| async move {
+        migrate_profile(
+            &pool,
+            Ok(vec![root]),
+            None,
+            LegacyLocalStorage::Snapshot(BTreeMap::new()),
+        )
+        .await
+    };
+    sqlx::query("CREATE TRIGGER crash BEFORE INSERT ON architect_legacy_import BEGIN SELECT RAISE(ABORT,'crash'); END")
+        .execute(&pool).await.unwrap();
+    assert!(migrate(pool.clone(), root.clone()).await.is_err());
+    let counts:(i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM architect_blueprints),(SELECT count(*) FROM architect_legacy_import)").fetch_one(&pool).await.unwrap();
+    assert_eq!(counts, (0, 0));
+    sqlx::query("DROP TRIGGER crash")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    let pool = crate::db::create_pool(&db).await.unwrap();
+    let done = migrate(pool.clone(), root.clone()).await.unwrap();
+    assert_eq!(done.inserted, 1, "{:?}", done.issues);
+    let (document,history):(String,String)=sqlx::query_as("SELECT architect_versions.document,history FROM architect_versions JOIN architect_blueprints ON blueprint_id=architect_blueprints.id").fetch_one(&pool).await.unwrap();
+    let document: Value = serde_json::from_str(&document).unwrap();
+    let history: Value = serde_json::from_str(&history).unwrap();
+    assert_eq!(document["source"], final_plan["agsdl"]["source"]);
+    assert_eq!(document["annexes"], final_plan["agsdl"]["annexes"]);
+    assert_eq!(history["description"], "after-0");
+    assert_eq!(history["origins"].as_array().unwrap().len(), 2);
+    assert_eq!(fs::read_to_string(old_path).unwrap(), stale.to_string());
+    assert!(!root.join("api/.git").exists());
+    assert_eq!(
+        initial_head,
+        repo.refname_to_id("refs/heads/@macro").unwrap()
+    );
+    assert!(!metadata_root
+        .join("branches/develop/plans/index.json")
+        .exists());
+    assert_eq!(
+        migrate(pool.clone(), root).await.unwrap().already_imported,
+        1
+    );
+    let retained: String = sqlx::query_scalar("SELECT value_json FROM app_settings WHERE key=?")
+        .bind(journal::KEY)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(retained, entries.to_string());
+}
+
+#[tokio::test]
+async fn pending_local_archive_and_remove_replace_the_stale_snapshot_only_after_validation() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let pool = crate::db::create_pool(&root.join("profile.db"))
+        .await
+        .unwrap();
+    let mut entries = interrupted_journal(&root);
+    entries[0]["workspaceKey"] = json!("local:local");
+    entries[0]["phase"] = json!("prepared");
+    entries[0]["operation"] = json!("archive");
+    let targets = entries[0]["payload"]["targets"].as_array_mut().unwrap();
+    targets.truncate(1);
+    let target = &mut targets[0];
+    target["scope"] = json!({"scopeKey":"local","source":"local","workspacePath":null,"repoPath":null,"projectId":null});
+    target["plan"]["status"] = json!("archived");
+    target["plan"]["archivedAt"] = json!("2026-09-01T00:00:00Z");
+    target["index"]["plans"][0]["status"] = json!("archived");
+    let mut removed = entries[0].clone();
+    removed["id"] = json!("remove-obsolete");
+    removed["operation"] = json!("delete");
+    removed["planId"] = json!("obsolete");
+    removed["payload"]["targets"][0]["action"] = json!("remove");
+    removed["payload"]["targets"][0]["plan"] = Value::Null;
+    entries.as_array_mut().unwrap().push(removed);
+    let run = || {
+        migrate_profile(
+            &pool,
+            Ok(vec![root.clone()]),
+            None,
+            LegacyLocalStorage::Snapshot(BTreeMap::from([(
+                "macro_architect_plan:develop:obsolete".into(),
+                blueprint("obsolete").to_string(),
+            )])),
+        )
+    };
+    let mut invalid = entries.clone();
+    invalid[0]["payload"]["targets"][0]["scope"] = json!({"scopeKey":"repo:/foreign","source":"project","workspacePath":"/foreign","repoPath":"/foreign"});
+    invalid[0]["workspaceKey"] = json!("/foreign");
+    set_pending(&pool, &invalid).await;
+    let failed = run().await.unwrap();
+    assert_eq!(failed.status, LegacyImportStatus::DiscoveryIncomplete);
+    assert!(failed
+        .issues
+        .iter()
+        .any(|issue| issue.location == journal::KEY));
+    let marker: i64 = sqlx::query_scalar("SELECT count(*) FROM architect_legacy_import")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(marker, 0);
+    // A files_applied entry with a missing plan is incomplete too.
+    let mut missing = entries.clone();
+    missing[0]["phase"] = json!("files_applied");
+    set_pending(&pool, &missing).await;
+    assert_eq!(
+        run().await.unwrap().status,
+        LegacyImportStatus::DiscoveryIncomplete
+    );
+    set_pending(&pool, &entries).await;
+    let done = run().await.unwrap();
+    assert_eq!(done.inserted, 1, "{:?}", done.issues);
+    let history: String = sqlx::query_scalar("SELECT history FROM architect_blueprints")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let history: Value = serde_json::from_str(&history).unwrap();
+    assert_eq!(history["status"], "archived");
+    assert_eq!(history["archivedAt"], "2026-09-01T00:00:00Z");
+}
+
+#[tokio::test]
+async fn artifact_journal_uses_the_old_commit_point_and_preserves_conflicts_for_retry() {
+    for (phase, count) in [("applying", 1), ("committing", 0)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let pool = crate::db::create_pool(&root.join("profile.db"))
+            .await
+            .unwrap();
+        let dir = root.join(".macro");
+        store(&dir, "main", &blueprint("audit"));
+        let path = "branches/main/plans/audit/manifest.json";
+        let before = json!({"planId":"audit","status":"draft"}).to_string();
+        let after = json!({"planId":"audit","status":"deleted","revision":100}).to_string();
+        let entries = json!([{"id":"plan:v1:main:audit:artifacts:1:test","workspaceKey":root,"planId":"audit","branchName":"main",
+            "operation":"artifacts","phase":phase,"createdAt":"now","updatedAt":"now",
+            "payload":{"files":[{"workspacePath":root,"workspaceScope":"direct","path":path,"before":before,"after":after}]}}]);
+        set_pending(&pool, &entries).await;
+        let run = || {
+            migrate_profile(
+                &pool,
+                Ok(vec![root.clone()]),
+                None,
+                LegacyLocalStorage::NotApplicable,
+            )
+        };
+        fs::write(dir.join(path), "conflicting edit").unwrap();
+        let conflict = run().await.unwrap();
+        assert_eq!(conflict.status, LegacyImportStatus::DiscoveryIncomplete);
+        assert!(conflict
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains("Artifact recovery conflict")));
+        fs::write(dir.join(path), &after).unwrap();
+        let done = run().await.unwrap();
+        assert_eq!(
+            done.status,
+            LegacyImportStatus::Complete,
+            "{:?}",
+            done.issues
+        );
+        assert_eq!(done.inserted, count);
+        assert_eq!(fs::read_to_string(dir.join(path)).unwrap(), after);
+    }
+}

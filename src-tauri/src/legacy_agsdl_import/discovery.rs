@@ -49,6 +49,8 @@ fn disk_kind(path: &Path) -> ReadResult<Option<EntryKind>> {
 }
 
 enum Root<'a> {
+    Empty,
+    Overlay(&'a Root<'a>, &'a journal::Changes),
     Directory(&'a Path),
     Commit(&'a Repository, Tree<'a>),
 }
@@ -56,6 +58,37 @@ enum Root<'a> {
 impl Root<'_> {
     fn children(&self, path: &Path) -> ReadResult<Vec<(String, EntryKind)>> {
         match self {
+            Self::Empty => Ok(Vec::new()),
+            Self::Overlay(base, changes) => {
+                let mut children: BTreeMap<_, _> = match base {
+                    Root::Directory(root) if disk_kind(&root.join(path))?.is_none() => {
+                        BTreeMap::new()
+                    }
+                    _ => base.children(path)?.into_iter().collect(),
+                };
+                for (file, value) in &changes.files {
+                    let Ok(relative) = file.strip_prefix(path) else {
+                        continue;
+                    };
+                    let Some(name) = relative.iter().next().and_then(|s| s.to_str()) else {
+                        continue;
+                    };
+                    if value.is_none() {
+                        continue;
+                    }
+                    let kind = if relative == Path::new(name) {
+                        EntryKind::File
+                    } else {
+                        EntryKind::Directory
+                    };
+                    if children.get(name).is_some_and(|old| *old != kind) {
+                        return Err("Journal target conflicts with an existing path".into());
+                    }
+                    children.insert(name.to_owned(), kind);
+                }
+                children.retain(|name, _| !changes.removed_dirs.contains(&path.join(name)));
+                Ok(children.into_iter().collect())
+            }
             Self::Directory(root) => {
                 let path = root.join(path);
                 fs::read_dir(&path)
@@ -99,8 +132,30 @@ impl Root<'_> {
         }
     }
 
+    fn read_scoped(&self, path: &Path) -> ReadResult<Option<String>> {
+        // The regular scan has already checked each directory when it reads a file.
+        // Applied-journal verification starts with a relative path instead.
+        if let Self::Directory(root) = self {
+            let mut parent = root.to_path_buf();
+            for part in path.parent().into_iter().flat_map(Path::iter) {
+                parent.push(part);
+                match disk_kind(&parent)? {
+                    None => return Ok(None),
+                    Some(EntryKind::Directory) => {}
+                    _ => return Err("Unsupported parent in journal path".into()),
+                }
+            }
+        }
+        self.read(path)
+    }
+
     fn read(&self, path: &Path) -> ReadResult<Option<String>> {
         match self {
+            Self::Empty => Ok(None),
+            Self::Overlay(base, changes) => match changes.files.get(path) {
+                Some(value) => Ok(value.clone()),
+                None => base.read(path),
+            },
             Self::Directory(root) => {
                 let path = root.join(path);
                 match disk_kind(&path)? {
@@ -219,6 +274,8 @@ struct Scan {
     projects: BTreeMap<PathBuf, BTreeSet<String>>,
     project_names: BTreeMap<String, String>,
     candidates: Vec<Candidate>,
+    journal: journal::Journal,
+    visited_targets: BTreeSet<(PathBuf, bool)>,
     deletions: BTreeMap<(String, String), Vec<Recency>>,
 }
 
@@ -243,12 +300,12 @@ fn branch_matches(record: &Value, branch: &str) -> bool {
             .is_some_and(|value| stored_plan_branch_matches(value, branch))
 }
 
-fn valid_branch(branch: &str) -> bool {
+pub(super) fn valid_branch(branch: &str) -> bool {
     !branch.starts_with("refs/heads/")
         && git2::Reference::is_valid_name(&format!("refs/heads/{branch}"))
 }
 
-fn canonical_plan_id(slot: &str) -> bool {
+pub(super) fn canonical_plan_id(slot: &str) -> bool {
     !matches!(slot, "" | "." | "..")
         && !slot.starts_with('-')
         && !slot.ends_with('-')
@@ -1051,13 +1108,97 @@ fn is_metadata_checkout(path: &Path, common: &Path, reference: &str) -> ReadResu
 }
 
 impl Scan {
-    fn layout(&mut self, root: &Root<'_>, scope: &Scope, workspace: &Path, legacy_nested: bool) {
+    fn layout(
+        &mut self,
+        root: &Root<'_>,
+        scope: &Scope,
+        workspace: &Path,
+        nested: bool,
+        selectors: &[bool],
+    ) {
+        // Only match paths reached through approved roots or their registry. Never open a journal path.
+        let mut changes = None;
+        for direct in selectors {
+            let key = (workspace.to_owned(), *direct);
+            if let Some(delta) = self.journal.disk.get(&key) {
+                self.visited_targets.insert(key);
+                if changes.is_some() {
+                    self.result::<()>(
+                        journal::KEY,
+                        Err(
+                            "Multiple recovery scopes resolve to the same metadata directory"
+                                .into(),
+                        ),
+                    );
+                    return;
+                }
+                changes = Some(delta.clone());
+            }
+        }
         let prefix = Path::new("");
-        let nested = legacy_nested && self.contains_dir(root, scope, prefix, ".macro");
+        let nested = nested && self.contains_dir(root, scope, prefix, ".macro");
         if scope.kind == "workspace" {
             self.registry(root, scope, workspace, nested);
         }
-        self.branches(root, scope, prefix);
+        if let Some(changes) = changes {
+            // Old writers merge .macro/branches before writing. A pending write
+            // over that historical layout can have two possible before-images.
+            if nested {
+                let mut paths: BTreeSet<_> = changes
+                    .files
+                    .keys()
+                    .chain(changes.applied.keys())
+                    .chain(changes.artifacts.keys())
+                    .cloned()
+                    .collect();
+                for path in changes.files.keys().filter(|p| p.ends_with("plan.json")) {
+                    paths.insert(path.with_file_name("chat.jsonl"));
+                }
+                for path in paths {
+                    let legacy = Path::new(".macro").join(path);
+                    match root.read_scoped(&legacy) {
+                        Ok(None) => {}
+                        Ok(Some(_)) => {
+                            self.result::<()>(
+                                scope.path(&legacy),
+                                Err(
+                                    "Pending replica mutation overlaps unmigrated nested metadata"
+                                        .into(),
+                                ),
+                            );
+                            return;
+                        }
+                        Err(error) => {
+                            self.result::<()>(scope.path(&legacy), Err(error));
+                            return;
+                        }
+                    }
+                }
+            }
+            // Artifact recovery rolls back before the files_applied marker and
+            // checks the after-images from that point onward.
+            for (path, check) in &changes.artifacts {
+                let checked = root.read_scoped(path).and_then(|actual| {
+                    if actual.as_deref() == Some(check.after.as_str())
+                        || (!check.committed && actual == check.before)
+                    {
+                        Ok(())
+                    } else {
+                        Err(format!("Artifact recovery conflict: {}", path.display()))
+                    }
+                });
+                self.result(journal::KEY, checked);
+            }
+            for (path, expected) in &changes.applied {
+                let checked = root
+                    .read_scoped(path)
+                    .and_then(|text| journal::verify_applied(path, text.as_deref(), expected));
+                self.result(journal::KEY, checked);
+            }
+            self.branches(&Root::Overlay(root, &changes), scope, prefix);
+        } else {
+            self.branches(root, scope, prefix);
+        }
         if nested {
             self.branches(root, scope, Path::new(".macro"));
         }
@@ -1072,6 +1213,7 @@ impl Scan {
             );
             return;
         }
+        let requested = path;
         let Some(path) = self.result(
             &location,
             fs::canonicalize(path).map_err(|err| err.to_string()),
@@ -1087,6 +1229,30 @@ impl Scan {
             location,
             project_ids,
         };
+        self.journal.owners.remove(path.as_path());
+        if requested != path {
+            self.journal.owners.remove(requested);
+            for direct in [false, true] {
+                if let Some(changes) = self.journal.disk.remove(&(requested.to_owned(), direct)) {
+                    if self
+                        .journal
+                        .disk
+                        .insert((path.clone(), direct), changes)
+                        .is_some()
+                    {
+                        self.result::<()>(journal::KEY, Err("Aliased replica targets".into()));
+                    }
+                }
+            }
+        }
+        let Some(repo) = self.result(&scope.location, open_git_workspace(&path)) else {
+            return;
+        };
+        let selectors: &[bool] = if repo.is_none() {
+            &[true, false]
+        } else {
+            &[true]
+        };
         let direct = path.join(".macro");
         match self.result(&scope.location, disk_kind(&direct)).flatten() {
             Some(EntryKind::Directory) => self.layout(
@@ -1097,6 +1263,7 @@ impl Scan {
                 },
                 &path,
                 false,
+                selectors,
             ),
             Some(_) => {
                 self.result::<()>(
@@ -1104,13 +1271,19 @@ impl Scan {
                     Err("Expected a metadata directory".into()),
                 );
             }
-            None => {}
+            None => self.layout(
+                &Root::Empty,
+                &Scope {
+                    location: direct.display().to_string(),
+                    ..scope.clone()
+                },
+                &path,
+                false,
+                selectors,
+            ),
         }
 
-        let Some(repo) = self
-            .result(&scope.location, open_git_workspace(&path))
-            .flatten()
-        else {
+        let Some(repo) = repo else {
             return;
         };
         let Some(common) = self.result(
@@ -1149,6 +1322,7 @@ impl Scan {
                         },
                         &path,
                         true,
+                        &[false],
                     );
                 }
                 None => materialized = true,
@@ -1161,7 +1335,20 @@ impl Scan {
         // the local tip. A materialized tree may contain newer edits/removals.
         let metadata_ref = match repo.find_reference(&reference) {
             Ok(metadata_ref) => metadata_ref,
-            Err(error) if error.code() == ErrorCode::NotFound => return,
+            Err(error) if error.code() == ErrorCode::NotFound => {
+                // The old writer would initialize @macro from an empty tree.
+                self.layout(
+                    &Root::Empty,
+                    &Scope {
+                        location: format!("{}#{reference}", scope.location),
+                        ..scope
+                    },
+                    &path,
+                    false,
+                    &[false],
+                );
+                return;
+            }
             Err(error) => {
                 self.result::<()>(&scope.location, Err(error.to_string()));
                 return;
@@ -1190,14 +1377,18 @@ impl Scan {
                     },
                     &path,
                     true,
+                    &[false],
                 );
             }
         };
     }
 }
 
-pub(super) fn discover(profile: &LegacyProfile) -> LegacyDiscovery {
-    let mut scan = Scan::default();
+pub(super) fn discover(profile: &LegacyProfile, journal: journal::Journal) -> LegacyDiscovery {
+    let mut scan = Scan {
+        journal,
+        ..Scan::default()
+    };
     for project in &profile.projects {
         let path = match (profile.workspace_paths.first(), project.path.to_str()) {
             (Some(workspace), Some(path)) if workspace.is_absolute() && !path.trim().is_empty() => {
@@ -1220,7 +1411,54 @@ pub(super) fn discover(profile: &LegacyProfile) -> LegacyDiscovery {
         // Keep distinct scope provenance when the workspace is also a registered project.
         scan.physical_scope(&path, "project", project_ids.into_iter().collect());
     }
-    scan.local(&profile.local_storage);
+    if !scan.journal.owners.is_empty()
+        || scan
+            .journal
+            .disk
+            .keys()
+            .any(|key| !scan.visited_targets.contains(key))
+    {
+        scan.result::<()>(
+            journal::KEY,
+            Err("Recovery workspace or metadata checkout is unavailable".into()),
+        );
+    }
+    if scan.journal.local.files.is_empty() && scan.journal.local.applied.is_empty() {
+        scan.local(&profile.local_storage);
+    } else if let LegacyLocalStorage::Snapshot(entries) = &profile.local_storage {
+        for (path, expected) in &scan.journal.local.applied {
+            if let Err(message) = journal::verify_applied(
+                path,
+                entries
+                    .get(path.to_str().expect("local key"))
+                    .map(String::as_str),
+                expected,
+            ) {
+                scan.issues.push(LegacyImportIssue {
+                    location: journal::KEY.into(),
+                    message,
+                });
+            }
+        }
+        let mut entries = entries.clone();
+        for (key, value) in &scan.journal.local.files {
+            let key = key.to_str().expect("validated local key");
+            match value {
+                Some(text) => {
+                    entries.insert(key.to_owned(), text.clone());
+                }
+                None => {
+                    entries.remove(key);
+                }
+            }
+        }
+        scan.local(&LegacyLocalStorage::Snapshot(entries));
+    } else {
+        scan.result::<()>(
+            journal::KEY,
+            Err("Recovery requires the local storage snapshot".into()),
+        );
+    }
 
     let mut links = BTreeMap::<_, BTreeSet<_>>::new();
     for link in &profile.conversation_links {

@@ -1,6 +1,7 @@
 //! Read-only migration of the legacy Architect 0.3 library. Run discovery on a
 //! blocking worker, while legacy writers are idle, before retiring their storage.
 mod discovery;
+mod journal;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -158,7 +159,7 @@ pub struct LegacyImportReport {
 }
 
 pub fn discover_legacy_agsdl(profile: &LegacyProfile) -> LegacyDiscovery {
-    discovery::discover(profile)
+    discovery::discover(profile, journal::Journal::default())
 }
 
 /// Include the approved runtime configuration even when startup selected a
@@ -253,6 +254,11 @@ pub(crate) async fn migrate_profile(
             },
         )
         .collect();
+    let pending: Option<String> =
+        sqlx::query_scalar("SELECT value_json FROM app_settings WHERE key=?")
+            .bind(journal::KEY)
+            .fetch_optional(&mut *tx)
+            .await?;
     let discovery = tokio::task::spawn_blocking(move || {
         let mut paths = workspace_paths;
         if let Some(fallback) = fallback_workspace {
@@ -263,12 +269,27 @@ pub(crate) async fn migrate_profile(
                 paths.push(fallback);
             }
         }
-        discover_legacy_agsdl(&LegacyProfile {
-            workspace_paths: paths,
-            projects: Vec::new(),
-            local_storage,
-            conversation_links,
-        })
+        let journal = match journal::Journal::parse(pending.as_deref()) {
+            Ok(journal) => journal,
+            Err(message) => {
+                return LegacyDiscovery {
+                    blueprints: Vec::new(),
+                    issues: vec![LegacyImportIssue {
+                        location: journal::KEY.into(),
+                        message,
+                    }],
+                }
+            }
+        };
+        discovery::discover(
+            &LegacyProfile {
+                workspace_paths: paths,
+                projects: Vec::new(),
+                local_storage,
+                conversation_links,
+            },
+            journal,
+        )
     })
     .await
     .map_err(|error| DbError::Migration(error.to_string()))?;
