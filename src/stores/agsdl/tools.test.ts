@@ -226,10 +226,13 @@ describe("shared AgSDL authoring session", () => {
       }),
     );
     expect(result.persisted_revision).toBe(2);
-    useAgsdlStore.setState({ sessions: {} });
     expect(result.design_context).toMatchObject({ version: 1, kind: "system" });
-    expect(result.display_context).toMatchObject({ title: "Release", cards: { "/agents/implement": { title: "Release evidence" }, "/flow/steps/implement": { title: "Complete the mission" } } });
-    expect((plan as ArchitectPlanRecord).agsdl?.display).toEqual(result.display_context);
+    const display = JSON.parse(await call("agsdl_get", { section: "display", expected_revision: result.revision }));
+    expect(display.text_page.next_offset).toBeNull();
+    const displayContext = JSON.parse(display.text_page.content);
+    expect(displayContext).toMatchObject({ title: "Release", cards: { "/agents/implement": { title: "Release evidence" }, "/flow/steps/implement": { title: "Complete the mission" } } });
+    expect((plan as ArchitectPlanRecord).agsdl?.display).toEqual(displayContext);
+    useAgsdlStore.setState({ sessions: {} });
     const subtree = JSON.parse(
       await call("agsdl_get", { path: "/flow/entry" }),
     );
@@ -603,6 +606,8 @@ it('pages the complete 0.4 guide and keeps empty defaults independent of Chat pr
   const guide = JSON.parse(recovered);
   expect(guide.contract).toBe('agsdl-0.4.0');
   expect(guide.minimal).toEqual({ contract: 'agsdl-0.4.0', id: 'new-system', agents: {} });
+  expect(guide.flow).toContain('only if the intended work became unavailable and delivery can be ruled out');
+  expect(guide.flow).toContain('Other refusals and uncertain receipt follow the normal failure routes');
   expect(guide.agent_shape.permissions).toBe('read-only');
   for (const field of ['instructs', 'permissions', 'results', 'conduct', 'models', 'equipment', 'messages', 'fanout', 'joins', 'compositions', 'calls', 'approvals', 'limits', 'validation', 'design', 'presentation']) expect(guide[field]).toBeString();
   expect(Object.keys(guide.examples)).toHaveLength(6);

@@ -334,7 +334,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/shared/macroToolRegistry.ts",
-    "sha256": "0b387e9cf50f8fe4add2472492257bfc651044ae2b683ab38ec170b5a8cc43e6"
+    "sha256": "ae574252d36c55de3598468d2305c9143615738b630da677c91c0575410868ae"
   },
   {
     "path": "src/shared/toolOutputLimits.ts",
@@ -460,5 +460,5 @@ export const TRANSFER_RESOURCES = [
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "8ced8539aac81220e899404a5fdd3a098680bee1e5783e6d48ada15e5185af9f"
+  "preparation_set_sha256": "710a9152b00d540d4f36973183c976187fb3927bd605a64e71dbddf274d2988c"
 } as const;
