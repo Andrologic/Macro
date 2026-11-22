@@ -405,6 +405,10 @@ fn reads_recoverable_registry_without_promoting_or_repairing_files() {
             "description": "", "tags": [], "team_members": [], "api_contracts": [], "dependencies": []
         }}]}),
     );
+    put(
+        &primary,
+        &json!({"workspaceRevision": 10, "plan_nodes": "invalid"}),
+    );
     let expected_files: BTreeMap<_, _> = fs::read_dir(&root)
         .unwrap()
         .map(|entry| {
@@ -427,7 +431,8 @@ fn reads_recoverable_registry_without_promoting_or_repairing_files() {
 
     put(
         &primary,
-        &json!({"workspaceRevision": 3, "standaloneProjects": [{"id": "app", "path": "projects/app"}]}),
+        &json!({"workspaceRevision": 3, "standaloneProjects": [{"id": "app", "path": "projects/app", "name": "App", "status": "active", "created_at": "2026-01-01T00:00:00Z",
+            "metadata": {"description": "", "tags": [], "team_members": [], "api_contracts": [], "dependencies": []}}]}),
     );
     let from_primary = discover_legacy_agsdl(&input);
     assert!(from_primary.issues.is_empty(), "{:?}", from_primary.issues);
@@ -933,6 +938,20 @@ fn reads_root_backup_when_historical_registry_is_corrupt() {
     let discovery = discover_legacy_agsdl(&profile(dir.path()));
     assert!(discovery.issues.is_empty(), "{:?}", discovery.issues);
     assert_eq!(discovery.blueprints.len(), 1);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = metadata.join(".macro/.workspace.json.macro-tmp-pending");
+        put(&tmp, &json!({"workspaceRevision": 9}));
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0)).unwrap();
+        if fs::read(&tmp).is_err() {
+            let discovery = discover_legacy_agsdl(&profile(dir.path()));
+            assert!(discovery
+                .issues
+                .iter()
+                .any(|issue| issue.location.contains("macro-tmp-pending")));
+        }
+    }
 }
 
 #[test]

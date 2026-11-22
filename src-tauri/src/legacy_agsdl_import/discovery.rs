@@ -137,6 +137,10 @@ fn tree_entry(tree: &Tree<'_>, path: &Path) -> ReadResult<Option<git2::TreeEntry
 struct Registry {
     #[serde(default, rename = "version")]
     _version: u32,
+    // Historical registries can have shorter project records. Validate the remaining
+    // fields against the same workspace schema as the writer.
+    #[serde(flatten)]
+    _workspace: crate::workspace::metadata::WorkspaceState,
     #[serde(default, rename = "workspaceRevision")]
     revision: u64,
     #[serde(default, alias = "standalone_projects", rename = "standaloneProjects")]
@@ -156,6 +160,11 @@ struct RegistryProject {
     path: String,
     #[serde(default)]
     name: String,
+}
+
+enum RegistryError {
+    Invalid(PathBuf, String),
+    Unavailable(PathBuf, String),
 }
 
 #[derive(Clone)]
@@ -308,26 +317,51 @@ impl Scan {
         root: &Root<'_>,
         prefix: &Path,
         nested: bool,
-    ) -> Result<Option<Registry>, (PathBuf, String)> {
+    ) -> Result<Option<Registry>, RegistryError> {
+        use RegistryError::{Invalid, Unavailable};
+        if let Root::Directory(dir) = root {
+            match disk_kind(&dir.join(prefix))
+                .map_err(|error| Unavailable(prefix.to_owned(), error))?
+            {
+                Some(EntryKind::Directory) => {}
+                None => return Ok(None),
+                _ => {
+                    return Err(Unavailable(
+                        prefix.to_owned(),
+                        "Expected a workspace directory".into(),
+                    ))
+                }
+            }
+        }
         let primary = prefix.join("workspace.json");
         let backup = prefix.join("workspace.json.bak");
-        let read = |path: &Path| -> ReadResult<Option<Registry>> {
-            root.read(path)?
+        let read = |path: &Path| {
+            root.read(path)
+                .map_err(|error| Unavailable(path.to_owned(), error))?
                 .map(|text| {
                     if !text.trim_start().starts_with('{') {
                         return Err("Expected a workspace registry object".into());
                     }
-                    serde_json::from_str::<Registry>(&text).map_err(|e| e.to_string())
+                    let registry =
+                        serde_json::from_str::<Registry>(&text).map_err(|e| e.to_string())?;
+                    let complete =
+                        serde_json::from_str::<crate::workspace::metadata::WorkspaceState>(&text)
+                            .is_ok();
+                    Ok((registry, complete))
                 })
                 .transpose()
+                .map_err(|error| Invalid(path.to_owned(), error))
         };
         let registry = read(&primary);
+        if let Err(error @ Unavailable(..)) = registry {
+            return Err(error);
+        }
         if let Root::Directory(dir) = root {
             // Match the writer's revision, modification time and name ordering.
             let mut candidates = Vec::new();
             for (name, kind) in root
                 .children(prefix)
-                .map_err(|error| (prefix.to_owned(), error))?
+                .map_err(|error| Unavailable(prefix.to_owned(), error))?
             {
                 if kind != EntryKind::File || !name.starts_with(".workspace.json.macro-tmp-") {
                     continue;
@@ -335,8 +369,10 @@ impl Scan {
                 let path = prefix.join(&name);
                 let text = root
                     .read(&path)
-                    .map_err(|error| (path.clone(), error))?
-                    .ok_or_else(|| (path.clone(), "Temporary registry disappeared".to_string()))?;
+                    .map_err(|error| Unavailable(path.clone(), error))?
+                    .ok_or_else(|| {
+                        Unavailable(path.clone(), "Temporary registry disappeared".to_string())
+                    })?;
                 // Only complete snapshots produced by the workspace writer can supersede the primary.
                 let Ok(state) =
                     serde_json::from_str::<crate::workspace::metadata::WorkspaceState>(&text)
@@ -345,7 +381,7 @@ impl Scan {
                 };
                 let modified = fs::symlink_metadata(dir.join(&path))
                     .and_then(|metadata| metadata.modified())
-                    .map_err(|error| (path, error.to_string()))?;
+                    .map_err(|error| Unavailable(path, error.to_string()))?;
                 let project = |p: crate::workspace::metadata::ProjectDto| RegistryProject {
                     id: p.id,
                     name: p.name,
@@ -353,6 +389,7 @@ impl Scan {
                 };
                 let state = Registry {
                     _version: state.version,
+                    _workspace: Default::default(),
                     revision: state.workspace_revision,
                     standalone: state.standalone_projects.into_iter().map(project).collect(),
                     project_groups: state
@@ -369,33 +406,38 @@ impl Scan {
                 (&left.0.revision, &left.1, &left.2).cmp(&(&right.0.revision, &right.1, &right.2))
             });
             if let Some((state, _, _)) = temporary {
-                if !matches!(&registry, Ok(Some(primary)) if primary.revision >= state.revision) {
+                if !matches!(&registry, Ok(Some((primary, true))) if primary.revision >= state.revision)
+                {
                     return Ok(Some(state));
                 }
             }
         }
         let mut failure = None;
         match registry {
-            Ok(Some(state)) => return Ok(Some(state)),
+            Ok(Some((state, _))) => return Ok(Some(state)),
             Ok(None) if nested => match Self::read_registry(root, Path::new(".macro"), false) {
                 Ok(Some(state)) => return Ok(Some(state)),
+                Err(error @ Unavailable(..)) => return Err(error),
                 Err(error) => failure = Some(error),
                 Ok(None) => {}
             },
-            Err(error) => failure = Some((primary, error)),
+            Err(error) => failure = Some(error),
             Ok(None) => {}
         }
         match read(&backup) {
-            Ok(Some(state)) => Ok(Some(state)),
+            Ok(Some((state, _))) => Ok(Some(state)),
             Ok(None) => failure.map_or(Ok(None), Err),
-            Err(error) => Err(failure.unwrap_or((backup, error))),
+            Err(error @ Unavailable(..)) => Err(error),
+            Err(error) => Err(failure.unwrap_or(error)),
         }
     }
 
     fn registry(&mut self, root: &Root<'_>, scope: &Scope, workspace: &Path, nested: bool) {
         let registry = match Self::read_registry(root, Path::new(""), nested) {
             Ok(registry) => registry,
-            Err((path, error)) => self.result(scope.path(&path), Err(error)).flatten(),
+            Err(RegistryError::Invalid(path, error) | RegistryError::Unavailable(path, error)) => {
+                self.result(scope.path(&path), Err(error)).flatten()
+            }
         };
         if let Some(registry) = registry {
             for project in registry.standalone.into_iter().chain(
