@@ -10,10 +10,3 @@ export function messages(count: number): ChatMessage[] {
     content, timestamp,
   }));
 }
-export function terminal(count: number) {
-  const line = 'synthetic terminal match '.padEnd(120, '.');
-  return { buffer: { active: {
-    length: count,
-    getLine: () => ({ translateToString: () => line }),
-  } } };
-}

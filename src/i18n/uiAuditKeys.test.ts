@@ -14,7 +14,7 @@ const REQUIRED_UI_KEYS = [
   'notifications.mcpServersUnavailable',
   ...[
     'promptArchitect', 'promptImplement', 'promptChat', 'promptPlanExplorer',
-    'promptTaskReviewer', 'promptRepoAuditor', 'promptGoalAuditor', 'smartCommitPrompt',
+    'promptTaskReviewer', 'promptRepoAuditor', 'promptGoalAuditor',
   ].flatMap(key => [`prompts.editors.${key}.label`, `prompts.editors.${key}.description`]),
   ...['online', 'degraded', 'offline', 'unconfigured'].map(status => `tools.mcp.status.${status}`),
 ] as const;

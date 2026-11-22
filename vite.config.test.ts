@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import viteConfig, { isMacroPilotValidatorsImport, isPathInside, validatePublicSecretFiles } from './vite.config';
 
-it('keeps startup CSS and the shared preload helper out of deferred vendor chunks', async () => {
+it('assigns shared startup helpers and deferred modules to their designated chunks', async () => {
   if (typeof viteConfig !== 'function') throw new Error('Expected Vite config factory');
   const config = await viteConfig({ command: 'build', mode: 'production' });
   const output = config.build?.rollupOptions?.output;
@@ -12,8 +12,6 @@ it('keeps startup CSS and the shared preload helper out of deferred vendor chunk
     throw new Error('Expected the production chunk selector');
   }
   const graph = { getModuleIds: () => [][Symbol.iterator](), getModuleInfo: () => null };
-  expect(output.manualChunks('/fixture/node_modules/xterm/lib/xterm.js', graph)).toBe('terminal-vendor');
-  expect(output.manualChunks('/fixture/node_modules/xterm/css/xterm.css', graph)).toBeUndefined();
   expect(output.manualChunks('\0vite/preload-helper.js', graph)).toBe('utils-vendor');
   expect(output.manualChunks('\0macro-pilot-schema-validators', graph)).toBe('pilot-schema-validators');
   expect(output.manualChunks('/fixture/src/services/macroPilot/contentValidators.generated.js', graph)).toBe('nativeClient-content-validation');

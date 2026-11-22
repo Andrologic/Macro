@@ -26,9 +26,8 @@ system temporary directory, limits Terser to two workers, reports raw and gzip-9
 JS/CSS sizes and content hashes, then removes that directory. It captures the
 final emitted chunk graph, deduplicated static JS closure and CSS links.
 The report distinguishes pre-minification module lengths from emitted sizes.
-It verifies every emitted locale default against its source JSON, records xterm
-CSS rules and checks that Mermaid/xterm JavaScript stays outside the static
-startup closure. Dynamic imports executed at startup and rendering are not
+It verifies every emitted locale default against its source JSON and checks the
+static startup closure for deferred Mermaid and chat modules. Dynamic imports executed at startup and rendering are not
 inferred from this graph. The existing budget checker runs against this same
 temporary build; a budget or deferred-vendor failure returns exit code 1. It requires a clean worktree, including untracked
 files, and refuses ignored environment/source/public inputs. Commit the tooling
@@ -53,11 +52,12 @@ of harness overhead is applied.
 | Metric | Actual executed path | Fixture and limits |
 | --- | --- | --- |
 | Chat history list | `src/components/chat/transcriptItems.ts::buildChatTranscriptItems` | 100/1,000/10,000 messages, 256 ASCII bytes each, alternating user/assistant, one completed compaction event per 100 messages. Includes item allocation and event grouping; excludes React, layout, markdown and virtualizer. |
-| Terminal history search | `src/services/terminalSearch.ts::findTerminalSearchMatches`, called by `terminalRuntime` | 100/1,000/10,000 synthetic rows, 120 ASCII columns, one case-insensitive match per row. Buffer adapter supplies strings; excludes xterm rendering, ANSI parsing and real buffer extraction. These sizes are stress inputs, not a claim about configured scrollback. |
 | SQLite read | First literal SQL in `src-tauri/src/db/repository.rs::list_messages`, extracted at run time | Canonical `001_initial.sql` at the recorded baseline, one conversation, 100/1,000/10,000 messages of 256 ASCII bytes, identical timestamps with distinct ordered IDs. Reads all rows via Bun SQLite. |
 | SQLite insert | First literal SQL in `repository.rs::create_message`, extracted at run time | One new message, BEGIN/INSERT/ROLLBACK per sample to keep size fixed. Includes transaction overhead. Excludes conversation metadata refresh, Rust/SQLx conversion, pool contention, disk sync, later migrations and IPC. This is **not** a durable write or the complete `create_message` operation. |
 | Architect instrumentation disabled | `createArchitectSwitchPerfRuntime({ enabled: false }).measureSwitchPhase` | 10,000 callback calls per batch, compared with direct calls. Injected clock/logger/mark throw if used; callback result and empty report list checked. |
 | Performance hook disabled | Real `usePerformanceMonitor` rendered with React SSR | Compared with an empty SSR component. Bun has no Vite DEV flag, so mark/measure take the disabled path. Includes hook allocation, React and assertions; effects do not run. Does not prove browser mount overhead. |
+
+The active runner skips terminal history search after the removal of the terminal panel. The historical measurements below retain those results.
 
 The current statement runner also applies `006_generation_attempts.sql` before executing the current message queries. Its schema fingerprint includes both SQL files. The earlier measurements below retain their recorded schema; this maintenance change does not supply new performance measurements.
 
@@ -696,7 +696,6 @@ or prove its absence. They do not launch child processes or open any profile.
 | `streamResources` | Registry holds active readers/streams/request IDs; prune removes only an empty entry owned by that invocation. | Real Web Stream cancellation; no HTTP reader, native request or provider is opened. |
 | `lifecycleScope` / configuration effects | Scope owns unsubscribe/dispose functions and admitted promises; stop revokes then releases, drain waits. Config effects own store and preference subscriptions. | Scope cycles with EventTarget/timer; configuration subscriptions inspected, not mounted. |
 | `SubagentRuntime` / Goal audit | Runtime keeps settled snapshots until `releaseRun`; dispose cancels work and removes listeners. GoalAuditCoordinator calls releaseRun after observing results, and the durable journal releases transient data. | Real runtime completion/dispose/release cycles, synthetic executor; coordinator release path inspected, not a provider-driven audit. |
-| `terminalRuntime` | Detach retains at most six detached renderers; attached tabs remain. Disposal clears queued writes, RAF/retry timers, observers, links, input/global listeners and xterm. | Source inspection only; helper cycles do not instantiate xterm or measure WebView rendering. |
 | Native terminal store | PTYs/process groups and output tasks have native close paths; snapshots cap at 1,000,000 bytes per terminal. | Source inspection only; no native process lifetime measured by this runner. |
 | `useGitStore` | Tree/commit data retained per project; request identity Maps clear in finally; invalidateProject clears results and invalidates requests. Project registry owns invalidation. | Source inspection of store and gitCacheComposition; no repository polling experiment. |
 | `modelContextCatalog` | Catalog snapshot and status listeners have application lifetimes; persisted catalog is intentional cache data. | Source inspection only; no network refresh or user cache is accessed. |
@@ -728,8 +727,7 @@ in `DEVELOPMENT.md`; a config directory override alone is insufficient.
    RAF/retry queues and idle work. Record app/backend and WebView process-tree
    RSS, open file descriptors and live child PIDs before/after each batch. In
    WebView DevTools take heap snapshots at matching settled boundaries. Compare
-   retained paths for messages, detached DOM, xterm renderers and subscriptions,
-   distinguishing six cached detached terminals from closed ones. Keep selected
+   retained paths for messages, detached DOM and subscriptions. Keep selected
    entities and fixture sizes fixed so intentional loaded-history growth is
    separated from repeated same-entity retention.
 4. Close every created terminal, verify child/descendant PIDs disappear and
@@ -844,7 +842,7 @@ became zero; after returning and yielding it fell to about 5 MiB. RSS did not
 return to its initial value. Neither observation identifies a retaining owner
 or establishes a leak. The executed evidence confirms the tested release
 contracts and explicit data retention only. WebView heaps, DOM/listeners,
-xterm/RAF, native PTYs/process groups and app shutdown remain unmeasured; use
+animation frame callbacks, native PTYs/process groups and app shutdown remain unmeasured; use
 the separate native/WebView protocol above before making claims about them.
 
 

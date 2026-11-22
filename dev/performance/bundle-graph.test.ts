@@ -15,13 +15,12 @@ test('static closure deduplicates cycles and excludes deferred code', () => {
   expect(() => bundleGraph({ entry: chunk('entry.js', ['missing.js']) }, '/synthetic')).toThrow();
 });
 
-test('startup check catches both terminal CSS coupling and shared Mermaid helpers', () => {
+test('startup check catches shared Mermaid helpers and chat execution', () => {
   const graph = { entries: [{ name: 'entry.js', staticClosure: ['entry.js'] }],
     chunks: [{ name: 'entry.js', modules: [{ id: 'src/main.tsx' }] },
-      { name: 'terminal.js', modules: [{ id: 'node_modules/xterm/lib/xterm.js' }] },
       { name: 'diagram.js', modules: [{ id: 'node_modules/mermaid/dist/mermaid.core.mjs' }] },
       { name: 'chat.js', modules: [{ id: 'src/services/streamingChatExecution.ts' }] }]  };
   expect(deferredStartupViolations(graph)).toEqual([]);
-  graph.entries[0].staticClosure.push('terminal.js', 'diagram.js', 'chat.js');
-  expect(deferredStartupViolations(graph).map(issue => issue.chunk)).toEqual(['terminal.js', 'diagram.js', 'chat.js']);
+  graph.entries[0].staticClosure.push('diagram.js', 'chat.js');
+  expect(deferredStartupViolations(graph).map(issue => issue.chunk)).toEqual(['diagram.js', 'chat.js']);
 });

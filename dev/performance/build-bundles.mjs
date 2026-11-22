@@ -8,7 +8,6 @@ import config from '../../vite.config';
 import { assertCleanBuildSource } from './build-provenance';
 import { bundleGraph, deferredStartupViolations } from './bundle-graph.mjs';
 import assert from 'node:assert/strict';
-import postcss from 'postcss';
 
 if (process.env.NODE_ENV !== 'production') throw new Error('Run with NODE_ENV=production');
 const root = new URL('../../', import.meta.url);
@@ -38,21 +37,13 @@ try {
     assert.deepEqual(emitted.default, JSON.parse(readFileSync(locale.source, 'utf8')), `Locale changed: ${locale.file}`);
   }
   const scan = JSON.parse(output);
-  const xtermRules = [];
-  for (const row of scan.rows.filter(row => row.name.endsWith('.css'))) {
-    postcss.parse(readFileSync(join(directory, 'assets', row.name), 'utf8')).walkRules(rule => {
-      if (rule.selector.includes('.xterm')) xtermRules.push({ selector: rule.selector,
-        declarations: rule.nodes.filter(node => node.type === 'decl').map(node => [node.prop, node.value, Boolean(node.important)]) });
-    });
-  }
   assert.ok(locales.length > 0, 'No emitted locales verified');
-  assert.ok(xtermRules.length > 0, 'Missing terminal styles');
   if (assertCleanBuildSource(root) !== sha) throw new Error('Source changed during build');
   const budget = spawnSync(process.execPath, ['dev/check-bundle-size.mjs', join(directory, 'assets')],
     { cwd: root, encoding: 'utf8' });
   if (budget.error) throw budget.error;
   const startupViolations = deferredStartupViolations(graph);
-  console.log(JSON.stringify({ ...scan, graph, localeDefaultsVerified: locales.length, xtermRules, startupViolations,
+  console.log(JSON.stringify({ ...scan, graph, localeDefaultsVerified: locales.length, startupViolations,
     budget: { exitCode: budget.status, output: (budget.stdout + budget.stderr).trim() } }, null, 2));
   if (budget.status !== 0 || startupViolations.length > 0) process.exitCode = 1;
 } finally { rmSync(directory, { recursive: true, force: true }); }
