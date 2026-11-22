@@ -116,6 +116,7 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
   };
   messages: {
     persistence: ChatPersistenceAdapters;
+    assertUserWrite?(conversationId: string, contextRefs: ChatMessage["context_refs"]): void;
     onUserPersisted?(message: ChatMessage): void | Promise<void>;
     beforeAssistantStart?(assistant: ChatMessage): void | Promise<void>;
     canDeleteAfter?(conversationId: string): boolean;

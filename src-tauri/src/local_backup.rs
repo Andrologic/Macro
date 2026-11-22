@@ -3087,6 +3087,10 @@ mod tests {
         let (_temp, data, config) = profile().await;
         let path = data.join("macro.db");
         let pool = crate::db::create_pool(&path).await.unwrap();
+        sqlx::query("UPDATE conversations SET scope_mode='Architect' WHERE id='conversation'")
+            .execute(&pool)
+            .await
+            .unwrap();
         let legacy = serde_json::json!({
             "id":"original","title":"Blueprint","projectId":"old-project","conversationId":"conversation",
             "status":"archived","archivedFromStatus":"draft",
@@ -3163,7 +3167,7 @@ mod tests {
             .unwrap();
         sqlx::raw_sql(
             "DROP TABLE architect_legacy_import; DELETE FROM schema_migrations WHERE version>45;
-             INSERT INTO conversations(id,title,created_at,updated_at) VALUES('old-chat','Design','now','now');
+             INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('old-chat','Design','Architect','now','now');
              INSERT INTO architect_plan_conversation_sync(conversation_id,plan_id,target_branch,updated_at)
              VALUES('old-chat','legacy','main','now');",
         )

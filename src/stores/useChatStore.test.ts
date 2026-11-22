@@ -3158,6 +3158,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     mock.module('../services/operateWorkspace', () => ({ demoWorkflowJourney: false, isOperateWorkspace: (mode: string) => mode === 'Implement' }));
     const { architectLibrary } = await import('../services/ipc/architectLibrary');
     const { useArchitectLibraryStore: library } = await import('./useArchitectLibraryStore');
+    const { useAgsdlStore: editor, agsdlSessionKey } = await import('./useAgsdlStore');
     const { createExampleDocument } = await import('../services/agsdl/examples');
     const previousGroups = appState.projectGroups;
     const previousLibrary = library.getState();
@@ -3172,10 +3173,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         origin: null, document: createExampleDocument('feature'), conversationId: 'first-chat' };
       const b = { ...a, id: 'second', conversationId: 'second-chat', document: createExampleDocument('release') };
       const drafts = new Map([a,b].map(draft => [draft.id, draft]));
-      spyOn(architectLibrary, 'getDraft').mockImplementation(async id => drafts.get(id)!);
+      const readDraft = spyOn(architectLibrary, 'getDraft').mockImplementation(async id => drafts.get(id)!);
+      const { document, revision } = a;
+      spyOn(architectLibrary, 'getVersion').mockResolvedValue({ blueprintId: a.id, revision, document, number: 1, note: null });
       spyOn(architectLibrary, 'listBlueprints').mockResolvedValue([a,b]);
       spyOn(architectLibrary, 'listVersions').mockResolvedValue([]);
-      spyOn(architectLibrary, 'ensureConversation').mockImplementation(async id => drafts.get(id)!);
+      const ensure = spyOn(architectLibrary, 'ensureConversation').mockImplementation(async id => drafts.get(id)!);
       const save = spyOn(architectLibrary, 'saveDraft').mockImplementation(async (id, revision, document) =>
         ({ ...drafts.get(id)!, document, revision: revision + 1 }));
       chatSnapshotConversations = [a,b].map(draft => ({ ...createChatSnapshotConversation(draft.conversationId), project_id: null, group_id: null }));
@@ -3183,12 +3186,58 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       const { useChatStore: chat } = await loadChatStore();
       chat.setState(createIdleChatStoreState({ conversations: [] }));
       expect(await chat.getState().ensureConversationForCurrentMode()).toBe(a.conversationId);
+      const target = { blueprintId: a.id };
+      const session = editor.getState().sessions[agsdlSessionKey(target)];
+      const scopedStarted = createDeferred<void>();
+      const scopedReady = createDeferred<ScopedTurnConfiguration | null>();
+      const configuration = await import('../services/configurationClient');
+      const originalLoad = configuration.loadScopedTurnConfiguration;
+      const load = spyOn(configuration, 'loadScopedTurnConfiguration').mockImplementationOnce(async () => {
+        scopedStarted.resolve();
+        return scopedReady.promise;
+      }).mockImplementation(originalLoad);
+      const sending = chat.getState().sendMessage({ conversationId: a.conversationId, content: 'Review this selection',
+        contextRefs: [{ id: 'selection', kind: 'agsdl', title: 'Document',
+          agsdl: { ...target, document: 'agsdl', id: 'selection', title: 'Document', path: '',
+            conversationId: a.conversationId, version: session.version, persistedRevision: session.persistedRevision } }] });
+      try {
+        await Promise.race([scopedStarted.promise, sending]);
+        editor.getState().replace(target, b.document.source);
+        scopedReady.resolve(null);
+        await expect(sending).rejects.toThrow('agsdl.staleChatSelection');
+        expect(chat.getState().getConversationMessages(a.conversationId)).toHaveLength(0);
+        expect(streamChatMock).not.toHaveBeenCalled();
+        editor.setState({ sessions: {} });
+        editor.getState().openBlueprintDocument(a);
+      } finally {
+        scopedReady.resolve(null);
+        load.mockRestore();
+      }
+
       const tool = await sendArchitectMessageAndGetToolHandler(chat, { conversationId: a.conversationId, content: 'Edit this blueprint' });
       const read = JSON.parse(String(await tool('agsdl_get', {})));
       expect(read.blueprint_id).toBe(a.id);
       expect(read.source).toBe(a.document.source);
       await tool('agsdl_update', { blueprint_id: a.id, expected_revision: read.revision, source: b.document.source });
       expect(save).toHaveBeenCalledWith(a.id, 1, expect.objectContaining({ source: b.document.source }));
+      await library.getState().selectVersion(1);
+      const readResult = Promise.withResolvers<typeof a>();
+      readDraft.mockImplementationOnce(() => readResult.promise);
+      const back = library.getState().selectVersion(null);
+      const assertChatBlocked = async () => {
+        const calls = ensure.mock.calls.length;
+        expect(await chat.getState().ensureConversationForCurrentMode()).toBeNull();
+        expect(ensure.mock.calls).toHaveLength(calls);
+        await expect(chat.getState().sendMessage({ conversationId: a.conversationId, content: 'Send while returning' }))
+          .rejects.toThrow('Open the editable blueprint');
+        expect(chat.getState().selectedConversationId).toBeNull();
+      };
+      await assertChatBlocked();
+      readResult.reject(new Error('Unable to read the draft'));
+      await back;
+      await assertChatBlocked();
+      await library.getState().selectVersion(null);
+      expect(await chat.getState().ensureConversationForCurrentMode()).toBe(a.conversationId);
       await library.getState().selectBlueprint(b.projectId,b.id);
       expect(await chat.getState().ensureConversationForCurrentMode()).toBe(b.conversationId);
       await tool('agsdl_update', { blueprint_id: a.id, expected_revision: read.revision, source: a.document.source }, 'late-update');

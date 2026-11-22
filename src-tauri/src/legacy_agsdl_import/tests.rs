@@ -676,7 +676,7 @@ async fn batch_rollback_and_lost_acknowledgement_reopen_the_right_generation() {
         };
         LegacyLocalStorage::Snapshot(entries.clone())
     };
-    sqlx::raw_sql("INSERT INTO conversations(id,title,created_at,updated_at) VALUES('chat','Design','now','now');
+    sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('chat','Design','Architect','now','now');
         INSERT INTO architect_plan_conversation_sync(conversation_id,plan_id,target_branch,updated_at)
         VALUES('chat','homonym','main','now');
         CREATE TRIGGER fail_second BEFORE INSERT ON architect_versions

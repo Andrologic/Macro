@@ -1,4 +1,4 @@
-import { useArchitectLibraryStore } from "./useArchitectLibraryStore";
+import { confirmedBlueprintDraft, useArchitectLibraryStore } from "./useArchitectLibraryStore";
 import { architectLibrary } from "../services/ipc/architectLibrary";
 import { demoWorkflowJourney, isOperateWorkspace } from '../services/operateWorkspace';
 import { resolveTaskReference, taskReferenceMatches } from "../services/durableIdentity";
@@ -2414,9 +2414,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (matches.length !== 1 || get().mode !== state.mode || initial !== useArchitectLibraryStore.getState()) return false;
       const match = matches[0];
       await initial.selectBlueprint(match.projectId, match.id);
-      const selected = useArchitectLibraryStore.getState();
-      if (selected.draft?.id !== match.id || selected.draft.conversationId !== conversationId ||
-          selected.versionNumber !== null || get().mode !== state.mode) return false;
+      const selected = confirmedBlueprintDraft(useArchitectLibraryStore.getState());
+      if (selected?.id !== match.id || selected.conversationId !== conversationId || get().mode !== state.mode) return false;
       get().setMode("Architect");
       return await useChatStore.getState().ensureConversationForCurrentMode() === conversationId;
     }

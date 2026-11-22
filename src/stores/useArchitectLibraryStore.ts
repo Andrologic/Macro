@@ -4,7 +4,7 @@ import {
   architectLibrary, type ArchitectProject, type BlueprintDraft, type BlueprintSummary,
   type BlueprintVersion, type BlueprintVersionSummary, type VersionKey,
 } from "../services/ipc/architectLibrary";
-import { agsdlSessionKey, useAgsdlStore } from "./useAgsdlStore";
+import { useAgsdlStore } from "./useAgsdlStore";
 
 type Read<T> =
   | { status: "idle" | "loading" | "error" }
@@ -39,9 +39,13 @@ function rememberSelection(projectId: string | null, blueprintId: string | null,
   localStorage.setItem(selectionKey, JSON.stringify({ projectId, blueprintId, versionNumber }));
 }
 
+export function confirmedBlueprintDraft({ draft, draftStatus, versionNumber }: ArchitectLibraryState) {
+  return draftStatus === "idle" && versionNumber === null ? draft : null;
+}
+
 export function selectedBlueprintForConversation(conversationId: string) {
-  const { draft, versionNumber } = useArchitectLibraryStore.getState();
-  return versionNumber === null && draft?.conversationId === conversationId && !draft.archived ? draft : null;
+  const draft = confirmedBlueprintDraft(useArchitectLibraryStore.getState());
+  return draft?.conversationId === conversationId && !draft.archived ? draft : null;
 }
 
 export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get) => {
@@ -153,11 +157,7 @@ export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get)
       rememberSelection(draft.projectId, draft.id, number);
       if (number === null) {
         if (versionNumber === null && draftStatus === "idle") return;
-        const editor = useAgsdlStore.getState();
-        const current = editor.sessions[agsdlSessionKey({ blueprintId: draft.id })];
-        const keepLocal = current?.dirty || current?.saving;
-        set({ draftStatus: keepLocal ? "idle" : "loading", versionNumber: null, version: { status: "idle" } });
-        if (keepLocal) return;
+        set({ draftStatus: "loading", versionNumber: null, version: { status: "idle" } });
         try {
           const fresh = await architectLibrary.getDraft(draft.id);
           if (request !== versionRequest) return;
@@ -202,8 +202,8 @@ export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get)
       await revealNewDraft(draft, requestedDraft, requestedVersion);
     },
     async saveVersion(blueprintId, note) {
-      const { draft, versionNumber, draftStatus } = get();
-      if (draftStatus !== "idle" || draft?.id !== blueprintId || draft.archived || versionNumber !== null) throw new Error("No editable draft selected");
+      const draft = confirmedBlueprintDraft(get());
+      if (draft?.id !== blueprintId || draft.archived) throw new Error("No editable draft selected");
       const request = versionRequest;
       await useAgsdlStore.getState().saveVersion(blueprintId, note?.trim() || null, () =>
         request === versionRequest && get().draft?.id === blueprintId);

@@ -52,6 +52,7 @@ it('transmits only AgSDL context when message editing preserves preceding metada
   expect(model).toContain('System </agsdl_selection>');
   expect(model).not.toContain('Preserved message metadata');
   expect(submissionHiddenContext(refs, hidden)).toBe(hidden);
+  expect(submissionHiddenContext([], hidden)).toBe(hidden);
 });
 
 
@@ -82,4 +83,13 @@ it('moves only design selections when a draft changes conversation', () => {
   const [movedDesign, keptRuntime] = rebindAgsdlContextRefs([design, runtime], 'pending', 'conversation');
   expect(movedDesign.data).toEqual({ ...(design.data as object), conversationId: 'conversation' });
   expect(keptRuntime).toBe(runtime);
+});
+
+it('requires a structured reference for a blueprint attachment', () => {
+  const refs = [{ id: 'selection', kind: 'agsdl' as const, title: 'Design',
+    agsdl: { id: 'selection', blueprintId: 'blueprint', conversationId: 'chat',
+      document: 'agsdl' as const, title: 'Design', path: '', version: 'v1', persistedRevision: 1 } }];
+  const hidden = submissionHiddenContext(refs);
+  expect(submissionHiddenContext(refs, hidden)).toBe(hidden);
+  expect(() => submissionHiddenContext([], hidden)).toThrow('differs from its reference');
 });

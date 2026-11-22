@@ -1,5 +1,6 @@
-import { selectedBlueprintForConversation, useArchitectLibraryStore } from "./useArchitectLibraryStore";
+import { confirmedBlueprintDraft, selectedBlueprintForConversation, useArchitectLibraryStore } from "./useArchitectLibraryStore";
 import { architectLibrary } from "../services/ipc/architectLibrary";
+import { isAgsdlChatContextCurrent } from "./agsdl/selectionRevision";
 import { demoWorkflowJourney, isOperateWorkspace } from '../services/operateWorkspace';
 import {
   getConversationFallbackTitle,
@@ -1053,8 +1054,7 @@ const buildChatContextKey = (
 ): ChatContextKey => {
   if (appState.mode === "Architect") {
     if (!demoWorkflowJourney) {
-      const { draft, versionNumber } = useArchitectLibraryStore.getState();
-      return JSON.stringify(["Architect", draft?.id ?? null, versionNumber]);
+      return JSON.stringify(["Architect", confirmedBlueprintDraft(useArchitectLibraryStore.getState())?.id ?? null]);
     }
     if (appState.activeArchitectPlanId) {
       return [
@@ -1802,10 +1802,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       getConflictAssistantContext(id), conflictAssistantSelection(id),
     ) ? id : null;
   };
-  const assertBlueprintAttachment = async (conversationId: string, refs: ChatMessage["context_refs"]) => {
+  const assertBlueprintAttachment = (conversationId: string, refs: ChatMessage["context_refs"]) => {
     const ref = refs?.find(item => item.kind === "agsdl")?.agsdl;
     if (ref?.blueprintId === undefined) return;
-    const { isAgsdlChatContextCurrent } = await import("./agsdl/selectionRevision");
     if (useAppStore.getState().mode !== "Architect" || ref.conversationId !== conversationId ||
         selectedBlueprintForConversation(conversationId)?.id !== ref.blueprintId || !isAgsdlChatContextCurrent(ref))
       throw buildSendError(i18n.t("agsdl.staleChatSelection", { ns: "agsdl" }));
@@ -3552,7 +3551,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (!demoWorkflowJourney) scope.own(useArchitectLibraryStore.subscribe((next, previous) => {
       if (scope.isActive() && useAppStore.getState().mode === "Architect" &&
-          (next.draft?.id !== previous.draft?.id || next.versionNumber !== previous.versionNumber)) {
+          confirmedBlueprintDraft(next)?.id !== confirmedBlueprintDraft(previous)?.id) {
         if (previous.draft?.conversationId) stopConversationRuntimeLocally(previous.draft.conversationId);
         beginArchitectPlanSwitchSelection();
         void scope.track(get().ensureConversationForCurrentMode(scope)).catch(() => undefined);
@@ -6794,8 +6793,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (mode === "Architect") {
       if (!demoWorkflowJourney) {
-        const { draft, versionNumber } = useArchitectLibraryStore.getState();
-        return versionNumber === null && draft?.conversationId === conversation.id && !conversation.task_id;
+        const draft = confirmedBlueprintDraft(useArchitectLibraryStore.getState());
+        return draft?.conversationId === conversation.id && !conversation.task_id;
       }
       if (!selectedGroupId && !selectedProjectId) {
         return false;
@@ -8213,6 +8212,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     providerInputItems?: unknown[];
     contextRefs?: ChatMessage["context_refs"];
   }): Promise<ChatMessage> => {
+    assertImplementConversationContext(params.conversationId);
+    assertBlueprintAttachment(params.conversationId, params.contextRefs);
     try {
       return await createUserMessage(chatPersistenceAdapters, params);
     } catch (error) {
@@ -8549,6 +8550,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     messageId: string;
     clearQuestionnaireSession?: boolean;
     updatedMessage?: ChatMessage;
+    assertUserWrite?: () => void;
     replayRecovery?: {
       sessionId: string;
       turnId: string;
@@ -8641,6 +8643,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         if (tauriIpc.isTauriAvailable()) {
           if (params.replayRecovery) {
+            params.assertUserWrite?.();
             await tauriIpc.dbPrepareConversationReplay({
               conversationId: params.conversationId,
               messageId: params.messageId,
@@ -11207,14 +11210,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       appState;
     let state = get();
     if (mode === "Architect" && !demoWorkflowJourney) {
-      const { draft, versionNumber } = useArchitectLibraryStore.getState();
-      if (!draft || versionNumber !== null) return modeFallback(null);
-      if (draft.archived && !draft.conversationId && !(Array.isArray(draft.history?.origins) && draft.history.origins.some(origin => origin?.transcript)))
+      const draft = confirmedBlueprintDraft(useArchitectLibraryStore.getState());
+      if (!draft) return modeFallback(null);
+      if (draft.archived && !draft.conversationId && !draft.history?.legacyConversationId &&
+          !(Array.isArray(draft.history?.origins) && draft.history.origins.some(origin => origin?.transcript)))
         return modeFallback(null);
       const linked = await architectLibrary.ensureConversation(draft.id);
-      if (!isCurrentRequest() || !linked.conversationId || linked.id !== draft.id) return modeFallback(null);
+      const isDraftCurrent = () => isCurrentRequest() && confirmedBlueprintDraft(useArchitectLibraryStore.getState()) === draft;
+      if (!isDraftCurrent() || !linked.conversationId || linked.id !== draft.id) return modeFallback(null);
       const row = await tauriIpc.getConversation(linked.conversationId);
-      if (!isCurrentRequest()) return modeFallback(null);
+      if (!isDraftCurrent()) return modeFallback(null);
       if (!row || row.scope_mode !== "Architect" || row.task_id) throw new Error("Invalid blueprint conversation");
       const conversation = mapDbConversationToConversation(row);
       set(state => ({
@@ -13714,7 +13719,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (hasMultipleAgsdlContexts(capturedContextRefs)) {
         throw buildSendError(i18n.t('agsdl.multipleChatSelections', { ns: 'agsdl', defaultValue: 'Keep only one AgSDL selection before sending.' }));
       }
-      await assertBlueprintAttachment(payload.conversationId, capturedContextRefs);
+      assertBlueprintAttachment(payload.conversationId, capturedContextRefs);
       payload.hiddenContext = submissionHiddenContext(capturedContextRefs, payload.hiddenContext);
       if (capturedContextRefs?.some(ref => ref.agsdl?.contextKind === "runtime")) await assertRuntimeSelectionDestination(capturedContextRefs, payload.conversationId, {
         conversation: () => get().conversations.find(item => item.id === payload.conversationId), plan: getArchitectPlan,
@@ -13757,6 +13762,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           useConversationArchiveStore.getState().archivedConversationIds.has(payload.conversationId)) {
           throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
         }
+        assertImplementConversationContext(payload.conversationId);
+        assertBlueprintAttachment(payload.conversationId, capturedContextRefs);
         await queue.accept(entry, queuedAdmissionStops.get(payload.conversationId) !== admissionStop);
         return "queued";
       }
@@ -13790,6 +13797,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         sessionId: runtime.sessionId, turnId: runtime.turnId, assistantMessageId: runtime.assistantMessageId ?? null,
       } };
       const steerAdmission = await beginChatIntent({ conversationId: payload.conversationId, kind: 'steer', id: messageId });
+      assertImplementConversationContext(payload.conversationId);
+      assertBlueprintAttachment(payload.conversationId, contextRefs);
       if (payload.images?.length) {
         const next = { ...get().messageImagesByMessageId, [messageId]: payload.images };
         if (!persistMessageImageCache(next)) {
@@ -13946,7 +13955,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       if (payload.contextRefs !== undefined) payload = { ...payload, contextRefs: resolvedRefs };
       else snapshot = { ...snapshot, composerContextRefs: resolvedRefs };
-      await assertBlueprintAttachment(payload.conversationId, resolvedRefs);
+      assertBlueprintAttachment(payload.conversationId, resolvedRefs);
       payload.hiddenContext = submissionHiddenContext(resolvedRefs, payload.hiddenContext);
       if (resolvedRefs?.some(ref => ref.agsdl?.contextKind === "runtime")) await assertRuntimeSelectionDestination(resolvedRefs, payload.conversationId, {
         conversation: () => get().conversations.find(item => item.id === payload.conversationId), plan: getArchitectPlan,
@@ -13959,6 +13968,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         owner: turnRuntime,
         messages: {
           persistence: chatPersistenceAdapters,
+          assertUserWrite: assertBlueprintAttachment,
           saveImages: (messageId, images) => {
             if (pilotTarget && payload.persistedUserMessage?.id === messageId) {
               if (!cacheNativeImages(messageId, images)) throw buildSendError(i18n.t('chat.sendImagesSaveFailed', 'The message could not be saved with its images. Retry the draft.'));
@@ -14440,7 +14450,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const validatedHiddenContext = submissionHiddenContext(editContextRefs, editedHiddenContext);
       options = { ...options, hiddenContext: validatedHiddenContext };
       const editedDestination = get().messages.find(message => message.id === messageId)?.conversation_id;
-      if (editedDestination) await assertBlueprintAttachment(editedDestination, editContextRefs);
+      if (editedDestination) assertBlueprintAttachment(editedDestination, editContextRefs);
       if (editedDestination && editContextRefs?.some(ref => ref.agsdl?.contextKind === "runtime")) await assertRuntimeSelectionDestination(editContextRefs, editedDestination, {
         conversation: () => get().conversations.find(item => item.id === editedDestination), plan: getArchitectPlan,
       });
@@ -14494,8 +14504,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       const conversationId = target.conversation_id;
-      if (editBlueprint && (useAppStore.getState().mode !== "Architect" || selectedBlueprintForConversation(conversationId) !== editBlueprint))
-        throw buildSendError("The blueprint selection changed.");
+      const assertEditedUserWrite = () => {
+        if (editBlueprint && (useAppStore.getState().mode !== "Architect" || selectedBlueprintForConversation(conversationId) !== editBlueprint))
+          throw buildSendError("The blueprint selection changed.");
+        assertBlueprintAttachment(conversationId, editContextRefs);
+      };
+      assertEditedUserWrite();
       if (replayRecoveryBlockedConversationIds.has(conversationId)) {
         const message =
           "Replay recovery is pending for this conversation. Refresh the workspace to retry the recovery.";
@@ -14760,6 +14774,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? cloneProviderInputItems(options.providerInputItems)
           : target.provider_input_items;
         if (!tauriIpc.isTauriAvailable()) {
+          assertEditedUserWrite();
           await persistEditedUserMessage({
             messageId,
             turnId,
@@ -14788,6 +14803,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             messageId,
             clearQuestionnaireSession: options?.clearQuestionnaireSession,
             updatedMessage: updatedTargetMessage,
+            assertUserWrite: assertEditedUserWrite,
             replayRecovery: tauriIpc.isTauriAvailable()
               ? {
                   sessionId,

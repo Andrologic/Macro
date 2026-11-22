@@ -75,12 +75,14 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       if (!messages.saveImages) throw new Error('Image persistence is unavailable.');
       await authorizePilotEffect();
       if (!isCurrent()) throw new DOMException('Send cancelled before saving images.', 'AbortError');
+      messages.assertUserWrite?.(conversationId, contextRefs);
       messages.saveImages(messageId, images);
       if (!isCurrent()) throw new DOMException('Send cancelled before saving text.', 'AbortError');
     }
+    await authorizePilotEffect();
+    if (!isCurrent()) throw new DOMException('Send cancelled before saving text.', 'AbortError');
+    messages.assertUserWrite?.(conversationId, contextRefs);
     try {
-      await authorizePilotEffect();
-      if (!isCurrent()) throw new DOMException('Send cancelled before saving text.', 'AbortError');
       message = input.persistedUserMessage ?? await createUserMessage(messages.persistence, {
         id: messageId, conversationId, turnId: current.turnId, taskId: resolvedTaskId,
         content, hiddenContext, providerInputItems, contextRefs,

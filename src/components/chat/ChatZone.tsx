@@ -1,5 +1,5 @@
 import { demoWorkflowJourney } from "../../services/operateWorkspace";
-import { useArchitectLibraryStore } from "../../stores/useArchitectLibraryStore";
+import { confirmedBlueprintDraft, useArchitectLibraryStore } from "../../stores/useArchitectLibraryStore";
 import { captureAgsdlChatContext, getAgsdlContext, replaceAgsdlChatContext, legacyAgsdlReference, serializeAgsdlChatContext, readAgsdlChatSelection, isAgsdlChatContextCurrent } from "../../stores/agsdl/chatContext";
 import { createComposerTransaction } from "../../services/chat/composerTransaction";
 import { COMPOSER_REFERENCE_PATTERN, resolveReference, referenceText } from "../../services/chat/composerReferenceText";
@@ -1366,7 +1366,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     () => tasks.find((task) => task.id === selectedTaskId) ?? null,
     [tasks, selectedTaskId]
   );
-  const libraryDraft = useArchitectLibraryStore(s => s.versionNumber === null ? s.draft : null);
+  const libraryDraft = useArchitectLibraryStore(confirmedBlueprintDraft);
+  const libraryDraftLoading = useArchitectLibraryStore(state => state.draftStatus === "loading");
   const libraryVersionNumber = useArchitectLibraryStore(s => s.versionNumber);
   const libraryMode = mode === "Architect" && !demoWorkflowJourney;
   const activeArchitectPlanId = libraryMode ? libraryDraft?.id : legacyPlanId;
@@ -1791,6 +1792,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   );
 
   const isConversationPending =
+    (libraryMode && libraryDraftLoading) ||
     hydrationStatus === 'idle' ||
     hydrationStatus === 'hydrating' ||
     restoreStatus === 'idle' ||

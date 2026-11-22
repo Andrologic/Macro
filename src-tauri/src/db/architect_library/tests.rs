@@ -44,7 +44,7 @@ async fn atomic_import_recovers_after_failed_freeze_and_concurrent_retry() {
     pool.close().await;
 
     let pool = create_pool(&path).await.unwrap();
-    sqlx::query("INSERT INTO conversations(id,title,created_at,updated_at) VALUES('old-conversation','old chat','now','now')")
+    sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('old-conversation','old chat','Architect','now','now')")
         .execute(&pool).await.unwrap();
     let (a, b) = tokio::join!(
         import_blueprint(&pool, legacy()),
@@ -66,7 +66,7 @@ async fn atomic_import_recovers_after_failed_freeze_and_concurrent_retry() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO conversations(id,title,created_at,updated_at) VALUES('recovered','chat','now','now'),('competing','chat','now','now')")
+    sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('recovered','chat','Architect','now','now'),('competing','chat','Architect','now','now')")
         .execute(&pool).await.unwrap();
     assert!(
         attach_conversation(&pool, id.clone(), "still-missing".into())
@@ -116,7 +116,7 @@ async fn conflicting_edits_versions_and_pinned_uses() {
         .await
         .unwrap();
     let id = draft.summary.id;
-    sqlx::query("INSERT INTO conversations(id,title,created_at,updated_at) VALUES('chat','chat','now','now')").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('chat','chat','Architect','now','now')").execute(&pool).await.unwrap();
     attach_conversation(&pool, id.clone(), "chat".into())
         .await
         .unwrap();
@@ -268,4 +268,165 @@ async fn blueprint_chats_restore_once_without_a_repository() {
     .await
     .unwrap();
     assert_eq!(rows, ["Initial design", "Review"]);
+}
+
+#[tokio::test]
+async fn replicas_restore_independently_even_after_a_shared_legacy_binding() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("macro.db");
+    let pool = create_pool(&path).await.unwrap();
+    sqlx::raw_sql(
+        "INSERT INTO conversations(id,title,scope_mode,created_at,updated_at)
+         VALUES('old-conversation','Design','Architect','2026-01-01','2026-01-01');
+         INSERT INTO messages(id,conversation_id,role,content,created_at)
+         VALUES('same-user-id','old-conversation','user','Local draft','2026-01-01');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut ids = Vec::new();
+    for content in ["Replica A", "Replica B"] {
+        let mut input = legacy();
+        input.source_id = content.into();
+        let history = input.history.as_mut().unwrap();
+        let messages = [
+            json!({"id":"same-user-id","role":"user","content":content,"createdAt":"2026-01-01"}),
+            json!({"id":"same-answer-id","role":"assistant","content":"Review","createdAt":"2026-01-01"}),
+        ];
+        history.insert(
+            "origins".into(),
+            json!([{
+                "location": content,
+                "transcript": messages.map(|message| message.to_string()).join("\n"),
+            }]),
+        );
+        ids.push(import_blueprint(&pool, input).await.unwrap().blueprint_id);
+    }
+    assert_eq!(
+        get_draft(&pool, ids[0].clone())
+            .await
+            .unwrap()
+            .summary
+            .conversation_id
+            .as_deref(),
+        Some("old-conversation")
+    );
+    assert_eq!(
+        get_draft(&pool, ids[1].clone())
+            .await
+            .unwrap()
+            .summary
+            .conversation_id,
+        None
+    );
+
+    // Older imports could share the legacy ID and falsely mark a divergent chat restored.
+    sqlx::query("UPDATE architect_blueprints SET conversation_id='old-conversation' WHERE id=?")
+        .bind(&ids[1])
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,'true','now')")
+        .bind(format!(
+            "architect:restored-transcript:{}:old-conversation",
+            ids[0]
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Open the unmarked replica first so the previously marked row then has
+    // exclusive ownership of the incompatible legacy conversation.
+    let b = ensure_conversation(&pool, ids[1].clone())
+        .await
+        .unwrap()
+        .conversation_id
+        .unwrap();
+    let (a, a_again) = tokio::join!(
+        ensure_conversation(&pool, ids[0].clone()),
+        ensure_conversation(&pool, ids[0].clone()),
+    );
+    let a = a.unwrap().conversation_id.unwrap();
+    assert_eq!(a_again.unwrap().conversation_id.as_ref(), Some(&a));
+    assert_ne!(a, b);
+    assert_ne!(a, "old-conversation");
+    assert_ne!(b, "old-conversation");
+    pool.close().await;
+
+    let pool = create_pool(&path).await.unwrap();
+    for ((blueprint, chat), content) in ids.into_iter().zip([a, b]).zip(["Replica A", "Replica B"])
+    {
+        let draft = get_draft(&pool, blueprint.clone()).await.unwrap();
+        let history = draft.history.unwrap();
+        assert_eq!(history["legacyConversationId"], "old-conversation");
+        assert_eq!(history["origins"][0]["location"], content);
+        assert_eq!(
+            ensure_conversation(&pool, blueprint)
+                .await
+                .unwrap()
+                .conversation_id
+                .as_ref(),
+            Some(&chat)
+        );
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT content,created_at FROM messages WHERE conversation_id=? ORDER BY created_at,id",
+        ).bind(&chat).fetch_all(&pool).await.unwrap();
+        assert_eq!(
+            rows,
+            [
+                (content.into(), "2026-01-01".into()),
+                ("Review".into(), "2026-01-01".into())
+            ]
+        );
+    }
+    let rows: Vec<String> =
+        sqlx::query_scalar("SELECT content FROM messages WHERE conversation_id='old-conversation'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(rows, ["Local draft"]);
+}
+
+#[tokio::test]
+async fn a_chat_can_only_be_attached_to_one_blueprint() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = create_pool(&dir.path().join("macro.db")).await.unwrap();
+    let project = create_project(&pool, "Library".into()).await.unwrap();
+    let a = create_blueprint(&pool, project.id.clone(), "A".into(), document())
+        .await
+        .unwrap()
+        .summary
+        .id;
+    let b = create_blueprint(&pool, project.id, "B".into(), document())
+        .await
+        .unwrap()
+        .summary
+        .id;
+    sqlx::raw_sql(
+        "INSERT INTO conversations(id,title,scope_mode,created_at,updated_at)
+        VALUES('design','Design','Architect','now','now'),('chat','Chat','Chat','now','now')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (first, second) = tokio::join!(
+        attach_conversation(&pool, a.clone(), "design".into()),
+        attach_conversation(&pool, b.clone(), "design".into()),
+    );
+    assert_ne!(first.is_ok(), second.is_ok());
+    let (winner, loser) = if first.is_ok() { (a, b) } else { (b, a) };
+    attach_conversation(&pool, winner, "design".into())
+        .await
+        .unwrap();
+    assert!(attach_conversation(&pool, loser.clone(), "chat".into())
+        .await
+        .is_err());
+    let chat = ensure_conversation(&pool, loser)
+        .await
+        .unwrap()
+        .conversation_id
+        .unwrap();
+    assert_ne!(chat, "design");
+    assert_ne!(chat, "chat");
 }
