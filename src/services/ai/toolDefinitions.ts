@@ -48,37 +48,15 @@ export const TERMINAL_CREATE_SESSION_TOOL = toFunctionToolShape(
 export const TERMINAL_RUN_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('terminal_run'));
 export const TERMINAL_READ_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('terminal_read'));
 export const TERMINAL_KILL_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('terminal_kill'));
-export const GENERATE_PLAN_TOOL = toFunctionToolShape(
-  requireMacroToolRegistryEntry('strategy_generate')
-);
 const agsdlToolShape = (id: 'agsdl_get' | 'agsdl_update') =>
   toFunctionToolShape(requireMacroToolRegistryEntry(id));
 export const AGSDL_GET_TOOL = agsdlToolShape('agsdl_get');
 export const AGSDL_UPDATE_TOOL = agsdlToolShape('agsdl_update');
-export const CREATE_PLAN_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('plan_create'));
-export const LIST_PLANS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('plan_list'));
-export const GET_PLAN_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('plan_get'));
-export const UPDATE_PLAN_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('plan_update'));
-export const DELETE_PLAN_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('plan_delete'));
-export const RESTORE_PLAN_TOOL = toFunctionToolShape(
-  requireMacroToolRegistryEntry('plan_restore')
-);
-export const SET_ACTIVE_PLAN_TOOL = toFunctionToolShape(
-  requireMacroToolRegistryEntry('plan_set_active')
-);
-export const GET_STRATEGY_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('strategy_get'));
 export const GET_TASK_TODOS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_todo_get'));
 export const UPDATE_TASK_TODOS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_todo_update'));
 export const LIST_TASK_ARTIFACTS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_artifact_list'));
 export const GET_TASK_ARTIFACT_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_artifact_get'));
 export const PUT_TASK_ARTIFACT_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_artifact_put'));
-export const UPDATE_STRATEGY_TOOL = toFunctionToolShape(
-  requireMacroToolRegistryEntry('strategy_update')
-);
-export const DELETE_STRATEGY_TOOL = toFunctionToolShape(
-  requireMacroToolRegistryEntry('strategy_delete')
-);
-
 export const cloneJsonSchema = (schema: JsonSchema): JsonSchema =>
   JSON.parse(JSON.stringify(schema)) as JsonSchema;
 
@@ -187,24 +165,13 @@ export const collectAllowedTools = (params: {
     tools.push(WEB_SEARCH_TOOL);
   }
   if (allowedTools.has('web_fetch') && enableWebFetch) tools.push(WEB_FETCH_TOOL);
-  if (allowedTools.has('strategy_generate')) tools.push(GENERATE_PLAN_TOOL);
   if (allowedTools.has('agsdl_get')) tools.push(AGSDL_GET_TOOL);
   if (allowedTools.has('agsdl_update')) tools.push(AGSDL_UPDATE_TOOL);
-  if (allowedTools.has('plan_create')) tools.push(CREATE_PLAN_TOOL);
-  if (allowedTools.has('plan_list')) tools.push(LIST_PLANS_TOOL);
-  if (allowedTools.has('plan_get')) tools.push(GET_PLAN_TOOL);
-  if (allowedTools.has('plan_update')) tools.push(UPDATE_PLAN_TOOL);
-  if (allowedTools.has('plan_delete')) tools.push(DELETE_PLAN_TOOL);
-  if (allowedTools.has('plan_restore')) tools.push(RESTORE_PLAN_TOOL);
-  if (allowedTools.has('plan_set_active')) tools.push(SET_ACTIVE_PLAN_TOOL);
-  if (allowedTools.has('strategy_get')) tools.push(GET_STRATEGY_TOOL);
   if (allowedTools.has('task_todo_get')) tools.push(GET_TASK_TODOS_TOOL);
   if (allowedTools.has('task_todo_update')) tools.push(UPDATE_TASK_TODOS_TOOL);
   if (allowedTools.has('task_artifact_list')) tools.push(LIST_TASK_ARTIFACTS_TOOL);
   if (allowedTools.has('task_artifact_get')) tools.push(GET_TASK_ARTIFACT_TOOL);
   if (allowedTools.has('task_artifact_put')) tools.push(PUT_TASK_ARTIFACT_TOOL);
-  if (allowedTools.has('strategy_update')) tools.push(UPDATE_STRATEGY_TOOL);
-  if (allowedTools.has('strategy_delete')) tools.push(DELETE_STRATEGY_TOOL);
   if (shouldDiscoverMcpTools(allowedTools, mcpTools ?? [])) {
     tools.push(...mcpDiscoveryToolShapes);
   } else {

@@ -22,6 +22,7 @@ const buildPlan = (
   createdAt: overrides.createdAt ?? '2026-04-17T10:00:00.000Z',
   updatedAt: overrides.updatedAt ?? '2026-04-17T10:00:00.000Z',
   nodeCount: overrides.nodeCount ?? 1,
+  hasAgsdl: overrides.hasAgsdl,
   predictedBranchCount: overrides.predictedBranchCount ?? 1,
 });
 
@@ -37,6 +38,35 @@ const createDeps = (plansByBranch: Record<string, { activePlanId: string | null;
 });
 
 describe('loadMacroProjectMetadataForSelection', () => {
+  it('clears the Architect selection after archiving the last AgSDL plan in a mixed catalog', async () => {
+    const system = buildPlan({ id: 'system', hasAgsdl: true, nodeCount: 0 });
+    const software = buildPlan({ id: 'software', hasAgsdl: false });
+    const listing = { activePlanId: software.id, plans: [software, system] };
+    const deps = createDeps({ develop: listing });
+    const params = {
+      scopedProjectIds: ['project-1'],
+      rememberedPlanId: software.id,
+      currentActivePlanId: software.id,
+      currentTargetBranch: 'develop',
+      includeArchivedInVisible: true,
+      agsdlOnlyForSelection: true,
+      deps,
+    };
+    expect((await loadMacroProjectMetadataForSelection(params)).selectedPlan).toEqual(system);
+
+    const archived = { ...system, status: 'archived' as const };
+    listing.plans = [software, archived];
+    const result = await loadMacroProjectMetadataForSelection(params);
+    expect(result.selectedPlan).toBeNull();
+    expect(result.selectedBranchName).toBeNull();
+    expect(result.selectionReason).toBe('none');
+    expect(result.snapshot.visiblePlans).toEqual([software, archived]);
+    expect((await loadMacroProjectMetadataForSelection({
+      ...params,
+      agsdlOnlyForSelection: false,
+    })).selectedPlan).toEqual(software);
+  });
+
   it('builds a stable catalog scope key from the current selection and scoped projects', () => {
     expect(
       buildArchitectPlanCatalogScopeKey({

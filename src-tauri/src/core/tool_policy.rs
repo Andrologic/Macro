@@ -53,30 +53,9 @@ fn architect_allowed_tool_ids() -> &'static [&'static str] {
         "git_branch_list",
         "git_diff",
         "git_get_tree",
-        "plan_create",
-        "plan_list",
-        "plan_get",
-        "plan_update",
         "agsdl_get",
         "agsdl_update",
     ]
-}
-
-fn normalize_architect_tool_id(tool_id: &str) -> &str {
-    match tool_id {
-        "generate_plan" => "strategy_generate",
-        "create_plan" => "plan_create",
-        "list_plans" => "plan_list",
-        "get_plan" => "plan_get",
-        "update_plan" => "plan_update",
-        "delete_plan" => "plan_delete",
-        "restore_plan" => "plan_restore",
-        "set_active_plan" => "plan_set_active",
-        "get_strategy" => "strategy_get",
-        "update_strategy" => "strategy_update",
-        "delete_strategy" => "strategy_delete",
-        _ => tool_id,
-    }
 }
 
 fn chat_allowed_tool_ids() -> &'static [&'static str] {
@@ -254,7 +233,7 @@ pub fn validate_tool_execution(
     path: Option<&str>,
 ) -> ToolValidationResult {
     let mode = mode.trim();
-    let tool_id = normalize_architect_tool_id(tool_id.trim());
+    let tool_id = tool_id.trim();
 
     let Some((allowed_tool_ids, enforce_macro_only_writes)) = resolve_mode_policy(mode) else {
         return ToolValidationResult {
@@ -387,6 +366,32 @@ mod tests {
             assert!(!get_mode_policy("Implement")
                 .allowed_tool_ids
                 .contains(&tool.to_string()));
+        }
+    }
+
+    #[test]
+    fn architect_rejects_retired_plan_tools_and_aliases() {
+        let policy = get_mode_policy("Architect");
+        for (canonical, alias) in [
+            ("strategy_generate", "generate_plan"),
+            ("plan_create", "create_plan"),
+            ("plan_list", "list_plans"),
+            ("plan_get", "get_plan"),
+            ("plan_update", "update_plan"),
+            ("plan_delete", "delete_plan"),
+            ("plan_restore", "restore_plan"),
+            ("plan_set_active", "set_active_plan"),
+            ("strategy_get", "get_strategy"),
+            ("strategy_update", "update_strategy"),
+            ("strategy_delete", "delete_strategy"),
+        ] {
+            for tool in [canonical, alias] {
+                assert!(!policy.allowed_tool_ids.iter().any(|id| id == tool));
+                assert!(
+                    !validate_tool_execution("Architect", tool, None).allowed,
+                    "{tool}"
+                );
+            }
         }
     }
 

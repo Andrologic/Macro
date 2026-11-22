@@ -16,11 +16,9 @@ interface TestAppState {
   standaloneProjects: Array<{ id: string }>;
   projectGroups: Array<{ id: string; projects: Array<{ id: string }> }>;
   setMode: ReturnType<typeof mock>;
-  setSelectedGroup: ReturnType<typeof mock>;
   setSelectedTask: ReturnType<typeof mock>;
   switchProjectContext: ReturnType<typeof mock>;
-  loadMacroProjectMetadataForSelection: ReturnType<typeof mock>;
-  activateArchitectPlan: ReturnType<typeof mock>;
+  openArchitectPlanNotification: ReturnType<typeof mock>;
 }
 
 interface TestChatState {
@@ -64,7 +62,6 @@ const taskListeners = new Set<StoreListener<TestTaskState>>();
 const notifyActionRequired = mock(
   (_title: string, _options: CapturedNotificationOptions) => undefined,
 );
-
 const useAppStore = Object.assign(() => appState, {
   getState: () => appState,
 });
@@ -190,41 +187,17 @@ beforeEach(() => {
       navigationCalls.push('setMode');
       appState.mode = mode;
     }),
-    setSelectedGroup: mock((
-      groupId: string | null,
-      _options?: { restoreProjectContext?: boolean; ensureAutoPlan?: boolean },
-    ) => {
-      navigationCalls.push('setSelectedGroup');
-      appState.selectedGroupId = groupId;
-    }),
     setSelectedTask: mock((taskId: string | null) => {
       navigationCalls.push('setSelectedTask');
       appState.selectedTaskId = taskId;
     }),
-    switchProjectContext: mock(async () => {
+    switchProjectContext: mock(async (projectId: string) => {
       navigationCalls.push('switchProjectContext');
+      appState.selectedGroupId = null;
+      appState.selectedProjectId = projectId;
     }),
-    loadMacroProjectMetadataForSelection: mock(async (options: {
-      hydrateActivePlan?: boolean;
-    }) => {
-      navigationCalls.push(
-        options.hydrateActivePlan === false ? 'loadCatalog' : 'hydratePlan',
-      );
-      return {
-        snapshot: {
-          scopedProjectIds: ['project-current'],
-          visiblePlans: [
-            {
-              id: 'plan-owner',
-              targetBranch: 'develop',
-              conversationId: 'conversation-1',
-            },
-          ],
-        },
-      };
-    }),
-    activateArchitectPlan: mock(async () => {
-      navigationCalls.push('activatePlan');
+    openArchitectPlanNotification: mock(async () => {
+      navigationCalls.push('openArchitectPlanNotification');
       return true;
     }),
   };
@@ -274,6 +247,20 @@ describe('workflow attention notification subscriptions', () => {
       expect(chatState.selectedConversationId).toBe('conversation-visible');
     },
   );
+  it('lets the Architect store refuse a stale notification without opening a fallback', async () => {
+    const conversation = makeConversation({ scope_mode: 'Architect', task_id: null });
+    chatState.conversations = [conversation];
+    appState.openArchitectPlanNotification.mockResolvedValue(false);
+
+    await openWorkflowNotificationContext({ kind: 'conversation', requestKind: 'approval', conversationId: conversation.id });
+
+    expect(appState.openArchitectPlanNotification).toHaveBeenCalledWith(conversation.id);
+    expect(chatState.ensureConversationForCurrentMode).not.toHaveBeenCalled();
+    expect(chatState.selectConversation).not.toHaveBeenCalled();
+    expect(appState.setMode).not.toHaveBeenCalled();
+  });
+
+
 
   it('keeps conversation navigation retryable while chat is hydrating', async () => {
     chatState.hydrationStatus = 'hydrating';
@@ -636,7 +623,7 @@ describe('workflow attention notification subscriptions', () => {
     unsubscribe();
   });
 
-  it('emits one questionnaire notification and honors its explicit Architect group', async () => {
+  it('dispatches one Architect questionnaire notification through its exact-plan action', async () => {
     const conversation = makeConversation({
       scope_mode: 'Architect',
       task_id: null,
@@ -659,58 +646,9 @@ describe('workflow attention notification subscriptions', () => {
       notificationKey: 'workflow-attention:questionnaire:conversation-1:question-1',
     }));
     await options.actions[0]!.onClick();
-    expect(appState.setSelectedGroup).toHaveBeenCalledWith('group-other', {
-      restoreProjectContext: false,
-      ensureAutoPlan: false,
-    });
-    expect(appState.switchProjectContext).not.toHaveBeenCalled();
-    expect(appState.setMode).toHaveBeenCalledWith('Architect', {
-      ensureAutoPlan: false,
-    });
-    expect(appState.activateArchitectPlan).toHaveBeenCalledWith(
-      'plan-owner',
-      expect.objectContaining({
-        targetBranch: 'develop',
-        allowScopeSwitch: false,
-      }),
-    );
-    expect(navigationCalls).toEqual([
-      'setSelectedGroup',
-      'setMode',
-      'loadCatalog',
-      'activatePlan',
-      'ensureConversation',
-      'selectConversation',
-    ]);
-    expect(chatState.ensureConversationForCurrentMode).toHaveBeenCalledTimes(1);
-    expect(chatState.selectConversation).toHaveBeenCalledWith(conversation.id);
-    unsubscribe();
-  });
 
-  it('routes a project-only Architect request through its project context', async () => {
-    const conversation = makeConversation({
-      scope_mode: 'Architect',
-      task_id: null,
-      group_id: null,
-      project_id: 'project-other',
-    });
-    chatState = { ...chatState, conversations: [conversation] };
-    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
-    const message = makeQuestionnaire(conversation);
-    updateChatState({
-      messages: [message],
-      messagesByConversationId: { [conversation.id]: [message] },
-    });
-
-    const [, options] = notifyActionRequired.mock.calls[0]!;
-    await options.actions[0]!.onClick();
-
-    expect(appState.switchProjectContext).toHaveBeenCalledWith('project-other', {
-      restoreProjectContext: false,
-      ensureAutoPlan: false,
-    });
-    expect(appState.setSelectedGroup).not.toHaveBeenCalled();
-    expect(chatState.selectConversation).toHaveBeenCalledWith(conversation.id);
+    expect(appState.openArchitectPlanNotification).toHaveBeenCalledWith(conversation.id);
+    expect(navigationCalls).toEqual(['openArchitectPlanNotification']);
     unsubscribe();
   });
 
@@ -773,18 +711,9 @@ describe('workflow attention notification subscriptions', () => {
       messages: [message],
       messagesByConversationId: { [conversation.id]: [message] },
     });
-
     const [, options] = notifyActionRequired.mock.calls[0]!;
     await options.actions[0]!.onClick();
-
-    expect(appState.setSelectedGroup).toHaveBeenCalledWith('group-other', {
-      restoreProjectContext: false,
-      ensureAutoPlan: false,
-    });
-    expect(appState.setMode).toHaveBeenCalledWith('Architect', {
-      ensureAutoPlan: false,
-    });
-    expect(chatState.selectConversation).toHaveBeenCalledWith(conversation.id);
+    expect(appState.openArchitectPlanNotification).toHaveBeenCalledWith(conversation.id);
     unsubscribe();
   });
 

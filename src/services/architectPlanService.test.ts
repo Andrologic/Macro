@@ -2,6 +2,7 @@ import { afterEach,beforeEach,describe,expect,it,mock,spyOn } from 'bun:test';
 import { DEFAULT_NEW_PLAN_LABEL } from './architectPlanPresentation';
 import { installArchitectPlanPorts,type ArchitectPlanServiceAppState } from './architectPlanReadContext';
 import type { ArchitectPlanRecord,ArchitectPlanSummary } from './architectPlanService';
+import { getIndexPath, getPlanJsonPath, getPlanManifestPath, localIndexKey, localPlanKey } from './architectPlanReadModel';
 import type { WorkspaceScope } from './tauriIpc';
 import type { ValidProjectRegistrySnapshot } from './validProjectRegistry';
 const actualTauriIpc = await import('./tauriIpc');
@@ -2527,6 +2528,152 @@ describe('architectPlanService', () => {
     expect(listing.activePlanId).not.toBe(created.id);
   });
 
+  it('can resolve an activation conversation from the stored plan when its summary is stale', async () => {
+    const plan = await service.createArchitectPlan({
+      branchName,
+      planId: 'notification-owner',
+      agsdl: { source: '', annexes: {} },
+    });
+    await service.bindArchitectPlanConversation({ branchName, planId: plan.id, conversationId: 'stored-owner' });
+    const listed = await service.listArchitectPlans(branchName);
+    const summaryHint = {
+      ...listed.plans.find((candidate: ArchitectPlanSummary) => candidate.id === plan.id)!,
+      conversationId: 'stale-owner',
+    };
+    await service.getArchitectPlanActivationPayload(branchName, plan.id, { summaryHint });
+    const payload = await service.getArchitectPlanActivationPayload(branchName, plan.id, {
+      summaryHint,
+      requireStoredConversation: true,
+    });
+    expect(payload?.conversationId).toBe('stored-owner');
+  });
+
+  it.each(['main', 'refs/heads/develop', undefined])(
+    'checks the raw plan branch of an exact filesystem activation: %s',
+    async (storedBranch) => {
+      const root = '/repos/web';
+      const planId = 'branch-owner';
+      const conversationId = 'stored-conversation';
+      const stamp = '2026-06-01T08:00:00.000Z';
+      const agsdl = { source: '{"contract":"agsdl-0.3.0","id":"branch-owner","agents":{}}', annexes: {}, revision: 1 };
+      const summaryHint = {
+        id: planId, slug: planId, title: 'Branch owner', description: '', status: 'draft' as const,
+        hasAgsdl: true, targetBranch: branchName, conversationId, createdAt: stamp, updatedAt: stamp, nodeCount: 0,
+      };
+      service = await loadArchitectPlanService({
+        tauriAvailable: true,
+        workspaceRoot: root,
+        filesByWorkspacePath: { [root]: {
+          [getPlanJsonPath(branchName, planId)]: JSON.stringify({
+            ...summaryHint, targetBranch: storedBranch, nodes: [], predictedBranches: [], agsdl,
+          }),
+          [getPlanManifestPath(branchName, planId)]: JSON.stringify({
+            targetBranch: branchName, conversation: { conversationId, messageCount: 0 },
+          }),
+        } },
+      });
+      const permissive = await service.getArchitectPlanActivationPayload(branchName, planId, { summaryHint });
+      expect(permissive?.plan.targetBranch).toBe(branchName);
+      const exact = await service.getArchitectPlanActivationPayload(branchName, planId, {
+        summaryHint, requireStoredConversation: true,
+      });
+      if (storedBranch === 'main') {
+        expect(exact).toBeNull();
+      } else {
+        expect(exact?.plan.targetBranch).toBe(branchName);
+        expect(exact?.conversationId).toBe(conversationId);
+      }
+    },
+  );
+
+  it.each(['local', 'filesystem'])('reopens AgSDL from an old mixed %s index without changing the stored data', async (backend) => {
+    const projectRoot = '/repos/web';
+    const indexPath = getIndexPath(branchName);
+    const indexKey = localIndexKey(branchName);
+    const stamp = '2026-06-01T08:00:00.000Z';
+    const summary = (id: string): ArchitectPlanSummary => ({
+      id,
+      slug: id,
+      title: id,
+      status: 'draft',
+      targetBranch: branchName,
+      label: DEFAULT_NEW_PLAN_LABEL,
+      description: '',
+      createdAt: stamp,
+      updatedAt: stamp,
+      nodeCount: 0,
+    });
+    const agsdl = {
+      source: '{ "contract":"agsdl-0.3.0", "id":"test", "agents":{} }',
+      annexes: { note: 'Example' },
+      revision: 1,
+    };
+    const system = { ...summary('system'), nodes: [], predictedBranches: [], agsdl };
+    const software = { ...summary('software'), nodes: [], predictedBranches: [] };
+    const index = JSON.stringify({
+      version: 2,
+      activePlanId: software.id,
+      reservedPlanSlugs: ['reserved'],
+      plans: [
+        summary(system.id), summary(software.id), summary('ambiguous'), summary('missing'),
+        { ...summary('modern-software'), hasAgsdl: false },
+        { ...summary('modern-system'), hasAgsdl: true },
+      ],
+    });
+    const plans = {
+      [system.id]: JSON.stringify(system),
+      [software.id]: JSON.stringify(software),
+      ambiguous: JSON.stringify(system),
+      'modern-software': JSON.stringify({ ...system, id: 'modern-software' }),
+    };
+    const readPaths: string[] = [];
+    const filesByWorkspacePath = { [projectRoot]: {
+      [indexPath]: index,
+      ...Object.fromEntries(Object.entries(plans).map(([id, value]) => [getPlanJsonPath(branchName, id), value])),
+    } };
+    const beforeFiles = JSON.stringify(filesByWorkspacePath);
+    if (backend === 'filesystem') {
+      service = await loadArchitectPlanService({
+        tauriAvailable: true, workspaceRoot: projectRoot, filesByWorkspacePath, readPaths,
+      });
+    } else {
+      storage.setItem(indexKey, index);
+      for (const [id, value] of Object.entries(plans)) {
+        storage.setItem(localPlanKey(branchName, id), value);
+      }
+      const getItem = storage.getItem;
+      spyOn(storage, 'getItem').mockImplementation((key) => {
+        readPaths.push(key);
+        return getItem(key);
+      });
+    }
+
+    const listed = await service.listArchitectPlans(branchName);
+    expect(listed.activePlanId).toBe(software.id);
+    expect(listed.plans).toHaveLength(6);
+    expect(listed.plans.filter((plan: ArchitectPlanSummary) => plan.hasAgsdl)
+      .map((plan: ArchitectPlanSummary) => plan.id).sort())
+      .toEqual(['modern-system', system.id]);
+    const planPaths = readPaths.filter((path) => path.endsWith('/plan.json') || path.startsWith('macro_architect_plan:'));
+    const expectedReads = ['system', 'software', 'ambiguous', 'missing'].map((id) =>
+      backend === 'filesystem' ? getPlanJsonPath(branchName, id) : localPlanKey(branchName, id),
+    );
+    expect([...new Set(planPaths)].sort()).toEqual(expectedReads.sort());
+
+    service.clearArchitectPlanFrontendCaches();
+    const reopened = await service.getArchitectPlanActivationPayload(branchName, system.id);
+    expect(reopened?.resolutionMode).toBe('full');
+    expect(reopened?.plan.agsdl).toEqual(agsdl);
+    if (backend === 'filesystem') {
+      expect(JSON.stringify(filesByWorkspacePath)).toBe(beforeFiles);
+    } else {
+      expect(storage.getItem(indexKey)).toBe(index);
+      for (const [id, value] of Object.entries(plans)) {
+        expect(storage.getItem(localPlanKey(branchName, id))).toBe(value);
+      }
+    }
+  });
+
   it('persists 0.2 design intent outside the unchanged closed source and includes metadata in size limits', async () => {
     const source = '{"contract":"agsdl-0.2.0","id":"release","agents":{},"configurations":{},"bindings":{}}';
     const design = { version: 1 as const, kind: 'blueprint' as const, purpose: 'Vérifier la release.', context: '', rules: [], requirements: [] };
@@ -2554,15 +2701,19 @@ describe('architectPlanService', () => {
     expect(created.id).toBe('oversized-blueprint');
   });
 
-  it('fully activates an AgSDL-only draft and marks its summary as authored', async () => {
-    const created = await service.createArchitectPlan({ branchName, planId: 'agsdl-only', label: DEFAULT_NEW_PLAN_LABEL });
-    const source = '{ "opaque":900719925474099312345 }';
-    await service.updateArchitectPlan({ branchName, planId: created.id, agsdl: { source, annexes: {} }, expectedAgsdlRevision: 0 });
+  it('creates, activates, saves and reopens an initially empty AgSDL draft', async () => {
+    const empty = { source: '', annexes: {} };
+    const created = await service.createArchitectPlan({ branchName, planId: 'agsdl-only', label: DEFAULT_NEW_PLAN_LABEL, agsdl: empty });
     const listed = await service.listArchitectPlans(branchName, true, true);
     expect(listed.plans.find((plan: ArchitectPlanSummary) => plan.id === created.id)?.hasAgsdl).toBe(true);
-    const payload = await service.getArchitectPlanActivationPayload(branchName, created.id);
-    expect(payload?.resolutionMode).toBe('full');
-    expect(payload?.plan.agsdl?.source).toBe(source);
+    const initial = await service.getArchitectPlanActivationPayload(branchName, created.id);
+    expect(initial?.resolutionMode).toBe('full');
+    expect(initial?.plan.agsdl).toEqual({ ...empty, revision: 1 });
+
+    const source = '{ "contract":"agsdl-0.3.0", "id":"test", "agents":{} }';
+    await service.updateArchitectPlan({ branchName, planId: created.id, agsdl: { source, annexes: {} }, expectedAgsdlRevision: 1 });
+    const reopened = await service.getArchitectPlanActivationPayload(branchName, created.id);
+    expect(reopened?.plan.agsdl).toEqual({ source, annexes: {}, revision: 2 });
   });
 
   it('returns a blank fast-path activation payload for an untouched new plan', async () => {

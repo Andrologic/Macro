@@ -306,6 +306,7 @@ export interface ArchitectPlanActivationOptions {
   summaryHint?: ArchitectPlanSummary | null;
   scopedProjectIdsHint?: string[];
   allowIndexFallback?: boolean;
+  requireStoredConversation?: boolean;
 }
 
 export const applyArchitectPlanLifecycleForStatus = <T extends {
@@ -523,6 +524,10 @@ export const normalizeBranchName = (value?: string, fallbackBranch = DEFAULT_GIT
     .replace(/\/+$/, '');
   return normalized || fallbackBranch;
 };
+
+export const matchesStoredArchitectPlanBranch = (stored: unknown, branchName: string): boolean =>
+  stored == null ||
+  (typeof stored === 'string' && (!stored.trim() || normalizeBranchName(stored, '') === branchName));
 
 export const getArchitectPlanIndexCacheKey = (branchName: string): string =>
   normalizeBranchName(branchName);
