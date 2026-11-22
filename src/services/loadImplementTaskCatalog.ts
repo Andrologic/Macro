@@ -430,6 +430,7 @@ export const createLoadImplementTaskCatalog = (
       await Promise.all(
         plans.filter(plan => !hasNativeWorkflow(plan)).map(async (plan) => {
           const runtime = await readArchitectPlanRuntime({
+            existingOnly,
             branchName: plan.targetBranch,
             planId: plan.id,
             projectIds: plan.projectIds,

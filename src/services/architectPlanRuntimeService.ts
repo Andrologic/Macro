@@ -139,6 +139,7 @@ export const createArchitectPlanRuntimeService = (ports: ArchitectPlanRuntimePor
     target: RuntimeWorkspaceTarget,
     runtimePath: string,
     planId: string,
+    existingOnly = false,
   ): Promise<RuntimeSnapshot> => {
     let file: tauriIpc.FsFileContentDto;
     try {
@@ -146,6 +147,7 @@ export const createArchitectPlanRuntimeService = (ports: ArchitectPlanRuntimePor
         path: runtimePath,
         allowOutsideWorkspace: false,
         ...target,
+        workspaceScope: existingOnly && target.workspaceScope === "metadata" ? "metadata_existing" : target.workspaceScope,
       });
     } catch (error) {
       if (toServiceError(error).code === 'FilesystemNotFound') {
@@ -183,16 +185,20 @@ export const createArchitectPlanRuntimeService = (ports: ArchitectPlanRuntimePor
 
   const targetKey = (target: RuntimeWorkspaceTarget): string => `${target.workspaceScope}:${target.workspacePath}`;
 
+  const requireReplicaOwners = (pending: NonNullable<RuntimeJournal['pending']>, targets: RuntimeWorkspaceTarget[]) => {
+    const allowed = new Set(targets.map(targetKey));
+    if (pending.replicas.some(({ target }) => !allowed.has(targetKey(target)))) {
+      throw new Error('Runtime replication requires its original project roots before recovery.');
+    }
+  };
+
   const recoverRuntimeReplication = async (
     key: string, runtimePath: string, planId: string, targets: RuntimeWorkspaceTarget[],
   ): Promise<void> => {
     const { raw, journal } = await readRuntimeJournal(key, planId);
     if (!journal.pending) return;
     const pending = journal.pending;
-    const allowed = new Set(targets.map(targetKey));
-    if (pending.replicas.some(({ target }) => !allowed.has(targetKey(target)))) {
-      throw new Error('Runtime replication requires its original project roots before recovery.');
-    }
+    requireReplicaOwners(pending, targets);
     // Settle every write before another mutation can proceed. Each write also fences
     // other windows/processes, and a lost response can be reconciled by content.
     const results = await Promise.allSettled(pending.replicas.map(async ({ target, revision }) => {
@@ -224,8 +230,17 @@ export const createArchitectPlanRuntimeService = (ports: ArchitectPlanRuntimePor
 
   const readCoherentRuntime = async (
     targets: RuntimeWorkspaceTarget[], runtimePath: string, planId: string, completedGeneration: number,
+    observation?: RuntimeJournal,
   ) => {
-    const snapshots = await Promise.all(targets.map((target) => readRuntimeAtWorkspace(target, runtimePath, planId)));
+    const pending = observation?.pending;
+    if (pending) requireReplicaOwners(pending, targets);
+    const snapshots = await Promise.all(targets.map(async target => {
+      const snapshot = await readRuntimeAtWorkspace(target, runtimePath, planId, !!observation);
+      const replica = pending?.replicas.find(item => targetKey(item.target) === targetKey(target));
+      if (!pending || !replica || canonicalJson(snapshot.record) === canonicalJson(pending.record)) return snapshot;
+      if (snapshot.revision !== replica.revision) throw new Error('Runtime replica changed outside the pending mutation.');
+      return { ...snapshot, record: pending.record };
+    }));
     const present = snapshots.filter((snapshot) => snapshot.record !== null);
     const current = present[0]?.record ?? null;
     if ((current?.generation ?? 0) < completedGeneration) {
@@ -278,6 +293,7 @@ export const createArchitectPlanRuntimeService = (ports: ArchitectPlanRuntimePor
   };
 
   const readArchitectPlanRuntime = async (params: {
+    existingOnly?: boolean;
     branchName: string;
     planId: string;
     projectIds?: string[] | null;
@@ -293,9 +309,9 @@ export const createArchitectPlanRuntimeService = (ports: ArchitectPlanRuntimePor
 
     const key = runtimeJournalKey(params.branchName, params.planId);
     return serializeRuntimeMutation(key, async () => {
-      await recoverRuntimeReplication(key, runtimePath, params.planId, workspaceTargets);
+      if (!params.existingOnly) await recoverRuntimeReplication(key, runtimePath, params.planId, workspaceTargets);
       const { journal } = await readRuntimeJournal(key, params.planId);
-      return (await readCoherentRuntime(workspaceTargets, runtimePath, params.planId, journal.generation)).current;
+      return (await readCoherentRuntime(workspaceTargets, runtimePath, params.planId, journal.generation, params.existingOnly ? journal : undefined)).current;
     });
   };
 
