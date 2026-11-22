@@ -72,7 +72,7 @@ export default function OperateNavigator() {
   const scoped = registrations.filter(({ scope }) => projects.some(project => project.id === scope.owner.projectId) ||
     groups.some(group => group.projects.some(project => project.id === scope.owner.projectId)));
   const instances = tasks.filter(isWorkflowAgentTask);
-  return <nav className="flex h-full min-h-0 flex-col" aria-label={t('agsdl.shell030.executions')}>
+  return <nav className="flex h-full min-h-0 flex-col" aria-label={t('agsdl.shell030.executions')} data-tour-id="operate-executions">
     <header className="flex min-h-12 items-center justify-between border-b border-border px-3">
       <h2 className="text-sm font-medium">{t('agsdl.shell030.executions')}</h2>
     </header>

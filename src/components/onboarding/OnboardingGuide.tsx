@@ -22,7 +22,7 @@ import {
 const PANEL_GAP = 14;
 const VIEWPORT_PADDING = 14;
 
-type TourSection = 'basics' | 'architect' | 'implement' | 'chat' | 'system';
+type TourSection = 'basics' | 'architect' | 'operate' | 'chat' | 'system';
 type TourPlacement = 'top' | 'right' | 'bottom' | 'left' | 'center';
 
 interface TourStep {
@@ -75,10 +75,9 @@ const TOUR_STEPS: TourStep[] = [
   {
     id: 'panel-toggles',
     section: 'basics',
-    targetId: 'toggle-right-panel',
-    fallbackTargetId: 'mode-context-header',
+    targetId: 'toggle-left-panel',
     placement: 'bottom',
-    icon: 'panel-right-open',
+    icon: 'panel-left-open',
   },
   {
     id: 'settings-and-help',
@@ -93,54 +92,43 @@ const TOUR_STEPS: TourStep[] = [
     mode: 'Architect',
     targetId: 'mode-architect',
     fallbackTargetId: 'mode-switcher',
-    openLeft: false,
-    openRight: true,
     placement: 'bottom',
     icon: 'compass',
   },
   {
-    id: 'architect-plan-selector',
+    id: 'architect-navigator',
     section: 'architect',
     mode: 'Architect',
-    targetId: 'architect-plan-selector',
-    fallbackTargetId: 'mode-context-header',
-    openLeft: false,
-    openRight: true,
-    placement: 'bottom',
+    targetId: 'architect-project-navigator',
+    openLeft: true,
+    placement: 'right',
     icon: 'layers',
   },
   {
-    id: 'architect-generate',
+    id: 'architect-conversation',
     section: 'architect',
     mode: 'Architect',
-    targetId: 'architect-generate-strategy',
-    fallbackTargetId: 'chat-control-row',
-    openLeft: false,
-    openRight: true,
-    placement: 'top',
-    icon: 'sparkles',
+    targetId: 'mode-context-header',
+    placement: 'bottom',
+    icon: 'message-square',
   },
   {
-    id: 'architect-strategy',
+    id: 'architect-agsdl',
     section: 'architect',
     mode: 'Architect',
-    targetId: 'architect-strategy-panel',
-    fallbackTargetId: 'right-panel',
-    openLeft: false,
+    targetId: 'architect-agsdl-panel',
     openRight: true,
     placement: 'left',
     icon: 'network',
     pointCount: 3,
   },
   {
-    id: 'implement-mode',
-    section: 'implement',
+    id: 'operate-executions',
+    section: 'operate',
     mode: 'Implement',
-    targetId: 'mode-implement',
-    fallbackTargetId: 'mode-switcher',
+    targetId: 'operate-executions',
     openLeft: true,
-    openRight: false,
-    placement: 'bottom',
+    placement: 'right',
     icon: 'workflow',
   },
   {
@@ -202,7 +190,6 @@ const TOUR_STEPS: TourStep[] = [
     id: 'footer',
     section: 'system',
     targetId: 'notification-center',
-    fallbackTargetId: 'footer-status-bar',
     placement: 'top',
     icon: 'bell',
   },
@@ -219,7 +206,7 @@ const TOUR_STEPS: TourStep[] = [
 const SECTION_LABEL_KEYS: Record<TourSection, string> = {
   basics: 'onboarding.sections.basics',
   architect: 'onboarding.sections.architect',
-  implement: 'onboarding.sections.implement',
+  operate: 'onboarding.sections.operate',
   chat: 'onboarding.sections.chat',
   system: 'onboarding.sections.system',
 };

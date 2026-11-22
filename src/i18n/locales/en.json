@@ -281,7 +281,7 @@
     "sections": {
       "basics": "Basics",
       "architect": "Architect",
-      "implement": "Operate",
+      "operate": "Operate",
       "chat": "Chat",
       "system": "System"
     },
@@ -289,7 +289,7 @@
     "steps": {
       "welcome": {
         "title": "Welcome to Macro",
-        "body": "Macro is organized by modes. The best onboarding shows controls when they become useful, then lets the user take back control.",
+        "body": "Use Architect to design AgSDL workflows, Operate to monitor executions, and Chat for conversations with their own context.",
         "points": [
           "The guide changes mode automatically.",
           "The left and right panels reopen when a step needs them.",
@@ -298,16 +298,16 @@
       },
       "modes": {
         "title": "Mode selector",
-        "body": "These three buttons change the whole workspace. Architect is for scoping, Operate is for executing, and Chat is for free-form discussion with context.",
+        "body": "Use this selector to switch between Architect, Operate, and Chat.",
         "points": [
-          "Architect: conversations, plans, and strategy.",
-          "Operate shows running systems, agent conversations and requests for human input.",
-          "Chat: conversations, sources, and general tools."
+          "Design AgSDL workflows in Architect.",
+          "Monitor executions and respond to requests in Operate.",
+          "Start a conversation with its own files, sources, and tools in Chat."
         ]
       },
       "panel-toggles": {
         "title": "Side panels",
-        "body": "Panel buttons hide or show context areas. The left panel often contains the work list, while the right panel contains details or validation."
+        "body": "The buttons in the top bar show or hide the side panels available in the current mode."
       },
       "settings-and-help": {
         "title": "Settings and onboarding",
@@ -315,32 +315,32 @@
       },
       "architect-mode": {
         "title": "Architect mode",
-        "body": "Architect turns a discussion into a strategy when the user explicitly asks for one."
+        "body": "Design a system in Architect. Each plan keeps its design conversation and its AgSDL document together."
       },
-      "architect-plan-selector": {
-        "title": "Plans",
-        "body": "The plan selector isolates conversations and strategies for each plan."
+      "architect-navigator": {
+        "title": "Projects and plans",
+        "body": "Use the left panel to open a project plan or browse the Macro library for blueprints."
       },
-      "architect-generate": {
-        "title": "Generate the strategy",
-        "body": "This action builds the task graph and predictable branches from the conversation and project context."
+      "architect-conversation": {
+        "title": "Design conversation",
+        "body": "Open a plan, then describe the workflow you want in the center conversation. Ask the agent to create or revise its AgSDL document."
       },
-      "architect-strategy": {
-        "title": "Strategy and branches",
-        "body": "The right panel shows the strategy. The Graph / Branches switch helps move from a dependency view to a Git execution view.",
+      "architect-agsdl": {
+        "title": "AgSDL viewer",
+        "body": "The right panel shows the workflow for the selected plan.",
         "points": [
-          "Graph: dependencies and logical order.",
-          "Branches: work grouped by feature branch.",
-          "Expand opens a more comfortable explorer."
+          "Inspect the agents and their exchanges in the graph.",
+          "Select a component to see its details.",
+          "Use Expand view to open the graph in a larger window."
         ]
       },
       "architect-validate": {
         "title": "Validate the plan",
         "body": "Validation freezes the plan enough to provision branches and feed Implement. Started or completed tasks are protected from destructive regenerations."
       },
-      "implement-mode": {
-        "title": "Operate mode",
-        "body": "Operate shows running systems, agent conversations and requests for human input."
+      "operate-executions": {
+        "title": "Executions in Operate",
+        "body": "Select an execution on the left to review its status and requests for your input. Select an agent instance to see its conversation when available."
       },
       "implement-tasks": {
         "title": "Task queue",

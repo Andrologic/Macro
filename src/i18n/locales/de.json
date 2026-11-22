@@ -281,7 +281,7 @@
     "sections": {
       "basics": "Grundlagen",
       "architect": "Architect",
-      "implement": "Operate",
+      "operate": "Operate",
       "chat": "Chat",
       "system": "System"
     },
@@ -289,7 +289,7 @@
     "steps": {
       "welcome": {
         "title": "Willkommen bei Macro",
-        "body": "Macro ist nach Modi organisiert. Das beste Onboarding zeigt Bedienelemente erst dann, wenn sie nützlich werden, und gibt danach die Kontrolle an den Nutzer zurück.",
+        "body": "Entwirf AgSDL-Workflows in Architect, verfolge Ausführungen in Operate und führe Unterhaltungen mit eigenem Kontext in Chat.",
         "points": [
           "Der Leitfaden wechselt den Modus automatisch.",
           "Das linke und rechte Panel werden wieder geöffnet, wenn ein Schritt sie benötigt.",
@@ -298,16 +298,16 @@
       },
       "modes": {
         "title": "Modusauswahl",
-        "body": "Diese drei Schaltflächen ändern die gesamte Arbeitsfläche. Architect dient der Eingrenzung, Operate der Ausführung und Chat der freien Diskussion mit Kontext.",
+        "body": "Mit dieser Auswahl wechselst du zwischen Architect, Operate und Chat.",
         "points": [
-          "Architect: Unterhaltungen, Pläne und Strategie.",
-          "Operate zeigt laufende Systeme, Agentengespräche und Anfragen, die eine Antwort erfordern.",
-          "Chat: Unterhaltungen, Quellen und allgemeine Werkzeuge."
+          "Entwirf AgSDL-Workflows in Architect.",
+          "Verfolge Ausführungen und beantworte Anfragen in Operate.",
+          "Beginne in Chat eine Unterhaltung mit eigenen Dateien, Quellen und Werkzeugen."
         ]
       },
       "panel-toggles": {
         "title": "Seitenpanels",
-        "body": "Panel-Schaltflächen blenden Kontextbereiche ein oder aus. Das linke Panel enthält oft die Arbeitsliste, das rechte Details oder Prüfungen."
+        "body": "Die Schaltflächen in der oberen Leiste blenden die Seitenbereiche ein oder aus, die im aktuellen Modus verfügbar sind."
       },
       "settings-and-help": {
         "title": "Einstellungen und Onboarding",
@@ -315,32 +315,32 @@
       },
       "architect-mode": {
         "title": "Architect-Modus",
-        "body": "Architect wandelt ein Gespräch in eine Strategie um, wenn der Benutzer dies ausdrücklich anfordert."
+        "body": "Entwirf ein System in Architect. Jeder Plan enthält die Unterhaltung zum Entwurf und das zugehörige AgSDL-Dokument."
       },
-      "architect-plan-selector": {
-        "title": "Pläne",
-        "body": "Die Planauswahl trennt Gespräche und Strategien für jeden Plan."
+      "architect-navigator": {
+        "title": "Projekte und Pläne",
+        "body": "Öffne links einen Projektplan oder suche in der Macro-Bibliothek nach Blueprints."
       },
-      "architect-generate": {
-        "title": "Strategie generieren",
-        "body": "Diese Aktion erstellt den Aufgabengraphen und vorhersehbare Branches aus dem Gespräch und Projektkontext."
+      "architect-conversation": {
+        "title": "Unterhaltung zum Entwurf",
+        "body": "Öffne einen Plan und beschreibe den gewünschten Workflow in der Unterhaltung in der Mitte. Bitte den Agenten, das AgSDL-Dokument zu erstellen oder zu ändern."
       },
-      "architect-strategy": {
-        "title": "Strategie und Branches",
-        "body": "Das rechte Panel zeigt die Strategie. Der Graph-/Branches-Schalter hilft beim Wechsel von einer Abhängigkeitsansicht zu einer Git-Ausführungsansicht.",
+      "architect-agsdl": {
+        "title": "AgSDL-Ansicht",
+        "body": "Der rechte Bereich zeigt den Workflow des ausgewählten Plans.",
         "points": [
-          "Graph: Abhängigkeiten und logische Reihenfolge.",
-          "Branches: Arbeit nach Feature-Branch gruppiert.",
-          "Expand öffnet einen komfortableren Explorer."
+          "Sieh dir im Graphen die Agenten und ihren Austausch an.",
+          "Wähle eine Komponente aus, um ihre Details anzuzeigen.",
+          "Mit „Ansicht erweitern“ öffnest du den Graphen in einem größeren Fenster."
         ]
       },
       "architect-validate": {
         "title": "Plan validieren",
         "body": "Die Validierung friert den Plan weit genug ein, um Branches bereitzustellen und Implement zu speisen. Gestartete oder abgeschlossene Aufgaben sind vor destruktiver Neugenerierung geschützt."
       },
-      "implement-mode": {
-        "title": "Operate-Modus",
-        "body": "Operate zeigt laufende Systeme, Agentengespräche und Anfragen, die eine Antwort erfordern."
+      "operate-executions": {
+        "title": "Ausführungen in Operate",
+        "body": "Wähle links eine Ausführung, um ihren Status und offene Anfragen an dich zu sehen. Wähle eine Agenteninstanz, um ihre Unterhaltung aufzurufen, sofern sie verfügbar ist."
       },
       "implement-tasks": {
         "title": "Aufgabenliste",

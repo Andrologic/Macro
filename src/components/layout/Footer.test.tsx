@@ -53,7 +53,8 @@ describe('Footer', () => {
     const { Footer } = await import('./Footer');
     await act(async () => root.render(<Footer />));
 
-    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Notifications"]')!;
+    const button = container.querySelector<HTMLButtonElement>('button[data-tour-id="notification-center"]')!;
+    expect(button.getAttribute('aria-label')).toBe('Notifications');
     expect(button.title).toBe('Notifications');
     expect(button.getAttribute('aria-haspopup')).toBe('dialog');
     expect(button.getAttribute('aria-expanded')).toBe('false');

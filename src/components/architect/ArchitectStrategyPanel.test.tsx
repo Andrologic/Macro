@@ -41,7 +41,8 @@ it("opens the graph in a portal modal and closes without changing the panels or 
     expect(dialog).not.toBeNull();
     expect(container!.contains(dialog)).toBe(false);
     // The modal shows the same steps as the panel graph, never a different subset.
-    const inline = container!.querySelectorAll(".agsdl-graph-node").length;
+    const viewer = container!.querySelector('aside[data-tour-id="architect-agsdl-panel"]')!;
+    const inline = viewer.querySelectorAll(".agsdl-graph-node").length;
     expect(inline).toBeGreaterThan(0);
     expect(dialog.querySelectorAll(".agsdl-graph-node")).toHaveLength(inline);
     // The inline and modal graphs each keep their own dot pattern.

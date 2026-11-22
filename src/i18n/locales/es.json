@@ -281,7 +281,7 @@
     "sections": {
       "basics": "Bases",
       "architect": "Architect",
-      "implement": "Operate",
+      "operate": "Operate",
       "chat": "Chat",
       "system": "Sistema"
     },
@@ -289,7 +289,7 @@
     "steps": {
       "welcome": {
         "title": "Bienvenido a Macro",
-        "body": "Macro se organiza por modos. El mejor onboarding muestra los controles cuando se vuelven útiles y luego deja que el usuario recupere el control.",
+        "body": "Usa Architect para diseñar flujos de trabajo AgSDL, Operate para supervisar las ejecuciones y Chat para conversar con un contexto propio.",
         "points": [
           "La guía cambia de modo automáticamente.",
           "Los paneles izquierdo y derecho se vuelven a abrir cuando un paso los necesita.",
@@ -298,16 +298,16 @@
       },
       "modes": {
         "title": "Selector de modo",
-        "body": "Estos tres botones cambian toda la superficie de trabajo. Architect sirve para definir el alcance, Operate para ejecutar y Chat para conversar libremente con contexto.",
+        "body": "Usa este selector para cambiar entre Architect, Operate y Chat.",
         "points": [
-          "Architect: conversaciones, planes y estrategia.",
-          "Operate muestra los sistemas en ejecución, las conversaciones de agentes y las solicitudes que requieren tu respuesta.",
-          "Chat: conversaciones, fuentes y herramientas generales."
+          "Diseña flujos de trabajo AgSDL en Architect.",
+          "Supervisa las ejecuciones y responde a las solicitudes en Operate.",
+          "Abre una conversación en Chat con sus propios archivos, fuentes y herramientas."
         ]
       },
       "panel-toggles": {
         "title": "Paneles laterales",
-        "body": "Los botones de panel ocultan o muestran las zonas de contexto. El panel izquierdo suele contener la lista de trabajo, y el derecho los detalles o validaciones."
+        "body": "Los botones de la barra superior muestran u ocultan los paneles laterales disponibles en el modo actual."
       },
       "settings-and-help": {
         "title": "Configuración y onboarding",
@@ -315,32 +315,32 @@
       },
       "architect-mode": {
         "title": "Modo Architect",
-        "body": "Architect convierte una conversación en una estrategia cuando el usuario lo solicita explícitamente."
+        "body": "Diseña un sistema en Architect. Cada plan guarda juntos la conversación de diseño y su documento AgSDL."
       },
-      "architect-plan-selector": {
-        "title": "Planes",
-        "body": "El selector de planes aísla las conversaciones y estrategias de cada plan."
+      "architect-navigator": {
+        "title": "Proyectos y planes",
+        "body": "En el panel izquierdo, abre un plan de proyecto o busca un blueprint en la biblioteca de Macro."
       },
-      "architect-generate": {
-        "title": "Generar la estrategia",
-        "body": "Esta acción crea el grafo de tareas y las ramas predecibles a partir de la conversación y el contexto del proyecto."
+      "architect-conversation": {
+        "title": "Conversación de diseño",
+        "body": "Abre un plan y describe el flujo de trabajo que quieres en la conversación del centro. Pide al agente que cree o modifique su documento AgSDL."
       },
-      "architect-strategy": {
-        "title": "Estrategia y ramas",
-        "body": "El panel derecho muestra la estrategia. El selector Graph / Branches ayuda a pasar de una vista de dependencias a una vista de ejecución Git.",
+      "architect-agsdl": {
+        "title": "Visor AgSDL",
+        "body": "El panel derecho muestra el flujo de trabajo del plan seleccionado.",
         "points": [
-          "Graph: dependencias y orden lógico.",
-          "Branches: trabajo agrupado por rama funcional.",
-          "Expand abre un explorador más cómodo."
+          "Consulta los agentes y sus intercambios en el grafo.",
+          "Selecciona un componente para ver sus detalles.",
+          "Usa «Ampliar vista» para abrir el grafo en una ventana más grande."
         ]
       },
       "architect-validate": {
         "title": "Validar el plan",
         "body": "La validación congela el plan lo suficiente para provisionar ramas y alimentar Implement. Las tareas iniciadas o terminadas quedan protegidas contra regeneraciones destructivas."
       },
-      "implement-mode": {
-        "title": "Modo Operate",
-        "body": "Operate muestra los sistemas en ejecución, las conversaciones de agentes y las solicitudes que requieren tu respuesta."
+      "operate-executions": {
+        "title": "Ejecuciones en Operate",
+        "body": "Selecciona una ejecución a la izquierda para ver su estado y las solicitudes que esperan tu respuesta. Selecciona una instancia de agente para ver su conversación si está disponible."
       },
       "implement-tasks": {
         "title": "Cola de tareas",
