@@ -269,6 +269,8 @@ Chaque geste a un nom distinct :
 
 ### 3.10 Serveur Macro
 
+La conception détaillée est dans [Le serveur Macro](macro-server.md).
+
 - Le serveur est une machine de plus dans Macro Connect : un Macro sans
   interface, toujours allumé.
 - Le choix « Où » de la fenêtre de lancement liste toutes les machines
@@ -316,8 +318,8 @@ les ouvrir. Le paquet maison prévu à l'origine disparaît.
 | G. Pause d'exécution | « Mettre en pause » depuis le menu du graphe, avec son travail dans Argentic. | 3.7 | |
 | H. Champs de lancement | Prototype de formulaire déclaré par l'auteur. | 3.11 | |
 
-La conception du serveur (section 3.10) avance en parallèle, sous forme d'un
-document de conception, avant toute réalisation.
+La conception du serveur (section 3.10) est décrite dans
+[Le serveur Macro](macro-server.md). Sa réalisation vient après l'étape D.
 
 ## 5. Plus tard
 
