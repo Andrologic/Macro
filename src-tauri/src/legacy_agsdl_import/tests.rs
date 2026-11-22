@@ -761,6 +761,8 @@ async fn batch_rollback_and_lost_acknowledgement_reopen_the_right_generation() {
         LegacyLocalStorage::Snapshot(entries.clone())
     };
     sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('chat','Design','Architect','now','now');
+        INSERT INTO messages(id,conversation_id,role,content,created_at)
+        VALUES('recent-message','chat','user','Latest design notes','now');
         INSERT INTO architect_plan_conversation_sync(conversation_id,plan_id,target_branch,updated_at)
         VALUES('chat','homonym','main','now');
         CREATE TRIGGER fail_second BEFORE INSERT ON architect_versions
@@ -816,6 +818,14 @@ async fn batch_rollback_and_lost_acknowledgement_reopen_the_right_generation() {
             .await
             .unwrap();
     assert!(linked.1.contains("legacyConversationId"));
+    crate::db::architect_library::ensure_conversation(&pool, linked.0.clone())
+        .await
+        .unwrap();
+    let recent: String = sqlx::query_scalar(
+        "SELECT messages.content FROM messages JOIN architect_blueprints AS b
+         ON b.conversation_id=messages.conversation_id WHERE b.id=? AND messages.id='recent-message'",
+    ).bind(&linked.0).fetch_one(&pool).await.unwrap();
+    assert_eq!(recent, "Latest design notes");
     let document =
         serde_json::from_value(json!({"source":"unfinished edit","annexes":{}})).unwrap();
     crate::db::architect_library::save_draft(&pool, linked.0, 1, document)

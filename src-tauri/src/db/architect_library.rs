@@ -381,12 +381,14 @@ pub(crate) async fn ensure_conversation(
             // An importer may cite this ID even after switching to a private chat.
             // A restore marker alone cannot tell us who owns a historical chat.
             let contested: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM architect_blueprints
-                   WHERE json_extract(history,'$.legacyConversationId')=?1
-                      OR (conversation_id=?1 AND id<>?2))",
+                "SELECT EXISTS(SELECT 1 FROM architect_blueprints WHERE id<>?2
+                   AND (json_extract(history,'$.legacyConversationId')=?1 OR conversation_id=?1))
+                 OR (?1 IS ?3 AND NOT EXISTS(SELECT 1 FROM app_settings
+                   WHERE key='architect:legacy-chat-claim:' || ?1 AND value_json=json_quote(?2)))",
             )
             .bind(id)
             .bind(&blueprint_id)
+            .bind(legacy_id)
             .fetch_one(&mut *tx)
             .await?;
             if !contested {
@@ -397,12 +399,16 @@ pub(crate) async fn ensure_conversation(
     }
     let transcript = archived_transcript(&draft)?;
     let mut already_restored = false;
-    if let Some(id) = candidate.as_ref().filter(|_| !transcript.is_empty()) {
+    if let Some(id) = candidate
+        .as_ref()
+        .filter(|id| !transcript.is_empty() && Some(id.as_str()) != legacy_id)
+    {
         // A verified marker from before ownership tracking is usable on a
         // private binding, including if its messages have since been edited.
         already_restored =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app_settings WHERE key=?)")
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app_settings WHERE key IN (?,?))")
                 .bind(format!("architect:verified-transcript:{blueprint_id}:{id}"))
+                .bind(format!("architect:restored-transcript:{blueprint_id}:{id}"))
                 .fetch_one(&mut *tx)
                 .await?;
     }

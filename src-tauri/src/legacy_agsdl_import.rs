@@ -334,6 +334,19 @@ pub(crate) async fn migrate_profile(
             Err(error) => return Err(error),
         }
     }
+    // Only the complete profile scan can establish a sole historical claimant.
+    // A standalone import can be followed by another replica citing the same chat.
+    sqlx::query(
+        "INSERT OR IGNORE INTO app_settings(key,value_json,updated_at)
+         SELECT 'architect:legacy-chat-claim:' || conversation_id,json_quote(id),CURRENT_TIMESTAMP
+         FROM architect_blueprints AS b
+         WHERE conversation_id=json_extract(history,'$.legacyConversationId')
+           AND NOT EXISTS (SELECT 1 FROM architect_blueprints AS other WHERE other.id<>b.id
+             AND (other.conversation_id=b.conversation_id
+                  OR json_extract(other.history,'$.legacyConversationId')=b.conversation_id))",
+    )
+    .execute(&mut *tx)
+    .await?;
     sqlx::query(
         "INSERT INTO architect_legacy_import(singleton,discovered,divergent_plans) VALUES(1,?,?)",
     )

@@ -514,6 +514,47 @@ async fn a_transcriptless_replica_never_claims_another_replicas_history() {
 }
 
 #[tokio::test]
+async fn existing_private_restore_marker_preserves_subsequent_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = create_pool(&dir.path().join("macro.db")).await.unwrap();
+    let mut input = legacy();
+    input.history.as_mut().unwrap().insert(
+        "origins".into(),
+        json!([{"transcript": r#"{"role":"user","content":"Original message"}"#}]),
+    );
+    let blueprint = import_blueprint(&pool, input).await.unwrap().blueprint_id;
+    sqlx::raw_sql(
+        "INSERT INTO conversations(id,title,scope_mode,created_at,updated_at)
+         VALUES('private','Design','Architect','now','now');
+         INSERT INTO messages(id,conversation_id,role,content,created_at)
+         VALUES('edited','private','user','Updated text','now');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    attach_conversation(&pool, blueprint.clone(), "private".into())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,'true','now')")
+        .bind(format!("architect:restored-transcript:{blueprint}:private"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let resolution = ensure_conversation(&pool, blueprint).await.unwrap();
+    assert_eq!(
+        resolution.summary.conversation_id.as_deref(),
+        Some("private")
+    );
+    assert!(resolution.draft_recovery.is_none());
+    let messages: Vec<String> =
+        sqlx::query_scalar("SELECT content FROM messages WHERE conversation_id='private'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(messages, ["Updated text"]);
+}
+
+#[tokio::test]
 async fn repair_of_an_exclusive_nonhistorical_binding_records_draft_recovery() {
     let dir = tempfile::tempdir().unwrap();
     let pool = create_pool(&dir.path().join("macro.db")).await.unwrap();
