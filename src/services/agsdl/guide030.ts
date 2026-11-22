@@ -1,5 +1,4 @@
-import { AGSDL_CONTRACT } from './contract';
-import type { FlowDocumentContract } from '../../vendor/agsdl/v0.4/reader.mjs';
+import { AGSDL_CONTRACT, type FlowDocumentContract } from './contract';
 import { authoringPatterns030 } from './examples030';
 
 /** Edition reference loaded on demand by agsdl_get, rather than injected into every turn. */

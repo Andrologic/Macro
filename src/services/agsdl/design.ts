@@ -1,5 +1,4 @@
-import { AGSDL_CONTRACT, isFlowDocumentContract } from "./contract";
-import type { FlowDocumentContract } from "../../vendor/agsdl/v0.4/reader.mjs";
+import { AGSDL_CONTRACT, isFlowDocumentContract, type FlowDocumentContract } from "./contract";
 import type { AgsdlChange,AgsdlDisplayMetadata,AgsdlEnvelopeMetadata,DesignMetadata } from '../../types/agsdl';
 import { applyChanges,LEGACY_AGSDL_CONTRACT,object,readDocument,sourceAt } from './document';
 export type { AgsdlDisplayMetadata,AgsdlEnvelopeMetadata,AgsdlMigrationMetadata,DesignMetadata } from '../../types/agsdl';

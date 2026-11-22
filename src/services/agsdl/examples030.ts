@@ -1,5 +1,4 @@
-import { AGSDL_CONTRACT } from './contract';
-import type { FlowDocumentContract } from '../../vendor/agsdl/v0.4/reader.mjs';
+import { AGSDL_CONTRACT, type FlowDocumentContract } from './contract';
 
 /** Authored examples describe requests; installation and admission belong to native Preflight. */
 export function productExample030(kind: 'release' | 'feature' | 'hotfix' | 'bugfix', contract: FlowDocumentContract = AGSDL_CONTRACT) {

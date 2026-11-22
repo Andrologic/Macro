@@ -78,7 +78,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/agsdl/contract.ts",
-    "sha256": "82a0c2114025b43ae4735341b423e6ad266b962188fd30580736d7d203d7e721"
+    "sha256": "3eb196a48da1e3967e21e09d8edf9dd1431d70a823cfa4acbbb34490c0eea92b"
   },
   {
     "path": "src/services/agsdl/document.ts",
@@ -460,5 +460,5 @@ export const TRANSFER_RESOURCES = [
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "572d9189aa8f0e260df31fa068ff63078948bf49b7f08555df45dbb4df7d337f"
+  "preparation_set_sha256": "8ced8539aac81220e899404a5fdd3a098680bee1e5783e6d48ada15e5185af9f"
 } as const;

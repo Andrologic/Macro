@@ -1,5 +1,4 @@
-import { AGSDL_CONTRACT } from './contract';
-import type { FlowDocumentContract } from '../../vendor/agsdl/v0.4/reader.mjs';
+import { AGSDL_CONTRACT, type FlowDocumentContract } from './contract';
 
 /** Supplied by the native runtime catalogue, never inferred from Chat provider preferences. */
 export interface AgsdlHarnessChoice {

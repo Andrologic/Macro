@@ -540,11 +540,11 @@ fn repository(c: &mut Corpus) {
         }
     }
     assert_eq!(
-        source_counts["scenarios"], 37,
+        source_counts["scenarios"], 50,
         "official run corpus changed"
     );
     assert_eq!(
-        source_counts["staticCases"], 144,
+        source_counts["staticCases"], 147,
         "official static corpus changed"
     );
     assert_eq!(source_counts["examples"], 10, "official examples changed");

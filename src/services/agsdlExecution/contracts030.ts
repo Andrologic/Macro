@@ -1,4 +1,4 @@
-import type { FlowDocumentContract } from '../../vendor/agsdl/v0.4/reader.mjs';
+import type { FlowDocumentContract } from '../agsdl/contract';
 import type { ExactJsonText, SourceRevision, StaticAssessment, StepAddress } from './contracts';
 
 export const COMPILED_PLAN_FORMAT030 = 'macro-agsdl-compiled-plan/2' as const;

@@ -204,7 +204,7 @@ groupes de join. Une visite refusée ne démarre pas de nouveau travail.
 Le run attend toujours la fin des travaux physiques qui restent actifs après
 une sortie. Les valeurs hors des bornes numériques natives sont refusées.
 
-En 0.4.0, le moteur enregistre l'arrêt du run avant de l'accuser réception.
+En 0.4.0, le moteur enregistre l'arrêt du run avant d'en accuser réception.
 Il annule les travaux ouverts, retire les messages et demandes en attente, puis
 attend la confirmation de la fin physique avant de déclarer le run annulé.
 Si le moteur ne peut reprendre après une interruption et qu'aucun arrêt n'est

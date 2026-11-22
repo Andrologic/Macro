@@ -1,4 +1,4 @@
-import type { FlowDocumentContract } from '../vendor/agsdl/v0.4/reader.mjs';
+import type { FlowDocumentContract } from './agsdl';
 /**
  * Product contract for AgSDL 0.3 and 0.4. These types grant no native authority and are
  * not generated IPC DTOs. See docs/agsdl-030.md for command adapters and gaps.
