@@ -2243,10 +2243,16 @@ async fn read_existing_workspace_state(workspace_path: &Path) -> Result<Workspac
     tokio::task::spawn_blocking(move || {
         let root = crate::git::find_existing_macro_metadata_worktree_root(&workspace)
             .unwrap_or_else(|| workspace.join(LEGACY_WORKSPACE_META_DIR));
-        if !root.is_dir() {
+        let state = if root.is_dir() {
+            read_raw_state_sync(&root, false)?.unwrap_or_default()
+        } else if matches!(root.symlink_metadata(), Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
+            let Some(state) = read_committed_workspace_state(&workspace)? else {
+                return Ok(WorkspaceState::default());
+            };
+            state
+        } else {
             return Ok(WorkspaceState::default());
-        }
-        let state = read_raw_state_sync(&root, false)?.unwrap_or_default();
+        };
         let (sanitized, report) = sanitize_workspace_state(&workspace, state.clone());
         let mut state = if report.has_destructive_repairs() {
             state
@@ -2261,6 +2267,55 @@ async fn read_existing_workspace_state(workspace_path: &Path) -> Result<Workspac
     .map_err(|error| BackendError::Internal {
         message: format!("Workspace observation task failed: {error}"),
     })?
+}
+
+fn read_committed_workspace_state(workspace: &Path) -> Result<Option<WorkspaceState>> {
+    use crate::git::metadata_read::{
+        local_macro_tree, macro_metadata_checkouts, open_git_workspace, read_tree_file,
+    };
+
+    let Ok(workspace) = workspace.canonicalize() else {
+        return Ok(None);
+    };
+    let repo = match open_git_workspace(&workspace) {
+        Ok(Some(repo)) => repo,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            tracing::warn!(path = %workspace.display(), %error, "Cannot verify workspace Git checkout");
+            return Ok(None);
+        }
+    };
+    let checkouts = macro_metadata_checkouts(&repo).map_err(BackendError::Validation)?;
+    if checkouts
+        .iter()
+        .any(|(_, result)| !matches!(result, Ok(false)))
+    {
+        // A checkout still on disk can contain edits or deletions newer than its tip.
+        return Ok(None);
+    }
+    let Some((tip, tree)) = local_macro_tree(&repo).map_err(BackendError::Validation)? else {
+        return Ok(None);
+    };
+    let read = |path: &Path| -> Result<Option<Result<WorkspaceState>>> {
+        let location = format!("{}#@macro@{tip}:{}", workspace.display(), path.display());
+        Ok(read_tree_file(&repo, &tree, path)
+            .map_err(|error| BackendError::Validation(format!("{location}: {error}")))?
+            .map(|content| parse_workspace_state(&content, &location)))
+    };
+    let root = Path::new("");
+    let primary = read(&workspace_state_path(root))?;
+    if let Some(Ok(state)) = primary {
+        return Ok(Some(state));
+    }
+    if primary.is_none() {
+        if let Some(state) = read(&legacy_workspace_state_path(root))? {
+            return state.map(Some);
+        }
+    }
+    match read(&workspace_state_backup_path(root))? {
+        Some(Ok(state)) => Ok(Some(state)),
+        backup => primary.or(backup).transpose(),
+    }
 }
 
 pub(crate) async fn read_workspace_bootstrap(
@@ -5963,6 +6018,14 @@ fn load_raw_state_sync(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
     read_raw_state_sync(metadata_root, true)
 }
 
+fn parse_workspace_state(content: &str, location: &str) -> Result<WorkspaceState> {
+    serde_json::from_str(content).map_err(|error| {
+        BackendError::Validation(format!(
+            "Invalid workspace state format in {location}: {error}"
+        ))
+    })
+}
+
 fn read_raw_state_sync(metadata_root: &Path, repair: bool) -> Result<Option<WorkspaceState>> {
     let primary_path = workspace_state_path(metadata_root);
     let legacy_path = legacy_workspace_state_path(metadata_root);
@@ -6008,13 +6071,7 @@ fn read_raw_state_sync(metadata_root: &Path, repair: bool) -> Result<Option<Work
                     error
                 ),
             })?;
-        serde_json::from_str(&content).map_err(|error| {
-            BackendError::Validation(format!(
-                "Invalid workspace state format in {}: {}",
-                candidate.display(),
-                error
-            ))
-        })
+        parse_workspace_state(&content, &candidate.to_string_lossy())
     };
 
     match read_and_parse(&path) {

@@ -2202,6 +2202,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_observation_recovers_registry_and_tasks_from_local_macro_tip() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_path = temp.path().join("workspace");
+        let repo = startup_test_repo(&workspace_path);
+        let project_path = temp.path().join("app");
+        std::fs::create_dir_all(&project_path).unwrap();
+        let project: ProjectDto = serde_json::from_value(json!({
+            "id": "project-app", "name": "Application", "path": "../app",
+            "created_at": "2026-01-01T00:00:00Z", "status": "active",
+            "directEdit": true,
+            "metadata": {"description": "Source application", "tags": [], "team_members": [], "api_contracts": [], "dependencies": []}
+        })).unwrap();
+        let state = workspace::metadata::WorkspaceState {
+            standalone_projects: vec![project],
+            current_plan: Some(
+                serde_json::from_value(json!({
+                    "id": "plan", "description": "Previous work", "status": "Validated",
+                    "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+                    "project_ids": ["project-app"], "tasks": [{"id": "task", "status": "Pending"}]
+                }))
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        let macro_ref = "refs/heads/@macro";
+        let mut nested = repo.treebuilder(None).unwrap();
+        let registry = repo.blob(&serde_json::to_vec(&state).unwrap()).unwrap();
+        nested.insert("workspace.json", registry, 0o100644).unwrap();
+        let mut root = repo.treebuilder(None).unwrap();
+        root.insert(".macro", nested.write().unwrap(), 0o040000)
+            .unwrap();
+        let tree = repo.find_tree(root.write().unwrap()).unwrap();
+        let signature = git2::Signature::now("Macro Tests", "macro@example.invalid").unwrap();
+        let tip = repo
+            .commit(
+                Some(macro_ref),
+                &signature,
+                &signature,
+                "Metadata",
+                &tree,
+                &[],
+            )
+            .unwrap();
+
+        let bootstrap = workspace::read_workspace_bootstrap(&workspace_path)
+            .await
+            .unwrap();
+        let project = &bootstrap.standalone_projects[0];
+        assert_eq!(project.id, "project-app");
+        assert_eq!(project.path, "../app");
+        assert!(project.direct_edit);
+        assert_eq!(project.metadata.description, "Source application");
+        assert_eq!(bootstrap.plan.unwrap().id, "plan");
+        let catalog = workspace::read_workspace_tasks(&workspace_path)
+            .await
+            .unwrap();
+        assert_eq!(catalog.tasks[0]["id"], "task");
+        assert_eq!(repo.refname_to_id(macro_ref).unwrap(), tip);
+        assert!(repo.worktrees().unwrap().is_empty());
+        assert!(!workspace_path.join(".macro").exists());
+        assert!(!repo
+            .path()
+            .join(crate::git::MACRO_WORKTREE_DIR_NAME)
+            .exists());
+    }
+
+    #[tokio::test]
     async fn startup_observation_uses_legacy_registry_and_config_without_repairing_them() {
         let temp = tempfile::tempdir().unwrap();
         let workspace_path = temp.path().join("workspace");

@@ -566,6 +566,90 @@ fn trusts_a_registered_macro_checkout_from_a_linked_project() {
     assert_eq!(discovery.blueprints[0].plan_id, "uncommitted");
 }
 
+#[tokio::test]
+async fn imports_a_registered_git_submodule_into_sqlite() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let source_repo = git2::Repository::init(&source).unwrap();
+    commit(&source_repo, "HEAD", &[]);
+    let workspace = dir.path().join("workspace");
+    let superproject = git2::Repository::init(&workspace).unwrap();
+    let output = std::process::Command::new("git")
+        .current_dir(&workspace)
+        .args([
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "--name",
+            "custom/module",
+        ])
+        .arg(&source)
+        .arg("projects/module")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project = workspace.join("projects/module");
+    let repo = git2::Repository::open(&project).unwrap();
+    let mut record = blueprint("from-submodule");
+    record["projectId"] = json!("module-project");
+    let plan = store(&project, "main", &record);
+    let plan_path = plan.strip_prefix(&project).unwrap().to_str().unwrap();
+    let tip = commit(&repo, "refs/heads/@macro", &[plan_path]);
+    fs::remove_dir_all(project.join("branches")).unwrap();
+    put(
+        &workspace.join(".macro/workspace.json"),
+        &json!({
+            "standaloneProjects": [
+                {"id": "module-project", "path": "projects/module", "name": "Module"}
+            ],
+        }),
+    );
+
+    let pool = crate::db::create_pool(&dir.path().join("macro.db"))
+        .await
+        .unwrap();
+    let report = migrate_profile(
+        &pool,
+        Ok(vec![workspace.clone()]),
+        None,
+        LegacyLocalStorage::NotApplicable,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        report.status,
+        LegacyImportStatus::Complete,
+        "{:?}",
+        report.issues
+    );
+    assert_eq!(report.inserted, 1);
+    let (project_id, plan_id): (String, String) = sqlx::query_as(
+        "SELECT p.source_project_id, json_extract(b.history, '$.legacyPlanId')
+         FROM architect_blueprints b JOIN architect_projects p ON b.project_id=p.id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(project_id, "legacy:project:module-project");
+    assert_eq!(plan_id, "from-submodule");
+    assert_eq!(repo.refname_to_id("refs/heads/@macro").unwrap(), tip);
+    assert!(repo.worktrees().unwrap().is_empty());
+
+    // A gitfile and a .gitmodules mapping alone cannot authorize another repo.
+    let mut index = superproject.index().unwrap();
+    index.remove_path(Path::new("projects/module")).unwrap();
+    index.write().unwrap();
+    let discovery = discover_legacy_agsdl(&profile(&workspace));
+    assert!(discovery.blueprints.is_empty());
+    assert_eq!(discovery.issues.len(), 1, "{:?}", discovery.issues);
+}
+
 #[test]
 fn refuses_nonempty_metadata_without_macro_registration_or_branch() {
     for case in ["folder", "other-registration", "wrong-branch"] {

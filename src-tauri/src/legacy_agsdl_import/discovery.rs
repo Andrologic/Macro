@@ -1,13 +1,19 @@
 use super::*;
 use crate::{
-    git::{MACRO_BRANCH_NAME, MACRO_WORKTREE_DIR_NAME, MACRO_WORKTREE_NAME},
+    git::{
+        metadata_read::{
+            disk_kind, local_macro_tree, macro_metadata_checkouts, open_git_workspace,
+            read_tree_file, tree_entry, EntryKind,
+        },
+        MACRO_BRANCH_NAME,
+    },
     workspace::{
         architect::{sanitize_id, stored_plan_branch_matches},
         resolve_project_path,
     },
 };
 use chrono::DateTime;
-use git2::{ErrorCode, ObjectType, Repository, RepositoryOpenFlags, Tree};
+use git2::{ObjectType, Repository, Tree};
 use std::{
     fs,
     io::ErrorKind,
@@ -26,26 +32,6 @@ fn optional<T>(result: std::io::Result<T>) -> ReadResult<Option<T>> {
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.to_string()),
     }
-}
-
-#[derive(PartialEq, Eq)]
-enum EntryKind {
-    Directory,
-    File,
-    Unsupported,
-}
-
-fn disk_kind(path: &Path) -> ReadResult<Option<EntryKind>> {
-    Ok(optional(fs::symlink_metadata(path))?.map(|metadata| {
-        let kind = metadata.file_type();
-        if kind.is_dir() {
-            EntryKind::Directory
-        } else if kind.is_file() {
-            EntryKind::File
-        } else {
-            EntryKind::Unsupported
-        }
-    }))
 }
 
 enum Root<'a> {
@@ -180,27 +166,8 @@ impl Root<'_> {
                     _ => Err("Expected a regular file".into()),
                 }
             }
-            Self::Commit(repo, tree) => {
-                let Some(entry) = tree_entry(tree, path)? else {
-                    return Ok(None);
-                };
-                if !matches!(entry.filemode(), 0o100644 | 0o100755) {
-                    return Err("Expected a regular Git blob".into());
-                }
-                let blob = repo.find_blob(entry.id()).map_err(|e| e.to_string())?;
-                std::str::from_utf8(blob.content())
-                    .map(|text| Some(text.to_owned()))
-                    .map_err(|error| error.to_string())
-            }
+            Self::Commit(repo, tree) => read_tree_file(repo, tree, path),
         }
-    }
-}
-
-fn tree_entry(tree: &Tree<'_>, path: &Path) -> ReadResult<Option<git2::TreeEntry<'static>>> {
-    match tree.get_path(path) {
-        Ok(entry) => Ok(Some(entry)),
-        Err(error) if error.code() == ErrorCode::NotFound => Ok(None),
-        Err(error) => Err(error.to_string()),
     }
 }
 
@@ -1013,116 +980,6 @@ fn ids(value: &Value) -> Vec<String> {
     }
 }
 
-fn read_git_pointer(file: &Path, prefix: &str, base: &Path) -> ReadResult<PathBuf> {
-    if disk_kind(file)? != Some(EntryKind::File) {
-        return Err("Expected a regular Git pointer file".into());
-    }
-    let text = fs::read_to_string(file).map_err(|error| error.to_string())?;
-    let path = text
-        .trim()
-        .strip_prefix(prefix)
-        .map(str::trim)
-        .filter(|path| !path.is_empty() && !path.contains(['\n', '\r']))
-        .ok_or("Invalid Git pointer")?;
-    base.join(path)
-        .canonicalize()
-        .map_err(|error| error.to_string())
-}
-
-fn linked_git_dirs(
-    worktree: &Path,
-    expected_admin: Option<&Path>,
-) -> ReadResult<(PathBuf, PathBuf)> {
-    let gitfile = worktree.join(".git");
-    let admin = read_git_pointer(&gitfile, "gitdir:", worktree)?;
-    if expected_admin.is_some_and(|expected| admin != expected) {
-        return Err("Metadata checkout is outside this repository's Macro registration".into());
-    }
-    // Git registers linked checkouts under <common>/worktrees/<name>.
-    let common = admin
-        .parent()
-        .filter(|parent| parent.ends_with("worktrees"))
-        .and_then(Path::parent)
-        .ok_or("Git pointer is outside the worktree registrations")?;
-    if read_git_pointer(&admin.join("commondir"), "", &admin)? != common
-        || read_git_pointer(&admin.join("gitdir"), "", &admin)? != gitfile
-    {
-        return Err("Git worktree registration does not point back to this checkout".into());
-    }
-    let common = common.to_path_buf();
-    Ok((admin, common))
-}
-
-fn open_git_checkout(path: &Path, admin: &Path, common: &Path) -> ReadResult<Repository> {
-    if disk_kind(&admin.join("HEAD"))? != Some(EntryKind::File) {
-        return Err("Expected a regular Git HEAD file".into());
-    }
-    let repo = Repository::open_ext(
-        path,
-        RepositoryOpenFlags::NO_SEARCH,
-        std::iter::empty::<&Path>(),
-    )
-    .map_err(|error| error.to_string())?;
-    let canonical = |path: &Path| path.canonicalize().map_err(|error| error.to_string());
-    if canonical(repo.path())? != admin
-        || canonical(repo.commondir())? != common
-        || !repo
-            .workdir()
-            .and_then(|dir| canonical(dir).ok())
-            .is_some_and(|dir| dir == path)
-        || repo.is_worktree() != (admin != common)
-    {
-        return Err("Git repository does not match this checkout".into());
-    }
-    Ok(repo)
-}
-
-fn open_git_workspace(path: &Path) -> ReadResult<Option<Repository>> {
-    let dot_git = path.join(".git");
-    match disk_kind(&dot_git)? {
-        None => Ok(None),
-        Some(EntryKind::Directory) if disk_kind(&dot_git.join("commondir"))?.is_none() => {
-            open_git_checkout(path, &dot_git, &dot_git).map(Some)
-        }
-        Some(EntryKind::File) => {
-            let (admin, common) = linked_git_dirs(path, None)?;
-            open_git_checkout(path, &admin, &common).map(Some)
-        }
-        _ => Err("Expected a local .git directory or a registered linked checkout".into()),
-    }
-}
-
-fn is_metadata_checkout(path: &Path, common: &Path, reference: &str) -> ReadResult<bool> {
-    match disk_kind(path)? {
-        None => return Ok(false),
-        Some(EntryKind::Directory) => {}
-        _ => return Err("Expected a metadata worktree directory".into()),
-    }
-    if fs::read_dir(path)
-        .map_err(|error| error.to_string())?
-        .next()
-        .is_none()
-    {
-        return Ok(false);
-    }
-    let expected_admin = common.join("worktrees").join(MACRO_WORKTREE_NAME);
-    let (admin, _) = linked_git_dirs(path, Some(&expected_admin))?;
-    let repo = open_git_checkout(path, &admin, common)?;
-    let head = repo
-        .find_reference("HEAD")
-        .map_err(|error| error.to_string())?;
-    if head.symbolic_target().map_err(|error| error.to_string())? != Some(reference) {
-        return Err("Metadata checkout is on a branch other than @macro".into());
-    }
-    let branch = repo
-        .find_reference(reference)
-        .map_err(|error| error.to_string())?;
-    if branch.target().is_none() {
-        return Err("Expected @macro to be a direct Git reference".into());
-    }
-    Ok(true)
-}
-
 impl Scan {
     fn layout(
         &mut self,
@@ -1310,31 +1167,13 @@ impl Scan {
         let Some(repo) = repo else {
             return;
         };
-        let Some(common) = self.result(
-            &scope.location,
-            repo.commondir()
-                .canonicalize()
-                .map_err(|error| error.to_string()),
-        ) else {
+        let Some(checkouts) = self.result(&scope.location, macro_metadata_checkouts(&repo)) else {
             return;
         };
-        let Some(admin) = self.result(
-            &scope.location,
-            repo.path()
-                .canonicalize()
-                .map_err(|error| error.to_string()),
-        ) else {
-            return;
-        };
-        let reference = format!("refs/heads/{MACRO_BRANCH_NAME}");
         let mut materialized = false;
-        for admin in BTreeSet::from([admin, common.clone()]) {
-            let worktree = admin.join(MACRO_WORKTREE_DIR_NAME);
+        for (worktree, checked) in checkouts {
             let location = worktree.display().to_string();
-            match self.result(
-                &location,
-                is_metadata_checkout(&worktree, &common, &reference),
-            ) {
+            match self.result(&location, checked) {
                 Some(false) => {}
                 Some(true) => {
                     materialized = true;
@@ -1357,54 +1196,17 @@ impl Scan {
         }
         // A repository can retain @macro after losing its checkout. Read only
         // the local tip. A materialized tree may contain newer edits/removals.
-        let metadata_ref = match repo.find_reference(&reference) {
-            Ok(metadata_ref) => metadata_ref,
-            Err(error) if error.code() == ErrorCode::NotFound => {
-                // The old writer would initialize @macro from an empty tree.
-                self.layout(
-                    &Root::Empty,
-                    &Scope {
-                        location: format!("{}#{reference}", scope.location),
-                        ..scope
-                    },
-                    &path,
-                    false,
-                    &[false],
-                );
-                return;
-            }
-            Err(error) => {
-                self.result::<()>(&scope.location, Err(error.to_string()));
-                return;
-            }
-        };
-        let Some(tip) = self.result(
-            &scope.location,
-            metadata_ref
-                .target()
-                .ok_or("Expected @macro to be a direct Git reference".into()),
-        ) else {
+        let Some(tree) = self.result(&scope.location, local_macro_tree(&repo)) else {
             return;
         };
-        if let Some(commit) = self.result(
-            &scope.location,
-            repo.find_commit(tip).map_err(|e| e.to_string()),
-        ) {
-            if let Some(tree) =
-                self.result(&scope.location, commit.tree().map_err(|e| e.to_string()))
-            {
-                self.layout(
-                    &Root::Commit(&repo, tree),
-                    &Scope {
-                        location: format!("{}#{reference}@{}", scope.location, commit.id()),
-                        ..scope
-                    },
-                    &path,
-                    true,
-                    &[false],
-                );
-            }
+        let reference = format!("refs/heads/{MACRO_BRANCH_NAME}");
+        let location = match &tree {
+            Some((tip, _)) => format!("{}#{reference}@{tip}", scope.location),
+            None => format!("{}#{reference}", scope.location),
         };
+        let nested = tree.is_some();
+        let root = tree.map_or(Root::Empty, |(_, tree)| Root::Commit(&repo, tree));
+        self.layout(&root, &Scope { location, ..scope }, &path, nested, &[false]);
     }
 }
 

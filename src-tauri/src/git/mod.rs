@@ -14,6 +14,7 @@ use git2::{
 
 use crate::core::error::{BackendError, Result};
 
+pub(crate) mod metadata_read;
 pub mod repo;
 mod worktree;
 pub use worktree::{
