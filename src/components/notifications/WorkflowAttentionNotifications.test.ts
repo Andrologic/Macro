@@ -3,7 +3,6 @@ import { useNotificationCenterStore } from '../../stores/useNotificationCenterSt
 import { openWorkflowNotificationContext } from '../../services/openWorkflowNotificationContext';
 import type { TFunction } from 'i18next';
 import type { ChatMessage, Conversation, PendingToolApproval } from '../../types';
-import type { ArchitectPlanActivationPayload, ArchitectPlanSummary } from '../../services/architectPlanService';
 import type { CatalogedImplementTask } from '../../services/implementTaskCatalog';
 
 type StoreListener<T> = (nextState: T, previousState: T) => void;
@@ -13,15 +12,12 @@ interface TestAppState {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   selectedTaskId: string | null;
-  activeArchitectPlanId: string | null;
-  activePlanContext: { targetBranch: string } | null;
   standaloneProjects: Array<{ id: string }>;
   projectGroups: Array<{ id: string; projects: Array<{ id: string }> }>;
   setMode: ReturnType<typeof mock>;
-  setSelectedGroup: ReturnType<typeof mock>;
   setSelectedTask: ReturnType<typeof mock>;
   switchProjectContext: ReturnType<typeof mock>;
-  activateArchitectPlan: ReturnType<typeof mock>;
+  openArchitectPlanNotification: ReturnType<typeof mock>;
 }
 
 interface TestChatState {
@@ -65,36 +61,6 @@ const taskListeners = new Set<StoreListener<TestTaskState>>();
 const notifyActionRequired = mock(
   (_title: string, _options: CapturedNotificationOptions) => undefined,
 );
-const ownerPlan: ArchitectPlanSummary = {
-  id: 'plan-owner',
-  slug: 'plan-owner',
-  title: 'Owner',
-  description: '',
-  targetBranch: 'develop',
-  conversationId: 'conversation-1',
-  status: 'draft',
-  hasAgsdl: true,
-  createdAt: '2026-09-04T10:00:00.000Z',
-  updatedAt: '2026-09-04T10:00:00.000Z',
-  nodeCount: 0,
-};
-const ownerPayload: ArchitectPlanActivationPayload = {
-  plan: { ...ownerPlan, nodes: [], predictedBranches: [], agsdl: { source: '', annexes: {}, revision: 1 } },
-  conversationId: 'conversation-1',
-  chatMessages: [],
-  targetBranch: 'develop',
-  sharedConversation: false,
-  resolutionMode: 'full',
-};
-const readOwner = mock(async (): Promise<ArchitectPlanActivationPayload | null> => ownerPayload);
-const makeCatalog = (plans: readonly ArchitectPlanSummary[]) => ({
-  snapshot: {
-    branches: [{ branchName: 'develop', plans }],
-    visiblePlans: plans,
-  },
-});
-const loadNotificationCatalog = mock(async () => makeCatalog([ownerPlan]));
-
 const useAppStore = Object.assign(() => appState, {
   getState: () => appState,
 });
@@ -116,10 +82,6 @@ const useTaskStore = Object.assign(() => taskState, {
 mock.module('../../stores/useAppStore', () => ({ useAppStore }));
 mock.module('../../stores/useChatStore', () => ({ useChatStore }));
 mock.module('../../stores/useTaskStore', () => ({ useTaskStore }));
-mock.module('../../services/architectPlanService', () => ({ getArchitectPlanActivationPayload: readOwner }));
-mock.module('../../services/macroProjectMetadataLoader', () => ({
-  loadMacroProjectMetadataForSelection: loadNotificationCatalog,
-}));
 mock.module('../ui/toastService', () => ({
   notify: { actionRequired: notifyActionRequired, dismiss: mock(() => undefined) },
 }));
@@ -210,30 +172,17 @@ beforeEach(() => {
   chatListeners.clear();
   taskListeners.clear();
   notifyActionRequired.mockClear();
-  readOwner.mockReset();
-  readOwner.mockResolvedValue(ownerPayload);
-  loadNotificationCatalog.mockReset();
-  loadNotificationCatalog.mockResolvedValue(makeCatalog([ownerPlan]));
   navigationCalls = [];
   appState = {
     mode: 'Chat',
     selectedGroupId: 'group-current',
     selectedTaskId: null,
     selectedProjectId: 'project-current',
-    activeArchitectPlanId: null,
-    activePlanContext: null,
     standaloneProjects: [{ id: 'project-other' }, { id: 'project-current' }],
     projectGroups: [{ id: 'group-other', projects: [{ id: 'project-current' }] }],
     setMode: mock((mode: TestAppState['mode'], _options?: { ensureAutoPlan?: boolean }) => {
       navigationCalls.push('setMode');
       appState.mode = mode;
-    }),
-    setSelectedGroup: mock((
-      groupId: string | null,
-      _options?: { restoreProjectContext?: boolean; ensureAutoPlan?: boolean },
-    ) => {
-      navigationCalls.push('setSelectedGroup');
-      appState.selectedGroupId = groupId;
     }),
     setSelectedTask: mock((taskId: string | null) => {
       navigationCalls.push('setSelectedTask');
@@ -244,10 +193,8 @@ beforeEach(() => {
       appState.selectedGroupId = null;
       appState.selectedProjectId = projectId;
     }),
-    activateArchitectPlan: mock(async (planId: string, options: { targetBranch: string }) => {
-      navigationCalls.push('activatePlan');
-      appState.activeArchitectPlanId = planId;
-      appState.activePlanContext = { targetBranch: options.targetBranch };
+    openArchitectPlanNotification: mock(async () => {
+      navigationCalls.push('openArchitectPlanNotification');
       return true;
     }),
   };
@@ -271,38 +218,17 @@ beforeEach(() => {
 });
 
 describe('workflow attention notification subscriptions', () => {
-  it.each([
-    { label: 'no owner', plans: [], payload: ownerPayload },
-    { label: 'legacy owner', plans: [{ ...ownerPlan, hasAgsdl: false }], payload: ownerPayload },
-    { label: 'archived owner', plans: [{ ...ownerPlan, status: 'archived' as const }], payload: ownerPayload },
-    { label: 'ambiguous owners', plans: [ownerPlan, { ...ownerPlan, id: 'another' }], payload: ownerPayload },
-    { label: 'unreadable owner', plans: [ownerPlan], payload: null },
-    { label: 'different plan', plans: [ownerPlan], payload: { ...ownerPayload, plan: { ...ownerPayload.plan, id: 'another' } } },
-    { label: 'different branch', plans: [ownerPlan], payload: { ...ownerPayload, plan: { ...ownerPayload.plan, targetBranch: 'main' } } },
-    { label: 'different conversation', plans: [ownerPlan], payload: { ...ownerPayload, conversationId: 'another' } },
-    { label: 'shared conversation', plans: [ownerPlan], payload: { ...ownerPayload, sharedConversation: true } },
-    { label: 'stale AgSDL flag', plans: [ownerPlan], payload: { ...ownerPayload, plan: { ...ownerPayload.plan, agsdl: undefined } } },
-  ])('keeps the current context for an Architect request with $label', async ({ plans, payload }) => {
-    const conversation = makeConversation({ scope_mode: 'Architect', task_id: null, group_id: 'group-other' });
+  it('lets the Architect store refuse a stale notification without opening a fallback', async () => {
+    const conversation = makeConversation({ scope_mode: 'Architect', task_id: null });
     chatState.conversations = [conversation];
-    loadNotificationCatalog.mockResolvedValue(makeCatalog(plans));
-    readOwner.mockResolvedValue(payload);
+    appState.openArchitectPlanNotification.mockResolvedValue(false);
 
     await openWorkflowNotificationContext({ kind: 'conversation', requestKind: 'approval', conversationId: conversation.id });
 
-    expect(navigationCalls).toEqual([]);
-  });
-
-  it('does not select any conversation if exact Architect activation fails', async () => {
-    const conversation = makeConversation({ scope_mode: 'Architect', task_id: null, group_id: 'group-other' });
-    chatState.conversations = [conversation];
-    appState.activateArchitectPlan.mockResolvedValue(false);
-
-    await openWorkflowNotificationContext({ kind: 'conversation', requestKind: 'approval', conversationId: conversation.id });
-
-    expect(appState.activateArchitectPlan).toHaveBeenCalledTimes(1);
+    expect(appState.openArchitectPlanNotification).toHaveBeenCalledWith(conversation.id);
     expect(chatState.ensureConversationForCurrentMode).not.toHaveBeenCalled();
     expect(chatState.selectConversation).not.toHaveBeenCalled();
+    expect(appState.setMode).not.toHaveBeenCalled();
   });
 
   it('uses the current conversation task identity instead of an obsolete notification context', async () => {
@@ -685,7 +611,7 @@ describe('workflow attention notification subscriptions', () => {
     unsubscribe();
   });
 
-  it('emits one questionnaire notification and honors its explicit Architect group', async () => {
+  it('dispatches one Architect questionnaire notification through its exact-plan action', async () => {
     const conversation = makeConversation({
       scope_mode: 'Architect',
       task_id: null,
@@ -708,57 +634,9 @@ describe('workflow attention notification subscriptions', () => {
       notificationKey: 'workflow-attention:questionnaire:conversation-1:question-1',
     }));
     await options.actions[0]!.onClick();
-    expect(appState.setSelectedGroup).toHaveBeenCalledWith('group-other', {
-      restoreProjectContext: false,
-      ensureAutoPlan: false,
-    });
-    expect(appState.switchProjectContext).not.toHaveBeenCalled();
-    expect(appState.setMode).toHaveBeenCalledWith('Architect', {
-      ensureAutoPlan: false,
-    });
-    expect(appState.activateArchitectPlan).toHaveBeenCalledWith(
-      'plan-owner',
-      expect.objectContaining({
-        targetBranch: 'develop',
-        allowScopeSwitch: false,
-        expectedAgsdlConversationId: conversation.id,
-      }),
-    );
-    expect(navigationCalls).toEqual([
-      'setSelectedGroup',
-      'setMode',
-      'activatePlan',
-      'selectConversation',
-    ]);
-    expect(chatState.ensureConversationForCurrentMode).not.toHaveBeenCalled();
-    expect(chatState.selectConversation).toHaveBeenCalledWith(conversation.id);
-    unsubscribe();
-  });
 
-  it('routes a project-only Architect request through its project context', async () => {
-    const conversation = makeConversation({
-      scope_mode: 'Architect',
-      task_id: null,
-      group_id: null,
-      project_id: 'project-other',
-    });
-    chatState = { ...chatState, conversations: [conversation] };
-    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
-    const message = makeQuestionnaire(conversation);
-    updateChatState({
-      messages: [message],
-      messagesByConversationId: { [conversation.id]: [message] },
-    });
-
-    const [, options] = notifyActionRequired.mock.calls[0]!;
-    await options.actions[0]!.onClick();
-
-    expect(appState.switchProjectContext).toHaveBeenCalledWith('project-other', {
-      restoreProjectContext: false,
-      ensureAutoPlan: false,
-    });
-    expect(appState.setSelectedGroup).not.toHaveBeenCalled();
-    expect(chatState.selectConversation).toHaveBeenCalledWith(conversation.id);
+    expect(appState.openArchitectPlanNotification).toHaveBeenCalledWith(conversation.id);
+    expect(navigationCalls).toEqual(['openArchitectPlanNotification']);
     unsubscribe();
   });
 
@@ -855,35 +733,6 @@ describe('workflow attention notification subscriptions', () => {
     expect(appState.setMode).toHaveBeenCalledWith('Implement');
     expect(appState.setSelectedTask).toHaveBeenCalledWith('task-1');
     expect(chatState.selectConversation).toHaveBeenCalledWith('conversation-1');
-    unsubscribe();
-  });
-
-  it('routes a group-only Architect request without starting context restoration', async () => {
-    const conversation = makeConversation({
-      scope_mode: 'Architect',
-      task_id: null,
-      group_id: 'group-other',
-      project_id: null,
-    });
-    chatState = { ...chatState, conversations: [conversation] };
-    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
-    const message = makeQuestionnaire(conversation);
-    updateChatState({
-      messages: [message],
-      messagesByConversationId: { [conversation.id]: [message] },
-    });
-
-    const [, options] = notifyActionRequired.mock.calls[0]!;
-    await options.actions[0]!.onClick();
-
-    expect(appState.setSelectedGroup).toHaveBeenCalledWith('group-other', {
-      restoreProjectContext: false,
-      ensureAutoPlan: false,
-    });
-    expect(appState.setMode).toHaveBeenCalledWith('Architect', {
-      ensureAutoPlan: false,
-    });
-    expect(chatState.selectConversation).toHaveBeenCalledWith(conversation.id);
     unsubscribe();
   });
 
