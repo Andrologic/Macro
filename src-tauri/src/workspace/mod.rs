@@ -8884,7 +8884,7 @@ fn ensure_plan_has_project(state: &mut WorkspaceState, project: &ProjectDto) {
     }
 }
 
-fn resolve_project_path(workspace_path: &Path, project_path: &str) -> PathBuf {
+pub(crate) fn resolve_project_path(workspace_path: &Path, project_path: &str) -> PathBuf {
     let normalized_project_path = project_path.replace('\\', "/");
     let candidate = PathBuf::from(normalized_project_path);
     if candidate.is_absolute() {

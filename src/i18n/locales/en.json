@@ -125,6 +125,7 @@
     "failedTitle": "Macro could not finish booting.",
     "failedDescription": "Macro could not initialize its local data. You can retry safely.",
     "failedSteps": "Failed steps",
+    "architectImportIncomplete": "Architect library import is incomplete.",
     "metadataRecovery": {
       "restoredWithCommit": "Metadata @macro restored from history ({{commit}})",
       "restored": "Metadata @macro restored from history",

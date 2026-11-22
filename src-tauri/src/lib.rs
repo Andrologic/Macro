@@ -156,6 +156,7 @@ mod dev_overrides;
 mod diagnostics;
 pub mod host_telemetry;
 pub mod ipc_contracts;
+pub mod legacy_agsdl_import;
 mod local_backup;
 #[cfg(target_os = "macos")]
 mod macos_traffic_lights;
@@ -961,6 +962,23 @@ pub fn run() {
             commands::goal_audit::db_apply_conversation_goal_verdict,
             commands::db_toggle_pin_conversation,
             commands::db_list_messages,
+            commands::architect_library::architect_migrate_legacy,
+            commands::architect_library::architect_list_projects,
+            commands::architect_library::architect_create_project,
+            commands::architect_library::architect_list_blueprints,
+            commands::architect_library::architect_create_blueprint,
+            commands::architect_library::architect_get_draft,
+            commands::architect_library::architect_save_draft,
+            commands::architect_library::architect_attach_conversation,
+            commands::architect_library::architect_save_version,
+            commands::architect_library::architect_list_versions,
+            commands::architect_library::architect_get_version,
+            commands::architect_library::architect_delete_version,
+            commands::architect_library::architect_adapt_version,
+            commands::architect_library::architect_record_use,
+            commands::architect_library::architect_release_use,
+            commands::architect_library::architect_list_uses,
+            commands::architect_library::architect_import_blueprint,
             commands::pilot_files::pilot_files_inspect_attachments,
             commands::pilot_files::db_pilot_message_images,
             commands::pilot_secrets::connect_transfer_send,

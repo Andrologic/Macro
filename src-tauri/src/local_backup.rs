@@ -346,6 +346,19 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if !versions.contains(&47) {
+        sqlx::query("DROP TABLE architect_legacy_import")
+            .execute(&reference)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    if !versions.contains(&46) {
+        crate::db::architect_library::remove_reference_schema(
+            &mut *reference.acquire().await.map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    }
     if !versions.contains(&45) {
         crate::db::connect_transfer::remove_target_activation_reference_in(
             &mut *reference.acquire().await.map_err(|e| e.to_string())?,
@@ -489,7 +502,14 @@ async fn check_database(path: &Path) -> Result<()> {
         return Err("Backup database tables do not match this Macro version".into());
     }
     for table in tables {
-        if table.starts_with("engine_")
+        if matches!(
+            table.as_str(),
+            "architect_projects"
+                | "architect_legacy_import"
+                | "architect_blueprints"
+                | "architect_versions"
+                | "architect_version_uses"
+        ) || table.starts_with("engine_")
             || table == "migration_identity_history"
             || table.starts_with("connect_")
             || table.starts_with("chat_admission_")
@@ -3059,6 +3079,204 @@ mod tests {
         )
         .unwrap();
     }
+    #[tokio::test]
+    async fn architect_library_restores_frozen_document_history_and_usage() {
+        use crate::db::architect_library as library;
+        use crate::legacy_agsdl_import::{migrate_profile, LegacyImportStatus, LegacyLocalStorage};
+
+        let (_temp, data, config) = profile().await;
+        let path = data.join("macro.db");
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        let legacy = serde_json::json!({
+            "id":"original","title":"Blueprint","projectId":"old-project","conversationId":"conversation",
+            "status":"archived","archivedFromStatus":"draft",
+            "agsdl":{"revision":7,"source":" {\"contract\":\"agsdl-0.3.0\"}\n","annexes":{"notes":"original"}}
+        });
+        let local = LegacyLocalStorage::Snapshot(BTreeMap::from([(
+            "macro_architect_plan:main:original".into(),
+            legacy.to_string(),
+        )]));
+        let completed = migrate_profile(&pool, Ok(vec![data.clone()]), None, local)
+            .await
+            .unwrap();
+        assert_eq!(
+            completed.status,
+            LegacyImportStatus::Complete,
+            "{:?}",
+            completed.issues
+        );
+        assert_eq!(completed.inserted, 1);
+        let id: String = sqlx::query_scalar("SELECT id FROM architect_blueprints")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let key =
+            || serde_json::from_value(serde_json::json!({"blueprintId": id, "number": 1})).unwrap();
+        let usage = || {
+            serde_json::from_value(serde_json::json!({"kind":"schedule", "ownerId":"daily"}))
+                .unwrap()
+        };
+        library::record_use(&pool, key(), usage()).await.unwrap();
+        pool.close().await;
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        library::release_use(&pool, key(), usage()).await.unwrap();
+        library::delete_version(&pool, key()).await.unwrap();
+        pool.close().await;
+        queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        let version =
+            serde_json::to_value(library::get_version(&pool, key()).await.unwrap()).unwrap();
+        assert_eq!(version["document"]["source"], legacy["agsdl"]["source"]);
+        assert_eq!(version["document"]["annexes"], legacy["agsdl"]["annexes"]);
+        assert!(library::delete_version(&pool, key()).await.is_err());
+        let draft = serde_json::to_value(library::get_draft(&pool, id).await.unwrap()).unwrap();
+        assert_eq!(draft["history"]["status"], "archived");
+        assert_eq!(draft["history"]["archivedFromStatus"], "draft");
+        assert_eq!(draft["history"]["legacyConversationId"], "conversation");
+        assert_eq!(draft["conversationId"], "conversation");
+        let retried = migrate_profile(
+            &pool,
+            Ok(vec![data.join("missing")]),
+            None,
+            LegacyLocalStorage::Unavailable("offline after restore".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(retried.status, LegacyImportStatus::Complete);
+        assert_eq!((retried.inserted, retried.already_imported), (0, 1));
+    }
+
+    #[tokio::test]
+    async fn architect_library_v45_archive_preserves_legacy_conversation_links() {
+        use crate::legacy_agsdl_import::{migrate_profile, LegacyImportStatus, LegacyLocalStorage};
+
+        let (_temp, data, config) = profile().await;
+        let path = data.join("macro.db");
+        let mut db = connection(&path).await.unwrap();
+        crate::db::architect_library::remove_reference_schema(&mut db)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "DROP TABLE architect_legacy_import; DELETE FROM schema_migrations WHERE version>45;
+             INSERT INTO conversations(id,title,created_at,updated_at) VALUES('old-chat','Design','now','now');
+             INSERT INTO architect_plan_conversation_sync(conversation_id,plan_id,target_branch,updated_at)
+             VALUES('old-chat','legacy','main','now');",
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+        db.close().await.unwrap();
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        let mut original = connection(&path).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT max(version) FROM schema_migrations")
+                .fetch_one(&mut original)
+                .await
+                .unwrap(),
+            45
+        );
+        sqlx::query("DELETE FROM architect_plan_conversation_sync")
+            .execute(&mut original)
+            .await
+            .unwrap();
+        original.close().await.unwrap();
+
+        queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        let local = LegacyLocalStorage::Snapshot(BTreeMap::from([(
+            "macro_architect_plan:main:legacy".into(),
+            serde_json::json!({"id":"legacy","agsdl":{
+                "revision":1,"source":"{\"contract\":\"agsdl-0.3.0\"}","annexes":{}
+            }})
+            .to_string(),
+        )]));
+        let report = migrate_profile(&pool, Ok(vec![data]), None, local)
+            .await
+            .unwrap();
+        assert_eq!(
+            report.status,
+            LegacyImportStatus::Complete,
+            "{:?}",
+            report.issues
+        );
+        assert_eq!(report.inserted, 1);
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT conversation_id FROM architect_blueprints")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            "old-chat"
+        );
+    }
+
+    #[tokio::test]
+    async fn architect_library_v46_backup_resumes_without_overwriting_an_edited_import() {
+        use crate::db::architect_library as library;
+        use crate::legacy_agsdl_import::{migrate_profile, LegacyLocalStorage};
+        let (_temp, data, config) = profile().await;
+        let path = data.join("macro.db");
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        let local = || {
+            LegacyLocalStorage::Snapshot(BTreeMap::from([(
+                "macro_architect_plan:main:stable".into(),
+                serde_json::json!({"id":"stable","status":"archived","agsdl":{
+                    "revision":4,"source":"{\"contract\":\"agsdl-0.3.0\"}","annexes":{}
+                }})
+                .to_string(),
+            )]))
+        };
+        migrate_profile(&pool, Ok(vec![data.clone()]), None, local())
+            .await
+            .unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM architect_blueprints")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        library::save_draft(
+            &pool,
+            id.clone(),
+            1,
+            serde_json::from_value(serde_json::json!({"source":"edited", "annexes":{}})).unwrap(),
+        )
+        .await
+        .unwrap();
+        // Reconstruct the pre-marker schema in the disposable profile.
+        sqlx::raw_sql(
+            "UPDATE architect_blueprints SET conversation_id='old-orphan';
+             DROP TABLE architect_legacy_import; DELETE FROM schema_migrations WHERE version=47;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        let done = migrate_profile(&pool, Ok(vec![data.clone()]), None, local())
+            .await
+            .unwrap();
+        assert_eq!((done.inserted, done.already_imported), (0, 1));
+        let draft =
+            serde_json::to_value(library::get_draft(&pool, id.clone()).await.unwrap()).unwrap();
+        assert_eq!(draft["document"]["source"], "edited");
+        assert_eq!(draft["archived"], true);
+        assert_eq!(draft["revision"], 2);
+        assert_eq!(draft["history"]["legacyConversationId"], "old-orphan");
+        let versions = library::list_versions(&pool, id).await.unwrap();
+        assert_eq!(versions.len(), 1);
+    }
+
     #[tokio::test]
     async fn pending_restore_defers_updater_until_restored_channel_is_loaded() {
         let (_temp, data, config) = profile().await;

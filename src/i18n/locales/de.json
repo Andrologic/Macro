@@ -125,6 +125,7 @@
     "failedTitle": "Macro konnte den Start nicht abschließen.",
     "failedDescription": "Macro konnte die lokalen Daten nicht initialisieren. Sie können den Vorgang sicher wiederholen.",
     "failedSteps": "Fehlgeschlagene Schritte",
+    "architectImportIncomplete": "Der Import der Architect-Bibliothek ist unvollständig.",
     "metadataRecovery": {
       "restoredWithCommit": "@macro-Metadaten aus dem Verlauf wiederhergestellt ({{commit}})",
       "restored": "@macro-Metadaten aus dem Verlauf wiederhergestellt",

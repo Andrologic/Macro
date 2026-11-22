@@ -23,6 +23,7 @@ import type {
   AppBootstrapController,
   AppBootstrapSnapshot,
 } from "./services/appBootstrap";
+import { ARCHITECT_LIBRARY_IMPORT_STEP } from "./services/ipc/architectLibrary";
 import {
   getDatabaseInitializationStatus,
   isTauriAvailable,
@@ -466,6 +467,20 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
     }).finally(() => { retryPendingRef.current = false; });
     void (application?.track(retry) ?? retry);
   };
+
+  const architectImportWarning = initStatus.warnings[ARCHITECT_LIBRARY_IMPORT_STEP];
+  useEffect(() => {
+    if (!initStatus.critical || !architectImportWarning) return;
+    notify.actionRequired(t("startup.architectImportIncomplete", "Architect library import is incomplete."), {
+      description: architectImportWarning,
+      tone: "warning",
+      notificationKey: "architect-library-import",
+      actions: [{
+        label: t("common.retry", "Retry"),
+        onClick: () => appBootstrapRef.current?.retryArchitectLibrary(),
+      }],
+    });
+  }, [initStatus.critical, architectImportWarning, t]);
 
   const lastRecoveryToastKeyRef = useRef<string | null>(null);
   useEffect(() => {

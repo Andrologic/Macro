@@ -301,3 +301,5 @@ export { listExecutionRuns030,readExecutionHumans030,readExecutionRunCorrelation
 export type { PublicSnapshot030,PublicStartReceipt030,StartRequest030 } from './ipc/agsdlExecution030';
 
 export { deliverExecution030 } from './ipc/agsdlExecution030';
+
+export * from "./ipc/architectLibrary";

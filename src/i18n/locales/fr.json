@@ -125,6 +125,7 @@
     "failedTitle": "Macro n’a pas pu terminer son démarrage.",
     "failedDescription": "Macro n’a pas pu initialiser ses données locales. Vous pouvez réessayer sans risque.",
     "failedSteps": "Étapes en échec",
+    "architectImportIncomplete": "L’importation de la bibliothèque Architect est incomplète.",
     "metadataRecovery": {
       "restoredWithCommit": "Métadonnées @macro restaurées depuis l'historique ({{commit}})",
       "restored": "Métadonnées @macro restaurées depuis l'historique",

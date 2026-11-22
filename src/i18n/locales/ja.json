@@ -125,6 +125,7 @@
     "failedTitle": "Macro は起動を完了できませんでした。",
     "failedDescription": "Macro はローカルデータを初期化できませんでした。安全に再試行できます。",
     "failedSteps": "失敗した手順",
+    "architectImportIncomplete": "Architect ライブラリのインポートが完了していません。",
     "metadataRecovery": {
       "restoredWithCommit": "履歴から @macro メタデータを復元しました ({{commit}})",
       "restored": "履歴から @macro メタデータを復元しました",

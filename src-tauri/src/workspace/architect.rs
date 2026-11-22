@@ -226,7 +226,7 @@ fn normalize_branch_name(value: &str) -> String {
     }
 }
 
-fn stored_plan_branch_matches(value: &str, branch_name: &str) -> bool {
+pub(crate) fn stored_plan_branch_matches(value: &str, branch_name: &str) -> bool {
     let value = value.trim();
     if value.is_empty() {
         return true;
@@ -239,7 +239,7 @@ fn stored_plan_branch_matches(value: &str, branch_name: &str) -> bool {
         == branch_name
 }
 
-fn sanitize_id(value: &str) -> String {
+pub(crate) fn sanitize_id(value: &str) -> String {
     let mut result = String::with_capacity(value.len());
     let mut previous_dash = false;
     for character in value.trim().to_lowercase().chars() {

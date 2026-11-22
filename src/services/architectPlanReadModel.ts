@@ -1,3 +1,4 @@
+import { LOCAL_INDEX_KEY_PREFIX, LOCAL_PLAN_KEY_PREFIX, LOCAL_PLAN_CHAT_KEY_PREFIX } from './agsdl/legacyLocalStorage';
 import { normalizePlanIcon } from './planIcon';
 import type { PlanNode, PredictedBranch, ProjectGitFlowSettings } from '../types';
 import * as tauriIpc from './tauriIpc';
@@ -462,11 +463,7 @@ export interface ArchitectPlanIndex {
   reservedPlanSlugs: string[];
 }
 
-export const LOCAL_INDEX_KEY_PREFIX = 'macro_architect_plan_index';
-
-export const LOCAL_PLAN_KEY_PREFIX = 'macro_architect_plan';
-
-export const LOCAL_PLAN_CHAT_KEY_PREFIX = 'macro_architect_plan_chat';
+export { LOCAL_INDEX_KEY_PREFIX, LOCAL_PLAN_KEY_PREFIX, LOCAL_PLAN_CHAT_KEY_PREFIX };
 
 export const DEFAULT_GIT_FLOW_BASE_BRANCH = 'main';
 

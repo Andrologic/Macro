@@ -125,6 +125,7 @@
     "failedTitle": "Macro가 시작을 완료하지 못했습니다.",
     "failedDescription": "Macro가 로컬 데이터를 초기화하지 못했습니다. 안전하게 다시 시도할 수 있습니다.",
     "failedSteps": "실패한 단계",
+    "architectImportIncomplete": "Architect 라이브러리 가져오기가 완료되지 않았습니다.",
     "metadataRecovery": {
       "restoredWithCommit": "기록에서 @macro 메타데이터를 복원했습니다 ({{commit}})",
       "restored": "기록에서 @macro 메타데이터를 복원했습니다",

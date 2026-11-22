@@ -364,6 +364,28 @@ describe('appBootstrap ownership', () => {
     await controller.stop();
   });
 
+  it('retries the Architect import alone and keeps the restored shell ready on SQLite errors', async () => {
+    const failure = { code: 'DB_ERROR', message: 'database is locked' };
+    const migrateArchitectLibrary = mock(async (): Promise<void> => { throw failure; });
+    const initializeAppCritical = mock(async () => {});
+    const controller = createAppBootstrapController(() => bootstrapDependencies({
+      migrateArchitectLibrary, initializeAppCritical,
+    }));
+    await controller.ensureStarted();
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: 'ready', ready: true, startupError: null,
+      warnings: { 'Architect library import': failure.message },
+    });
+    await expect(controller.retryArchitectLibrary()).rejects.toThrow(failure.message);
+    expect(controller.getSnapshot().ready).toBe(true);
+    migrateArchitectLibrary.mockImplementation(async () => {});
+    await Promise.all([controller.retryArchitectLibrary(), controller.retryArchitectLibrary()]);
+    expect(migrateArchitectLibrary).toHaveBeenCalledTimes(3);
+    expect(initializeAppCritical).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot().warnings['Architect library import']).toBeUndefined();
+    await controller.stop();
+  });
+
   it('cancels idle work, settles start and makes a retained callback inert', async () => {
     const scheduled = deferred<() => void>();
     const cancel = mock(() => undefined);
@@ -511,6 +533,47 @@ describe('appBootstrap ownership', () => {
 });
 
 describe('production app initialization lifetime',()=>{
+  it('sends a fresh legacy storage snapshot via native IPC and skips browser-only runtimes', async () => {
+    const { getAppBootstrapDependencies } = await import('./appBootstrap');
+    const bridge = await import('./tauriRuntimeBridge');
+    const available = spyOn(tauriIpc, 'isTauriAvailable').mockReturnValue(false);
+    const browser = spyOn(bridge, 'isBrowserRuntimeBridgeEnabled').mockReturnValue(false);
+    const report = {
+      status: 'discoveryIncomplete',
+      issues: [{ location: 'workspace.json', message: 'Unreadable registry' }],
+    };
+    const invoke = spyOn(bridge, 'invoke').mockResolvedValue(report);
+    const key = 'macro_architect_plan:main:startup-test';
+    const original = localStorage.getItem(key);
+    try {
+      const migrate = getAppBootstrapDependencies().migrateArchitectLibrary!;
+      await migrate();
+      available.mockReturnValue(true);
+      browser.mockReturnValue(true);
+      await migrate();
+      expect(invoke).not.toHaveBeenCalled();
+
+      browser.mockReturnValue(false);
+      localStorage.setItem(key, '{ "id": "startup-test" }');
+      await expect(migrate()).rejects.toThrow('workspace.json: Unreadable registry');
+      expect(invoke).toHaveBeenCalledWith('architect_migrate_legacy', {
+        localStorage: { state: 'snapshot', value: expect.objectContaining({ [key]: '{ "id": "startup-test" }' }) },
+      });
+      localStorage.setItem(key, '{}');
+      invoke.mockResolvedValue({ status: 'complete' });
+      await migrate();
+      expect(invoke).toHaveBeenLastCalledWith('architect_migrate_legacy', {
+        localStorage: { state: 'snapshot', value: expect.objectContaining({ [key]: '{}' }) },
+      });
+    } finally {
+      if (original === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, original);
+      invoke.mockRestore();
+      browser.mockRestore();
+      available.mockRestore();
+    }
+  });
+
   it('forwards the lifecycle to the real initializeCritical dependency, including revocation',async()=>{
     const {getAppBootstrapDependencies}=await import('./appBootstrap');
     const {useAppStore}=await import('../stores/useAppStore');

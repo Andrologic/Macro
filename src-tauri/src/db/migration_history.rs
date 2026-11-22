@@ -65,6 +65,8 @@ pub(crate) const NAMES: &[&str] = &[
     "043_connect_archive_lifecycle",
     "044_connect_target_abort",
     "045_connect_target_activation",
+    "046_architect_library",
+    "047_architect_legacy_import",
 ];
 
 pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {

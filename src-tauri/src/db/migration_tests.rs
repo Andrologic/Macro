@@ -290,6 +290,8 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (43, "043_connect_archive_lifecycle".into()),
             (44, "044_connect_target_abort".into()),
             (45, "045_connect_target_activation".into()),
+            (46, "046_architect_library".into()),
+            (47, "047_architect_legacy_import".into()),
         ]
     );
 }
@@ -426,7 +428,20 @@ async fn fixture(path: &Path, stamped: bool) -> SqliteConnection {
     connection
 }
 
+async fn drop_architect_library(c: &mut SqliteConnection) {
+    sqlx::query("DROP TABLE IF EXISTS architect_legacy_import")
+        .execute(&mut *c)
+        .await
+        .unwrap();
+    architect_library::remove_reference_schema(c).await.unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version IN (46,47)")
+        .execute(c)
+        .await
+        .unwrap();
+}
+
 pub(crate) async fn drop_develop_after9(c: &mut SqliteConnection) {
+    drop_architect_library(c).await;
     let agsdl: Vec<(i64, String, String)> = sqlx::query_as(
         "SELECT version,name,applied_at FROM schema_migrations WHERE version BETWEEN 20 AND 42",
     )
@@ -510,6 +525,7 @@ pub(crate) async fn drop_human_public(c: &mut SqliteConnection) {
 }
 
 pub(crate) async fn drop_agsdl(c: &mut SqliteConnection) {
+    drop_architect_library(c).await;
     migration_history::remove_reference_schema(c, &[])
         .await
         .unwrap();

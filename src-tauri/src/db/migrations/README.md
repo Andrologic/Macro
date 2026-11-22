@@ -159,3 +159,37 @@ writes its row once the relay has acknowledged its activation receipt. A
 published target without that row resumes `activation.record` at startup. The
 rows are immutable and reference the local activation receipt. Backup
 comparison removes version 45 before version 44.
+
+Version 46 stores Architect projects, blueprints, draft revisions, frozen
+versions and their execution or schedule references in the profile database.
+Each blueprint allocates its version numbers from a counter that survives
+deletion of a version. Adaptations retain the source blueprint ID and version
+number even if the source version is later deleted. Imports use the source
+project and blueprint identities to recognize retries across restarts.
+
+Version 47 adds the durable completion row. Existing version 46 databases
+keep their library and start with discovery pending.
+
+After SQLite is ready and before restoring the shell, the desktop calls
+`architect_migrate_legacy` with a snapshot of the legacy plan keys from its
+webview. The native command scans the configured
+workspace from the effective runtime configuration, the metadata and active roots,
+and the profile's default workspace if present. An unreadable or unsupported
+runtime configuration leaves discovery pending.
+It reads registered project paths from those workspaces and conversation links
+from the profile database. A configured root must be readable, even if another
+root is usable.
+
+A new profile completes with a zero-count row in `architect_legacy_import`
+after an empty scan. An older profile without that row imports the discovered
+drafts, provenance and version 1 in the same SQLite transaction as the row.
+Unreadable sources and documents the editor cannot open leave the transaction
+uncommitted. The shell opens with a diagnostic and a retry action when discovery
+is incomplete or the import fails. Retrying captures a fresh webview snapshot.
+An interruption before commit rolls the entire batch back. If the acknowledgement
+is lost after commit, the retry returns the stored counts without reading
+historical files again. Subsequent edits, archive history and identities survive.
+
+Restoring a database with the completion row restores its library and completion
+state together. A restored older database, or one captured before the import
+committed, runs discovery using the restored profile and available legacy sources.

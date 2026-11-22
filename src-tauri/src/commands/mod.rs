@@ -1,5 +1,6 @@
 pub mod agsdl_execution;
 pub mod ai;
+pub(crate) mod architect_library;
 pub(crate) mod chat_admission;
 pub(crate) mod connect_archive;
 pub mod conversation_catalog;

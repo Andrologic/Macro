@@ -41,6 +41,7 @@ let appBootstrapSnapshot: AppBootstrapSnapshot;
 let importCounter = 0;
 let browserRuntimeEnabled = false;
 const restartBootstrapMock = mock(async () => undefined);
+const retryArchitectLibraryMock = mock(async () => undefined);
 const actualRuntimeBridge = await import("./services/tauriRuntimeBridge");
 const actualDesktopPlatform = await import('./utils/desktopPlatform');
 const actualAppBootstrap = await import('./services/appBootstrap');
@@ -132,6 +133,7 @@ const registerAppMocks = () => {
       subscribe: () => () => undefined,
       ensureStarted: () => Promise.resolve(),
       restart: restartBootstrapMock,
+      retryArchitectLibrary: retryArchitectLibraryMock,
     },
   }));
 
@@ -183,6 +185,7 @@ describe('App layout containment', () => {
   beforeEach(() => {
     browserRuntimeEnabled = false;
     restartBootstrapMock.mockClear();
+    retryArchitectLibraryMock.mockClear();
     hydrateArchivedConversationIdsMock.mockClear();
     useConversationArchiveStore.setState({
       hydrateArchivedConversationIds: hydrateArchivedConversationIdsMock,
@@ -325,6 +328,26 @@ describe('App layout containment', () => {
     });
 
     expect(container.querySelector('[data-testid="mock-project-navigator"]')).not.toBeNull();
+  });
+
+  it('shows the Architect import diagnostic and retries without replacing the shell', async () => {
+    appBootstrapSnapshot.warnings = { 'Architect library import': 'workspace.json: Unreadable registry' };
+    const { default: App } = await loadApp();
+    const { notify } = await import('./components/ui/toastService');
+    const notification = spyOn(notify, 'actionRequired').mockReturnValue('architect-import-test');
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => root?.render(<App />));
+    expect(container.querySelector('[data-testid="panel-center"]')).not.toBeNull();
+    expect(notification).toHaveBeenCalledTimes(1);
+    const [, options] = notification.mock.calls[0];
+    expect(options.description).toBe('workspace.json: Unreadable registry');
+    await act(async () => options.actions[0].onClick());
+    expect(retryArchitectLibraryMock).toHaveBeenCalledTimes(1);
+    expect(restartBootstrapMock).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="panel-center"]')).not.toBeNull();
   });
 
   it('renders startup chrome while critical boot is pending', async () => {

@@ -7,6 +7,7 @@ mod portable_normalization_io;
 pub mod agent_runs;
 #[allow(dead_code)]
 pub(crate) mod agsdl_execution;
+pub(crate) mod architect_library;
 pub(crate) mod chat_admission;
 pub(crate) mod connect_transfer;
 pub(crate) mod conversation_catalog;
@@ -116,7 +117,7 @@ const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
 pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
-    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
+    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
 ];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
@@ -634,6 +635,16 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             "045_connect_target_activation",
             include_str!("migrations/022_connect_target_activation.sql"),
         ),
+        (
+            46,
+            "046_architect_library",
+            include_str!("migrations/046_architect_library.sql"),
+        ),
+        (
+            47,
+            "047_architect_legacy_import",
+            include_str!("migrations/047_architect_legacy_import.sql"),
+        ),
     ] {
         if !list_applied_migrations(connection)
             .await?
@@ -672,6 +683,7 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&16) && !applied.contains(&15))
         || (applied.contains(&17) && !applied.contains(&16))
         || (applied.contains(&18) && !applied.contains(&17))
+        || (applied.contains(&47) && !applied.contains(&46))
         || (applied.contains(&19) && !applied.contains(&18))
     {
         return Err(DbError::Migration(
