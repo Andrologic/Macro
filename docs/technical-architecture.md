@@ -29,6 +29,10 @@ L'architecture repose sur quatre principes :
 - transport interchangeable entre backend desktop et backend distant
 - préservation d'un historique de travail auditable via la persistance locale et la branche metadata
 
+La bibliothèque d’Architect réside dans la base SQLite du profil. Le frontend passe par les commandes Tauri de la bibliothèque pour charger un brouillon, enregistrer avec sa révision attendue et figer une version. La base conserve l’identité de la version source d’une adaptation et les références qui empêchent la suppression d’une version utilisée.
+
+Lors de la migration des anciens profils, le lecteur récupère les documents AgSDL 0.3 dans les métadonnées historiques. Une transaction enregistre les brouillons, leur première version et la fin de l’import. Les chemins de métadonnées Git décrits plus bas concernent le format historique et ses consommateurs.
+
 Le produit actuel fonctionne en desktop local avec backend Tauri embarqué.
 Les topologies client desktop ou web/mobile connecté à un kernel distant restent
 des objectifs futurs. Le prototype headless et le transport remote décrits plus

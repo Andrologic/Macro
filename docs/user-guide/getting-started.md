@@ -1,6 +1,6 @@
 # Premiers pas avec Macro
 
-Cet exercice crée un système AgSDL dans Architect. Il prend une courte note et en tire trois actions. Vous pourrez rouvrir sa définition et, si votre installation prend en charge son exécution, suivre le travail dans Operate.
+Cet exercice crée un système AgSDL dans Architect. Il prend une courte note et en tire trois actions. Vous enregistrerez une première version, puis vous pourrez la consulter ou en tirer un autre blueprint.
 
 ## 1. Vérifier la connexion à l'IA
 
@@ -27,18 +27,18 @@ dans un message à l'agent ni dans un fichier du projet.
 
 ## 2. Créer le système dans Architect
 
-Dans **Architect**, sélectionnez un projet d’essai où vous pouvez enregistrer un document. Pour ajouter un projet existant, utilisez **Ajouter un projet** et choisissez son dossier. Dans le navigateur de gauche, ouvrez le menu de création du projet puis choisissez **Créer un système**.
+Dans **Architect**, ouvrez la **Bibliothèque de blueprints**. Cliquez sur **Nouveau projet** et donnez-lui un nom, par exemple « Réunions ». Ce projet range vos systèmes dans Macro. Sélectionnez-le, cliquez sur **Nouveau blueprint** et nommez le brouillon « Actions de réunion ».
 
 Décrivez le résultat souhaité dans la conversation du nouveau système. Par exemple :
 
 > Crée un système AgSDL avec un seul agent. Il reçoit une note de réunion et en extrait jusqu’à trois actions. Si personne n’est nommé pour une action, il écrit « responsable à préciser ».
 
-Le panneau droit affiche le graphe du système sélectionné. Cliquez sur l’agent pour vérifier ses instructions. Demandez une correction dans la même conversation si nécessaire. Utilisez **Enregistrer et exporter** pour conserver le document dans le projet. Rouvrez Macro puis sélectionnez votre système dans le navigateur du projet pour retrouver sa définition.
+Le panneau droit affiche le graphe du système sélectionné. Cliquez sur l’agent pour vérifier ses instructions. Demandez une correction dans la même conversation si nécessaire.
 
-## 3. Lancer et suivre une exécution
+## 3. Enregistrer et retrouver la première version
 
-Pour un système AgSDL 0.3 compatible, **Lancer** se trouve dans le panneau droit d’Architect. Utilisez une note fictive comme entrée si le formulaire en demande une. Si le lancement est refusé, le diagnostic indique la condition à remplir sur cette machine. [Profils d’exécution pris en charge](../agsdl-codex-native.md)
+Cliquez sur **Enregistrer une version**. Vous pouvez ajouter une note, par exemple « Trois actions avec responsable », pour la reconnaître plus tard. Ouvrez **Version 1** dans la liste **Versions** et vérifiez les instructions de l’agent.
 
-Passez dans **Operate** après le lancement. Sélectionnez l’exécution pour ouvrir son graphe ou une instance d’agent pour lire ses échanges disponibles. Si une demande de réponse apparaît, sa notification ouvre l’exécution concernée. Deux lancements du même système ont chacun leur propre historique.
+Choisissez **Retour au brouillon** pour poursuivre la conception. Les modifications suivantes touchent le brouillon. Après avoir rouvert Macro, vous pouvez retrouver la première définition dans **Versions**. Pour essayer une autre conception dans un blueprint distinct, ouvrez la version souhaitée puis choisissez **Adapter cette version**.
 
 [Sommaire du guide](README.md) · [Protocole de vérification pour les agents](../agents/getting-started.md)
