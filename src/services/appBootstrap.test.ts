@@ -574,6 +574,53 @@ describe('production app initialization lifetime',()=>{
     }
   });
 
+  it('restores Architect through the native bootstrap and skips the legacy catalog on startup', async () => {
+    const { getAppBootstrapDependencies } = await import('./appBootstrap');
+    const { useAppStore } = await import('../stores/useAppStore');
+    const { useArchitectLibraryStore } = await import('../stores/useArchitectLibraryStore');
+    const { configureWorkflowRunAccess030 } = await import('./workflowAgentTasks');
+    const bridge = await import('./tauriRuntimeBridge');
+    const localContext = await import('./localProjectContext');
+    const serviceRuntime = await import('./serviceRuntime');
+    const desktop = spyOn(serviceRuntime, 'getServiceRuntime').mockReturnValue({
+      requestedTransport: 'desktop', effectiveTransport: 'desktop', effectiveProvider: 'ipc',
+    });
+    const original = useAppStore.getState();
+    const scope = createLifecycleScope();
+    const invoke = spyOn(bridge, 'invoke').mockImplementation(async (command) => {
+      if (command !== 'workspace_get_bootstrap') throw new Error(`Unexpected IPC: ${command}`);
+      return { plan: null, standaloneProjects: [], projectGroups: [], planNodes: [], predictedBranches: [] } as never;
+    });
+    const restoredSession = {
+      globalProjectId: null, selectedGroupId: null, selectedProjectId: null, mode: 'Architect', updatedAt: '',
+    } as const;
+    const session = spyOn(localContext, 'getLocalSessionContextState').mockResolvedValue(restoredSession);
+    const persistSession = spyOn(localContext, 'upsertLocalSessionContextState').mockResolvedValue(restoredSession);
+    const restore = spyOn(useArchitectLibraryStore.getState(), 'restoreSelection').mockResolvedValue(undefined);
+    const legacyCatalog = spyOn(useAppStore.getState(), 'loadMacroProjectMetadataForSelection');
+    try {
+      const dependencies = getAppBootstrapDependencies();
+      await dependencies.initializeAppCritical(scope);
+      await dependencies.resumeAppAfterInitialize(scope);
+      expect(useAppStore.getState().mode).toBe('Architect');
+      expect(useAppStore.getState().lastError).toBeNull();
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(invoke).toHaveBeenCalledWith('workspace_get_bootstrap');
+      expect(restore).toHaveBeenCalledTimes(1);
+      expect(legacyCatalog).not.toHaveBeenCalled();
+    } finally {
+      scope.stop();
+      restore.mockRestore();
+      legacyCatalog.mockRestore();
+      persistSession.mockRestore();
+      session.mockRestore();
+      invoke.mockRestore();
+      desktop.mockRestore();
+      useAppStore.setState(original, true);
+      configureWorkflowRunAccess030(undefined);
+    }
+  });
+
   it('forwards the lifecycle to the real initializeCritical dependency, including revocation',async()=>{
     const {getAppBootstrapDependencies}=await import('./appBootstrap');
     const {useAppStore}=await import('../stores/useAppStore');

@@ -5156,8 +5156,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       let bootstrapPredictedBranches: PredictedBranch[] = [];
       let bootstrapErrorMessage: string | null = null;
 
-      const reloadWorkspaceBootstrapAfterRegistryRepair = async () => {
-        lifecycle?.assertActive();
+      try {
         const bootstrap = await services.getAppBootstrap();
         lifecycle?.assertActive();
         bootstrapPlan = bootstrap.plan;
@@ -5165,11 +5164,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
         bootstrapProjectGroups = bootstrap.projectGroups;
         bootstrapPlanNodes = bootstrap.planNodes ?? [];
         bootstrapPredictedBranches = bootstrap.predictedBranches ?? [];
-      };
-
-      try {
-        await reloadWorkspaceBootstrapAfterRegistryRepair();
-        lifecycle?.assertActive();
       } catch (bootstrapError) {
         lifecycle?.assertActive();
         bootstrapErrorMessage = toServiceError(bootstrapError).message;
@@ -5459,6 +5453,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         `[Init] project context restore failed after shell boot: ${toServiceError(error).message}`,
       );
     }
+
+    if (!demoWorkflowJourney) return;
 
     try {
       const current = useAppStore.getState();

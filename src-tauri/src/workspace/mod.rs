@@ -2223,13 +2223,52 @@ pub async fn get_bootstrap(
         message: format!("Workspace recovery task failed: {error}"),
     })??;
     let state = load_or_default_state(workspace_path, metadata_root).await?;
-    Ok(WorkspaceBootstrapDto {
+    Ok(workspace_bootstrap_from_state(state))
+}
+
+fn workspace_bootstrap_from_state(state: WorkspaceState) -> WorkspaceBootstrapDto {
+    WorkspaceBootstrapDto {
         plan: state.current_plan,
         standalone_projects: state.standalone_projects,
         project_groups: state.project_groups,
         plan_nodes: state.plan_nodes,
         predicted_branches: state.predicted_branches,
+    }
+}
+
+// Startup and observers can consult legacy data without repairing its files or
+// creating a metadata worktree. An empty workspace has no legacy registry.
+async fn read_existing_workspace_state(workspace_path: &Path) -> Result<WorkspaceState> {
+    let workspace = workspace_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let root = crate::git::find_existing_macro_metadata_worktree_root(&workspace)
+            .unwrap_or_else(|| workspace.join(LEGACY_WORKSPACE_META_DIR));
+        if !root.is_dir() {
+            return Ok(WorkspaceState::default());
+        }
+        let state = read_raw_state_sync(&root, false)?.unwrap_or_default();
+        let (sanitized, report) = sanitize_workspace_state(&workspace, state.clone());
+        let mut state = if report.has_destructive_repairs() {
+            state
+        } else {
+            sanitized
+        };
+        merge_manual_feature_snapshots_from_project_roots(&mut state, &root);
+        recover_physical_workspace_project_if_missing(&mut state, &workspace, &root);
+        Ok(state)
     })
+    .await
+    .map_err(|error| BackendError::Internal {
+        message: format!("Workspace observation task failed: {error}"),
+    })?
+}
+
+pub(crate) async fn read_workspace_bootstrap(
+    workspace_path: &Path,
+) -> Result<WorkspaceBootstrapDto> {
+    Ok(workspace_bootstrap_from_state(
+        read_existing_workspace_state(workspace_path).await?,
+    ))
 }
 
 pub async fn list_projects(
@@ -2254,6 +2293,15 @@ pub async fn list_tasks(
     metadata_root: &Path,
 ) -> Result<WorkspaceTaskCatalogDto> {
     let state = load_or_default_state(workspace_path, metadata_root).await?;
+    Ok(workspace_task_catalog(state, workspace_path))
+}
+
+pub(crate) async fn read_workspace_tasks(workspace_path: &Path) -> Result<WorkspaceTaskCatalogDto> {
+    let state = read_existing_workspace_state(workspace_path).await?;
+    Ok(workspace_task_catalog(state, workspace_path))
+}
+
+fn workspace_task_catalog(state: WorkspaceState, workspace_path: &Path) -> WorkspaceTaskCatalogDto {
     let project_count = count_registry_projects(&state.standalone_projects, &state.project_groups);
     let manual_feature_count = state.manual_features.len();
     let manual_tasks = state
@@ -2269,11 +2317,10 @@ pub async fn list_tasks(
                 project_count,
                 manual_feature_count,
                 workspace_path = %workspace_path.display(),
-                metadata_root = %metadata_root.display(),
                 "Workspace task catalog is empty because no current plan or manual features were found."
             );
         }
-        return Ok(WorkspaceTaskCatalogDto {
+        return WorkspaceTaskCatalogDto {
             tasks: manual_tasks.clone(),
             plans: Vec::new(),
             has_standalone_tasks: !manual_tasks.is_empty(),
@@ -2282,7 +2329,7 @@ pub async fn list_tasks(
             } else {
                 "fallback".to_string()
             },
-        });
+        };
     };
 
     let fallback_tasks = merge_task_lists(plan.tasks.clone(), manual_tasks);
@@ -2352,17 +2399,16 @@ pub async fn list_tasks(
             project_count,
             is_executable_plan,
             workspace_path = %workspace_path.display(),
-            metadata_root = %metadata_root.display(),
             "Workspace task catalog is empty after loading workspace metadata."
         );
     }
 
-    Ok(WorkspaceTaskCatalogDto {
+    WorkspaceTaskCatalogDto {
         tasks: fallback_tasks,
         plans,
         has_standalone_tasks,
         source,
-    })
+    }
 }
 
 pub async fn get_metadata(
@@ -5914,6 +5960,10 @@ fn latest_valid_workspace_temp_sync(metadata_root: &Path) -> Option<(PathBuf, Wo
 }
 
 fn load_raw_state_sync(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
+    read_raw_state_sync(metadata_root, true)
+}
+
+fn read_raw_state_sync(metadata_root: &Path, repair: bool) -> Result<Option<WorkspaceState>> {
     let primary_path = workspace_state_path(metadata_root);
     let legacy_path = legacy_workspace_state_path(metadata_root);
     let backup_path = workspace_state_backup_path(metadata_root);
@@ -5926,6 +5976,9 @@ fn load_raw_state_sync(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
             Some(primary) => state.workspace_revision > primary.workspace_revision,
         };
         if should_promote {
+            if !repair {
+                return Ok(Some(state));
+            }
             persist_state_sync(metadata_root, &state)?;
             let _ = std::fs::remove_file(&temp_path);
             tracing::warn!(
@@ -5966,7 +6019,7 @@ fn load_raw_state_sync(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
 
     match read_and_parse(&path) {
         Ok(state) => {
-            if path == backup_path && !primary_path.exists() {
+            if repair && path == backup_path && !primary_path.exists() {
                 persist_state_sync(metadata_root, &state)?;
                 tracing::warn!(
                     action = "workspace_state_recovered_from_backup",
@@ -5979,6 +6032,7 @@ fn load_raw_state_sync(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
         }
         Err(primary_error) if path == primary_path && backup_path.exists() => {
             match read_and_parse(&backup_path) {
+                Ok(state) if !repair => Ok(Some(state)),
                 Ok(state) => {
                     let corrupt_path = metadata_root.join(format!(
                         "{}.corrupt-{}",

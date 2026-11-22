@@ -213,7 +213,8 @@ export const listLocalTargetBranches = (): string[] => {
 };
 
 export const listTargetBranchesAtScope = async (
-  scope: ArchitectMetadataScope
+  scope: ArchitectMetadataScope,
+  observeOnly = false,
 ): Promise<string[]> => {
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
     return listLocalTargetBranches();
@@ -234,8 +235,12 @@ export const listTargetBranchesAtScope = async (
       entries
         .filter((entry) => entry.kind === 'file')
         .map((entry) => entry.relative_path.replace(/\\/g, '/').replace(/^\/+/, ''))
-        .filter((relativePath) => relativePath.endsWith(suffix))
-        .map((relativePath) => normalizeBranchName(relativePath.slice(0, -suffix.length)))
+        .flatMap((relativePath) => {
+          if (relativePath.endsWith(suffix)) return [relativePath.slice(0, -suffix.length)];
+          const branch = observeOnly ? relativePath.match(/^(.+)\/plans\/[^/]+\/plan\.json$/)?.[1] : undefined;
+          return branch ? [branch] : [];
+        })
+        .map((branch) => normalizeBranchName(branch))
         .filter((branchName) => branchName.length > 0)
     ));
   } catch {
@@ -246,14 +251,15 @@ export const listTargetBranchesAtScope = async (
 export const readAggregatedIndex = async (
   branchName: string,
   registrySnapshot?: ValidProjectRegistrySnapshot | null,
-  deps?: ResolvedArchitectPlanServiceDependencies
+  deps?: ResolvedArchitectPlanServiceDependencies,
+  existingOnly = false,
 ): Promise<ArchitectPlanIndex> => {
   const normalized = normalizeBranchName(branchName);
   const resolvedDeps = deps ?? resolveArchitectPlanServiceDependencies();
   const resolvedRegistrySnapshot = resolvedDeps.tauri.isTauriAvailable()
     ? registrySnapshot ?? await resolvedDeps.loadRegistrySnapshot({ getAppState: resolvedDeps.getAppState })
     : registrySnapshot;
-  const cacheKey = `${getArchitectPlanIndexCacheKey(normalized)}::${getArchitectPlanCacheScope(resolvedDeps, resolvedRegistrySnapshot)}`;
+  const cacheKey = `${getArchitectPlanIndexCacheKey(normalized)}::${getArchitectPlanCacheScope(resolvedDeps, resolvedRegistrySnapshot)}::${existingOnly}`;
 
   return await loadCachedArchitectPlanValue({
     cache: architectPlanIndexCache,
@@ -287,7 +293,10 @@ export const readAggregatedIndex = async (
       const indexes = await Promise.all(
         dedupedScopes.map(async (scope) => ({
           scope,
-          index: await readIndexAtScope(scope, normalized, resolvedRegistrySnapshot),
+          index: await readIndexAtScope(
+            existingOnly ? existingMetadataScope(scope) : scope,
+            normalized, resolvedRegistrySnapshot, existingOnly,
+          ),
         }))
       );
 
@@ -330,12 +339,13 @@ export const readAggregatedIndex = async (
 };
 
 export const listArchitectPlanTargetBranchesImpl = async (
-  deps: ResolvedArchitectPlanServiceDependencies
+  deps: ResolvedArchitectPlanServiceDependencies,
+  existingOnly = false,
 ): Promise<string[]> => {
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const scopes = await resolveMetadataScopes(undefined, { includeAllKnown: true }, registrySnapshot, deps);
   const discoveredBranches = (
-    await Promise.all(scopes.map((scope) => listTargetBranchesAtScope(scope)))
+    await Promise.all(scopes.map((scope) => listTargetBranchesAtScope(existingOnly ? existingMetadataScope(scope) : scope, existingOnly)))
   ).flat();
 
   return Array.from(new Set([
@@ -1210,6 +1220,7 @@ export const assertPlanReplicaSetWritable = (
 };
 
 export interface ListArchitectPlansOptions {
+  existingOnly?: boolean;
   scopedProjectIdsHint?: string[];
   requestId?: string;
 }
@@ -1237,16 +1248,16 @@ export const listArchitectPlansWithDeps = async (
   activePlanId: string | null;
   plans: ArchitectPlanSummary[];
 }> => {
-  await recoverArchitectPlanReplicaMutations(deps);
+  if (!options.existingOnly) await recoverArchitectPlanReplicaMutations(deps);
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
-  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
+  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps, options.existingOnly);
   const hasPersistedDirectPlan = index.plans.some((plan) =>
     Object.values(plan.executionModesByProjectId ?? {}).includes('direct')
   );
 
-  if (isWorkspaceArchitectRuntimeAvailable(deps) &&
+  if (!options.existingOnly && isWorkspaceArchitectRuntimeAvailable(deps) &&
       canUseWorkspaceArchitectRuntimeForScope(registrySnapshot, options.scopedProjectIdsHint) &&
       !hasPersistedDirectPlan) {
     try {
@@ -1474,12 +1485,12 @@ export const inspectArchitectPlanMetadataHealth = async (input: {
   };
 };
 
-export const listArchitectPlanTargetBranches = async (): Promise<string[]> =>
-  listArchitectPlanTargetBranchesImpl(resolveArchitectPlanServiceDependencies());
+export const listArchitectPlanTargetBranches = async (existingOnly = false): Promise<string[]> =>
+  listArchitectPlanTargetBranchesImpl(resolveArchitectPlanServiceDependencies(), existingOnly);
 
 /** Queries and activation snapshots without a store or UI dependency. */
 export interface ArchitectPlanReadService {
-  listArchitectPlanTargetBranches: () => Promise<string[]>;
+  listArchitectPlanTargetBranches: typeof listArchitectPlanTargetBranches;
   listArchitectPlans: typeof listArchitectPlans;
   isArchitectPlanSlugAvailable: typeof isArchitectPlanSlugAvailable;
   getArchitectPlanActivationPayload: typeof getArchitectPlanActivationPayload;
@@ -1493,7 +1504,7 @@ export interface ArchitectPlanReadService {
 export const createArchitectPlanReadService = (overrides: ArchitectPlanServiceDependencies = {}): ArchitectPlanReadService => {
   const deps = resolveArchitectPlanServiceDependencies(overrides);
   return {
-    listArchitectPlanTargetBranches: () => listArchitectPlanTargetBranchesImpl(deps),
+    listArchitectPlanTargetBranches: (existingOnly) => listArchitectPlanTargetBranchesImpl(deps, existingOnly),
     listArchitectPlans: (branchName, includeDeleted, includeArchived, options) =>
       listArchitectPlansWithDeps(branchName, includeDeleted, includeArchived, deps, options),
     isArchitectPlanSlugAvailable: (params) => isArchitectPlanSlugAvailable(params, deps),

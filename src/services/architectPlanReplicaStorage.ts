@@ -16,6 +16,7 @@ import {
   getPlanJsonPath,
   getPlanManifestPath,
   getPlanMarkdownPath,
+  getPlanRoot,
   getPlanTasksRoot,
   getTaskPlannedPath,
   localIndexKey,
@@ -36,6 +37,7 @@ import {
   stripPlanReplicaMetadata,
   throwPlanMetadataMissing,
   toJsonLines,
+  toSummary,
   type ArchitectMetadataScope,
   type ArchitectPlanArtifactManifestSummary,
   type ArchitectPlanChatMessage,
@@ -314,7 +316,8 @@ const readIndexSummariesForBranch = (
 export const readIndexAtScope = async (
   scope: ArchitectMetadataScope,
   branchName: string,
-  registrySnapshot?: ValidProjectRegistrySnapshot | null
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+  observeOnly = false,
 ): Promise<ArchitectPlanIndex> => {
   const normalized = normalizeBranchName(branchName);
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
@@ -344,7 +347,28 @@ export const readIndexAtScope = async (
     };
   }
 
-  return emptyIndex();
+  if (!observeOnly) return emptyIndex();
+
+  // The legacy native catalog can recover an index from its plan files. Keep
+  // that discovery available to observers without replacing the on-disk index.
+  let entries;
+  try {
+    entries = await tauriIpc.fsListDir({
+      path: getPlanRoot(normalized),
+      recursive: false,
+      includeHidden: true,
+      allowOutsideWorkspace: false,
+      workspaceScope: getScopeWorkspaceScope(scope),
+      workspacePath: scope.workspacePath,
+    });
+  } catch {
+    return emptyIndex();
+  }
+  const records = await Promise.all(entries.filter(entry => entry.kind === 'directory').map(async entry => {
+    const { plan } = await readPlanAtScopeWithDiagnostics(scope, normalized, entry.name, registrySnapshot);
+    return plan ? toSummary(plan) : null;
+  }));
+  return { ...emptyIndex(), plans: records.filter((plan): plan is ArchitectPlanSummary => plan !== null) };
 };
 
 export const writeIndexAtScope = async (

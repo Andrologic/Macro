@@ -2,6 +2,7 @@ import type { PlanNode, PredictedBranch, Project, ProjectGroup, Task } from '../
 import { useAppStore } from '../stores/useAppStore';
 import {
   getArchitectPlan,
+  readArchitectPlanSnapshot,
   getArchitectPlanEffectiveTargetBranchesByProjectId,
   getGitFlowBaseBranch,
   listArchitectPlans,
@@ -26,6 +27,7 @@ import {
 } from './projectIdentityReconciliation';
 import { resolveProjectExecutionMode } from './projectExecutionMode';
 import { isWorkflowPlan, loadWorkflowAgentTasks } from './workflowAgentTasks';
+import { demoWorkflowJourney } from './operateWorkspace';
 
 interface ActivePlanContextState {
   id: string;
@@ -55,6 +57,7 @@ interface LoadImplementTaskCatalogDependencies {
   getAppState: () => AppState | Promise<AppState>;
   listArchitectPlans: typeof listArchitectPlans;
   getArchitectPlan: typeof getArchitectPlan;
+  readArchitectPlanSnapshot?: typeof readArchitectPlanSnapshot;
   listArchitectPlanTargetBranches: typeof listArchitectPlanTargetBranches;
   getGitFlowBaseBranch: typeof getGitFlowBaseBranch;
   resolveTargetBranch: typeof resolveTargetBranch;
@@ -248,6 +251,7 @@ export const createLoadImplementTaskCatalog = (
     getAppState: () => useAppStore.getState(),
     listArchitectPlans,
     getArchitectPlan,
+    readArchitectPlanSnapshot,
     listArchitectPlanTargetBranches,
     getGitFlowBaseBranch,
     resolveTargetBranch,
@@ -258,6 +262,10 @@ export const createLoadImplementTaskCatalog = (
 ) => {
   return async (fallbackTasks: Task[], options?: { persistedOnly?: boolean }): Promise<ImplementTaskCatalog> => {
     const appState = await dependencies.getAppState();
+    const existingOnly = options?.persistedOnly === true && !demoWorkflowJourney;
+    const readPlan = existingOnly
+      ? dependencies.readArchitectPlanSnapshot ?? dependencies.getArchitectPlan
+      : dependencies.getArchitectPlan;
     const reconciliationProjectIds = options?.persistedOnly ? collectKnownProjects(appState).map((project) => project.id) : resolveRelevantProjectIds(appState);
     const validProjects = collectKnownProjects(appState);
     const validProjectIds = validProjects.map((project) => project.id);
@@ -274,7 +282,7 @@ export const createLoadImplementTaskCatalog = (
 
     let discoveredTargetBranches: string[] = [];
     try {
-      discoveredTargetBranches = await dependencies.listArchitectPlanTargetBranches();
+      discoveredTargetBranches = await dependencies.listArchitectPlanTargetBranches(existingOnly);
     } catch (error) {
       if (options?.persistedOnly) throw error;
       // Discovery is advisory; the active and Git-flow base branches remain valid fallbacks.
@@ -299,7 +307,7 @@ export const createLoadImplementTaskCatalog = (
                   branchName,
                   false,
                   false,
-                  { scopedProjectIdsHint: undefined }
+                  { existingOnly }
                 ),
               };
             } catch (error) {
@@ -329,7 +337,7 @@ export const createLoadImplementTaskCatalog = (
         executablePlanRefs.map(async ({ branchName, planId }) => {
           const requiresCompleteRead = options?.persistedOnly || agsdlPlanRefs.has(toPlanLocatorKey({ branchName, planId }));
           try {
-            const plan = await dependencies.getArchitectPlan(branchName, planId);
+            const plan = await readPlan(branchName, planId);
             if (!plan && requiresCompleteRead) throw new Error('A referenced Architect plan could not be read.');
             return plan
               ? plan.agsdl ? plan : retargetPlanForExecution(plan, {

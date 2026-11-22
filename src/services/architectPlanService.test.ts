@@ -384,6 +384,33 @@ describe('architectPlanService', () => {
     await expect(service.updateArchitectPlan({ branchName, planId: plan.id, agsdl, expectedAgsdlRevision: 2 })).rejects.toThrow('draft');
   });
 
+  it('discovers a historical plan from its files without repairing legacy metadata', async () => {
+    const workspaceRoot = '/repos/synthetic';
+    const plan = await service.createArchitectPlan({
+      branchName, planId: 'historical-plan', title: 'Historical plan',
+      agsdl: createEmptyBlueprintDocument('Historical plan'),
+    });
+    const workspaceFiles = { [getPlanJsonPath(branchName, plan.id)]: JSON.stringify(plan) };
+    const workspaceScopeCalls: NonNullable<LoadArchitectPlanServiceOptions['workspaceScopeCalls']> = [];
+    const runtimeList = mock(async () => { throw new Error('legacy runtime list can repair metadata'); });
+    service = await loadArchitectPlanService({
+      tauriAvailable: true, workspaceRoot,
+      filesByWorkspacePath: { [workspaceRoot]: workspaceFiles },
+      workspaceScopeCalls, workspaceArchitectListPlans: runtimeList,
+    });
+
+    const list = await service.listArchitectPlans(branchName, false, false, { existingOnly: true });
+    expect(list.plans.map(({ id, hasAgsdl }: ArchitectPlanSummary) => ({ id, hasAgsdl })))
+      .toEqual([{ id: plan.id, hasAgsdl: true }]);
+    expect((await service.readArchitectPlanSnapshot(branchName, plan.id))?.agsdl).toEqual(plan.agsdl);
+    expect(runtimeList).not.toHaveBeenCalled();
+    expect(workspaceScopeCalls.length).toBeGreaterThan(0);
+    expect(workspaceScopeCalls.every(({ operation, workspaceScope }) =>
+      (operation === 'read' || operation === 'list') && workspaceScope === 'metadata_existing'
+    )).toBe(true);
+    expect(Object.keys(workspaceFiles)).toEqual([getPlanJsonPath(branchName, plan.id)]);
+  });
+
   it('allows main as the target branch in mainline mode', async () => {
     const preferences = await import('./preferences');
     await preferences.savePreferences({

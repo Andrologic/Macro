@@ -173,6 +173,7 @@ struct SplitConfigPublication {
 struct DesiredProjectRoot {
     path: PathBuf,
     needs_resolution: bool,
+    observe_only: bool,
 }
 
 #[derive(Default)]
@@ -364,6 +365,25 @@ impl ConfigManager {
         project_id: &str,
         macro_metadata_root: PathBuf,
     ) -> Result<PathBuf, ConfigApiError> {
+        self.bind_project_root(project_id, macro_metadata_root, false)
+            .await
+    }
+
+    pub(crate) async fn observe_project_root(
+        &self,
+        project_id: &str,
+        macro_metadata_root: PathBuf,
+    ) -> Result<PathBuf, ConfigApiError> {
+        self.bind_project_root(project_id, macro_metadata_root, true)
+            .await
+    }
+
+    async fn bind_project_root(
+        &self,
+        project_id: &str,
+        macro_metadata_root: PathBuf,
+        observe_only: bool,
+    ) -> Result<PathBuf, ConfigApiError> {
         let _references = self.lock_mcp_configuration_mutation().await;
         let _registration = self.project_registration.lock().await;
         validate_project_id(project_id)?;
@@ -383,9 +403,10 @@ impl ConfigManager {
             DesiredProjectRoot {
                 path: requested.clone(),
                 needs_resolution: true,
+                observe_only,
             },
         );
-        let resolved = resolve_project_config_root(&requested);
+        let resolved = resolve_project_config_root(&requested, !observe_only);
         let binding = match resolved {
             Ok(binding) => binding,
             Err(mut error) => {
@@ -413,6 +434,7 @@ impl ConfigManager {
             DesiredProjectRoot {
                 path: config_root.clone(),
                 needs_resolution: false,
+                observe_only,
             },
         );
         // The requested subscription can be A while the pending consent intent
@@ -424,7 +446,7 @@ impl ConfigManager {
             .await?;
         self.install_project_root(project_id, &binding).await;
         // Loading is idempotent, including same-root retries after partial loads.
-        self.load_registered_project_documents(project_id, &config_root)
+        self.load_registered_project_documents(project_id, &config_root, observe_only)
             .await?;
         Ok(config_root)
     }
@@ -526,6 +548,7 @@ impl ConfigManager {
         &self,
         project_id: &str,
         root: &Path,
+        observe_only: bool,
     ) -> Result<(), ConfigApiError> {
         let result = async {
             self.require_project_root_identity(project_id).await?;
@@ -545,7 +568,7 @@ impl ConfigManager {
                 }
                 let path = root.join(kind.file_name());
                 if path.exists() {
-                    self.load_document_from_path_locked(kind, scope, path, false)
+                    self.load_document_from_path_locked(kind, scope, path, false, observe_only)
                         .await?;
                 }
             }
@@ -939,8 +962,8 @@ impl ConfigManager {
                 )
             };
             let result = async {
-                let retry_resolution = self.state.read().await.desired_project_roots.get(&project_id)
-                    .is_some_and(|request| request.needs_resolution);
+                let (retry_resolution, observe_only) = self.state.read().await.desired_project_roots.get(&project_id)
+                    .map_or((false, false), |request| (request.needs_resolution, request.observe_only));
                 let resumed = self.resume_project_transition(&project_id).await?;
                 if self.state.read().await.unresolved_project_repositories.contains(&project_id) {
                     return Err(ConfigApiError::new("config.project.resolution_pending",
@@ -963,9 +986,9 @@ impl ConfigManager {
                     return Ok(resumed);
                 };
                 let (root, identity) = if retry_resolution {
-                    match resolve_project_config_root(&root) {
+                    match resolve_project_config_root(&root, !observe_only) {
                         Ok(binding) => {
-                            self.state.write().await.desired_project_roots.insert(project_id.clone(), DesiredProjectRoot { path: binding.path.clone(), needs_resolution: false });
+                            self.state.write().await.desired_project_roots.insert(project_id.clone(), DesiredProjectRoot { path: binding.path.clone(), needs_resolution: false, observe_only });
                             (binding.path, Some(binding.identity))
                         }
                         Err(error) => {
@@ -1007,7 +1030,7 @@ impl ConfigManager {
                 }
                 self.install_project_root(&project_id, target.as_ref().expect("available root"))
                     .await;
-                self.load_registered_project_documents(&project_id, &root)
+                self.load_registered_project_documents(&project_id, &root, observe_only)
                     .await?;
                 Ok(true)
             }
@@ -1158,7 +1181,7 @@ impl ConfigManager {
         fail_on_invalid_initial: bool,
     ) -> Result<(), ConfigApiError> {
         let _project = self.lock_project_access(&scope).await?;
-        self.load_document_from_path_locked(kind, scope, path, fail_on_invalid_initial)
+        self.load_document_from_path_locked(kind, scope, path, fail_on_invalid_initial, false)
             .await
     }
 
@@ -1169,6 +1192,7 @@ impl ConfigManager {
         scope: ConfigScope,
         path: PathBuf,
         fail_on_invalid_initial: bool,
+        observe_only: bool,
     ) -> Result<(), ConfigApiError> {
         if let ConfigScope::Project { project_id } = &scope {
             validate_project_id(project_id)?;
@@ -1179,10 +1203,18 @@ impl ConfigManager {
         };
         let local_lock = self.document_lock(&key).await;
         let _local_guard = local_lock.lock().await;
-        let _file_guard = lock_document_file_async(path.clone()).await?;
+        let _file_guard = if observe_only {
+            None
+        } else {
+            Some(lock_document_file_async(path.clone()).await?)
+        };
         let _runtime_guards = lock_project_runtime_files(self.root(), &key).await?;
         let project_root = self.pending_root_binding(&key.scope).await?;
-        recover_config_publication(self.root(), &key, &path, project_root.as_ref())?;
+        if observe_only {
+            require_no_config_publication(self.root(), &key)?;
+        } else {
+            recover_config_publication(self.root(), &key, &path, project_root.as_ref())?;
+        }
         let raw = fs::read(&path).map_err(|error| {
             ConfigApiError::new(
                 "config.document.read_failed",
@@ -1482,7 +1514,7 @@ impl ConfigManager {
                 })?;
             }
         }
-        self.load_document_from_path_locked(kind, key.scope, path, true)
+        self.load_document_from_path_locked(kind, key.scope, path, true, false)
             .await
     }
 
@@ -1519,11 +1551,15 @@ impl ConfigManager {
                         ),
                     )
                 })?;
-                roots.push((project_id.clone(), root));
+                let observe_only = state
+                    .desired_project_roots
+                    .get(project_id)
+                    .is_some_and(|request| request.observe_only);
+                roots.push((project_id.clone(), root, observe_only));
             }
             roots
         };
-        for (project_id, root) in roots {
+        for (project_id, root, observe_only) in roots {
             for kind in ConfigDocumentKind::ALL
                 .into_iter()
                 .filter(|kind| kind.supports_project_scope())
@@ -1540,7 +1576,7 @@ impl ConfigManager {
                 }
                 let path = root.join(kind.file_name());
                 if path.exists() {
-                    self.load_document_from_path_locked(kind, scope, path, false)
+                    self.load_document_from_path_locked(kind, scope, path, false, observe_only)
                         .await?;
                 }
             }
@@ -2248,8 +2284,20 @@ impl ConfigManager {
         scope: ConfigScope,
         source: ConfigChangeSource,
     ) -> Result<ReloadOutcome, ConfigApiError> {
+        self.reload_document(kind, scope, source, false).await
+    }
+
+    async fn reload_document(
+        &self,
+        kind: ConfigDocumentKind,
+        scope: ConfigScope,
+        source: ConfigChangeSource,
+        observe_only: bool,
+    ) -> Result<ReloadOutcome, ConfigApiError> {
         if let ConfigScope::Project { project_id } = &scope {
-            self.ensure_project_document(kind, project_id).await?;
+            if !observe_only {
+                self.ensure_project_document(kind, project_id).await?;
+            }
         }
         let _reference_guard = matches!(
             kind,
@@ -2281,15 +2329,23 @@ impl ConfigManager {
                     "The requested configuration document was not found.",
                 )
             })?;
-        let _file_guard = lock_document_file_async(current.path.clone()).await?;
+        let _file_guard = if observe_only {
+            None
+        } else {
+            Some(lock_document_file_async(current.path.clone()).await?)
+        };
         let _runtime_guards = lock_project_runtime_files(self.root(), &key).await?;
         if let ConfigScope::Project { project_id } = &key.scope {
             self.require_current_project_root(project_id).await?;
         }
         let project_root = self.pending_root_binding(&key.scope).await?;
-        let (approved, disk_pending) = self
-            .read_runtime_state(&key, project_root.as_ref(), &current.path)
-            .await?;
+        let (approved, disk_pending) = if observe_only {
+            require_no_config_publication(self.root(), &key)?;
+            read_runtime_state(self.root(), &key, project_root.as_ref())?
+        } else {
+            self.read_runtime_state(&key, project_root.as_ref(), &current.path)
+                .await?
+        };
         if let ConfigScope::Project { project_id } = &key.scope {
             self.require_current_project_root(project_id).await?;
         }
@@ -2893,17 +2949,29 @@ impl ConfigManager {
                 outcomes.push(Err(error));
             }
         }
-        let keys = self
-            .state
-            .read()
-            .await
-            .documents
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        outcomes.reserve(keys.len());
-        for key in keys {
-            outcomes.push(self.reload(key.kind, key.scope, source).await);
+        let documents = {
+            let state = self.state.read().await;
+            state
+                .documents
+                .keys()
+                .map(|key| {
+                    let observe_only = match &key.scope {
+                        ConfigScope::Project { project_id } => state
+                            .desired_project_roots
+                            .get(project_id)
+                            .is_some_and(|request| request.observe_only),
+                        ConfigScope::User => false,
+                    };
+                    (key.clone(), observe_only)
+                })
+                .collect::<Vec<_>>()
+        };
+        outcomes.reserve(documents.len());
+        for (key, observe_only) in documents {
+            outcomes.push(
+                self.reload_document(key.kind, key.scope, source, observe_only)
+                    .await,
+            );
         }
         outcomes
     }
@@ -2995,10 +3063,14 @@ fn publication_document_path(root: &Path, key: &DocumentKey) -> PathBuf {
 // migration; development fixtures must be recreated when changing this protocol.
 // Initial registration and retries use the same filesystem boundary. No caller
 // may continue serving an older root when this resolution fails.
-fn resolve_project_config_root(root: &Path) -> Result<PendingRootBinding, ConfigApiError> {
-    if !root
-        .try_exists()
-        .map_err(|error| ConfigApiError::new("config.project.resolve_failed", error.to_string()))?
+fn resolve_project_config_root(
+    root: &Path,
+    create: bool,
+) -> Result<PendingRootBinding, ConfigApiError> {
+    if create
+        && !root.try_exists().map_err(|error| {
+            ConfigApiError::new("config.project.resolve_failed", error.to_string())
+        })?
     {
         fs::create_dir_all(&root).map_err(|error| {
             ConfigApiError::new(
@@ -3495,6 +3567,22 @@ fn rollback_config_publication(
         restore_approved()?;
     }
     remove_file_if_exists(publication_path)
+}
+
+// A deferred publication may be rolled back by an explicit config operation.
+// Observation must never publish back into a legacy project directory.
+fn require_no_config_publication(root: &Path, key: &DocumentKey) -> Result<(), ConfigApiError> {
+    if runtime_file_exists(&publication_document_path(root, key))?
+        || (key.kind == ConfigDocumentKind::Tools
+            && read_json_value(&pending_document_path(root, key))
+                .is_ok_and(|value| value.get("splitPublication").is_some()))
+    {
+        return Err(ConfigApiError::new(
+            "config.publication.recovery_required",
+            "An interrupted project configuration change needs an explicit reload.",
+        ));
+    }
+    Ok(())
 }
 
 fn recover_config_publication(
