@@ -1475,6 +1475,7 @@ export interface ArchitectPlanReadService {
   isArchitectPlanSlugAvailable: typeof isArchitectPlanSlugAvailable;
   getArchitectPlanActivationPayload: typeof getArchitectPlanActivationPayload;
   getArchitectPlan: typeof getArchitectPlan;
+  readArchitectPlanSnapshot: typeof readArchitectPlanSnapshot;
   getArchitectPlanChatMessages: typeof getArchitectPlanChatMessages;
   getArchitectPlanChatTranscript: typeof getArchitectPlanChatTranscript;
   inspectArchitectPlanMetadataHealth: typeof inspectArchitectPlanMetadataHealth;
@@ -1490,6 +1491,7 @@ export const createArchitectPlanReadService = (overrides: ArchitectPlanServiceDe
     getArchitectPlanActivationPayload: (branchName, planId, options) =>
       getArchitectPlanActivationPayload(branchName, planId, options, deps),
     getArchitectPlan: (branchName, planId) => getArchitectPlan(branchName, planId, deps),
+    readArchitectPlanSnapshot: (branchName, planId) => readArchitectPlanSnapshot(branchName, planId, deps),
     getArchitectPlanChatMessages: (branchName, planId) =>
       getArchitectPlanChatMessages(branchName, planId, deps),
     getArchitectPlanChatTranscript: (branchName, planId, options) =>

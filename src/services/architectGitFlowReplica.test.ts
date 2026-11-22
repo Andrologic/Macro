@@ -160,7 +160,9 @@ const buildStoredPlan = () => ({
   ],
 });
 
-const seedReplica = (plan = buildStoredPlan()): void => {
+const seedReplica = (plan: ReturnType<typeof buildStoredPlan> & Pick<
+  import('./architectPlanService').ArchitectPlanRecord, 'agsdl'
+> = buildStoredPlan()): void => {
   writeWorkspaceJson('/repos/web', 'branches/develop/plans/index.json', {
     version: 2,
     activePlanId: plan.id,
@@ -245,11 +247,32 @@ const dbSetAppSettingMock = mock(async ({ key, valueJson }: { key: string; value
   dbAppSettings.set(key, valueJson);
   return { key, value_json: valueJson, updated_at: '2026-08-13T00:00:00.000Z' };
 });
-const dbCompareAndSwapAppSettingMock = mock(async ({ key, expectedValueJson, valueJson }: { key: string; expectedValueJson: string | null; valueJson: string }) => {
+const compareAndSwapAppSetting = async ({ key, expectedValueJson, valueJson }: Parameters<typeof actualTauriIpc.dbCompareAndSwapAppSetting>[0]) => {
   if ((dbAppSettings.get(key) ?? null) !== expectedValueJson) return { applied: false };
   dbAppSettings.set(key, valueJson);
   return { applied: true };
-});
+};
+const dbCompareAndSwapAppSettingMock = mock(compareAndSwapAppSetting);
+const metadataCommitResult = {
+  branch: '@macro',
+  state: 'clean',
+  worktree_path: '/repos/web/.git/macro-metadata-worktree',
+  is_dirty: false,
+  has_origin: false,
+  has_upstream: false,
+  ahead: 0,
+  behind: 0,
+  conflicted_files: [],
+  committed: false,
+  commit_hash: null,
+  reason: null,
+  next_action: null,
+  output: null,
+  error: null,
+} satisfies import('./tauriIpc').MacroBranchSyncDto;
+const macroBranchCommitIfDirtyMock = mock<typeof actualTauriIpc.macroBranchCommitIfDirty>(
+  async () => metadataCommitResult,
+);
 const gitWorktreeRemoveMock = mock(async (params: { repoPath: string; taskId: string; branchName?: string | null }) => ({
   taskId: params.taskId,
   worktreePath: `${params.repoPath}/.macro/worktrees/task${params.taskId}`,
@@ -278,23 +301,9 @@ const registerModuleMocks = () => {
     dbSetAppSetting: dbSetAppSettingMock,
     dbCompareAndSwapAppSetting: dbCompareAndSwapAppSettingMock,
     workspaceGetActiveRoot: async () => '/repos/web',
-    macroBranchCommitIfDirty: async () => ({
-      branch: '@macro',
-      state: 'clean',
-      worktree_path: '/repos/web/.git/macro-metadata-worktree',
-      is_dirty: false,
-      has_origin: false,
-      has_upstream: false,
-      ahead: 0,
-      behind: 0,
-      conflicted_files: [],
-      committed: false,
-      commit_hash: null,
-      reason: null,
-      next_action: null,
-      output: null,
-      error: null,
-    }),
+    macroBranchCommitIfDirty: macroBranchCommitIfDirtyMock,
+    workspaceAcquirePlanLifecycleLock: async () => 'plan-lifecycle-lease',
+    workspaceReleasePlanLifecycleLock: async () => undefined,
     fsReadFileWithOptions: async ({
       path,
       workspacePath,
@@ -407,6 +416,37 @@ const loadIntegrationModules = async () => {
   };
 };
 
+const legacyArchiveCheckpoint = {
+  branchName: 'develop', planId: 'plan-1', operation: 'archive', phase: 'metadata_commit_pending',
+  requiresMetadataCommit: true, createdAt: '2026-03-17T00:00:00.000Z', updatedAt: '2026-03-17T00:00:00.000Z',
+} as const;
+const legacyFinalization = {
+  branchName: 'develop', planId: 'plan-1', operation: 'finalize', phase: 'metadata_written',
+  finalizationRepositories: [], createdAt: '2026-03-16T00:00:00.000Z', updatedAt: '2026-03-16T00:00:00.000Z',
+} as const;
+const lifecycleJournalKey = 'pendingPlanLifecycles:v1';
+const readLifecycleJournal = () => JSON.parse(dbAppSettings.get(lifecycleJournalKey) ?? '[]');
+
+const loadLifecycleRecovery = async () => {
+  const { planService, gitFlowService } = await loadIntegrationModules();
+  const getAppState = () => ({
+    ...appState,
+    getProjectById: (id: string) => appState.projectGroups.flatMap((group) => group.projects)
+      .find((project) => project.id === id) ?? null,
+  });
+  const plans = planService.createArchitectPlanService({ getAppState });
+  return gitFlowService.createArchitectGitFlowService({ ...plans, getAppState });
+};
+
+const expectNoDevelopmentGit = () => {
+  expect(gitBranchListMock).not.toHaveBeenCalled();
+  expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+  expect(gitGuardedMergeStateMock).not.toHaveBeenCalled();
+  expect(gitMergeMock).not.toHaveBeenCalled();
+  expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+  expect(gitBranchWorktreeRemoveMock).not.toHaveBeenCalled();
+};
+
 describe('architectGitFlowService replica integration', () => {
   beforeEach(() => {
     installTauriRuntimeMock();
@@ -429,6 +469,10 @@ describe('architectGitFlowService replica integration', () => {
     gitBranchCreateMock.mockClear();
     dbGetAppSettingMock.mockClear();
     dbSetAppSettingMock.mockClear();
+    dbCompareAndSwapAppSettingMock.mockReset();
+    dbCompareAndSwapAppSettingMock.mockImplementation(compareAndSwapAppSetting);
+    macroBranchCommitIfDirtyMock.mockReset();
+    macroBranchCommitIfDirtyMock.mockImplementation(async () => metadataCommitResult);
     gitWorktreeInspectMock.mockClear();
     gitBranchWorktreeInspectMock.mockClear();
     gitWorktreeRemoveMock.mockClear();
@@ -439,6 +483,119 @@ describe('architectGitFlowService replica integration', () => {
     console.info = originalConsoleInfo;
     removeTauriRuntimeMock();
     mock.restore();
+  });
+
+  it('leaves an AgSDL replica with stale project ids byte-for-byte intact during legacy archive recovery', async () => {
+    seedReplica({
+      ...buildStoredPlan(), status: 'archived',
+      agsdl: { source: '{ "opaque": 900719925474099312345 }', annexes: { notes: '{ "keep": true }' }, revision: 4 },
+    });
+    writeWorkspaceFile('/repos/web', 'branches/develop/plans/plan-1/chat.jsonl', '{"content":"Keep this chat"}\n');
+    const before = new Map(ensureWorkspace('/repos/web'));
+    const journal = JSON.stringify([legacyFinalization, legacyArchiveCheckpoint]);
+    dbAppSettings.set(lifecycleJournalKey, journal);
+    const service = await loadLifecycleRecovery();
+
+    await service.resumePlanLifecycleSagas();
+
+    expect(ensureWorkspace('/repos/web')).toEqual(before);
+    expect(dbAppSettings.get(lifecycleJournalKey)).toBe(journal);
+    expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
+    expectNoDevelopmentGit();
+  });
+
+  it.each(['metadata_commit_pending', 'metadata_committed'] as const)(
+    'closes a legacy finalization and its archive at %s without development actions',
+    async (phase) => {
+      seedReplica({ ...buildStoredPlan(), status: 'archived' });
+      const before = new Map(ensureWorkspace('/repos/web'));
+      dbAppSettings.set(lifecycleJournalKey, JSON.stringify([
+        legacyFinalization, { ...legacyArchiveCheckpoint, phase, requiresMetadataCommit: undefined },
+      ]));
+      const service = await loadLifecycleRecovery();
+
+      expect(await service.readPlanFinalizationRecovery(legacyFinalization)).toMatchObject({
+        phase, nextActions: [phase === 'metadata_commit_pending' ? 'commit_metadata' : 'close_journal'],
+      });
+      await service.resumePlanLifecycleSagas();
+      await service.resumePlanLifecycleSagas();
+
+      expect(readLifecycleJournal()).toEqual([]);
+      expect(await service.readPlanFinalizationRecovery(legacyFinalization)).toBeNull();
+      expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(phase === 'metadata_commit_pending' ? 1 : 0);
+      expect(ensureWorkspace('/repos/web')).toEqual(before);
+      expectNoDevelopmentGit();
+    },
+  );
+
+  it('keeps both journals pending when the metadata checkpoint returns an error', async () => {
+    seedReplica({ ...buildStoredPlan(), status: 'archived' });
+    dbAppSettings.set(lifecycleJournalKey, JSON.stringify([legacyFinalization, legacyArchiveCheckpoint]));
+    macroBranchCommitIfDirtyMock.mockImplementationOnce(async () => ({
+      ...metadataCommitResult, is_dirty: true, error: 'Metadata checkpoint rejected',
+    }));
+    const service = await loadLifecycleRecovery();
+
+    await service.resumePlanLifecycleSagas();
+
+    expect(readLifecycleJournal()).toEqual([
+      legacyFinalization,
+      expect.objectContaining({ phase: 'metadata_commit_pending', lastError: 'Metadata checkpoint rejected' }),
+    ]);
+    expect(await service.readPlanFinalizationRecovery(legacyFinalization)).toMatchObject({
+      nextActions: ['commit_metadata'],
+    });
+    await service.resumePlanLifecycleSagas();
+    expect(readLifecycleJournal()).toEqual([]);
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(2);
+    expectNoDevelopmentGit();
+  });
+
+  it.each(['finalize', 'archive'])('restarts closure after interruption before closing %s', async (operation) => {
+    seedReplica({ ...buildStoredPlan(), status: 'archived' });
+    dbAppSettings.set(lifecycleJournalKey, JSON.stringify([legacyFinalization, legacyArchiveCheckpoint]));
+    let interrupted = false;
+    dbCompareAndSwapAppSettingMock.mockImplementation(async (change) => {
+      if (!interrupted && change.key === 'completedPlanLifecycles:v1' && change.valueJson.includes(`:${operation}"`)) {
+        interrupted = true;
+        throw new Error('Interrupted before closing the journal');
+      }
+      return compareAndSwapAppSetting(change);
+    });
+    const service = await loadLifecycleRecovery();
+
+    await service.resumePlanLifecycleSagas();
+
+    expect(readLifecycleJournal()).toEqual([
+      ...(operation === 'finalize' ? [legacyFinalization] : []),
+      expect.objectContaining({ phase: 'metadata_committed', lastError: 'Interrupted before closing the journal' }),
+    ]);
+    expect(await service.readPlanFinalizationRecovery(legacyFinalization)).toMatchObject({
+      nextActions: ['close_journal'],
+    });
+    const restarted = await loadLifecycleRecovery();
+    await restarted.resumePlanLifecycleSagas();
+    expect(readLifecycleJournal()).toEqual([]);
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(1);
+    expectNoDevelopmentGit();
+  });
+
+  it('keeps a replacement finalization generation introduced during the archive checkpoint', async () => {
+    seedReplica({ ...buildStoredPlan(), status: 'archived' });
+    const original = { ...legacyFinalization, generation: 1 };
+    const replacement = { ...legacyFinalization, generation: 2 };
+    dbAppSettings.set(lifecycleJournalKey, JSON.stringify([original, legacyArchiveCheckpoint]));
+    macroBranchCommitIfDirtyMock.mockImplementationOnce(async () => {
+      dbAppSettings.set(lifecycleJournalKey, JSON.stringify([replacement, legacyArchiveCheckpoint]));
+      return metadataCommitResult;
+    });
+    const service = await loadLifecycleRecovery();
+
+    await service.resumePlanLifecycleSagas();
+
+    expect(readLifecycleJournal()).toEqual([replacement]);
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(1);
+    expectNoDevelopmentGit();
   });
 
   it('does not fail closed during finalization when replica noise is only a stale session project id', async () => {

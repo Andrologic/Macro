@@ -733,6 +733,7 @@ describe('architectGitFlowService', () => {
         getProjectById: (projectId: string) => projectPaths.get(projectId),
       }),
       getArchitectPlan: getArchitectPlanMock,
+      readArchitectPlanSnapshot: async () => currentPlan,
       updateArchitectPlan: updateArchitectPlanMock,
       archiveArchitectPlan: archiveArchitectPlanMock,
       restoreArchitectPlan: restoreArchitectPlanMock,

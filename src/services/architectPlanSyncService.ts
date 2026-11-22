@@ -49,6 +49,7 @@ export const commitArchitectPlanMetadata = async (input: {
   branchName: string;
   planId: string;
   commitMessage: string;
+  requireArchivedLegacyPlan?: boolean;
 }, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<void> => {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
@@ -57,10 +58,17 @@ export const commitArchitectPlanMetadata = async (input: {
     const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
     const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
       allowDivergence: true,
+      disableAutoHeal: true,
+      metadataOnly: true,
       registrySnapshot,
     }, deps);
     if (!replicaSet) {
       throwPlanMetadataMissing(normalizedBranch, safeId);
+    }
+    if (input.requireArchivedLegacyPlan &&
+      replicaSet.snapshots.some(({ plan }) => plan.agsdl || plan.status !== 'archived')
+    ) {
+      throw new Error(`Plan ${safeId} is unavailable for legacy archive checkpoint recovery.`);
     }
 
     const executionModesByProjectId = getPlanExecutionModes(
