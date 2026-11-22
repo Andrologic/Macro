@@ -1,6 +1,7 @@
 import i18n from "../../i18n";
 import { readAgsdlSelectionPayload,readRuntimeCapture,stripAgsdlChatContext } from '../../services/agsdl/chatContextPayload';
-import { list,object,readDocument,sourceAt } from "../../services/agsdl/document";
+import { resolveAgsdlSelectionPath } from "./selectionRevision";
+export { resolveAgsdlSelectionPath, isAgsdlChatContextCurrent } from "./selectionRevision";
 import { isAgsdlReference,sameRuntimeReference,type RuntimeSelectionCapture } from "../../services/agsdl/runtimeSelection";
 import { serializeAgsdlChatContext } from "../../services/agsdl/selectionContext";
 import { AgsdlUserError } from "../../services/agsdl/userErrors";
@@ -16,22 +17,6 @@ export type AgsdlChatContext = AgsdlSelectionReference;
 
 export function getAgsdlContext(refs: readonly ContextReference[]): AgsdlChatContext | undefined {
   return refs.find(ref => ref.kind === 'agsdl')?.data as AgsdlChatContext | undefined;
-}
-
-/** Resolve viewer-only legacy cards to their real source owner. */
-export function resolveAgsdlSelectionPath(source: string, path: string): string {
-  if (path.startsWith("/legacy/")) {
-    const index = Number(path.slice("/legacy/".length));
-    const definitions = list(readDocument(source).definitions).map(object);
-    const archiveIndex = definitions.findIndex(value => value.kind === "Resource" && object(value.key).id === "macro-legacy-plan");
-    const node = object(list(object(definitions[archiveIndex]?.payload).nodes)[index]);
-    const matches = definitions.map((value, index) => ({ value, index })).filter(({ value }) =>
-      value.kind === "Agent" && typeof node.id === "string" && object(value.annotations).macroLegacyNodeId === node.id);
-    path = matches.length === 1 ? `/definitions/${matches[0].index}` : `/definitions/${archiveIndex}/payload/nodes/${index}`;
-  }
-  // Root references also support repairing a malformed or empty document.
-  if (path) sourceAt(source, path);
-  return path;
 }
 
 /** Attach a document reference to the plan's currently selected chat. Never sends or changes draft text. */
@@ -68,20 +53,6 @@ export async function prepareAgsdlChatContext(
     if (ref.kind === 'agsdl') useChatStore.getState().removeComposerContextRef(ref.id, ref.kind);
   }
   useChatStore.getState().addComposerContextRef({ id: context.id, kind: 'agsdl', title: context.title, data: context });
-}
-
-export function isAgsdlChatContextCurrent(context: AgsdlChatContext): boolean {
-  if (context.contextKind === "runtime") return true;
-  const session = useAgsdlStore.getState().sessions[agsdlSessionKey(context.blueprintId !== undefined ? { blueprintId: context.blueprintId } : context)];
-  if (!session) return false;
-  if (session.version === context.version) return true;
-  // Each load starts a new session version. A draft restored after a reload still
-  // targets the same document while its saved revision is unchanged and unedited.
-  if (session.dirty || session.saving || session.persistedRevision !== context.persistedRevision) return false;
-  try {
-    for (const path of [context.path, ...(context.relatedPaths ?? [])]) resolveAgsdlSelectionPath(session.source, path);
-    return true;
-  } catch { return false; }
 }
 
 /** Read only the display metadata from our persisted selection envelope. */

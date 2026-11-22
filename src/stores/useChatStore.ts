@@ -1805,7 +1805,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const assertBlueprintAttachment = async (conversationId: string, refs: ChatMessage["context_refs"]) => {
     const ref = refs?.find(item => item.kind === "agsdl")?.agsdl;
     if (ref?.blueprintId === undefined) return;
-    const { isAgsdlChatContextCurrent } = await import("./agsdl/chatContext");
+    const { isAgsdlChatContextCurrent } = await import("./agsdl/selectionRevision");
     if (useAppStore.getState().mode !== "Architect" || ref.conversationId !== conversationId ||
         selectedBlueprintForConversation(conversationId)?.id !== ref.blueprintId || !isAgsdlChatContextCurrent(ref))
       throw buildSendError(i18n.t("agsdl.staleChatSelection", { ns: "agsdl" }));
