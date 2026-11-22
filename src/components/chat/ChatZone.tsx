@@ -134,7 +134,6 @@ import { parseConversationGoalCommand } from '../../services/conversationGoalCom
 import { conversationGoalProductFlow } from '../../composition/goalProductComposition';
 import { isTauriAvailable } from '../../services/ipc/runtime';
 import { chatAdmissionMode, type ChatAdmissionMode } from '../../services/ipc/chatAdmission';
-import { GoalAuditArtifactsButton } from './GoalAuditArtifactsButton';
 import { StandaloneTaskLaunchProgressCard } from './StandaloneTaskLaunchProgressCard';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
 import { ChatFloatingNotice, ChatFloatingNoticeStack } from './ChatFloatingNotices';
@@ -198,6 +197,9 @@ const ImagePreviewModal = React.lazy(() =>
 );
 const ArchiveReaderDialog = React.lazy(() =>
   import('./ArchiveReaderDialog').then((module) => ({ default: module.ArchiveReaderDialog })),
+);
+const GoalAuditArtifactsButton = React.lazy(() =>
+  import('./GoalAuditArtifactsButton').then((module) => ({ default: module.GoalAuditArtifactsButton })),
 );
 const TransferConversationDialog = React.lazy(() =>
   import('../connect/TransferConversationDialog').then((module) => ({ default: module.TransferConversationDialog })),
@@ -4018,10 +4020,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               <button type="button" className="rounded p-1.5 text-muted-foreground hover:bg-accent" title={t('chat.archive.title')} aria-label={t('chat.archive.title')} onClick={() => setArchiveReaderOpen(true)}><Icon name="archive" size={14} /></button>
             )}
             {currentConversation?.project_id && (
-              <GoalAuditArtifactsButton key={`${currentConversation.project_id}:${currentConversation.id}:${activeConversationGoal?.goalId ?? ''}`}
-                projectId={currentConversation.project_id}
-                conversationId={currentConversation.id} goalId={activeConversationGoal?.goalId}
-                refreshKey={activeConversationGoal?.revision ?? 0} />
+              <Suspense fallback={null}>
+                <GoalAuditArtifactsButton key={`${currentConversation.project_id}:${currentConversation.id}:${activeConversationGoal?.goalId ?? ''}`}
+                  projectId={currentConversation.project_id}
+                  conversationId={currentConversation.id} goalId={activeConversationGoal?.goalId}
+                  refreshKey={activeConversationGoal?.revision ?? 0} />
+              </Suspense>
             )}
             {shouldShowContextIndicator && selectedConversationId && (
               <Suspense fallback={null}>

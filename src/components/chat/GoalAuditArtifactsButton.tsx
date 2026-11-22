@@ -1,10 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useConversationGoalStore } from '../../stores/useConversationGoalStore';
 import { Icon } from '../ui/Icon';
 import { Dialog } from '../ui/Dialog';
-import { DiffMergeView } from '../ui/DiffMergeView';
 import { listConversationGoalAuditArtifacts, readGoalAuditArtifact, type GoalAuditArtifact } from '../../composition/goalArtifactComposition';
+
+const DiffMergeView = lazy(() =>
+  import('../ui/DiffMergeView').then((module) => ({ default: module.DiffMergeView })),
+);
 
 interface Props { projectId: string; conversationId: string; goalId?: string | null; refreshKey: number }
 
@@ -62,7 +65,11 @@ export const GoalAuditArtifactsButton: React.FC<Props> = ({ projectId, conversat
             </button>)}
           </nav>
           <div className="min-w-0 flex-1">
-            {error ? <div className="p-4 text-xs text-destructive"><p role="alert">{error}</p><button type="button" className="mt-2 rounded border border-border px-2 py-1" onClick={() => setRetryKey((value) => value + 1)}>{t('common.retry', 'Retry')}</button></div> : <DiffMergeView original="" modified={content} language="javascript" layout="right-only" presentationMode="full" className="h-full w-full border-none" editable={false} />}
+            {error ? <div className="p-4 text-xs text-destructive"><p role="alert">{error}</p><button type="button" className="mt-2 rounded border border-border px-2 py-1" onClick={() => setRetryKey((value) => value + 1)}>{t('common.retry', 'Retry')}</button></div> : (
+              <Suspense fallback={null}>
+                <DiffMergeView original="" modified={content} language="javascript" layout="right-only" presentationMode="full" className="h-full w-full border-none" editable={false} />
+              </Suspense>
+            )}
           </div>
         </div>
       </div>
