@@ -8143,16 +8143,20 @@ mod tests {
                         }
                     };
                     tokio::pin!(action);
-                    assert!(tokio::time::timeout(
-                        std::time::Duration::from_millis(20),
-                        &mut action
-                    )
+                    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                        tokio::select! {
+                            result = &mut action => {
+                                panic!("{operation} finished before acquiring its document mutex: {result:?}");
+                            }
+                            _ = async {
+                                while local_lock.try_lock().is_ok() {
+                                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                                }
+                            } => {}
+                        }
+                    })
                     .await
-                    .is_err());
-                    assert!(
-                        local_lock.try_lock().is_err(),
-                        "{operation} must hold its document mutex while waiting for the file lock"
-                    );
+                    .unwrap_or_else(|_| panic!("{operation} never acquired its document mutex"));
 
                     let moved_root = root.with_file_name("previous-config");
                     fs::rename(&root, &moved_root).unwrap();
