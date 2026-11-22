@@ -711,26 +711,35 @@ fn strip_credentials(value: &mut serde_json::Value) {
 }
 fn make_config_files_portable(files: &mut BTreeMap<String, Entry>) -> Result<()> {
     for file in CONFIG_FILES {
-        let active = format!("config/{file}");
-        let approved = format!("config/.runtime/approved/user/{file}");
-        let pending = format!("config/.runtime/pending/user/{file}");
-        files.remove(&pending);
+        make_config_file_portable(files, file)?;
+    }
+    Ok(())
+}
 
-        if let Some(approved_entry) = files.get(&approved).cloned() {
-            files.insert(active.clone(), approved_entry);
+fn make_config_file_portable(files: &mut BTreeMap<String, Entry>, file: &str) -> Result<()> {
+    let active = format!("config/{file}");
+    let approved = format!("config/.runtime/approved/user/{file}");
+    files.remove(&format!("config/.runtime/pending/user/{file}"));
+
+    let has_approved = files.contains_key(&approved);
+    let source = if has_approved { &approved } else { &active };
+    if let Some(entry) = files.get_mut(source) {
+        let bytes = STANDARD.decode(&entry.data).map_err(|e| e.to_string())?;
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        // A raw-only Tools document cannot establish consent for a legacy executable.
+        if file == "tools.json" && !has_approved {
+            if let Some(object) = json.as_object_mut() {
+                object.remove("languageServer");
+            }
         }
-
-        for name in [&active, &approved] {
-            let Some(entry) = files.get_mut(name) else {
-                continue;
-            };
-            let bytes = STANDARD.decode(&entry.data).map_err(|e| e.to_string())?;
-            let mut json: serde_json::Value =
-                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-            strip_credentials(&mut json);
-            let bytes = serde_json::to_vec(&json).map_err(|e| e.to_string())?;
-            entry.sha256 = hash(&bytes);
-            entry.data = STANDARD.encode(bytes);
+        strip_credentials(&mut json);
+        let bytes = serde_json::to_vec(&json).map_err(|e| e.to_string())?;
+        entry.sha256 = hash(&bytes);
+        entry.data = STANDARD.encode(bytes);
+        if has_approved {
+            let entry = entry.clone();
+            files.insert(active, entry);
         }
     }
     Ok(())
@@ -1194,6 +1203,7 @@ async fn load_restore_archive(path: &Path) -> Result<Archive> {
     } else {
         // Verify original checksums before detaching identities in older portable archives.
         validate(&archive).await?;
+        make_config_file_portable(&mut archive.files, "tools.json")?;
     }
     make_state_file_portable(&mut archive.files)?;
     validate(&archive).await?;
@@ -2764,8 +2774,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn portable_tools_backup_keeps_approved_legacy_value_and_drops_pending_changes() {
+        use crate::config::{ConfigDocumentKind, ConfigManager, ConfigScope};
+        use serde_json::json;
+
+        let (temp, data, config) = profile().await;
+        let initial = ConfigManager::initialize(config.clone()).await.unwrap();
+        let scope = ConfigScope::User;
+        let kind = ConfigDocumentKind::Tools;
+        let mut approved = initial
+            .get_document(kind, scope.clone())
+            .await
+            .unwrap()
+            .value;
+        drop(initial);
+        approved["languageServer"] = json!({"enabled": false, "executable": "/example/approved"});
+        approved["riskLevel"] = json!("strict");
+        let mut raw = approved.clone();
+        raw["languageServer"] = json!({"enabled": true, "executable": "/example/pending"});
+        raw["riskLevel"] = json!("yolo");
+        let active_path = config.join("tools.json");
+        let approved_path = config.join(".runtime/approved/user/tools.json");
+        let pending_path = config.join(".runtime/pending/user/tools.json");
+        let raw_bytes = serde_json::to_vec_pretty(&raw).unwrap();
+        fs::write(&active_path, &raw_bytes).unwrap();
+        fs::write(&approved_path, serde_json::to_vec(&approved).unwrap()).unwrap();
+        fs::create_dir_all(pending_path.parent().unwrap()).unwrap();
+        // Reproduce the full-document shape written before LSP was retired.
+        fs::write(&pending_path, serde_json::to_vec(&json!({
+            "pending": {
+                "id": "legacy-tools-approval",
+                "document": "tools",
+                "scope": {"type": "user"},
+                "source": "agent",
+                "changedPaths": ["/languageServer/enabled", "/languageServer/executable", "/riskLevel"],
+                "reasons": ["/languageServer exige une approbation utilisateur.", "/riskLevel exige une approbation utilisateur."],
+                "proposedDocument": raw,
+                "proposedEtag": format!("sha256:{}", hash(&serde_json::to_vec(&raw).unwrap())),
+                "createdAt": "2026-09-05T00:00:00Z",
+            },
+            "approvedEtag": format!("sha256:{}", hash(&serde_json::to_vec(&approved).unwrap())),
+            "allChangedPaths": ["/languageServer/enabled", "/languageServer/executable", "/riskLevel"],
+            "applyModes": ["live"],
+        })).unwrap()).unwrap();
+
+        let exported = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        assert_eq!(fs::read(&active_path).unwrap(), raw_bytes);
+        let legacy = capture(&data, &config, BTreeMap::new(), false)
+            .await
+            .unwrap();
+        let migrated = ConfigManager::initialize(config.clone()).await.unwrap();
+        assert_eq!(
+            migrated.list_pending_changes().await[0].changed_paths,
+            ["/riskLevel"]
+        );
+        assert_eq!(fs::read(&active_path).unwrap(), raw_bytes);
+        let after_migration = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        drop(migrated);
+
+        let archived_tools = |archive: &Archive, name: &str| {
+            let bytes = STANDARD.decode(&archive.files[name].data).unwrap();
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+        };
+        let active = "config/tools.json";
+        let baseline = "config/.runtime/approved/user/tools.json";
+        let pending = "config/.runtime/pending/user/tools.json";
+        for archive in [&exported, &after_migration] {
+            assert_eq!(archived_tools(archive, active), approved);
+            assert_eq!(archived_tools(archive, baseline), approved);
+            assert!(!archive.files.contains_key(pending));
+        }
+        let archive_path = temp.path().join("legacy.json");
+        fs::write(&archive_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let restored = load_restore_archive(&archive_path).await.unwrap();
+        assert_eq!(archived_tools(&restored, active), approved);
+        assert!(!restored.files.contains_key(pending));
+        let mut unproven = legacy;
+        unproven.files.remove(baseline);
+        fs::write(&archive_path, serde_json::to_vec(&unproven).unwrap()).unwrap();
+        let restored_unproven = load_restore_archive(&archive_path).await.unwrap();
+        assert!(archived_tools(&restored_unproven, active)
+            .get("languageServer")
+            .is_none());
+
+        queue_restore(&data, &exported);
+        process_startup(&data, &config).await.unwrap();
+        let restored = ConfigManager::initialize(config).await.unwrap();
+        assert_eq!(
+            restored.get_document(kind, scope).await.unwrap().value,
+            approved
+        );
+        assert!(restored.list_pending_changes().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn portable_restore_detaches_provider_secrets_and_keeps_them_in_rollback() {
         let (_temp, data, config) = profile().await;
+        let legacy_tools = br#"{
+  "$schema": "./schemas/v1/tools.schema.json",
+  "schemaVersion": 1,
+  "languageServer": {
+    "executable": "/example/language-server",
+    "arguments": ["macro-secret://providers/synthetic-provider"]
+  }
+}"#;
+        fs::write(config.join("tools.json"), legacy_tools).unwrap();
+        let approved_tools = config.join(".runtime/approved/user/tools.json");
+        fs::create_dir_all(approved_tools.parent().unwrap()).unwrap();
+        fs::write(approved_tools, legacy_tools).unwrap();
         let provider_document = |base_url: &str| {
             serde_json::json!({
                 "$schema": "providers.schema.json",
@@ -2849,6 +2969,12 @@ mod tests {
             restored.pointer("/providers/synthetic-provider/baseUrl"),
             Some(&serde_json::json!("https://restored.invalid/v1"))
         );
+        let restored_tools: serde_json::Value =
+            serde_json::from_slice(&fs::read(config.join("tools.json")).unwrap()).unwrap();
+        assert_eq!(
+            restored_tools,
+            serde_json::from_slice::<serde_json::Value>(legacy_tools).unwrap()
+        );
 
         let dir = data.join("local-backup");
         let preserved = fs::read_dir(&dir)
@@ -2887,6 +3013,12 @@ mod tests {
                 .decode(&rollback.files["data/provider-secrets.migration-pending.json"].data)
                 .unwrap(),
             migration_journal_bytes
+        );
+        assert_eq!(
+            STANDARD
+                .decode(&rollback.files["config/tools.json"].data)
+                .unwrap(),
+            legacy_tools
         );
 
         apply_files(&rollback, &data, &config, true).unwrap();
@@ -3230,6 +3362,12 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        // This fixture captures raw SQLite files immediately after closing the pool.
+        let (busy, _, _): (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(busy, 0);
         pool.close().await;
 
         let provider_document = |base_url: &str, sentinel: &str| {

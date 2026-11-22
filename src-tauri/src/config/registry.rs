@@ -2,6 +2,7 @@ use super::types::*;
 use schemars::{schema::RootSchema, schema_for};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Map, Value};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 const DEFAULT_ARCHITECT_PROMPT: &str = "Help the user design an agentic system in Architect. Clarify the goal, inputs, responsibilities, and expected outputs. Use the AgSDL authoring tools to read and edit the system document. Summarize changes and report any open design questions.";
@@ -177,13 +178,28 @@ pub fn default_document(kind: ConfigDocumentKind) -> Value {
     }
 }
 
+pub(super) const LEGACY_LANGUAGE_SERVER: &str = "languageServer";
+
 pub fn schema_for_kind(kind: ConfigDocumentKind) -> RootSchema {
     match kind {
         ConfigDocumentKind::Runtime => schema_for!(RuntimeDocument),
         ConfigDocumentKind::Settings => schema_for!(SettingsDocument),
         ConfigDocumentKind::Agents => schema_for!(AgentsDocument),
         ConfigDocumentKind::Providers => schema_for!(ProvidersDocument),
-        ConfigDocumentKind::Tools => schema_for!(ToolsDocument),
+        ConfigDocumentKind::Tools => {
+            let mut schema = schema_for!(ToolsDocument);
+            // Match active_document: old profiles may carry any value here.
+            schema
+                .schema
+                .object
+                .get_or_insert_with(Default::default)
+                .properties
+                .insert(
+                    LEGACY_LANGUAGE_SERVER.into(),
+                    schemars::schema::Schema::Bool(true),
+                );
+            schema
+        }
         ConfigDocumentKind::Skills => schema_for!(SkillsDocument),
         ConfigDocumentKind::Git => schema_for!(GitDocument),
     }
@@ -559,6 +575,19 @@ fn validate_skill_paths(value: &Value, scope: &ConfigScope) -> Vec<(String, Stri
     diagnostics
 }
 
+// Keep raw profile values and etags available for edits and pending approvals.
+pub(super) fn active_document(kind: ConfigDocumentKind, value: &Value) -> Cow<'_, Value> {
+    if kind == ConfigDocumentKind::Tools && value.get(LEGACY_LANGUAGE_SERVER).is_some() {
+        let mut active = value.clone();
+        if let Some(fields) = active.as_object_mut() {
+            fields.remove(LEGACY_LANGUAGE_SERVER);
+        }
+        Cow::Owned(active)
+    } else {
+        Cow::Borrowed(value)
+    }
+}
+
 pub fn validate_document(
     kind: ConfigDocumentKind,
     scope: &ConfigScope,
@@ -602,7 +631,9 @@ pub fn validate_document(
             ConfigDocumentKind::Settings => validate_typed::<SettingsDocument>(value),
             ConfigDocumentKind::Agents => validate_typed::<AgentsDocument>(value),
             ConfigDocumentKind::Providers => validate_typed::<ProvidersDocument>(value),
-            ConfigDocumentKind::Tools => validate_typed::<ToolsDocument>(value),
+            ConfigDocumentKind::Tools => {
+                validate_typed::<ToolsDocument>(&active_document(kind, value))
+            }
             ConfigDocumentKind::Skills => validate_typed::<SkillsDocument>(value),
             ConfigDocumentKind::Git => validate_typed::<GitDocument>(value),
         };
@@ -806,28 +837,6 @@ pub fn validate_document(
                 "config.tools.agsdl_host_permissions_invalid",
                 "Les permissions AgSDL de l’hôte ne peuvent pas être nulles.",
             ));
-        }
-        if let Some(server) = value.get("languageServer") {
-            if matches!(scope, ConfigScope::Project { .. }) {
-                diagnostics.push(diagnostic(
-                    kind,
-                    scope,
-                    Some("/languageServer".into()),
-                    "config.project.lsp_forbidden",
-                    "Le serveur LSP et ses racines autorisées sont configurés par l’utilisateur.",
-                ));
-            }
-            if let Ok(server) = serde_json::from_value::<LanguageServerSettings>(server.clone()) {
-                if let Err(message) = server.validate() {
-                    diagnostics.push(diagnostic(
-                        kind,
-                        scope,
-                        Some("/languageServer".into()),
-                        "config.tools.lsp_invalid",
-                        message,
-                    ));
-                }
-            }
         }
         diagnostics.extend(
             validate_mcp_secret_refs(value)
@@ -1087,14 +1096,6 @@ pub fn descriptors() -> Vec<ConfigDescriptor> {
             Deep,
             ApprovalRequired,
             Reconnect,
-        ),
-        descriptor(
-            Tools,
-            "/languageServer",
-            &["user"],
-            Replace,
-            ApprovalRequired,
-            Live,
         ),
         descriptor(
             Tools,
@@ -1699,8 +1700,9 @@ pub fn effective_documents(
         }
 
         if let Some(user) = user_documents.get(&kind) {
-            merge_values(&mut value, user);
-            for pointer in collect_leaf_pointers(user) {
+            let user = active_document(kind, user);
+            merge_values(&mut value, &user);
+            for pointer in collect_leaf_pointers(&user) {
                 provenance.insert(
                     (kind, pointer.clone()),
                     ConfigProvenance {
@@ -1715,7 +1717,7 @@ pub fn effective_documents(
 
         for (project_id, project_documents) in project_documents {
             if let Some(project) = project_documents.get(&kind) {
-                let mut restricted_project = project.clone();
+                let mut restricted_project = active_document(kind, project).into_owned();
                 if kind == ConfigDocumentKind::Tools {
                     if let Some(map) = restricted_project.as_object_mut() {
                         map.remove("agsdlHostPermissions");
@@ -1743,7 +1745,7 @@ pub fn effective_documents(
         );
 
         if let Some(session) = session_documents.get(&kind) {
-            let mut restricted_session = session.clone();
+            let mut restricted_session = active_document(kind, session).into_owned();
             if kind == ConfigDocumentKind::Tools {
                 if let Some(map) = restricted_session.as_object_mut() {
                     map.remove("agsdlHostPermissions");
@@ -2607,7 +2609,8 @@ mod tests {
                     !matches!(
                         property.as_str(),
                         "$schema" | "schemaVersion" | "extensions"
-                    )
+                    ) && !(kind == ConfigDocumentKind::Tools
+                        && property.as_str() == LEGACY_LANGUAGE_SERVER)
                 })
                 .cloned()
                 .collect::<BTreeSet<_>>();

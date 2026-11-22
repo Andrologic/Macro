@@ -3968,6 +3968,34 @@ mod tests {
         assert!(temp_path.ends_with(".tmp"));
     }
 
+    #[tokio::test]
+    async fn confined_read_reports_the_current_root_identity() {
+        let container = setup_empty_workspace();
+        let workspace = container.path().join("workspace");
+        let path = "sample.ts".to_string();
+        fs::create_dir(&workspace).unwrap();
+        fs::write(workspace.join(&path), "same contents").unwrap();
+        let original = read_file_internal(&workspace, path.clone(), Some(false))
+            .await
+            .unwrap();
+
+        fs::rename(&workspace, container.path().join("original")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        fs::write(workspace.join(&path), "same contents").unwrap();
+        let replaced = read_file_internal(&workspace, path.clone(), Some(false))
+            .await
+            .unwrap();
+
+        assert!(original.workspace_identity.is_some());
+        assert!(replaced.workspace_identity.is_some());
+        assert_ne!(original.workspace_identity, replaced.workspace_identity);
+        assert_eq!(original.revision, replaced.revision);
+        let unconfined = read_file_internal(&workspace, path, Some(true))
+            .await
+            .unwrap();
+        assert_eq!(unconfined.workspace_identity, None);
+    }
+
     #[cfg(windows)]
     #[test]
     fn workspace_root_identity_matches_the_capability_directory() {

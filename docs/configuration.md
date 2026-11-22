@@ -94,7 +94,7 @@ Chaque fichier commence au minimum par :
 | `settings.json` | Langue, apparence, zoom, code, raccourcis, notifications et applications d’ouverture |
 | `agents.json` | Prompts, limites de tours, compaction, revues, modèles dédiés et smart commit |
 | `providers.json` | Fournisseurs IA et vocaux, modèles manuels, overrides et dictée |
-| `tools.json` | Risque, outils par mode, recherche web, MCP, serveur LSP, commandes projet et changement de projet |
+| `tools.json` | Risque, outils par mode, recherche web, MCP, commandes projet et changement de projet |
 | `skills.json` | Racines, destinations d’installation, priorités et permissions de skills |
 | `git.json` | Branches, modèles de noms, politiques de merge et synchronisation metadata |
 
@@ -381,6 +381,16 @@ ne sont pas réinitialisés. La suppression physique des anciennes colonnes et
 tables fera l’objet d’une migration ultérieure après la période de
 compatibilité.
 
-Le réglage sensible utilisateur `tools.languageServer` active les diagnostics
-après édition pour des racines explicitement autorisées. Voir
-[Diagnostics après édition](lsp-diagnostics.md) pour son contrat et ses limites.
+Macro ignore la clé `languageServer` dans les anciens fichiers `tools.json`.
+Le fichier brut conserve cette clé. La copie approuvée conserve uniquement la
+valeur LSP déjà approuvée, si elle existe. L’approbation d’un réglage actif
+ne valide pas une modification LSP en attente. Une ancienne version qui
+rouvre le profil peut donc demander son approbation. Le format de la copie
+approuvée ne retrace pas l’origine du consentement déjà enregistré.
+
+Une sauvegarde portable transporte la configuration approuvée et écarte les
+propositions en attente. Si la copie approuvée de `tools.json` est absente,
+la sauvegarde conserve les réglages actifs disponibles et retire
+`languageServer`, faute d’approbation vérifiable. La restauration applique
+la même règle aux anciennes archives. Le rollback local interne conserve
+les fichiers bruts, la copie approuvée et les demandes en attente.

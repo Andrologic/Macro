@@ -597,7 +597,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oauth_client_secret_cleanup_preserves_active_references() {
+    async fn oauth_client_secret_cleanup_counts_active_references_only() {
         let _store_guard = crate::secrets::lock_test_store();
         let temp = tempfile::tempdir().expect("temporary secret store");
         crate::secrets::init(temp.path()).expect("initialize synthetic secrets");
@@ -615,24 +615,35 @@ mod tests {
                 kind: ConfigDocumentKind::Tools,
                 scope: ConfigScope::User,
                 expected_etag: document.etag,
-                patch: vec![JsonPatchOperation {
-                    op: "add".to_string(),
-                    path: "/mcpServers".to_string(),
-                    from: None,
-                    value: Some(json!({
-                        "remote": {
-                            "transport": {
-                                "type": "streamable_http",
-                                "url": "https://mcp.example.test/mcp"
-                            },
-                            "authorization": {
-                                "type": "oauth",
-                                "clientId": "synthetic-client",
-                                "clientSecretRef": "macro-secret://mcp-oauth-client/remote"
+                patch: vec![
+                    JsonPatchOperation {
+                        op: "add".to_string(),
+                        path: "/mcpServers".to_string(),
+                        from: None,
+                        value: Some(json!({
+                            "remote": {
+                                "transport": {
+                                    "type": "streamable_http",
+                                    "url": "https://mcp.example.test/mcp"
+                                },
+                                "authorization": {
+                                    "type": "oauth",
+                                    "clientId": "synthetic-client",
+                                    "clientSecretRef": "macro-secret://mcp-oauth-client/remote"
+                                }
                             }
-                        }
-                    })),
-                }],
+                        })),
+                    },
+                    JsonPatchOperation {
+                        op: "add".into(),
+                        path: "/languageServer".into(),
+                        from: None,
+                        value: Some(json!({
+                            "executable": "/example/language-server",
+                            "arguments": ["macro-secret://mcp-oauth-client/remote"],
+                        })),
+                    },
+                ],
                 source: ConfigChangeSource::UserInterface,
             })
             .await
@@ -681,6 +692,10 @@ mod tests {
         assert_eq!(
             orphans[0].secret_ref,
             "macro-secret://mcp-oauth-client/remote"
+        );
+        assert_eq!(
+            crate::secrets::get_api_key(&id).unwrap().as_deref(),
+            Some("synthetic-client-secret")
         );
         delete_orphan_secret(
             &manager,
