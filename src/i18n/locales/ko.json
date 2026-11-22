@@ -1756,7 +1756,7 @@
     "count_other": "{{count}}프로젝트",
     "name": "프로젝트 이름",
     "emptyWorkspaceTitle": "Macro를 시작하려면 프로젝트를 추가하세요.",
-    "emptyWorkspaceBody": "Architect와 Implement가 계획, 작업, 브랜치, worktree를 만들려면 프로젝트가 필요합니다.",
+    "emptyWorkspaceBody": "Architect에서 설계한 AgSDL 시스템은 프로젝트에 저장됩니다.",
     "emptyWorkspaceStrategyPanel": "프로젝트를 추가하면 전략을 사용할 수 있습니다.",
     "emptyWorkspaceTasksPanel": "프로젝트를 추가하면 작업을 사용할 수 있습니다.",
     "emptyWorkspaceChangesPanel": "프로젝트를 추가하면 변경 사항을 사용할 수 있습니다.",

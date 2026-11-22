@@ -1756,7 +1756,7 @@
     "count_other": "{{count}} projets",
     "name": "Nom du projet",
     "emptyWorkspaceTitle": "Ajoutez un projet pour commencer avec Macro.",
-    "emptyWorkspaceBody": "Architect et Implement ont besoin d’un projet pour créer des plans, des tâches, des branches et des worktrees.",
+    "emptyWorkspaceBody": "Votre projet regroupe les systèmes AgSDL que vous concevez dans Architect.",
     "emptyWorkspaceStrategyPanel": "La stratégie sera disponible après l’ajout d’un projet.",
     "emptyWorkspaceTasksPanel": "Les tâches seront disponibles après l’ajout d’un projet.",
     "emptyWorkspaceChangesPanel": "Les changements seront disponibles après l’ajout d’un projet.",

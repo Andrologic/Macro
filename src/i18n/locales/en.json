@@ -1756,7 +1756,7 @@
     "count_other": "{{count}} projects",
     "name": "Project name",
     "emptyWorkspaceTitle": "Add a project to start using Macro.",
-    "emptyWorkspaceBody": "Architect and Implement need a project before they can create plans, tasks, branches, and worktrees.",
+    "emptyWorkspaceBody": "Your project holds the AgSDL systems you design in Architect.",
     "emptyWorkspaceStrategyPanel": "Strategy will be available after you add a project.",
     "emptyWorkspaceTasksPanel": "Tasks will be available after you add a project.",
     "emptyWorkspaceChangesPanel": "Changes will be available after you add a project.",

@@ -1756,7 +1756,7 @@
     "count_other": "{{count}} Projekte",
     "name": "Projektname",
     "emptyWorkspaceTitle": "Füge ein Projekt hinzu, um mit Macro zu beginnen.",
-    "emptyWorkspaceBody": "Architect und Implement benötigen ein Projekt, bevor sie Pläne, Aufgaben, Branches und Worktrees erstellen können.",
+    "emptyWorkspaceBody": "In deinem Projekt findest du die AgSDL-Systeme, die du in Architect entwirfst.",
     "emptyWorkspaceStrategyPanel": "Die Strategie ist verfügbar, nachdem du ein Projekt hinzugefügt hast.",
     "emptyWorkspaceTasksPanel": "Aufgaben sind verfügbar, nachdem du ein Projekt hinzugefügt hast.",
     "emptyWorkspaceChangesPanel": "Änderungen sind verfügbar, nachdem du ein Projekt hinzugefügt hast.",

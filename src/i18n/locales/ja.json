@@ -1756,7 +1756,7 @@
     "count_other": "{{count}}プロジェクト",
     "name": "プロジェクト名",
     "emptyWorkspaceTitle": "Macro を始めるにはプロジェクトを追加してください。",
-    "emptyWorkspaceBody": "Architect と Implement がプラン、タスク、ブランチ、worktree を作成するにはプロジェクトが必要です。",
+    "emptyWorkspaceBody": "Architect で設計した AgSDL システムは、プロジェクトに保存されます。",
     "emptyWorkspaceStrategyPanel": "プロジェクトを追加すると戦略を利用できます。",
     "emptyWorkspaceTasksPanel": "プロジェクトを追加するとタスクを利用できます。",
     "emptyWorkspaceChangesPanel": "プロジェクトを追加すると変更を利用できます。",

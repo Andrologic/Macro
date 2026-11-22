@@ -69,7 +69,7 @@ export const ProjectWorkspaceEmptyState: React.FC<ProjectWorkspaceEmptyStateProp
               {isNoProjectAvailable
                 ? t(
                     'project.emptyWorkspaceBody',
-                    'Architect et Implement ont besoin d’un projet pour créer des plans, des tâches, des branches et des worktrees.'
+                    'Votre projet regroupe les systèmes AgSDL que vous concevez dans Architect.'
                   )
                 : t(
                     'project.noProjectSelectedBody',
