@@ -114,6 +114,7 @@ mod agsdl_runtime_adapter;
 mod app_quit_state;
 mod app_shutdown;
 mod app_updates;
+pub mod architect_library;
 // The editor parity suite exercises Argentic internals at the Cargo-locked revision.
 #[cfg(all(test, argentic_editor_parity))]
 mod argentic_clock_conformance030_tests;

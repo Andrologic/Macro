@@ -3110,7 +3110,7 @@ fn remove_symlink(path: &Path) -> std::io::Result<()> {
     std::fs::remove_file(path)
 }
 
-fn rename_without_replacement(source: &Path, destination: &Path) -> std::io::Result<()> {
+pub(crate) fn rename_without_replacement(source: &Path, destination: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::ffi::CString;
