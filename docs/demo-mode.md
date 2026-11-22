@@ -117,9 +117,8 @@ sans bloc de préparation au-dessus. Les instructions des agents se modifient
 à partir des blocs ou dans le chat. Les attentes de lancement des exemples restent
 conservées dans les métadonnées du blueprint.
 
-Dans cette démo, `Implement` porte le nom **Operate**. Il conserve l’interface
-existante : liste des tâches à gauche, espace de travail au centre et modifications
-de fichiers à droite. Les cartes ne présentent plus la classification historique
+Dans la démo, Operate affiche la liste des tâches simulées à gauche et la
+conversation de l’agent sélectionné au centre. Les cartes ne présentent plus la classification historique
 Direct, Feature, Bugfix ou Hotfix. Les tâches des scénarios et des nouveaux
 workflows ne reçoivent plus ces types de tâche Git. Les écrans expérimentaux de
 préparation et de simulation qui avaient remplacé ces panneaux ont été retirés. La préparation d’un workflow

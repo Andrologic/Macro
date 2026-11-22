@@ -1,3 +1,4 @@
+import { demoWorkflowJourney } from '../../services/operateWorkspace';
 import { visibleTaskQueueTasks } from '../../services/taskQueueVisibility';
 import { groupTaskQueueLanes, TASK_QUEUE_LANES, type TaskQueueLane } from '../../services/taskQueueLanes';
 import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
@@ -688,8 +689,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     cancelTaskCommands,
     refreshFromPlan,
     missingBaseBranchIssue,
-    clearMissingBaseBranchIssue,
-    createMissingBaseBranch,
     taskError,
   } = useTaskStore(useShallow((state) => ({
     tasks: state.tasks,
@@ -713,8 +712,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     cancelTaskCommands: state.cancelTaskCommands,
     refreshFromPlan: state.refreshFromPlan,
     missingBaseBranchIssue: state.missingBaseBranchIssue,
-    clearMissingBaseBranchIssue: state.clearMissingBaseBranchIssue,
-    createMissingBaseBranch: state.createMissingBaseBranch,
     taskError: state.lastError,
   })));
   const requestSignature = useChatStore(selectTaskQueueRequestSignature);
@@ -725,7 +722,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   const liveReviewSummary = useFileChangesStore((state) => state.reviewSummary);
   const lastErrorToastRef = useRef<string | null>(null);
   const readOnlyScopeToastRef = useRef<string | null>(null);
-  const missingBaseBranchToastRef = useRef<string | number | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const startingReviewsRef = useRef(new Set<string>());
   const {
@@ -782,91 +778,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     'implement.remoteTaskCommandsUnavailable',
     'Project commands are unavailable in remote mode.'
   );
-
-  useEffect(() => {
-    if (!missingBaseBranchIssue) {
-      if (missingBaseBranchToastRef.current !== null) {
-        notify.dismiss(missingBaseBranchToastRef.current);
-      }
-      missingBaseBranchToastRef.current = null;
-      return;
-    }
-
-    const toastId = [
-      'missing-base-branch',
-      missingBaseBranchIssue.taskId,
-      missingBaseBranchIssue.projectId,
-      missingBaseBranchIssue.missingRef,
-    ].join(':');
-    if (toastId === missingBaseBranchToastRef.current) {
-      return;
-    }
-
-    if (missingBaseBranchToastRef.current !== null) {
-      notify.dismiss(missingBaseBranchToastRef.current);
-    }
-
-    missingBaseBranchToastRef.current = toastId;
-    notify.actionRequired(
-      t(
-        'implement.missingBaseBranchToastTitle',
-        'Branche {{baseBranch}} introuvable',
-        { baseBranch: missingBaseBranchIssue.missingRef }
-      ),
-      {
-        notificationKey: toastId,
-        category: 'task_attention_required',
-        duration: 12000,
-        closeButton: true,
-        tone: 'warning',
-        actions: [
-          {
-            label: t('implement.missingBaseBranchCreateAction', 'Créer'),
-            variant: 'primary',
-            onClick: async () => {
-              setPendingTaskId(missingBaseBranchIssue.taskId);
-              try {
-                await createMissingBaseBranch(missingBaseBranchIssue);
-                notify.success(
-                  t('implement.missingBaseBranchCreated', '{{baseBranch}} créée', {
-                    baseBranch: missingBaseBranchIssue.missingRef,
-                  })
-                );
-              } catch (error) {
-                lastErrorToastRef.current =
-                  error instanceof Error
-                    ? error.message
-                    : t('common.error', 'An error occurred');
-                throw error;
-              } finally {
-                setPendingTaskId((current) =>
-                  current === missingBaseBranchIssue.taskId ? null : current
-                );
-              }
-            },
-          },
-          {
-            label: t('implement.missingBaseBranchEditAction', 'Paramètres'),
-            variant: 'secondary',
-            onClick: () => {
-              setSelectedTask(missingBaseBranchIssue.taskId);
-              setSelectedProject(missingBaseBranchIssue.projectId);
-              openProjectGitFlowModal(missingBaseBranchIssue.projectId);
-              clearMissingBaseBranchIssue();
-            },
-          },
-        ],
-      }
-    );
-  }, [
-    clearMissingBaseBranchIssue,
-    createMissingBaseBranch,
-    missingBaseBranchIssue,
-    openProjectGitFlowModal,
-    setSelectedProject,
-    setSelectedTask,
-    t,
-  ]);
 
   const handleCreateManualFeature = async ({
     projectId,
@@ -1696,7 +1607,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   };
 
   const buildTaskActions = (task: ImplementTask): TaskActionDescriptor[] => {
-    if (isPlanFinalizationTask(task)) {
+    if (demoWorkflowJourney || isPlanFinalizationTask(task)) {
       return [{ key: 'execution_graph', label: t('implement.viewExecutionGraph', 'View workflow'), icon: 'workflow' }];
     }
 
@@ -2245,7 +2156,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   };
   const panelMenu = panelMenuPosition && <SidebarMenu position={panelMenuPosition} onClose={() => setPanelMenuPosition(null)} aria-label={t('implement.tasks', 'Tasks')} className="w-52">
         <button role="menuitem" type="button" disabled={Boolean(pendingTaskId) || editableProjectOptions.length === 0 || taskMutationDisabled || taskExecutionDisabled}
-          onClick={() => { setPanelMenuPosition(null); setCreateTaskError(null); setShowCreateTaskDialog(true); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name="plus" size={12} />{import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? t('implement.launchWorkflow', 'Launch a workflow') : t('implement.createStandaloneTask', 'Créer une tâche indépendante')}</button>
+          onClick={() => { setPanelMenuPosition(null); setCreateTaskError(null); setShowCreateTaskDialog(true); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name="plus" size={12} />{demoWorkflowJourney ? t('implement.launchWorkflow', 'Launch a workflow') : t('implement.createStandaloneTask', 'Créer une tâche indépendante')}</button>
         <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); openProjectNavigator(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="settings" size={12} />{t('implement.manageProjects', 'Manage projects')}</button>
       </SidebarMenu>;
 
@@ -2344,7 +2255,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
                         'implement.readOnlyOnlyAction',
                         'At least one editable repository is required to create a standalone feature.'
                       )
-                    : import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1'
+                    : demoWorkflowJourney
                       ? t('implement.launchWorkflow', 'Launch a workflow')
                       : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
             }
@@ -2415,7 +2326,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
 
       {showCreateTaskDialog && (
         <React.Suspense fallback={null}>
-          {import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? (
+          {demoWorkflowJourney ? (
             <DemoBlueprintLaunchDialog
               projects={projectFilterOptions}
               onClose={() => setShowCreateTaskDialog(false)}
@@ -2469,7 +2380,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
                     <MemoizedTaskItem
                       task={row.task}
                       mergeWorkflowRuntime={mergeWorkflowRuntimeByTaskId[row.task.id] ?? null}
-                      multiRepoPresentation={row.multiRepoPresentation}
+                      multiRepoPresentation={demoWorkflowJourney ? null : row.multiRepoPresentation}
                       attention={attentionByTaskId.get(row.task.id)}
                       hasResolvedUserRequest={resolvedWaitTaskIds.has(row.task.id)}
                       isSelected={selectedTaskId === row.task.id}
@@ -2477,9 +2388,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
                       planLabel={getTaskPlanLabel(row.task)}
                       planKind={planKindsById.get(row.task.plan_id) ?? null}
                       isAssistantRunning={runningTaskIds.has(row.task.id)}
-                      taskCommandRunStatus={taskCommandRuns[row.task.id]?.status ?? null}
+                      taskCommandRunStatus={demoWorkflowJourney ? null : taskCommandRuns[row.task.id]?.status ?? null}
                       canRunTaskCommands={canRunTaskCommandsForTask(row.task)}
-                      showRunTaskCommands={row.task.task_source !== 'agsdl' && !isPlanFinalizationTask(row.task)}
+                      showRunTaskCommands={!demoWorkflowJourney && row.task.task_source !== 'agsdl' && !isPlanFinalizationTask(row.task)}
                       runTaskCommandsTitle={getRunTaskCommandsTitle(row.task)}
                       onSelect={() => {
                         if (row.task.task_source === 'agsdl') { setExecutionGraphTask(row.task); return; }

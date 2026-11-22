@@ -1,4 +1,5 @@
 import type { Conversation, TaskStatus } from '../types';
+import { demoWorkflowJourney, isOperateWorkspace } from './operateWorkspace';
 import type { CatalogedImplementTask } from './implementTaskCatalog';
 import {
   detectNewConversationAttentionEvents,
@@ -76,8 +77,8 @@ export const detectNewChatAttentionEvents = (
   context: WorkflowAttentionContext,
 ): WorkflowAttentionEvent[] =>
   detectNewConversationAttentionEvents(previousState, nextState, context, (conversation) =>
-    conversation.scope_mode === 'Implement' && isImplementConversationInScope(context, conversation),
-  );
+    demoWorkflowJourney && conversation.scope_mode === 'Implement' && isImplementConversationInScope(context, conversation),
+  ).filter((event) => !isOperateWorkspace(event.mode));
 
 const indexTaskStatuses = (
   tasks: Array<Pick<CatalogedImplementTask, 'id' | 'status'>>,
@@ -90,6 +91,7 @@ export const detectNewReviewAttentionEvents = (
   context: WorkflowAttentionContext,
   conversations: Conversation[],
 ): WorkflowAttentionEvent[] => {
+  if (!demoWorkflowJourney) return [];
   const previousStatuses = indexTaskStatuses(previousTasks);
 
   const selectedTask = context.selectedTaskId

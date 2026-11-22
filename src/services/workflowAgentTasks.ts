@@ -192,28 +192,10 @@ async function tasksForCapture(plan: ArchitectPlanRecord, snapshot: WorkflowCapt
   throw new Error('Unsupported AgSDL execution edition.');
 }
 
-/** Re-read only known executions. Polling never scans metadata or creates Tasks. */
-export async function refreshWorkflowAgentTasks(tasks: CatalogedImplementTask[], ports: WorkflowAgentTaskPorts = nativePorts): Promise<CatalogedImplementTask[]> {
-  const groups = new Map<string, CatalogedImplementTask>();
-  for (const task of tasks.filter(isWorkflowAgentTask)) {
-    const ref = task.workflow_execution!;
-    if (task.id !== workflowAgentTaskId(ref.systemStartId, ref.agentInstanceId) || task.plan_id !== ref.source.owner.planId ||
-      task.project_id !== ref.source.owner.projectId || task.plan_storage_branch !== ref.source.owner.branch) throw new Error('Workflow Task identity differs');
-    const old = groups.get(ref.systemStartId);
-    if (old && !sameWorkflowSource030(old.workflow_execution!.source, ref.source)) throw new Error('Workflow source differs');
-    groups.set(ref.systemStartId, task);
-  }
-  const result: CatalogedImplementTask[] = [];
-  for (const [system, task] of groups) {
-    const ref = task.workflow_execution!;
-    const plan: ArchitectPlanRecord = { id: task.plan_id, slug: task.plan_id, title: task.plan_title || task.title,
-      description: '', status: task.plan_status || 'draft', targetBranch: ref.source.owner.branch, projectIds: [task.project_id],
-      archivedAt: task.archived_at ?? undefined, createdAt: '', updatedAt: '', nodes: [], predictedBranches: [] };
-    const snapshot = await ports.snapshot(system as SystemStartId);
-    if (snapshot.systemStartId !== system || !sameWorkflowSource030(snapshot.source, ref.source)) throw new Error('Workflow capture differs');
-    result.push(...await tasksForCapture(plan, snapshot, ports));
-  }
-  return result;
+export function staleWorkflowTask(task: CatalogedImplementTask): CatalogedImplementTask {
+  if (!isWorkflowAgentTask(task) || task.workflow_execution?.stale) return task;
+  return { ...task, status: 'Blocked', is_blocked: true,
+    workflow_execution: { ...task.workflow_execution!, stale: true, interactionRequired: true } };
 }
 
 /** Refuse delayed native reads instead of overwriting a newer projection. */
@@ -256,43 +238,74 @@ export async function loadWorkflowAgentTasks(plans: ArchitectPlanRecord[], proje
     for (const projectId of plan.projectIds ?? (plan.projectId ? [plan.projectId] : [])) {
       if (projectIds && !projectIds.includes(projectId)) continue;
       const owner = { projectId, planId: plan.id, branch: plan.targetBranch };
-      let after: string | null = null;
-      const cursors = new Set<string>(), runs = new Set<string>();
-      do {
-        const page = await ports.runs({ owner, after, limit: 100 });
-        for (const run of page.runs) {
-          if (runs.has(run.systemStartId)) throw new Error('Repeated workflow run');
-          runs.add(run.systemStartId);
-          const snapshot = await ports.snapshot(run.systemStartId as SystemStartId);
-          if (snapshot.systemStartId !== run.systemStartId || !sameWorkflowSource030(snapshot.source, run.source as SourceRevision) ||
-            snapshot.source.owner.projectId !== owner.projectId || snapshot.source.owner.planId !== owner.planId ||
-            snapshot.source.owner.branch !== owner.branch) throw new Error('Workflow capture differs');
-          for (const task of await tasksForCapture(plan, snapshot, ports)) tasks.set(task.id, task);
-        }
-        after = page.nextCursor;
-        if (after && cursors.has(after)) throw new Error('Repeated workflow cursor');
-        if (after) cursors.add(after);
-      } while (after);
       if (plan.conversationId && hasWorkflowSource030(plan)) {
         let bundle: WorkflowRunAccess030 | undefined;
+        const project = (inspection: RunInspection030, stale = false) => {
+          for (const task of projectWorkflowAgentTasks030(plan, inspection)) {
+            tasks.set(task.id, stale ? staleWorkflowTask(task) : task);
+          }
+        };
         try {
           bundle = getWorkflowRunAccess030({ owner, conversationId: plan.conversationId });
           if (!bundle) throw new Error('Run inspection access unavailable');
-          await bundle.access.refreshHistory();
-          const history = bundle.access.getSnapshot().history;
+          const previousRuns = bundle.access.getSnapshot().runs;
+          try {
+            if (bundle.access.refreshCatalog) await bundle.access.refreshCatalog();
+            else await bundle.access.refreshHistory();
+          } catch (error) {
+            // Admission is independent of inspection. A completed history can
+            // publish fresh instances even when reading the intentions fails.
+            const snapshot = bundle.access.getSnapshot();
+            const current = snapshot.history.kind === 'ready' && Boolean(bundle.access.refreshCatalog);
+            for (const [id, read] of Object.entries(current ? snapshot.runs : previousRuns)) {
+              if (snapshot.history.kind === 'ready' && !Object.hasOwn(snapshot.runs, id)) continue;
+              const inspection = retainedRunValue030(read);
+              if (inspection) project(inspection, !current || read.kind !== 'ready');
+            }
+            throw error;
+          }
+          const { history, runs, runFailures } = bundle.access.getSnapshot();
           if (history.kind !== 'ready') throw new Error('Incomplete workflow history');
           let runError: unknown;
-          for (const run of history.value) {
-            try {
-              const inspection = await readWorkflowRun030(run.capture, plan.conversationId);
-              for (const task of projectWorkflowAgentTasks030(plan, inspection)) tasks.set(task.id, task);
-            } catch (error) { runError = error; }
+          if (bundle.access.refreshCatalog) {
+            const ids = new Set([...history.value.map(run => run.scope.systemStartId), ...Object.keys(runFailures)]);
+            for (const id of ids) {
+              if (!Object.hasOwn(runs, id)) continue;
+              const read = runs[id];
+              const inspection = retainedRunValue030(read);
+              if (!inspection) continue;
+              try { project(inspection, read.kind !== 'ready'); }
+              catch (error) { runError = error; }
+            }
+          } else {
+            for (const run of history.value) {
+              try { project(await readWorkflowRun030(run.capture, plan.conversationId)); }
+              catch (error) { runError = error; }
+            }
           }
           setWorkflowCatalogError030(bundle, runError);
         } catch (error) {
           // A failed 030 reader must not discard independently loaded legacy tasks.
           if (bundle) setWorkflowCatalogError030(bundle, error);
         }
+      } else {
+        let after: string | null = null;
+        const cursors = new Set<string>(), runs = new Set<string>();
+        do {
+          const page = await ports.runs({ owner, after, limit: 100 });
+          for (const run of page.runs) {
+            if (runs.has(run.systemStartId)) throw new Error('Repeated workflow run');
+            runs.add(run.systemStartId);
+            const snapshot = await ports.snapshot(run.systemStartId as SystemStartId);
+            if (snapshot.systemStartId !== run.systemStartId || !sameWorkflowSource030(snapshot.source, run.source as SourceRevision) ||
+              snapshot.source.owner.projectId !== owner.projectId || snapshot.source.owner.planId !== owner.planId ||
+              snapshot.source.owner.branch !== owner.branch) throw new Error('Workflow capture differs');
+            for (const task of await tasksForCapture(plan, snapshot, ports)) tasks.set(task.id, task);
+          }
+          after = page.nextCursor;
+          if (after && cursors.has(after)) throw new Error('Repeated workflow cursor');
+          if (after) cursors.add(after);
+        } while (after);
       }
     }
   }

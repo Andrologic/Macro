@@ -1,3 +1,4 @@
+import { isOperateWorkspace } from '../services/operateWorkspace';
 import { resolveTaskReference, taskReferenceMatches } from "../services/durableIdentity";
 import { type LifecycleContext } from '../services/lifecycleScope';
 import type { SettingsTab } from '../domains/shell/settings';
@@ -753,8 +754,9 @@ const persistCurrentProjectContext = async (
 const restoreProjectContext = async (
   groupId: string,
   preferredFocusProjectId?: string | null,
-  lifecycle?: LifecycleContext,
+  options?: { lifecycle?: LifecycleContext; restoreLegacyTask?: boolean },
 ): Promise<void> => {
+  const { lifecycle, restoreLegacyTask = true } = options ?? {};
   lifecycle?.assertActive();
   const appState = useAppStore.getState();
   const globalProject = getGlobalProjectById(appState.projectGroups, groupId);
@@ -773,10 +775,12 @@ const restoreProjectContext = async (
 
   let restoredTaskId: string | null = null;
   const contextTaskId = context?.lastTaskId;
-  if (contextTaskId) {
+  if (contextTaskId && (restoreLegacyTask || appState.selectedTaskId === null)) {
     const task = taskStore.getTaskById(contextTaskId);
     if (
-      task &&
+      task && (isOperateWorkspace(appState.mode)
+        ? task.task_source === 'agsdl'
+        : restoreLegacyTask) &&
       globalProject.subProjectIds.some((projectId) =>
         taskMatchesProjectId(task, projectId),
       )
@@ -785,7 +789,7 @@ const restoreProjectContext = async (
     }
   }
 
-  if (restoredTaskId) {
+  if (restoredTaskId && useAppStore.getState().selectedTaskId === appState.selectedTaskId) {
     useAppStore.setState({ selectedTaskId: restoredTaskId });
     await taskStore.activateTask(restoredTaskId, lifecycle);
     lifecycle?.assertActive();
@@ -793,7 +797,7 @@ const restoreProjectContext = async (
     await useChatStore.getState().ensureConversationForCurrentMode(lifecycle);
     lifecycle?.assertActive();
     if (!isCurrent()) return;
-  } else {
+  } else if (restoreLegacyTask && useAppStore.getState().selectedTaskId === appState.selectedTaskId) {
     useAppStore.setState({ selectedTaskId: null });
   }
 
@@ -2393,7 +2397,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         architectPlanCatalogError: null,
       });
       if (options.refreshTasks) {
-        await useTaskStore.getState().refreshFromPlan({ lifecycle });
+        await useTaskStore.getState().refreshFromPlan({ lifecycle, observeOnly: true });
         lifecycle?.assertActive();
       }
       return null;
@@ -2490,7 +2494,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       if (!canPublish()) return null;
       if (options.refreshTasks) {
-        await useTaskStore.getState().refreshFromPlan({ lifecycle });
+        await useTaskStore.getState().refreshFromPlan({ lifecycle, observeOnly: true });
         lifecycle?.assertActive();
       }
 
@@ -5274,7 +5278,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 	        current.selectedGroupId &&
 	        current.projectSwitchPolicy === "resume_per_project"
 	      ) {
-	        await restoreProjectContext(current.selectedGroupId, undefined, lifecycle);
+	        await restoreProjectContext(current.selectedGroupId, undefined, { lifecycle, restoreLegacyTask: false });
 	        lifecycle?.assertActive();
 	      }
     } catch (error) {

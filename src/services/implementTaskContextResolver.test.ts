@@ -1,32 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import type { ProjectGroup } from '../types';
 import type { CatalogedImplementTask as ImplementTask } from './implementTaskCatalog';
 import { resolveImplementTaskForContext } from './implementTaskContextResolver';
-
-const projectGroups: ProjectGroup[] = [
-  {
-    id: 'group-1',
-    name: 'Macro',
-    isOpen: true,
-    projects: [
-      {
-        id: 'project-1',
-        name: 'Web',
-        path: '/repos/web',
-        mountName: 'web',
-        created_at: '2026-03-19T00:00:00.000Z',
-        status: 'active',
-        metadata: {
-          description: '',
-          tags: [],
-          team_members: [],
-          api_contracts: [],
-          dependencies: [],
-        },
-      },
-    ],
-  },
-];
 
 const createTask = (overrides: Partial<ImplementTask> = {}): ImplementTask => ({
   id: 'task-1',
@@ -72,79 +46,21 @@ const createTask = (overrides: Partial<ImplementTask> = {}): ImplementTask => ({
   ...overrides,
 });
 
-const resolve = (
-  tasks: ImplementTask[],
-  overrides: Partial<Parameters<typeof resolveImplementTaskForContext>[0]> = {},
-) => resolveImplementTaskForContext({
-  tasks,
-  projectGroups,
-  selectedGroupId: 'group-1',
-  selectedProjectId: 'project-1',
-  ...overrides,
-});
-
 describe('resolveImplementTaskForContext', () => {
-  it('keeps an explicitly selected task even when it is archived or outside the current project scope', () => {
-    const selectedTask = createTask({
-      id: 'task-selected',
-      project_id: 'project-2',
-      project_ids: ['project-2'],
-      archived_at: '2026-08-14T10:00:00.000Z',
-    });
-
-    expect(resolve([selectedTask], { selectedTaskId: selectedTask.id })).toBe(selectedTask);
+  it('resolves an explicitly requested durable or legacy identity', () => {
+    const selectedTask = createTask({ id: 'task:v1:develop:plan:node-1', archived_at: '2026-08-14T10:00:00.000Z' });
+    const tasks = [createTask({ id: 'other', node_id: 'other-node' }), selectedTask];
+    expect(resolveImplementTaskForContext({ tasks, selectedTaskId: selectedTask.id })).toBe(selectedTask);
+    expect(resolveImplementTaskForContext({ tasks, selectedTaskId: selectedTask.node_id })).toBe(selectedTask);
   });
 
-  it('restores the local task through its durable node reference before applying status priority', () => {
-    const localTask = createTask({ id: 'task:v1:plan:local', node_id: 'local-node' });
-    const activeTask = createTask({ id: 'task-active', status: 'InProgress' });
-
-    expect(resolve([activeTask, localTask], {
-      localContext: {
-        projectId: 'project-1',
-        groupId: 'group-1',
-        focusProjectId: 'project-1',
-        lastPlanId: null,
-        architectConversationId: null,
-        implementConversationId: null,
-        lastTaskId: 'local-node',
-        updatedAt: '2026-08-21T10:00:00.000Z',
-      },
-    })).toBe(localTask);
-  });
-
-  it('chooses the highest-priority scoped task and uses sequence order as the tie-breaker', () => {
-    const pendingTask = createTask({ id: 'task-pending', status: 'Pending', sequence_index: 0 });
-    const laterActiveTask = createTask({ id: 'task-active-later', status: 'InProgress', sequence_index: 2 });
-    const firstActiveTask = createTask({ id: 'task-active-first', status: 'InProgress', sequence_index: 1 });
-    const archivedTask = createTask({
-      id: 'task-archived',
-      status: 'InProgress',
-      sequence_index: 0,
-      archived_at: '2026-08-14T10:00:00.000Z',
-    });
-
-    expect(resolve([pendingTask, laterActiveTask, firstActiveTask, archivedTask])).toBe(firstActiveTask);
-  });
-
-  it('does not select a standalone task with stale project identity', () => {
-    const staleStandaloneTask = createTask({
-      id: 'task-standalone',
-      task_source: 'standalone',
-      project_id: 'removed-project',
-      project_ids: ['removed-project'],
-    });
-
-    expect(resolve([staleStandaloneTask])).toBeNull();
-  });
-
-  it('returns null when every unselected task is outside the current project scope', () => {
-    const outsideTask = createTask({
-      id: 'task-outside',
-      project_id: 'project-2',
-      project_ids: ['project-2'],
-    });
-
-    expect(resolve([outsideTask])).toBeNull();
+  it('leaves selection empty when the task is absent or the legacy reference is ambiguous', () => {
+    const tasks = [
+      createTask({ id: 'task:v1:develop:plan:node-1', status: 'InProgress' }),
+      createTask({ id: 'task:v1:develop:other-plan:node-1' }),
+    ];
+    expect(resolveImplementTaskForContext({ tasks })).toBeNull();
+    expect(resolveImplementTaskForContext({ tasks, selectedTaskId: 'deleted' })).toBeNull();
+    expect(resolveImplementTaskForContext({ tasks, selectedTaskId: 'node-1' })).toBeNull();
   });
 });

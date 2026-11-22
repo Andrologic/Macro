@@ -10,7 +10,6 @@ describe('appBootstrap', () => {
   let resumeApp: ReturnType<typeof mock>;
   let initializeTasks: ReturnType<typeof mock>;
   let resumeTasks: ReturnType<typeof mock>;
-  let initializeTerminal: ReturnType<typeof mock>;
   let initializeChat: ReturnType<typeof mock>;
   let initializeTools: ReturnType<typeof mock>;
   let initializeSkills: ReturnType<typeof mock>;
@@ -33,9 +32,6 @@ describe('appBootstrap', () => {
     });
     resumeTasks = mock(async () => {
       callOrder.push('resume-tasks');
-    });
-    initializeTerminal = mock(async () => {
-      callOrder.push('terminal');
     });
     initializeChat = mock(async () => {
       callOrder.push('chat');
@@ -67,7 +63,6 @@ describe('appBootstrap', () => {
       initializeChatCritical: initializeChat,
       initializeTasksCritical: initializeTasks,
       resumeTasksAfterInitialize: resumeTasks,
-      initializeTerminal,
       initializeTools,
       initializeSkills,
       initializeProviders,
@@ -99,7 +94,6 @@ describe('appBootstrap', () => {
     expect(resumeApp.mock.calls.length).toBe(1);
     expect(resumeTasks.mock.calls.length).toBe(1);
     expect(initializeShortcuts.mock.calls.length).toBe(1);
-    expect(initializeTerminal.mock.calls.length).toBe(1);
     expect(preloadModeComponents.mock.calls.length).toBe(1);
     expect(lowPriorityRuns).toHaveLength(1);
     expect(callOrder[0]).toBe('app');
@@ -146,7 +140,6 @@ describe('appBootstrap', () => {
       initializeChatCritical: initializeChat,
       initializeTasksCritical: initializeTasks,
       resumeTasksAfterInitialize: resumeTasks,
-      initializeTerminal,
       initializeTools,
       initializeSkills,
       initializeProviders,
@@ -187,7 +180,6 @@ describe('appBootstrap', () => {
       initializeChatCritical: initializeChat,
       initializeTasksCritical: initializeTasks,
       resumeTasksAfterInitialize: resumeTasks,
-      initializeTerminal,
       initializeTools,
       initializeSkills,
       initializeProviders,
@@ -230,7 +222,6 @@ describe('appBootstrap', () => {
       initializeChatCritical: initializeChat,
       initializeTasksCritical: initializeTasks,
       resumeTasksAfterInitialize: resumeTasks,
-      initializeTerminal,
       initializeTools,
       initializeSkills,
       initializeProviders,
@@ -281,7 +272,6 @@ describe('appBootstrap', () => {
       initializeChatCritical: initializeChat,
       initializeTasksCritical: initializeTasks,
       resumeTasksAfterInitialize: resumeTasks,
-      initializeTerminal,
       initializeTools,
       initializeSkills,
       initializeProviders,
@@ -336,7 +326,6 @@ const bootstrapDependencies = (overrides: Partial<AppBootstrapDependencies> = {}
   initializeChatCritical: async () => undefined,
   initializeTasksCritical: async () => undefined,
   resumeTasksAfterInitialize: async () => undefined,
-  initializeTerminal: async () => undefined,
   initializeTools: async () => undefined,
   initializeSkills: async () => undefined,
   initializeProviders: async () => undefined,

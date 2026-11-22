@@ -115,8 +115,10 @@ it('keeps a native 030 scope failure local while returning the independently rea
   const legacyPorts={...old.ports,runs:async(request:Parameters<typeof old.ports.runs>[0])=>request.owner.projectId==='project'?{runs:[old.summary],nextCursor:null}:{runs:[],nextCursor:null}};
   const nativePlan={...plan,agsdl:{revision:1,source:f.capture.authoredSource,annexes:{}}};
   const tasks=await loadWorkflowAgentTasks([nativePlan,old.plan],null,legacyPorts);
-  expect(tasks).toHaveLength(2);
-  expect(tasks.every(item=>item.workflow_execution?.systemStartId===old.snapshot.systemStartId)).toBe(true);
+  expect(tasks.filter(item => item.workflow_execution?.systemStartId === old.snapshot.systemStartId)).toHaveLength(2);
+  const fresh = tasks.find(item => item.workflow_execution?.systemStartId === f.capture.systemStartId);
+  expect(fresh).toBeDefined();
+  expect(fresh?.workflow_execution?.stale).not.toBe(true);
   expect(getWorkflowRunAccess030(scope)?.catalogError).toMatchObject({code:'SCOPE_INVALID',message:'Native intent scope rejected'});
   transport.readExecutionIntentsVersioned=async()=>[nativeIntentFor030(f)];
   expect(await loadWorkflowAgentTasks([nativePlan,old.plan],null,legacyPorts)).toHaveLength(3);

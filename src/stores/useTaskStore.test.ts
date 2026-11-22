@@ -311,7 +311,7 @@ const completeLinkedTaskConversationDeletionMock = mock(async (conversationId: s
 let chatStoreConversations: Array<{ id: string; task_id?: string | null }> = [];
 let chatStoreRuntimeById: Record<string, { phase: string }> = {};
 const appStoreState = {
-  mode: 'Implement' as const,
+  mode: 'Implement' as 'Implement' | 'Chat' | 'Architect',
   selectedTaskId: null as string | null,
   selectedGroupId: 'group-1' as string | null,
   selectedProjectId: null as string | null,
@@ -529,6 +529,7 @@ let releasePlanPorts: (() => void) | undefined;
 beforeEach(() => {
   releasePlanPorts = installArchitectPlanPorts({ getAppState: () => appStoreState as unknown as ArchitectPlanServiceAppState });
   installTauriRuntimeMock();
+  appStoreState.mode = 'Implement';
   appStoreState.selectedTaskId = null;
   appStoreState.selectedGroupId = 'group-1';
   appStoreState.selectedProjectId = null;
@@ -782,26 +783,34 @@ describe('getPlanActivationCandidateTask', () => {
 describe('useTaskStore refreshFromPlan selection reconciliation', () => {
   it('refreshes native Agent Tasks in place, marks read failures stale and rejects legacy status writes', async () => {
     const { workflowTaskFixture } = await import('../services/workflowAgentTasks.fixtures');
-    const { projectWorkflowAgentTasks030, configureWorkflowRunAccess030, getWorkflowRunAccess030 } = await import('../services/workflowAgentTasks');
+    const { loadWorkflowAgentTasks, projectWorkflowAgentTasks030, configureWorkflowRunAccess030 } = await import('../services/workflowAgentTasks');
     const f = await workflowTaskFixture();
     const tasks = projectWorkflowAgentTasks030(f.plan, await f.ports.inspect!(f.snapshot));
     const { nativeTransportFor030 } = await import('../services/agsdl/runAccess030.testSupport');
     const { createRunInspectionAccess030 } = await import('../services/agsdl/runAccess030');
     const { transport, scope } = nativeTransportFor030(f.fixture);
     configureWorkflowRunAccess030(() => ({ access: createRunInspectionAccess030(scope, transport) }));
-    getWorkflowRunAccess030(scope);
     const { useTaskStore, getTaskLifecycleCapabilities } = await loadIsolatedTaskStore();
     useTaskStore.setState({ tasks: [buildTask(), ...tasks] });
+    appStoreState.standaloneProjects = [{ id: scope.owner.projectId, name: 'Workflow project', path: '/repos/workflow' }];
     let fail = false;
-    let release: (() => void) | undefined;
-    installTauriRuntimeMock(async command => {
-      if (command === 'execution_read_snapshot') {
-        if (fail) throw new Error('Native read interrupted');
-        if (release !== undefined) await new Promise<void>(resolve => { release = resolve; });
-        return f.snapshot;
-      }
-      throw new Error(`Unexpected ${command}`);
-    });
+    let snapshotBlocked: (() => void) | undefined;
+    let release!: () => void;
+    const readSnapshot = transport.readExecutionSnapshot030;
+    transport.readExecutionSnapshot030 = async id => {
+      if (fail) throw new Error('Native read interrupted');
+      if (snapshotBlocked) await new Promise<void>(resolve => {
+        release = resolve;
+        snapshotBlocked?.();
+      });
+      return readSnapshot(id);
+    };
+    const list = spyOn(services, 'listTasks').mockImplementation(async () => ({
+      tasks: await loadWorkflowAgentTasks([{ ...f.plan, conversationId: scope.conversationId }], null, {
+        ...f.ports, runs: async () => ({ runs: [], nextCursor: null }),
+      }),
+      plans: [], hasStandaloneTasks: false, source: 'architect',
+    }));
     const visit = f.fixture.runtime.items.find(item => item.kind === 'activation');
     if (visit?.kind !== 'activation') throw new Error('Missing synthetic native visit');
     visit.value.phase = 'done'; visit.value.physical = false;
@@ -827,14 +836,15 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
     fail = false;
     await useTaskStore.getState().refreshWorkflowTasks();
     expect(useTaskStore.getState().tasks.find((task: ImplementTask) => task.id === tasks[0].id)?.workflow_execution?.stale).toBeUndefined();
-    release = () => undefined;
+    const reading = new Promise<void>(resolve => { snapshotBlocked = resolve; });
     const pending = useTaskStore.getState().refreshWorkflowTasks();
-    await flushPromises();
+    await reading;
     appStoreState.selectedProjectId = 'other-project';
     useTaskStore.setState({ tasks: [buildTask({ id: 'other-task' })] });
     release();
     await pending;
     expect(useTaskStore.getState().tasks.map((task: ImplementTask) => task.id)).toEqual(['other-task']);
+    list.mockRestore();
     configureWorkflowRunAccess030(undefined);
   });
 
@@ -860,6 +870,58 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
     await useTaskStore.getState().drainAppSync();
     list.mockRestore();
   });
+
+  it.each(['Implement', 'Chat', 'Architect'] as const)(
+    'boots and resumes in %s without restoring a legacy task or replaying its Git cleanup',
+    async (mode) => {
+      const legacy = buildTask({ id: 'retired-task', status: 'InProgress' });
+      const catalog = spyOn(services, 'listTasks').mockResolvedValue({
+        tasks: [legacy], plans: [], hasStandaloneTasks: false, source: 'architect',
+      });
+      const cleanupJournal = JSON.stringify([{
+        taskId: 'removed-task', conversationId: 'removed-conversation', phase: 'task_deleting',
+        draft: false,
+        executionTargets: [{
+          worktreeKey: 'project-1::feature/removed',
+          repoPath: '/repos/web', branchName: 'feature/removed',
+          branchExisted: true, expectedCommit: 'abc123',
+          expectedWorktreePath: '/repos/web/.macro/worktrees/project-1::feature/removed',
+          worktreeRemoved: false, branchRemoved: false,
+        }],
+        createdAt: '2026-08-12T00:00:00.000Z', updatedAt: '2026-08-12T00:00:00.000Z',
+      }]);
+      dbAppSettings.set('pendingLinkedTaskDeletions:v1', cleanupJournal);
+      appStoreState.mode = mode;
+      appStoreState.selectedTaskId = null;
+      const invoke = mock(async (command: string) => command === 'db_get_project_context_state'
+        ? { project_id: 'group-1', last_task_id: legacy.id }
+        : undefined);
+      installTauriRuntimeMock(invoke);
+      gitWorktreeRemoveMock.mockClear();
+      gitBranchDeleteMock.mockClear();
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      const activate = spyOn(useTaskStore.getState(), 'activateTask');
+      const scope = createLifecycleScope();
+      try {
+        await useTaskStore.getState().initializeCritical(scope);
+        await useTaskStore.getState().resumeAfterInitialize(scope);
+        expect(catalog.mock.calls.length).toBeGreaterThanOrEqual(2);
+        for (const call of catalog.mock.calls) expect(call).toEqual([{ persistedOnly: true }]);
+        expect(useTaskStore.getState().getTaskById(legacy.id)).toBeDefined();
+        expect(appStoreState.setSelectedTask).not.toHaveBeenCalledWith(legacy.id);
+        expect(appStoreState.selectedTaskId).toBeNull();
+        expect(activate).not.toHaveBeenCalled();
+        expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+        expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+        expect(dbAppSettings.get('pendingLinkedTaskDeletions:v1')).toBe(cleanupJournal);
+      } finally {
+        scope.stop();
+        await useTaskStore.getState().drainAppSync();
+        activate.mockRestore();
+        catalog.mockRestore();
+      }
+    },
+  );
 
   it('keeps the newest refresh and selection when an older context resolves last', async () => {
     const originalListTasks = services.listTasks;

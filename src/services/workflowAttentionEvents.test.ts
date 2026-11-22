@@ -34,9 +34,9 @@ const makeConversation = (
 ): Conversation => ({
   id,
   title: `Conversation ${id}`,
-  scope_mode: 'Implement',
-  task_id: `task-${id}`,
-  project_id: 'project-1',
+  scope_mode: 'Chat',
+  task_id: null,
+  project_id: null,
   last_message: '',
   message_count: 0,
   updated_at: '2026-09-04T10:00:00.000Z',
@@ -119,13 +119,28 @@ describe('workflow attention events', () => {
     expect(detectNewConversationAttentionEvents(previous, next, { ...context, appForeground: true })).toEqual([]);
   });
 
-  it('notifies for a selected review only while the window is inactive', () => {
-    const previous = [makeTask('visible', 'InProgress')];
-    const next = [makeTask('visible', 'InReview')];
-    const context: WorkflowAttentionContext = { ...backgroundContext, mode: 'Implement', selectedTaskId: 'visible', appForeground: false };
-    expect(detectNewReviewAttentionEvents(previous, next, context, [])).toHaveLength(1);
-    expect(detectNewReviewAttentionEvents(next, next, context, [])).toEqual([]);
-    expect(detectNewReviewAttentionEvents(previous, next, { ...context, appForeground: true }, [])).toEqual([]);
+  it('retired Implement selections do not mask real Chat attention', () => {
+    const legacy = makeConversation('legacy', { scope_mode: 'Implement', task_id: 'legacy-task' });
+    const chat = makeConversation('chat');
+    const task = makeTask('legacy-task', 'InProgress');
+    const context: WorkflowAttentionContext = {
+      ...backgroundContext,
+      mode: 'Implement',
+      selectedTaskId: task.id,
+      selectedConversationId: legacy.id,
+      tasks: [task],
+    };
+    const previous = makeChatState([legacy, chat]);
+    const next = makeChatState([legacy, chat], {
+      pendingToolApprovalByConversationId: { legacy: makeApproval(legacy.id), chat: makeApproval(chat.id) },
+    });
+    expect(detectNewConversationAttentionEvents(previous, next, context).map(event => event.conversationId))
+      .toEqual([legacy.id, chat.id]);
+    expect(detectNewChatAttentionEvents(previous, next, context)).toEqual([
+      expect.objectContaining({ kind: 'approval', conversationId: chat.id }),
+    ]);
+    expect(detectNewReviewAttentionEvents([task], [{ ...task, status: 'InReview' }], context, [legacy]))
+      .toEqual([]);
   });
 
   it('does not emit requests restored during startup or lazy message loading', () => {
@@ -215,29 +230,6 @@ describe('workflow attention events', () => {
     ]);
   });
 
-  it('detects a transition to review without treating hydrated review tasks as new', () => {
-    const previous = [makeTask('review', 'InProgress')];
-    const next = [makeTask('review', 'InReview')];
-
-    expect(
-      detectNewReviewAttentionEvents(previous, next, backgroundContext, []),
-    ).toEqual([
-      expect.objectContaining({
-        kind: 'review',
-        key: 'workflow-attention:review:review',
-        conversationId: 'conversation-review',
-        catalogScope: {
-          selectedGroupId: null,
-          selectedProjectId: null,
-        },
-        catalogLoadId: null,
-      }),
-    ]);
-    expect(
-      detectNewReviewAttentionEvents([], next, backgroundContext, []),
-    ).toEqual([]);
-  });
-
   it('does not notify for a questionnaire already visible to the user', () => {
     const conversation = makeConversation('visible');
     const message = makeQuestionnaireMessage(conversation.id);
@@ -248,8 +240,8 @@ describe('workflow attention events', () => {
     });
     const visibleContext: WorkflowAttentionContext = {
       appForeground: true,
-      mode: 'Implement',
-      selectedTaskId: conversation.task_id,
+      mode: 'Chat',
+      selectedTaskId: null,
       selectedConversationId: conversation.id,
       selectedGroupId: 'group-1',
       selectedProjectId: 'project-1',
@@ -270,8 +262,8 @@ describe('workflow attention events', () => {
     });
     const visibleContext: WorkflowAttentionContext = {
       appForeground: true,
-      mode: 'Implement',
-      selectedTaskId: conversation.task_id,
+      mode: 'Chat',
+      selectedTaskId: null,
       selectedConversationId: conversation.id,
       selectedGroupId: 'group-1',
       selectedProjectId: 'project-1',
@@ -338,140 +330,6 @@ describe('workflow attention events', () => {
     expect(
       detectNewChatAttentionEvents(previous, next, conflictingContext),
     ).toEqual([expect.objectContaining({ kind: 'questionnaire' })]);
-  });
-
-  it('does notify for a taskless Implement conversation while a task is selected', () => {
-    const conversation = makeConversation('implement-taskless', {
-      scope_mode: 'Implement',
-      task_id: null,
-    });
-    const previous = makeChatState([conversation]);
-    const next = makeChatState([conversation], {
-      pendingToolApprovalByConversationId: {
-        [conversation.id]: makeApproval(conversation.id),
-      },
-    });
-    const selectedTaskContext: WorkflowAttentionContext = {
-      appForeground: true,
-      mode: 'Implement',
-      selectedTaskId: 'task-selected',
-      selectedConversationId: conversation.id,
-      selectedGroupId: 'group-1',
-      selectedProjectId: 'project-1',
-      scopedProjectIds: ['project-1'],
-      tasks: [makeTask('selected', 'InProgress')],
-    };
-
-    expect(
-      detectNewChatAttentionEvents(previous, next, selectedTaskContext),
-    ).toEqual([expect.objectContaining({ kind: 'approval' })]);
-  });
-
-  it('recognizes a visible Implement conversation through its legacy node id', () => {
-    const conversation = makeConversation('legacy-visible', {
-      task_id: 'node-legacy',
-    });
-    const task = {
-      ...makeTask('task:v1:develop:plan:node-legacy', 'InProgress'),
-      node_id: 'node-legacy',
-    };
-    const previous = makeChatState([conversation]);
-    const next = makeChatState([conversation], {
-      pendingToolApprovalByConversationId: {
-        [conversation.id]: makeApproval(conversation.id),
-      },
-    });
-    const visibleContext: WorkflowAttentionContext = {
-      appForeground: true,
-      mode: 'Implement',
-      selectedTaskId: task.id,
-      selectedConversationId: conversation.id,
-      selectedGroupId: 'group-1',
-      selectedProjectId: 'project-1',
-      scopedProjectIds: ['project-1'],
-      tasks: [task],
-    };
-
-    expect(detectNewChatAttentionEvents(previous, next, visibleContext)).toEqual([]);
-  });
-
-  it('does not notify for a review already visible to the user', () => {
-    const visibleReviewContext: WorkflowAttentionContext = {
-      appForeground: true,
-      mode: 'Implement',
-      selectedTaskId: 'visible',
-      selectedConversationId: 'conversation-visible',
-      selectedGroupId: 'group-1',
-      selectedProjectId: 'project-1',
-      scopedProjectIds: ['project-1'],
-      tasks: [makeTask('visible', 'InProgress')],
-    };
-    expect(
-      detectNewReviewAttentionEvents(
-        [makeTask('visible', 'InProgress')],
-        [makeTask('visible', 'InReview')],
-        visibleReviewContext,
-        [makeConversation('visible')],
-      ),
-    ).toEqual([]);
-  });
-
-  it('does not notify for a visible review selected through its legacy node id', () => {
-    const previousTask = {
-      ...makeTask('task:v1:develop:plan:node-legacy', 'InProgress'),
-      node_id: 'node-legacy',
-    };
-    const nextTask = { ...previousTask, status: 'InReview' as const };
-    const context: WorkflowAttentionContext = {
-      ...backgroundContext,
-      mode: 'Implement',
-      selectedTaskId: 'node-legacy',
-      tasks: [nextTask],
-    };
-
-    expect(
-      detectNewReviewAttentionEvents(
-        [previousTask],
-        [nextTask],
-        context,
-        [],
-      ),
-    ).toEqual([]);
-  });
-
-  it('keeps ambiguous legacy reviews visible and resolves durable selections exactly', () => {
-    const previous = ['plan-a', 'plan-b'].map((plan) => ({
-      ...makeTask(`task:v1:develop:${plan}:shared-node`, 'InProgress'),
-      node_id: 'shared-node',
-      conversation_id: null,
-    }));
-    const next = previous.map((task) => ({ ...task, status: 'InReview' as const }));
-    const conversations = [makeConversation('legacy', { task_id: 'shared-node' })];
-    const context: WorkflowAttentionContext = {
-      ...backgroundContext,
-      mode: 'Implement',
-      selectedTaskId: 'shared-node',
-      tasks: next,
-    };
-    const expected = next.map((task) => ({
-      kind: 'review' as const,
-      key: `workflow-attention:review:${task.id}`,
-      taskId: task.id,
-      taskTitle: task.title,
-      conversationId: null,
-      catalogScope: { selectedGroupId: null, selectedProjectId: null },
-      catalogLoadId: null,
-    }));
-
-    expect(detectNewReviewAttentionEvents(previous, next, context, conversations)).toEqual(expected);
-    expect(detectNewReviewAttentionEvents(previous, next, {
-      ...context, selectedTaskId: next[0].id,
-    }, conversations)).toEqual([expected[1]]);
-    expect(detectNewReviewAttentionEvents(previous, next, {
-      ...context, selectedTaskId: next[0].id, appForeground: false,
-    }, conversations)).toEqual(expected);
-    expect(detectNewReviewAttentionEvents(next, next, context, conversations)).toEqual([]);
-    expect(detectNewReviewAttentionEvents([], next, context, conversations)).toEqual([]);
   });
 
   it('does not notify when a questionnaire is resolved', () => {

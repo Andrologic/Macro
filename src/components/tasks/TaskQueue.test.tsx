@@ -1366,6 +1366,24 @@ describe('TaskQueue', () => {
     expect(notifyMock.actionRequired).toHaveBeenCalledTimes(1);
   });
 
+  it('offers no branch remediation actions in the demo queue', async () => {
+    seedStores('Pending');
+    const message = 'Base branch develop is missing';
+    useTaskStore.setState({
+      lastError: message,
+      missingBaseBranchIssue: {
+        kind: 'missing_base_branch', taskId: 'task-1', projectId: 'project-1',
+        repoPath: '/tmp/project-1', targetBranchName: 'develop', missingRef: 'develop', message,
+      },
+    });
+    const { default: DemoTaskQueue } = await import('../../demo/DemoTaskQueue');
+    await act(async () => {
+      root?.render(<DemoTaskQueue />);
+      await flushRender();
+    });
+    expect(notifyMock.actionRequired).not.toHaveBeenCalled();
+  });
+
   it('scopes the toast notification key to the selected task id', async () => {
     seedStores('Pending');
     useTaskStore.setState({

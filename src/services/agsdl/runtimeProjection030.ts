@@ -81,6 +81,7 @@ export interface RunInspectionAccess030 {
   getSnapshot(): RunMonitorSnapshot030;
   subscribe(listener: () => void): () => void;
   refreshHistory(): Promise<void>;
+  refreshCatalog?(): Promise<void>;
   refreshRun(systemStartId: string): Promise<void>;
 }
 

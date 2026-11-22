@@ -263,7 +263,7 @@
   },
   "header": {
     "architect": "Architect",
-    "implement": "Implement",
+    "implement": "Operate",
     "chat": "Chat",
     "debug": "Debug",
     "selectProject": "Seleccionar Proyecto",
@@ -281,7 +281,7 @@
     "sections": {
       "basics": "Bases",
       "architect": "Architect",
-      "implement": "Implement",
+      "implement": "Operate",
       "chat": "Chat",
       "system": "Sistema"
     },
@@ -298,10 +298,10 @@
       },
       "modes": {
         "title": "Selector de modo",
-        "body": "Estos tres botones cambian toda la superficie de trabajo. Architect sirve para definir el alcance, Implement para ejecutar y Chat para conversar libremente con contexto.",
+        "body": "Estos tres botones cambian toda la superficie de trabajo. Architect sirve para definir el alcance, Operate para ejecutar y Chat para conversar libremente con contexto.",
         "points": [
           "Architect: conversaciones, planes y estrategia.",
-          "Implement: tareas, terminal y validación de cambios.",
+          "Operate muestra los sistemas en ejecución, las conversaciones de agentes y las solicitudes que requieren tu respuesta.",
           "Chat: conversaciones, fuentes y herramientas generales."
         ]
       },
@@ -339,8 +339,8 @@
         "body": "La validación congela el plan lo suficiente para provisionar ramas y alimentar Implement. Las tareas iniciadas o terminadas quedan protegidas contra regeneraciones destructivas."
       },
       "implement-mode": {
-        "title": "Modo Implement",
-        "body": "Implement sirve para tomar una tarea, hablar de su ejecución, abrir un terminal y validar archivos modificados antes del commit."
+        "title": "Modo Operate",
+        "body": "Operate muestra los sistemas en ejecución, las conversaciones de agentes y las solicitudes que requieren tu respuesta."
       },
       "implement-tasks": {
         "title": "Cola de tareas",
@@ -3098,8 +3098,8 @@
         "description": "Cambiar el modo activo a Architect"
       },
       "switchImplement": {
-        "label": "Cambiar a modo Implement",
-        "description": "Cambiar el modo activo a Implement"
+        "label": "Cambiar a modo Operate",
+        "description": "Cambiar el modo activo a Operate"
       },
       "switchChat": {
         "label": "Cambiar al modo Chat",
