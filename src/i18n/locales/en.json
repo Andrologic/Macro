@@ -315,7 +315,7 @@
       },
       "architect-mode": {
         "title": "Architect mode",
-        "body": "Design a system in Architect. Each plan keeps its design conversation and its AgSDL document together."
+        "body": "Each blueprint has an AgSDL draft, a design conversation, and saved versions."
       },
       "architect-navigator": {
         "title": "Projects and systems",
@@ -323,7 +323,7 @@
       },
       "architect-conversation": {
         "title": "Design conversation",
-        "body": "Open a plan, then describe the workflow you want in the center conversation. Ask the agent to create or revise its AgSDL document."
+        "body": "Open a blueprint and describe the system you want in the center conversation. The agent can read and edit the draft."
       },
       "architect-agsdl": {
         "title": "AgSDL viewer",
@@ -340,7 +340,7 @@
       },
       "operate-executions": {
         "title": "Executions in Operate",
-        "body": "Start a supported system from Architect. Its execution appears here. Select an execution to inspect its status and requests, or an agent instance to read its available messages.",
+        "body": "Select a run to see its status and requests, or select an agent instance to read its messages.",
         "demoBody": "In this demo, use the plus button to launch a workflow. Select a task to follow its conversation."
       },
       "implement-tasks": {

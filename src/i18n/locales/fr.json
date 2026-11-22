@@ -315,7 +315,7 @@
       },
       "architect-mode": {
         "title": "Mode Architect",
-        "body": "Concevez un système dans Architect. Chaque plan réunit sa conversation de conception et son document AgSDL."
+        "body": "Chaque blueprint réunit un brouillon AgSDL, sa conversation de conception et ses versions enregistrées."
       },
       "architect-navigator": {
         "title": "Projets et systèmes",
@@ -323,7 +323,7 @@
       },
       "architect-conversation": {
         "title": "Conversation de conception",
-        "body": "Ouvrez un plan, puis décrivez le workflow souhaité dans la conversation au centre. Demandez à l’agent de créer ou de modifier son document AgSDL."
+        "body": "Ouvrez un blueprint, puis décrivez le système souhaité dans la conversation au centre. L’agent peut lire et modifier le brouillon."
       },
       "architect-agsdl": {
         "title": "Visualiseur AgSDL",
@@ -340,7 +340,7 @@
       },
       "operate-executions": {
         "title": "Exécutions dans Operate",
-        "body": "Lancez un système compatible depuis Architect. Son exécution apparaît ici. Sélectionnez-la pour consulter son état et ses demandes, ou choisissez un agent pour lire les messages disponibles.",
+        "body": "Sélectionnez une exécution pour consulter son état et ses demandes, ou choisissez une instance d’agent pour lire ses messages.",
         "demoBody": "Dans la démo, le bouton + lance un workflow. Sélectionnez une tâche pour suivre sa conversation."
       },
       "implement-tasks": {

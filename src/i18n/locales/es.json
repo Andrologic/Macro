@@ -315,7 +315,7 @@
       },
       "architect-mode": {
         "title": "Modo Architect",
-        "body": "Diseña un sistema en Architect. Cada plan guarda juntos la conversación de diseño y su documento AgSDL."
+        "body": "Cada blueprint reúne un borrador AgSDL, una conversación de diseño y sus versiones guardadas."
       },
       "architect-navigator": {
         "title": "Proyectos y sistemas",
@@ -323,7 +323,7 @@
       },
       "architect-conversation": {
         "title": "Conversación de diseño",
-        "body": "Abre un plan y describe el flujo de trabajo que quieres en la conversación del centro. Pide al agente que cree o modifique su documento AgSDL."
+        "body": "Abre un blueprint y describe el sistema que quieres en la conversación central. El agente puede leer y editar el borrador."
       },
       "architect-agsdl": {
         "title": "Visor AgSDL",
@@ -340,7 +340,7 @@
       },
       "operate-executions": {
         "title": "Ejecuciones en Operate",
-        "body": "Inicia un sistema compatible desde Architect. Su ejecución aparecerá aquí. Selecciónala para consultar su estado y sus solicitudes, o elige una instancia de agente para leer los mensajes disponibles.",
+        "body": "Selecciona una ejecución para ver su estado y sus solicitudes, o una instancia de agente para leer sus mensajes.",
         "demoBody": "En la demo, usa el botón + para iniciar un flujo de trabajo. Selecciona una tarea para seguir su conversación."
       },
       "implement-tasks": {

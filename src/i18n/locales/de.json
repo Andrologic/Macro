@@ -315,7 +315,7 @@
       },
       "architect-mode": {
         "title": "Architect-Modus",
-        "body": "Entwirf ein System in Architect. Jeder Plan enthält die Unterhaltung zum Entwurf und das zugehörige AgSDL-Dokument."
+        "body": "Zu jedem Blueprint gehören ein AgSDL-Entwurf, ein Entwurfsgespräch und gespeicherte Versionen."
       },
       "architect-navigator": {
         "title": "Projekte und Systeme",
@@ -323,7 +323,7 @@
       },
       "architect-conversation": {
         "title": "Unterhaltung zum Entwurf",
-        "body": "Öffne einen Plan und beschreibe den gewünschten Workflow in der Unterhaltung in der Mitte. Bitte den Agenten, das AgSDL-Dokument zu erstellen oder zu ändern."
+        "body": "Öffnen Sie einen Blueprint und beschreiben Sie das gewünschte System im Chat in der Mitte. Der Agent kann den Entwurf lesen und bearbeiten."
       },
       "architect-agsdl": {
         "title": "AgSDL-Ansicht",
@@ -340,7 +340,7 @@
       },
       "operate-executions": {
         "title": "Ausführungen in Operate",
-        "body": "Starte ein unterstütztes System in Architect. Die Ausführung erscheint hier. Wähle sie aus, um ihren Status und ihre Anfragen zu sehen, oder öffne eine Agenteninstanz, um die verfügbaren Nachrichten zu lesen.",
+        "body": "Wählen Sie eine Ausführung, um ihren Status und ihre Anfragen zu sehen, oder eine Agenteninstanz, um ihre Nachrichten zu lesen.",
         "demoBody": "In der Demo startest du über die Plus-Schaltfläche einen Workflow. Wähle eine Aufgabe aus, um ihre Unterhaltung zu verfolgen."
       },
       "implement-tasks": {
