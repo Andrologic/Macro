@@ -99,7 +99,8 @@ première version. La logique existante d'attention de la file de tâches est
 réutilisée pour Operate.
 
 Les blueprints AgSDL 0.3 existants sont importés une fois dans le nouveau
-stockage. Les autres données de développement sont abandonnées.
+stockage. Architect crée en AgSDL 0.4.0. Le format de stockage reste JSON
+jusqu’à l’étape C. Les autres données de développement sont abandonnées.
 
 Si AgSDL définit plus tard des mécanismes comparables aux worktrees, ils seront
 traités dans ce cadre.
@@ -310,7 +311,7 @@ les ouvrir. Le paquet maison prévu à l'origine disparaît.
 | 0. Retrait | Tout ce qui relève du code, sauf le stockage : tâches de code, fichiers modifiés, Git dans l'interface, éditeur, LSP, worktrees, terminal. Le mode Implement disparaît au profit d'Operate. | 3.2 | Réalisée |
 | 1. Blueprints et versions | Stockage local, projets d'Architect, « Enregistrer une version », import unique des blueprints de `@macro`. Les versions sont encore des documents JSON. | 3.1, 3.2 | Réalisée |
 | A. Intégration | Pull requests des étapes 0 et 1, après correction des tests qui échouent en parallèle et du budget de taille de `ChatZone`. | | |
-| B. AgSDL 0.4.0 | Argentic à la révision `826170f`. L'éditeur et l'agent d'Architect produisent et valident des documents 0.4.0. Un blueprint 0.3.0 est converti au prochain enregistrement. Vérification sous macOS de l'ouverture d'un dossier et d'une archive, puis d'une exécution Codex réelle. | 3.1 | |
+| B. AgSDL 0.4.0 | Argentic à la révision `826170f`. L'éditeur et l'agent d'Architect produisent et valident des documents 0.4.0. Un brouillon 0.3.0 passe en 0.4.0 à l’enregistrement d’une version. Les versions déjà figées conservent leur édition. Vérification sous macOS de l'ouverture d'un dossier et d'une archive, puis d'une exécution Codex réelle. | 3.1 | |
 | C. Projet et archive | Le brouillon devient un dossier de projet, la version une archive `.agsdl` accompagnée des réglages Macro. Conversion des versions existantes. Import et export de dossiers et d'archives. Retrait de `@macro`, de `.macro` et du panneau d'exécution d'Architect. | 3.1 à 3.3 | |
 | D. Lancement | Lancement d'une version depuis son archive. Configuration de lancement, fenêtre compacte, raccourci depuis Architect, secrets filtrés, serveurs MCP locaux lancés depuis la copie d'Argentic, accord sur les permissions. | 3.4, 3.5 | |
 | E. Operate | Colonne de gauche, ligne « système · exécution », lien vers le graphe, filtre, threads masqués, Reporter, Terminer, Supprimer avec le nettoyage des copies d'Argentic, Interrompre avec son travail dans Argentic. | 3.6 à 3.8 | |

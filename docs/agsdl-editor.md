@@ -108,7 +108,7 @@ et celles de l’IA suivent le même historique Annuler/Rétablir. Fermer cet ap
 ou masquer ses repères ne change pas le document. Cet historique ne constitue
 pas un historique durable de toutes les versions du système.
 
-La modale 0.3 édite les instructions, propriétés et choix de modèle pris en
+La modale des éditions 0.3 et 0.4 édite les instructions, propriétés et choix de modèle pris en
 charge par le document. La disponibilité du harness et les droits d’exécution
 restent soumis au Preflight natif. Le lecteur historique 0.1 conserve ses règles
 d’édition. L’édition 0.2 n’est plus prise en charge et son ouverture l’indique
@@ -117,7 +117,7 @@ clairement, sans proposer de lancement ou de conversion.
 ## Plans existants
 
 L’ouverture d’un ancien plan ne crée plus automatiquement de document AgSDL.
-Ses données Macro restent conservées. Les nouveaux systèmes utilisent 0.3 ;
+Ses données Macro restent conservées. Les nouveaux systèmes utilisent 0.4.0 ;
 aucun remplacement de marqueur ni graphe inventé ne migre une ancienne édition.
 Les tâches Macro extérieures au moteur AgSDL restent dans leur domaine existant.
 
@@ -129,9 +129,9 @@ révision. Les valeurs opaques et les jetons numériques sont conservés par le
 sérialiseur sans perte. Les diagnostics structurels ne certifient pas la capacité
 à exécuter le système.
 
-Les nouveaux documents et blueprints inclus utilisent [AgSDL 0.3](agsdl-030.md).
+Les nouveaux documents et blueprints inclus utilisent [AgSDL 0.4.0](agsdl-030.md).
 La source 0.1 conserve son édition et son guide. L’édition 0.2 est refusée. Le guide chargé par
-`agsdl_get` suit la source ; le guide d’un document vide est celui de 0.3. La provenance,
+`agsdl_get` suit la source ; le guide d’un document vide est celui de 0.4.0. La provenance,
 la licence et les adaptations des lecteurs sont décrites dans
 [`src/vendor/agsdl/NOTICE.md`](../src/vendor/agsdl/NOTICE.md).
 
@@ -147,7 +147,7 @@ statut n’est déduit du titre du bloc ou du statut enregistré dans la migrati
 
 Pour les cartes legacy, le lien utilise l’identifiant original du nœud. Pour
 un document natif, `macroTaskId` doit référencer l’identifiant exact de la tâche
-dans `agsdl.display.cards[path]` pour les documents 0.3.0.
+dans `agsdl.display.cards[path]` pour les documents 0.3.0 et 0.4.0.
 Pour un document historique 0.1.0, le lien reste dans les annotations de la
 déclaration ou dans `ControlFlow.annotations.macroSteps[stepId]` pour une étape. Le lien est limité
 au même plan et à la même branche ; les tâches archivées et les liens ambigus

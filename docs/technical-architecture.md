@@ -407,11 +407,11 @@ de stockage et d’exécution.
 
 `src/services/agsdl` contient la projection du graphe, les modifications
 atomiques par pointeurs JSON et les exemples. `src/stores/agsdl/tools.ts`
-orchestre les outils de lecture et de modification du document. Les lecteurs de référence 0.3 et 0.1 sont fournis sous leur licence dans
+orchestre les outils de lecture et de modification du document. Les lecteurs des éditions 0.4, 0.3 et 0.1 sont fournis sous leur licence dans
 `src/vendor/agsdl`, avec leurs adaptations navigateur documentées. Le dispatch
 est explicite. L’édition 0.2 est refusée à l’ouverture ; son exécution, son
 édition et la conversion automatique des anciens plans sont retirées. Les
-métadonnées Macro de conception et de présentation vivent dans l’enveloppe 0.3.
+métadonnées Macro de conception et de présentation vivent dans l’enveloppe du document.
 Le sérialiseur conserve les lexèmes numériques et les valeurs opaques. Une
 mutation d’outil vérifie la conversation propriétaire, le statut brouillon et
 la révision lue.
@@ -452,7 +452,7 @@ est raccordé au shell. L’UI ne conduit ni outbox, ni horloge, ni scheduler,
 ni relecture de commit native. Le lancement produit exige la qualification
 du profil fournisseur exact ; les preuves synthétiques ne la remplacent pas.
 
-Les lecteurs vérifient explicitement le contrat 0.3, les versions de capture
+Les lecteurs vérifient explicitement le contrat du document, les versions de capture
 et le profil d’exécution. L’ancienne admission 0.2 est retirée ; `start030`
 et `execution_deliver030` utilisent les tables natives conservées. Les entrées UI
 contiennent seulement scope public, identifiants publics, révision et réponse.
@@ -2422,7 +2422,7 @@ Le même document décrit la projection des instances d'agents natives dans le
 catalogue de tâches d'Operate. Les identités et états proviennent du journal
 natif ; les tâches ne déclenchent pas un second chat ni un worktree Git.
 
-Les constructeurs et les blueprints inclus créent en [AgSDL 0.3](agsdl-030.md).
+Les constructeurs et les blueprints inclus créent en [AgSDL 0.4.0](agsdl-030.md).
 La construction historique 0.1 reste explicite ; 0.2 est refusée. La
 copie d’un blueprint conserve son édition et ses octets. `guide030.ts` fournit
 la référence d’auteur chargée à la demande ; `tools.ts` garde les guides des
@@ -2431,7 +2431,7 @@ sources importées, la pagination UTF-8 et les contrôles de révision.
 elle ne déduit aucune installation depuis les préférences des fournisseurs Chat
 et n’ajoute pas d’IPC. Le runtime reste propriétaire de la qualification.
 
-En 0.3, les informations de conception et de présentation sont dans
+Depuis la 0.3, les informations de conception et de présentation sont dans
 l’enveloppe du plan, hors source. Les adaptations ciblent une chaîne existante
 sans réécrire les autres valeurs. La revue 0.3 utilise les pointeurs source des
 agents, routes et compositions, indépendamment de la projection du viewer.

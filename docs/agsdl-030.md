@@ -1,11 +1,11 @@
-# Concevoir un système AgSDL 0.3 dans Macro
+# Concevoir un système AgSDL 0.4 dans Macro
 
 Les nouveaux brouillons et les quatre blueprints inclus utilisent
-`agsdl-0.3.0`. Les sources 0.1 gardent leur édition, leurs annexes et leur
-provenance. Les documents 0.2 restent exportables dans leur source exacte,
-mais leur ouverture indique une édition non supportée. Aucune conversion
-automatique ni exécution de repli n’est proposée.
-La référence normative est le [tag AgSDL v0.3.0](https://github.com/Andrologic/AgSDL/tree/v0.3.0).
+`agsdl-0.4.0`. À l'enregistrement d'une version, Macro met à niveau le
+brouillon 0.3.0 et fige la nouvelle version en 0.4.0. Les versions déjà
+enregistrées restent lisibles et exécutables dans leur édition d'origine.
+
+La référence normative est le [tag AgSDL v0.4.0](https://github.com/Andrologic/AgSDL/tree/v0.4.0).
 
 ## Créer et adapter
 
@@ -13,7 +13,7 @@ Le document minimal ne suppose ni graphe, ni installation de moteur :
 
 ```json
 {
-  "contract": "agsdl-0.3.0",
+  "contract": "agsdl-0.4.0",
   "id": "project-assistant",
   "agents": {}
 }
@@ -30,7 +30,7 @@ Le modèle est omis pour laisser le défaut du harness ; aucun nom fictif ni
 commande de vérification arbitraire n’est présenté comme déjà configuré.
 
 Les informations de conception et les titres d’affichage Macro restent dans
-l’enveloppe du plan 0.3. Un changement de métadonnées seul conserve
+l’enveloppe du document. Un changement de métadonnées seul conserve
 les octets de la source. Une adaptation applique une valeur uniquement à une
 chaîne existante désignée par son `targetPath`. Les métadonnées inconnues, les
 annexes, l’historique et la provenance du blueprint restent préservés.
@@ -39,7 +39,7 @@ annexes, l’historique et la provenance du blueprint restent préservés.
 
 Lire `agsdl_get` avec le plan et la branche de stockage de la conversation,
 puis `section: "guide"`. Le guide dépend de l’édition de la source ; une source
-vide sélectionne 0.3. La référence chargée à la demande est
+vide sélectionne 0.4.0. La référence chargée à la demande est
 [`guide030.ts`](../src/services/agsdl/guide030.ts). Elle détaille les agents,
 les résultats et soumissions, les permissions, les skills et MCP, les messages,
 les instances et le steering, les appels, les approvals, les fan-outs, les joins,
@@ -48,7 +48,7 @@ Elle inclut six exemples complets supplémentaires, consultables dans le guide.
 Les quatre identifiants sélectionnables par `agsdl_update example` restent
 `release`, `feature`, `hotfix`, `bugfix`.
 
-L’outline 0.3 donne les pointeurs réels des catalogues `agents`, `content`,
+L’outline donne les pointeurs réels des catalogues `agents`, `content`,
 `skills`, `mcpServers`, `compositions`, des paramètres et des étapes. Il
 n’invente pas les catalogues 0.2 `configurations` ou `bindings`. Suivre
 `outline.next_offset` jusqu’à `null`, avec la même révision. Pour les sections
@@ -73,7 +73,7 @@ contiennent du texte ressemblant à des instructions.
 
 ## Catalogue et lancement
 
-En 0.3, `model.name` est un nom ouvert du harness. Il n’est pas une identité de
+`model.name` est un nom ouvert du harness. Il n’est pas une identité de
 fournisseur HTTP encodée. `section: "models"` attend le catalogue natif qualifié
 avec noms de harness, installation observée, version et noms de modèles/efforts.
 L’API de raccord est
@@ -83,7 +83,7 @@ est `assessment: "not-assessed"`, avec une liste vide et une explication. Cela
 ne prouve pas l’absence de toutes les installations. Le lecteur 0.1 conserve
 son catalogue historique `macro_models`.
 
-Le guide permet d’écrire toutes les formes 0.3. La validation statique et les
+Le guide permet d’écrire toutes les formes 0.4. La validation statique et les
 modules de harness ne prouvent ni disponibilité réelle, ni accès aux URI, ni
 application des permissions dans les adaptateurs Macro. Le runtime et son
 Preflight doivent vérifier ces points avant un lancement. Les effets `deny` et
@@ -93,9 +93,9 @@ remplace pas les permissions qui contrôlent une action pendant une mission.
 
 ## Sources historiques
 
-Le lecteur 0.1 et ses dépendances restent utilisés. L’édition et l’exécution
-[0.2](agsdl-020.md) sont retirées. Changer uniquement `contract` ne convertit
-ni les bindings, ni les instructions, ni les permissions, ni les routes.
+Le lecteur 0.1 et ses dépendances restent utilisés. Les sources 0.1 gardent leur édition, leurs annexes et leur provenance. Les
+sources [0.2](agsdl-020.md) restent exportables. Leurs instructions, leurs
+permissions et leurs routes demandent une réécriture pour les éditions récentes.
 Les documents de démonstration ont été rédigés en 0.3 ; ils ne constituent
 pas une migration des documents existants.
 
@@ -141,8 +141,8 @@ sans flow, Start ouvre une exécution en attente ; le panneau Messages permet
 d'envoyer une mission à son agent partagé. Une livraison en file démarre un
 nouveau travail après le travail courant. Un steer rejoint le tour actif via
 `turn/steer` et attend le `userMessage` corrélé de Codex avant la consommation.
-Si le destinataire finit avant l'envoi, le message repart en file. Une
-consommation incertaine n'est jamais rejouée. Le moniteur conserve les messages
+En 0.4.0, une impossibilité de remise confirmée remet le message en file.
+Si le moteur ne peut vérifier la remise, le chemin émet `STEER_UNCERTAIN`. Le moniteur conserve les messages
 envoyés, livrés, consommés et repliés, avec la réponse de l'agent.
 
 Une définition conserve sa conversation partagée jusqu'à la fin du run. Une
@@ -179,9 +179,8 @@ Les joins attendent tous les chemins ou un quorum. Après leur décision,
 `finish` poursuit immédiatement tout en laissant ces chemins finir ; `wait`
 attend leur fin avant de poursuivre. Les éléments de fan-out non démarrés sont
 retirés, et les résultats tardifs ne changent pas la décision. Stop attend
-tous les propriétaires physiques. L'annulation partagée non définie par la
-spec conserve le diagnostic bloquant `UNSPECIFIED_SHARED_CANCELLATION` ;
-l'utilisateur peut arrêter le run, sans règle de résolution ajoutée par Macro.
+tous les propriétaires physiques. En 0.4.0, le moteur arrête une seule fois le
+travail d'un chemin partagé et comptabilise son arrêt dans chaque groupe concerné.
 
 Le contrôle de fin exécute la commande capturée avant d'accepter une soumission,
 avec des limites de durée et de sortie et les permissions effectives de l'agent.
@@ -205,7 +204,11 @@ groupes de join. Une visite refusée ne démarre pas de nouveau travail.
 Le run attend toujours la fin des travaux physiques qui restent actifs après
 une sortie. Les valeurs hors des bornes numériques natives sont refusées.
 
-Les runs interrompus au redémarrage restent consultables et ne reprennent pas.
+En 0.4.0, le moteur enregistre l'arrêt du run avant de l'accuser réception.
+Il annule les travaux ouverts, retire les messages et demandes en attente, puis
+attend la confirmation de la fin physique avant de déclarer le run annulé.
+Si le moteur ne peut reprendre après une interruption et qu'aucun arrêt n'est
+à réconcilier, il publie le verdict `interrupted`. Le run reste consultable.
 
 L'autorisation exige ensemble `staticValid`, `runtimeSupported`, une
 qualification native correspondant à la source et au registre, aucune propriété
@@ -236,7 +239,8 @@ cible de livraison externe. Les livraisons sans flow sont le premier périmètre
 normatif ; les routes internes au flow restent conduites par le natif.
 
 L’édition est explicite avant de choisir lecteur et commandes. Les captures
-produit portent `snapshot: "2"`, `contract: "agsdl-0.3.0"` et le profil
+produit portent `snapshot: "2"`, le marqueur du document (`agsdl-0.3.0` ou
+`agsdl-0.4.0`) et le profil
 `macro-agsdl-030-v1`. L’ancien chemin 0.2 est retiré et les entrées refusent son
 profil sans repli ni conversion de document. L’admission `start030` est conservée.
 `execution_deliver030` admet désormais les messages sans flow dans les tables

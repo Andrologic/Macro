@@ -304,14 +304,14 @@ des anciennes tâches.
 
 #### Visualisation AgSDL
 
-Les nouvelles créations et les blueprints inclus utilisent [AgSDL 0.3](agsdl-030.md).
+Les nouvelles créations et les blueprints inclus utilisent [AgSDL 0.4.0](agsdl-030.md).
 Une copie conserve l’édition prise en charge de son modèle. Les documents 0.1
 gardent leur source, leurs annexes et leur guide. Ouvrir un document 0.2 affiche
 clairement une édition non supportée ; aucune conversion ni exécution de repli
 n’est effectuée. Les outils
-chargent le guide de la source à la demande, avec le guide 0.3 pour une source
+chargent le guide de la source à la demande, avec le guide 0.4.0 pour une source
 vide. Un catalogue de modèles Chat ne prouve pas la disponibilité d’un harness
-natif ; sans raccord qualifié, le catalogue 0.3 reste explicitement non évalué.
+natif ; sans raccord qualifié, le catalogue reste explicitement non évalué.
 
 Le panneau droit Architect présente un canvas AgSDL non éditable. La conversation
 conserve sa place centrale. L’agent peut modifier le document ; une modale permet
