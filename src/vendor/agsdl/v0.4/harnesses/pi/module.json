@@ -1,0 +1,153 @@
+{
+  "$schema": "../../schema/harness-module.schema.json",
+  "name": "pi",
+  "title": "pi",
+  "version": "2.0.0",
+  "contract": "agsdl-0.4.0",
+  "harnessVersions": ">=1.2.0 <2.0.0",
+  "sources": [
+    "pi:packages/coding-agent/package.json",
+    "pi:packages/coding-agent/docs/cli.md",
+    "pi:packages/coding-agent/docs/settings.md",
+    "pi:packages/coding-agent/docs/models.md",
+    "pi:packages/coding-agent/docs/sdk.md",
+    "pi:packages/coding-agent/docs/rpc-commands.md",
+    "pi:packages/coding-agent/docs/mcp.md",
+    "pi:packages/coding-agent/docs/skills.md",
+    "pi:packages/coding-agent/docs/extensions.md",
+    "pi:packages/coding-agent/docs/security.md",
+    "pi:packages/coding-agent/src/cli/args.ts",
+    "pi:packages/coding-agent/src/core/agent-session.ts",
+    "pi:packages/coding-agent/examples/extensions/todo.ts",
+    "pi:packages/coding-agent/examples/extensions/plan-mode",
+    "pi:packages/coding-agent/examples/extensions/permission-gate.ts",
+    "pi:packages/coding-agent/examples/extensions/subagent",
+    "pi:packages/coding-agent/docs/rpc-extension-ui.md",
+    "pi:packages/coding-agent/src/modes/rpc/rpc-mode.ts",
+    "pi:packages/coding-agent/src/core/tools/index.ts"
+  ],
+  "properties": {
+    "resources": {
+      "support": "approximate",
+      "note": "pi has no channel for information that carries no authority: resources arrive as message content or as files the agent reads."
+    },
+    "model.name": {
+      "support": "native",
+      "note": "A provider/id reference (--model)."
+    },
+    "model.effort": {
+      "support": "native",
+      "values": [
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "note": "Maps to the thinking level. pi clamps a level the model does not support to a supported one."
+    },
+    "skills": {
+      "support": "native",
+      "note": "--no-skills with one --skill <path> per named skill. pi lists the skills in the system prompt and the agent reads SKILL.md with the read tool."
+    },
+    "mcpServers": {
+      "support": "native",
+      "note": "Built-in MCP support, configured in mcp.json; tools are named mcp__server__tool."
+    },
+    "plan": {
+      "support": "absent",
+      "note": "pi ships no plan or todo tool; todo.ts is an example extension."
+    },
+    "planFirst.auto": {
+      "support": "absent",
+      "note": "pi has no plan mode; plan-mode is an example extension."
+    },
+    "planFirst.ask": {
+      "support": "absent",
+      "note": "pi has no plan mode; plan-mode is an example extension."
+    },
+    "instance.new": {
+      "support": "native",
+      "note": "Each work runs in a new session."
+    },
+    "delivery.steer": {
+      "support": "native",
+      "note": "steer delivers the message after the current assistant turn and its tool calls, before the next model call."
+    },
+    "reviewer.person": {
+      "support": "absent",
+      "note": "pi has no ask effect: it has no permission prompts."
+    },
+    "reviewer.model": {
+      "support": "absent",
+      "note": "pi has no ask effect: it has no permission prompts."
+    },
+    "directories": {
+      "support": "native",
+      "note": "pi does not restrict file access, so every added directory is reachable."
+    }
+  },
+  "permissions": {
+    "read": {
+      "allow": "harness",
+      "ask": "absent",
+      "deny": "absent",
+      "outside": "absent",
+      "note": "pi has no permission rules and asks before no tool call. Only whole tools can be removed (--tools, --exclude-tools), so a path-matched deny is not enforced."
+    },
+    "write": {
+      "allow": "harness",
+      "ask": "absent",
+      "deny": "absent",
+      "note": "pi has no permission rules. Only the edit and write tools as a whole can be removed, so a path-matched deny, including the workspace preset's limit to the workspace, is not enforced."
+    },
+    "shell": {
+      "allow": "harness",
+      "ask": "absent",
+      "deny": "absent",
+      "note": "pi has no permission rules. Only the bash and powershell tools as a whole can be removed, so a command-matched deny is not enforced. No operating-system sandbox."
+    },
+    "network": {
+      "allow": "absent",
+      "ask": "absent",
+      "deny": "harness",
+      "note": "pi ships no network tool, so no network action exists unless an extension adds one. Network access by shell commands and MCP servers is not restricted."
+    },
+    "mcp": {
+      "allow": "harness",
+      "ask": "absent",
+      "deny": "harness",
+      "note": "--exclude-tools with mcp__server__* or mcp__server__tool unregisters the matched tools, also for codemode scripts."
+    },
+    "delegate": {
+      "allow": "absent",
+      "ask": "absent",
+      "deny": "harness",
+      "note": "pi ships no sub-agent tool; subagent is an example extension."
+    }
+  },
+  "settings": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "steeringMode": {
+        "type": "string",
+        "enum": [
+          "all",
+          "one-at-a-time"
+        ],
+        "description": "How queued steering messages are delivered: all after the current assistant turn, or one per completed assistant turn (pi default)."
+      },
+      "followUpMode": {
+        "type": "string",
+        "enum": [
+          "all",
+          "one-at-a-time"
+        ],
+        "description": "How queued follow-up messages are delivered when the agent finishes: all at once, or one at a time (pi default)."
+      }
+    }
+  }
+}

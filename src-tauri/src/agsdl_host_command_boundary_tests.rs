@@ -31,16 +31,20 @@ struct CommandFixture {
 }
 impl CommandFixture {
     async fn new(executor: Arc<FakeExecutor>, with_ai: bool) -> Self {
-        use crate::db::agsdl_execution::dto::{
-            EngineAssociations, EngineEntry, EngineSourceOwner, EngineStartRequest,
-        };
-        use crate::workspace::metadata::{ProjectDto, WorkspaceState};
         let document = json!({"contract":"agsdl-0.3.0","id":"codex-demo","agents":{
         "writer":{"harness":"codex","permissions":"workspace","model":{"name":"fixture","effort":"high"}},
         "reviewer":{"harness":"codex","permissions":"read-only"}},
         "flow":{"entry":"write","steps":{
             "write":{"type":"agent","agent":"writer","maxVisits":3,"next":"review"},
             "review":{"type":"agent","agent":"reviewer","maxVisits":3,"next":{"approve":[],"revise":"write"}}}}});
+        Self::with_document(executor, with_ai, document.to_string()).await
+    }
+
+    async fn with_document(executor: Arc<FakeExecutor>, with_ai: bool, document: String) -> Self {
+        use crate::db::agsdl_execution::dto::{
+            EngineAssociations, EngineEntry, EngineSourceOwner, EngineStartRequest,
+        };
+        use crate::workspace::metadata::{ProjectDto, WorkspaceState};
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let mut fixture = MacroFixture {
@@ -70,7 +74,7 @@ impl CommandFixture {
         )
         .unwrap();
         std::fs::write(dir.join("plan.json"), serde_json::to_vec(&json!({
-        "id":"source", "projectIds":["project"], "revision":1, "updatedAt":"time", "agsdl":{"source":document.to_string()}
+        "id":"source", "projectIds":["project"], "revision":1, "updatedAt":"time", "agsdl":{"source":document}
     })).unwrap()).unwrap();
         let scope = EngineSourceOwner {
             project_id: "project".into(),
@@ -1165,4 +1169,106 @@ async fn pending_application_ceiling_does_not_reach_runtime_until_accepted() {
         serde_json::to_value(ceiling.permissions()).unwrap(),
         json!("workspace")
     );
+}
+
+#[tokio::test]
+async fn agsdl040_project_and_archive_open_and_run_with_scripted_codex() {
+    use argentic_runtime::source::OpenedSource;
+    use sha2::{Digest, Sha256};
+    use std::io::{Cursor, Write};
+    use zip::{write::SimpleFileOptions, ZipWriter};
+
+    let _secret_guard = secrets::lock_test_store();
+    let tmp = tempfile::tempdir().unwrap();
+    secrets::init(tmp.path()).unwrap();
+
+    let project = tmp.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let manifest = json!({
+        "projectFormat": "agsdl-project-1",
+        "contract": argentic_core::AGSDL_040,
+        "id": "smoke",
+        "agents": {"worker":{"harness":"codex","permissions":"read-only"}},
+        "flow": {"file":"flow.json"}
+    })
+    .to_string();
+    let flow = json!({
+        "entry": "run",
+        "steps": {"run":{"type":"agent","agent":"worker","prompt":"Reply with OK."}}
+    })
+    .to_string();
+    let files = [
+        ("agsdl.json", manifest.as_bytes()),
+        ("flow.json", flow.as_bytes()),
+    ];
+    let mut inventory = serde_json::Map::new();
+    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, bytes) in files {
+        std::fs::write(project.join(name), bytes).unwrap();
+        inventory.insert(name.into(), json!({
+            "size":bytes.len(), "sha256":format!("{:x}", Sha256::digest(bytes)), "executable":false
+        }));
+        zip.start_file(format!("project/{name}"), SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.start_file("archive.json", SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(
+        json!({"archiveFormat":"agsdl-archive-1","files":inventory})
+            .to_string()
+            .as_bytes(),
+    )
+    .unwrap();
+    let archive = zip.finish().unwrap().into_inner();
+
+    let folder = OpenedSource::open_path(&project).unwrap();
+    let packed = OpenedSource::open_archive_bytes(&archive).unwrap();
+    let archive_path = tmp.path().join("smoke.agsdl");
+    std::fs::write(&archive_path, &archive).unwrap();
+    assert_eq!(
+        OpenedSource::open_path(&archive_path)
+            .unwrap()
+            .authored_json(),
+        packed.authored_json()
+    );
+    assert_eq!(folder.authored_json(), packed.authored_json());
+    let data = tmp.path().join("data");
+    std::fs::create_dir(&data).unwrap();
+    let mut previous_scope = None;
+    for input in [folder, packed] {
+        let retained = input.retain(&data).unwrap();
+        assert_eq!(
+            std::fs::read(retained.resource_root().join("flow.json")).unwrap(),
+            flow.as_bytes()
+        );
+        let mut scope = json!({});
+        retained.bind_scope(&mut scope).unwrap();
+        assert_ne!(scope, json!({}));
+        if let Some(previous) = &previous_scope {
+            assert_eq!(&scope, previous);
+        }
+        previous_scope = Some(scope);
+        // This step still starts versions from assembled JSON. Binding the
+        // retained package to a Macro launch belongs to the archive work.
+        let peer = Arc::new(fake_executor());
+        let fixture =
+            CommandFixture::with_document(peer.clone(), true, input.authored_json().into()).await;
+        let receipt = tokio::time::timeout(std::time::Duration::from_secs(15), fixture.start())
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            fixture.wait(&receipt.system_start_id),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let view = fixture.inspect(&receipt.system_start_id).await;
+        assert_eq!(view.capture.versions.contract, argentic_core::AGSDL_040);
+        assert_eq!(view.flow.state.verdict.as_deref(), Some("succeeded"));
+        assert_eq!(peer.starts.load(Ordering::SeqCst), 1);
+        fixture.finish().await;
+    }
 }

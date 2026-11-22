@@ -1,0 +1,180 @@
+{
+  "$schema": "../../schema/harness-module.schema.json",
+  "name": "codex",
+  "title": "Codex",
+  "version": "2.0.0",
+  "contract": "agsdl-0.4.0",
+  "harnessVersions": ">=0.152.0 <1.0.0",
+  "sources": [
+    "codex:codex-rs/protocol/src/openai_models.rs",
+    "codex:codex-rs/config/src/config_toml.rs",
+    "codex:codex-rs/config/src/skills_config.rs",
+    "codex:codex-rs/config/src/mcp_types.rs",
+    "codex:codex-rs/config/src/permissions_toml.rs",
+    "codex:codex-rs/core/src/config/permissions.rs",
+    "codex:codex-rs/core/src/config/mod.rs",
+    "codex:codex-rs/core/src/tools/handlers/plan.rs",
+    "codex:codex-rs/core/src/tools/spec_plan.rs",
+    "codex:codex-rs/core/src/tools/network_approval.rs",
+    "codex:codex-rs/core/src/safety.rs",
+    "codex:codex-rs/core/src/mcp_tool_call.rs",
+    "codex:codex-rs/core/src/agent/control/spawn.rs",
+    "codex:codex-rs/collaboration-mode-templates/templates/plan.md",
+    "codex:codex-rs/features/src/lib.rs",
+    "codex:codex-rs/execpolicy/README.md",
+    "codex:codex-rs/protocol/src/protocol.rs",
+    "codex:codex-rs/protocol/src/config_types.rs",
+    "codex:codex-rs/app-server-protocol/src/protocol/common.rs",
+    "codex:codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
+    "codex:codex-rs/app-server-protocol/src/protocol/v2/turn.rs",
+    "https://learn.chatgpt.com/docs/config-file/config-reference",
+    "https://learn.chatgpt.com/docs/agent-approvals-security",
+    "https://learn.chatgpt.com/docs/agent-configuration/rules",
+    "https://learn.chatgpt.com/docs/build-skills",
+    "codex:codex-rs/core/src/tools/sandboxing.rs",
+    "codex:codex-rs/app-server/src/bespoke_event_handling.rs"
+  ],
+  "properties": {
+    "resources": {
+      "support": "approximate",
+      "note": "Codex has no definition-level information channel, so resources are sent per turn as experimental additionalContext entries of kind untrusted."
+    },
+    "model.name": {
+      "support": "native"
+    },
+    "model.effort": {
+      "support": "native",
+      "suggestions": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+        "persistent"
+      ],
+      "note": "Maps to model_reasoning_effort. Codex accepts any non-empty level a model advertises, beyond the named ones; each model accepts only the levels it advertises, so the host checks the level at launch."
+    },
+    "skills": {
+      "support": "native",
+      "note": "Maps to SKILL.md skills, selected by name with skills.config entries."
+    },
+    "mcpServers": {
+      "support": "native",
+      "note": "Maps to mcp_servers with stdio or streamable HTTP transport."
+    },
+    "plan": {
+      "support": "native",
+      "note": "Maps to update_plan, which must be enabled with tools.update_plan and reports progress as turn/plan/updated. update_plan is refused in Plan mode."
+    },
+    "planFirst.auto": {
+      "support": "approximate",
+      "note": "Plan collaboration mode forbids mutation by instructions only, and a read-only turn sandbox does not cover MCP tool calls."
+    },
+    "planFirst.ask": {
+      "support": "absent",
+      "note": "Codex cannot enforce a complete lock before plan approval because Plan mode is prompt-only and MCP tools run outside the sandbox."
+    },
+    "instance.new": {
+      "support": "native",
+      "note": "Maps to a new thread started with thread/start."
+    },
+    "delivery.steer": {
+      "support": "native",
+      "note": "Maps to app-server turn/steer with expectedTurnId."
+    },
+    "reviewer.person": {
+      "support": "native",
+      "note": "Maps to approvals_reviewer = \"user\": approval requests go to the client."
+    },
+    "reviewer.model": {
+      "support": "native",
+      "note": "Maps to approvals_reviewer = \"auto_review\" with an interactive approval policy such as on-request: a reviewer agent answers approval requests; the sandbox and its limits are unchanged."
+    },
+    "directories": {
+      "support": "native",
+      "note": "Maps to workspace_roots in a permissions profile; :workspace_roots rules make them readable or writable."
+    }
+  },
+  "permissions": {
+    "read": {
+      "allow": "sandbox",
+      "deny": "sandbox",
+      "outside": "sandbox",
+      "ask": "absent",
+      "note": "Deny uses permission-profile deny paths and globs; Codex has no per-path approval for reads. Reads outside the zone are denied with \":root\" = \"deny\", keeping :minimal readable for the programs the agent runs. Outside macOS, ** deny globs are expanded at startup, up to glob_scan_max_depth."
+    },
+    "write": {
+      "allow": "sandbox",
+      "deny": "sandbox",
+      "ask": "harness",
+      "note": "Ask relies on apply_patch approval outside writable paths. Glob entries are deny-only, so a write deny on a glob also denies reading. An approved escalation runs outside the sandbox when the profile denies no read, so deny holds only while escalation requests are refused, for example with a granular approval policy whose sandbox_approval is false."
+    },
+    "shell": {
+      "allow": "harness",
+      "deny": "harness",
+      "ask": "harness",
+      "match": "prefix",
+      "note": "Maps to execpolicy prefix_rule decisions allow, forbidden and prompt, which match the leading words of a command."
+    },
+    "network": {
+      "allow": "sandbox",
+      "deny": "sandbox",
+      "ask": "sandbox",
+      "note": "Host-level rules and approvals need the experimental network_proxy feature, and the hosted web_search tool must be disabled for deny. An approved escalation bypasses the network proxy, so deny holds only while escalation requests are refused."
+    },
+    "mcp": {
+      "allow": "harness",
+      "deny": "harness",
+      "ask": "harness",
+      "note": "Maps to enabled_tools, disabled_tools and per-tool approval_mode prompt or approve."
+    },
+    "delegate": {
+      "allow": "harness",
+      "deny": "harness",
+      "ask": "absent",
+      "note": "Maps to features.multi_agent and features.multi_agent_v2; deny needs both off, since multi_agent_v2 overrides [agents].enabled. Sub-agents inherit the parent's permission profile and Codex has no spawn approval."
+    }
+  },
+  "settings": {
+    "type": "object",
+    "description": "Codex settings without a standard AgSDL property.",
+    "properties": {
+      "profile": {
+        "type": "string",
+        "description": "Name of a Codex config profile to apply."
+      },
+      "approvalsReviewer": {
+        "type": "string",
+        "enum": [
+          "user",
+          "auto_review"
+        ],
+        "description": "Who reviews approval requests: the user, or Codex's automatic reviewer sub-agent."
+      },
+      "reasoningSummary": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "concise",
+          "detailed",
+          "none"
+        ],
+        "description": "Codex model_reasoning_summary."
+      },
+      "webSearch": {
+        "type": "string",
+        "enum": [
+          "disabled",
+          "cached",
+          "indexed",
+          "live"
+        ],
+        "description": "Codex web_search mode for the hosted search tool."
+      }
+    },
+    "additionalProperties": false
+  }
+}

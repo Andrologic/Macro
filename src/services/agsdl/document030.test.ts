@@ -1,7 +1,7 @@
 import { describe,expect,it } from 'bun:test';
 import { readdirSync,readFileSync } from 'node:fs';
 import type { AgsdlReport } from '../../types/agsdl';
-import { equal,loadHarnessModule,NumberToken,parse,stringify } from '../../vendor/agsdl/v0.3/reader.mjs';
+import { equal,loadHarnessModule,NumberToken,parse,stringify } from '../../vendor/agsdl/v0.4/reader.mjs';
 import { decode as decodeExecution,encode as encodeExecution,record as executionRecord,NumberToken as ExecutionToken } from '../agsdlExecution/exact';
 import { localizeDiagnostics } from './diagnostics';
 import { AGSDL_020_CONTRACT,AGSDL_CONTRACT,applyChanges,LEGACY_AGSDL_CONTRACT,MAX_AGSDL_BYTES,object,readDocument,readExactDocument,sourceAt,validateDocument,validateDocumentBytes } from './document';
@@ -9,11 +9,11 @@ import { rememberSourceLocations } from './reader030WorkerProtocol';
 import type { ViewerCard } from './viewer';
 
 const bytes = (source: string) => new TextEncoder().encode(source);
-const source = (extra = '') => `{"contract":"agsdl-0.3.0","id":"test","agents":{}${extra}}`;
+const source = (extra = '') => `{"contract":"agsdl-0.4.0","id":"test","agents":{}${extra}}`;
 
 describe('AgSDL 0.3 document boundary', () => {
   it('dispatches explicit editions and keeps exact numbers separate from business objects', async () => {
-    expect([AGSDL_CONTRACT, AGSDL_020_CONTRACT, LEGACY_AGSDL_CONTRACT]).toEqual(['agsdl-0.3.0', 'agsdl-0.2.0', 'agsdl-0.1.0']);
+    expect([AGSDL_CONTRACT, AGSDL_020_CONTRACT, LEGACY_AGSDL_CONTRACT]).toEqual(['agsdl-0.4.0', 'agsdl-0.2.0', 'agsdl-0.1.0']);
     const raw = source(',"content":{"n":{"value":900719925474099312345}}');
     const document = readDocument(raw);
     const number = object(object(document.content).n).value;
@@ -81,7 +81,7 @@ describe('AgSDL 0.3 document boundary', () => {
     const numeric = object(object(exact.content).n).value as NumberToken[];
     expect(numeric[0]).toBeInstanceOf(ExecutionToken);
     expect(() => executionRecord(numeric[0])).toThrow('Expected an object');
-    const folder = new URL('../../../dev/agsdl/fixtures/v0.3/examples/', import.meta.url);
+    const folder = new URL('../../../dev/agsdl/fixtures/v0.4/examples/', import.meta.url);
     const names = readdirSync(folder).filter(name => name.endsWith('.json'));
     expect(names).toHaveLength(10);
     for (const name of names) {

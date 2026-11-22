@@ -72,6 +72,15 @@ pub(crate) struct VersionSummary {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SavedVersion {
+    #[serde(flatten)]
+    summary: VersionSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    converted_draft: Option<Document>,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct Version {
     #[serde(flatten)]
     summary: VersionSummary,
@@ -581,16 +590,81 @@ async fn freeze(
     })
 }
 
+/// Upgrade only the edition marker and its known schema URI. Borrow the raw
+/// header values so the rest of the authored JSON stays byte-for-byte intact.
+fn upgrade_draft(mut document: Document) -> DbResult<Option<Document>> {
+    use serde_json::value::RawValue;
+
+    #[derive(Deserialize)]
+    struct Header<'a> {
+        #[serde(borrow)]
+        contract: &'a RawValue,
+        #[serde(rename = "$schema", borrow)]
+        schema: Option<&'a RawValue>,
+    }
+    let Ok(header) = serde_json::from_str::<Header<'_>>(&document.source) else {
+        return Ok(None);
+    };
+    let contract: String =
+        serde_json::from_str(header.contract.get()).map_err(|error| invalid(&error.to_string()))?;
+    if contract != "agsdl-0.3.0" {
+        return Ok(None);
+    }
+    const LEGACY_SCHEMA: &str =
+        "https://raw.githubusercontent.com/Andrologic/AgSDL/v0.3.0/schema/agsdl.schema.json";
+    const CURRENT_SCHEMA: &str =
+        "https://raw.githubusercontent.com/Andrologic/AgSDL/v0.4.0/schema/agsdl.schema.json";
+    let input_start = document.source.as_ptr() as usize;
+    let range = |raw: &RawValue| {
+        let token = raw.get();
+        let start = token.as_ptr() as usize - input_start;
+        start..start + token.len()
+    };
+    let mut edits = vec![(range(header.contract), argentic_core::AGSDL_040)];
+    if let Some(schema) = header.schema.filter(|raw| {
+        serde_json::from_str::<String>(raw.get()).is_ok_and(|uri| uri == LEGACY_SCHEMA)
+    }) {
+        edits.push((range(schema), CURRENT_SCHEMA));
+    }
+    edits.sort_unstable_by_key(|(span, _)| std::cmp::Reverse(span.start));
+    for (span, value) in edits {
+        let value = serde_json::to_string(value).map_err(|error| invalid(&error.to_string()))?;
+        document.source.replace_range(span, &value);
+    }
+    Ok(Some(document))
+}
+
 pub(crate) async fn save_version(
     pool: &SqlitePool,
     blueprint_id: String,
     expected_revision: i64,
     note: Option<String>,
-) -> DbResult<VersionSummary> {
+) -> DbResult<SavedVersion> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let version = freeze(&mut tx, &blueprint_id, expected_revision, note).await?;
+    let row = sqlx::query("SELECT document FROM architect_blueprints WHERE id=? AND revision=?")
+        .bind(&blueprint_id)
+        .bind(expected_revision)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| invalid("stale_revision"))?;
+    let converted_draft = upgrade_draft(decode(&row)?)?;
+    let revision = if let Some(document) = &converted_draft {
+        sqlx::query_scalar(
+            "UPDATE architect_blueprints SET document=?,revision=revision+1 WHERE id=? RETURNING revision",
+        )
+        .bind(encode(document)?)
+        .bind(&blueprint_id)
+        .fetch_one(&mut *tx)
+        .await?
+    } else {
+        expected_revision
+    };
+    let summary = freeze(&mut tx, &blueprint_id, revision, note).await?;
     tx.commit().await?;
-    Ok(version)
+    Ok(SavedVersion {
+        summary,
+        converted_draft,
+    })
 }
 
 pub(crate) async fn list_versions(
@@ -649,13 +723,18 @@ pub(crate) async fn adapt_version(
     name: String,
 ) -> DbResult<Draft> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let document = sqlx::query_scalar(
+    let document: String = sqlx::query_scalar(
         "SELECT document FROM architect_versions WHERE blueprint_id=? AND number=?",
     )
     .bind(&key.blueprint_id)
     .bind(key.number)
     .fetch_one(&mut *tx)
     .await?;
+    let original = serde_json::from_str(&document).map_err(|error| invalid(&error.to_string()))?;
+    let document = match upgrade_draft(original)? {
+        Some(converted) => encode(&converted)?,
+        None => document,
+    };
     let draft = insert_blueprint(&mut tx, &project_id, &name, document, Some(&key), None).await?;
     tx.commit().await?;
     Ok(draft)
@@ -748,7 +827,7 @@ fn validate_import_source(source: &str) -> DbResult<()> {
         contract: String,
     }
     let header: Header = serde_json::from_str(source).map_err(|e| invalid(&e.to_string()))?;
-    if header.contract != "agsdl-0.3.0" {
+    if !argentic_core::supports_contract(&header.contract) {
         return Err(invalid("unsupported_agsdl_contract"));
     }
     Ok(())

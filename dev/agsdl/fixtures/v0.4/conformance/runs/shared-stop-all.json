@@ -1,0 +1,110 @@
+{
+  "description": "An all join receives a branch without a result when a sibling join cancels the shared work.",
+  "document": {
+    "contract": "agsdl-0.4.0",
+    "id": "shared-stop-all",
+    "agents": {
+      "worker": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "origin",
+      "steps": {
+        "origin": {
+          "type": "agent",
+          "agent": "worker",
+          "next": [
+            "a",
+            "b"
+          ]
+        },
+        "a": {
+          "type": "agent",
+          "agent": "worker",
+          "instance": "new",
+          "next": {
+            "one": "j1",
+            "two": "j2"
+          }
+        },
+        "b": {
+          "type": "agent",
+          "agent": "worker",
+          "instance": "new",
+          "next": {
+            "one": "j1",
+            "two": "j2"
+          }
+        },
+        "j1": {
+          "type": "join",
+          "remaining": "stop"
+        },
+        "j2": {
+          "type": "join",
+          "remaining": "stop"
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start both branches."
+  },
+  "timeline": [
+    {
+      "work": "origin",
+      "returns": {
+        "text": "",
+        "results": {}
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "a"
+        },
+        {
+          "step": "b"
+        }
+      ]
+    },
+    {
+      "work": "a",
+      "returns": {
+        "text": "",
+        "results": {},
+        "choice": "one"
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "origin": 1,
+      "a": 1,
+      "b": 1
+    },
+    "joins": [
+      {
+        "join": "j1",
+        "outcome": "done",
+        "branches": {
+          "a": {
+            "choice": "one"
+          },
+          "b": {
+            "ended": "without-result"
+          }
+        }
+      }
+    ],
+    "failures": [],
+    "cancelled": [
+      {
+        "step": "b"
+      }
+    ]
+  }
+}

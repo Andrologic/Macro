@@ -1,3 +1,4 @@
+import { isFlowDocumentContract } from "../../services/agsdl/contract";
 import { AlertTriangle,Download,Maximize2,Redo2,Save,Settings2,Undo2,X } from "lucide-react";
 import React,{ useEffect,useMemo,useState } from "react";
 import { applyChanges } from "../../services/agsdl/document";
@@ -105,7 +106,7 @@ export const AgsdlEditor: React.FC<{
   }, [source, displayMetadata, migrationMetadata, reports]);
   const document = parsed.document;
   const visibleGraphIndex = Math.max(0, Math.min(graphIndex, Math.max(0, (document?.graphs.length ?? 0) - 1)));
-  const edition030 = document?.contract === "agsdl-0.3.0";
+  const edition030 = isFlowDocumentContract(document?.contract);
   const graph = edition030 && (definitions030 || (!Object.hasOwn(document.systemDetails, "flow") && !graphChosen030)) ? undefined : document?.graphs[visibleGraphIndex];
   const selected = selection?.key === key ? selection.path : "";
   const system = useMemo(() => projectSystemOverview(graph, document?.legacyCards.length
@@ -137,7 +138,7 @@ export const AgsdlEditor: React.FC<{
   // Keep an open form alive if an agent removes its component. Its captured
   // version will reject saving; the user's text remains available to copy.
   const snapshotCard = selection?.key === key ? selection.card : undefined;
-  const routeCardFor = (edge: typeof selectedEdge): ViewerCard | undefined => edge?.route030 ? { path: edge.id, id: edge.id, title: edge.label, kind: "Route", mission: "", unresolved: false, inputs: [], outputs: [], branches: [], details: { contract: "agsdl-0.3.0" }, edition030: { sourceJson: edge.route030.valueJson ?? "", routes: [edge.route030] } } : undefined;
+  const routeCardFor = (edge: typeof selectedEdge): ViewerCard | undefined => edge?.route030 ? { path: edge.id, id: edge.id, title: edge.label, kind: "Route", mission: "", unresolved: false, inputs: [], outputs: [], branches: [], details: { contract: document?.contract }, edition030: { sourceJson: edge.route030.valueJson ?? "", routes: [edge.route030] } } : undefined;
   const routeCard = routeCardFor(selectedEdge);
   const selectedCard = snapshotCard && (!currentCard || currentCard.id !== snapshotCard.id) ? snapshotCard : currentCard;
   const select = (path: string) => {
@@ -174,7 +175,7 @@ export const AgsdlEditor: React.FC<{
   }}>{t("agsdl.viewer.correctIssue")}</button>;
   const nodeTitle = (item: ViewerCard) => {
     const hasTitle = !!((item.details.displayAnnotations ?? item.details.annotations) as { title?: string } | undefined)?.title;
-    if (item.kind === "approval" && !(item.details.contract === "agsdl-0.3.0") && !hasTitle) return t("agsdl.viewer.approvalRequired");
+    if (item.kind === "approval" && !isFlowDocumentContract(item.details.contract) && !hasTitle) return t("agsdl.viewer.approvalRequired");
     if (item.kind === "end" && !hasTitle) return t(`agsdl.edge.${item.outcome}`, { defaultValue: item.title });
     return item.title || t("agsdl.viewer.unnamed");
   };

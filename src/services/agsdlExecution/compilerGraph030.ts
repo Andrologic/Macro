@@ -1,4 +1,4 @@
-import { Graph, analyse_joins, step_routes, type JoinInfo } from '../../vendor/agsdl/v0.3/graph.mjs';
+import { Graph, analyse_joins, step_routes, type JoinInfo } from '../../vendor/agsdl/v0.4/graph.mjs';
 import { createAgentWorkContract030 } from './agentWorkContracts030';
 import type { ExactJsonText, StepAddress } from './contracts';
 import type { CompiledHandler030, CompiledJoin030, CompiledPlan030, CompiledRoute030, CompiledScope030, CompiledStep030, CompiledTarget030, ScopeAddress030 } from './contracts030';

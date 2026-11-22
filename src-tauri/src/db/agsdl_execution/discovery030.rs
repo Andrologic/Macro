@@ -65,11 +65,7 @@ struct Cursor030 {
 }
 
 fn correlation() -> super::dto::EngineFailure {
-    failure(
-        "CORRELATION",
-        "",
-        "Flow 0.3 discovery capture is inconsistent",
-    )
+    failure("CORRELATION", "", "Flow discovery capture is inconsistent")
 }
 fn validate_owner(owner: &EngineSourceOwner) -> Result<()> {
     opaque(&owner.project_id)?;
@@ -139,7 +135,7 @@ fn validated_summary(
         && serde_json::to_value(&plan.versions)? == serde_json::to_value(&capture.versions)?
         && plan.format == "macro-agsdl-compiled-plan/2"
         && capture.versions.snapshot == "2"
-        && capture.versions.contract == "agsdl-0.3.0"
+        && argentic_core::supports_contract(&capture.versions.contract)
         && capture.versions.profile == "macro-agsdl-030-v1"
         && plan.entry.is_some() == request.entry.is_some()
         && plan.entry.is_some() == receipt.enter.is_some()
@@ -156,14 +152,14 @@ fn validated_summary(
             None => state.events.is_empty() && !state.entered,
         }
         && document_tokens_equal(&plan.document_json, &capture.authored_source)?;
-    require(same, "Flow 0.3 discovery capture is inconsistent")?;
+    require(same, "Flow discovery capture is inconsistent")?;
     decimal(&state.revision)?;
     require(
         state
             .verdict
             .as_deref()
-            .is_none_or(|v| matches!(v, "succeeded" | "failed" | "cancelled")),
-        "Flow 0.3 discovery verdict is inconsistent",
+            .is_none_or(|v| matches!(v, "succeeded" | "failed" | "cancelled" | "interrupted")),
+        "Flow discovery verdict is inconsistent",
     )?;
     let mut counts = BTreeMap::<String, usize>::new();
     let mut physical_pending = 0usize;
@@ -181,7 +177,7 @@ fn validated_summary(
                     | "barrier"
                     | "stopping"
             ),
-            "Flow 0.3 discovery activation phase is inconsistent",
+            "Flow discovery activation phase is inconsistent",
         )?;
         *counts.entry(activation.phase.clone()).or_default() += 1;
         if activation.physical {

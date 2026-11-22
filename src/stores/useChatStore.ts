@@ -14556,7 +14556,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const conversationId = target.conversation_id;
       const assertEditedUserWrite = () => {
         if (editBlueprint && (useAppStore.getState().mode !== "Architect" || selectedBlueprintForConversation(conversationId) !== editBlueprint))
-          throw buildSendError("The blueprint selection changed.");
+          throw buildSendError("A different blueprint is selected.");
         assertBlueprintAttachment(conversationId, editContextRefs);
       };
       assertEditedUserWrite();

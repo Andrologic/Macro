@@ -1,3 +1,4 @@
+import { isFlowDocumentContract } from "./contract";
 import type { AgsdlReport } from "../../types/agsdl";
 import type { AgsdlEnvelopeMetadata } from "./design";
 import { keyId,list,object,readDocument,scanSource,text } from "./document";
@@ -87,7 +88,7 @@ const ports = (value: unknown): ViewerPort[] =>
 
 /** A reading model only. Unresolved and ambiguous references never become links. */
 export function projectViewer(source: string, metadata?: AgsdlEnvelopeMetadata, reports: readonly AgsdlReport[] = []) {
-  if (object(scanSource(source).tree).contract === "agsdl-0.3.0") return projectViewer030(source, metadata, staticReportForSource030(source, reports));
+  if (isFlowDocumentContract(object(scanSource(source).tree).contract)) return projectViewer030(source, metadata, staticReportForSource030(source, reports));
   const doc = readDocument(source);
   if (doc.contract === "agsdl-0.2.0") throw new Error("agsdl.unsupportedEdition020");
   if (doc.contract !== "agsdl-0.1.0")

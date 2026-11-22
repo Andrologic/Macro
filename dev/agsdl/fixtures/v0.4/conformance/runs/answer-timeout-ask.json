@@ -1,0 +1,72 @@
+{
+  "description": "An ask left unanswered for answerTimeoutMs gets no from the host; the agent continues.",
+  "document": {
+    "contract": "agsdl-0.4.0",
+    "id": "answer-timeout-ask",
+    "agents": {
+      "dev": {
+        "harness": "example",
+        "permissions": {
+          "preset": "workspace",
+          "reviewer": "person",
+          "rules": [
+            {
+              "action": "shell",
+              "match": "npm publish *",
+              "effect": "ask"
+            }
+          ]
+        },
+        "answerTimeoutMs": 600000
+      }
+    },
+    "flow": {
+      "entry": "release",
+      "steps": {
+        "release": {
+          "type": "agent",
+          "agent": "dev",
+          "timeoutMs": 60000
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "release",
+      "request": "ask"
+    },
+    {
+      "elapse": 600001
+    },
+    {
+      "running": [
+        {
+          "step": "release"
+        }
+      ]
+    },
+    {
+      "work": "release",
+      "returns": {
+        "text": "Not published: the request was refused."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "release": 1
+    },
+    "answers": [
+      {
+        "work": "release",
+        "answer": "no"
+      }
+    ],
+    "failures": []
+  }
+}

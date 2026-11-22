@@ -470,9 +470,9 @@ fn repository(c: &mut Corpus) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut files = Vec::new();
     for directory in [
-        "dev/agsdl/fixtures/v0.3",
-        "src/vendor/agsdl/v0.3/schema",
-        "src/vendor/agsdl/v0.3/harnesses",
+        "dev/agsdl/fixtures/v0.4",
+        "src/vendor/agsdl/v0.4/schema",
+        "src/vendor/agsdl/v0.4/harnesses",
         "src/demo/agsdl",
     ] {
         json_files(&root.join(directory), &mut files);

@@ -35,8 +35,8 @@ it('rejects an event attributed to another native owner or event id', () => {
 });
 
 it('uses the shipped 030 value schema reader for a real work submission', async () => {
-  const { NumberToken, parse } = await import('../../vendor/agsdl/v0.3/json.mjs');
-  const { validate } = await import('../../vendor/agsdl/v0.3/valueschema.mjs');
+  const { NumberToken, parse } = await import('../../vendor/agsdl/v0.4/json.mjs');
+  const { validate } = await import('../../vendor/agsdl/v0.4/valueschema.mjs');
   const { connectValueSchemaValidator030 } = await import('./valueSchemaPort030');
   const validator = connectValueSchemaValidator030({ NumberToken, parse, validate });
   const contract = JSON.stringify(createAgentWorkContract030({ agentJson: '{"results":{"data":{"required":true,"schema":{"type":"integer"}}}}' as ExactJsonText }));

@@ -1,0 +1,186 @@
+{
+  "description": "A fan-out starts one path per element with the element as item; a keep join lists the paths in element order and routes incomplete when one failed.",
+  "document": {
+    "contract": "agsdl-0.4.0",
+    "id": "fanout-keep",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace",
+        "results": {
+          "files": {
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "worker": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "plan",
+      "steps": {
+        "plan": {
+          "type": "agent",
+          "agent": "lead",
+          "maxVisits": 3,
+          "next": {
+            "split": {
+              "step": "fix",
+              "each": [
+                "results",
+                "files"
+              ],
+              "max": 10
+            },
+            "none": []
+          }
+        },
+        "fix": {
+          "type": "agent",
+          "agent": "worker",
+          "instance": "new",
+          "next": "gather"
+        },
+        "gather": {
+          "type": "join",
+          "failures": "keep",
+          "next": {
+            "done": "summary",
+            "incomplete": "plan"
+          }
+        },
+        "summary": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Summarize."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "plan",
+      "returns": {
+        "choice": "split",
+        "results": {
+          "files": [
+            "a.ts",
+            "b.ts"
+          ]
+        }
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "fix",
+          "item": 0
+        },
+        {
+          "step": "fix",
+          "item": 1
+        }
+      ]
+    },
+    {
+      "work": "fix",
+      "item": 1,
+      "returns": {
+        "text": "Fixed b."
+      }
+    },
+    {
+      "work": "fix",
+      "item": 0,
+      "fails": "AGENT_FAILED"
+    },
+    {
+      "work": "plan",
+      "returns": {
+        "choice": "none"
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "plan": 2,
+      "fix": 2
+    },
+    "messages": [
+      {
+        "to": "fix",
+        "item": 0,
+        "element": "a.ts",
+        "resources": {
+          "files": [
+            "a.ts",
+            "b.ts"
+          ]
+        }
+      },
+      {
+        "to": "fix",
+        "item": 1,
+        "element": "b.ts"
+      },
+      {
+        "to": "plan",
+        "nth": 2,
+        "resources": {
+          "fix": [
+            {
+              "item": "a.ts",
+              "ended": "failed",
+              "error": {
+                "code": "AGENT_FAILED"
+              }
+            },
+            {
+              "item": "b.ts",
+              "text": "Fixed b."
+            }
+          ]
+        }
+      }
+    ],
+    "joins": [
+      {
+        "join": "gather",
+        "outcome": "incomplete",
+        "branches": {
+          "fix": [
+            {
+              "item": "a.ts",
+              "ended": "failed",
+              "error": {
+                "code": "AGENT_FAILED"
+              }
+            },
+            {
+              "item": "b.ts",
+              "text": "Fixed b."
+            }
+          ]
+        }
+      }
+    ],
+    "failures": [
+      {
+        "step": "fix",
+        "item": 0,
+        "code": "AGENT_FAILED"
+      }
+    ]
+  }
+}

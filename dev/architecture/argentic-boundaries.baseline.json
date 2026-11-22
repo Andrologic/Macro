@@ -92,22 +92,22 @@
         "import:runtime:src/vendor/agsdl/shared/values.mjs": 1
       },
       "src/services/agsdl/document.ts": {
-        "import:runtime:src/vendor/agsdl/v0.3/reader.mjs": 1,
-        "import:type:src/vendor/agsdl/v0.3/reader.mjs": 1
+        "import:runtime:src/vendor/agsdl/v0.4/reader.mjs": 1,
+        "import:type:src/vendor/agsdl/v0.4/reader.mjs": 1
       },
       "src/services/agsdl/humanReadAccess030.ts": {
         "import:runtime:src/services/agsdlExecution/workIntegers030.ts": 1
       },
       "src/services/agsdl/reader030.worker.ts": {
-        "import:runtime:src/vendor/agsdl/v0.3/reader.mjs": 1
+        "import:runtime:src/vendor/agsdl/v0.4/reader.mjs": 1
       },
       "src/services/agsdl/reader030WorkerProtocol.ts": {
-        "import:runtime:src/vendor/agsdl/v0.3/reader.mjs": 1,
-        "import:type:src/vendor/agsdl/v0.3/reader.mjs": 1
+        "import:runtime:src/vendor/agsdl/v0.4/reader.mjs": 1,
+        "import:type:src/vendor/agsdl/v0.4/reader.mjs": 1
       },
       "src/services/agsdl/staticSemantics030.ts": {
-        "import:runtime:src/vendor/agsdl/v0.3/graph.mjs": 1,
-        "import:type:src/vendor/agsdl/v0.3/reader.mjs": 1
+        "import:runtime:src/vendor/agsdl/v0.4/graph.mjs": 1,
+        "import:type:src/vendor/agsdl/v0.4/reader.mjs": 1
       },
       "src/services/agsdlExecution/agentSubmission030.ts": {
         "import:runtime:src/services/agsdlExecution/exact.ts": 1,
@@ -144,26 +144,26 @@
         "import:runtime:src/services/agsdlExecution/configuration030.ts": 1,
         "import:runtime:src/services/agsdlExecution/exact.ts": 1,
         "import:runtime:src/services/agsdlExecution/metadata.ts": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/reader.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.4/reader.mjs": 1,
         "import:type:src/services/agsdlExecution/exact.ts": 1
       },
       "src/services/agsdlExecution/compilerGraph030.ts": {
         "import:runtime:src/services/agsdlExecution/agentWorkContracts030.ts": 1,
         "import:runtime:src/services/agsdlExecution/exact.ts": 1,
         "import:runtime:src/services/agsdlExecution/routes030.ts": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/graph.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.4/graph.mjs": 1,
         "import:type:src/services/agsdlExecution/exact.ts": 1,
         "import:type:src/services/agsdlExecution/routes030.ts": 1,
-        "import:type:src/vendor/agsdl/v0.3/graph.mjs": 1
+        "import:type:src/vendor/agsdl/v0.4/graph.mjs": 1
       },
       "src/services/agsdlExecution/configuration030.ts": {
         "import:runtime:src/services/agsdlExecution/exact.ts": 1,
         "import:runtime:src/services/agsdlExecution/metadata.ts": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/graph.mjs": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/reader.mjs": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/valueschema.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.4/graph.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.4/reader.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.4/valueschema.mjs": 1,
         "import:type:src/services/agsdlExecution/exact.ts": 1,
-        "import:type:src/vendor/agsdl/v0.3/reader.mjs": 1
+        "import:type:src/vendor/agsdl/v0.4/reader.mjs": 1
       },
       "src/services/agsdlExecution/contentResolution030.ts": {
         "import:runtime:src/services/agsdlExecution/exact.ts": 1
@@ -180,7 +180,7 @@
         "import:runtime:src/services/agsdlExecution/compilerGraph030.ts": 1,
         "import:runtime:src/services/agsdlExecution/exact.ts": 1,
         "import:runtime:src/services/agsdlExecution/messages030.ts": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/schemacheck.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.4/schemacheck.mjs": 1,
         "import:type:src/services/agsdlExecution/exact.ts": 1
       },
       "src/services/agsdlExecution/hostHumanClock030.ts": {
@@ -265,36 +265,36 @@
       "src/vendor/agsdl/shared/values.mjs": {
         "import:runtime:src/vendor/agsdl/shared/json.mjs": 1
       },
-      "src/vendor/agsdl/v0.3/graph.mjs": {
-        "import:runtime:src/vendor/agsdl/v0.3/values.mjs": 1
+      "src/vendor/agsdl/v0.4/graph.mjs": {
+        "import:runtime:src/vendor/agsdl/v0.4/values.mjs": 1
       },
-      "src/vendor/agsdl/v0.3/json.mjs": {
+      "src/vendor/agsdl/v0.4/json.mjs": {
         "import:runtime:src/vendor/agsdl/experimental/readers/javascript/json.mjs": 1,
         "import:runtime:src/vendor/agsdl/shared/json.mjs": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/values.mjs": 1
+        "import:runtime:src/vendor/agsdl/v0.4/values.mjs": 1
       },
-      "src/vendor/agsdl/v0.3/reader.mjs": {
-        "import:runtime:src/vendor/agsdl/v0.3/json.mjs": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/validator.mjs": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/values.mjs": 1
+      "src/vendor/agsdl/v0.4/reader.mjs": {
+        "import:runtime:src/vendor/agsdl/v0.4/json.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.4/validator.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.4/values.mjs": 1
       },
-      "src/vendor/agsdl/v0.3/schemacheck.mjs": {
-        "import:runtime:src/vendor/agsdl/v0.3/values.mjs": 1
+      "src/vendor/agsdl/v0.4/schemacheck.mjs": {
+        "import:runtime:src/vendor/agsdl/v0.4/values.mjs": 1
       },
-      "src/vendor/agsdl/v0.3/validator.mjs": {
-        "import:runtime:src/vendor/agsdl/v0.3/graph.mjs": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/json.mjs": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/permissions.mjs": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/schemacheck.mjs": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/values.mjs": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/valueschema.mjs": 1
+      "src/vendor/agsdl/v0.4/validator.mjs": {
+        "import:runtime:src/vendor/agsdl/v0.4/graph.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.4/json.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.4/permissions.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.4/schemacheck.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.4/values.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.4/valueschema.mjs": 1
       },
-      "src/vendor/agsdl/v0.3/values.mjs": {
+      "src/vendor/agsdl/v0.4/values.mjs": {
         "import:runtime:src/vendor/agsdl/shared/json.mjs": 1
       },
-      "src/vendor/agsdl/v0.3/valueschema.mjs": {
-        "import:runtime:src/vendor/agsdl/v0.3/schemacheck.mjs": 1,
-        "import:runtime:src/vendor/agsdl/v0.3/values.mjs": 1
+      "src/vendor/agsdl/v0.4/valueschema.mjs": {
+        "import:runtime:src/vendor/agsdl/v0.4/schemacheck.mjs": 1,
+        "import:runtime:src/vendor/agsdl/v0.4/values.mjs": 1
       }
     }
   }

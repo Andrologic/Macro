@@ -1,0 +1,26 @@
+{
+  "description": "A restart with uncertain work and no safe continuation records interruption without routing a failure or starting the call again.",
+  "document": "cases/flow-error.json",
+  "timeline": [
+    {
+      "running": [
+        {
+          "step": "build"
+        }
+      ]
+    },
+    {
+      "hostRestart": "interrupt"
+    },
+    {
+      "runState": "interrupted"
+    }
+  ],
+  "expect": {
+    "run": "interrupted",
+    "starts": {
+      "build": 1
+    },
+    "failures": []
+  }
+}

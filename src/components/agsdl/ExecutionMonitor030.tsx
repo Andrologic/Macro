@@ -93,6 +93,7 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
   const stale = !!taskStale || readState?.kind === 'stale' || readState?.kind === 'loading' ||
     snapshot.history.kind === 'stale' || snapshot.history.kind === 'loading';
   const state = inspection?.state;
+  const interrupted = !!left?.interruptedAt || state?.verdict === 'interrupted';
   const active = !!state && (state.verdict === null || state.physicalPending !== '0');
   useEffect(() => { onSelection?.(selected, active, !design); }, [onSelection, selected, active, design]);
   const occurrences = state ? retainedRunValue030(state.occurrences) : null;
@@ -167,8 +168,8 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
     {inspection && state && <>
       {stale && <p role="status" className="rounded border border-border p-2">{tr('stale')}</p>}
       <section className="space-y-1 rounded border border-border p-2" aria-label={tr('summary')}>
-        <h3 className="font-medium">{left?.interruptedAt ? t('agsdl.execution.interrupted030') : tr(`verdict.${state.verdict ?? 'pending'}`)}</h3>
-        <p>{left?.interruptedAt ? t('agsdl.execution.interrupted030') : [tr(`summarySentence.${state.verdict ?? 'pending'}`),
+        <h3 className="font-medium">{interrupted ? t('agsdl.execution.interrupted030') : tr(`verdict.${state.verdict ?? 'pending'}`)}</h3>
+        <p>{interrupted ? t('agsdl.execution.interrupted030') : [tr(`summarySentence.${state.verdict ?? 'pending'}`),
           ...(/^[1-9][0-9]*$/.test(state.physicalPending) ? [tr(state.stopping ? 'summarySentence.stopping' : 'summarySentence.active')] : []),
           ...(state.stop.kind === 'available' && state.stop.value.kind === 'uncertain' ? [tr('summarySentence.uncertain')] : []),
           ...(state.humans.kind === 'ready' && state.humans.value.some(request => request.state.kind === 'open') ? [tr('summarySentence.human')] : []),

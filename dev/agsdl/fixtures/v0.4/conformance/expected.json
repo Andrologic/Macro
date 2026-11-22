@@ -1,0 +1,941 @@
+{
+  "agents-only": {
+    "description": "A document may define agents without a flow.",
+    "errors": [],
+    "warnings": []
+  },
+  "review-loop": {
+    "description": "A writer and a fresh reviewer loop by choice.",
+    "errors": [],
+    "warnings": []
+  },
+  "parallel-join": {
+    "description": "Two branches start at once and a join waits for both; a message selects a branch result.",
+    "errors": [],
+    "warnings": []
+  },
+  "quorum-vote": {
+    "description": "A quorum join routes on reached or missed.",
+    "errors": [],
+    "warnings": []
+  },
+  "join-direct-branch": {
+    "description": "A direct route from the origin to the join is a branch without steps.",
+    "errors": [],
+    "warnings": []
+  },
+  "branch-exit": {
+    "description": "A route leaving a branch closes the group.",
+    "errors": [],
+    "warnings": []
+  },
+  "branch-ends-without-result": {
+    "description": "A route ending inside a branch ends that branch without a result.",
+    "errors": [],
+    "warnings": []
+  },
+  "nested-join": {
+    "description": "A branch forks and closes with its own join before the outer join.",
+    "errors": [],
+    "warnings": []
+  },
+  "steer-in-branch": {
+    "description": "A watcher steers the developer working in another branch.",
+    "errors": [],
+    "warnings": []
+  },
+  "nested-compositions": {
+    "description": "Compositions may contain joins and use other compositions.",
+    "errors": [],
+    "warnings": []
+  },
+  "call-outcome": {
+    "description": "A call routes on its outcome, and a message can select it.",
+    "errors": [],
+    "warnings": []
+  },
+  "error-route": {
+    "description": "An error route can carry the error to an agent.",
+    "errors": [],
+    "warnings": []
+  },
+  "approval": {
+    "description": "An approval offers a person choices and passes on the comment.",
+    "errors": [],
+    "warnings": []
+  },
+  "approval-message": {
+    "description": "The steps after an approval read the message it received.",
+    "errors": [],
+    "warnings": []
+  },
+  "approval-message-resource": {
+    "description": "An approval's message holds only the resources that can reach it.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "approval-entry": {
+    "description": "An approval at the flow's entry receives the host's message, which no document declares: its resources are not checked.",
+    "errors": [],
+    "warnings": []
+  },
+  "approval-composition-entry": {
+    "description": "An approval at a composition's entry is checked in each use, against the messages that reach the compose step.",
+    "errors": [],
+    "warnings": []
+  },
+  "approval-composition-entry-resource": {
+    "description": "An approval at a composition's entry receives no resource that the messages reaching the compose step lack.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "agent-conduct": {
+    "description": "Plan, plan first, completion check limited to a choice, permission rules and a reviewer.",
+    "errors": [],
+    "warnings": []
+  },
+  "permissions-zone": {
+    "description": "Directories extend the zone; rules accept home and absolute paths.",
+    "errors": [],
+    "warnings": []
+  },
+  "flow-error": {
+    "description": "The flow's onError is the default error route and makes its target reachable.",
+    "errors": [],
+    "warnings": []
+  },
+  "content-references": {
+    "description": "Content is reused through ref.",
+    "errors": [],
+    "warnings": []
+  },
+  "shared-instance-parallel": {
+    "description": "Two parallel branches use the same shared instance without declaring delivery.",
+    "errors": [],
+    "warnings": [
+      "SHARED_INSTANCE_PARALLEL"
+    ]
+  },
+  "unverified-harness": {
+    "description": "A harness without a module is not verified.",
+    "errors": [],
+    "warnings": [
+      "HARNESS_UNVERIFIED"
+    ]
+  },
+  "approximate-support": {
+    "description": "Approximate and version-dependent support produce warnings.",
+    "errors": [],
+    "warnings": [
+      "HARNESS_APPROXIMATE",
+      "HARNESS_VERSION"
+    ]
+  },
+  "parse-duplicate-key": {
+    "description": "Duplicate object keys are rejected.",
+    "errors": [
+      "PARSE"
+    ],
+    "warnings": []
+  },
+  "parse-not-json": {
+    "description": "NaN is not JSON.",
+    "errors": [
+      "PARSE"
+    ],
+    "warnings": []
+  },
+  "shape-unknown-field": {
+    "description": "Unknown fields are rejected.",
+    "errors": [
+      "SHAPE"
+    ],
+    "warnings": []
+  },
+  "shape-wrong-contract": {
+    "description": "Only the agsdl-0.4.0 marker is accepted.",
+    "errors": [
+      "SHAPE"
+    ],
+    "warnings": []
+  },
+  "shape-invalid-choice": {
+    "description": "Choices are lowercase snake_case.",
+    "errors": [
+      "SHAPE"
+    ],
+    "warnings": []
+  },
+  "shape-reserved-choice": {
+    "description": "step, output and message are not valid choices.",
+    "errors": [
+      "SHAPE"
+    ],
+    "warnings": []
+  },
+  "shape-call-both": {
+    "description": "A call has exactly one of command or mcp.",
+    "errors": [
+      "SHAPE"
+    ],
+    "warnings": []
+  },
+  "reference-unknown": {
+    "description": "References must name declared things.",
+    "errors": [
+      "REFERENCE"
+    ],
+    "warnings": []
+  },
+  "duplicate-target": {
+    "description": "A target appears once per route.",
+    "errors": [
+      "DUPLICATE"
+    ],
+    "warnings": []
+  },
+  "routes-approval-empty": {
+    "description": "An approval offers at least one choice.",
+    "errors": [
+      "ROUTES"
+    ],
+    "warnings": []
+  },
+  "approval-output-path": {
+    "description": "An approval output has only choice and comment.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "flow-error-path": {
+    "description": "The flow's onError carries only the error.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "routes-entry-join": {
+    "description": "The entry cannot be a join.",
+    "errors": [
+      "ROUTES"
+    ],
+    "warnings": []
+  },
+  "routes-message-to-join": {
+    "description": "A join cannot receive a message.",
+    "errors": [
+      "ROUTES"
+    ],
+    "warnings": []
+  },
+  "routes-output-at-top": {
+    "description": "Outputs exist only inside compositions.",
+    "errors": [
+      "ROUTES"
+    ],
+    "warnings": []
+  },
+  "routes-quorum-keys": {
+    "description": "A quorum join routes with reached and missed.",
+    "errors": [
+      "ROUTES"
+    ],
+    "warnings": []
+  },
+  "unreachable-step": {
+    "description": "Every step is reachable from the entry.",
+    "errors": [
+      "UNREACHABLE"
+    ],
+    "warnings": []
+  },
+  "message-path": {
+    "description": "Selections must exist in the sender's declared output.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "call-outcome-keys": {
+    "description": "A call's route map has exactly passed and failed.",
+    "errors": [
+      "ROUTES"
+    ],
+    "warnings": []
+  },
+  "delivery-with-new": {
+    "description": "delivery cannot be used with a fresh instance.",
+    "errors": [
+      "DELIVERY"
+    ],
+    "warnings": []
+  },
+  "join-no-fork": {
+    "description": "At least one route of the origin starts two branches.",
+    "errors": [
+      "JOIN"
+    ],
+    "warnings": []
+  },
+  "join-shared-step": {
+    "description": "Branches of one join share no step.",
+    "errors": [
+      "JOIN"
+    ],
+    "warnings": []
+  },
+  "join-entry-from-outside": {
+    "description": "No route from outside enters a branch.",
+    "errors": [
+      "JOIN"
+    ],
+    "warnings": []
+  },
+  "join-open-fork": {
+    "description": "A fork inside a branch closes with its own join.",
+    "errors": [
+      "JOIN"
+    ],
+    "warnings": []
+  },
+  "join-quorum-count": {
+    "description": "A quorum cannot need more results than branches.",
+    "errors": [
+      "JOIN"
+    ],
+    "warnings": []
+  },
+  "composition-cycle": {
+    "description": "A composition cannot use itself.",
+    "errors": [
+      "COMPOSITION"
+    ],
+    "warnings": []
+  },
+  "composition-parameters": {
+    "description": "A compose step binds exactly the declared parameters and covers the outputs.",
+    "errors": [
+      "COMPOSITION"
+    ],
+    "warnings": []
+  },
+  "schema-inconsistent": {
+    "description": "Value schemas are consistent.",
+    "errors": [
+      "SCHEMA"
+    ],
+    "warnings": []
+  },
+  "permissions-missing": {
+    "description": "Every agent declares its permissions.",
+    "errors": [
+      "SHAPE"
+    ],
+    "warnings": []
+  },
+  "completion-check-denied": {
+    "description": "The completion check command must not be denied by the agent's own permissions.",
+    "errors": [
+      "PERMISSIONS"
+    ],
+    "warnings": []
+  },
+  "completion-check-unknown-choice": {
+    "description": "Completion check choices are choices of the agent's steps.",
+    "errors": [
+      "REFERENCE"
+    ],
+    "warnings": []
+  },
+  "result-named-text": {
+    "description": "A result cannot be named text.",
+    "errors": [
+      "RESULT_NAME"
+    ],
+    "warnings": []
+  },
+  "harness-unsupported": {
+    "description": "A property the module declares absent is an error.",
+    "errors": [
+      "HARNESS_UNSUPPORTED"
+    ],
+    "warnings": []
+  },
+  "harness-value": {
+    "description": "A value outside the module's closed vocabulary is an error.",
+    "errors": [
+      "HARNESS_VALUE"
+    ],
+    "warnings": []
+  },
+  "harness-settings": {
+    "description": "harnessSettings follow the module's schema.",
+    "errors": [
+      "HARNESS_SETTINGS"
+    ],
+    "warnings": []
+  },
+  "harness-permissions": {
+    "description": "A deny the harness cannot enforce is an error.",
+    "errors": [
+      "HARNESS_UNSUPPORTED"
+    ],
+    "warnings": []
+  },
+  "reviewer-unsupported": {
+    "description": "A reviewer the module declares absent is an error.",
+    "errors": [
+      "HARNESS_UNSUPPORTED"
+    ],
+    "warnings": []
+  },
+  "outside-unsupported": {
+    "description": "Denying reads outside the zone needs enforcement.",
+    "errors": [
+      "HARNESS_UNSUPPORTED"
+    ],
+    "warnings": []
+  },
+  "directories-unsupported": {
+    "description": "Added directories need module support.",
+    "errors": [
+      "HARNESS_UNSUPPORTED"
+    ],
+    "warnings": []
+  },
+  "read-only-write-directory": {
+    "description": "A read-only agent cannot have a writable directory.",
+    "errors": [
+      "PERMISSIONS"
+    ],
+    "warnings": []
+  },
+  "shell-bypass": {
+    "description": "A harness rule on its own tools does not hold while the agent can run shell commands.",
+    "errors": [
+      "HARNESS_UNSUPPORTED"
+    ],
+    "warnings": []
+  },
+  "shell-bypass-closed": {
+    "description": "A harness rule on its own tools holds when the agent can run no shell command.",
+    "errors": [],
+    "warnings": []
+  },
+  "shell-prefix": {
+    "description": "A harness that matches commands by their leading words enforces a deny on words, alone or followed by \" *\"; an allow it cannot express is not granted, and is no error.",
+    "errors": [],
+    "warnings": []
+  },
+  "shell-prefix-unsupported": {
+    "description": "A harness that matches commands by their leading words cannot enforce a deny on any other pattern.",
+    "errors": [
+      "HARNESS_UNSUPPORTED"
+    ],
+    "warnings": []
+  },
+  "effort-open": {
+    "description": "An effort level outside a module's suggestions is not an error.",
+    "errors": [],
+    "warnings": []
+  },
+  "instructions-default-prompt": {
+    "description": "An instructing agent's instructions become the prompt; other routes use the step's default prompt.",
+    "errors": [],
+    "warnings": []
+  },
+  "prompt-missing": {
+    "description": "A step reached with a prompt on some routes and without on others needs a default prompt.",
+    "errors": [
+      "PROMPT"
+    ],
+    "warnings": []
+  },
+  "instructions-all-routes": {
+    "description": "A step needs no default prompt when every route brings one.",
+    "errors": [],
+    "warnings": []
+  },
+  "instructions-not-instructing": {
+    "description": "Only an agent with instructs has instructions to select.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "json-suffix": {
+    "description": "A media type with the +json suffix is JSON: it takes a schema and field selections.",
+    "errors": [],
+    "warnings": []
+  },
+  "flow-error-join": {
+    "description": "Steps reached only from the flow's onError are checked like the others.",
+    "errors": [
+      "JOIN"
+    ],
+    "warnings": []
+  },
+  "flow-error-prompt": {
+    "description": "An error route carries no instructions to select.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "name-newline": {
+    "description": "A name cannot end with a newline.",
+    "errors": [
+      "SHAPE"
+    ],
+    "warnings": []
+  },
+  "nested-choices": {
+    "description": "Completion check choices are found through nested compositions.",
+    "errors": [
+      "REFERENCE"
+    ],
+    "warnings": []
+  },
+  "join-foreign-input": {
+    "description": "A join receives only normal routes, from its origin and its branches.",
+    "errors": [
+      "JOIN"
+    ],
+    "warnings": []
+  },
+  "prompt-from-results": {
+    "description": "A prompt selects only instructions.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "output-message": {
+    "description": "A message goes on the compose step's route, not on an output.",
+    "errors": [
+      "ROUTES"
+    ],
+    "warnings": []
+  },
+  "parse-bom": {
+    "description": "A document cannot start with a byte order mark.",
+    "errors": [
+      "PARSE"
+    ],
+    "warnings": []
+  },
+  "join-branch-path": {
+    "description": "A selection inside a branch output is checked against the step that reached the join.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "join-branch-instructions": {
+    "description": "Only an instructing agent's branch has instructions to select.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "default-prompt-ref": {
+    "description": "A step's default prompt can only reference existing content.",
+    "errors": [
+      "REFERENCE"
+    ],
+    "warnings": []
+  },
+  "delegate-match": {
+    "description": "A delegate rule has no match.",
+    "errors": [
+      "SHAPE"
+    ],
+    "warnings": []
+  },
+  "quorum-no-next": {
+    "description": "A quorum join routes with reached and missed.",
+    "errors": [
+      "ROUTES"
+    ],
+    "warnings": []
+  },
+  "shell-star-closed": {
+    "description": "A shell deny matching every command closes the shell.",
+    "errors": [],
+    "warnings": []
+  },
+  "uri-syntax": {
+    "description": "A URI must follow RFC 3986 syntax.",
+    "errors": [
+      "SHAPE"
+    ],
+    "warnings": []
+  },
+  "integer-index": {
+    "description": "An array index written 0.0 is the integer 0.",
+    "errors": [],
+    "warnings": []
+  },
+  "compose-branches": {
+    "description": "Branches that start in compositions are named after their compose steps.",
+    "errors": [],
+    "warnings": []
+  },
+  "compose-open-fork": {
+    "description": "A composition leaves once: a body fork without its own join is an error.",
+    "errors": [
+      "COMPOSITION"
+    ],
+    "warnings": []
+  },
+  "compose-branch-exit": {
+    "description": "A join branch may leave a composition through an output: its group closes.",
+    "errors": [],
+    "warnings": []
+  },
+  "compose-two-joins": {
+    "description": "A body fork starts the branches of one join, not of two joins that could each leave.",
+    "errors": [
+      "COMPOSITION"
+    ],
+    "warnings": []
+  },
+  "compose-error-fork": {
+    "description": "A body onError that starts several targets is a fork like any other.",
+    "errors": [
+      "COMPOSITION"
+    ],
+    "warnings": []
+  },
+  "compose-nested-fork": {
+    "description": "A fork on the output route of a nested compose step is checked in its own body.",
+    "errors": [
+      "COMPOSITION"
+    ],
+    "warnings": []
+  },
+  "join-compose-origin": {
+    "description": "A compose step is one step for joins, whatever its body looks like.",
+    "errors": [],
+    "warnings": []
+  },
+  "join-error-fork": {
+    "description": "An onError route that starts several targets opens a group like a normal route.",
+    "errors": [],
+    "warnings": []
+  },
+  "join-finish-shared": {
+    "description": "A step after a finish join waits for a branch still using its instance.",
+    "errors": [],
+    "warnings": [
+      "SHARED_INSTANCE_PARALLEL"
+    ]
+  },
+  "join-wait-shared": {
+    "description": "Nothing after a wait join runs while its branches finish.",
+    "errors": [],
+    "warnings": []
+  },
+  "join-keep-failures": {
+    "description": "A join that keeps failures routes done or incomplete.",
+    "errors": [],
+    "warnings": []
+  },
+  "join-keep-done-only": {
+    "description": "A join that keeps failures routes with both done and incomplete.",
+    "errors": [
+      "ROUTES"
+    ],
+    "warnings": []
+  },
+  "join-max-failures-alone": {
+    "description": "maxFailures requires failures: keep.",
+    "errors": [
+      "JOIN"
+    ],
+    "warnings": []
+  },
+  "join-keep-quorum": {
+    "description": "A quorum join already keeps failed branches.",
+    "errors": [
+      "JOIN"
+    ],
+    "warnings": []
+  },
+  "fanout": {
+    "description": "A fan-out starts one branch per element; the join lists them with their items.",
+    "errors": [],
+    "warnings": []
+  },
+  "fanout-not-list": {
+    "description": "A fan-out reads a list.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "fanout-entry-index": {
+    "description": "A fan-out branch is a list: a selection reads an entry by index.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "fanout-to-call": {
+    "description": "A call receives no message, so it cannot be the target of a fan-out.",
+    "errors": [
+      "ROUTES"
+    ],
+    "warnings": []
+  },
+  "fanout-mixed": {
+    "description": "A fan-out branch is started with each on every route.",
+    "errors": [
+      "JOIN"
+    ],
+    "warnings": []
+  },
+  "fanout-shared-instance": {
+    "description": "A shared instance in the paths of a fan-out serializes their work.",
+    "errors": [],
+    "warnings": [
+      "SHARED_INSTANCE_PARALLEL"
+    ]
+  },
+  "fanout-quorum": {
+    "description": "Each path of a fan-out counts for a quorum; the count is not checked statically.",
+    "errors": [],
+    "warnings": []
+  },
+  "compose-fanout-open": {
+    "description": "A fan-out in a composition body is closed by a join.",
+    "errors": [
+      "COMPOSITION"
+    ],
+    "warnings": []
+  },
+  "fanout-nested": {
+    "description": "A fan-out inside a fan-out path closes with its own join; the outer join closes the outer fan-out.",
+    "errors": [],
+    "warnings": []
+  },
+  "schema-item-bounds": {
+    "description": "minItems and maxItems apply to arrays, and minItems does not exceed maxItems.",
+    "errors": [
+      "SCHEMA"
+    ],
+    "warnings": []
+  },
+  "fanout-visits": {
+    "description": "Each element of a fan-out is a visit: a maxVisits below max on a step in its paths is likely a mistake.",
+    "errors": [],
+    "warnings": [
+      "FANOUT_VISITS"
+    ]
+  },
+  "fanout-options-without-each": {
+    "description": "concurrency and max limit a fan-out and require each.",
+    "errors": [
+      "ROUTES"
+    ],
+    "warnings": []
+  },
+  "fanout-instructions": {
+    "description": "An instructing agent gives each path of a fan-out its own mission.",
+    "errors": [],
+    "warnings": []
+  },
+  "fanout-item-path": {
+    "description": "item reads in the element of a fan-out, as declared, and only there.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "fanout-item-prompt": {
+    "description": "Only an element of instructions is a mission.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "fanout-instructions-shared": {
+    "description": "Instructions that a route fans out over are a list, not one prompt for its other targets.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "time-limits": {
+    "description": "Agent and call steps bound their machine time; an agent bounds how long a person may take to answer.",
+    "errors": [],
+    "warnings": []
+  },
+  "fanout-command-lines": {
+    "description": "A command reads its standard output as lines, and a route fans out over them.",
+    "errors": [],
+    "warnings": []
+  },
+  "fanout-command-json": {
+    "description": "A command reads its standard output as JSON, whatever its outcome; an element's fields are not declared.",
+    "errors": [],
+    "warnings": []
+  },
+  "call-value-without-parse": {
+    "description": "A command result has a value only when the call declares parse.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "call-answer-timeout-command": {
+    "description": "answerTimeoutMs bounds requests an MCP server makes during a call; a command makes none.",
+    "errors": [
+      "SHAPE"
+    ],
+    "warnings": []
+  },
+  "fanout-line-field": {
+    "description": "A line read from a command is a string and has no fields.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "shape-parse-mcp": {
+    "description": "Only a command declares parse.",
+    "errors": [
+      "SHAPE"
+    ],
+    "warnings": []
+  },
+  "compose-output-fanout": {
+    "description": "A fan-out on a compose step's output route reads the body step that left: item paths, maxVisits and instances are checked as on any fan-out.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": [
+      "FANOUT_VISITS",
+      "SHARED_INSTANCE_PARALLEL"
+    ]
+  },
+  "join-mixed-exit": {
+    "description": "A branch route cannot both reach the join and leave the branch at once.",
+    "errors": [
+      "JOIN"
+    ],
+    "warnings": []
+  },
+  "compose-output-prompt": {
+    "description": "A compose step's route brings a prompt when the body step that left instructs, so a step it shares with a route without one needs a default prompt.",
+    "errors": [
+      "PROMPT"
+    ],
+    "warnings": []
+  },
+  "fanout-each-item": {
+    "description": "each reads the output of the step that fans out; item exists only in the message.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "error-path-string": {
+    "description": "An error's code and message are strings: a selection cannot read below them.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "flow-error-fork": {
+    "description": "The flow's onError acts as if written on each step it covers: here it starts the same branches as the origin's normal route, so the join keeps its origin.",
+    "errors": [],
+    "warnings": []
+  },
+  "shape-reserved-output": {
+    "description": "step, output and message are not valid composition outputs: a compose step's next would read as a route object.",
+    "errors": [
+      "SHAPE"
+    ],
+    "warnings": []
+  },
+  "join-kept-failure": {
+    "description": "A join that keeps failures lets a selection read a failed branch's error.",
+    "errors": [],
+    "warnings": []
+  },
+  "join-item-field": {
+    "description": "The item of a fan-out branch entry has the type of the list's elements.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "schema-closed-object": {
+    "description": "An object schema without properties and with additionalProperties false has no fields to select.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "schema-max-items-index": {
+    "description": "A selection index at or beyond a declared maxItems cannot exist.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "fanout-instructions-index": {
+    "description": "On a route that fans out over instructions, they are a list a resource can index.",
+    "errors": [],
+    "warnings": []
+  },
+  "compose-parameter-prompt": {
+    "description": "Whether a body route brings a prompt can depend on the agent bound to a parameter: it is checked in each use.",
+    "errors": [],
+    "warnings": []
+  },
+  "uri-ip-literal": {
+    "description": "Brackets in a URI enclose an IP literal in the authority, and nothing else (RFC 3986).",
+    "errors": [
+      "SHAPE"
+    ],
+    "warnings": []
+  },
+  "mcp-empty-argument": {
+    "description": "A local MCP server's arguments may be empty strings; only its program must not be.",
+    "errors": [],
+    "warnings": []
+  },
+  "parallel-no-join-shared": {
+    "description": "Paths of a fork that meets no join run at the same time: steps on them that share an instance are serialized.",
+    "errors": [],
+    "warnings": [
+      "SHARED_INSTANCE_PARALLEL"
+    ]
+  },
+  "fanout-join-text-not-list": {
+    "description": "A fan-out cannot read a branch text string as a list.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "approval-comments-path": {
+    "description": "Approval comments are a list of entries with declared string fields.",
+    "errors": [
+      "MESSAGE_PATH"
+    ],
+    "warnings": []
+  },
+  "fanout-join-approval-comments": {
+    "description": "A join can fan out over the comments list received by an approval and read the comment on each entry.",
+    "errors": [],
+    "warnings": []
+  }
+}

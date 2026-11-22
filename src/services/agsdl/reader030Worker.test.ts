@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
-import { has030Contract, validateDocument, validateDocumentBytes } from './document';
+import { hasFlowDocumentContract, validateDocument, validateDocumentBytes } from './document';
 import { localizeDiagnostics } from './diagnostics';
 import type { ViewerCard } from './viewer';
-import { loadHarnessModule, ModuleError, parse, stringify } from '../../vendor/agsdl/v0.3/reader.mjs';
-import type { HarnessModule030 } from '../../vendor/agsdl/v0.3/reader.mjs';
+import { loadHarnessModule, ModuleError, parse, stringify } from '../../vendor/agsdl/v0.4/reader.mjs';
+import type { HarnessModule030 } from '../../vendor/agsdl/v0.4/reader.mjs';
 
-const root = new URL('../../../dev/agsdl/fixtures/v0.3/', import.meta.url);
+const root = new URL('../../../dev/agsdl/fixtures/v0.4/', import.meta.url);
 const bytes = (text: string) => new TextEncoder().encode(text);
 const fixture = (path: string) => new Uint8Array(readFileSync(new URL(path, root)));
 const modules = new Map(['example', 'limited'].map(name => [name, loadHarnessModule(fixture(`conformance/modules/${name}/module.json`))]));
@@ -21,8 +21,8 @@ async function compare(source: string, options?: { modules: ReadonlyMap<string, 
     details: d.message, location: { pointer: d.path }, ...(d.step === undefined ? {} : { step: d.step }) })));
 }
 
-describe('AgSDL 0.3 worker', () => {
-  it('matches native reports across the 144 cases, examples and scenario documents', async () => {
+describe('AgSDL flow worker', () => {
+  it('matches native reports across the 147 cases, examples and scenario documents', async () => {
     let count = 0;
     for (const folder of ['conformance/cases', 'examples', 'conformance/runs']) {
       for (const name of readdirSync(new URL(`${folder}/`, root)).filter(n => n.endsWith('.json'))) {
@@ -46,18 +46,18 @@ describe('AgSDL 0.3 worker', () => {
           continue;
         }
         const contract = JSON.parse(source).contract;
-        if (contract === 'agsdl-0.3.0') await compare(source, folder === 'examples' ? undefined : { modules });
+        if (contract === 'agsdl-0.4.0') await compare(source, folder === 'examples' ? undefined : { modules });
         count++;
       }
     }
-    expect(count).toBe(191);
+    expect(count).toBe(207);
   }, 60000);
   it('dispatches top-level 0.3 markers even when escaped, late or followed by invalid JSON', async () => {
     const valid = '{"id":"late","agents":{},"content":{"x":{"value":"} \\"contract\\":\\"agsdl-0.1.0\\""}},"\\u0063ontract":"agsdl-0.3.0"}';
-    expect(has030Contract(valid)).toBe(true);
+    expect(hasFlowDocumentContract(valid)).toBe(true);
     expect((await validateDocument(valid))[0].contract).toBe('agsdl-0.3.0');
     const nested = '{"contract":"agsdl-0.2.0","other":{"contract":"agsdl-0.3.0"}}';
-    expect(has030Contract(nested)).toBe(false);
+    expect(hasFlowDocumentContract(nested)).toBe(false);
     expect((await validateDocument(nested))[0].contract).toBe('agsdl-0.2.0');
     const malformed = '{"contract":"agsdl-0.3.0","id":"x","agents":{},';
     const [report] = await validateDocument(malformed);

@@ -244,7 +244,20 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
         throw new AgsdlUserError("agsdl.viewer.editConflict", "The document changed. Read it again before editing.");
       update(target, { ...saved, saving: true });
       try {
-        return await architectLibrary.saveVersion(blueprintId, saved.persistedRevision, note);
+        const { convertedDraft, ...version } = await architectLibrary.saveVersion(blueprintId, saved.persistedRevision, note);
+        if (convertedDraft) {
+          if (session(target).version === saved.version) {
+            update(target, {
+              ...newSession(convertedDraft, version.revision, saved.status),
+              libraryDocument: convertedDraft,
+              saving: true,
+            });
+          } else {
+            try { await readConflictingDraft(target); }
+            catch { /* Keep the newer local edits and let the user retry the conflict read. */ }
+          }
+        }
+        return version;
       } catch (error) {
         throw await handleBlueprintWriteError(target, error);
       } finally {

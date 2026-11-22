@@ -1,7 +1,9 @@
+import { isFlowDocumentContract } from "../../services/agsdl/contract";
+import { isSupportedContract } from "../../services/agsdl/document";
 import { readDesign,updateDesignMetadata,validDisplayMetadata,type AgsdlDisplayMetadata,type DesignMetadata } from "../../services/agsdl/design";
 import { list,object,pointerPart,readDocument,scanSource,sourceAt,text } from "../../services/agsdl/document";
 import { AGSDL_EXAMPLES,createExampleDocument,type AgsdlExample } from "../../services/agsdl/examples";
-import { guide03 } from "../../services/agsdl/guide030";
+import { flowAuthoringGuide } from "../../services/agsdl/guide030";
 import { unassessedHarnessCatalogue,type ReadAgsdlHarnessCatalogue } from "../../services/agsdl/harnessCatalogue";
 import { macroNativeModelEdition } from "../../services/agsdl/nativeModelEdition";
 import { getArchitectPlan } from "../../services/architectPlanService";
@@ -38,7 +40,8 @@ const legacyGuide = {
 
 export function agsdlAuthoringGuide(contract: unknown, empty = false) {
   if (contract === "agsdl-0.1.0") return legacyGuide;
-  if (contract === "agsdl-0.3.0" || empty) return guide03;
+  if (isFlowDocumentContract(contract)) return flowAuthoringGuide(contract);
+  if (empty) return flowAuthoringGuide();
   return { contract: typeof contract === "string" && bytes(contract) < 256 ? contract : null, ...(typeof contract === "string" && bytes(contract) >= 256 ? { contract_omitted: true } : {}), supported: false,
     workflow: "Preserve this source and its marker. Read diagnostics and repair the explicit edition or malformed JSON through a deliberate source replacement. Select a supported authoring guide only after reading the resulting document. Unknown editions have no inferred AgSDL semantics or execution support." };
 }
@@ -49,16 +52,16 @@ const bytes = (value: unknown): number => new TextEncoder().encode(JSON.stringif
 const sections = ["outline", "outline_entry", "source", "guide", "report", "design", "display", "models", "annex_ids", "error"] as const;
 type ReadSection = typeof sections[number];
 interface InventoryEntry { catalog: string; path: string; name?: string; type?: unknown; key?: unknown; kind?: unknown }
-const catalogNames = (contract: unknown) => contract === "agsdl-0.3.0"
+const catalogNames = (contract: unknown) => isFlowDocumentContract(contract)
   ? ["agents", "content", "skills", "mcpServers", "compositions"]
   : ["agents", "configurations", "bindings", "content", "skills", "compositions"];
 function inventory(doc: Record<string, unknown>, path: string): InventoryEntry[] {
   const entries: InventoryEntry[] = [];
-  if (doc.contract === "agsdl-0.3.0") {
+  if (isFlowDocumentContract(doc.contract)) {
     for (const catalog of catalogNames(doc.contract)) {
       for (const name of Object.keys(object(doc[catalog]))) entries.push({ catalog, name, path: `/${catalog}/${pointerPart(name)}` });
     }
-    if (doc.contract === "agsdl-0.3.0") for (const [name, value] of Object.entries(object(doc.compositions))) {
+    for (const [name, value] of Object.entries(object(doc.compositions))) {
       list(object(value).parameters).forEach((parameter, index) => entries.push({ catalog: "parameters", name: text(parameter), path: `/compositions/${pointerPart(name)}/parameters/${index}` }));
     }
     const flows: Array<[string, unknown]> = [["/flow", doc.flow], ...Object.entries(object(doc.compositions)).map(([name, value]): [string, unknown] => [`/compositions/${pointerPart(name)}`, value])];
@@ -78,7 +81,7 @@ function integerArg(args: Record<string, unknown>, key: string, fallback: number
   return value;
 }
 function inventoryPage(doc: Record<string, unknown>, entries: InventoryEntry[], args: Record<string, unknown>) {
-  if (!["agsdl-0.1.0", "agsdl-0.3.0"].includes(text(doc.contract))) {
+  if (!isSupportedContract(doc.contract)) {
     return { contract: bytes(doc.contract ?? null) < 256 ? doc.contract : undefined, supported: false };
   }
   const offset = integerArg(args, "offset", 0), limit = Math.min(integerArg(args, "limit", 100), 200);
@@ -134,7 +137,7 @@ function addBounded(response: Record<string, unknown>, key: string, value: unkno
 
 /** Merge supplied display fields without changing source identities or discarding unknown metadata. */
 export function updateAgsdlDisplayMetadata(source: string, previous: AgsdlDisplayMetadata | undefined, update: unknown): AgsdlDisplayMetadata {
-  if (!["agsdl-0.3.0"].includes(text(readDocument(source).contract))) throw new Error("display_json requires AgSDL 0.3.0.");
+  if (!isFlowDocumentContract(readDocument(source).contract)) throw new Error("display_json requires AgSDL 0.3 or 0.4.");
   if (!validDisplayMetadata(update) || (previous !== undefined && !validDisplayMetadata(previous))) throw new Error("The display metadata is malformed. Its original contents have been preserved.");
   const next = { ...structuredClone(previous), ...structuredClone(update) };
   if (update.cards !== undefined) {
@@ -307,10 +310,10 @@ async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
   let designContext: unknown;
   try { if (session.source) designContext = readDesign(session.source, session.design); }
   catch (error) { designContext = { error: String(error) }; }
-  const usesHarnessCatalogue = doc.contract === "agsdl-0.3.0" || !session.source;
+  const usesHarnessCatalogue = isFlowDocumentContract(doc.contract) || !session.source;
   const needsModels = section === 'models' || (!section && !pointer);
   let models: unknown;
-  if (needsModels && usesHarnessCatalogue) models = params.readHarnessCatalogue ? await params.readHarnessCatalogue() : unassessedHarnessCatalogue();
+  if (needsModels && usesHarnessCatalogue) models = params.readHarnessCatalogue ? await params.readHarnessCatalogue() : unassessedHarnessCatalogue(isFlowDocumentContract(doc.contract) ? doc.contract : undefined);
   else if (needsModels) {
     const providerState = useProviderStore.getState();
     models = providerState.providers.filter(provider => provider.isEnabled !== false).map(provider => ({
@@ -367,7 +370,7 @@ async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
     }
     addBounded(response, "annex_ids", Object.keys(session.annexes), "annex_ids", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
     addBounded(response, "design_context", designContext, "design", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
-    if (doc.contract === "agsdl-0.3.0") addBounded(response, "display_context", session.display ?? {}, "display", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
+    if (isFlowDocumentContract(doc.contract)) addBounded(response, "display_context", session.display ?? {}, "display", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
     addBounded(response, usesHarnessCatalogue ? "harness_catalogue" : "macro_models", models, "models", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
     if (!session.source) response.examples = AGSDL_EXAMPLES;
   }

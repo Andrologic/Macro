@@ -1,0 +1,73 @@
+{
+  "contract": "agsdl-0.4.0",
+  "id": "agent-conduct",
+  "skills": {
+    "security-review": {
+      "uri": "skills/security-review/SKILL.md"
+    }
+  },
+  "agents": {
+    "dev": {
+      "harness": "example",
+      "permissions": {
+        "preset": "workspace",
+        "reviewer": "model",
+        "rules": [
+          {
+            "action": "shell",
+            "match": "git push *",
+            "effect": "ask"
+          },
+          {
+            "action": "write",
+            "match": ".env*",
+            "effect": "deny"
+          }
+        ]
+      },
+      "instructions": "Understand the request, implement it, then run the tests.",
+      "model": {
+        "name": "example/large",
+        "effort": "high"
+      },
+      "plan": true,
+      "planFirst": "ask",
+      "maxCorrections": 3,
+      "completionCheck": {
+        "command": "npm test",
+        "choices": [
+          "done"
+        ],
+        "maxFailures": 5
+      },
+      "skills": [
+        "security-review"
+      ],
+      "results": {
+        "summary": {
+          "required": true,
+          "mediaType": "text/plain"
+        },
+        "diagram": {
+          "mediaType": "image/png"
+        }
+      },
+      "harnessSettings": {
+        "profile": "ci"
+      }
+    }
+  },
+  "flow": {
+    "entry": "develop",
+    "steps": {
+      "develop": {
+        "type": "agent",
+        "agent": "dev",
+        "next": {
+          "done": [],
+          "blocked": []
+        }
+      }
+    }
+  }
+}

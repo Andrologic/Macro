@@ -1,3 +1,4 @@
+import { isFlowDocumentContract } from "../services/agsdl/contract";
 import { create } from "zustand";
 import { readDocument } from "../services/agsdl/document";
 import { executionProfileForContract,executionPrompt } from '../services/agsdl/executionView';
@@ -63,12 +64,12 @@ const retainedStartReceipt030 = (intent: VersionedIntent | undefined, owner: Sou
   const admission = state && (state.kind === 'admitted' || state.kind === 'closed') ? state.admission : null;
   if (admission?.kind !== 'start030') return undefined;
   if (!intent || !owner || intent.formatVersion !== '1' || intent.payload.kind !== 'start' ||
-      !sameSourceOwner(intent.key.scope.owner, owner) || intent.key.scope.conversationId !== conversationId) throw new Error('Invalid 0.3 admission');
+      !sameSourceOwner(intent.key.scope.owner, owner) || intent.key.scope.conversationId !== conversationId) throw new Error('Invalid AgSDL admission');
   const { receipt } = admission;
   const request = intent.payload.request;
   if (!receipt.systemStartId || !receipt.flowInvocationId || request.profile !== 'macro-agsdl-030-v1' ||
       !sameSourceOwner(request.source.owner, owner) || !sameWireSource(receipt.source, request.source) || receipt.entryDeliveryId !== (request.entry?.deliveryId ?? null) ||
-      receipt.versions.snapshot !== '2' || receipt.versions.contract !== 'agsdl-0.3.0' || receipt.versions.profile !== request.profile) throw new Error('Invalid 0.3 receipt');
+      receipt.versions.snapshot !== '2' || !isFlowDocumentContract(receipt.versions.contract) || receipt.versions.profile !== request.profile) throw new Error('Invalid AgSDL receipt');
   return receipt;
 };
 const runtimeFlowId030 = (view: ExecutionView, snapshot: PublicSnapshot030, validatedIntent: VersionedIntent | undefined) => {
@@ -126,7 +127,7 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
     if (page.nextCursor !== null && (typeof page.nextCursor !== 'string' || !page.nextCursor || page.nextCursor.length > 4096 || page.nextCursor === cursor || (cursor !== null && cursors030.has(page.nextCursor)))) throw new Error('Invalid run cursor');
     const ids = new Set(previous.map(run => run.systemStartId));
     for (const run of page.runs) {
-      if (!run.systemStartId || !run.flowInvocationId || !run.snapshotId || ids.has(run.systemStartId) || !sameSourceOwner(run.source.owner, owner) || run.versions.snapshot !== '2' || run.versions.contract !== 'agsdl-0.3.0' || run.versions.profile !== 'macro-agsdl-030-v1') throw new Error('Invalid 0.3 run');
+      if (!run.systemStartId || !run.flowInvocationId || !run.snapshotId || ids.has(run.systemStartId) || !sameSourceOwner(run.source.owner, owner) || run.versions.snapshot !== '2' || !isFlowDocumentContract(run.versions.contract) || run.versions.profile !== 'macro-agsdl-030-v1') throw new Error('Invalid AgSDL run');
       ids.add(run.systemStartId);
     }
   };
@@ -159,14 +160,14 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
     set({ intent030: row, });
     const admission = row.state.kind === 'admitted' || row.state.kind === 'closed' ? row.state.admission : null;
     if (!admission) return;
-    if (admission.kind !== 'start030' || row.payload.kind !== 'start') throw new Error('Invalid 0.3 admission');
+    if (admission.kind !== 'start030' || row.payload.kind !== 'start') throw new Error('Invalid AgSDL admission');
     const receipt = retainedStartReceipt030(row, initial.owner, initial.conversationId);
-    if (!receipt) throw new Error('Invalid 0.3 admission');
+    if (!receipt) throw new Error('Invalid AgSDL admission');
     const snapshot = await ipc.readExecutionSnapshot030(receipt.systemStartId);
     if (snapshot.systemStartId !== receipt.systemStartId || !sameWireSource(snapshot.source, receipt.source) ||
         (snapshot.associations.conversationId !== undefined && snapshot.associations.conversationId !== initial.conversationId) ||
         !sameWireVersions(snapshot.versions, receipt.versions) ||
-        await sourceDigest(snapshot.authoredSource) !== receipt.source.sourceSha256 || readDocument(snapshot.authoredSource).contract !== 'agsdl-0.3.0') throw new Error('Invalid 0.3 snapshot');
+        await sourceDigest(snapshot.authoredSource) !== receipt.source.sourceSha256 || readDocument(snapshot.authoredSource).contract !== snapshot.versions.contract) throw new Error('Invalid AgSDL snapshot');
     if (!(await sameSelection())) return;
     validatedIntent030 = row;
     if (preserveSelection && (initial.snapshot030)) return;
@@ -263,7 +264,7 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
       const snapshot = await ipc.readExecutionSnapshot030(id);
       if (snapshot.systemStartId !== id || !sameSourceOwner(snapshot.source.owner, initial.owner!) ||
           (snapshot.associations.conversationId !== undefined && snapshot.associations.conversationId !== initial.conversationId) ||
-          await sourceDigest(snapshot.authoredSource) !== snapshot.source.sourceSha256 || readDocument(snapshot.authoredSource).contract !== 'agsdl-0.3.0') throw new Error('Run source differs');
+          await sourceDigest(snapshot.authoredSource) !== snapshot.source.sourceSha256 || readDocument(snapshot.authoredSource).contract !== snapshot.versions.contract) throw new Error('Run source differs');
       const flowInvocationId = runtimeFlowId030(initial, snapshot, validatedIntent030);
       const [humans, runtime] = await Promise.all([
         loadHumanRequests030({ systemStartId: id, source: snapshot.source }, ipc.readExecutionHumans030, () => token === generation),

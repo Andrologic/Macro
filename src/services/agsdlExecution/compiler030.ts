@@ -1,14 +1,30 @@
-import { loadHarnessModule, read } from '../../vendor/agsdl/v0.3/reader.mjs';
+import { isFlowDocumentContract } from '../agsdl/contract';
+import { loadHarnessModule, read } from '../../vendor/agsdl/v0.4/reader.mjs';
 import { readExactDocument } from '../agsdl/document';
 import { compileStaticGraph030 } from './compilerGraph030';
 import { captureAgent030, captureRegistry030, usedProperties030 } from './configuration030';
 import type { SourceRevision } from './contracts';
-import { COMPILED_PLAN_FORMAT030, EXECUTION_PROFILE030, type CapturedRegistry030, type CompilationResult030, type CompiledPlan030, type Diagnostic030, type RuntimeAssessment030 } from './contracts030';
+import { COMPILED_PLAN_FORMAT030, EXECUTION_PROFILE030, type CapturedRegistry030, type CompilationResult030, type CompiledJoin030, type CompiledPlan030, type Diagnostic030, type RuntimeAssessment030 } from './contracts030';
 import { at, ConformanceError, clone, decode, encode, fail, has, record, type ExactObject } from './exact';
 import { captureSourceRevision } from './metadata';
 
 export const COMPILER_VERSION030 = 'macro-agsdl-compiler/030' as const;
 export const RUNTIME_VERSION030 = 'macro-agsdl-runtime/030' as const;
+
+function runtimeVersion(joins: readonly CompiledJoin030[]): string {
+  // Match Argentic's runtime marker for joins sharing a branch that can be stopped.
+  const stopsByTarget = new Map<string, boolean>();
+  for (const join of joins) {
+    const stops = join.remaining === 'stop';
+    for (const branch of join.branches) {
+      const key = JSON.stringify([join.origin, branch.target]);
+      const previous = stopsByTarget.get(key);
+      if (previous !== undefined && (previous || stops)) return 'macro-agsdl-runtime/030.1';
+      stopsByTarget.set(key, stops);
+    }
+  }
+  return RUNTIME_VERSION030;
+}
 
 const reportToAssessment = (report: ReturnType<typeof read>): CompilationResult030['static'] => ({ valid: report.valid,
   diagnostics: report.diagnostics.map((finding): Diagnostic030 => ({ code: finding.code, pointer: finding.path,
@@ -52,7 +68,7 @@ export async function compilePlan030(authoredSource: string, source: SourceRevis
     runtime = { ...runtime, unassessed: [...runtime.unassessed,
       'Native admission of resources in later graphless messages'] };
     assessment = reportToAssessment(read(bytes, { modules }));
-    if (!assessment.valid) return unavailable();
+    if (!assessment.valid || !isFlowDocumentContract(document.contract)) return unavailable();
     // Everything caller-owned is copied before the asynchronous digest.
     const hash = await crypto.subtle.digest('SHA-256', bytes);
     const digest = Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
@@ -91,7 +107,7 @@ export async function compilePlan030(authoredSource: string, source: SourceRevis
       }
     }
     const plan: CompiledPlan030 = { format: COMPILED_PLAN_FORMAT030,
-      versions: { snapshot: '2', contract: 'agsdl-0.3.0', compiler: COMPILER_VERSION030, runtime: RUNTIME_VERSION030,
+      versions: { snapshot: '2', contract: document.contract, compiler: COMPILER_VERSION030, runtime: runtimeVersion(graph.joins),
         registry: registry.version, profile: EXECUTION_PROFILE030 }, source: clone(capturedSource), documentJson, agents, ...graph };
     const compiledPlanJson = encode(plan as unknown as ExactObject);
     runtime = { ...runtime, supported: true, diagnostics: runtimeWarnings };

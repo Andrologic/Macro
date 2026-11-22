@@ -1,5 +1,6 @@
-import { Graph } from "../../vendor/agsdl/v0.3/graph.mjs";
-import type { Report030 } from "../../vendor/agsdl/v0.3/reader.mjs";
+import { isFlowDocumentContract } from "./contract";
+import { Graph } from "../../vendor/agsdl/v0.4/graph.mjs";
+import type { Report030 } from "../../vendor/agsdl/v0.4/reader.mjs";
 import type { AgsdlReport } from "../../types/agsdl";
 import { list, object, pointerPart, scanSource, text } from "./document";
 import { locationsForSource } from "./reader030WorkerProtocol";
@@ -13,10 +14,10 @@ export interface SourceBoundReport030 {
 /** Only worker reports associated with these exact source bytes supply join origins. */
 export function staticReportForSource030(source: string, reports: readonly AgsdlReport[]): SourceBoundReport030 | undefined {
   for (const report of reports) {
-    if (report.contract !== "agsdl-0.3.0" || locationsForSource(report, source) === undefined || typeof report.documentReportJson !== "string") continue;
+    if (!isFlowDocumentContract(report.contract) || locationsForSource(report, source) === undefined || typeof report.documentReportJson !== "string") continue;
     try {
       const native = JSON.parse(report.documentReportJson) as Report030;
-      if (native.contract === "agsdl-0.3.0") return { source, report: native };
+      if (isFlowDocumentContract(native.contract)) return { source, report: native };
     } catch {
       // An unavailable/unreadable report leaves the projection unassessed.
     }
@@ -71,7 +72,7 @@ export interface StaticOccurrence030 {
   join?: StaticJoin030;
 }
 export interface StaticSemantics030 {
-  contract: "agsdl-0.3.0";
+  contract: Report030["contract"];
   occurrences: StaticOccurrence030[];
   flowErrorCovered: string[];
   /** Matching worker report and authoritative join origins; null while unavailable/stale. */
@@ -88,7 +89,7 @@ export function resolveStaticAgent030(ref: unknown, bindings: Readonly<Record<st
 /** Source inspection only. A missing/stale worker report never triggers synchronous validation. */
 export function projectStaticSemantics030(source: string, report?: SourceBoundReport030): StaticSemantics030 {
   const scanned = scanSource(source), doc = object(scanned.tree);
-  if (doc.contract !== "agsdl-0.3.0") throw new Error("Expected agsdl-0.3.0.");
+  if (!isFlowDocumentContract(doc.contract)) throw new Error("Expected an AgSDL 0.3 or 0.4 document.");
   const validated = report?.source === source ? report.report : null;
   const shaped = validated !== null && !validated.diagnostics.some(item => item.code === "SHAPE" || item.code === "PARSE");
   const raw = (path: string) => {
@@ -207,5 +208,5 @@ export function projectStaticSemantics030(source: string, report?: SourceBoundRe
       : card.scopeId === "/flow" && covered.has(card.address![0]) ? { kind: "flow", ownerPath: "/flow/onError", ownerOccurrenceId: "/flow" }
       : { kind: "unhandled" };
   }
-  return { contract: "agsdl-0.3.0", occurrences, flowErrorCovered: root?.cards.filter(card => card.error.kind === "flow").map(card => card.occurrenceId) ?? [], report: validated };
+  return { contract: doc.contract, occurrences, flowErrorCovered: root?.cards.filter(card => card.error.kind === "flow").map(card => card.occurrenceId) ?? [], report: validated };
 }

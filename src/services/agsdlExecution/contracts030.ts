@@ -1,3 +1,4 @@
+import type { FlowDocumentContract } from '../../vendor/agsdl/v0.4/reader.mjs';
 import type { ExactJsonText, SourceRevision, StaticAssessment, StepAddress } from './contracts';
 
 export const COMPILED_PLAN_FORMAT030 = 'macro-agsdl-compiled-plan/2' as const;
@@ -22,7 +23,7 @@ export interface RuntimeAssessment030 {
 }
 export interface EngineVersions030 {
   readonly snapshot: '2';
-  readonly contract: 'agsdl-0.3.0';
+  readonly contract: FlowDocumentContract;
   readonly compiler: string;
   readonly runtime: string;
   readonly registry: string;

@@ -1,0 +1,39 @@
+{
+  "contract": "agsdl-0.4.0",
+  "id": "join-entry-from-outside",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": [
+          "x",
+          "y"
+        ]
+      },
+      "x": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "j",
+        "onError": "y"
+      },
+      "y": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "j"
+      },
+      "j": {
+        "type": "join"
+      }
+    }
+  }
+}

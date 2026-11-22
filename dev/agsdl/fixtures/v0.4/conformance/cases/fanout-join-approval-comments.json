@@ -1,0 +1,63 @@
+{
+  "contract": "agsdl-0.4.0",
+  "id": "fanout-join-approval-comments",
+  "agents": {
+    "writer": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "start",
+    "steps": {
+      "start": {
+        "type": "approval",
+        "next": {
+          "continue": [
+            "review",
+            "proofread"
+          ]
+        }
+      },
+      "review": {
+        "type": "approval",
+        "next": {
+          "accept": "collect"
+        }
+      },
+      "proofread": {
+        "type": "approval",
+        "next": {
+          "accept": "collect"
+        }
+      },
+      "collect": {
+        "type": "join",
+        "next": {
+          "step": "revise",
+          "each": [
+            "branches",
+            "review",
+            "message",
+            "comments"
+          ],
+          "message": {
+            "resources": {
+              "note": {
+                "from": [
+                  "item",
+                  "comment"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "revise": {
+        "type": "agent",
+        "agent": "writer",
+        "instance": "new"
+      }
+    }
+  }
+}

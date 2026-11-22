@@ -1,5 +1,5 @@
 import { describe,expect,it } from 'bun:test';
-import { NumberToken as ReaderNumberToken,parse } from '../../vendor/agsdl/v0.3/reader.mjs';
+import { NumberToken as ReaderNumberToken,parse } from '../../vendor/agsdl/v0.4/reader.mjs';
 import { NumberToken,clone,decimal,decode,encode,equal,record } from './exact';
 import { sourceDigest } from './sourceDigest';
 

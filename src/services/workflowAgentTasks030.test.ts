@@ -81,7 +81,7 @@ it('uses durable receipt-attested correlation independently of a new open intent
 
 it('covers exactly the nine phases published by Rust and keeps done physical work active', async () => {
   const rust = readFileSync(new URL('../../src-tauri/src/db/agsdl_execution/discovery030.rs',import.meta.url),'utf8');
-  const vocabulary = rust.slice(rust.indexOf('activation.phase.as_str()'),rust.indexOf('"Flow 0.3 discovery activation phase'));
+  const vocabulary = rust.slice(rust.indexOf('activation.phase.as_str()'),rust.indexOf('"Flow discovery activation phase'));
   expect(Object.keys(workflowPhaseStates030).sort()).toEqual([...vocabulary.matchAll(/"([a-z]+)"/g)].map(item=>item[1]).sort());
   const statuses = {queued:'InProgress',running:'InProgress',done:'Completed',preparing:'InProgress',stopping:'Blocked'} as const;
   for (const [phase,status] of Object.entries(statuses)) {

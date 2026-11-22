@@ -52,7 +52,7 @@ pub async fn execution_start<R: tauri::Runtime>(
         Err(repository::failure(
             "UNSUPPORTED_EDITION",
             "profile",
-            "Only AgSDL 0.3 execution is supported",
+            "Only AgSDL 0.3 and 0.4 execution is supported",
         ))
     })
     .await
@@ -111,7 +111,7 @@ pub async fn execution_stop<R: tauri::Runtime>(
     Err(repository::failure(
         "NOT_FOUND",
         "systemStartId",
-        "AgSDL 0.3 run not found",
+        "AgSDL run not found",
     ))
 }
 
@@ -156,7 +156,7 @@ pub async fn execution_ensure_stop<R: tauri::Runtime>(
         Err(repository::failure(
             "NOT_FOUND",
             "systemStartId",
-            "AgSDL 0.3 run not found",
+            "AgSDL run not found",
         ))
     })
     .await
@@ -191,7 +191,7 @@ pub(crate) async fn read_public_snapshot(
             || capture.identity.system_start_id != system_start_id
             || capture.versions.profile != request.profile
             || capture.versions.snapshot != "2"
-            || capture.versions.contract != "agsdl-0.3.0"
+            || !argentic_core::supports_contract(&capture.versions.contract)
         {
             return Err(repository::failure(
                 "CORRELATION",
@@ -210,7 +210,7 @@ pub(crate) async fn read_public_snapshot(
     Err(repository::failure(
         "NOT_FOUND",
         "systemStartId",
-        "AgSDL 0.3 capture not found",
+        "AgSDL capture not found",
     ))
 }
 
@@ -434,14 +434,14 @@ async fn submit_retained(
                 Err(repository::failure(
                     "UNSUPPORTED_EDITION",
                     "profile",
-                    "Only AgSDL 0.3 execution is supported",
+                    "Only AgSDL 0.3 and 0.4 execution is supported",
                 ))
             }
         }
         ExecutionIntentPayload::Deliver { .. } => Err(repository::failure(
             "UNSUPPORTED_EDITION",
             "payload",
-            "Use the AgSDL 0.3 delivery command",
+            "Use the AgSDL flow delivery command",
         )),
     };
     let guard = intent_scope(&app, &key.scope).await?;

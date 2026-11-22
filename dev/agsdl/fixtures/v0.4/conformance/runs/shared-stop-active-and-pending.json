@@ -1,0 +1,179 @@
+{
+  "description": "A stop join withdraws and cancels a shared path for both groups.",
+  "document": {
+    "contract": "agsdl-0.4.0",
+    "id": "shared-stop-active-and-pending",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "read-only",
+        "results": {
+          "items": {
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "worker": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "o",
+      "steps": {
+        "o": {
+          "type": "agent",
+          "agent": "lead",
+          "next": {
+            "approve": [
+              {
+                "step": "a",
+                "each": [
+                  "results",
+                  "items"
+                ],
+                "concurrency": 1,
+                "max": 3
+              },
+              "vote"
+            ]
+          }
+        },
+        "a": {
+          "type": "agent",
+          "agent": "worker",
+          "instance": "new",
+          "next": {
+            "one": "j1",
+            "two": "j2"
+          }
+        },
+        "j1": {
+          "type": "join",
+          "remaining": "stop",
+          "quorum": {
+            "count": 1,
+            "accept": [
+              "approve"
+            ]
+          },
+          "next": {
+            "reached": [],
+            "missed": []
+          }
+        },
+        "j2": {
+          "type": "join",
+          "remaining": "finish",
+          "quorum": {
+            "count": 2,
+            "accept": [
+              "two"
+            ]
+          },
+          "next": {
+            "reached": [],
+            "missed": "after"
+          }
+        },
+        "vote": {
+          "type": "agent",
+          "agent": "worker",
+          "instance": "new",
+          "next": {
+            "approve": "j1"
+          }
+        },
+        "after": {
+          "type": "agent",
+          "agent": "worker",
+          "instance": "new",
+          "next": []
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Choose how to run the shared fan-out."
+  },
+  "timeline": [
+    {
+      "work": "o",
+      "returns": {
+        "text": "",
+        "choice": "approve",
+        "results": {
+          "items": [
+            "first",
+            "second"
+          ]
+        }
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "a",
+          "item": 0
+        },
+        {
+          "step": "vote"
+        }
+      ]
+    },
+    {
+      "work": "vote",
+      "returns": {
+        "text": "",
+        "choice": "approve",
+        "results": {}
+      }
+    },
+    {
+      "work": "after",
+      "returns": {
+        "text": "",
+        "results": {}
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "o": 1,
+      "a": 1,
+      "vote": 1,
+      "after": 1
+    },
+    "joins": [
+      {
+        "join": "j1",
+        "outcome": "reached"
+      },
+      {
+        "join": "j2",
+        "outcome": "missed",
+        "branches": {
+          "a": [
+            {
+              "item": "first",
+              "ended": "without-result"
+            }
+          ]
+        }
+      }
+    ],
+    "failures": [],
+    "cancelled": [
+      {
+        "step": "a",
+        "item": 0
+      }
+    ]
+  }
+}

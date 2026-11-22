@@ -70,7 +70,7 @@ export const architectLibrary = {
   saveDraft: (blueprintId: string, expectedRevision: number, document: BlueprintDocument) =>
     invoke<BlueprintDraft>("architect_save_draft", { blueprintId, expectedRevision, document }),
   saveVersion: (blueprintId: string, expectedRevision: number, note: string | null = null) =>
-    invoke<BlueprintVersionSummary>("architect_save_version", { blueprintId, expectedRevision, note }),
+    invoke<BlueprintVersionSummary & { convertedDraft?: BlueprintDocument }>("architect_save_version", { blueprintId, expectedRevision, note }),
   listVersions: (blueprintId: string) => invoke<BlueprintVersionSummary[]>("architect_list_versions", { blueprintId }),
   getVersion: (key: VersionKey) => invoke<BlueprintVersion>("architect_get_version", { key }),
   deleteVersion: (key: VersionKey) => invoke<void>("architect_delete_version", { key }),

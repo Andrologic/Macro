@@ -1,3 +1,4 @@
+import { AGSDL_CONTRACT, isFlowDocumentContract } from "./contract";
 import { defaultDesign,type AgsdlAuthoringContract,type AgsdlEnvelopeMetadata } from "./design";
 import { LEGACY_AGSDL_CONTRACT } from "./document";
 import { productExample030 } from "./examples030";
@@ -222,17 +223,17 @@ export function createLegacyExample(kind: AgsdlExample): string {
   );
 }
 
-/** Preserve historical shapes explicitly; new product examples describe 0.3 missions. */
-export function createExample(kind: AgsdlExample, contract: AgsdlAuthoringContract = 'agsdl-0.3.0'): string {
+/** Preserve historical shapes explicitly; new product examples use the current edition. */
+export function createExample(kind: AgsdlExample, contract: AgsdlAuthoringContract = AGSDL_CONTRACT): string {
   if (contract === LEGACY_AGSDL_CONTRACT) return createLegacyExample(kind);
-  if (contract === 'agsdl-0.3.0') return JSON.stringify(productExample030(kind), null, 2);
+  if (isFlowDocumentContract(contract)) return JSON.stringify(productExample030(kind, contract), null, 2);
   throw new Error('agsdl.unsupportedEdition020');
 }
 
 /** Human labels travel with the Macro envelope; AgSDL names remain stable source identities. */
-export function createExampleDocument(kind: AgsdlExample, contract: AgsdlAuthoringContract = 'agsdl-0.3.0'): { source: string; annexes: Record<string, string> } & AgsdlEnvelopeMetadata {
+export function createExampleDocument(kind: AgsdlExample, contract: AgsdlAuthoringContract = AGSDL_CONTRACT): { source: string; annexes: Record<string, string> } & AgsdlEnvelopeMetadata {
   if (contract === LEGACY_AGSDL_CONTRACT) return { source: createLegacyExample(kind), annexes: {} };
-  if (contract === 'agsdl-0.3.0') return {
+  if (isFlowDocumentContract(contract)) return {
     source: createExample(kind, contract), annexes: {}, design: defaultDesign(),
     display: { title: kind[0].toUpperCase() + kind.slice(1), cards: {
       '/agents/implement': { title: kind === 'release' ? 'Release evidence' : 'Implementation and verification' },

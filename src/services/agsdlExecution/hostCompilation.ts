@@ -1,5 +1,5 @@
-import schema030 from '../../vendor/agsdl/v0.3/schema/agsdl.schema.json';
-import { SchemaChecker } from '../../vendor/agsdl/v0.3/schemacheck.mjs';
+import schema030 from '../../vendor/agsdl/v0.4/schema/agsdl.schema.json';
+import { SchemaChecker } from '../../vendor/agsdl/v0.4/schemacheck.mjs';
 import { compilePlan030 } from './compiler030';
 import { compileStaticGraph030 } from './compilerGraph030';
 import type { ExactJsonText,SourceRevision } from './contracts';

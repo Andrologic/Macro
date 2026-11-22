@@ -93,7 +93,7 @@ dependencies = [
 [[package]]
 name = "argentic-core"
 version = "0.1.0"
-source = "git+https://github.com/Andrologic/argentic.git?rev=351b989d4135729f90e6f7496fc317c8c7abe651#351b989d4135729f90e6f7496fc317c8c7abe651"
+source = "git+https://github.com/Andrologic/argentic.git?rev=826170f56ec13885c205de347fe2750c84253ec2#826170f56ec13885c205de347fe2750c84253ec2"
 dependencies = [
  "regex",
  "serde",
@@ -105,14 +105,17 @@ dependencies = [
 [[package]]
 name = "argentic-runtime"
 version = "0.1.0"
-source = "git+https://github.com/Andrologic/argentic.git?rev=351b989d4135729f90e6f7496fc317c8c7abe651#351b989d4135729f90e6f7496fc317c8c7abe651"
+source = "git+https://github.com/Andrologic/argentic.git?rev=826170f56ec13885c205de347fe2750c84253ec2#826170f56ec13885c205de347fe2750c84253ec2"
 dependencies = [
  "argentic-core",
  "async-trait",
  "base64 0.22.1",
  "cap-std",
+ "crc32fast",
+ "flate2",
  "futures",
  "libc",
+ "percent-encoding",
  "portable-pty",
  "regex",
  "reqwest 0.12.28",
@@ -128,6 +131,8 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "unicase",
+ "unicode-general-category",
  "unicode-normalization",
  "url",
  "uuid",
@@ -7237,6 +7242,12 @@ name = "unicode-bidi"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
+
+[[package]]
+name = "unicode-general-category"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b993bddc193ae5bd0d623b49ec06ac3e9312875fdae725a975c51db1cc1677f"
 
 [[package]]
 name = "unicode-ident"

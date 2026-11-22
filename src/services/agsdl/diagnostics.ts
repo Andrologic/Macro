@@ -1,5 +1,5 @@
 import type { AgsdlReport } from "../../types/agsdl";
-import { has030Contract, keyId, list, object, pointerPart, readDocument, scanSource, text } from "./document";
+import { hasFlowDocumentContract, keyId, list, object, pointerPart, readDocument, scanSource, text } from "./document";
 import { locationsForSource } from "./reader030WorkerProtocol";
 import type { ViewerCard } from "./viewer";
 
@@ -16,7 +16,7 @@ export interface LocalizedDiagnostic {
 
 /** Only a real source span or an unambiguous AgSDL key can establish a location. */
 export function localizeDiagnostics(source: string, reports: AgsdlReport[], cards: ViewerCard[]): LocalizedDiagnostic[] {
-  if (has030Contract(source)) {
+  if (hasFlowDocumentContract(source)) {
     return reports.flatMap(report => {
       const locations = locationsForSource(report, source);
       return report.results.flatMap(result => result.findings.map(finding => {
@@ -118,7 +118,7 @@ export function diagnosticOwner030(source: string, issue: LocalizedDiagnostic, c
   }).sort((left, right) => right.path.length - left.path.length);
   return candidates[0] ?? cards.find(card => card.edition030?.ownerPath === "") ?? {
     path: "agsdl:document", id: "document", title: "", kind: "System", mission: "", unresolved: false,
-    inputs: [], outputs: [], branches: [], details: { contract: "agsdl-0.3.0" },
+    inputs: [], outputs: [], branches: [], details: {},
     edition030: { ownerPath: "", sourceJson: source, routes: [] },
   };
 }

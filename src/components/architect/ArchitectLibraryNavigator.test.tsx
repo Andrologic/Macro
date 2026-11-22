@@ -147,7 +147,7 @@ it("creates a project without Git, saves revisioned drafts and adapts the exact 
   await newNamed("New blueprint", "Original");
   const blueprint = [...port.drafts.values()][0];
   expect(blueprint.projectId).toBe(source.id);
-  expect(JSON.parse(blueprint.document.source).contract).toBe("agsdl-0.3.0");
+  expect(JSON.parse(blueprint.document.source).contract).toBe("agsdl-0.4.0");
   expect(panel().textContent).toContain("Draft");
   expect(panel().querySelector('[aria-label="Start"]')).toBeNull();
   expect(panel().querySelector('.agsdl-runs-drawer')).toBeNull();

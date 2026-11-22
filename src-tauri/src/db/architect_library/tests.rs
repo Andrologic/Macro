@@ -2,7 +2,7 @@ use super::*;
 use crate::db::create_pool;
 use serde_json::json;
 
-fn document() -> Document {
+fn legacy_document() -> Document {
     serde_json::from_value(json!({
         "source": " { \"contract\" : \"agsdl-0.3.0\", \"opaque\": 98765432109876543210123456789 }\n",
         "annexes": { "guide.md": "# Étude\r\n" },
@@ -10,6 +10,10 @@ fn document() -> Document {
         "display": { "title": "Draft" },
         "migration": { "original": "evidence" }
     })).unwrap()
+}
+
+fn document() -> Document {
+    upgrade_draft(legacy_document()).unwrap().unwrap()
 }
 
 fn legacy() -> Import {
@@ -25,7 +29,7 @@ fn legacy() -> Import {
             .unwrap(),
         ),
         conversation_id: Some("old-conversation".into()),
-        document: document(),
+        document: legacy_document(),
     }
 }
 
@@ -103,7 +107,7 @@ async fn atomic_import_recovers_after_failed_freeze_and_concurrent_retry() {
     .unwrap();
     assert_eq!(
         encode(&original.document).unwrap(),
-        encode(&document()).unwrap()
+        encode(&legacy_document()).unwrap()
     );
 }
 
@@ -135,7 +139,7 @@ async fn conflicting_edits_versions_and_pinned_uses() {
         save_version(&pool, id.clone(), 2, Some("first caller".into())),
         save_version(&pool, id.clone(), 2, None)
     );
-    let (a, b) = (a.unwrap(), b.unwrap());
+    let (a, b) = (a.unwrap().summary, b.unwrap().summary);
     assert_ne!(a.key.number, b.key.number);
     let keys = list_versions(&pool, id.clone()).await.unwrap();
     assert_eq!(
@@ -183,7 +187,12 @@ async fn conflicting_edits_versions_and_pinned_uses() {
     }
     delete_version(&pool, key).await.unwrap();
     assert_eq!(
-        save_version(&pool, id, 2, None).await.unwrap().key.number,
+        save_version(&pool, id, 2, None)
+            .await
+            .unwrap()
+            .summary
+            .key
+            .number,
         3
     );
     assert_eq!(
@@ -662,4 +671,69 @@ async fn a_chat_can_only_be_attached_to_one_blueprint() {
         .unwrap();
     assert_ne!(chat, "design");
     assert_ne!(chat, "chat");
+}
+
+#[tokio::test]
+async fn saving_a_legacy_draft_upgrades_only_the_new_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = create_pool(&dir.path().join("macro.db")).await.unwrap();
+    let mut input = legacy();
+    input.document.source = r#"{ "$schema": "https://raw.githubusercontent.com/Andrologic/AgSDL/v0.3.0/schema/agsdl.schema.json", "contract": "agsdl-0.3.0", "id": "legacy", "agents": {}, "content": {"exact":{"value":[1.2300,98765432109876543210123456789,"agsdl-0.3.0"]}} }"#.into();
+    let original = input.document.clone();
+    let imported = import_blueprint(&pool, input).await.unwrap();
+    let id = imported.blueprint_id;
+    let old = VersionKey {
+        blueprint_id: id.clone(),
+        number: 1,
+    };
+    let copy = adapt_version(&pool, old.clone(), imported.project_id, "Copy".into())
+        .await
+        .unwrap();
+
+    sqlx::raw_sql("CREATE TRIGGER inject_failure BEFORE INSERT ON architect_versions BEGIN SELECT RAISE(ABORT,'injected'); END;").execute(&pool).await.unwrap();
+    assert!(save_version(&pool, id.clone(), 1, None).await.is_err());
+    let draft = get_draft(&pool, id.clone()).await.unwrap();
+    assert_eq!(draft.summary.revision, 1);
+    assert_eq!(encode(&draft.document).unwrap(), encode(&original).unwrap());
+    sqlx::query("DROP TRIGGER inject_failure")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let saved = save_version(&pool, id.clone(), 1, None).await.unwrap();
+    assert_eq!(saved.summary.revision, 2);
+    assert_eq!(saved.summary.key.number, 2);
+    let expected = original
+        .source
+        .replacen("v0.3.0/schema/", "v0.4.0/schema/", 1)
+        .replacen(r#""agsdl-0.3.0""#, r#""agsdl-0.4.0""#, 1);
+    let draft = get_draft(&pool, id.clone()).await.unwrap();
+    assert_eq!(draft.document.source, expected);
+    let report = argentic_core::validate_document_json(expected.as_bytes(), None).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&report).unwrap()["valid"],
+        true
+    );
+    assert_eq!(copy.document.source, expected);
+    assert_eq!(
+        encode(&draft.document).unwrap(),
+        encode(&saved.converted_draft.unwrap()).unwrap()
+    );
+    assert_eq!(
+        encode(&draft.document).unwrap(),
+        encode(
+            &get_version(&pool, saved.summary.key)
+                .await
+                .unwrap()
+                .document
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        encode(&original).unwrap(),
+        encode(&get_version(&pool, old).await.unwrap().document).unwrap()
+    );
+    let next = save_version(&pool, id, 2, None).await.unwrap();
+    assert_eq!(next.summary.revision, 2);
+    assert!(next.converted_draft.is_none());
 }

@@ -271,8 +271,8 @@ describe("shared AgSDL authoring session", () => {
 
 
 describe("edition-specific authoring", () => {
-  it("uses a 0.3 guide for empty documents, preserves 0.1 meaning and rejects candidate editions", () => {
-    expect(agsdlAuthoringGuide(undefined, true).contract).toBe("agsdl-0.3.0");
+  it("uses the 0.4 guide for empty documents, preserves 0.1 meaning and rejects candidate editions", () => {
+    expect(agsdlAuthoringGuide(undefined, true).contract).toBe("agsdl-0.4.0");
     expect(JSON.stringify(agsdlAuthoringGuide("agsdl-0.1.0"))).toContain("D declares root");
     expect(agsdlAuthoringGuide("agsdl-0.2.0")).toMatchObject({ supported: false });
     expect(agsdlAuthoringGuide("agsdl-exp-flow-0.2-c1")).toMatchObject({ supported: false });
@@ -589,11 +589,11 @@ it('discovers all 0.3 catalogues, composition parameters and steps across bounde
   expect(plan.agsdl.annexes).toEqual({ archive: 'unchanged' });
 });
 
-it('pages the complete 0.3 guide and keeps empty defaults independent of Chat providers', async () => {
+it('pages the complete 0.4 guide and keeps empty defaults independent of Chat providers', async () => {
   plan.agsdl = { source: '', annexes: {}, revision: 1 };
   const read = JSON.parse(await call('agsdl_get'));
   expect(read.macro_models).toBeUndefined();
-  expect(read.harness_catalogue).toMatchObject({ contract: 'agsdl-0.3.0', assessment: 'not-assessed', harnesses: [] });
+  expect(read.harness_catalogue).toMatchObject({ contract: 'agsdl-0.4.0', assessment: 'not-assessed', harnesses: [] });
   let recovered = '', offset = 0;
   do {
     const raw = await call('agsdl_get', { section: 'guide', limit: 1024, offset, expected_revision: read.revision });
@@ -601,14 +601,14 @@ it('pages the complete 0.3 guide and keeps empty defaults independent of Chat pr
     const page = JSON.parse(raw).text_page; recovered += page.content; offset = page.next_offset;
   } while (offset !== null);
   const guide = JSON.parse(recovered);
-  expect(guide.contract).toBe('agsdl-0.3.0');
-  expect(guide.minimal).toEqual({ contract: 'agsdl-0.3.0', id: 'new-system', agents: {} });
+  expect(guide.contract).toBe('agsdl-0.4.0');
+  expect(guide.minimal).toEqual({ contract: 'agsdl-0.4.0', id: 'new-system', agents: {} });
   expect(guide.agent_shape.permissions).toBe('read-only');
   for (const field of ['instructs', 'permissions', 'results', 'conduct', 'models', 'equipment', 'messages', 'fanout', 'joins', 'compositions', 'calls', 'approvals', 'limits', 'validation', 'design', 'presentation']) expect(guide[field]).toBeString();
   expect(Object.keys(guide.examples)).toHaveLength(6);
 });
 
-it('keeps 0.3 design and display edits in the envelope, with one revision and exact source', async () => {
+it('keeps 0.4 design and display edits in the envelope, with one revision and exact source', async () => {
   const { createExampleDocument } = await import('../../services/agsdl/examples');
   plan.agsdl = { ...createExampleDocument('feature'), revision: 1 };
   const source = plan.agsdl.source;

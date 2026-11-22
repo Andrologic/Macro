@@ -1,0 +1,39 @@
+{
+  "description": "A recovered run preserves its current call and continues through the next step once.",
+  "document": "cases/flow-error.json",
+  "timeline": [
+    {
+      "running": [
+        {
+          "step": "build"
+        }
+      ]
+    },
+    {
+      "hostRestart": "resume"
+    },
+    {
+      "runState": "running"
+    },
+    {
+      "work": "build",
+      "command": {
+        "exitCode": 0
+      }
+    },
+    {
+      "work": "ship",
+      "returns": {
+        "text": "Done."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "build": 1,
+      "ship": 1
+    },
+    "failures": []
+  }
+}

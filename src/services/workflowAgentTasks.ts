@@ -1,3 +1,4 @@
+import { isFlowDocumentContract } from "./agsdl/contract";
 import type { TaskStatus } from '../types';
 import type { RunCapture030,RunHumanRequest030 } from '../types/agsdlRunUi030';
 import type { WorkflowAgentTaskReference,WorkflowAgentTaskState } from '../types/workflowAgentTask';
@@ -90,7 +91,7 @@ export function openWorkflowRun030(target: WorkflowRunTarget030 | null): void {
   runTargetListeners030.forEach(listener => listener());
 }
 export type WorkflowCapture = PublicSnapshot | RunCapture030;
-export const isCapture030 = (snapshot: WorkflowCapture): snapshot is RunCapture030 => snapshot.versions.contract === 'agsdl-0.3.0';
+export const isCapture030 = (snapshot: WorkflowCapture): snapshot is RunCapture030 => isFlowDocumentContract(snapshot.versions.contract);
 export async function workflowAccessForCapture030(snapshot: RunCapture030, conversationId?: string): Promise<WorkflowRunAccess030> {
   if (snapshot.versions.snapshot !== '2' || snapshot.versions.profile !== 'macro-agsdl-030-v1') throw new Error('Unsupported workflow capture');
   // Metadata and registry scopes are candidates only. Lot 6a alone verifies the
@@ -215,7 +216,7 @@ export function retainWorkflowTaskOrder(previous: readonly CatalogedImplementTas
 
 function hasWorkflowSource030(plan: ArchitectPlanRecord): boolean {
   if (!plan.agsdl?.source) return false;
-  try { return readDocument(plan.agsdl.source).contract === 'agsdl-0.3.0'; }
+  try { return isFlowDocumentContract(readDocument(plan.agsdl.source).contract); }
   catch { return false; }
 }
 function setWorkflowCatalogError030(bundle: WorkflowRunAccess030, error: unknown): void {

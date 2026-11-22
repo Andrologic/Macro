@@ -1,5 +1,5 @@
-import { stringify } from '../../vendor/agsdl/v0.3/reader.mjs';
-import type { ReaderOptions030 } from '../../vendor/agsdl/v0.3/reader.mjs';
+import { stringify } from '../../vendor/agsdl/v0.4/reader.mjs';
+import type { ReaderOptions030 } from '../../vendor/agsdl/v0.4/reader.mjs';
 import type { AgsdlReport } from '../../types/agsdl';
 
 export type WorkerRequest = { primary: Uint8Array; modules?: [string, string][]; moduleError?: string };

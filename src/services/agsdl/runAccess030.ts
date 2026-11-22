@@ -1,3 +1,4 @@
+import { isFlowDocumentContract } from './contract';
 import type { NativeDtoGap030, NativeFact030, RunCapture030, RunRead030, RunRefusal030, RunVerdict030 } from '../../types/agsdlRunUi030';
 import type { EngineSourceOwner, ExecutionIntentScope, ExecutionRunCorrelation030, PublicRunSummary030 } from '../../types/generated/ipc';
 import { listExecutionRuns030, readExecutionSnapshot030, readExecutionRuntimeProjection030,
@@ -60,7 +61,7 @@ function requireFact(condition: unknown, code = 'CORRELATION', message = 'Native
   if (!condition) throw new MacroServiceError(code, message);
 }
 function verdict(value: string | null): RunVerdict030 {
-  requireFact(value === null || value === 'succeeded' || value === 'failed' || value === 'cancelled');
+  requireFact(value === null || value === 'succeeded' || value === 'failed' || value === 'cancelled' || value === 'interrupted');
   return value;
 }
 function freeze<T>(value: T): T {
@@ -143,7 +144,7 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
           decimal(run.revision) && decimal(run.physicalPending) &&
           (run.ownerStatus === 'live' || run.ownerStatus === 'revoked') && typeof run.stopping === 'boolean');
         verdict(run.verdict);
-        requireFact(run.versions.snapshot === '2' && run.versions.contract === 'agsdl-0.3.0' && run.versions.profile === 'macro-agsdl-030-v1', 'CONTRACT_UNSUPPORTED');
+        requireFact(run.versions.snapshot === '2' && isFlowDocumentContract(run.versions.contract) && run.versions.profile === 'macro-agsdl-030-v1', 'CONTRACT_UNSUPPORTED');
         ids.add(run.systemStartId); runs.push(structuredClone(run));
       }
       after = page.nextCursor;
@@ -161,7 +162,7 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     requireFact(sameHumanScope030(capture, run) && sameVersions(capture.versions, run.versions) &&
       sameHumanScope030(capture, correlation.receipt) && sameVersions(capture.versions, correlation.receipt.versions));
     requireFact(await sourceDigest(capture.authoredSource) === capture.source.sourceSha256 &&
-      readDocument(capture.authoredSource).contract === 'agsdl-0.3.0');
+      readDocument(capture.authoredSource).contract === capture.versions.contract);
     return structuredClone(capture);
   }
   function verifyRetained(run: PublicRunSummary030) {

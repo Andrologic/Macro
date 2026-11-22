@@ -1285,12 +1285,12 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "agsdl_update",
-    "Edit and save the calling blueprint's AgSDL document. Read agsdl_get first. Supply exactly one of changes, source, example, design_json, or display_json. New examples use AgSDL 0.3.0; preserve imported 0.1/0.2 editions. Design and display metadata are stored outside closed 0.2/0.3 source. Atomic pointer edits preserve untouched content. Returns a new revision and diagnostics; never runs agents.",
+    "Edit and save the calling blueprint's AgSDL document. Read agsdl_get first. Supply exactly one of changes, source, example, design_json, or display_json. Use AgSDL 0.4.0 for new designs and preserve the edition of an existing draft while editing. Keep design and display metadata in the Macro envelope. Atomic pointer edits preserve untouched content. Returns a new revision and diagnostics; never runs agents.",
     { type: "object", properties: {
       blueprint_id: { type: "string", description: "Blueprint identity returned by agsdl_get." }, plan_id: { type: "string" }, target_branch: { type: "string" }, expected_revision: { type: "string" },
       changes: { type: "array", items: { type: "object", properties: { op: { type: "string", enum: ["set", "remove"] }, path: { type: "string", allowEmpty: true }, value_json: { type: "string", description: "Exact JSON value as text, required for set." } }, required: ["op", "path"] } },
       source: { type: "string", description: "Complete replacement document; prefer changes for focused edits." },
-      example: { type: "string", enum: ["release", "feature", "hotfix", "bugfix"], description: "Initialize an empty document in AgSDL 0.3.0." },
+      example: { type: "string", enum: ["release", "feature", "hotfix", "bugfix"], description: "Initialize an empty document in AgSDL 0.4.0." },
       design_json: { type: "string", description: "Complete Macro design metadata as JSON text. Read design_context from agsdl_get first. Metadata stays outside 0.2/0.3 source; requirement targetPath values explicitly adapt supported source fields." },
       display_json: { type: "string", description: "AgSDL 0.2/0.3 Macro display metadata patch as JSON text. Read display_context first. Use title and cards mapping existing JSON pointers to title, description or macroGroup strings. Omitted fields remain unchanged; empty strings clear display overrides. Keeps source identities and bytes unchanged." },
     }, required: ["expected_revision"] },

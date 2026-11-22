@@ -1,0 +1,22 @@
+{
+  "description": "The work ends and receipt cannot be established. The steer step fails without starting work or replaying the message, and the all join fails.",
+  "document": "cases/steer-in-branch.json",
+  "timeline": [
+    { "work": "start", "returns": { "text": "Ship the release." } },
+    { "work": "watch", "returns": { "text": "Update the changelog." } },
+    { "running": [{ "step": "code" }] },
+    { "work": "code", "returns": { "text": "Release ready." } },
+    { "running": [] },
+    { "steer": { "to": "signal", "nth": 1, "outcome": "uncertain" } },
+    { "running": [] }
+  ],
+  "expect": {
+    "run": "failed",
+    "starts": { "start": 1, "watch": 1, "code": 1 },
+    "joins": [],
+    "failures": [
+      { "step": "signal", "code": "STEER_UNCERTAIN" },
+      { "step": "merge", "code": "BRANCH_FAILED" }
+    ]
+  }
+}

@@ -81,9 +81,13 @@ export async function buildRouteDataCorpus030() {
   for (const raw of ['null','false','[]','{}','{','1.1.']) add('broker-priority','broker',{job:{ticket:'ticket',generation:'generation',inputDigest:'digest',inputJson:raw}});
   add('broker-generation','broker',broker({},'retired'));
   for (const input of [{operation:'prepare',stepJson:'{}',source},{operation:'normalize',prepared:{kind:'command'},receipt:{complete:false}},{operation:'normalize',prepared:{kind:'mcp'},receipt:{text:'original',isError:false}},{operation:'other',...base,contentReceipts:emptyCache,content:{bad:true},contentForOccurrence:{bad:true}}]) add('broker-operation','broker',broker(input));
-  for (const name of readdirSync('dev/agsdl/fixtures/v0.3/conformance/runs').sort()) {
-    const path='dev/agsdl/fixtures/v0.3/conformance/runs/'+name, raw=readFileSync(path,'utf8');files.push({path,sha256:sha(raw)});
-    const document=record(decode(raw)).document;const compiled=await plan(encode(document));const p=JSON.parse(compiled);
+  const corpus = 'dev/agsdl/fixtures/v0.4/conformance';
+  for (const name of readdirSync(corpus + '/runs').sort()) {
+    const path = corpus + '/runs/' + name, raw = readFileSync(path, 'utf8');
+    files.push({ path, sha256: sha(raw) });
+    const document = record(decode(raw)).document;
+    const authored = typeof document === 'string' ? readFileSync(corpus + '/' + document, 'utf8') : encode(document);
+    const compiled = await plan(authored), p = JSON.parse(compiled);
     for (const route of p.routes) {
       const sourceStep=p.steps.find((s:any)=>JSON.stringify(s.address)===JSON.stringify(route.source));
       const producerStep=sourceStep.type==='compose'?p.steps.find((s:any)=>s.type!=='compose'&&s.address.length>route.source.length&&route.source.every((part:string,i:number)=>part===s.address[i])):sourceStep;

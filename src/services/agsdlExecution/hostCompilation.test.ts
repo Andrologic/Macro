@@ -51,7 +51,7 @@ it('runs the 0.3 reader without inventing native qualification and binds refusal
   const authored = '{"contract":"agsdl-0.3.0","id":"fixture","agents":{"worker":{"harness":"codex","permissions":"read-only"}},"content":{"number":{"value":9007199254740993}}}';
   const source: SourceRevision = { owner: { projectId: 'p', planId: 'p', branch: 'feature/p' }, revision: '1', sourceSha256: id(await sourceDigest(authored)) };
   const modules = ['codex', 'claude-code', 'opencode', 'pi'].map(harness => ({ harness,
-    moduleJson: json(readFileSync(new URL(`../../vendor/agsdl/v0.3/harnesses/${harness}/module.json`, import.meta.url), 'utf8')) }));
+    moduleJson: json(readFileSync(new URL(`../../vendor/agsdl/v0.4/harnesses/${harness}/module.json`, import.meta.url), 'utf8')) }));
   const registry: CapturedRegistry030 = { format: 'macro-agsdl-registry/030', version: 'native-capture', modules, harnesses: [], agents: [] };
   const ticket = { ...registry, startEntry: null, callPermissions: { allowed: false } };
   const result = JSON.parse(await compileHost030(authored, source, ticket));

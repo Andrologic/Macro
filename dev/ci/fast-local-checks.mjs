@@ -13,10 +13,10 @@ const AGSDL_CONFORMANCE_PATTERNS = [
   /^src-tauri\/src\/(?:agsdl_host|lib)\.rs$/,
   /^src-tauri\/(?:Cargo\.toml|Cargo\.lock)$/,
   /^src\/services\/agsdlExecution\//,
-  /^src\/vendor\/agsdl\/v0\.3\//,
+  /^src\/vendor\/agsdl\/v0\.[34]\//,
   /^src\/vendor\/agsdl\/shared\/(?:json|values)\.mjs$/,
   /^src\/vendor\/agsdl\/experimental\/readers\/javascript\/json\.mjs$/,
-  /^dev\/agsdl\/(?:conformance-host030\.ts|(?:compile|work|route-data|clock)-corpus030\.ts|(?:values|reader|routes|compile|native-json|work|route-data|clock)-oracle030(?:\.test)?\.ts|fixtures\/v0\.3\/)/,
+  /^dev\/agsdl\/(?:conformance-host030\.ts|(?:compile|work|route-data|clock)-corpus030\.ts|(?:values|reader|routes|compile|native-json|work|route-data|clock)-oracle030(?:\.test)?\.ts|fixtures\/v0\.[34]\/)/,
   /^dev\/ci\/(?:argentic|fast-local-checks|check-profiles)\.mjs$/,
 ];
 
@@ -243,7 +243,7 @@ export function planFastLocalChecks(paths, options = {}) {
 
   if (normalized.some((path) => matchesAny(path, AGSDL_CONFORMANCE_PATTERNS))) {
     steps.push({
-      name: 'Conformité AgSDL 0.3 en processus (37 scénarios)',
+      name: 'Conformité AgSDL 0.3 et 0.4 dans le moteur natif',
       command: process.execPath,
       args: ['dev/ci/argentic.mjs', 'argentic-runtime', 'test', '--locked', '--jobs', '2',
         '--lib', 'conformance030_tests', '--', '--test-threads=1'],

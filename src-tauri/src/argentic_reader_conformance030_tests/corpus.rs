@@ -610,7 +610,7 @@ pub(super) fn build() -> Corpus {
         counts: BTreeMap::new(),
     };
     let root = root();
-    let fixtures = root.join("dev/agsdl/fixtures/v0.3");
+    let fixtures = root.join("dev/agsdl/fixtures/v0.4");
     let record = |c: &mut Corpus, path: &Path, category: &str| -> Vec<u8> {
         let bytes = std::fs::read(path).unwrap();
         let relative = path
@@ -641,7 +641,7 @@ pub(super) fn build() -> Corpus {
     let mut documents: Vec<(String, String)> = Vec::new();
 
     let cases = json_files(&fixtures.join("conformance/cases"), ".json");
-    assert_eq!(cases.len(), 144, "official static corpus changed");
+    assert_eq!(cases.len(), 147, "official static corpus changed");
     for path in &cases {
         let bytes = record(&mut c, path, "staticCases");
         let id = format!("case:{}", path.file_stem().unwrap().to_str().unwrap());
@@ -661,11 +661,17 @@ pub(super) fn build() -> Corpus {
         documents.push((id, String::from_utf8(bytes).unwrap()));
     }
     let runs = json_files(&fixtures.join("conformance/runs"), ".json");
-    assert_eq!(runs.len(), 37, "official run corpus changed");
+    assert_eq!(runs.len(), 50, "official run corpus changed");
     for path in &runs {
         let bytes = record(&mut c, path, "scenarios");
         let scenario = scan::parse_v030(&bytes).unwrap().tree;
-        let document = stringify(scenario.as_object().unwrap().get("document").unwrap());
+        let raw_document = scenario.as_object().unwrap().get("document").unwrap();
+        let document = match raw_document {
+            Value::String(path) => {
+                std::fs::read_to_string(fixtures.join("conformance").join(path)).unwrap()
+            }
+            document => stringify(document),
+        };
         let id = format!("run:{}", path.file_stem().unwrap().to_str().unwrap());
         c.read("runs", &id, document.as_bytes(), &sets);
         documents.push((id, document));
@@ -681,7 +687,7 @@ pub(super) fn build() -> Corpus {
         }
     }
     let pinned: Vec<(String, String)> =
-        json_files(&root.join("src/vendor/agsdl/v0.3/harnesses"), "")
+        json_files(&root.join("src/vendor/agsdl/v0.4/harnesses"), "")
             .into_iter()
             .map(|directory| {
                 let path = directory.join("module.json");
@@ -695,7 +701,7 @@ pub(super) fn build() -> Corpus {
     for schema in ["agsdl.schema.json", "harness-module.schema.json"] {
         record(
             &mut c,
-            &root.join("src/vendor/agsdl/v0.3/schema").join(schema),
+            &root.join("src/vendor/agsdl/v0.4/schema").join(schema),
             "schemas",
         );
     }

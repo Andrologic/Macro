@@ -1,0 +1,49 @@
+{
+  "name": "limited",
+  "title": "Limited harness",
+  "version": "1.0.0",
+  "contract": "agsdl-0.4.0",
+  "harnessVersions": ">=2.0.0",
+  "properties": {
+    "model.name": {
+      "support": "native"
+    },
+    "model.effort": {
+      "support": "native",
+      "values": [
+        "low",
+        "high"
+      ]
+    },
+    "plan": {
+      "support": "native",
+      "versions": ">=2.3.0"
+    },
+    "planFirst.auto": {
+      "support": "approximate",
+      "note": "The read-only lock is kept by instructions only."
+    },
+    "planFirst.ask": {
+      "support": "absent",
+      "note": "The read-only lock is kept by instructions only, which cannot hold like a permission."
+    },
+    "delivery.steer": {
+      "support": "approximate",
+      "note": "The running tool call is interrupted to deliver the message."
+    }
+  },
+  "permissions": {
+    "read": {
+      "allow": "harness"
+    },
+    "write": {
+      "allow": "harness",
+      "deny": "harness"
+    },
+    "shell": {
+      "allow": "harness",
+      "deny": "harness",
+      "match": "prefix"
+    }
+  }
+}

@@ -256,7 +256,6 @@ pub(crate) async fn observation(
     let scope = execution_scope(workspace, source, task)?;
     let project = &source.project;
     let document = exact_json::value(&source.source).unwrap_or(Value::Null);
-    let is_030 = document.get("contract").and_then(Value::as_str) == Some("agsdl-0.3.0");
     // Report unsupported product features before attempting Codex account discovery.
     if let Some(diagnostic) = product_slice030(&source.source, None) {
         return Err(failure(
@@ -265,8 +264,12 @@ pub(crate) async fn observation(
             &diagnostic.message,
         ));
     }
+    let flow_document = document
+        .get("contract")
+        .and_then(Value::as_str)
+        .is_some_and(argentic_core::supports_contract);
     let uses_calls030 =
-        is_030 && declared_steps030(&document).any(|(_, step)| step["type"] == "call");
+        flow_document && declared_steps030(&document).any(|(_, step)| step["type"] == "call");
     if uses_calls030 {
         if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             return Err(failure(
@@ -290,7 +293,7 @@ pub(crate) async fn observation(
             ));
         }
     }
-    let uses_codex030 = is_030
+    let uses_codex030 = flow_document
         && document
             .get("agents")
             .and_then(Value::as_object)
@@ -356,7 +359,7 @@ pub(crate) async fn observation(
         ))?)
     );
     observation["version"] = Value::String(version);
-    if is_030 {
+    if flow_document {
         let (mut harnesses, agents) = match &codex030 {
             Some(observed) => {
                 let (harness, agents) =
@@ -386,9 +389,9 @@ pub(crate) async fn observation(
             "format":"macro-agsdl-registry/030",
             "modules":[
                 {"harness":"codex", "moduleJson":argentic_runtime::api::codex_module()},
-                {"harness":"claude-code", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/claude-code/module.json")},
-                {"harness":"opencode", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/opencode/module.json")},
-                {"harness":"pi", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/pi/module.json")}
+                {"harness":"claude-code", "moduleJson":include_str!("../../src/vendor/agsdl/v0.4/harnesses/claude-code/module.json")},
+                {"harness":"opencode", "moduleJson":include_str!("../../src/vendor/agsdl/v0.4/harnesses/opencode/module.json")},
+                {"harness":"pi", "moduleJson":include_str!("../../src/vendor/agsdl/v0.4/harnesses/pi/module.json")}
             ],
             "harnesses":harnesses, "agents":agents, "hostCapabilities": if cfg!(all(target_os="macos", target_arch="aarch64")) {
                 json!([{"name":"approval","support":"native","evidenceJson":"{\"runtime\":\"flow-human-clock\"}"},{"name":"call.command","support":"native","evidenceJson":"{\"transport\":\"confined-local\"}"},{"name":"call.mcp","support":"native","evidenceJson":"{\"transport\":\"confined-stdio\"}"}])
@@ -465,10 +468,10 @@ pub(crate) async fn compile_input(
         request.expected.as_ref(),
     )
     .await?;
-    if exact_json::value(&locked.source)?
+    if !exact_json::value(&locked.source)?
         .get("contract")
         .and_then(Value::as_str)
-        != Some("agsdl-0.3.0")
+        .is_some_and(argentic_core::supports_contract)
     {
         return Err(failure(
             "UNSUPPORTED_EDITION",
@@ -708,9 +711,9 @@ impl CompilationCapture {
                 != Some(versions.registry.as_str())
             || plan.get("format").and_then(Value::as_str) != Some("macro-agsdl-compiled-plan/2")
             || versions.snapshot != "2"
-            || versions.contract != "agsdl-0.3.0"
+            || !argentic_core::supports_contract(&versions.contract)
             || versions.profile != request.profile
-            || authored.get("contract").and_then(Value::as_str) != Some("agsdl-0.3.0")
+            || authored.get("contract").and_then(Value::as_str) != Some(versions.contract.as_str())
             || plan
                 .get("entry")
                 .is_none_or(|entry| entry.is_null() != request.entry.is_none())
@@ -754,7 +757,11 @@ fn local_harness_diagnostics030(authored: &str, registry_json: &str) -> Vec<Pref
     let Ok(registry) = exact_json::value(registry_json) else {
         return vec![];
     };
-    if document.get("contract").and_then(Value::as_str) != Some("agsdl-0.3.0") {
+    if !document
+        .get("contract")
+        .and_then(Value::as_str)
+        .is_some_and(argentic_core::supports_contract)
+    {
         return vec![];
     }
     let Some(agents) = document.get("agents").and_then(Value::as_object) else {
@@ -897,7 +904,7 @@ impl CompilationCapture {
                         && finding.get("message").and_then(Value::as_str)
                             == Some("No native observation matches the complete agent declaration.")
                     {
-                        "No qualified native 0.3 agent capture is available.".into()
+                        "No qualified native AgSDL agent capture is available.".into()
                     } else if self
                         .result
                         .pointer("/runtime/profile")
@@ -1077,8 +1084,8 @@ mod exact_capture_tests {
     fn local_harness_diagnostics_distinguish_missing_version_and_adapter() {
         let document = r#"{"contract":"agsdl-0.3.0","agents":{"a/b":{"harness":"opencode"},"other":{"harness":"pi"}}}"#;
         let registry = json!({"modules":[
-            {"harness":"opencode","moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/opencode/module.json")},
-            {"harness":"pi","moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/pi/module.json")}
+            {"harness":"opencode","moduleJson":include_str!("../../src/vendor/agsdl/v0.4/harnesses/opencode/module.json")},
+            {"harness":"pi","moduleJson":include_str!("../../src/vendor/agsdl/v0.4/harnesses/pi/module.json")}
         ],"harnesses":[
             {"harness":"opencode","installation":"available","version":"1.19.5"},
             {"harness":"pi","installation":"missing","version":null}

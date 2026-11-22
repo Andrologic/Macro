@@ -1,9 +1,11 @@
+import { AGSDL_CONTRACT, isFlowDocumentContract } from "./contract";
+import type { FlowDocumentContract } from "../../vendor/agsdl/v0.4/reader.mjs";
 import type { AgsdlChange,AgsdlDisplayMetadata,AgsdlEnvelopeMetadata,DesignMetadata } from '../../types/agsdl';
 import { applyChanges,LEGACY_AGSDL_CONTRACT,object,readDocument,sourceAt } from './document';
 export type { AgsdlDisplayMetadata,AgsdlEnvelopeMetadata,AgsdlMigrationMetadata,DesignMetadata } from '../../types/agsdl';
 
-export type AgsdlAuthoringContract = 'agsdl-0.1.0' | 'agsdl-0.2.0' | 'agsdl-0.3.0';
-export const hasDesignEnvelope = (contract: unknown): boolean => contract === 'agsdl-0.3.0';
+export type AgsdlAuthoringContract = 'agsdl-0.1.0' | 'agsdl-0.2.0' | FlowDocumentContract;
+export const hasDesignEnvelope = (contract: unknown): boolean => isFlowDocumentContract(contract);
 
 export class DesignMetadataError extends Error {
   constructor() { super('The design metadata is malformed or uses an unsupported version. Its original contents have been preserved.'); this.name = 'DesignMetadataError'; }
@@ -38,7 +40,7 @@ export function readDesign(source: string, metadata?: DesignMetadata): DesignMet
 export function designChanges(source: string, design: DesignMetadata): AgsdlChange[] {
   if (!valid(design)) throw new DesignMetadataError();
   design = updateDesignMetadata(readDesign(source), design);
-  if (hasDesignEnvelope(readDocument(source).contract)) throw new Error('AgSDL 0.3 design metadata belongs in the editor envelope. Use setDesign.');
+  if (hasDesignEnvelope(readDocument(source).contract)) throw new Error('AgSDL design metadata belongs in the editor envelope. Use setDesign.');
   const previous = readDesign(source);
   const root = object(readDocument(source).root);
   if (root.annotations === undefined) return [{ op: 'set', path: '/root/annotations', valueJson: JSON.stringify({ macroDesign: design }) }];
@@ -111,12 +113,12 @@ export function withDocumentDesign(source: string, design: DesignMetadata, metad
   if (hasDesignEnvelope(readDocument(source).contract)) return { ...structuredClone(metadata), source, design: updateDesignMetadata(metadata.design, design) };
   return { ...structuredClone(metadata), source: withDesign(source, design) };
 }
-export function createEmptySystem(title: string, contract: AgsdlAuthoringContract = 'agsdl-0.3.0'): string {
+export function createEmptySystem(title: string, contract: AgsdlAuthoringContract = AGSDL_CONTRACT): string {
   if (contract === LEGACY_AGSDL_CONTRACT) return createLegacyEmptySystem(title);
   if (!hasDesignEnvelope(contract)) throw new Error('Unsupported AgSDL authoring contract.');
   return JSON.stringify({ contract, id: `system-${crypto.randomUUID()}`, agents: {}, title }, null, 2);
 }
-export function createEmptySystemDocument(title: string, contract: AgsdlAuthoringContract = 'agsdl-0.3.0', kind: DesignMetadata['kind'] = 'system'): { source: string; annexes: Record<string, string> } & AgsdlEnvelopeMetadata {
+export function createEmptySystemDocument(title: string, contract: AgsdlAuthoringContract = AGSDL_CONTRACT, kind: DesignMetadata['kind'] = 'system'): { source: string; annexes: Record<string, string> } & AgsdlEnvelopeMetadata {
   const design = { ...defaultDesign(), kind };
   const source = createEmptySystem(title, contract);
   return { ...withDocumentDesign(source, design), annexes: {}, display: { title } };

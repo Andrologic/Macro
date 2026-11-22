@@ -1,3 +1,4 @@
+import { isFlowDocumentContract } from "../../services/agsdl/contract";
 import { Background,getViewportForBounds,Handle,MarkerType,Panel,Position,ReactFlow,ReactFlowProvider,useReactFlow,type Node,type NodeChange,type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Bot,Boxes,Braces,ChevronDown,ChevronRight,ChevronUp,CircleHelp,Info,Layers,List,LocateFixed,MessageSquare,MessageSquarePlus,Minus,Plus,RotateCcw,Shuffle,Sparkles,Terminal,UserCheck,Zap } from "lucide-react";
@@ -270,7 +271,7 @@ function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEnt
         dismissSignal,
         members: group?.members.map(title),
         changed: changedPaths.some(path => path === graphSourcePath(card) || (group?.members.some(member => graphSourcePath(member) === path))),
-        pending: !(card.details.contract === "agsdl-0.3.0") && (card.kind === "Agent" || card.kind === "invoke") && !card.mission.trim(),
+        pending: !isFlowDocumentContract(card.details.contract) && (card.kind === "Agent" || card.kind === "invoke") && !card.mission.trim(),
         occurrences: group ? undefined : occurrenceBadges[card.static030?.occurrenceId ?? card.path],
         native: group ? groupNativeState(group.members.flatMap(member => nativeActivations[member.path] ? [nativeActivations[member.path]] : []), group.members.length) : nativeActivations[card.path],
         task: group ? groupTaskState(group.members.flatMap(member => trackedTasks[member.path] ? [trackedTasks[member.path]] : []), group.members.length) : trackedTasks[card.path],
