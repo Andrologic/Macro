@@ -3186,6 +3186,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       const { useChatStore: chat } = await loadChatStore();
       chat.setState(createIdleChatStoreState({ conversations: [] }));
       expect(await chat.getState().ensureConversationForCurrentMode()).toBe(a.conversationId);
+      expect(chat.getState().activeContextKey).toBe(JSON.stringify(["Architect", a.id, null]));
       const target = { blueprintId: a.id };
       const session = editor.getState().sessions[agsdlSessionKey(target)];
       const scopedStarted = createDeferred<void>();

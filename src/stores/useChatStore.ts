@@ -1054,7 +1054,9 @@ const buildChatContextKey = (
 ): ChatContextKey => {
   if (appState.mode === "Architect") {
     if (!demoWorkflowJourney) {
-      return JSON.stringify(["Architect", confirmedBlueprintDraft(useArchitectLibraryStore.getState())?.id ?? null]);
+      const draft = confirmedBlueprintDraft(useArchitectLibraryStore.getState());
+      // Keep the persisted composer key for confirmed drafts.
+      return JSON.stringify(["Architect", draft?.id ?? null, null]);
     }
     if (appState.activeArchitectPlanId) {
       return [
