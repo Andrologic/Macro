@@ -521,12 +521,28 @@ describe('plan completion contracts', () => {
     expect(ports.deselectTaskIfSelected).not.toHaveBeenCalled();
   });
 
+  it.each(['archive', 'finalize'] as const)('blocks an explicit merge retry for an inherited %s saga before reading Git', async (operation) => {
+    const { ports } = fixture();
+    const finalization = { ...task, task_source: 'plan_finalization' } as TaskWorkflowTask;
+    ports.findPlanSummary = () => ({ id: 'plan-a', storageBranch: 'develop' }) as ReturnType<TaskMergeWorkflowPorts['findPlanSummary']>;
+    ports.loadPlanReview = mock(unexpected);
+    ports.loadPlanLifecycleSagas = async () => [{ operation, planId: 'plan-a', branchName: 'develop' }];
+    ports.finalizePlanIntoBaseBranch = mock(unexpected);
+    await expect(runTaskPlanFinalizationWorkflow(ports, finalization, { mergeStrategyAction: 'complete_merge' }, {
+      persist: unexpected, reloadAfterFailure: unexpected,
+    })).rejects.toThrow('manual inspection');
+    expect(ports.loadPlanReview).not.toHaveBeenCalled();
+    expect(ports.finalizePlanIntoBaseBranch).not.toHaveBeenCalled();
+  });
+
   it('locks the strategy when a finalization saga is already pending', async () => {
     const { ports } = fixture();
     const finalization = { ...task, task_source: 'plan_finalization' } as TaskWorkflowTask;
     ports.findPlanSummary = () => ({ id: 'plan-a', storageBranch: 'develop' }) as ReturnType<TaskMergeWorkflowPorts['findPlanSummary']>;
     ports.loadPlanReview = async () => ({ plan: { id: 'plan-a', title: 'Plan' }, tasks: [], repositories: [] }) as unknown as Awaited<ReturnType<TaskMergeWorkflowPorts['loadPlanReview']>>;
-    ports.loadPlanLifecycleSagas = async () => [{ operation: 'finalize', planId: 'plan-a', branchName: 'develop' }];
+    ports.loadPlanLifecycleSagas = async () => [{
+      operation: 'finalize', planId: 'plan-a', branchName: 'develop', developmentRecoveryVersion: 1,
+    }];
     ports.finalizePlanIntoBaseBranch = mock(unexpected);
     await expect(runTaskPlanFinalizationWorkflow(ports, finalization, { mergeStrategyAction: 'fast_forward' }, {
       persist: async () => {}, reloadAfterFailure: unexpected,
@@ -539,7 +555,9 @@ describe('plan completion contracts', () => {
     const finalization = { ...task, task_source: 'plan_finalization' } as TaskWorkflowTask;
     ports.findPlanSummary = () => ({ id: 'plan-a', storageBranch: 'develop' }) as ReturnType<TaskMergeWorkflowPorts['findPlanSummary']>;
     ports.loadPlanReview = async () => ({ plan: { id: 'plan-a', title: 'Plan' }, tasks: [], repositories: [] }) as unknown as Awaited<ReturnType<TaskMergeWorkflowPorts['loadPlanReview']>>;
-    ports.loadPlanLifecycleSagas = async () => [{ operation: 'finalize', planId: 'plan-a', branchName: 'develop' }];
+    ports.loadPlanLifecycleSagas = async () => [{
+      operation: 'finalize', planId: 'plan-a', branchName: 'develop', developmentRecoveryVersion: 1,
+    }];
     ports.finalizePlanIntoBaseBranch = mock(async () => { throw new Error('cleanup pending'); });
     const reload = mock(async () => buildInitialMergeWorkflowRuntimeState({ taskId: task.id, kind: 'plan_finalization' }));
     await expect(runTaskPlanFinalizationWorkflow(ports, finalization, { mergeStrategyAction: 'complete_merge' }, {

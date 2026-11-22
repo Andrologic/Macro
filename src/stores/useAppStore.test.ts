@@ -2697,7 +2697,7 @@ describe('useAppStore architect plan resolution', () => {
     getArchitectPlanActivationPayloadMock.mockImplementationOnce(async () => {
       readEntered();
       await new Promise<void>(resolve => { releaseRead = resolve; });
-      return { plan: a, chatMessages: [], conversationId: a.conversationId,
+      return { plan: a, chatMessages: [], conversationId: a.conversationId ?? null,
         sharedConversation: false, targetBranch: a.targetBranch, resolutionMode: 'full' };
     });
     const reopen = store.activateArchitectPlan(a.id);

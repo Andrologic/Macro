@@ -608,27 +608,23 @@ export const commitMetadataScopes = async (
     return;
   }
 
-  if (options?.commit) {
-    const commitScopes = options.metadataPathsByWorkspace
-      ? repoScopes.filter(scope => options.metadataPathsByWorkspace?.get(scope.workspacePath as string)?.size)
+  const inferredKind = options?.mutationKind ?? inferMacroMutationKind(commitMessage);
+  const structural = options?.structural ?? isStructuralMacroMutation(inferredKind);
+  if (options?.commit || structural) {
+    const metadataPaths = options?.metadataPathsByWorkspace;
+    const commitScopes = metadataPaths
+      ? repoScopes.filter(scope => metadataPaths.get(scope.workspacePath as string)?.size)
       : repoScopes;
     if (commitScopes.length === 0) return;
-    await flushMacroMetadata({
+    const results = await flushMacroMetadata({
       trigger: 'explicit_checkpoint',
       workspacePaths: commitScopes.map((scope) => scope.workspacePath as string),
       message: commitMessage,
     }, getArchitectPlanMetadataCoordinatorDeps(resolvedDeps));
-    return;
-  }
-
-  const inferredKind = options?.mutationKind ?? inferMacroMutationKind(commitMessage);
-  const structural = options?.structural ?? isStructuralMacroMutation(inferredKind);
-  if (structural) {
-    await flushMacroMetadata({
-      trigger: 'explicit_checkpoint',
-      workspacePaths: repoScopes.map((scope) => scope.workspacePath as string),
-      message: commitMessage,
-    }, getArchitectPlanMetadataCoordinatorDeps(resolvedDeps));
+    const failures = results.flatMap(result => result.error != null
+      ? [result.error || 'Metadata checkpoint failed.']
+      : []);
+    if (failures.length > 0) throw new Error(failures.join('\n'));
     return;
   }
 
@@ -638,7 +634,7 @@ export const commitMetadataScopes = async (
       kind: inferredKind,
       entityId: options?.mutationLabel ?? extractMacroMutationLabel(commitMessage),
       label: options?.mutationLabel ?? extractMacroMutationLabel(commitMessage),
-      importance: structural ? 'structural' : 'light',
+      importance: 'light',
     }, getArchitectPlanMetadataCoordinatorDeps(resolvedDeps));
   }
 };

@@ -1,9 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useAppStore } from '../../stores/useAppStore';
 import { toPlanLocatorKey } from '../../services/durableIdentity';
-import type { ArchitectPlanRecord, ArchitectPlanSummary } from '../../services/architectPlanService';
+import {
+  createArchitectPlan, getArchitectPlan, getGitFlowBaseBranch, type ArchitectPlanRecord, type ArchitectPlanSummary,
+} from '../../services/architectPlanService';
+import { installArchitectPlanPorts } from '../../services/architectPlanReadContext';
+import { useTaskStore } from '../../stores/useTaskStore';
 import type { MacroProjectMetadataLoadResult } from '../../services/macroProjectMetadataLoader';
 import { ArchitectProjectNavigator } from './ArchitectProjectNavigator';
 import {
@@ -13,7 +17,7 @@ import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { dispatchArchitectPlanSelectorRequest } from './planSelectorEvents';
 import { nameBlueprintFolder, moveBlueprintToFolder, emptyBlueprintFolders } from '../../services/blueprintFolders';
 import { PREF_KEYS, savePreference, loadPreference } from '../../services/preferences';
-import { readDesign } from '../../services/agsdl/design';
+import { createEmptyBlueprintDocument, readDesign } from '../../services/agsdl/design';
 import { AGSDL_CONTRACT, readDocument } from '../../services/agsdl/document';
 
 const flushRender = async () => {
@@ -65,6 +69,73 @@ describe('ArchitectProjectNavigator search', () => {
     container = null;
     root = null;
     useAppStore.setState(initialAppState, true);
+  });
+
+  it('archives, restores and deletes an old Macro blueprint through the metadata catalog', async () => {
+    const projectId = 'macro-library';
+    useAppStore.setState({
+      mode: 'Architect',
+      standaloneProjects: [{ id: projectId, name: 'Macro', path: '/demo/macro', gitSetupState: 'ready' }] as never,
+      projectGroups: [], selectedProjectId: projectId, selectedGroupId: null,
+      activeArchitectPlanId: null, activePlanContext: null,
+    });
+    const releasePlanPorts = installArchitectPlanPorts({ getAppState: useAppStore.getState });
+    const refreshTasks = spyOn(useTaskStore.getState(), 'refreshFromPlan').mockResolvedValue(undefined);
+    try {
+      const branchName = getGitFlowBaseBranch();
+      const doc = createEmptyBlueprintDocument('Legacy Macro blueprint');
+      const created = await createArchitectPlan({
+        branchName, projectId, label: 'Legacy Macro blueprint', agsdl: doc, status: 'validated',
+      });
+      const menuAction = async (label: string) => {
+        await act(async () => {
+          container!.querySelector<HTMLButtonElement>('[data-architect-plan-menu] > button')!.click();
+          await flushRender();
+        });
+        await act(async () => {
+          const actions = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+          expect(actions.map(button => button.textContent?.trim())).toContain(label);
+          actions.find(button => button.textContent?.trim() === label)!.click();
+          await flushRender();
+        });
+      };
+      const toggleArchives = async () => {
+        await act(async () => {
+          container!.querySelector<HTMLButtonElement>('[data-tour-id="architect-archive-toggle"]')!.click();
+          await flushRender();
+        });
+      };
+      await act(async () => {
+        root?.render(<ArchitectProjectNavigator macroBlueprintProjectId={projectId} />);
+        await flushRender();
+      });
+
+      await menuAction('Archiver');
+      expect((await getArchitectPlan(branchName, created.id))?.archivedFromStatus).toBe('validated');
+      expect(container?.textContent).not.toContain('Legacy Macro blueprint');
+      await toggleArchives();
+      await menuAction('Restaurer');
+      expect(await getArchitectPlan(branchName, created.id)).toMatchObject({
+        status: 'validated', agsdl: doc,
+      });
+      expect(container?.textContent).not.toContain('Legacy Macro blueprint');
+      await toggleArchives();
+      await menuAction('Archiver');
+      await toggleArchives();
+      await menuAction('Supprimer');
+      const dialog = document.querySelector('[role="dialog"]')!;
+      expect(dialog.textContent).toContain('sera supprimé');
+      await act(async () => {
+        [...dialog.querySelectorAll('button')].find(button => button.textContent === 'Supprimer')!.click();
+        await flushRender();
+      });
+      expect(await getArchitectPlan(branchName, created.id)).toBeNull();
+      expect(container?.textContent).not.toContain('Legacy Macro blueprint');
+      expect(refreshTasks).not.toHaveBeenCalled();
+    } finally {
+      refreshTasks.mockRestore();
+      releasePlanPorts();
+    }
   });
 
   it('separates the shared library, activates its blueprints and remembers independent section folds', async () => {

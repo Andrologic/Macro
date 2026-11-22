@@ -4,6 +4,7 @@ import type * as tauriIpc from './tauriIpc';
 import type * as planApi from './architectPlanService';
 import type * as gitFlowApi from './architectGitFlowService';
 import type { MergeWorkflowRuntimeState, MergeWorkflowResolutionAction, MergeWorkflowRepositoryResult } from './mergeWorkflow';
+import type { PlanLifecycleSaga } from './planLifecycleSaga';
 
 export type TaskWorkflowTask = CatalogedImplementTask;
 export type TaskWorkflowTarget = TaskExecutionTarget & { repoPath: string; worktreePath?: string };
@@ -57,7 +58,9 @@ export interface TaskMergeWorkflowPorts extends TaskWorkflowPorts {
   completionMergePolicy(projectId: string): CompletionMergePolicy;
   /** Share this queue with conflict-resolution actions in the composition. */
   serializeRepositoryOperation<T>(repository: Pick<MergeWorkflowRepositoryResult, 'repoPath' | 'targetBranchName'>, operation: () => Promise<T>): Promise<T>;
-  loadPlanLifecycleSagas(): Promise<Array<{ operation: string; planId: string; branchName: string }>>;
+  loadPlanLifecycleSagas(): Promise<Array<Pick<
+    PlanLifecycleSaga, 'operation' | 'planId' | 'branchName' | 'developmentRecoveryVersion'
+  >>>;
   resolveTargetBranch(branch: string): string;
   finalizePlanIntoBaseBranch: typeof gitFlowApi.finalizePlanIntoBaseBranch;
   refreshCatalog(): Promise<void>;

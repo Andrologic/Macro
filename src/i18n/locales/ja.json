@@ -2164,7 +2164,7 @@
       "delete": "削除",
       "deleting": "削除中…",
       "deleteTitle": "プランを削除",
-      "deleteDescription": "プラン「{{name}}」とローカルの Macro ブランチを削除します。この操作は元に戻せません。",
+      "deleteDescription": "プラン「{{name}}」を削除します。この操作は元に戻せません。",
       "editUnavailable": "このプランは編集できなくなりました。",
       "editError": "プランを編集できませんでした。",
       "archiveUnavailable": "このプランはアーカイブできなくなりました。",
