@@ -342,6 +342,28 @@ const bootstrapDependencies = (overrides: Partial<AppBootstrapDependencies> = {}
 });
 
 describe('appBootstrap ownership', () => {
+  it('imports after database initialization and retries an unavailable source on restart', async () => {
+    const events: string[] = [];
+    let available = false;
+    const controller = createAppBootstrapController(() => bootstrapDependencies({
+      initializeDatabaseCritical: async () => { events.push('database'); },
+      migrateArchitectLibrary: async () => {
+        events.push('import');
+        if (!available) throw new Error('Workspace unavailable');
+      },
+      initializeAppCritical: async () => { events.push('app'); },
+    }));
+    await controller.ensureStarted();
+    expect(events).toEqual(['database', 'import', 'app']);
+    expect(controller.getSnapshot().ready).toBe(true);
+    expect(controller.getSnapshot().warnings['Architect library import']).toBe('Workspace unavailable');
+    available = true;
+    await controller.restart();
+    expect(events).toEqual(['database', 'import', 'app', 'database', 'import', 'app']);
+    expect(controller.getSnapshot().warnings['Architect library import']).toBeUndefined();
+    await controller.stop();
+  });
+
   it('cancels idle work, settles start and makes a retained callback inert', async () => {
     const scheduled = deferred<() => void>();
     const cancel = mock(() => undefined);

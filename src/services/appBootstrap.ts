@@ -42,6 +42,7 @@ export type AppBootstrapInit = (context?: LifecycleContext) => Promise<void>;
 
 export interface AppBootstrapDependencies {
   initializeDatabaseCritical?: AppBootstrapInit;
+  migrateArchitectLibrary?: AppBootstrapInit;
   initializeAppCritical: AppBootstrapInit;
   resumeAppAfterInitialize: AppBootstrapInit;
   initializeChatCritical: AppBootstrapInit;
@@ -221,6 +222,13 @@ export const createAppBootstrapController = (
           }));
           return;
         }
+      }
+
+      if (dependencies.migrateArchitectLibrary) {
+        await initWithTracking('Architect library import', dependencies.migrateArchitectLibrary, 'critical', {
+          warningOnly: true,
+        });
+        if (!isActive()) return;
       }
 
       const appCriticalOk = await initWithTracking(
