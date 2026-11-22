@@ -226,6 +226,19 @@ fn normalize_branch_name(value: &str) -> String {
     }
 }
 
+fn stored_plan_branch_matches(value: &str, branch_name: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() {
+        return true;
+    }
+    let value = value.replace('\\', "/");
+    value
+        .strip_prefix("refs/heads/")
+        .unwrap_or(&value)
+        .trim_matches('/')
+        == branch_name
+}
+
 fn sanitize_id(value: &str) -> String {
     let mut result = String::with_capacity(value.len());
     let mut previous_dash = false;
@@ -1498,6 +1511,7 @@ async fn load_head_snapshot(
     if sanitize_id(&plan.id) != plan_id
         || sanitize_id(&manifest.plan_id) != plan_id
         || normalize_branch_name(&manifest.target_branch) != branch_name
+        || (plan.agsdl.is_some() && !stored_plan_branch_matches(&plan.target_branch, branch_name))
         || plan.updated_at != manifest.updated_at
         || manifest.revision <= 0
         || plan.revision.unwrap_or(1) != manifest.revision
@@ -2156,6 +2170,52 @@ mod tests {
             std_fs::read(path_for(plan_id)).expect("read plan"),
             previous_plan
         );
+    }
+
+    #[tokio::test]
+    async fn checks_the_stored_agsdl_branch_before_normalizing_the_activation_head() {
+        let workspace = TempDir::new().expect("workspace temp dir");
+        let metadata_root = workspace.path().join("metadata");
+        let plan_id = "branch-owner";
+        let stamp = "2026-06-01T08:00:00.000Z";
+        write_plan_replica(
+            &metadata_root,
+            plan_id,
+            "project-1",
+            stamp,
+            stamp,
+            "conversation-owner",
+            "Design the system",
+        );
+        let plan_path = architect_plan_dir(&metadata_root, "main", plan_id).join("plan.json");
+        let mut plan = plan_record(plan_id, "project-1");
+        plan.agsdl = Some(serde_json::json!({
+            "source": "{\"contract\":\"agsdl-0.3.0\",\"id\":\"branch-owner\",\"agents\":{}}",
+            "annexes": {},
+            "revision": 1,
+        }));
+
+        for (stored_branch, valid) in [("develop", false), ("refs/heads/main", true), ("", true)] {
+            plan.target_branch = stored_branch.to_string();
+            write_json(&plan_path, &plan);
+            let head = activate_plan_head(
+                workspace.path(),
+                &metadata_root,
+                WorkspaceArchitectActivatePlanHeadRequestDto {
+                    branch_name: "main".to_string(),
+                    plan_id: plan_id.to_string(),
+                    summary_hint: None,
+                    scoped_project_ids_hint: Vec::new(),
+                },
+            )
+            .await
+            .expect("read head");
+            assert_eq!(head.is_some(), valid);
+            if let Some(head) = head {
+                assert_eq!(head.plan.target_branch, "main");
+                assert_eq!(head.conversation_id.as_deref(), Some("conversation-owner"));
+            }
+        }
     }
 
     #[tokio::test]

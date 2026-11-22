@@ -21,6 +21,7 @@ import {
   localIndexKey,
   localPlanChatKey,
   localPlanKey,
+  matchesStoredArchitectPlanBranch,
   normalizeBranchName,
   normalizeContextProjectIds,
   normalizePlanLabel,
@@ -396,27 +397,22 @@ export const readPlanAtScopeWithDiagnostics = async (
   scope: ArchitectMetadataScope,
   branchName: string,
   planId: string,
-  registrySnapshot?: ValidProjectRegistrySnapshot | null
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+  requireStoredBranch = false,
 ): Promise<SanitizedArchitectPlanResult> => {
   const normalized = normalizeBranchName(branchName);
   const safeId = sanitizeId(planId);
-  if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
-    return sanitizeArchitectPlanRecord(
-      normalized,
-      safeId,
-      readLocalPlan(normalized, safeId),
-      registrySnapshot,
-      {
-        logContext: 'plan_read',
-        scopeKey: scope.scopeKey,
-      }
-    );
-  }
+  const storedPlan = !tauriIpc.isTauriAvailable() || scope.source === 'local'
+    ? readLocalPlan(normalized, safeId)
+    : await readJsonFileAtScope<ArchitectPlanRecord>(scope, getPlanJsonPath(normalized, safeId));
+  const plan = requireStoredBranch && !matchesStoredArchitectPlanBranch(storedPlan?.targetBranch, normalized)
+    ? null
+    : storedPlan;
 
   return sanitizeArchitectPlanRecord(
     normalized,
     safeId,
-    await readJsonFileAtScope<ArchitectPlanRecord>(scope, getPlanJsonPath(normalized, safeId)),
+    plan,
     registrySnapshot,
     {
       logContext: 'plan_read',

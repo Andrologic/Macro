@@ -31,6 +31,7 @@ import {
   getPlanDir,
   logArchitectPlanActivationLoad,
   mergePlanSummaries,
+  matchesStoredArchitectPlanBranch,
   normalizeBranchName,
   normalizeContextProjectIds,
   normalizeProjectIds,
@@ -804,7 +805,8 @@ export const buildArchitectPlanActivationSnapshot = async (params: {
     params.scope,
     params.branchName,
     params.planId,
-    params.registrySnapshot
+    params.registrySnapshot,
+    params.requireStoredConversation,
   );
   if (!planResult.plan || planResult.plan.status === 'deleted') {
     return null;
@@ -815,6 +817,10 @@ export const buildArchitectPlanActivationSnapshot = async (params: {
     params.branchName,
     params.planId
   );
+  if (params.requireStoredConversation &&
+      !matchesStoredArchitectPlanBranch(storedManifest?.targetBranch, params.branchName)) {
+    return null;
+  }
   const fallbackProjectIds = params.summary
     ? getArchitectPlanActionableProjectIds(params.summary)
     : resolvePlanProjectIds(planResult.plan);

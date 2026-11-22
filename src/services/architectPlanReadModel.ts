@@ -525,6 +525,10 @@ export const normalizeBranchName = (value?: string, fallbackBranch = DEFAULT_GIT
   return normalized || fallbackBranch;
 };
 
+export const matchesStoredArchitectPlanBranch = (stored: unknown, branchName: string): boolean =>
+  stored == null ||
+  (typeof stored === 'string' && (!stored.trim() || normalizeBranchName(stored, '') === branchName));
+
 export const getArchitectPlanIndexCacheKey = (branchName: string): string =>
   normalizeBranchName(branchName);
 

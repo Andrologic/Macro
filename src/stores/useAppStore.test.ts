@@ -1773,7 +1773,7 @@ describe('useAppStore architect plan resolution', () => {
     const newer = open(second);
     if (firstResponse === 'first') {
       firstHead.resolve(toActivationPayload(first));
-      expect(await older).toBe(false);
+      await flushAsyncWork();
       expect(useAppStore.getState().activeArchitectPlanId).toBeNull();
       secondHead.resolve(toActivationPayload(second));
     } else {
@@ -1786,6 +1786,57 @@ describe('useAppStore architect plan resolution', () => {
     expect(useAppStore.getState().activeArchitectPlanId).toBe(second.id);
     expect(chatStoreState.beginArchitectPlanSwitch).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['selection', 'notification'] as const)(
+    'keeps a valid selection in flight when a stale cross-project notification races it: %s finishes first',
+    async (firstResponse) => {
+      const current = buildPlan({ id: 'current-design', conversationId: 'current-chat' });
+      const valid = buildPlan({ id: 'valid-design', conversationId: 'valid-chat' });
+      const stale = buildPlan({ id: 'archived-design', projectId: 'project-other', conversationId: 'stale-chat' });
+      const other = buildProjectGroup({
+        id: 'group-other',
+        projects: [{ id: 'project-other', name: 'Other project', path: '/repos/other' }],
+      });
+      const { useAppStore } = await loadIsolatedUseAppStore();
+      useAppStore.setState({
+        mode: 'Architect', projectGroups: [...bootstrapProjectGroups, other],
+        selectedGroupId: 'group-1', selectedProjectId: 'project-1', activeArchitectPlanId: current.id,
+        activePlanContext: { id: current.id, title: current.title, targetBranch: current.targetBranch, status: current.status },
+      });
+      chatStoreState.selectedConversationId = 'current-chat';
+      chatStoreState.conversations = [{
+        id: 'stale-chat', scope_mode: 'Architect', group_id: other.id, project_id: null, task_id: null,
+      }];
+      listArchitectPlansMock.mockImplementationOnce(async () => ({
+        activePlanId: stale.id, plans: [toPlanSummary(stale)],
+      }));
+      const validHead = deferred<ActivationPayloadRecord>();
+      const staleHead = deferred<ActivationPayloadRecord>();
+      const staleEntered = deferred<void>();
+      getArchitectPlanActivationPayloadMock
+        .mockImplementationOnce(() => validHead.promise)
+        .mockImplementationOnce(() => {
+          staleEntered.resolve();
+          return staleHead.promise;
+        });
+      const first = useAppStore.getState().activateArchitectPlan(valid.id);
+      const second = useAppStore.getState().openArchitectPlanNotification('stale-chat');
+      await staleEntered.promise;
+      if (firstResponse === 'selection') {
+        validHead.resolve(toActivationPayload(valid));
+        await flushAsyncWork();
+        expect(useAppStore.getState().activeArchitectPlanId).toBe(current.id);
+      }
+      staleHead.resolve(toActivationPayload({ ...stale, status: 'archived' }));
+      expect(await second).toBe(false);
+      if (firstResponse === 'notification') validHead.resolve(toActivationPayload(valid));
+      expect(await first).toBe(true);
+      expect(useAppStore.getState().activeArchitectPlanId).toBe(valid.id);
+      expect(useAppStore.getState().selectedGroupId).toBe('group-1');
+      expect(chatStoreState.selectConversation).not.toHaveBeenCalled();
+      expect(persistActiveArchitectPlanMock.mock.calls).toEqual([['develop', valid.id]]);
+    },
+  );
 
   it('retires a catalog activation as soon as a replacement catalog starts reading', async () => {
     const first = buildPlan({ id: 'first-catalog-plan' });
@@ -1846,7 +1897,7 @@ describe('useAppStore architect plan resolution', () => {
 
     expect(await older).toBe(false);
     expect(useAppStore.getState().activeArchitectPlanId).toBe(second.id);
-    expect(chatStoreState.selectConversation.mock.calls).toEqual([[second.conversationId]]);
+    expect(chatStoreState.selectConversation.mock.calls).toEqual([[second.conversationId!]]);
     expect(getArchitectPlanActivationPayloadMock).toHaveBeenCalledTimes(1);
   });
 

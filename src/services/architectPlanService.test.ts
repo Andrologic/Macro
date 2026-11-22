@@ -2,7 +2,7 @@ import { afterEach,beforeEach,describe,expect,it,mock,spyOn } from 'bun:test';
 import { DEFAULT_NEW_PLAN_LABEL } from './architectPlanPresentation';
 import { installArchitectPlanPorts,type ArchitectPlanServiceAppState } from './architectPlanReadContext';
 import type { ArchitectPlanRecord,ArchitectPlanSummary } from './architectPlanService';
-import { getIndexPath, getPlanJsonPath, localIndexKey, localPlanKey } from './architectPlanReadModel';
+import { getIndexPath, getPlanJsonPath, getPlanManifestPath, localIndexKey, localPlanKey } from './architectPlanReadModel';
 import type { WorkspaceScope } from './tauriIpc';
 import type { ValidProjectRegistrySnapshot } from './validProjectRegistry';
 const actualTauriIpc = await import('./tauriIpc');
@@ -2547,6 +2547,44 @@ describe('architectPlanService', () => {
     });
     expect(payload?.conversationId).toBe('stored-owner');
   });
+
+  it.each(['main', 'refs/heads/develop', undefined])(
+    'checks the raw plan branch of an exact filesystem activation: %s',
+    async (storedBranch) => {
+      const root = '/repos/web';
+      const planId = 'branch-owner';
+      const conversationId = 'stored-conversation';
+      const stamp = '2026-06-01T08:00:00.000Z';
+      const agsdl = { source: '{"contract":"agsdl-0.3.0","id":"branch-owner","agents":{}}', annexes: {}, revision: 1 };
+      const summaryHint = {
+        id: planId, slug: planId, title: 'Branch owner', description: '', status: 'draft' as const,
+        hasAgsdl: true, targetBranch: branchName, conversationId, createdAt: stamp, updatedAt: stamp, nodeCount: 0,
+      };
+      service = await loadArchitectPlanService({
+        tauriAvailable: true,
+        workspaceRoot: root,
+        filesByWorkspacePath: { [root]: {
+          [getPlanJsonPath(branchName, planId)]: JSON.stringify({
+            ...summaryHint, targetBranch: storedBranch, nodes: [], predictedBranches: [], agsdl,
+          }),
+          [getPlanManifestPath(branchName, planId)]: JSON.stringify({
+            targetBranch: branchName, conversation: { conversationId, messageCount: 0 },
+          }),
+        } },
+      });
+      const permissive = await service.getArchitectPlanActivationPayload(branchName, planId, { summaryHint });
+      expect(permissive?.plan.targetBranch).toBe(branchName);
+      const exact = await service.getArchitectPlanActivationPayload(branchName, planId, {
+        summaryHint, requireStoredConversation: true,
+      });
+      if (storedBranch === 'main') {
+        expect(exact).toBeNull();
+      } else {
+        expect(exact?.plan.targetBranch).toBe(branchName);
+        expect(exact?.conversationId).toBe(conversationId);
+      }
+    },
+  );
 
   it.each(['local', 'filesystem'])('reopens AgSDL from an old mixed %s index without changing the stored data', async (backend) => {
     const projectRoot = '/repos/web';
