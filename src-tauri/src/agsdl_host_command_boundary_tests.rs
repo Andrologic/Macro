@@ -907,13 +907,18 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
         }
         let tree = repo.find_tree(index.write_tree_to(repo).unwrap()).unwrap();
         let signature = git2::Signature::now("Macro Tests", "macro@example.invalid").unwrap();
+        let previous = repo
+            .find_reference("refs/heads/@macro")
+            .ok()
+            .map(|reference| reference.peel_to_commit().unwrap());
+        let parents: Vec<_> = previous.iter().collect();
         repo.commit(
             Some("refs/heads/@macro"),
             &signature,
             &signature,
             "Metadata",
             &tree,
-            &[],
+            &parents,
         )
         .unwrap()
     }
@@ -1010,6 +1015,14 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
             .revision,
         crate::fs::operations::content_revision(runtime)
     );
+    assert_eq!(
+        read("branches/develop/plans/source/manifest.json")
+            .await
+            .unwrap()
+            .content
+            .as_bytes(),
+        manifest
+    );
     assert!(read("branches/develop/plans/source/chat.jsonl")
         .await
         .is_err());
@@ -1046,6 +1059,21 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
             .join(crate::git::MACRO_WORKTREE_DIR_NAME)
             .exists());
     }
+    commit_metadata(
+        &workspace_repo,
+        &[
+            ("workspace.json", b"{corrupt"),
+            ("workspace.json.bak", &registry),
+        ],
+    );
+    assert!(crate::commands::agsdl_execution::list_runs030_scoped(
+        &pool,
+        &workspace,
+        history.clone()
+    )
+    .await
+    .is_err());
+    commit_metadata(&workspace_repo, &[("workspace.json", &registry)]);
     std::fs::create_dir_all(project.join(".macro")).unwrap();
     assert!(read("branches/develop/plans/source/plan.json")
         .await

@@ -574,7 +574,7 @@ async fn imports_a_registered_git_submodule_into_sqlite() {
     commit(&source_repo, "HEAD", &[]);
     let workspace = dir.path().join("workspace");
     let superproject = git2::Repository::init(&workspace).unwrap();
-    let output = std::process::Command::new("git")
+    let output = crate::core::process::background_command("git")
         .current_dir(&workspace)
         .args([
             "-c",

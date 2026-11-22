@@ -2246,7 +2246,7 @@ pub(crate) async fn read_existing_workspace_state(workspace_path: &Path) -> Resu
         let state = if root.is_dir() {
             read_raw_state_sync(&root, false)?.unwrap_or_default()
         } else if matches!(root.symlink_metadata(), Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
-            let Some(state) = read_committed_workspace_state(&workspace)? else {
+            let Some(state) = read_committed_workspace_state(&workspace, true)? else {
                 return Ok(WorkspaceState::default());
             };
             state
@@ -2269,7 +2269,10 @@ pub(crate) async fn read_existing_workspace_state(workspace_path: &Path) -> Resu
     })?
 }
 
-fn read_committed_workspace_state(workspace: &Path) -> Result<Option<WorkspaceState>> {
+fn read_committed_workspace_state(
+    workspace: &Path,
+    allow_backup: bool,
+) -> Result<Option<WorkspaceState>> {
     use crate::git::metadata_read::{
         local_macro_tree, open_unchecked_out_macro_repo, read_tree_file,
     };
@@ -2303,6 +2306,9 @@ fn read_committed_workspace_state(workspace: &Path) -> Result<Option<WorkspaceSt
         if let Some(state) = read(&legacy_workspace_state_path(root))? {
             return state.map(Some);
         }
+    }
+    if !allow_backup {
+        return primary.transpose();
     }
     match read(&workspace_state_backup_path(root))? {
         Some(Ok(state)) => Ok(Some(state)),

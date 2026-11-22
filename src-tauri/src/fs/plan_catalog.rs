@@ -27,7 +27,7 @@ fn plan_file(path: &str) -> bool {
         Some(branch)
     } else {
         path.rsplit_once('/').and_then(|(path, file)| {
-            if !matches!(file, "plan.json" | "runtime.json") {
+            if !matches!(file, "plan.json" | "runtime.json" | "manifest.json") {
                 return None;
             }
             let (path, id) = path.rsplit_once('/')?;
@@ -193,7 +193,8 @@ pub(crate) async fn list_dir(
                         0o100644 | 0o100755
                             if recursive
                                 && plan_file(&format!("{path}/{relative}"))
-                                && !relative.ends_with("/runtime.json") =>
+                                && (relative.ends_with("/plan.json")
+                                    || relative.ends_with("/plans/index.json")) =>
                         {
                             "file"
                         }

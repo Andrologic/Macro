@@ -3293,7 +3293,7 @@ async fn read_execution_registry(
     if allow_committed && metadata_root_absent(metadata_root) {
         let workspace = workspace_path.to_path_buf();
         return tokio::task::spawn_blocking(move || {
-            super::read_committed_workspace_state(&workspace)
+            super::read_committed_workspace_state(&workspace, false)
         })
         .await
         .ok()
