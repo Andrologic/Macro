@@ -2,9 +2,11 @@
 
 ## 1. Objet du document
 
-Ce document définit la cible fonctionnelle de Macro en tant que produit fini.
+La [spécification des systèmes agentiques](agentic-systems.md) décrit la direction actuelle de Macro et le calendrier de livraison. À l’étape 0, Architect construit les systèmes AgSDL, Operate supervise leurs exécutions et Chat reste accessible indépendamment. Le lancement depuis Architect et le stockage des blueprints dans les métadonnées des projets restent en service pendant cette transition.
 
-Il décrit :
+Les descriptions de développement logiciel, de tâches de code et de revue Git ci-dessous documentent la version antérieure de Macro. Elles servent de référence pour lire les anciens profils et maintenir les clients historiques de Macro Pilot.
+
+Le document décrit :
 - ce qu'est Macro
 - ce que Macro doit permettre à un développeur de faire
 - comment les principaux workflows doivent fonctionner
@@ -67,7 +69,7 @@ Macro n'a pas vocation à être :
 - un simple chat généraliste sans workflow de développement
 - une interface publique pour les outils internes de debug de l'application
 
-Le périmètre fonctionnel public repose sur les modes `Architect`, `Implement` et `Chat`.
+Les trois modes visibles sont Architect, Operate et Chat.
 
 ---
 
@@ -121,11 +123,7 @@ moniteur 0.3 ; le contrat de consultation et d'actions est défini en section 7.
 La création depuis un blueprint reste disponible pour un plan vide. Cette
 conception ne lance pas les agents du graphe et ne crée pas de tâches Implement.
 
-Implement continue d'exécuter les tâches autonomes et celles des plans
-historiques. Pour ces tâches, l'utilisateur supervise l'exécution, examine les
-changements, puis valide leur intégration. Le démarrage d'un nouveau plan AgSDL
-depuis le produit est ouvert pour la tranche Codex qualifiée, avec contrôle
-natif avant lancement et arrêt depuis le panneau Architect (section 7.1).
+Operate affiche les instances d’agents et les exécutions AgSDL. Une demande humaine ouvre l’exécution à laquelle elle appartient. Le panneau Architect conserve le démarrage et l’arrêt du profil natif qualifié (section 7.1).
 
 ### 5.2 Unités fonctionnelles principales
 
@@ -258,7 +256,7 @@ Les artefacts de relais :
 Macro expose trois modes produits dans son périmètre public :
 
 - Architect
-- Implement
+- Operate
 - Chat
 
 Le mode `Debug` ne fait plus partie de l'application ni de la spécification fonctionnelle publique.
@@ -398,7 +396,13 @@ doit rester disponible pendant ces attentes. Une perte d'acquittement ou de
 host garde l'état incertain jusqu'à réconciliation native, sans replay
 automatique. Les capacités encore sans DTO attesté restent indisponibles.
 
-### 7.2 Mode Implement
+### 7.2 Mode Operate
+
+Operate découvre les exécutions du projet et leurs instances d’agents. Deux exécutions issues du même blueprint restent distinctes. Sélectionner une instance affiche les échanges que le moteur a enregistrés pour elle. L’inspecteur donne accès au graphe de l’exécution et à ses demandes humaines.
+
+Lorsqu’une lecture devient périmée, les derniers échanges disponibles restent consultables et les actions de réponse sont désactivées. Un ancien profil enregistré sous `Implement` rouvre Operate. Les tâches de code de ce profil restent inactives au démarrage.
+
+#### Contrat historique du mode Implement
 
 Le mode Implement est le mode d'exécution et de review.
 Il exécute les tâches autonomes et celles des plans historiques. Les mentions
@@ -912,7 +916,7 @@ Une tâche ne peut pas être considérée comme complète sans commit.
 
 ---
 
-## 14. Comportement du mode Implement
+## 14. Comportement historique du mode Implement
 
 ### 14.1 Conditions de démarrage
 
