@@ -154,6 +154,20 @@ struct DurableConfigPublication {
     proposed_approved_etag: Option<String>,
 }
 
+impl DurableConfigPublication {
+    fn has_split_copies(&self) -> bool {
+        self.previous_canonical_document.is_some() || self.proposed_approved_etag.is_some()
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SplitConfigPublication {
+    #[serde(flatten)]
+    baseline: DurablePendingSensitiveChange,
+    split_publication: DurableConfigPublication,
+}
+
 // Resolution is work owned by the request, not by the latest diagnostic.
 // It remains pending across failures while revoking the previous root.
 struct DesiredProjectRoot {
@@ -1168,7 +1182,7 @@ impl ConfigManager {
         let _file_guard = lock_document_file_async(path.clone()).await?;
         let _runtime_guards = lock_project_runtime_files(self.root(), &key).await?;
         let project_root = self.pending_root_binding(&key.scope).await?;
-        recover_config_publication(self.root(), &key, &path)?;
+        recover_config_publication(self.root(), &key, &path, project_root.as_ref())?;
         let raw = fs::read(&path).map_err(|error| {
             ConfigApiError::new(
                 "config.document.read_failed",
@@ -1954,7 +1968,7 @@ impl ConfigManager {
                     proposed_etag: new_etag.clone(),
                     created_at: Utc::now().to_rfc3339(),
                 },
-                project_root,
+                project_root: project_root.clone(),
                 last_root_transition: None,
                 approved_etag: etag(&approved),
                 all_changed_paths: changed_paths.clone(),
@@ -1974,16 +1988,26 @@ impl ConfigManager {
         });
         let pending_path = pending_document_path(self.root(), &key);
         let approved_path = approved_document_path(self.root(), &key);
-        let publication_path = publication_document_path(self.root(), &key);
+        let publication_path = match &durable_publication {
+            Some(publication) if publication.has_split_copies() => pending_path.clone(),
+            _ => publication_document_path(self.root(), &key),
+        };
         if let Some(pending) = &durable_pending {
             write_durable_pending(&pending_path, pending)?;
         }
         if let Some(publication) = &durable_publication {
-            write_durable_config_publication(&publication_path, publication)?;
+            write_durable_config_publication(&publication_path, publication, project_root)?;
+            #[cfg(test)]
+            if stored.path.with_extension("fail-after-journal").exists() {
+                return Err(ConfigApiError::new(
+                    "config.publication.interrupted",
+                    "Injected interruption after preparing the publication.",
+                ));
+            }
         }
         if let Err(error) = atomic_write_json_locked(&stored.path, &proposed) {
             if let Some(publication) = &durable_publication {
-                rollback_config_publication(self.root(), &key, &stored.path, publication).map_err(
+                rollback_config_publication(self.root(), &key, &stored.path, &publication_path, publication).map_err(
                     |cleanup_error| {
                         ConfigApiError::new(
                             "config.document.write_failed_with_publication_rollback_failed",
@@ -2018,20 +2042,30 @@ impl ConfigManager {
                         format!("Failed to promote configuration: {error}"),
                     )
                 })
-                .and_then(|()| remove_file_if_exists(&pending_path))
+                .and_then(|()| {
+                    if publication_path != pending_path {
+                        remove_file_if_exists(&pending_path)?;
+                    }
+                    Ok(())
+                })
                 .and_then(|()| remove_file_if_exists(&publication_path));
             if let Err(error) = publication_result {
-                rollback_config_publication(self.root(), &key, &stored.path, publication).map_err(
-                    |rollback_error| {
-                        ConfigApiError::new(
-                            "config.publication.failed_with_rollback_failed",
-                            format!(
-                                "{} Durable rollback also failed: {}",
-                                error.message, rollback_error.message
-                            ),
-                        )
-                    },
-                )?;
+                rollback_config_publication(
+                    self.root(),
+                    &key,
+                    &stored.path,
+                    &publication_path,
+                    publication,
+                )
+                .map_err(|rollback_error| {
+                    ConfigApiError::new(
+                        "config.publication.failed_with_rollback_failed",
+                        format!(
+                            "{} Durable rollback also failed: {}",
+                            error.message, rollback_error.message
+                        ),
+                    )
+                })?;
                 return Err(error);
             }
         }
@@ -2131,7 +2165,8 @@ impl ConfigManager {
         };
         // All cooperating managers lock the canonical document while publishing
         // the approved copy. Read disk under this lock to avoid stale instances.
-        let file = lock_document_file_async(path).await?;
+        let file = lock_document_file_async(path.clone()).await?;
+        recover_config_publication(self.root(), &key, &path, None)?;
         let (approved, _) = read_runtime_state(self.root(), &key, None)?;
         let mut effective = default_document(ConfigDocumentKind::Tools);
         super::registry::merge_values(&mut effective, &approved);
@@ -2511,6 +2546,7 @@ impl ConfigManager {
         project_root: Option<&PendingRootBinding>,
         canonical_path: &Path,
     ) -> Result<(Value, Option<DurablePendingSensitiveChange>), ConfigApiError> {
+        recover_config_publication(self.root(), key, canonical_path, project_root)?;
         let (approved, mut pending) = read_runtime_state(self.root(), key, project_root)?;
         // An older process can publish a user LSP request after startup.
         // Reclassify only a current request, under the canonical file lock.
@@ -3291,8 +3327,39 @@ fn read_durable_config_publication(
 fn write_durable_config_publication(
     path: &Path,
     publication: &DurableConfigPublication,
+    project_root: Option<PendingRootBinding>,
 ) -> Result<(), ConfigApiError> {
-    let value = serde_json::to_value(publication).map_err(|error| {
+    let value = if publication.has_split_copies() {
+        // A legacy publication journal can name only two ETags. Use the pending
+        // slot with a baseline entry that authorizes no change. A legacy reader
+        // can replace it with a fresh request based on the canonical file, or
+        // clear it if both copies match. Either action retires this rollback.
+        serde_json::to_value(SplitConfigPublication {
+            baseline: DurablePendingSensitiveChange {
+                pending: PendingSensitiveConfigChange {
+                    id: Uuid::new_v4().to_string(),
+                    document: publication.document,
+                    scope: publication.scope.clone(),
+                    source: ConfigChangeSource::ExternalEditor,
+                    changed_paths: vec![],
+                    reasons: vec![],
+                    proposed_document: publication.previous_document.clone(),
+                    proposed_etag: publication.previous_etag.clone(),
+                    created_at: Utc::now().to_rfc3339(),
+                },
+                canonical_proposal: None,
+                project_root,
+                last_root_transition: None,
+                approved_etag: publication.previous_etag.clone(),
+                all_changed_paths: vec![],
+                apply_modes: vec![],
+            },
+            split_publication: publication.clone(),
+        })
+    } else {
+        serde_json::to_value(publication)
+    }
+    .map_err(|error| {
         ConfigApiError::new(
             "config.publication.serialize_failed",
             format!("Failed to serialize publication journal: {error}"),
@@ -3310,6 +3377,7 @@ fn rollback_config_publication(
     root: &Path,
     key: &DocumentKey,
     canonical_path: &Path,
+    publication_path: &Path,
     publication: &DurableConfigPublication,
 ) -> Result<(), ConfigApiError> {
     if publication.document != key.kind
@@ -3364,6 +3432,33 @@ fn rollback_config_publication(
             "Injected failure during publication rollback.",
         ));
     }
+    let restore_approved = || -> Result<(), ConfigApiError> {
+        if approved_etag != publication.previous_etag {
+            write_runtime_json(&approved_path, &publication.previous_document, &key.scope)
+                .map_err(|error| {
+                    ConfigApiError::new(
+                        "config.publication.rollback_failed",
+                        format!("Failed to restore approved copy: {error}"),
+                    )
+                })?;
+        }
+        Ok(())
+    };
+    if publication.has_split_copies() {
+        // A legacy reader may take over at any point. Keep the approved policy
+        // at the previous baseline before restoring the previous proposal.
+        restore_approved()?;
+        #[cfg(test)]
+        if canonical_path
+            .with_extension("fail-rollback-after-approved")
+            .exists()
+        {
+            return Err(ConfigApiError::new(
+                "config.publication.rollback_failed",
+                "Injected interruption after restoring the approved copy.",
+            ));
+        }
+    }
     if current_etag != previous_canonical_etag {
         atomic_write_json_locked(canonical_path, previous_canonical).map_err(|error| {
             ConfigApiError::new(
@@ -3384,29 +3479,51 @@ fn rollback_config_publication(
     }
     // Both files must be restored before deleting the recovery journal, even
     // when an earlier attempt already restored the canonical document.
-    if approved_etag != publication.previous_etag {
-        write_runtime_json(&approved_path, &publication.previous_document, &key.scope).map_err(
-            |error| {
-                ConfigApiError::new(
-                    "config.publication.rollback_failed",
-                    format!("Failed to restore approved copy: {error}"),
-                )
-            },
-        )?;
+    if !publication.has_split_copies() {
+        restore_approved()?;
     }
-    remove_file_if_exists(&publication_document_path(root, key))
+    remove_file_if_exists(publication_path)
 }
 
 fn recover_config_publication(
     root: &Path,
     key: &DocumentKey,
     canonical_path: &Path,
+    project_root: Option<&PendingRootBinding>,
 ) -> Result<(), ConfigApiError> {
     let publication_path = publication_document_path(root, key);
-    let Some(publication) = read_durable_config_publication(&publication_path)? else {
-        return Ok(());
-    };
-    rollback_config_publication(root, key, canonical_path, &publication)
+    if let Some(publication) = read_durable_config_publication(&publication_path)? {
+        return rollback_config_publication(
+            root,
+            key,
+            canonical_path,
+            &publication_path,
+            &publication,
+        );
+    }
+    if key.kind == ConfigDocumentKind::Tools {
+        let pending_path = pending_document_path(root, key);
+        // Ordinary pending files (including corrupt ones) are handled by the
+        // existing pending reader after recovery.
+        if let Ok(value) = read_json_value(&pending_path) {
+            if value.get("splitPublication").is_some() {
+                let split: SplitConfigPublication =
+                    serde_json::from_value(value).map_err(|error| {
+                        ConfigApiError::new("config.publication.invalid", error.to_string())
+                    })?;
+                require_pending_document(key, Some(&split.baseline))?;
+                require_pending_root_binding(Some(&split.baseline), project_root)?;
+                return rollback_config_publication(
+                    root,
+                    key,
+                    canonical_path,
+                    &pending_path,
+                    &split.split_publication,
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn write_approved_document(path: &Path, value: &Value, scope: &ConfigScope) -> Result<(), String> {
@@ -4364,6 +4481,189 @@ mod tests {
                 .effective["tools"]["riskLevel"],
             json!("balanced")
         );
+    }
+
+    #[tokio::test]
+    async fn interrupted_split_tools_publication_recovers_and_retries() {
+        for previous_lsp_is_approved in [false, true] {
+            for (cut, canonical_written, approved_written, failures) in [
+                (
+                    "journal",
+                    false,
+                    false,
+                    vec![("canonical", "fail-after-journal")],
+                ),
+                (
+                    "canonical",
+                    true,
+                    false,
+                    vec![
+                        ("approved", "fail-write-once"),
+                        ("canonical", "fail-rollback"),
+                    ],
+                ),
+                (
+                    "approved",
+                    true,
+                    true,
+                    vec![("pending", "fail-remove"), ("canonical", "fail-rollback")],
+                ),
+                (
+                    "restore approved",
+                    true,
+                    false,
+                    vec![
+                        ("pending", "fail-remove"),
+                        ("canonical", "fail-rollback-after-approved"),
+                    ],
+                ),
+                (
+                    "restore canonical",
+                    false,
+                    false,
+                    vec![
+                        ("pending", "fail-remove"),
+                        ("canonical", "fail-rollback-after-canonical"),
+                    ],
+                ),
+            ] {
+                let (_temp, manager) = manager().await;
+                let root = manager.root();
+                let key = DocumentKey {
+                    kind: ConfigDocumentKind::Tools,
+                    scope: ConfigScope::User,
+                };
+                let canonical_path = root.join(key.kind.file_name());
+                let approved_path = approved_document_path(root, &key);
+                let pending_path = pending_document_path(root, &key);
+                let mut approved = read_json_value(&approved_path).unwrap();
+                if previous_lsp_is_approved {
+                    // The active half of a previous mixed proposal was accepted.
+                    approved["riskLevel"] = json!("strict");
+                    approved["languageServer"] = json!({
+                        "enabled": false,
+                        "executable": root.join("previous-language-server"),
+                    });
+                    atomic_write_json(&approved_path, &approved).unwrap();
+                }
+                let mut previous = approved.clone();
+                previous["languageServer"] = json!({
+                    "enabled": true,
+                    "executable": root.join("unapproved-language-server"),
+                });
+                atomic_write_json(&canonical_path, &previous).unwrap();
+                let document = manager
+                    .reload(
+                        key.kind,
+                        key.scope.clone(),
+                        ConfigChangeSource::ExternalEditor,
+                    )
+                    .await
+                    .unwrap()
+                    .document;
+                let mut proposed = previous.clone();
+                proposed["riskLevel"] = json!("yolo");
+                let mut proposed_approved = approved.clone();
+                proposed_approved["riskLevel"] = json!("yolo");
+                let request = ConfigPatchRequest {
+                    kind: key.kind,
+                    scope: key.scope.clone(),
+                    expected_etag: document.etag,
+                    patch: vec![JsonPatchOperation {
+                        op: "add".into(),
+                        path: "/riskLevel".into(),
+                        from: None,
+                        value: Some(json!("yolo")),
+                    }],
+                    source: ConfigChangeSource::UserInterface,
+                };
+                let markers = failures
+                    .iter()
+                    .map(|(file, suffix)| {
+                        let path = match *file {
+                            "canonical" => &canonical_path,
+                            "approved" => &approved_path,
+                            _ => &pending_path,
+                        };
+                        fs::create_dir_all(path.parent().unwrap()).unwrap();
+                        let marker = path.with_extension(suffix);
+                        fs::write(&marker, b"fail").unwrap();
+                        marker
+                    })
+                    .collect::<Vec<_>>();
+                manager.apply_patch(request.clone()).await.unwrap_err();
+                assert!(!publication_document_path(root, &key).exists(), "{cut}");
+                let journal: SplitConfigPublication =
+                    serde_json::from_value(read_json_value(&pending_path).unwrap()).unwrap();
+                assert_eq!(journal.baseline.pending.proposed_document, approved);
+                assert_eq!(journal.baseline.pending.proposed_etag, etag(&approved));
+                let expected_raw = if canonical_written {
+                    &proposed
+                } else {
+                    &previous
+                };
+                let expected_approved = if approved_written {
+                    &proposed_approved
+                } else {
+                    &approved
+                };
+                assert_eq!(
+                    read_json_value(&canonical_path).unwrap(),
+                    *expected_raw,
+                    "{cut}"
+                );
+                assert_eq!(
+                    read_json_value(&approved_path).unwrap(),
+                    *expected_approved,
+                    "{cut}"
+                );
+                for marker in markers.into_iter().filter(|marker| marker.exists()) {
+                    fs::remove_file(marker).unwrap();
+                }
+
+                // Refuse true divergence in either copy and leave both files and
+                // the journal intact so recovery can be retried.
+                if cut == "canonical" {
+                    for (path, expected) in [
+                        (&canonical_path, expected_raw),
+                        (&approved_path, expected_approved),
+                    ] {
+                        let mut divergent = expected.clone();
+                        divergent["extensions"] = json!({"external": true});
+                        atomic_write_json(path, &divergent).unwrap();
+                        let error = manager.apply_patch(request.clone()).await.unwrap_err();
+                        assert_eq!(error.code, "config.publication.conflict");
+                        assert_eq!(read_json_value(path).unwrap(), divergent);
+                        assert!(pending_path.exists());
+                        atomic_write_json(path, expected).unwrap();
+                    }
+                }
+
+                let root = root.to_path_buf();
+                let manager = if cut == "restore approved" {
+                    // The original instance can also recover under its write lock.
+                    manager
+                } else {
+                    ConfigManager::initialize(root.clone()).await.unwrap()
+                };
+                if cut != "restore approved" {
+                    assert_eq!(read_json_value(&canonical_path).unwrap(), previous, "{cut}");
+                    assert_eq!(read_json_value(&approved_path).unwrap(), approved, "{cut}");
+                    assert!(!pending_path.exists());
+                }
+                assert_eq!(
+                    manager.apply_patch(request).await.unwrap().status,
+                    "applied"
+                );
+                assert_eq!(read_json_value(&canonical_path).unwrap(), proposed, "{cut}");
+                assert_eq!(
+                    read_json_value(&approved_path).unwrap(),
+                    proposed_approved,
+                    "{cut}"
+                );
+                assert!(!pending_path.exists());
+            }
+        }
     }
 
     #[tokio::test]
