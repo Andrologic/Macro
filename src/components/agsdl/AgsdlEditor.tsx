@@ -306,7 +306,7 @@ export const AgsdlEditor: React.FC<{
     if (!conflictTarget || !savedDraft || !session) return;
     try {
       await useAgsdlStore.getState().resolveDraftConflict(conflictTarget, session.version, savedDraft.revision, choice);
-      if (choice === "saved") setNameDraft(undefined);
+      setNameDraft(undefined);
       setNameError("");
       setError("");
     } catch (failure) {

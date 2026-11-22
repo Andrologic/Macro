@@ -459,3 +459,38 @@ it("requires adopting the saved revision before retrying a conflicting version s
   expect(port.versions.get(blueprint.id)?.[0].revision).toBe(2);
   expect(port.writes).toEqual([]);
 });
+
+it("accepts another title in the same dialog after explicit conflict overwrite", async () => {
+  const port = libraryPort();
+  const project = port.createProject("Project");
+  const blueprint = port.createDraft(project.id, "Original", createExampleDocument("feature"));
+  const target = { blueprintId: blueprint.id };
+  const local = () => useAgsdlStore.getState().sessions[agsdlSessionKey(target)];
+  const release = Promise.withResolvers<BlueprintDraft>();
+  const saved = { ...blueprint, revision: 2 };
+  await mount(port);
+  await pick(projectPicker, project.id);
+  await click('nav button[title="Original"]');
+  port.drafts.set(blueprint.id, saved);
+  port.delayedReads.set(blueprint.id, release.promise);
+  await editDocument();
+  await fill('[role="dialog"] input', "Title from the dialog");
+  await submit();
+  expect(local().saving).toBe(true);
+  act(() => useAgsdlStore.getState().edit(target, [{ op: "set", path: "/title", valueJson: '"Intervening title"' }]));
+  await act(async () => release.resolve(saved));
+  await buttonByText('[role="dialog"] button', "Apply local edits and replace saved draft");
+  expect(local()).toMatchObject({ persistedRevision: 3, dirty: false });
+  expect(JSON.parse(port.drafts.get(blueprint.id)!.document.source).title).toBe("Intervening title");
+  await fill('[role="dialog"] input', "Final title");
+  await submit();
+  expect(JSON.parse(port.drafts.get(blueprint.id)!.document.source).title).toBe("Final title");
+  await click('[role="dialog"] button[aria-label="Close"]');
+  await editDocument();
+  await fill('[role="dialog"] input', "Final title after reopening");
+  await submit();
+  expect({ title: JSON.parse(port.drafts.get(blueprint.id)!.document.source).title,
+    alert: document.querySelector('[role="dialog"] [role="alert"]')?.textContent,
+    expectedRevisions: port.writes.map(write => write.expectedRevision),
+  }).toEqual({ title: "Final title after reopening", alert: undefined, expectedRevisions: [1, 2, 3, 4] });
+});
