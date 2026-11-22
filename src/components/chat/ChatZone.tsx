@@ -1367,6 +1367,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     [tasks, selectedTaskId]
   );
   const libraryDraft = useArchitectLibraryStore(s => s.versionNumber === null ? s.draft : null);
+  const libraryVersionNumber = useArchitectLibraryStore(s => s.versionNumber);
   const libraryMode = mode === "Architect" && !demoWorkflowJourney;
   const activeArchitectPlanId = libraryMode ? libraryDraft?.id : legacyPlanId;
   const activePlanContext = libraryMode ? null : legacyPlanContext;
@@ -2443,7 +2444,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       : missingArchitectPlanActionKind === 'configure'
         ? t('architect.projectNavigator.manageProjects', 'Manage projects')
       : t('architect.selectPlanAction', 'Select a plan');
-  const missingArchitectPlanMessage = libraryMode ? agsdlT("agsdl.library.chooseBlueprint") : isMissingArchitectPlanActionUnavailable
+  const librarySelectionMessage = libraryVersionNumber === null
+    ? agsdlT("agsdl.library.chooseBlueprint")
+    : agsdlT("agsdl.library.versionReadOnly", { number: libraryVersionNumber });
+  const missingArchitectPlanMessage = libraryMode ? librarySelectionMessage : isMissingArchitectPlanActionUnavailable
     ? t('architect.projectNavigator.loadError', 'Unable to load plans.')
     : missingArchitectPlanActionKind === 'create'
     ? t(
