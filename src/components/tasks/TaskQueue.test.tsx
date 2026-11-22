@@ -654,6 +654,7 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
     ).not.toBeNull();
+    expect(document.body.querySelector('aside[data-tour-id="operate-executions"]')).not.toBeNull();
     expect(document.body.querySelector('h2')).toBeNull();
   });
 

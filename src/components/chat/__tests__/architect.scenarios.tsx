@@ -66,6 +66,7 @@ export const registerArchitectScenarios = (context: ArchitectScenarioContext) =>
       expect(requireContainer().textContent).not.toContain('Conversation architecte');
       expect(requireContainer().textContent).toContain('Select or create a plan to start architecting.');
       expect(requireContainer().textContent).not.toContain('New Conversation');
+      expect(requireContainer().querySelector('header[data-tour-id="mode-context-header"]')).not.toBeNull();
       const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
       expect(composer).not.toBeNull();
       expect(composer?.disabled).toBe(true);

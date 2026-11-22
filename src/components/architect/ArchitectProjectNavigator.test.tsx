@@ -151,10 +151,11 @@ describe('ArchitectProjectNavigator search', () => {
       selectedPlan: null, selectedBranchName: null, selectionReason: 'none',
     }));
     await act(async () => { root?.render(<ArchitectProjectNavigator macroBlueprintProjectId="macro-library" catalogLoader={catalogLoader} />); await flushRender(); });
-    const library = document.querySelector('section[aria-label="Macro library"]')!;
+    const navigator = container!.querySelector('aside[data-tour-id="architect-project-navigator"]')!;
+    const library = navigator.querySelector('section[aria-label="Macro library"]')!;
     expect(library.textContent).toContain('Common assistant');
     expect(library.textContent).not.toContain('Project blueprint');
-    const projects = document.querySelector('section[aria-labelledby="architect-projects-title"]')!;
+    const projects = navigator.querySelector('section[aria-labelledby="architect-projects-title"]')!;
     expect(projects.textContent).toContain('Sample project');
     expect(projects.textContent).not.toContain('Common assistant');
     expect(projects.textContent).not.toContain('Macro');

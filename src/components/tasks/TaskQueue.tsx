@@ -2178,7 +2178,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     return (
       <aside
         className={cn('h-full w-full bg-card border-r border-border flex items-center justify-center', className)}
-        data-tour-id="implement-task-panel"
+        data-tour-id="operate-executions"
         onContextMenu={openPanelMenu}
       >
         {panelMenu}
@@ -2194,7 +2194,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   return (
     <aside
       className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}
-      data-tour-id="implement-task-panel"
+      data-tour-id="operate-executions"
       onContextMenu={openPanelMenu}
     >
       {panelMenu}

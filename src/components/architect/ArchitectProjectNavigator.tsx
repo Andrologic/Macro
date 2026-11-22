@@ -1066,6 +1066,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
 
   return (
     <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background" aria-label={t('architect.projectNavigator.title', 'Projets')}
+      data-tour-id="architect-project-navigator"
       onContextMenu={event => {
         if (isSidebarTextInput(event.target)) return;
         event.preventDefault(); event.stopPropagation(); setPanelMenuPosition(sidebarMenuPosition(event));

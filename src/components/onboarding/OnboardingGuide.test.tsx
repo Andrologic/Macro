@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import fr from '../../i18n/locales/fr.json';
+import agsdlFr from '../../i18n/locales/segments/agsdl-fr.json';
+import { demoWorkflowJourney } from '../../services/operateWorkspace';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import {
@@ -42,8 +44,8 @@ const resetStore = () => {
   listeners = new Set();
   storeSnapshot = {
     mode: 'Implement',
-    isLeftPanelOpen: true,
-    isRightPanelOpen: true,
+    isLeftPanelOpen: false,
+    isRightPanelOpen: false,
     setMode: (mode) => setStorePatch({ mode }),
     setLeftPanelOpen: (open) => setStorePatch({ isLeftPanelOpen: open }),
     setRightPanelOpen: (open) => setStorePatch({ isRightPanelOpen: open }),
@@ -72,7 +74,7 @@ const testTranslations: Record<string, string> = {
   'onboarding.sectionProgress': '{{current}}/{{total}} dans cette section',
   'onboarding.sections.basics': 'Bases',
   'onboarding.sections.architect': 'Architect',
-  'onboarding.sections.implement': 'Operate',
+  'onboarding.sections.operate': 'Operate',
   'onboarding.sections.chat': 'Chat',
   'onboarding.sections.system': 'Système',
 };
@@ -343,6 +345,10 @@ describe('OnboardingGuide positioning', () => {
     container = null;
   });
 
+  const positionTarget = (left: number) => (node: HTMLElement | null) => {
+    if (node) setRect(node, makeRect(left, 60, 120, 32));
+  };
+
   const renderGuideWithShell = async () => {
     const { OnboardingGuide } = await import('./OnboardingGuide');
     const TestShell = () => {
@@ -357,22 +363,35 @@ describe('OnboardingGuide positioning', () => {
 
       return (
         <>
-          <div data-tour-id="app-shell" />
-          <div data-tour-id="mode-switcher" />
-          <div data-tour-id="mode-context-header" />
-          <button data-tour-id="toggle-right-panel" type="button">Right panel</button>
-          {snapshot.mode === 'Architect' ? (
-            <div data-tour-id="mode-architect" />
-          ) : null}
-          {snapshot.isLeftPanelOpen ? (
-            <div data-tour-id="left-panel" />
-          ) : null}
-          {snapshot.isRightPanelOpen ? (
-            <div data-tour-id="right-panel" />
-          ) : null}
-          <button data-tour-id="notification-center" type="button">Notifications</button>
-          <button data-tour-id="onboarding-help" type="button">Help</button>
-          <button data-tour-id="settings-button" type="button">Settings</button>
+          <div data-tour-id="app-shell" ref={positionTarget(40)} />
+          <div data-tour-id="mode-switcher" ref={positionTarget(60)}>
+            <button data-tour-id="mode-architect" ref={positionTarget(80)} type="button" />
+            <button data-tour-id="mode-chat" ref={positionTarget(100)} type="button" />
+          </div>
+          <button data-tour-id="toggle-left-panel" ref={positionTarget(120)} type="button" />
+          {snapshot.mode === 'Architect' && (
+            <>
+              {snapshot.isLeftPanelOpen && <aside data-tour-id="architect-project-navigator" ref={positionTarget(160)} />}
+              <header data-tour-id="mode-context-header" ref={positionTarget(180)} />
+              {snapshot.isRightPanelOpen && <aside data-tour-id="architect-agsdl-panel" ref={positionTarget(200)} />}
+            </>
+          )}
+          {snapshot.mode === 'Implement' && snapshot.isLeftPanelOpen && (
+            <nav data-tour-id="operate-executions" ref={positionTarget(220)} />
+          )}
+          {snapshot.mode === 'Chat' && (
+            <>
+              {snapshot.isLeftPanelOpen && <aside data-tour-id="chat-conversations-panel" ref={positionTarget(240)} />}
+              {snapshot.isRightPanelOpen && <aside data-tour-id="chat-toolbox-panel" ref={positionTarget(260)} />}
+              <div data-tour-id="chat-control-row" ref={positionTarget(280)} />
+              <div data-tour-id="chat-composer" ref={positionTarget(300)} />
+            </>
+          )}
+          <footer data-tour-id="footer-status-bar" ref={positionTarget(320)}>
+            <button data-tour-id="notification-center" ref={positionTarget(340)} type="button">Notifications</button>
+          </footer>
+          <button data-tour-id="onboarding-help" ref={positionTarget(360)} type="button">Help</button>
+          <button data-tour-id="settings-button" ref={positionTarget(380)} type="button">Settings</button>
           <OnboardingGuide />
         </>
       );
@@ -383,57 +402,61 @@ describe('OnboardingGuide positioning', () => {
       root?.render(<TestShell />);
     });
 
-    const targets = Array.from(document.querySelectorAll<HTMLElement>('[data-tour-id]'));
-    targets.forEach((target, index) => {
-      setRect(target, makeRect(40 + index * 20, 50 + index * 10, 120, 32));
-    });
-
     act(() => {
       window.dispatchEvent(new Event('macro:start-onboarding'));
     });
     await flushFrames();
   };
 
-  it('renders the French guide using current control names and separate send and stop actions', async () => {
+  it('anchors the French tour to the current Architect, Operate, Chat and notification targets', async () => {
     frenchSteps = true;
     await renderGuideWithShell();
-    for (let step = 1; step <= 14; step += 1) {
-      if (step === 8) {
-        expect(document.body.textContent).toContain(fr.architect.openGraphExplorer);
-        expect(document.body.textContent).not.toContain('Expand opens');
+    const expectedSteps = [
+      ['welcome', 'app-shell', 'Implement'],
+      ['modes', 'mode-switcher', 'Implement'],
+      ['panel-toggles', 'toggle-left-panel', 'Implement'],
+      ['settings-and-help', 'settings-button', 'Implement'],
+      ['architect-mode', 'mode-architect', 'Architect'],
+      ['architect-navigator', 'architect-project-navigator', 'Architect'],
+      ['architect-conversation', 'mode-context-header', 'Architect'],
+      ['architect-agsdl', 'architect-agsdl-panel', 'Architect'],
+      ['operate-executions', 'operate-executions', 'Implement'],
+      ['chat-mode', 'mode-chat', 'Chat'],
+      ['chat-conversations', 'chat-conversations-panel', 'Chat'],
+      ['chat-toolbox', 'chat-toolbox-panel', 'Chat'],
+      ['chat-models', 'chat-control-row', 'Chat'],
+      ['composer', 'chat-composer', 'Chat'],
+      ['footer', 'notification-center', 'Chat'],
+      ['done', 'onboarding-help', 'Chat'],
+    ] as const;
+
+    for (const [step, targetId, mode] of expectedSteps) {
+      const tour = document.querySelector('[role="dialog"]');
+      expect(tour?.querySelector('h2')?.textContent).toBe(fr.onboarding.steps[step].title);
+      const expectedBody = demoWorkflowJourney && step === 'operate-executions'
+        ? fr.onboarding.steps[step].demoBody
+        : fr.onboarding.steps[step].body;
+      expect(tour?.textContent).toContain(expectedBody);
+      expect(tour?.textContent).not.toContain(testTranslations['onboarding.fallbackTarget']);
+      expect(tour?.textContent).not.toContain(testTranslations['onboarding.targetMissing']);
+      expect(storeSnapshot.mode).toBe(mode);
+
+      const target = document.querySelector(`[data-tour-id="${targetId}"]`)!;
+      const highlight = document.querySelector('[data-onboarding-highlight="true"]');
+      expect(highlight?.getAttribute('x')).toBe(String(target.getBoundingClientRect().left - 6));
+
+      if (step === 'architect-agsdl') expect(tour?.textContent).toContain(agsdlFr.expand);
+      if (step === 'chat-toolbox') expect(tour?.textContent).toContain(fr.chat.toolbox);
+      if (step === 'chat-models') expect(tour?.textContent).toContain('une clé dans Paramètres');
+      if (step === 'composer') {
+        expect(tour?.textContent).toContain('Le bouton Arrêter interrompt le tour actif.');
+        expect(tour?.textContent).toContain('mettre le message en file');
       }
-      if (step === 12) expect(document.body.textContent).toContain(fr.chat.toolbox);
-      if (step === 13) {
-        expect(document.body.textContent).toContain('une clé dans Paramètres');
-        expect(document.body.textContent).not.toContain('une clé dans Settings');
-      }
-      if (step === 14) {
-        expect(document.body.textContent).toContain('Le bouton Arrêter interrompt le tour actif.');
-        expect(document.body.textContent).toContain('mettre le message en file');
-      } else {
+      if (step !== 'done') {
         clickByText('Next');
         await flushFrames();
       }
     }
-    clickByText('Next');
-    await flushFrames();
-    expect(document.body.textContent).toContain(fr.onboarding.steps.footer.body);
-    expect(storeSnapshot.mode).toBe('Chat');
-    expect(document.body.textContent).not.toContain(testTranslations['onboarding.fallbackTarget']);
-  });
-
-  it('measures the target after a step changes the active mode', async () => {
-    await renderGuideWithShell();
-
-    clickByText('Next');
-    clickByText('Next');
-    clickByText('Next');
-    clickByText('Next');
-    await flushFrames();
-
-    expect(storeSnapshot.mode).toBe('Architect');
-    expect(document.querySelector('[data-tour-id="mode-architect"]')).not.toBeNull();
-    expect(document.body.textContent).not.toContain('Cette zone peut être masquée');
   });
 
   it('keeps header step highlights anchored near the viewport edge', async () => {
@@ -450,6 +473,22 @@ describe('OnboardingGuide positioning', () => {
     expect(highlight?.getAttribute('y')).toBe('4');
     expect(highlight?.getAttribute('width')).toBe('143');
     expect(highlight?.getAttribute('height')).toBe('40');
+  });
+
+  it('opens only the left panel when jumping to Operate', async () => {
+    setStorePatch({ mode: 'Chat' });
+    await renderGuideWithShell();
+
+    clickByText('Operate');
+    await flushFrames();
+
+    expect(storeSnapshot).toMatchObject({
+      mode: 'Implement',
+      isLeftPanelOpen: true,
+      isRightPanelOpen: false,
+    });
+    const highlight = document.querySelector('[data-onboarding-highlight="true"]');
+    expect(highlight?.getAttribute('x')).toBe('214');
   });
 
   it('remeasures when a visible target moves on resize', async () => {
@@ -469,15 +508,12 @@ describe('OnboardingGuide positioning', () => {
   it('surfaces fallback usage distinctly from a missing target', async () => {
     await renderGuideWithShell();
 
-    clickByText('Next');
-    clickByText('Next');
+    clickByText('Architect');
     await flushFrames();
 
-    const panelToggle = document.querySelector<HTMLElement>('[data-tour-id="toggle-right-panel"]');
+    const architectButton = document.querySelector<HTMLElement>('[data-tour-id="mode-architect"]')!;
     act(() => {
-      if (panelToggle) {
-        panelToggle.style.display = 'none';
-      }
+      architectButton.style.display = 'none';
       window.dispatchEvent(new Event('resize'));
     });
     await flushFrames(8);

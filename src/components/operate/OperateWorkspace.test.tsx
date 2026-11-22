@@ -62,7 +62,7 @@ it('restores the Implement view, filters code tasks and opens the exact run and 
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   await act(async () => root!.render(<><OperateNavigator /><OperateCenter /></>));
   expect(host.textContent).not.toContain(legacy.title);
-  const sections = [...host.querySelectorAll('nav section')];
+  const sections = [...host.querySelectorAll('nav[data-tour-id="operate-executions"] section')];
   expect(sections).toHaveLength(3);
   await act(async () => sections[2].querySelector('button')!.click());
   expect(workflowRunTargetSnapshot030()).toMatchObject({ scope: { systemStartId: 'run-empty' }, conversationId: scope.conversationId });

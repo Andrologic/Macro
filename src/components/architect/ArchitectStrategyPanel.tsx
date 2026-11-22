@@ -174,7 +174,7 @@ function ArchitectViewer({ target, planStatus }: { target: AgsdlTarget; planStat
   const runView = bundle && <WorkflowRunView030 bundle={bundle} currentSource={source} expanded={expanded} initialRunId={matchingOwner ? execution.launched030 : undefined} onSelection={selectRun}
     canvas={expanded ? <AgsdlEditor target={target} planStatus={planStatus} expanded onExpand={() => setExpanded(false)} /> : editor}
     controls={launchActions} projectPicker={projectPicker} onExpand={() => setExpanded(open => !open)} />;
-  return <aside className="h-full min-h-0 min-w-0 flex flex-col bg-card border-l border-border" data-tour-id="architect-strategy-panel">
+  return <aside className="h-full min-h-0 min-w-0 flex flex-col bg-card border-l border-border" data-tour-id="architect-agsdl-panel">
     <div ref={inlineRunHost} className="relative flex-1 min-h-0">
       {target.planId ? bundle ? null : <>{editor}{projectPicker && <details className="agsdl-project-picker"><summary>{t('agsdl.shell030.project')}</summary>{projectPicker}</details>}</> : <div className="agsdl-empty">{t('agsdl.choosePlan')}</div>}
     </div>
