@@ -74,7 +74,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/agsdl/chatContextPayload.ts",
-    "sha256": "11c066c432f2d6e0f818eb35d86e58383caed775b523b765fe70fae7451e5b1b"
+    "sha256": "733a0758163800d504b90bea2e27838c14422f847163a7ee85cb0f2dfb899b8c"
   },
   {
     "path": "src/services/agsdl/document.ts",
@@ -86,11 +86,11 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/agsdl/runtimeSelection.ts",
-    "sha256": "8437dfb41f78fd9a08b9e6c06e3cef962ce3f515274d902f7cc22cc058fac416"
+    "sha256": "8905b89bfd34450488931de3b6c0743381da70bdfa7dad566c558fe6a224f402"
   },
   {
     "path": "src/services/agsdl/selectionContext.ts",
-    "sha256": "32ec510d59094d3c74b07668a11cd8066b3bb2d772fbe29feac47b96fe97419d"
+    "sha256": "835d77469b3b35d487e6f27d823a8e1a305991821bac388d69ab27da06b00a6d"
   },
   {
     "path": "src/services/ai/chatCompletionsCodec.ts",
@@ -302,7 +302,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/toolModePolicy.ts",
-    "sha256": "44cd0aa75723947d35b9b7d2e9aadef8ccaddbe40bf49527740aadec3c011c39"
+    "sha256": "f74af3b98dda873281cc16b5a88e11bf29f69c2c1814cc3db0bdc033989740e5"
   },
   {
     "path": "src/services/toolSecurityPolicy.ts",
@@ -330,7 +330,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/shared/macroToolRegistry.ts",
-    "sha256": "e50a9cfa809da201fe609a19a8e27d18bdb02e07205e391f20de5dafbbc871e2"
+    "sha256": "33dde3daebe7bf14010a0cde0aa74ed9077d75814d54109a2349087a54c4bb79"
   },
   {
     "path": "src/shared/toolOutputLimits.ts",
@@ -456,5 +456,5 @@ export const TRANSFER_RESOURCES = [
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "29797d9446ff47db03047601f51c192e9606f5e2e997a96e8600331b795a386f"
+  "preparation_set_sha256": "769a89d38c9ef8dd2d8348c8b2d609ff1bde231f1f5af2b225f92bb6fcd96a02"
 } as const;
