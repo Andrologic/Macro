@@ -132,11 +132,17 @@ impl Default for ProviderSecretsFile {
 #[derive(Debug, Clone)]
 pub(super) struct LocalSecretStore {
     path: PathBuf,
+    #[cfg(test)]
+    test_mutex: Option<std::sync::Arc<Mutex<()>>>,
 }
 
 impl LocalSecretStore {
     pub(super) fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            #[cfg(test)]
+            test_mutex: None,
+        }
     }
 
     pub(super) fn read_file(&self) -> Result<ProviderSecretsFile, SecretError> {
@@ -777,7 +783,10 @@ fn with_store_lock_mode<T>(
     recovery: bool,
     operation: impl FnOnce(&LocalSecretStore) -> Result<T, SecretError>,
 ) -> Result<T, SecretError> {
-    let _guard = match STORE_MUTEX.lock() {
+    let mutex = &*STORE_MUTEX;
+    #[cfg(test)]
+    let mutex = store.test_mutex.as_deref().unwrap_or(mutex);
+    let _guard = match mutex.lock() {
         Ok(guard) => guard,
         Err(poisoned) if recovery => poisoned.into_inner(),
         Err(_) => return Err(SecretError::PolicyUnavailable),
@@ -787,7 +796,7 @@ fn with_store_lock_mode<T>(
     let unlock_result = FileExt::unlock(&file_guard);
     let result = result.and_then(|value| unlock_result.map(|()| value).map_err(SecretError::from));
     if recovery && result.is_ok() {
-        STORE_MUTEX.clear_poison();
+        mutex.clear_poison();
     }
     result
 }
@@ -820,5 +829,10 @@ pub(super) fn parse_chatgpt_secret(serialized: &str) -> Result<Option<ChatGptSec
 
 #[cfg(test)]
 pub(super) fn test_store(path: PathBuf) -> LocalSecretStore {
-    LocalSecretStore::new(path)
+    // A panic or a slow disk lock in another fixture must not affect this
+    // store. Separate handles for the same path still share the file lock.
+    LocalSecretStore {
+        path,
+        test_mutex: Some(std::sync::Arc::default()),
+    }
 }
