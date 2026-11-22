@@ -970,6 +970,7 @@ pub fn run() {
             commands::architect_library::architect_get_draft,
             commands::architect_library::architect_save_draft,
             commands::architect_library::architect_attach_conversation,
+            commands::architect_library::architect_ensure_conversation,
             commands::architect_library::architect_save_version,
             commands::architect_library::architect_list_versions,
             commands::architect_library::architect_get_version,

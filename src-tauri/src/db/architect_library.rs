@@ -227,6 +227,14 @@ pub(crate) async fn attach_conversation(
     blueprint_id: String,
     conversation_id: String,
 ) -> DbResult<Summary> {
+    attach_on_connection(&mut *pool.acquire().await?, blueprint_id, conversation_id).await
+}
+
+async fn attach_on_connection(
+    db: &mut SqliteConnection,
+    blueprint_id: String,
+    conversation_id: String,
+) -> DbResult<Summary> {
     let row = sqlx::query(
         "UPDATE architect_blueprints SET conversation_id=?
          WHERE id=? AND EXISTS (SELECT 1 FROM conversations WHERE id=?)
@@ -239,10 +247,148 @@ pub(crate) async fn attach_conversation(
     .bind(blueprint_id)
     .bind(&conversation_id)
     .bind(&conversation_id)
-    .fetch_optional(pool)
+    .fetch_optional(db)
     .await?
     .ok_or_else(|| invalid("conversation_conflict"))?;
     summary(&row)
+}
+
+/// Create the chat, restore its imported transcript and bind it in one transaction.
+pub(crate) async fn ensure_conversation(
+    pool: &SqlitePool,
+    blueprint_id: String,
+) -> DbResult<Summary> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let row = sqlx::query("SELECT * FROM architect_blueprints WHERE id=?")
+        .bind(&blueprint_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let draft = draft(&row)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let existing = if let Some(id) = &draft.summary.conversation_id {
+        let scope: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT scope_mode,task_id FROM conversations WHERE id=?")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if let Some((mode, task)) = scope {
+            if mode != "Architect" || task.is_some() {
+                return Err(invalid("conversation_conflict"));
+            }
+            Some(id.clone())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let id = if let Some(id) = existing {
+        id
+    } else {
+        let id = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES(?,?,'Architect',?,?)")
+        .bind(&id).bind(&draft.summary.name).bind(&now).bind(&now).execute(&mut *tx).await?;
+        id
+    };
+    let origins = draft
+        .history
+        .as_ref()
+        .and_then(|h| h.get("origins"))
+        .and_then(Value::as_array);
+    let restore_key = format!("architect:restored-transcript:{blueprint_id}:{id}");
+    let restored: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app_settings WHERE key=?)")
+            .bind(&restore_key)
+            .fetch_one(&mut *tx)
+            .await?;
+    if restored && draft.summary.conversation_id.as_ref() == Some(&id) {
+        return Ok(draft.summary);
+    }
+    let mut transcript = Vec::<Value>::new();
+    for raw in origins
+        .into_iter()
+        .flatten()
+        .filter_map(|o| o.get("transcript")?.as_str())
+    {
+        let messages: Vec<Value> = raw
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(serde_json::from_str)
+            .collect::<Result<_, _>>()
+            .map_err(|_| invalid("invalid_archived_transcript"))?;
+        if messages.starts_with(&transcript) {
+            transcript = messages;
+        } else if !transcript.starts_with(&messages) {
+            return Err(invalid("ambiguous_archived_transcript"));
+        }
+    }
+    let existing: Vec<(String, String)> = if transcript.is_empty() {
+        vec![]
+    } else {
+        sqlx::query_as("SELECT role,content FROM messages WHERE conversation_id=? ORDER BY created_at,id LIMIT ?")
+            .bind(&id).bind(transcript.len() as i64).fetch_all(&mut *tx).await?
+    };
+    // A live conversation may have been edited since import. Never splice a divergent history.
+    let compatible = existing
+        .iter()
+        .zip(&transcript)
+        .all(|((role, content), m)| {
+            m["role"].as_str() == Some(role.as_str())
+                && m["content"].as_str() == Some(content.as_str())
+        });
+    let skip = if compatible {
+        existing.len()
+    } else {
+        transcript.len()
+    };
+    for (ordinal, message) in transcript.iter().enumerate().skip(skip) {
+        let role = message["role"]
+            .as_str()
+            .filter(|s| matches!(*s, "assistant" | "user"))
+            .ok_or_else(|| invalid("invalid_archived_transcript"))?;
+        let content = message["content"]
+            .as_str()
+            .ok_or_else(|| invalid("invalid_archived_transcript"))?;
+        sqlx::query(
+            "INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES(?,?,?,?,?)",
+        )
+        .bind(format!("{id}-{ordinal:016}"))
+        .bind(&id)
+        .bind(role)
+        .bind(content)
+        .bind(message["createdAt"].as_str().unwrap_or(&now))
+        .execute(&mut *tx)
+        .await?;
+    }
+    if skip < transcript.len() {
+        super::repository::refresh_conversation_metadata_with_connection(&mut tx, id.clone(), None)
+            .await?;
+    }
+    if !transcript.is_empty() {
+        sqlx::query("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,'true',?)")
+            .bind(restore_key)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+    }
+    let linked = if draft.summary.conversation_id.as_ref() == Some(&id) {
+        draft.summary
+    } else {
+        attach_on_connection(&mut tx, blueprint_id, id).await?
+    };
+    tx.commit().await?;
+    Ok(linked)
+}
+
+pub(crate) async fn require_editable(pool: &SqlitePool, blueprint_id: &str) -> DbResult<()> {
+    let archived: bool = sqlx::query_scalar("SELECT archived FROM architect_blueprints WHERE id=?")
+        .bind(blueprint_id)
+        .fetch_one(pool)
+        .await?;
+    if archived {
+        return Err(invalid("archived_blueprint"));
+    }
+    Ok(())
 }
 
 pub(crate) async fn save_draft(

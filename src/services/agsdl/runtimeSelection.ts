@@ -18,10 +18,11 @@ export function sameSource(left: SourceRevision, right: SourceRevision): boolean
     left.revision === right.revision && left.sourceSha256 === right.sourceSha256;
 }
 export function isAgsdlReference(value: unknown): value is AgsdlSelectionReference {
-  if (!record(value) || value.document !== "agsdl" || ![value.id, value.conversationId, value.planId, value.branchName].every(identity) ||
+  if (!record(value) || value.document !== "agsdl" || ![value.id, value.conversationId].every(identity) ||
       !string(value.path) || !string(value.title, 4096) || (value.relatedPaths !== undefined && (!Array.isArray(value.relatedPaths) || value.relatedPaths.length > 64 || !value.relatedPaths.every(path => string(path))))) return false;
   const common = ["id", "conversationId", "planId", "branchName", "document", "path", "title", "relatedPaths", "contextKind"];
-  if (value.contextKind === undefined || value.contextKind === "document") return keys(value, [...common, "version", "persistedRevision", "diagnostic"]) &&
+  if (value.contextKind === undefined || value.contextKind === "document") return (value.blueprintId === undefined ? identity(value.planId) && identity(value.branchName) :
+    identity(value.blueprintId) && value.planId === undefined && value.branchName === undefined) && keys(value, [...common, "blueprintId", "version", "persistedRevision", "diagnostic"]) &&
     identity(value.version) && Number.isSafeInteger(value.persistedRevision) && Number(value.persistedRevision) >= 0 && (value.diagnostic === undefined || string(value.diagnostic, 65536));
   if (value.contextKind !== "runtime" || !keys(value, [...common, "systemStartId", "source", "activationId", "cursor", "diagnosticSelection"]) ||
       !identity(value.systemStartId) || !isSourceRevision(value.source) || value.source.owner.planId !== value.planId || value.source.owner.branch !== value.branchName ||

@@ -494,3 +494,21 @@ it("accepts another title in the same dialog after explicit conflict overwrite",
     expectedRevisions: port.writes.map(write => write.expectedRevision),
   }).toEqual({ title: "Final title after reopening", alert: undefined, expectedRevisions: [1, 2, 3, 4] });
 });
+
+it("restores the exact blueprint and selected version into a fresh store", async () => {
+  const port = libraryPort();
+  const project = port.createProject("Local library");
+  port.createDraft(project.id, "Same", createExampleDocument("release"));
+  const chosen = port.createDraft(project.id, "Same", createExampleDocument("feature"), { conversationId: "feature-chat" });
+  port.freeze(chosen, "Reviewed");
+  await mount(port);
+  await act(async () => {
+    await useArchitectLibraryStore.getState().selectBlueprint(project.id, chosen.id);
+    await useArchitectLibraryStore.getState().selectVersion(1);
+  });
+  const freshModule = "../../stores/useArchitectLibraryStore.ts?restart";
+  const { useArchitectLibraryStore: fresh } = await import(freshModule) as typeof import("../../stores/useArchitectLibraryStore");
+  await fresh.getState().restoreSelection();
+  expect(fresh.getState()).toMatchObject({ projectId: project.id, blueprintId: chosen.id,
+    draft: { conversationId: "feature-chat" }, versionNumber: 1, version: { status: "ready" } });
+});

@@ -53,13 +53,9 @@ pub(crate) async fn architect_save_draft(
     expected_revision: i64,
     document: Document,
 ) -> CommandResult<Draft> {
-    Ok(architect_library::save_draft(
-        &get_pool(&pool).await?,
-        blueprint_id,
-        expected_revision,
-        document,
-    )
-    .await?)
+    let pool = get_pool(&pool).await?;
+    architect_library::require_editable(&pool, &blueprint_id).await?;
+    Ok(architect_library::save_draft(&pool, blueprint_id, expected_revision, document).await?)
 }
 
 #[tauri::command]
@@ -69,13 +65,9 @@ pub(crate) async fn architect_save_version(
     expected_revision: i64,
     note: Option<String>,
 ) -> CommandResult<VersionSummary> {
-    Ok(architect_library::save_version(
-        &get_pool(&pool).await?,
-        blueprint_id,
-        expected_revision,
-        note,
-    )
-    .await?)
+    let pool = get_pool(&pool).await?;
+    architect_library::require_editable(&pool, &blueprint_id).await?;
+    Ok(architect_library::save_version(&pool, blueprint_id, expected_revision, note).await?)
 }
 
 #[tauri::command]
@@ -144,6 +136,14 @@ pub(crate) async fn architect_import_blueprint(
     input: Import,
 ) -> CommandResult<ImportResult> {
     Ok(architect_library::import_blueprint(&get_pool(&pool).await?, input).await?)
+}
+
+#[tauri::command]
+pub(crate) async fn architect_ensure_conversation(
+    pool: State<'_, DbPool>,
+    blueprint_id: String,
+) -> CommandResult<Summary> {
+    Ok(architect_library::ensure_conversation(&get_pool(&pool).await?, blueprint_id).await?)
 }
 
 #[tauri::command]

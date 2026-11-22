@@ -18,7 +18,7 @@ export function serializeAgsdlChatContext(context: AgsdlChatContext | undefined,
       diagnostics: capture.diagnostics.map(({ id, sequence, code, pointer, message }) => ({ id, sequence, code, pointer, message })) })}\n</agsdl_selection>\n${RUNTIME_SELECTION_REMINDER}`;
   }
   return `<agsdl_selection>\n${JSON.stringify({
-    plan_id: context.planId, target_branch: context.branchName, document: context.document,
+    blueprint_id: context.blueprintId, plan_id: context.planId, target_branch: context.branchName, document: context.document,
     revision: context.version, persisted_revision: context.persistedRevision,
     path: context.path, related_paths: context.relatedPaths, title: context.title,
     diagnostic: context.diagnostic,

@@ -1,3 +1,4 @@
+import { prepareAgsdlChatContext } from "../../stores/agsdl/chatContext";
 import { CopyPlus, Save } from "lucide-react";
 import { useMemo, useState } from "react";
 import { getGitFlowBaseBranch, resolveTargetBranch } from "../../services/architectPlanService";
@@ -83,6 +84,7 @@ function ArchitectViewer({ target, planStatus, canSaveVersion, adaptation }: {
       title={t("agsdl.library.adaptVersion")} aria-label={t("agsdl.library.adaptVersion")} onClick={() => setAdaptDialog(true)}><CopyPlus size={14} /></button>}
   </>;
   const editor = (inDialog = false) => <AgsdlEditor target={target} planStatus={planStatus} expanded={inDialog}
+    onAttachContext={canSaveVersion ? selection => prepareAgsdlChatContext(target, selection) : undefined}
     onExpand={() => setExpanded(!inDialog)} canvasActions={actions} />;
   return <div className="relative min-h-0 flex-1">
     {editor()}

@@ -51,7 +51,8 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       runtime.sessionId === lease.sessionId && runtime.turnId === lease.turnId &&
       runtime.abortController === abortController;
   };
-  const isCurrent = (id = conversationId) => ownsTurn(id) && owner.read(id).phase === 'preparing';
+  const isCurrent = (id = conversationId) => ownsTurn(id) && owner.read(id).phase === 'preparing' &&
+    (!snapshot.blueprintId || preparation.isBlueprintCurrent?.(snapshot.blueprintId, id) === true);
   const setPreparing = (id: string, current: SendLease, assistantId: string | null = null) =>
     owner.set(id, {
       phase: 'preparing', ...current, assistantMessageId: assistantId, lastError: null,
@@ -113,7 +114,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     await messages.ensureLoaded(conversationId);
     if (!isCurrent()) return cancelled();
     timeline('messages_ready', { conversationId });
-    if (mode === 'Architect' && !architectPlan) {
+    if (mode === 'Architect' && !architectPlan && !snapshot.blueprintId) {
       throw new Error('Select a plan before sending an Architect message.');
     }
 
@@ -240,7 +241,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
           if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
         }
       }
-      if (!skipMetadata && !input.pilotTarget) {
+      if (!skipMetadata && !snapshot.blueprintId && !input.pilotTarget) {
         const generate = () => preparation.generateMetadata({ ...model, conversationId, firstUserContent: content, architectPlan,
           providerAdmission, signal: abortController.signal });
         // Global metadata uses the same provider context after the main work

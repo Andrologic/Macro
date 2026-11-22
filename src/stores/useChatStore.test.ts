@@ -1586,6 +1586,9 @@ useTaskStoreMock.subscribe = (
 };
 
 const registerUseChatStoreMocks = async () => {
+  // These fixtures exercise plan-based Architect, retained by the demo.
+  mock.module('../services/operateWorkspace', () => ({ demoWorkflowJourney: true, isOperateWorkspace: (mode: string) => mode === 'Implement' }));
+
   mock.restore();
 
   // The store scenarios exercise tool policy and execution. Dispatch and
@@ -3149,6 +3152,55 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       value: originalLocalStorage,
     });
     mock.restore();
+  });
+
+  it('opens a blueprint conversation and edits only its document without repository scope', async () => {
+    mock.module('../services/operateWorkspace', () => ({ demoWorkflowJourney: false, isOperateWorkspace: (mode: string) => mode === 'Implement' }));
+    const { architectLibrary } = await import('../services/ipc/architectLibrary');
+    const { useArchitectLibraryStore: library } = await import('./useArchitectLibraryStore');
+    const { createExampleDocument } = await import('../services/agsdl/examples');
+    const previousGroups = appState.projectGroups;
+    const previousLibrary = library.getState();
+    try {
+      appState.selectedGroupId = null;
+      appState.selectedProjectId = null;
+      appState.projectGroups = [];
+      appState.activeArchitectPlanId = null;
+      appState.activePlanContext = null;
+      await useChatStoreScenarioContext.enableRealProjectExecutionContext();
+      const a = { id: 'first', projectId: 'library', name: 'Same', archived: false, history: null, revision: 1,
+        origin: null, document: createExampleDocument('feature'), conversationId: 'first-chat' };
+      const b = { ...a, id: 'second', conversationId: 'second-chat', document: createExampleDocument('release') };
+      const drafts = new Map([a,b].map(draft => [draft.id, draft]));
+      spyOn(architectLibrary, 'getDraft').mockImplementation(async id => drafts.get(id)!);
+      spyOn(architectLibrary, 'listBlueprints').mockResolvedValue([a,b]);
+      spyOn(architectLibrary, 'listVersions').mockResolvedValue([]);
+      spyOn(architectLibrary, 'ensureConversation').mockImplementation(async id => drafts.get(id)!);
+      const save = spyOn(architectLibrary, 'saveDraft').mockImplementation(async (id, revision, document) =>
+        ({ ...drafts.get(id)!, document, revision: revision + 1 }));
+      chatSnapshotConversations = [a,b].map(draft => ({ ...createChatSnapshotConversation(draft.conversationId), project_id: null, group_id: null }));
+      await library.getState().selectBlueprint(a.projectId,a.id);
+      const { useChatStore: chat } = await loadChatStore();
+      chat.setState(createIdleChatStoreState({ conversations: [] }));
+      expect(await chat.getState().ensureConversationForCurrentMode()).toBe(a.conversationId);
+      const tool = await sendArchitectMessageAndGetToolHandler(chat, { conversationId: a.conversationId, content: 'Edit this blueprint' });
+      const read = JSON.parse(String(await tool('agsdl_get', {})));
+      expect(read.blueprint_id).toBe(a.id);
+      expect(read.source).toBe(a.document.source);
+      await tool('agsdl_update', { blueprint_id: a.id, expected_revision: read.revision, source: b.document.source });
+      expect(save).toHaveBeenCalledWith(a.id, 1, expect.objectContaining({ source: b.document.source }));
+      await library.getState().selectBlueprint(b.projectId,b.id);
+      expect(await chat.getState().ensureConversationForCurrentMode()).toBe(b.conversationId);
+      await tool('agsdl_update', { blueprint_id: a.id, expected_revision: read.revision, source: a.document.source }, 'late-update');
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(getArchitectPlanMock).not.toHaveBeenCalled();
+      expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+      expect(syncArchitectPlanChatFromConversationMock).not.toHaveBeenCalled();
+    } finally {
+      appState.projectGroups = previousGroups;
+      useRealProjectExecutionContextForTest = false;
+      library.setState(previousLibrary);
+    }
   });
 
   it('keeps native workflow Tasks out of legacy conversation creation and provider dispatch', async () => {

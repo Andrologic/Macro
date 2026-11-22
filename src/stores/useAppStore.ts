@@ -1,4 +1,6 @@
-import { isOperateWorkspace } from '../services/operateWorkspace';
+import { useArchitectLibraryStore } from "./useArchitectLibraryStore";
+import { architectLibrary } from "../services/ipc/architectLibrary";
+import { demoWorkflowJourney, isOperateWorkspace } from '../services/operateWorkspace';
 import { resolveTaskReference, taskReferenceMatches } from "../services/durableIdentity";
 import { type LifecycleContext } from '../services/lifecycleScope';
 import type { SettingsTab } from '../domains/shell/settings';
@@ -1949,8 +1951,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       selectedProjectId,
       mode,
     });
+    if (!demoWorkflowJourney && mode === "Architect") void useArchitectLibraryStore.getState().restoreSelection();
     if (
-      mode === "Architect" &&
+      demoWorkflowJourney && mode === "Architect" &&
       previousMode !== "Architect" &&
       options?.ensureAutoPlan !== false
     ) {
@@ -2403,6 +2406,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const conversation = useChatStore.getState().conversations.find(({ id }) => id === conversationId);
     if (!conversation || conversation.scope_mode !== 'Architect' || conversation.task_id) return false;
     const state = get();
+    if (!demoWorkflowJourney) {
+      const initial = useArchitectLibraryStore.getState();
+      const projects = await architectLibrary.listProjects();
+      const entries = (await Promise.all(projects.map(p => architectLibrary.listBlueprints(p.id)))).flat();
+      const matches = entries.filter(b => b.conversationId === conversationId);
+      if (matches.length !== 1 || get().mode !== state.mode || initial !== useArchitectLibraryStore.getState()) return false;
+      const match = matches[0];
+      await initial.selectBlueprint(match.projectId, match.id);
+      const selected = useArchitectLibraryStore.getState();
+      if (selected.draft?.id !== match.id || selected.draft.conversationId !== conversationId ||
+          selected.versionNumber !== null || get().mode !== state.mode) return false;
+      get().setMode("Architect");
+      return await useChatStore.getState().ensureConversationForCurrentMode() === conversationId;
+    }
     const groupId = conversation.group_id;
     const projectId = conversation.project_id;
     if (groupId ? !state.projectGroups.some((group) => group.id === groupId)
@@ -2482,6 +2499,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   loadMacroProjectMetadataForSelection: async (options = {}) => {
+    if (!demoWorkflowJourney && get().mode === "Architect") return null;
     const lifecycle = options.lifecycle;
     lifecycle?.assertActive();
     const requestId = ++architectPlanCatalogRequestId;
@@ -5412,6 +5430,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       );
     }
 
+    if (!demoWorkflowJourney && get().mode === "Architect") {
+      await useArchitectLibraryStore.getState().restoreSelection();
+      return;
+    }
     try {
 	      await reconcileProjectRegistryDependencies(lifecycle);
 	      lifecycle?.assertActive();

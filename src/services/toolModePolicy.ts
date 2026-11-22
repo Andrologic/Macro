@@ -190,6 +190,9 @@ export const isMetadataRelativePath = (rawPath: string): boolean => {
   return resolved[0] === "branches";
 };
 
+export const isRepositoryToolId = (id: string): boolean =>
+  [...WORKSPACE_READ_TOOLS, ...WORKSPACE_WRITE_TOOLS, ...GIT_TOOLS].some(tool => tool === id);
+
 export const isGitToolId = (toolId: string): boolean => {
   return (GIT_TOOLS as readonly string[]).includes(toolId);
 };

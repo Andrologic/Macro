@@ -155,6 +155,7 @@ export type AgsdlToolCall = {
   conversationId: string;
   isCurrent: () => boolean;
   /** Runtime-owned qualification. Omission reports not-assessed, never infers native models. */
+  blueprintId?: string;
   readHarnessCatalogue?: ReadAgsdlHarnessCatalogue;
 };
 
@@ -170,9 +171,7 @@ export async function handleAgsdlToolCall(params: AgsdlToolCall): Promise<string
   }
 }
 
-async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
-  if (!params.isCurrent()) throw new Error("The authoring turn has ended.");
-  const { args } = params;
+async function resolveLegacyDocument(params: AgsdlToolCall, args: Record<string, unknown>) {
   const target = {
     planId: text(args.plan_id),
     branchName: text(args.target_branch),
@@ -192,6 +191,19 @@ async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
       "The AgSDL document must belong to the calling plan conversation.",
     );
   if (!plan.agsdl) throw new AgsdlAuthoringRefusal("Select an AgSDL system in the Architect navigator.");
+  return { target, editable: plan.status === "draft" };
+}
+
+async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
+  if (!params.isCurrent()) throw new Error("The authoring turn has ended.");
+  const { args } = params;
+  const { target, editable } = params.blueprintId ? {
+    target: { blueprintId: params.blueprintId }, editable: true,
+  } : await resolveLegacyDocument(params, args);
+  if (params.blueprintId && (args.plan_id !== undefined || args.target_branch !== undefined ||
+      (args.blueprint_id !== undefined && args.blueprint_id !== params.blueprintId) ||
+      (params.toolName === "agsdl_update" && args.blueprint_id !== params.blueprintId)))
+    throw new AgsdlAuthoringRefusal("Read the selected blueprint with agsdl_get before editing.");
   const store = useAgsdlStore.getState;
   await store().load(target);
   if (!params.isCurrent()) throw new Error("The authoring turn has ended.");
@@ -202,7 +214,7 @@ async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
   if (params.toolName === "agsdl_update") {
     if (current().saving)
       throw new Error("Wait for the current save to finish before editing.");
-    if (plan.status !== "draft")
+    if (!editable)
       throw new Error("AgSDL editing requires a draft plan.");
     if (
       typeof args.expected_revision !== "string" ||
@@ -289,7 +301,7 @@ async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
   if (params.toolName === "agsdl_get" && args.expected_revision !== undefined && args.expected_revision !== session.version) throw new AgsdlAuthoringRefusal("The document changed. Restart agsdl_get pagination with the current revision.");
   if (args.section !== undefined && !sections.includes(args.section as ReadSection)) throw new AgsdlReadArgumentError("Unknown AgSDL read section.");
   const section = args.section as ReadSection | undefined;
-  const base = { plan_id: target.planId, target_branch: target.branchName, revision: session.version,
+  const base = { ...("blueprintId" in target ? { blueprint_id: target.blueprintId } : { plan_id: target.planId, target_branch: target.branchName }), revision: session.version,
     persisted_revision: session.persistedRevision, dirty: session.dirty, ...(bytes(pointer) <= 1024 ? { path: pointer } : { path_omitted: true }) };
   const entries = inventory(doc, pointer);
   let designContext: unknown;

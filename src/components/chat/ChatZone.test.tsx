@@ -470,6 +470,8 @@ const loadChatZoneModule = async (
 
   installReactI18nextMock(translationMock);
 
+  // These fixtures exercise plan-based Architect, retained by the demo.
+  mock.module('../../services/operateWorkspace', () => ({ demoWorkflowJourney: true, isOperateWorkspace: (mode: string) => mode === 'Implement' }));
   mock.module('../../stores/useAppStore', () => ({
     useAppStore,
   }));

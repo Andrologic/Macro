@@ -55,6 +55,7 @@ export interface ChatSendSnapshot {
   modelSelectionCaptured?: boolean;
   mode: AppMode;
   agentType: AgentType | null;
+  blueprintId?: string;
   architectPlan?: ArchitectPlanAtSend;
   conversationTaskId: string | null;
   selectedTaskId: string;
@@ -136,6 +137,7 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
     onTurnCaptured?(conversationId: string, lease: SendLease): void;
     hasPendingArchitectConversation(conversationId: string): boolean;
     materializeArchitectConversation(conversationId: string): Promise<string>;
+    isBlueprintCurrent?(blueprintId: string, conversationId: string): boolean;
     bindArchitectConversation(params: { architectPlan: ArchitectPlanAtSend; conversationId: string }): Promise<boolean>;
     syncArchitectMetadata(params: { branchName: string; planId: string; conversationId: string; reason: 'metadata_prefix' }): Promise<void>;
     generateMetadata(params: SendModel & { providerAdmission: ProviderAdmission; signal: AbortSignal; conversationId: string; firstUserContent: string; architectPlan?: ArchitectPlanAtSend }): Promise<void>;

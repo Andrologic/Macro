@@ -53,7 +53,7 @@ export interface AgsdlSession extends Snapshot {
 interface AgsdlState {
   sessions: Record<string, AgsdlSession>;
   openBlueprintDocument: (record: BlueprintDraft | BlueprintVersion) => AgsdlSession;
-  saveVersion: (blueprintId: string, note: string | null) => Promise<BlueprintVersionSummary>;
+  saveVersion: (blueprintId: string, note: string | null, isCurrent?: () => boolean) => Promise<BlueprintVersionSummary>;
   load: (target: AgsdlDocumentTarget, reload?: boolean) => Promise<AgsdlSession>;
   replace: (
     target: AgsdlDocumentTarget,
@@ -231,7 +231,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       update(target, next);
       return next;
     },
-    async saveVersion(blueprintId, note) {
+    async saveVersion(blueprintId, note, isCurrent = () => true) {
       const target = { blueprintId };
       const current = session(target);
       assertDraft(current);
@@ -240,7 +240,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       assertEditableEdition(current.source);
       if (current.dirty) await get().save(target);
       const saved = session(target);
-      if (saved.version !== current.version || saved.saving || saved.dirty)
+      if (!isCurrent() || saved.version !== current.version || saved.saving || saved.dirty)
         throw new AgsdlUserError("agsdl.viewer.editConflict", "The document changed. Read it again before editing.");
       update(target, { ...saved, saving: true });
       try {

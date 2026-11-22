@@ -5,7 +5,8 @@ import type { ArchitectPlanRecord } from '../services/architectPlanService';
 import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
 import { createDeferred } from '../test-utils/deferred';
 
-// Exercise both stores together. Only native reads and provider restoration are replaced.
+// The demo still restores plan-based Architect chats from their exact replica.
+mock.module('../services/operateWorkspace', () => ({ demoWorkflowJourney: true, isOperateWorkspace: () => false }));
 const ipc = { ...await import('../services/tauriIpc') };
 const planService = { ...await import('../services/architectPlanService') };
 const readService = { ...await import('../services/architectPlanReadService') };

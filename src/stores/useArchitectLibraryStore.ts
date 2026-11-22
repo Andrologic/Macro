@@ -21,16 +21,27 @@ interface ArchitectLibraryState {
   projects: Read<ArchitectProject[]>;
   blueprints: Read<BlueprintSummary[]>;
   versions: Read<BlueprintVersionSummary[]>;
+  restoreSelection: () => Promise<void>;
   refreshProjects: () => Promise<void>;
   refreshBlueprints: () => Promise<void>;
   refreshVersions: () => Promise<void>;
   selectProject: (projectId: string | null) => Promise<void>;
-  selectBlueprint: (projectId: string, blueprintId: string) => Promise<void>;
+  selectBlueprint: (projectId: string, blueprintId: string, versionNumber?: number | null) => Promise<void>;
   selectVersion: (number: number | null) => Promise<void>;
   createProject: (name: string) => Promise<void>;
   createBlueprint: (projectId: string, name: string) => Promise<void>;
   adaptVersion: (key: VersionKey, projectId: string, name: string) => Promise<void>;
   saveVersion: (blueprintId: string, note: string | null) => Promise<void>;
+}
+
+const selectionKey = "macro_architect_library_selection_v1";
+function rememberSelection(projectId: string | null, blueprintId: string | null, versionNumber: number | null) {
+  localStorage.setItem(selectionKey, JSON.stringify({ projectId, blueprintId, versionNumber }));
+}
+
+export function selectedBlueprintForConversation(conversationId: string) {
+  const { draft, versionNumber } = useArchitectLibraryStore.getState();
+  return versionNumber === null && draft?.conversationId === conversationId && !draft.archived ? draft : null;
 }
 
 export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get) => {
@@ -63,10 +74,11 @@ export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get)
     } as const;
   };
 
-  const openDraft = (draft: BlueprintDraft) => {
+  const openDraft = (draft: BlueprintDraft, versionNumber: number | null = null) => {
     useAgsdlStore.getState().openBlueprintDocument(draft);
-    set({ blueprintId: draft.id, draft, draftStatus: "idle" });
-    return get().refreshVersions();
+    rememberSelection(draft.projectId, draft.id, versionNumber);
+    set({ blueprintId: draft.id, draft, draftStatus: "idle", versionNumber });
+    return Promise.all([get().refreshVersions(), versionNumber === null ? undefined : get().selectVersion(versionNumber)]);
   };
 
   async function revealNewDraft(draft: BlueprintDraft, requestedDraft: number, requestedVersion: number) {
@@ -88,6 +100,14 @@ export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get)
     projects: { status: "idle" },
     blueprints: { status: "idle" },
     versions: { status: "idle" },
+    async restoreSelection() {
+      if (get().projectId || draftRequest) return;
+      let saved;
+      try { saved = JSON.parse(localStorage.getItem(selectionKey) || "null"); } catch { return; }
+      if (typeof saved?.projectId !== "string") return;
+      if (typeof saved.blueprintId !== "string") { await get().selectProject(saved.projectId); return; }
+      await get().selectBlueprint(saved.projectId, saved.blueprintId, Number.isSafeInteger(saved.versionNumber) ? saved.versionNumber : null);
+    },
     refreshProjects: () => readCatalog("projects", () => architectLibrary.listProjects(), projects => set({ projects })),
     async refreshBlueprints() {
       const { projectId } = get();
@@ -99,14 +119,15 @@ export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get)
     },
     async selectProject(projectId) {
       if (get().projectId !== projectId) {
+        rememberSelection(projectId, null, null);
         catalogRequests.blueprints++;
         set({ ...clearDocument(), projectId, blueprints: { status: "idle" } });
       }
       await get().refreshBlueprints();
     },
-    async selectBlueprint(projectId, blueprintId) {
+    async selectBlueprint(projectId, blueprintId, versionNumber = null) {
       if (get().projectId === projectId && get().draft?.id === blueprintId) {
-        await get().selectVersion(null);
+        await get().selectVersion(versionNumber);
         return;
       }
       const projectChanged = get().projectId !== projectId;
@@ -120,7 +141,7 @@ export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get)
         const draft = await architectLibrary.getDraft(blueprintId);
         if (draftRequest !== request) return;
         if (draft.id !== blueprintId || draft.projectId !== projectId) throw new Error("Unexpected blueprint identity");
-        await openDraft(draft);
+        await openDraft(draft, versionNumber);
       } catch {
         if (request === draftRequest) set({ draftStatus: "error" });
       }
@@ -129,6 +150,7 @@ export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get)
       const { draft, versionNumber, draftStatus } = get();
       if (!draft) return;
       const request = ++versionRequest;
+      rememberSelection(draft.projectId, draft.id, number);
       if (number === null) {
         if (versionNumber === null && draftStatus === "idle") return;
         const editor = useAgsdlStore.getState();
@@ -182,7 +204,9 @@ export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get)
     async saveVersion(blueprintId, note) {
       const { draft, versionNumber, draftStatus } = get();
       if (draftStatus !== "idle" || draft?.id !== blueprintId || draft.archived || versionNumber !== null) throw new Error("No editable draft selected");
-      await useAgsdlStore.getState().saveVersion(blueprintId, note?.trim() || null);
+      const request = versionRequest;
+      await useAgsdlStore.getState().saveVersion(blueprintId, note?.trim() || null, () =>
+        request === versionRequest && get().draft?.id === blueprintId);
       if (get().draft?.id === blueprintId) await get().refreshVersions();
     },
   };

@@ -556,6 +556,9 @@ const registerMockModulePair = (
 };
 
 const registerUseAppStoreMocks = async () => {
+  // These fixtures exercise plan-based Architect, retained by the demo.
+  mock.module('../services/operateWorkspace', () => ({ demoWorkflowJourney: true, isOperateWorkspace: (mode: string) => mode === 'Implement' }));
+
   mock.restore();
 
   const actualPreferences = await import(

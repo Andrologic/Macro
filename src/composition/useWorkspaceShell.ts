@@ -1,3 +1,5 @@
+import { demoWorkflowJourney } from "../services/operateWorkspace";
+import { useArchitectLibraryStore } from "../stores/useArchitectLibraryStore";
 import { useSyncExternalStore } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { createWorkspaceSession, workspaceDefinitions, type WorkspaceSessionInput, type WorkspaceViewId } from '../domains/shell/workspace';
@@ -14,9 +16,10 @@ export function useWorkspaceShell() {
     planId: state.activeArchitectPlanId ?? null, taskId: state.selectedTaskId ?? null,
     groupId: state.selectedGroupId ?? null, projectId: state.selectedProjectId ?? null,
   })));
+  const blueprintId = useArchitectLibraryStore(state => state.draft?.id ?? null);
   const conversationId = useChatStore((state) => state.selectedConversationIdsByMode.Chat ?? null);
   const sessions = useWorkspaceSessionsStore((state) => state.sessions);
-  const input: WorkspaceSessionInput = { ...selection, conversationId };
+  const input: WorkspaceSessionInput = { ...selection, planId: demoWorkflowJourney ? selection.planId : blueprintId, conversationId };
   const session = createWorkspaceSession(workspaceDefinitions[selection.mode], input);
   const view = resolveWorkspaceView(session, sessions[session.id]?.selectedViewId);
   const navigation = Object.values(workspaceDefinitions).flatMap((definition) => {
@@ -38,7 +41,7 @@ export function selectWorkspaceView(id: WorkspaceViewId): void {
   const readSession = () => {
     const state = useAppStore.getState();
     return createWorkspaceSession(definition, {
-      agentType: state.agentType, planId: state.activeArchitectPlanId ?? null,
+      agentType: state.agentType, planId: demoWorkflowJourney ? state.activeArchitectPlanId ?? null : useArchitectLibraryStore.getState().draft?.id ?? null,
       taskId: state.selectedTaskId ?? null, groupId: state.selectedGroupId ?? null,
       projectId: state.selectedProjectId ?? null,
       conversationId: useChatStore.getState().selectedConversationIdsByMode.Chat ?? null,

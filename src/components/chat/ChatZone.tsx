@@ -1,3 +1,5 @@
+import { demoWorkflowJourney } from "../../services/operateWorkspace";
+import { useArchitectLibraryStore } from "../../stores/useArchitectLibraryStore";
 import { captureAgsdlChatContext, getAgsdlContext, replaceAgsdlChatContext, legacyAgsdlReference, serializeAgsdlChatContext, readAgsdlChatSelection, isAgsdlChatContextCurrent } from "../../stores/agsdl/chatContext";
 import { createComposerTransaction } from "../../services/chat/composerTransaction";
 import { COMPOSER_REFERENCE_PATTERN, resolveReference, referenceText } from "../../services/chat/composerReferenceText";
@@ -1181,8 +1183,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     standaloneProjects,
     projectGroups,
     getProjectById,
-    activeArchitectPlanId,
-    activePlanContext,
+    activeArchitectPlanId: legacyPlanId,
+    activePlanContext: legacyPlanContext,
     openProjectModal,
     setLeftPanelOpen,
   } = useAppStore(useShallow((state) => ({
@@ -1364,6 +1366,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     () => tasks.find((task) => task.id === selectedTaskId) ?? null,
     [tasks, selectedTaskId]
   );
+  const libraryDraft = useArchitectLibraryStore(s => s.versionNumber === null ? s.draft : null);
+  const libraryMode = mode === "Architect" && !demoWorkflowJourney;
+  const activeArchitectPlanId = libraryMode ? libraryDraft?.id : legacyPlanId;
+  const activePlanContext = libraryMode ? null : legacyPlanContext;
   const isArchitectPlanSelectionMissing = mode === 'Architect' && !activeArchitectPlanId;
   const shouldShowContextControlsForActiveContext = shouldShowContextControls({
     mode,
@@ -2133,7 +2139,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       }),
     [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
-  const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
+  const isWorkspaceMissing = !libraryMode && isProjectWorkspaceMissing(workspaceState);
   const isModeProjectWorkspaceMissing =
     (mode === 'Architect' || mode === 'Implement') && isWorkspaceMissing;
   const selectedTaskScopedProjectIds = useMemo(() => {
@@ -2282,6 +2288,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   }, [copyRestoredConversation, isCopyingRestored, selectedConversationId, t]);
   const isComposerDisabled =
+    (libraryMode && (!libraryDraft || libraryDraft.archived || libraryDraft.conversationId !== selectedConversationId)) ||
     isConversationPending ||
     isModeProjectWorkspaceMissing ||
     isArchitectPlanSelectionMissing ||
@@ -2346,6 +2353,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   ]);
 
   const modeHeader = useMemo(() => {
+    if (libraryMode) return { icon: "compass" as const, title: t("header.architect", "Architect"), subtitle: libraryDraft?.name ?? null };
     if (mode === 'Architect') {
       return {
         icon: import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? 'pencil-ruler' as const : 'compass' as const,
@@ -2377,6 +2385,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     };
   }, [
     currentConversation?.title,
+    libraryMode,
+    libraryDraft?.name,
     hasVerifiedConflictContext,
     activePlanContext,
     focusedProjectName,
@@ -2389,6 +2399,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   ]);
 
   useEffect(() => {
+    if (!demoWorkflowJourney) return;
     const handlePlanSelectorState = (event: Event) => {
       setArchitectPlanSelectorState(
         (event as CustomEvent<ArchitectPlanSelectorStateDetail>).detail ?? null
@@ -2432,7 +2443,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       : missingArchitectPlanActionKind === 'configure'
         ? t('architect.projectNavigator.manageProjects', 'Manage projects')
       : t('architect.selectPlanAction', 'Select a plan');
-  const missingArchitectPlanMessage = isMissingArchitectPlanActionUnavailable
+  const missingArchitectPlanMessage = libraryMode ? agsdlT("agsdl.library.chooseBlueprint") : isMissingArchitectPlanActionUnavailable
     ? t('architect.projectNavigator.loadError', 'Unable to load plans.')
     : missingArchitectPlanActionKind === 'create'
     ? t(
@@ -3122,7 +3133,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       ? { ...draftAgsdlContext, conversationId: selectedConversationId }
       : draftAgsdlContext;
 
-    if (agsdlContext && (mode !== 'Architect' || agsdlContext.conversationId !== selectedConversationId || agsdlContext.planId !== activeArchitectPlanId || agsdlContext.branchName !== activePlanContext?.targetBranch || !isAgsdlChatContextCurrent(agsdlContext))) {
+    if (agsdlContext && (mode !== 'Architect' || agsdlContext.conversationId !== selectedConversationId || (libraryMode ? agsdlContext.blueprintId !== libraryDraft?.id : agsdlContext.planId !== activeArchitectPlanId || agsdlContext.branchName !== activePlanContext?.targetBranch) || !isAgsdlChatContextCurrent(agsdlContext))) {
       notify.warning(agsdlT("agsdl.staleChatSelection"));
       return;
     }
@@ -3268,7 +3279,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
     const conversationId = await ensureConversation();
     if (!conversationId) return;
-    if (agsdlContext && (mode !== 'Architect' || agsdlContext.conversationId !== selectedConversationId || agsdlContext.planId !== activeArchitectPlanId || agsdlContext.branchName !== activePlanContext?.targetBranch || !isAgsdlChatContextCurrent(agsdlContext))) {
+    if (agsdlContext && (mode !== 'Architect' || agsdlContext.conversationId !== selectedConversationId || (libraryMode ? agsdlContext.blueprintId !== libraryDraft?.id : agsdlContext.planId !== activeArchitectPlanId || agsdlContext.branchName !== activePlanContext?.targetBranch) || !isAgsdlChatContextCurrent(agsdlContext))) {
       notify.warning(agsdlT("agsdl.staleChatSelection"));
       return;
     }
@@ -4089,7 +4100,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 <p className="text-muted-foreground text-sm">
                   {missingArchitectPlanMessage}
                 </p>
-                <button
+                {!libraryMode && <button
                   ref={missingArchitectPlanActionRef}
                   type="button"
                   onClick={handleMissingArchitectPlanAction}
@@ -4118,7 +4129,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     className={cn(isMissingArchitectPlanActionPending && 'animate-spin')}
                   />
                   {missingArchitectPlanActionLabel}
-                </button>
+                </button>}
               </div>
             </div>
           ) : isSelectedTaskDependencyBlocked && selectedTask ? (

@@ -197,3 +197,75 @@ async fn conflicting_edits_versions_and_pinned_uses() {
         2
     );
 }
+
+#[tokio::test]
+async fn blueprint_chats_restore_once_without_a_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("macro.db");
+    let pool = create_pool(&path).await.unwrap();
+    let project = create_project(&pool, "Library".into()).await.unwrap();
+    let a = create_blueprint(&pool, project.id.clone(), "Same".into(), document())
+        .await
+        .unwrap()
+        .summary
+        .id;
+    let b = create_blueprint(&pool, project.id, "Same".into(), document())
+        .await
+        .unwrap()
+        .summary
+        .id;
+    let (first, concurrent) = tokio::join!(
+        ensure_conversation(&pool, a.clone()),
+        ensure_conversation(&pool, a.clone())
+    );
+    let first = first.unwrap().conversation_id.unwrap();
+    assert_eq!(
+        concurrent.unwrap().conversation_id.as_deref(),
+        Some(first.as_str())
+    );
+    assert_ne!(
+        ensure_conversation(&pool, b)
+            .await
+            .unwrap()
+            .conversation_id
+            .unwrap(),
+        first
+    );
+    let mut archived = legacy();
+    archived.history.as_mut().unwrap().insert("origins".into(), json!([{"transcript":"{\"role\":\"user\",\"content\":\"Initial design\"}\n{\"role\":\"assistant\",\"content\":\"Review\"}"}]));
+    let archived = import_blueprint(&pool, archived)
+        .await
+        .unwrap()
+        .blueprint_id;
+    assert!(require_editable(&pool, &archived).await.is_err());
+    let archive_chat = ensure_conversation(&pool, archived.clone())
+        .await
+        .unwrap()
+        .conversation_id
+        .unwrap();
+    pool.close().await;
+    let reopened = create_pool(&path).await.unwrap();
+    assert_eq!(
+        ensure_conversation(&reopened, a)
+            .await
+            .unwrap()
+            .conversation_id,
+        Some(first)
+    );
+    assert_eq!(
+        ensure_conversation(&reopened, archived)
+            .await
+            .unwrap()
+            .conversation_id
+            .as_ref(),
+        Some(&archive_chat)
+    );
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT content FROM messages WHERE conversation_id=? ORDER BY created_at,id",
+    )
+    .bind(archive_chat)
+    .fetch_all(&reopened)
+    .await
+    .unwrap();
+    assert_eq!(rows, ["Initial design", "Review"]);
+}
