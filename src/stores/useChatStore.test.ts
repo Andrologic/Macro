@@ -4199,7 +4199,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       await useChatStore.getState().initialize(scope);
       expect(appSettingValues.get(key)).toBe(marker);
       expect(dbDeleteAppSettingMock).not.toHaveBeenCalledWith(key);
-      expect(useChatStore.getState().conversations.some(conversation => conversation.id === id)).toBe(false);
+      expect(useChatStore.getState().conversations).not.toContainEqual(expect.objectContaining({ id }));
     } finally {
       scope.stop();
       await useChatStore.getState().drainSubscriptions();

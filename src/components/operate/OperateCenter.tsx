@@ -15,10 +15,13 @@ export default function OperateCenter() {
   const bundle = ref && registrations.find(item => {
     const read = item.access.getSnapshot().runs[ref.systemStartId];
     const inspection = read && retainedRunValue030(read);
-    return inspection && sameWorkflowSource030(inspection.capture.source, ref.source) &&
+    return inspection && inspection.capture.systemStartId === ref.systemStartId &&
+      inspection.state.scope.systemStartId === ref.systemStartId && sameWorkflowSource030(inspection.capture.source, ref.source) &&
+      sameWorkflowSource030(inspection.state.scope.source, ref.source) &&
       inspection.state.instances.some(instance => instance.id === ref.agentInstanceId);
   });
   if (bundle && task && ref) return <WorkflowRunView030 key={task.id} bundle={bundle}
-    target={{ scope: { systemStartId: ref.systemStartId, source: ref.source } }} initialInstanceId={ref.agentInstanceId} />;
+    target={{ scope: { systemStartId: ref.systemStartId, source: ref.source }, conversationId: bundle.scope.conversationId }}
+    initialInstanceId={ref.agentInstanceId} taskStale={ref.stale} />;
   return <p role="status" className="m-auto p-4 text-sm text-muted-foreground">{t(ref ? 'agsdl.shell030.exactUnavailable' : 'agsdl.run030.selectRun')}</p>;
 }

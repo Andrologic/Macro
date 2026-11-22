@@ -76,6 +76,8 @@ export function getWorkflowRunAccess030(scope: WorkflowRunScope030): WorkflowRun
 }
 export type WorkflowRunTarget030 = Pick<RunHumanRequest030, 'scope'> & { requestId?: string; conversationId?: string };
 let runTarget030: WorkflowRunTarget030 | null = null;
+let runOpenSequence030 = 0;
+export const workflowRunOpenSequence030 = () => runOpenSequence030;
 const runTargetListeners030 = new Set<() => void>();
 export const workflowRunTargetSnapshot030 = () => runTarget030;
 export const subscribeWorkflowRunTarget030 = (listener: () => void) => {
@@ -83,6 +85,7 @@ export const subscribeWorkflowRunTarget030 = (listener: () => void) => {
   return () => { runTargetListeners030.delete(listener); };
 };
 export function openWorkflowRun030(target: WorkflowRunTarget030 | null): void {
+  runOpenSequence030++;
   runTarget030 = target;
   runTargetListeners030.forEach(listener => listener());
 }

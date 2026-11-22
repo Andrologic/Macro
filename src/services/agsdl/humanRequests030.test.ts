@@ -112,6 +112,30 @@ it('requires a successful correlated read before retrying a definitive refusal',
   expect(client.blocked(request)).toBe(false);
 });
 
+it('retains request readback by run, capture and revision', async () => {
+  const request = humanFixture030();
+  const transport = humanTransportDouble030();
+  const client = createHumanRequestClient030({ ...transport, storage: memoryDraftStorage030() });
+  const latest = { ...request, revision: '2' };
+  transport.setCurrent(latest);
+  await client.refresh(request, 'capture-one');
+  expect(client.currentRequest(request, 'capture-one')).toBe(latest);
+  expect(client.currentRequest(request, 'capture-two')).toBe(request);
+  const otherRun = { ...request, scope: { ...request.scope, systemStartId: 'other-run' } };
+  expect(client.currentRequest(otherRun, 'capture-one')).toBe(otherRun);
+  if (latest.clock.kind !== 'available') throw new Error('Expected a native clock');
+  const clock = { ...latest.clock, value: { ...latest.clock.value, observedAtMs: (BigInt(latest.clock.value.observedAtMs) + 50000n).toString() } };
+  expect(client.currentRequest({ ...latest, clock }, 'capture-one').clock).toEqual(clock);
+  const newerProjection = { ...request, revision: '3' };
+  expect(client.currentRequest(newerProjection, 'capture-one')).toBe(newerProjection);
+
+  transport.setCurrent(request);
+  await expect(client.refresh(request, 'capture-one')).rejects.toThrow('REVISION_CONFLICT');
+  await client.send(request, { kind: 'approval', choice: 'refuser', comment: '' }, 'capture-one');
+  expect(transport.submissions).toHaveLength(0);
+  expect(client.currentRequest(request, 'capture-one')).toBe(latest);
+});
+
 it('does not submit if the local attempt cannot be retained', () => {
   const transport = humanTransportDouble030();
   const storage = memoryDraftStorage030();

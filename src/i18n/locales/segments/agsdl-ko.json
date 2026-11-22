@@ -975,6 +975,10 @@
     }
   },
   "run030": {
+    "instanceActivity": "인스턴스 활동",
+    "instance": "에이전트 인스턴스",
+    "openRunInspector": "실행 검사기 열기",
+    "instanceRequestLinksUnavailable": "일부 요청은 여기에서 활성화에 연결할 수 없습니다. 실행 검사기에서 확인할 수 있습니다.",
     "staleShort": "오래됨",
     "mappingUnavailable": "실행 항목 연결을 제공하지 않습니다",
     "monitor": "실행",
@@ -1183,6 +1187,10 @@
     "close": "닫기"
   },
   "messages030": {
+    "instanceTrace": "인스턴스 메시지",
+    "traceLimit": "런타임은 전달 기록과 작업의 최종 텍스트를 제공합니다. 전체 대화 기록은 사용할 수 없습니다.",
+    "traceUnavailable": "런타임이 이 인스턴스의 메시지를 제공하지 않습니다.",
+    "workText": "작업 최종 텍스트",
     "title": "메시지",
     "agent": "에이전트",
     "delivery": "전달",
