@@ -2164,7 +2164,7 @@
       "delete": "Löschen",
       "deleting": "Wird gelöscht…",
       "deleteTitle": "Plan löschen",
-      "deleteDescription": "Der Plan „{{name}}“ und seine lokalen Macro-Branches werden gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.",
+      "deleteDescription": "Der Plan „{{name}}“ wird gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.",
       "editUnavailable": "Dieser Plan kann nicht mehr bearbeitet werden.",
       "editError": "Der Plan konnte nicht bearbeitet werden.",
       "archiveUnavailable": "Dieser Plan kann nicht mehr archiviert werden.",

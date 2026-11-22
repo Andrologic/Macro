@@ -141,10 +141,10 @@ describe("shared chat message preparation", () => {
     const prompt = mock(async (..._args: Parameters<ChatMessagePreparationPorts["architectPlanInstructions"]>) => ["Captured plan instructions"]);
     f.ports.architectPlanInstructions = prompt;
     expect((await f.run()).systemMessage).toContain("Captured plan instructions");
-    expect(prompt.mock.calls[0]?.slice(0, 3)).toEqual([plan, plan.nodes, f.context]);
+    expect(prompt.mock.calls[0]).toEqual([plan]);
     f.input.architectPlanOverride = null;
     await f.run();
-    expect(prompt.mock.calls[1]?.slice(0, 3)).toEqual([null, [], f.context]);
+    expect(prompt.mock.calls[1]).toEqual([null]);
     f.ports.repositoryInstructions = async () => { throw new Error("Repository instructions unavailable"); };
     await expect(f.run()).rejects.toThrow("Repository instructions unavailable");
   });

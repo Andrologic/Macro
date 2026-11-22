@@ -40,6 +40,7 @@ import { toServiceError } from './contracts/errors';
 import {
   StalePlanLifecycleSagaError,
   PlanLifecycleSagaCorruptionError,
+  assertPlanDevelopmentRecoveryAllowed,
   getPlanLifecycleSagaGeneration,
   loadPlanLifecycleSagas,
   removePlanLifecycleSaga,
@@ -1719,6 +1720,7 @@ export const createArchitectGitFlowService = (
     explicitRepoPath?: string,
     committedSaga?: PlanLifecycleSaga,
   ): Promise<ProvisionPlanBranchesResult> => {
+    if (plan.agsdl) throw new Error(`Plan ${plan.id} is unavailable for Git provisioning.`);
     const featureBranchesByProject = new Map<string, string[]>(
       resolvePlanProjectRepoPathsWithDeps(plan, explicitRepoPath, {
         errorMessage: 'Unable to resolve repository path for this plan. Select at least one project before validating the plan.',
@@ -1746,7 +1748,9 @@ export const createArchitectGitFlowService = (
     const previous = !committedSaga && (await loadPlanLifecycleSagas()).find((entry) => entry.operation === 'provision' &&
       entry.planId === plan.id && entry.branchName === plan.targetBranch);
     if (previous) {
+      assertPlanDevelopmentRecoveryAllowed(previous);
       const persistedPlan = await deps.getArchitectPlan(previous.branchName, previous.planId);
+      if (persistedPlan?.agsdl) throw new Error(`Plan ${previous.planId} is unavailable for Git provisioning.`);
       if (provisionMatchesPersistedPlan(previous, persistedPlan)) {
         await provisionPlanBranchesUnlocked(persistedPlan!, explicitRepoPath, previous);
         await finishProvision(persistedPlan!);
@@ -1964,7 +1968,7 @@ export const createArchitectGitFlowService = (
     setActive?: boolean;
   }): Promise<{ plan: ArchitectPlanRecord; provision: ProvisionPlanBranchesResult }> => {
     const plan = await deps.getArchitectPlan(params.branchName, params.planId);
-    if (!plan || plan.status === 'deleted') {
+    if (!plan || plan.agsdl || plan.status === 'deleted') {
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
 
@@ -2116,9 +2120,13 @@ export const createArchitectGitFlowService = (
     lifecycleSaga: PlanLifecycleSaga;
   }> => {
     const plan = await deps.getArchitectPlan(params.branchName, params.planId);
-    if (!plan || !getArchitectPlanCrudCapabilities(plan).canArchive) {
+    if (!plan || plan.agsdl || !getArchitectPlanCrudCapabilities(plan).canArchive) {
       throw new Error(`Plan ${params.planId} cannot be archived.`);
     }
+    const pendingArchive = (await loadPlanLifecycleSagas()).find(
+      (saga) => saga.planId === plan.id && saga.branchName === params.branchName && saga.operation === 'archive',
+    );
+    if (pendingArchive) assertPlanDevelopmentRecoveryAllowed(pendingArchive);
     const cleanupTargets = buildCleanupPlanTargetsWithDeps(plan, params.repoPath);
     const cleanupResources = deps.tauri.isTauriAvailable()
       ? await (async () => {
@@ -2170,7 +2178,7 @@ export const createArchitectGitFlowService = (
     repoPath?: string;
   }): Promise<ArchitectPlanRecord> => {
     const plan = await deps.getArchitectPlan(params.branchName, params.planId);
-    if (!plan || plan.status === 'deleted') {
+    if (!plan || plan.agsdl || plan.status === 'deleted') {
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
     const pendingArchiveSaga = (await loadPlanLifecycleSagas()).find(
@@ -2779,13 +2787,15 @@ export const createArchitectGitFlowService = (
     cleanup: CleanupPlanRepositoryResult[];
   }> => {
     let plan = await deps.getArchitectPlan(params.branchName, params.planId);
-    if (!plan || plan.status === 'deleted') {
+    if (!plan || plan.agsdl || plan.status === 'deleted') {
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
-    const pendingFinalization = (await loadPlanLifecycleSagas()).find(
+    const pending = (await loadPlanLifecycleSagas()).filter(
       (saga) => saga.planId === plan!.id && saga.branchName === params.branchName &&
-        saga.operation === 'finalize',
+        (saga.operation === 'finalize' || saga.operation === 'archive'),
     );
+    pending.forEach(assertPlanDevelopmentRecoveryAllowed);
+    const pendingFinalization = pending.find((saga) => saga.operation === 'finalize');
     let finalizationSaga: PlanLifecycleSaga;
     if (pendingFinalization) {
       finalizationSaga = pendingFinalization;
@@ -2975,7 +2985,7 @@ export const createArchitectGitFlowService = (
     repositories: CleanupPlanRepositoryResult[];
   }> => {
     const plan = await deps.getArchitectPlan(params.branchName, params.planId);
-    if (!plan) {
+    if (!plan || plan.agsdl) {
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
 
@@ -2983,6 +2993,7 @@ export const createArchitectGitFlowService = (
     const pendingDeleteSaga = (await loadPlanLifecycleSagas()).find(
       (saga) => saga.planId === params.planId && saga.branchName === params.branchName && saga.operation === 'delete',
     );
+    if (pendingDeleteSaga) assertPlanDevelopmentRecoveryAllowed(pendingDeleteSaga);
 
     if (plan.status === 'deleted') {
       await deps.deleteArchitectPlan({
@@ -3083,7 +3094,11 @@ export const createArchitectGitFlowService = (
   const resumePlanLifecycleSagaWithDeps = async (saga: PlanLifecycleSaga): Promise<void> => {
     let currentSaga = saga;
     try {
+      const metadataCheckpointOnly = saga.operation === 'archive' &&
+        (saga.phase === 'git_cleanup_complete' || saga.phase === 'metadata_commit_pending' || saga.phase === 'metadata_committed');
+      if (saga.developmentRecoveryVersion !== 1 && !metadataCheckpointOnly) return;
       const plan = await deps.getArchitectPlan(saga.branchName, saga.planId);
+      if (plan?.agsdl) return;
       if (saga.operation === 'provision') {
         if (provisionMatchesPersistedPlan(saga, plan)) {
           // Re-enumerate every expected branch and worktree from the persisted plan.

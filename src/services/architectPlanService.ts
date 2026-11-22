@@ -4,6 +4,7 @@ bindArchitectPlanConversation as bindArchitectPlanConversationImpl,
 createArchitectPlan as createArchitectPlanImpl,
 createArchitectPlanMutationService,
 deleteArchitectPlan as deleteArchitectPlanImpl,
+mutateAgsdlPlanLifecycle as mutateAgsdlPlanLifecycleImpl,
 mutateArchitectPlan as mutateArchitectPlanImpl,
 mutateArchitectPlanTaskStatus as mutateArchitectPlanTaskStatusImpl,
 restoreArchitectPlan as restoreArchitectPlanImpl,
@@ -123,5 +124,6 @@ export const setActiveArchitectPlan: typeof setActiveArchitectPlanImpl = (...arg
 export const deleteArchitectPlan: typeof deleteArchitectPlanImpl = (...args) => deleteArchitectPlanImpl(...args);
 export const restoreArchitectPlan: typeof restoreArchitectPlanImpl = (...args) => restoreArchitectPlanImpl(...args);
 export const archiveArchitectPlan: typeof archiveArchitectPlanImpl = (...args) => archiveArchitectPlanImpl(...args);
+export const mutateAgsdlPlanLifecycle: typeof mutateAgsdlPlanLifecycleImpl = (...args) => mutateAgsdlPlanLifecycleImpl(...args);
 
 export const mutateArchitectPlan: typeof mutateArchitectPlanImpl = (...args) => mutateArchitectPlanImpl(...args);

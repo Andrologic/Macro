@@ -78,12 +78,21 @@ export interface PlanLifecycleSaga {
   requiresMetadataCommit?: boolean;
   cleanupResources?: PlanLifecycleCleanupResource[];
   finalizationRepositories?: PlanFinalizationRepositoryCheckpoint[];
+  developmentRecoveryVersion?: 1;
   generation?: number;
   legacyCreatedAt?: string;
   createdAt: string;
   updatedAt: string;
   lastError?: string;
 }
+
+export const assertPlanDevelopmentRecoveryAllowed = (
+  saga: Pick<PlanLifecycleSaga, 'developmentRecoveryVersion'>,
+): void => {
+  if (saga.developmentRecoveryVersion !== 1) {
+    throw new Error('This legacy plan operation requires manual inspection before continuing.');
+  }
+};
 
 export const getPlanLifecycleSagaKey = (
   saga: Pick<PlanLifecycleSaga, 'branchName' | 'planId' | 'operation'>,
@@ -211,6 +220,9 @@ const parseSagaEntry = (entry: unknown): PlanLifecycleSaga => {
     typeof saga.createdAt !== 'string' || typeof saga.updatedAt !== 'string'
   ) throw new PlanLifecycleSagaCorruptionError();
   if (saga.generation !== undefined && !isDurableGeneration(saga.generation)) {
+    throw new PlanLifecycleSagaCorruptionError();
+  }
+  if (saga.developmentRecoveryVersion !== undefined && saga.developmentRecoveryVersion !== 1) {
     throw new PlanLifecycleSagaCorruptionError();
   }
   if (
@@ -716,7 +728,11 @@ const persistPlanLifecycleSaga = async (
 export const startPlanLifecycleSaga = async (
   saga: PlanLifecycleSaga,
   transport: PlanLifecycleSagaTransport = defaultTransport,
-): Promise<void> => persistPlanLifecycleSaga(saga, transport, true);
+): Promise<void> => {
+  // Only an explicitly started operation can authorize later development recovery.
+  saga.developmentRecoveryVersion = 1;
+  await persistPlanLifecycleSaga(saga, transport, true);
+};
 
 export const upsertPlanLifecycleSaga = async (
   saga: PlanLifecycleSaga,
