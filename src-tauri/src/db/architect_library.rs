@@ -48,6 +48,22 @@ pub(crate) struct Draft {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConversationResolution {
+    #[serde(flatten)]
+    summary: Summary,
+    draft_recovery: Option<DraftRecovery>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DraftRecovery {
+    from_conversation_id: String,
+    to_conversation_id: String,
+    owned: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct VersionSummary {
     #[serde(flatten)]
     key: VersionKey,
@@ -234,6 +250,11 @@ pub(crate) async fn attach_conversation(
              SELECT 1 FROM conversations WHERE id=?1 AND scope_mode='Architect' AND task_id IS NULL
          ) AND NOT EXISTS (
              SELECT 1 FROM architect_blueprints WHERE conversation_id=?1 AND id<>?2
+         ) AND NOT EXISTS (
+             SELECT 1 FROM app_settings WHERE key='architect:conversation-owner:' || ?1
+               AND value_json<>json_quote(?2)
+         ) AND NOT EXISTS (
+             SELECT 1 FROM architect_blueprints WHERE json_extract(history,'$.legacyConversationId')=?1
          ) AND (conversation_id=?1 OR NOT EXISTS (
              SELECT 1 FROM conversations WHERE id=architect_blueprints.conversation_id
          ))
@@ -255,7 +276,9 @@ async fn available_conversation(
     let id = sqlx::query_scalar(
         "SELECT id FROM conversations
          WHERE id=?1 AND scope_mode='Architect' AND task_id IS NULL
-           AND NOT EXISTS (SELECT 1 FROM architect_blueprints WHERE conversation_id=?1 AND id<>?2)",
+           AND NOT EXISTS (SELECT 1 FROM architect_blueprints WHERE conversation_id=?1 AND id<>?2)
+           AND NOT EXISTS (SELECT 1 FROM app_settings WHERE key='architect:conversation-owner:' || ?1
+                           AND value_json<>json_quote(?2))",
     )
     .bind(candidate)
     .bind(blueprint_id)
@@ -309,7 +332,7 @@ fn archived_transcript(draft: &Draft) -> DbResult<Vec<ArchivedMessage>> {
 pub(crate) async fn ensure_conversation(
     pool: &SqlitePool,
     blueprint_id: String,
-) -> DbResult<Summary> {
+) -> DbResult<ConversationResolution> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let row = sqlx::query("SELECT * FROM architect_blueprints WHERE id=?")
         .bind(&blueprint_id)
@@ -321,72 +344,96 @@ pub(crate) async fn ensure_conversation(
         .as_ref()
         .and_then(|h| h.get("legacyConversationId"))
         .and_then(Value::as_str);
-    let mut candidate = available_conversation(
-        &mut tx,
-        &blueprint_id,
-        draft.summary.conversation_id.as_deref(),
-    )
-    .await?;
-    if let Some(id) = &candidate {
-        let key = format!("architect:verified-transcript:{blueprint_id}:{id}");
-        let previous_key = format!("architect:restored-transcript:{blueprint_id}:{id}");
-        // The old marker could certify a divergent transcript under the legacy ID.
-        let verified: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app_settings WHERE key=? OR key=?)")
-                .bind(key)
-                .bind((Some(id.as_str()) != legacy_id).then_some(previous_key))
-                .fetch_one(&mut *tx)
+    let previous_id = draft.summary.conversation_id.as_deref().or(legacy_id);
+    let now = chrono::Utc::now().to_rfc3339();
+    let recovery_key = format!("architect:composer-recovery:{blueprint_id}");
+    let mut candidate = None;
+    let mut owned = false;
+    if let Some(id) = previous_id {
+        let owner_key = format!("architect:conversation-owner:{id}");
+        let owner: Option<Option<String>> =
+            sqlx::query_scalar("SELECT json_extract(value_json,'$') FROM app_settings WHERE key=?")
+                .bind(&owner_key)
+                .fetch_optional(&mut *tx)
                 .await?;
-        if verified {
-            tx.commit().await?;
-            return Ok(draft.summary);
+        let available = available_conversation(&mut tx, &blueprint_id, Some(id)).await?;
+        if owner
+            .as_ref()
+            .is_some_and(|value| value.as_deref() == Some(blueprint_id.as_str()))
+        {
+            owned = true;
+            if available.is_some() && draft.summary.conversation_id.as_deref() == Some(id) {
+                let receipt: Option<String> =
+                    sqlx::query_scalar("SELECT value_json FROM app_settings WHERE key=?")
+                        .bind(&recovery_key)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                let draft_recovery = receipt
+                    .and_then(|value| serde_json::from_str::<DraftRecovery>(&value).ok())
+                    .filter(|recovery| recovery.to_conversation_id == id);
+                tx.commit().await?;
+                return Ok(ConversationResolution {
+                    summary: draft.summary,
+                    draft_recovery,
+                });
+            }
+        } else if owner.is_none() {
+            // An importer may cite this ID even after switching to a private chat.
+            // A restore marker alone cannot tell us who owns a historical chat.
+            let contested: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM architect_blueprints
+                   WHERE json_extract(history,'$.legacyConversationId')=?1
+                      OR (conversation_id=?1 AND id<>?2))",
+            )
+            .bind(id)
+            .bind(&blueprint_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !contested {
+                owned = available.is_some();
+                candidate = available;
+            }
         }
     }
     let transcript = archived_transcript(&draft)?;
     let mut already_restored = false;
-    if let Some(id) = &candidate {
-        if !transcript.is_empty() {
-            let local: Vec<(String, String, String)> = sqlx::query_as(
-                "SELECT role,content,created_at FROM messages WHERE conversation_id=? ORDER BY created_at,id LIMIT ?",
-            )
-            .bind(id)
-            .bind(transcript.len() as i64 + 1)
-            .fetch_all(&mut *tx)
-            .await?;
-            let matching_prefix = local.len() >= transcript.len()
-                && local
-                    .iter()
-                    .zip(&transcript)
-                    .all(|((role, content, date), message)| {
-                        role == &message.role
-                            && content == &message.content
-                            && message
-                                .created_at
-                                .as_ref()
-                                .is_none_or(|expected| expected == date)
-                    });
-            // A suffix past a shared legacy ID's archived prefix may belong to another replica.
-            let shared_legacy: bool = if matching_prefix && local.len() > transcript.len() {
-                sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM architect_blueprints
-                      WHERE id<>? AND json_extract(history,'$.legacyConversationId')=?)",
-                )
-                .bind(&blueprint_id)
-                .bind(id)
+    if let Some(id) = candidate.as_ref().filter(|_| !transcript.is_empty()) {
+        // A verified marker from before ownership tracking is usable on a
+        // private binding, including if its messages have since been edited.
+        already_restored =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app_settings WHERE key=?)")
+                .bind(format!("architect:verified-transcript:{blueprint_id}:{id}"))
                 .fetch_one(&mut *tx)
-                .await?
-            } else {
-                false
-            };
-            already_restored = matching_prefix && !shared_legacy;
-            if !already_restored && !local.is_empty() {
-                // A fresh chat restores the entire transcript without splicing into a
-                // conflicting or partial live transcript. That live history stays intact.
-                candidate = None;
-            }
+                .await?;
+    }
+    if let Some(id) = candidate
+        .as_ref()
+        .filter(|_| !transcript.is_empty() && !already_restored)
+    {
+        let local: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT role,content,created_at FROM messages WHERE conversation_id=? ORDER BY created_at,id LIMIT ?",
+        )
+        .bind(id)
+        .bind(transcript.len() as i64)
+        .fetch_all(&mut *tx)
+        .await?;
+        already_restored = local.len() == transcript.len()
+            && local
+                .iter()
+                .zip(&transcript)
+                .all(|((role, content, date), message)| {
+                    role == &message.role
+                        && content == &message.content
+                        && message
+                            .created_at
+                            .as_ref()
+                            .is_none_or(|expected| expected == date)
+                });
+        if !already_restored && !local.is_empty() {
+            // Keep the old history intact when the archive diverges.
+            candidate = None;
         }
     }
-    let now = chrono::Utc::now().to_rfc3339();
     let id = if let Some(id) = candidate {
         id
     } else {
@@ -413,9 +460,35 @@ pub(crate) async fn ensure_conversation(
         super::repository::refresh_conversation_metadata_with_connection(&mut tx, id.clone(), None)
             .await?;
     }
-    if !transcript.is_empty() {
-        sqlx::query("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,'true',?)")
-            .bind(format!("architect:verified-transcript:{blueprint_id}:{id}"))
+    sqlx::query("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,json_quote(?),?)")
+        .bind(format!("architect:conversation-owner:{id}"))
+        .bind(&blueprint_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+    let draft_recovery = previous_id
+        .filter(|from| *from != id)
+        .map(|from| DraftRecovery {
+            from_conversation_id: from.into(),
+            to_conversation_id: id.clone(),
+            owned,
+        });
+    if let Some(recovery) = &draft_recovery {
+        // Preserve the old chat and its provenance after the binding moves.
+        sqlx::query(
+            "INSERT OR IGNORE INTO app_settings(key,value_json,updated_at) VALUES(?,'null',?)",
+        )
+        .bind(format!(
+            "architect:conversation-owner:{}",
+            recovery.from_conversation_id
+        ))
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,?,?)
+                     ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at")
+            .bind(recovery_key)
+            .bind(serde_json::to_string(recovery).map_err(|error| invalid(&error.to_string()))?)
             .bind(&now)
             .execute(&mut *tx)
             .await?;
@@ -432,7 +505,10 @@ pub(crate) async fn ensure_conversation(
         summary(&row)?
     };
     tx.commit().await?;
-    Ok(linked)
+    Ok(ConversationResolution {
+        summary: linked,
+        draft_recovery,
+    })
 }
 
 pub(crate) async fn require_editable(pool: &SqlitePool, blueprint_id: &str) -> DbResult<()> {

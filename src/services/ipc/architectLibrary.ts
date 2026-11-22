@@ -26,6 +26,9 @@ export interface BlueprintDraft extends BlueprintSummary {
   document: BlueprintDocument;
   history: BlueprintHistory | null;
 }
+export interface BlueprintConversationResolution extends BlueprintSummary {
+  draftRecovery?: { fromConversationId: string; toConversationId: string; owned: boolean } | null;
+}
 export interface BlueprintVersionSummary extends VersionKey { revision: number; note: string | null }
 export interface BlueprintVersion extends BlueprintVersionSummary { document: BlueprintDocument }
 export interface BlueprintImport {
@@ -60,7 +63,8 @@ export const architectLibrary = {
   createBlueprint: (projectId: string, name: string, document: BlueprintDocument) =>
     invoke<BlueprintDraft>("architect_create_blueprint", { projectId, name, document }),
   getDraft: (blueprintId: string) => invoke<BlueprintDraft>("architect_get_draft", { blueprintId }),
-  ensureConversation: (blueprintId: string) => invoke<BlueprintSummary>("architect_ensure_conversation", { blueprintId }),
+  ensureConversation: (blueprintId: string) =>
+    invoke<BlueprintConversationResolution>("architect_ensure_conversation", { blueprintId }),
   attachConversation: (blueprintId: string, conversationId: string) =>
     invoke<BlueprintSummary>("architect_attach_conversation", { blueprintId, conversationId }),
   saveDraft: (blueprintId: string, expectedRevision: number, document: BlueprintDocument) =>

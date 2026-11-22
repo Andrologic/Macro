@@ -142,7 +142,7 @@ pub(crate) async fn architect_import_blueprint(
 pub(crate) async fn architect_ensure_conversation(
     pool: State<'_, DbPool>,
     blueprint_id: String,
-) -> CommandResult<Summary> {
+) -> CommandResult<ConversationResolution> {
     Ok(architect_library::ensure_conversation(&get_pool(&pool).await?, blueprint_id).await?)
 }
 

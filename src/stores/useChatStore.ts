@@ -1,6 +1,7 @@
 import { confirmedBlueprintDraft, selectedBlueprintForConversation, useArchitectLibraryStore } from "./useArchitectLibraryStore";
+import { agsdlSessionKey, useAgsdlStore } from "./useAgsdlStore";
 import { architectLibrary } from "../services/ipc/architectLibrary";
-import { isAgsdlChatContextCurrent } from "./agsdl/selectionRevision";
+import { isAgsdlChatContextCurrent, resolveAgsdlSelectionPath } from "./agsdl/selectionRevision";
 import { demoWorkflowJourney, isOperateWorkspace } from '../services/operateWorkspace';
 import {
   getConversationFallbackTitle,
@@ -11,7 +12,7 @@ import {
   extractManualFeatureMetadataFromModelOutput,
   buildManualFeatureFallbackMetadata,
 } from "./chat/chatMetadataTransforms";
-import { assertRuntimeSelectionDestination } from "../services/agsdl/runtimeSelection";
+import { assertRuntimeSelectionDestination, isAgsdlReference } from "../services/agsdl/runtimeSelection";
 import { assertLegacyTaskOwnership } from '../services/workflowTaskOwnership';
 import { hasMultipleAgsdlContexts, persistableContextRefs, rebindAgsdlContextRefs, submissionHiddenContext } from "../services/chat/composerSubmission";
 import { agsdlContextForModel } from "../services/agsdl/chatContextPayload";
@@ -888,7 +889,8 @@ interface ChatStore {
   getComposerDraftForContext: (contextKey: string) => ComposerDraft | null;
   clearComposerDraftForContext: (contextKey: string) => void;
   discardComposerDraftForConversation: (conversationId: string) => void;
-  migrateComposerDraftContext: (fromContextKey: string, toContextKey: string) => void;
+  migrateComposerDraftContext: (fromContextKey: string, toContextKey: string,
+    prepareRecovery?: (draft: ComposerDraft) => ComposerDraft | null) => void;
   getPendingToolApproval: (conversationId: string) => PendingToolApproval | null;
   approvePendingToolApprovalOnce: (conversationId: string, pilotActionToken?: symbol) => void;
   approvePendingToolApprovalForConversation: (conversationId: string, pilotActionToken?: symbol) => void;
@@ -11219,10 +11221,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return modeFallback(null);
       const linked = await architectLibrary.ensureConversation(draft.id);
       const isDraftCurrent = () => isCurrentRequest() && confirmedBlueprintDraft(useArchitectLibraryStore.getState()) === draft;
-      if (!isDraftCurrent() || !linked.conversationId || linked.id !== draft.id) return modeFallback(null);
+      lifecycle?.assertActive();
+      if (!isDraftCurrent() || !linked.conversationId || linked.id !== draft.id || linked.projectId !== draft.projectId) return modeFallback(null);
       const row = await tauriIpc.getConversation(linked.conversationId);
+      lifecycle?.assertActive();
       if (!isDraftCurrent()) return modeFallback(null);
-      if (!row || row.scope_mode !== "Architect" || row.task_id) throw new Error("Invalid blueprint conversation");
+      if (!row || row.id !== linked.conversationId || row.scope_mode !== "Architect" || row.task_id) throw new Error("Invalid blueprint conversation");
       const conversation = mapDbConversationToConversation(row);
       set(state => ({
         conversations: [...state.conversations.filter(item => item.id !== row.id), conversation],
@@ -11231,6 +11235,42 @@ export const useChatStore = create<ChatStore>((set, get) => {
             messageLoadStatusByConversationId: { ...state.messageLoadStatusByConversationId, [row.id]: "idle" as const },
           } : {}),
       }));
+      const recovery = linked.draftRecovery;
+      if (recovery?.toConversationId === row.id && recovery.fromConversationId) {
+        const from = recovery.fromConversationId;
+        get().migrateComposerDraftContext(`conversation:${from}`, `conversation:${row.id}`, saved => {
+          const session = useAgsdlStore.getState().sessions[agsdlSessionKey({ blueprintId: draft.id })];
+          const selections = saved.contextRefs.filter(ref => ref.kind === "agsdl").map(ref => ref.data);
+          // A persisted document selection can also identify its blueprint when
+          // the old conversation key alone is ambiguous.
+          if (selections.some(ref => !isAgsdlReference(ref) ||
+              (ref.blueprintId !== undefined && ref.blueprintId !== draft.id) ||
+              ref.conversationId !== from)) return null;
+          const valid = saved.contextRefs.filter(ref => {
+            if (ref.kind === "agsdl") {
+              const selection = ref.data;
+              if (!isAgsdlReference(selection) || selection.blueprintId !== draft.id || !session ||
+                  selection.persistedRevision !== linked.revision ||
+                  selection.persistedRevision !== session.persistedRevision ||
+                  !isAgsdlChatContextCurrent(selection)) return false;
+              try {
+                for (const path of [selection.path, ...(selection.relatedPaths ?? [])]) {
+                  resolveAgsdlSelectionPath(session.source, path);
+                }
+                return true;
+              } catch { return false; }
+            }
+            // Citations belong to the old chat. A live reference to that chat
+            // could bring the original ambiguous transcript into the new one.
+            return ref.kind !== "source" && !(ref.kind === "conversation" &&
+              ("conversationId" in ref.data && ref.data.conversationId === from));
+          });
+          if (!recovery.owned && (selections.length === 0 ||
+              selections.length !== valid.filter(ref => ref.kind === "agsdl").length)) return null;
+          if (!saved.text && !saved.images.length && !valid.length) return null;
+          return { ...saved, contextRefs: valid };
+        });
+      }
       if (draft.conversationId !== row.id) useArchitectLibraryStore.setState({ draft: { ...draft, conversationId: row.id } });
       return modeFallback(row.id);
     }
@@ -13257,10 +13297,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       discardComposerDraftsForConversationIds([conversationId]);
     },
 
-    migrateComposerDraftContext: (fromContextKey, toContextKey) => {
+    migrateComposerDraftContext: (fromContextKey, toContextKey, prepareRecovery) => {
       if (!fromContextKey || !toContextKey || fromContextKey === toContextKey) return;
       set((state) => {
-        const draft = state.composerDraftsByContextKey[fromContextKey];
+        const previous = state.composerDraftsByContextKey[fromContextKey];
+        if (!previous || (prepareRecovery && state.composerDraftsByContextKey[toContextKey])) return state;
+        const draft = prepareRecovery ? prepareRecovery(previous) : previous;
         if (!draft) return state;
         const next = { ...state.composerDraftsByContextKey };
         delete next[fromContextKey];
@@ -13270,19 +13312,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const fromConversationId = fromContextKey.startsWith("conversation:")
           ? fromContextKey.slice("conversation:".length)
           : null;
-        if (
+        const canMove =
           !conversationId ||
           (!deletedConversationIds.has(conversationId) &&
             !useConversationArchiveStore
               .getState()
-              .archivedConversationIds.has(conversationId))
-        ) {
+              .archivedConversationIds.has(conversationId));
+        if (prepareRecovery && (!canMove || (conversationId && conversationId in state.pendingComposerDraftByConversationId))) return state;
+        if (canMove) {
           next[toContextKey] = conversationId && fromConversationId
             ? { ...draft, contextRefs: rebindAgsdlContextRefs(draft.contextRefs, fromConversationId, conversationId) }
             : draft;
         }
         persistComposerDrafts(next);
-        return { composerDraftsByContextKey: next };
+        if (!prepareRecovery || !fromConversationId || !(fromConversationId in state.pendingComposerDraftByConversationId)) {
+          return { composerDraftsByContextKey: next };
+        }
+        const pending = { ...state.pendingComposerDraftByConversationId };
+        delete pending[fromConversationId];
+        return { composerDraftsByContextKey: next, pendingComposerDraftByConversationId: pending };
       });
     },
 

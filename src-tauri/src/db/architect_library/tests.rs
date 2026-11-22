@@ -218,15 +218,16 @@ async fn blueprint_chats_restore_once_without_a_repository() {
         ensure_conversation(&pool, a.clone()),
         ensure_conversation(&pool, a.clone())
     );
-    let first = first.unwrap().conversation_id.unwrap();
+    let first = first.unwrap().summary.conversation_id.unwrap();
     assert_eq!(
-        concurrent.unwrap().conversation_id.as_deref(),
+        concurrent.unwrap().summary.conversation_id.as_deref(),
         Some(first.as_str())
     );
     assert_ne!(
         ensure_conversation(&pool, b)
             .await
             .unwrap()
+            .summary
             .conversation_id
             .unwrap(),
         first
@@ -241,6 +242,7 @@ async fn blueprint_chats_restore_once_without_a_repository() {
     let archive_chat = ensure_conversation(&pool, archived.clone())
         .await
         .unwrap()
+        .summary
         .conversation_id
         .unwrap();
     pool.close().await;
@@ -249,6 +251,7 @@ async fn blueprint_chats_restore_once_without_a_repository() {
         ensure_conversation(&reopened, a)
             .await
             .unwrap()
+            .summary
             .conversation_id,
         Some(first)
     );
@@ -256,6 +259,7 @@ async fn blueprint_chats_restore_once_without_a_repository() {
         ensure_conversation(&reopened, archived)
             .await
             .unwrap()
+            .summary
             .conversation_id
             .as_ref(),
         Some(&archive_chat)
@@ -341,14 +345,15 @@ async fn replicas_restore_independently_even_after_a_shared_legacy_binding() {
     let b = ensure_conversation(&pool, ids[1].clone())
         .await
         .unwrap()
+        .summary
         .conversation_id
         .unwrap();
     let (a, a_again) = tokio::join!(
         ensure_conversation(&pool, ids[0].clone()),
         ensure_conversation(&pool, ids[0].clone()),
     );
-    let a = a.unwrap().conversation_id.unwrap();
-    assert_eq!(a_again.unwrap().conversation_id.as_ref(), Some(&a));
+    let a = a.unwrap().summary.conversation_id.unwrap();
+    assert_eq!(a_again.unwrap().summary.conversation_id.as_ref(), Some(&a));
     assert_ne!(a, b);
     assert_ne!(a, "old-conversation");
     assert_ne!(b, "old-conversation");
@@ -365,6 +370,7 @@ async fn replicas_restore_independently_even_after_a_shared_legacy_binding() {
             ensure_conversation(&pool, blueprint)
                 .await
                 .unwrap()
+                .summary
                 .conversation_id
                 .as_ref(),
             Some(&chat)
@@ -386,6 +392,164 @@ async fn replicas_restore_independently_even_after_a_shared_legacy_binding() {
             .await
             .unwrap();
     assert_eq!(rows, ["Local draft"]);
+}
+
+#[tokio::test]
+async fn a_transcriptless_replica_never_claims_another_replicas_history() {
+    for (first_import, first_open, staggered) in [
+        (0, 0, false),
+        (0, 1, false),
+        (1, 0, false),
+        (1, 1, false),
+        (0, 0, true),
+        (1, 1, true),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("macro.db");
+        let pool = create_pool(&path).await.unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO conversations(id,title,scope_mode,created_at,updated_at)
+             VALUES('old-conversation','Historical','Architect','2026-01-01','2026-01-01');
+             INSERT INTO messages(id,conversation_id,role,content,created_at)
+             VALUES('historical-message','old-conversation','user','Replica B','2026-01-01');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let input = |index: usize| {
+            let mut input = legacy();
+            input.source_id = format!("replica-{index}");
+            if index == 1 {
+                input.history.as_mut().unwrap().insert(
+                    "origins".into(),
+                    json!([{"transcript": r#"{"role":"user","content":"Replica B","createdAt":"2026-01-01"}"#}]),
+                );
+            }
+            input
+        };
+        let mut ids = [String::new(), String::new()];
+        let mut chats = [String::new(), String::new()];
+        for index in [first_import, 1 - first_import] {
+            ids[index] = import_blueprint(&pool, input(index))
+                .await
+                .unwrap()
+                .blueprint_id;
+            if staggered && index == first_open {
+                chats[index] = ensure_conversation(&pool, ids[index].clone())
+                    .await
+                    .unwrap()
+                    .summary
+                    .conversation_id
+                    .unwrap();
+            }
+        }
+        if !staggered {
+            // Old databases could store both bindings and even a transcript marker.
+            sqlx::query("UPDATE architect_blueprints SET conversation_id='old-conversation'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,'true','now')",
+            )
+            .bind(format!(
+                "architect:verified-transcript:{}:old-conversation",
+                ids[1]
+            ))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        for index in [first_open, 1 - first_open] {
+            let (first, concurrent) = tokio::join!(
+                ensure_conversation(&pool, ids[index].clone()),
+                ensure_conversation(&pool, ids[index].clone()),
+            );
+            let first = first.unwrap();
+            let chat = first.summary.conversation_id.unwrap();
+            assert_eq!(
+                concurrent.unwrap().summary.conversation_id.as_ref(),
+                Some(&chat)
+            );
+            let recovery = first.draft_recovery.unwrap();
+            assert_eq!(recovery.from_conversation_id, "old-conversation");
+            assert_eq!(recovery.to_conversation_id, chat);
+            assert!(!recovery.owned);
+            if !chats[index].is_empty() {
+                assert_eq!(chats[index], chat);
+            }
+            chats[index] = chat;
+        }
+        assert_ne!(chats[0], chats[1]);
+        pool.close().await;
+        let pool = create_pool(&path).await.unwrap();
+        for index in 0..2 {
+            let chat = &chats[index];
+            assert_ne!(chat, "old-conversation");
+            let resolution = ensure_conversation(&pool, ids[index].clone())
+                .await
+                .unwrap();
+            assert_eq!(resolution.summary.conversation_id.as_ref(), Some(chat));
+            let contents: Vec<String> =
+                sqlx::query_scalar("SELECT content FROM messages WHERE conversation_id=?")
+                    .bind(chat)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                contents,
+                if index == 0 {
+                    vec![]
+                } else {
+                    vec!["Replica B"]
+                }
+            );
+        }
+        let original: String = sqlx::query_scalar(
+            "SELECT content FROM messages WHERE id='historical-message' AND conversation_id='old-conversation'",
+        )
+        .fetch_one(&pool).await.unwrap();
+        assert_eq!(original, "Replica B");
+    }
+}
+
+#[tokio::test]
+async fn repair_of_an_exclusive_nonhistorical_binding_records_draft_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = create_pool(&dir.path().join("macro.db")).await.unwrap();
+    let mut input = legacy();
+    input.history.as_mut().unwrap().insert(
+        "origins".into(),
+        json!([{"transcript": r#"{"role":"user","content":"Archived"}"#}]),
+    );
+    sqlx::raw_sql(
+        "INSERT INTO conversations(id,title,scope_mode,created_at,updated_at)
+         VALUES('private','Design','Architect','now','now');
+         INSERT INTO messages(id,conversation_id,role,content,created_at)
+         VALUES('private-message','private','user','Different','now');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let blueprint = import_blueprint(&pool, input).await.unwrap().blueprint_id;
+    attach_conversation(&pool, blueprint.clone(), "private".into())
+        .await
+        .unwrap();
+    let resolution = ensure_conversation(&pool, blueprint.clone()).await.unwrap();
+    let chat = resolution.summary.conversation_id.unwrap();
+    assert_ne!(chat, "private");
+    assert!(resolution.draft_recovery.unwrap().owned);
+    let resumed = ensure_conversation(&pool, blueprint).await.unwrap();
+    let recovery = resumed.draft_recovery.unwrap();
+    assert!(recovery.owned);
+    assert_eq!(recovery.from_conversation_id, "private");
+    assert_eq!(recovery.to_conversation_id, chat);
+    let original: String =
+        sqlx::query_scalar("SELECT content FROM messages WHERE id='private-message'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(original, "Different");
 }
 
 #[tokio::test]
@@ -425,6 +589,7 @@ async fn a_chat_can_only_be_attached_to_one_blueprint() {
     let chat = ensure_conversation(&pool, loser)
         .await
         .unwrap()
+        .summary
         .conversation_id
         .unwrap();
     assert_ne!(chat, "design");

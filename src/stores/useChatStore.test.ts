@@ -1,4 +1,4 @@
-import { activateComposerDraftWriter, drainComposerDraftWrites } from './chat/chatLocalSessionState';
+import { activateComposerDraftWriter, drainComposerDraftWrites, readComposerDraftsFromStorage } from './chat/chatLocalSessionState';
 import { reservePilotAction } from '../services/macroPilot/actionReservations';
 import { createGitCommitDto } from '../test-utils/gitCommit';
 import { loadQueuedSubmissions } from './chat/chatQueuedSubmissions';
@@ -3250,6 +3250,82 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       appState.projectGroups = previousGroups;
       useRealProjectExecutionContextForTest = false;
       library.setState(previousLibrary);
+    }
+  });
+
+  it('recovers a repaired blueprint composer draft only with owner evidence and current selections', async () => {
+    mock.module('../services/operateWorkspace', () => ({ demoWorkflowJourney: false, isOperateWorkspace: (mode: string) => mode === 'Implement' }));
+    const { architectLibrary } = await import('../services/ipc/architectLibrary');
+    const { useArchitectLibraryStore: library } = await import('./useArchitectLibraryStore');
+    const { useAgsdlStore: editor, agsdlSessionKey } = await import('./useAgsdlStore');
+    const { createExampleDocument } = await import('../services/agsdl/examples');
+    const previousLibrary = library.getState();
+    const previousSessions = editor.getState().sessions;
+    try {
+      await useChatStoreScenarioContext.enableRealProjectExecutionContext();
+      const blueprint = {
+        id: 'first', projectId: 'library', name: 'Design', archived: false, history: null, revision: 1,
+        origin: null, document: createExampleDocument('feature'), conversationId: 'old-chat',
+      };
+      const repaired = { ...blueprint, conversationId: 'private-chat' };
+      chatSnapshotConversations = [blueprint, repaired].map(draft => ({
+        ...createChatSnapshotConversation(draft.conversationId), project_id: null, group_id: null,
+      }));
+      // The backend may already have repaired the chat on a previous open.
+      library.setState({ draft: repaired, projectId: blueprint.projectId, blueprintId: blueprint.id, draftStatus: 'idle', versionNumber: null });
+      const { useChatStore: chat } = await loadChatStore();
+      const ensure = spyOn(architectLibrary, 'ensureConversation');
+      const fromKey = 'conversation:old-chat';
+      const toKey = 'conversation:private-chat';
+      const image = { id: 'image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AA==', createdAt: '2026-01-01' };
+      editor.setState({ sessions: {} });
+      for (const test of [
+        { owned: true, selection: 'none', moved: true },
+        { owned: false, selection: 'current', moved: true },
+        { owned: false, selection: 'none', moved: false },
+        { owned: false, selection: 'stale', moved: false },
+        { owned: false, selection: 'missing-path', moved: false },
+        { owned: true, selection: 'other-blueprint', moved: false },
+        { owned: true, selection: 'current', moved: false, existing: true },
+        { owned: true, selection: 'stale', moved: true },
+      ]) {
+        editor.getState().openBlueprintDocument(blueprint);
+        const session = editor.getState().sessions[agsdlSessionKey({ blueprintId: blueprint.id })];
+        const selection = { id: 'selection', kind: 'agsdl' as const, title: 'Document', data: {
+          id: 'selection', title: 'Document', document: 'agsdl' as const,
+          blueprintId: test.selection === 'other-blueprint' ? 'second' : blueprint.id,
+          conversationId: blueprint.conversationId, version: session.version,
+          persistedRevision: test.selection === 'stale' ? 0 : session.persistedRevision,
+          path: test.selection === 'missing-path' ? '/no-such-field' : '',
+        } };
+        const saved = { text: 'Find the original note', images: [image],
+          contextRefs: test.selection === 'none' ? [] : [selection] };
+        const newer = { text: 'Keep my new draft', images: [], contextRefs: [] };
+        chat.setState(createIdleChatStoreState({
+          composerDraftsByContextKey: { [fromKey]: saved, ...(test.existing ? { [toKey]: newer } : {}) },
+        }));
+        ensure.mockResolvedValue({ ...repaired, draftRecovery: {
+          fromConversationId: blueprint.conversationId, toConversationId: repaired.conversationId, owned: test.owned,
+        } });
+        const selected = await chat.getState().ensureConversationForCurrentMode();
+        expect(chat.getState().lastError).toBeNull();
+        expect(selected).toBe(repaired.conversationId);
+        expect(chat.getState().getComposerDraftForContext(fromKey)).toEqual(test.moved ? null : saved);
+        expect(chat.getState().getComposerDraftForContext(toKey)).toEqual(test.existing ? newer : test.moved ? {
+          ...saved,
+          contextRefs: test.selection === 'current'
+            ? [{ ...selection, data: { ...selection.data, conversationId: repaired.conversationId } }]
+            : [],
+        } : null);
+      }
+      await drainComposerDraftWrites();
+      const persisted = readComposerDraftsFromStorage();
+      expect(persisted[fromKey]).toBeUndefined();
+      expect(persisted[toKey]).toEqual({ text: 'Find the original note', images: [image], contextRefs: [] });
+    } finally {
+      useRealProjectExecutionContextForTest = false;
+      library.setState(previousLibrary);
+      editor.setState({ sessions: previousSessions });
     }
   });
 
