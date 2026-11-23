@@ -29,6 +29,8 @@ pub(crate) const PROJECT_ID: &str = "macro:architect-archive";
 pub(crate) const BRANCH: &str = "versions";
 pub(crate) const SCHEMA_VERSION: i64 = 50;
 pub(crate) const SCHEMA_NAME: &str = "050_architect_launch";
+pub(crate) const OWNER_SCHEMA_VERSION: i64 = 51;
+pub(crate) const OWNER_SCHEMA_NAME: &str = "051_architect_launch_ownership";
 fn machine_id(host_root: &Path) -> Result<String> {
     use std::io::Write;
     let path = host_root.join(".agsdl-machine-id");
@@ -55,19 +57,36 @@ fn machine_id(host_root: &Path) -> Result<String> {
 }
 
 pub(crate) async fn migrate(db: &mut SqliteConnection) -> crate::db::DbResult<()> {
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=?)")
-            .bind(SCHEMA_VERSION)
-            .fetch_one(&mut *db)
-            .await?;
-    if !exists {
-        crate::db::apply_migration(
-            db,
+    migrate_through(db, OWNER_SCHEMA_VERSION).await
+}
+
+pub(crate) async fn migrate_through(
+    db: &mut SqliteConnection,
+    through: i64,
+) -> crate::db::DbResult<()> {
+    for (version, name, schema) in [
+        (
             SCHEMA_VERSION,
-            SCHEMA_NAME.into(),
-            include_str!("db/migrations/050_architect_launch.sql").into(),
-        )
-        .await?;
+            SCHEMA_NAME,
+            include_str!("db/migrations/050_architect_launch.sql"),
+        ),
+        (
+            OWNER_SCHEMA_VERSION,
+            OWNER_SCHEMA_NAME,
+            include_str!("db/migrations/051_architect_launch_ownership.sql"),
+        ),
+    ] {
+        if version > through {
+            break;
+        }
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=?)")
+                .bind(version)
+                .fetch_one(&mut *db)
+                .await?;
+        if !exists {
+            crate::db::apply_migration(db, version, name.into(), schema.into()).await?;
+        }
     }
     Ok(())
 }

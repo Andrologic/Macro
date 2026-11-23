@@ -100,8 +100,10 @@ pub(crate) async fn launch(
         entry,
     };
 
-    let database = resources::database_key(runtime.pool).await?;
     let _resources = resources::launch_lease(context.root()).await?;
+    let database = resources::database_owner(runtime.pool, context.root())
+        .await?
+        .key;
     let policy = runtime
         .manager
         .lock_execution_tools(PROJECT_ID)

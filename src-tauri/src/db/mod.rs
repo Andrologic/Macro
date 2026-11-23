@@ -683,6 +683,7 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
     if applied.iter().any(|version| {
         *version != architect_library::storage_index::VERSION
             && *version != crate::architect_launch::SCHEMA_VERSION
+            && *version != crate::architect_launch::OWNER_SCHEMA_VERSION
             && !SUPPORTED_MIGRATION_VERSIONS.contains(version)
     }) || (!applied.is_empty() && !applied.contains(&1))
         || (applied.contains(&4) && !applied.contains(&3))
@@ -703,6 +704,8 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&architect_library::storage_index::VERSION) && !applied.contains(&48))
         || (applied.contains(&crate::architect_launch::SCHEMA_VERSION)
             && !applied.contains(&architect_library::storage_index::VERSION))
+        || (applied.contains(&crate::architect_launch::OWNER_SCHEMA_VERSION)
+            && !applied.contains(&crate::architect_launch::SCHEMA_VERSION))
         || (applied.contains(&48) && !applied.contains(&47))
         || (applied.contains(&47) && !applied.contains(&46))
         || (applied.contains(&19) && !applied.contains(&18))

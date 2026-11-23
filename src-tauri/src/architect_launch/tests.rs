@@ -258,7 +258,10 @@ async fn archive_launch_admits_pinned_snapshot_and_rediscovers_named_run() {
     fs::create_dir_all(orphan_snapshot.join("project")).unwrap();
     fs::write(orphan_snapshot.join("project/agsdl.json"), "orphan").unwrap();
     resources::seal_snapshot(&orphan_snapshot.join("project"), &folder).unwrap();
-    let db_key = resources::database_key(&pool).await.unwrap();
+    let db_key = resources::database_owner(&pool, manager.root())
+        .await
+        .unwrap()
+        .key;
     fs::write(
         orphan_snapshot.with_extension("owners.json"),
         json!([db_key]).to_string(),
@@ -503,6 +506,113 @@ async fn retained_snapshot_cleanup_obeys_both_profiles() {
         .unwrap();
     assert!(!snapshot.exists());
     assert!(legacy.is_dir());
+}
+
+async fn snapshot_with_run(data: &Path, manager: &ConfigManager) -> (SqlitePool, PathBuf) {
+    let (pool, version) = archive_fixture(data, manifest()).await;
+    observe_fixture(manager);
+    let prepared = preview(manager, &pool, data, version.clone(), None).await;
+    let host = HostState::new();
+    let executor = Arc::new(ScriptedAgent::default());
+    executor.install(&host);
+    let run = start::launch(
+        runtime(&host, manager, &pool, data),
+        request(version, prepared.consent_token),
+    )
+    .await
+    .unwrap();
+    executor
+        .wait(&host, &run.capture.identity.system_start_id)
+        .await
+        .unwrap();
+    let snapshot: String =
+        sqlx::query_scalar("SELECT retained_snapshot_id FROM architect_launch_runs")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    (pool, manager.root().join("agsdl-snapshots").join(snapshot))
+}
+
+async fn delete_launch_rows(pool: &SqlitePool) {
+    sqlx::query("DELETE FROM architect_launch_runs")
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn restored_database_reclaims_its_unreferenced_snapshot() {
+    let data = tempfile::tempdir().unwrap();
+    let manager = manager_for_test(data.path()).await;
+    let (pool, snapshot) = snapshot_with_run(data.path(), &manager).await;
+    delete_launch_rows(&pool).await;
+    let replacement = data.path().join("replacement.db");
+    sqlx::query("VACUUM INTO ?")
+        .bind(replacement.to_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    let database = data.path().join("launch.db");
+    fs::rename(replacement, &database).unwrap();
+    let restored = crate::db::create_pool(&database).await.unwrap();
+    resources::cleanup(&restored, data.path(), manager.root())
+        .await
+        .unwrap();
+    assert!(!snapshot.exists());
+}
+
+#[tokio::test]
+async fn two_profiles_restored_from_one_backup_keep_separate_snapshot_ownership() {
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let manager = manager_for_test(first.path()).await;
+    let (original, snapshot) = snapshot_with_run(first.path(), &manager).await;
+    let second_db = second.path().join("launch.db");
+    sqlx::query("VACUUM INTO ?")
+        .bind(second_db.to_str())
+        .execute(&original)
+        .await
+        .unwrap();
+    let restored = crate::db::create_pool(&second_db).await.unwrap();
+    resources::cleanup(&restored, second.path(), manager.root())
+        .await
+        .unwrap();
+    let id = |pool: SqlitePool| async move {
+        sqlx::query_scalar::<_, String>("SELECT id FROM architect_launch_database")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    assert_ne!(id(original.clone()).await, id(restored.clone()).await);
+
+    delete_launch_rows(&original).await;
+    resources::cleanup(&original, first.path(), manager.root())
+        .await
+        .unwrap();
+    assert!(snapshot.is_dir());
+
+    delete_launch_rows(&restored).await;
+    resources::cleanup(&restored, second.path(), manager.root())
+        .await
+        .unwrap();
+    assert!(!snapshot.exists());
+}
+
+#[tokio::test]
+async fn renamed_database_reclaims_its_unreferenced_snapshot() {
+    let data = tempfile::tempdir().unwrap();
+    let manager = manager_for_test(data.path()).await;
+    let (pool, snapshot) = snapshot_with_run(data.path(), &manager).await;
+    delete_launch_rows(&pool).await;
+    pool.close().await;
+    let renamed = data.path().join("renamed.db");
+    fs::rename(data.path().join("launch.db"), &renamed).unwrap();
+    let moved = crate::db::create_pool(&renamed).await.unwrap();
+    resources::cleanup(&moved, data.path(), manager.root())
+        .await
+        .unwrap();
+    assert!(!snapshot.exists());
 }
 
 async fn manager_for_test(data: &Path) -> ConfigManager {

@@ -434,7 +434,12 @@ async fn check_database(path: &Path) -> Result<()> {
             .await
             .map_err(|e| e.to_string())?;
         if versions.contains(&crate::architect_launch::SCHEMA_VERSION) {
-            crate::architect_launch::migrate(&mut tx)
+            let through = if versions.contains(&crate::architect_launch::OWNER_SCHEMA_VERSION) {
+                crate::architect_launch::OWNER_SCHEMA_VERSION
+            } else {
+                crate::architect_launch::SCHEMA_VERSION
+            };
+            crate::architect_launch::migrate_through(&mut tx, through)
                 .await
                 .map_err(|e| e.to_string())?;
         }
