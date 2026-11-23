@@ -116,7 +116,7 @@ export const AgsdlEditor: React.FC<{
   }, [source, displayMetadata, migrationMetadata, reports, projectTarget]);
   const document = parsed.document;
   const inventory = useMemo(() => view !== "flow" && source ? projectInventory(source) : null, [view, source]);
-  const hiddenAgents = project && view === "agents" ? projectSettings(project).hiddenAgentIds : [];
+  const hiddenAgents = useMemo(() => project ? projectSettings(project).hiddenAgentIds : [], [project]);
   const visibleGraphIndex = Math.max(0, Math.min(graphIndex, Math.max(0, (document?.graphs.length ?? 0) - 1)));
   const edition030 = isFlowDocumentContract(document?.contract);
   const graph = edition030 && (definitions030 || (!Object.hasOwn(document.systemDetails, "flow") && !graphChosen030)) ? undefined : document?.graphs[visibleGraphIndex];
@@ -144,7 +144,8 @@ export const AgsdlEditor: React.FC<{
     } catch (error) { setDiagnosticError(agsdlErrorText(error, t)); }
     finally { setAttaching(false); }
   };
-  const cards = useMemo(() => system.cards.map(card => ({ ...card, issueCount: diagnostics.filter(issue => issue.targets.includes(card.path)).length })), [system.cards, diagnostics]);
+  const cards = useMemo(() => system.cards.map(card => ({ ...card, issueCount: diagnostics.filter(issue => issue.targets.includes(card.path)).length,
+    ...(typeof card.details.agentName === "string" && hiddenAgents.includes(card.details.agentName) ? { hiddenInOperate: true } : {}) })), [system.cards, diagnostics, hiddenAgents]);
   const selectedEdge = system.edges.find(edge => edge.id === selected);
   const currentCard = cards.find(item => item.path === selected) ?? graph?.cards.find(item => item.path === selected) ?? document?.declarations.find(item => item.path === selected);
   // Keep an open form alive if an agent removes its component. Its captured

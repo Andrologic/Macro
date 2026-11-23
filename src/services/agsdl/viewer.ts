@@ -50,6 +50,8 @@ export interface ViewerCard {
   tools?: ViewerReference[];
   interfaces?: ViewerReference[];
   issueCount?: number;
+  /** The author hid this agent's threads in Operate (a Macro setting, never part of the document). */
+  hiddenInOperate?: boolean;
   resources?: ViewerReference[];
   approvers?: ViewerReference[];
   approvalCall?: ViewerReference;

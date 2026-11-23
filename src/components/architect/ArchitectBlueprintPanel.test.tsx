@@ -123,6 +123,11 @@ it("hides an agent's thread from Operate with a checkbox that saves at once, as 
   expect(settings.hiddenAgentIds).toEqual(["implement"]);
   await click(dialog.querySelector('button[aria-label="Close"]'));
   expect(panel().querySelector('ul[aria-label="Agents"]')?.textContent).toContain("Hidden in Operate");
+  // The block of the graph carries the same small sign, and only for that agent.
+  await click(tab("Flow"));
+  const marked = [...panel().querySelectorAll(".agsdl-graph-node")].filter(node => node.querySelector('[aria-label="Hidden in Operate"]'));
+  expect(marked).toHaveLength(1);
+  expect(marked[0].textContent).toContain("implement");
 });
 
 it("puts the box back and offers a retry when the setting could not be saved", async () => {
