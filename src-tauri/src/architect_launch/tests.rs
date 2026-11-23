@@ -253,9 +253,17 @@ async fn archive_launch_admits_pinned_snapshot_and_rediscovers_named_run() {
     fs::create_dir_all(orphan_snapshot.join("project")).unwrap();
     fs::write(orphan_snapshot.join("project/agsdl.json"), "orphan").unwrap();
     resources::seal_snapshot(&orphan_snapshot.join("project"), &folder).unwrap();
+    let db_key = resources::database_key(&pool).await.unwrap();
+    fs::write(
+        orphan_snapshot.with_extension("owners.json"),
+        json!([db_key]).to_string(),
+    )
+    .unwrap();
     let staging = retained.parent().unwrap().join(".tmpAbandoned");
     fs::create_dir(&staging).unwrap();
-    let folder_without_run = resources::new_working_folder(data.path()).unwrap().keep();
+    let folder_without_run = resources::new_working_folder(data.path(), &db_key)
+        .unwrap()
+        .keep();
     fs::write(folder_without_run.join("pre-commit"), "interrupted").unwrap();
     resources::cleanup(&pool, data.path(), manager.root())
         .await
@@ -290,6 +298,95 @@ async fn archive_launch_admits_pinned_snapshot_and_rediscovers_named_run() {
         .lock()
         .unwrap()
         .remove(manager.root());
+}
+
+#[tokio::test]
+async fn retained_snapshot_cleanup_obeys_both_profiles() {
+    let data = tempfile::tempdir().unwrap();
+    let first = tempfile::tempdir_in(data.path()).unwrap();
+    let second = tempfile::tempdir_in(data.path()).unwrap();
+    let manager = manager_for_test(data.path()).await;
+    observe_fixture(&manager);
+    let (first_pool, first_version) = archive_fixture(first.path(), manifest()).await;
+    let (second_pool, second_version) = archive_fixture(second.path(), manifest()).await;
+    let first_host = HostState::new();
+    let second_host = HostState::new();
+    let executor = Arc::new(ScriptedAgent::default());
+    executor.install(&first_host);
+    let second_executor = Arc::new(ScriptedAgent::default());
+    second_executor.install(&second_host);
+
+    let prepared = preview(
+        &manager,
+        &first_pool,
+        first.path(),
+        first_version.clone(),
+        None,
+    )
+    .await;
+    let first_run = start::launch(
+        runtime(&first_host, &manager, &first_pool, first.path()),
+        request(first_version, prepared.consent_token),
+    )
+    .await
+    .unwrap();
+    let first_id = &first_run.capture.identity.system_start_id;
+    executor.wait(&first_host, first_id).await.unwrap();
+    let id: String = sqlx::query_scalar("SELECT retained_snapshot_id FROM architect_launch_runs")
+        .fetch_one(&first_pool)
+        .await
+        .unwrap();
+    let root = manager.root().join("agsdl-snapshots");
+    let snapshot = root.join(&id);
+    let legacy = root.join("b".repeat(64));
+    fs::create_dir(&legacy).unwrap();
+
+    resources::cleanup(&second_pool, second.path(), manager.root())
+        .await
+        .unwrap();
+    assert!(snapshot.is_dir() && legacy.is_dir());
+
+    let prepared = preview(
+        &manager,
+        &second_pool,
+        second.path(),
+        second_version.clone(),
+        None,
+    )
+    .await;
+    let second_run = start::launch(
+        runtime(&second_host, &manager, &second_pool, second.path()),
+        request(second_version, prepared.consent_token),
+    )
+    .await
+    .unwrap();
+    let second_id = &second_run.capture.identity.system_start_id;
+    second_executor.wait(&second_host, second_id).await.unwrap();
+    let shared_id: String =
+        sqlx::query_scalar("SELECT retained_snapshot_id FROM architect_launch_runs")
+            .fetch_one(&second_pool)
+            .await
+            .unwrap();
+    assert_eq!(id, shared_id);
+
+    sqlx::query("DELETE FROM architect_launch_runs")
+        .execute(&first_pool)
+        .await
+        .unwrap();
+    resources::cleanup(&first_pool, first.path(), manager.root())
+        .await
+        .unwrap();
+    assert!(snapshot.is_dir());
+
+    sqlx::query("DELETE FROM architect_launch_runs")
+        .execute(&second_pool)
+        .await
+        .unwrap();
+    resources::cleanup(&second_pool, second.path(), manager.root())
+        .await
+        .unwrap();
+    assert!(!snapshot.exists());
+    assert!(legacy.is_dir());
 }
 
 async fn manager_for_test(data: &Path) -> ConfigManager {

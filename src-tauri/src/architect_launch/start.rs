@@ -101,6 +101,8 @@ pub(crate) async fn launch(
         entry,
     };
 
+    let database = resources::database_key(runtime.pool).await?;
+    let _resources = resources::launch_lease(context.root()).await?;
     let policy = runtime
         .manager
         .lock_execution_tools(PROJECT_ID)
@@ -133,9 +135,8 @@ pub(crate) async fn launch(
         return Err(launch_failure("MCP_SECRETS_UNAVAILABLE", &secret.server));
     }
 
-    let _resources = resources::launch_lease(context.root(), false).await?;
     let private_folder = if owns_folder {
-        Some(resources::new_working_folder(runtime.app_data)?)
+        Some(resources::new_working_folder(runtime.app_data, &database)?)
     } else {
         None
     };
@@ -163,9 +164,13 @@ pub(crate) async fn launch(
     };
 
     let session = runtime.host.begin_start().await?;
-    let retained = input.archive.source().retain(context.root())?;
     let mut scope = root_scope.clone();
-    retained.bind_scope(&mut scope)?;
+    let retained = resources::retain_snapshot(
+        context.root(),
+        &database,
+        input.archive.source(),
+        &mut scope,
+    )?;
     let snapshot = scope["projectSnapshot"]
         .as_str()
         .ok_or_else(|| launch_failure("CORRELATION", "projectSnapshot"))?;
