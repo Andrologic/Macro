@@ -1016,12 +1016,8 @@
       "allSystems": "Tous les systèmes",
       "showHidden": "Afficher les threads masqués",
       "hidden": "Masqué",
-      "local": "Cet ordinateur",
       "snooze": "Reporter",
-      "snoozeUntil": "Reporter jusqu’au",
-      "deadlineWarning": "Le délai d’approbation expire à {{time}}, avant la fin du report.",
       "terminate": "Terminer",
-      "confirmTerminate": "Terminer définitivement {{run}} ?",
       "actionFailed": "L’action n’a pas pu aboutir.",
       "status": {
         "active": "En cours",
@@ -1031,14 +1027,76 @@
         "failed": "En échec"
       },
       "reason": {
-        "question": "Question en attente",
+        "question": "Question",
         "approval": "Approbation",
         "error": "Erreur",
         "interrupted": "Interrompu",
-        "finished": "Exécution terminée",
+        "finished": "Terminée",
         "activity": "Nouvelle activité",
         "snoozeElapsed": "Report arrivé à échéance",
         "snoozed": "Reporté"
+      },
+      "filter": "Filtrer",
+      "filterSystem": "Par système",
+      "chipSystem": "Système : {{name}}",
+      "chipHidden": "Threads masqués",
+      "removeFilter": "Retirer le filtre : {{filter}}",
+      "clearFilters": "Effacer les filtres",
+      "noResultsQuery": "Aucune exécution ne correspond à « {{query}} ».",
+      "noResultsFilters": "Aucune exécution ne correspond aux filtres.",
+      "emptyTitle": "Aucune exécution pour l’instant.",
+      "emptyHint": "Les exécutions lancées apparaîtront ici.",
+      "nothingWaiting": "Rien ne vous attend.",
+      "scheduledEmpty": "Aucune exécution programmée.",
+      "showOlder": "Voir les plus anciennes ({{count}})",
+      "justNow": "à l’instant",
+      "unread": "Non lu",
+      "returns": "Revient {{time}}",
+      "onMachine": "sur {{machine}}",
+      "rowActions": "Actions pour {{name}}",
+      "threadState": {
+        "working": "travaille…",
+        "done": "terminé",
+        "question": "attend votre réponse",
+        "approval": "attend votre approbation",
+        "interrupted": "interrompu",
+        "error": "en erreur",
+        "snoozed": "reporté",
+        "activity": "nouvelle activité",
+        "snoozeElapsed": "report terminé"
+      },
+      "menu": {
+        "openThread": "Ouvrir le thread",
+        "openRun": "Voir l’exécution",
+        "markRead": "Marquer comme lu",
+        "snooze": "Reporter…",
+        "editSnooze": "Modifier le report…",
+        "terminate": "Terminer…"
+      },
+      "snoozeMenu": {
+        "title": "Reporter ce thread",
+        "hour": "Dans 1 heure",
+        "beforeDeadline": "Jusqu’à {{time}} (avant l’expiration)",
+        "tonight": "Ce soir ({{time}})",
+        "tomorrow": "Demain matin ({{time}})",
+        "monday": "Lundi ({{time}})",
+        "custom": "Choisir une date…",
+        "deadlineNote": "Cette demande expire le {{time}}.",
+        "deadlineWarn": "Dépasse le délai de réponse ({{time}})."
+      },
+      "snoozeDialog": {
+        "title": "Reporter jusqu’à",
+        "date": "Jour",
+        "time": "Heure",
+        "past": "Choisissez un moment dans le futur.",
+        "deadlineWarning": "Le délai de réponse de cette demande expire le {{time}}, avant la fin du report. Sans réponse d’ici là, elle expirera."
+      },
+      "terminateDialog": {
+        "title": "Terminer cette exécution ?",
+        "description": "« {{run}} » s’arrêtera définitivement. Les agents en cours seront arrêtés. Le travail déjà produit reste consultable. Cette action est irréversible.",
+        "waiting": "Des agents attendent votre réponse ; leurs demandes seront abandonnées.",
+        "confirm": "Terminer l’exécution",
+        "failed": "L’arrêt n’a pas abouti. Réessayez."
       }
     },
   "run030": {

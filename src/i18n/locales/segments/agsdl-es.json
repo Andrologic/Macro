@@ -1016,12 +1016,8 @@
       "allSystems": "Todos los sistemas",
       "showHidden": "Mostrar hilos ocultos",
       "hidden": "Oculto",
-      "local": "Este equipo",
       "snooze": "Posponer",
-      "snoozeUntil": "Posponer hasta",
-      "deadlineWarning": "El plazo de aprobación vence a las {{time}}, antes de que termine el aplazamiento.",
       "terminate": "Finalizar",
-      "confirmTerminate": "¿Finalizar definitivamente {{run}}?",
       "actionFailed": "No se pudo completar la acción.",
       "status": {
         "active": "En curso",
@@ -1039,6 +1035,68 @@
         "activity": "Actividad nueva",
         "snoozeElapsed": "Aplazamiento vencido",
         "snoozed": "Pospuesto"
+      },
+      "filter": "Filtrar",
+      "filterSystem": "Por sistema",
+      "chipSystem": "Sistema: {{name}}",
+      "chipHidden": "Hilos ocultos",
+      "removeFilter": "Quitar el filtro: {{filter}}",
+      "clearFilters": "Borrar filtros",
+      "noResultsQuery": "Ninguna ejecución coincide con «{{query}}».",
+      "noResultsFilters": "Ninguna ejecución coincide con los filtros.",
+      "emptyTitle": "Aún no hay ejecuciones.",
+      "emptyHint": "Las ejecuciones que inicie aparecerán aquí.",
+      "nothingWaiting": "Nada requiere su atención.",
+      "scheduledEmpty": "No hay ejecuciones programadas.",
+      "showOlder": "Ver anteriores ({{count}})",
+      "justNow": "ahora",
+      "unread": "Sin leer",
+      "returns": "Vuelve {{time}}",
+      "onMachine": "en {{machine}}",
+      "rowActions": "Acciones de {{name}}",
+      "threadState": {
+        "working": "trabajando…",
+        "done": "terminado",
+        "question": "espera su respuesta",
+        "approval": "espera su aprobación",
+        "interrupted": "interrumpido",
+        "error": "con fallo",
+        "snoozed": "pospuesto",
+        "activity": "actividad nueva",
+        "snoozeElapsed": "aplazamiento vencido"
+      },
+      "menu": {
+        "openThread": "Abrir hilo",
+        "openRun": "Ver la ejecución",
+        "markRead": "Marcar como leído",
+        "snooze": "Posponer…",
+        "editSnooze": "Cambiar la posposición…",
+        "terminate": "Finalizar…"
+      },
+      "snoozeMenu": {
+        "title": "Posponer este hilo",
+        "hour": "En 1 hora",
+        "beforeDeadline": "Hasta las {{time}} (antes de que venza)",
+        "tonight": "Esta noche ({{time}})",
+        "tomorrow": "Mañana por la mañana ({{time}})",
+        "monday": "Lunes ({{time}})",
+        "custom": "Elegir una fecha…",
+        "deadlineNote": "Esta solicitud vence el {{time}}.",
+        "deadlineWarn": "Supera el plazo de respuesta ({{time}})."
+      },
+      "snoozeDialog": {
+        "title": "Posponer hasta",
+        "date": "Día",
+        "time": "Hora",
+        "past": "Elija un momento futuro.",
+        "deadlineWarning": "El plazo de respuesta de esta solicitud vence el {{time}}, antes de que termine el aplazamiento. Si nadie responde antes, caducará."
+      },
+      "terminateDialog": {
+        "title": "¿Finalizar esta ejecución?",
+        "description": "«{{run}}» se detendrá definitivamente. Los agentes en curso se detendrán. El trabajo ya producido seguirá disponible. Esta acción no se puede deshacer.",
+        "waiting": "Hay agentes esperando su respuesta; sus solicitudes se abandonarán.",
+        "confirm": "Finalizar ejecución",
+        "failed": "No se pudo detener la ejecución. Inténtelo de nuevo."
       }
     },
   "run030": {
