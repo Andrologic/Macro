@@ -54,7 +54,10 @@ contents are included; credentials are removed from the copy and that copy is
 vacuumed again. Validation checks database integrity, foreign keys, supported
 migration versions, tables and column shapes, configuration validity, paths,
 checksums and size. The manifest is limited to 256 MiB. Architect artifacts
-are stored as separate ZIP members and streamed during backup and restore.
+and SQLite files larger than 16 MiB are stored as separate ZIP members and
+streamed during backup and restore. Backup staging lives under
+`<app-data>/local-backup/staging`. Startup clears abandoned files under the backup
+lock, including an interrupted export's temporary file beside its destination.
 The remaining files have a 10,000-entry limit, and private checkpoint
 traversal also has a depth and entry budget.
 
@@ -63,7 +66,7 @@ bytes, including SQLite WAL/SHM, the managed secret store and migration files,
 Pilot's original state, and invalid configuration or state files, in a new
 private `<app-data>/local-backup/preserved-<id>.zip` file. Each preservation
 has its own name and is retained. On Unix, newly written preservation and
-restored profile files have private permissions (0600). The preservation also
+restored profile files have private permissions (0600, or 0700 for executable files). The preservation also
 contains the browser recovery values captured at confirmation, including queued
 instructions and unsaved responses. Its exact path appears after restoration.
 Checksums are verified again after writing this file. If any required file

@@ -1,12 +1,12 @@
 use super::{
-    architect_artifact_prefix, entry_digest, Archive, Entry, Result, ARCHITECT_FILES, LIMIT,
+    architect_artifact_prefix, entry_digest, Archive, Entry, Result, DATABASE_ENTRIES, LIMIT,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use sha2::Digest;
 use std::{
     fs::{self, File},
     io::{self, Read, Seek, SeekFrom, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 use tempfile::TempDir;
@@ -32,10 +32,33 @@ fn stream_hash(
     Ok(format!("{:x}", digest.finalize()))
 }
 
+pub(super) fn staged_path(root: &Path, name: &str) -> PathBuf {
+    // The archive contains the full path. The private copy needs only a
+    // fixed-width, collision-resistant name, even for PATH_MAX members.
+    root.join(super::hash(name.as_bytes()))
+}
+
 impl Entry {
+    pub(super) fn size(&self, name: &str) -> Result<u64> {
+        if let Some(root) = &self.native {
+            Ok(fs::metadata(staged_path(root.path(), name))
+                .map_err(|error| error.to_string())?
+                .len())
+        } else {
+            Ok(STANDARD
+                .decode(&self.data)
+                .map_err(|error| error.to_string())?
+                .len() as u64)
+        }
+    }
+
     pub(super) fn copy_verified(&self, name: &str, output: impl Write) -> io::Result<()> {
         let checksum = if let Some(root) = &self.native {
-            stream_hash(File::open(root.path().join(name))?, output, self.executable)?
+            stream_hash(
+                File::open(staged_path(root.path(), name))?,
+                output,
+                self.executable,
+            )?
         } else {
             let bytes = STANDARD.decode(&self.data).map_err(io::Error::other)?;
             stream_hash(bytes.as_slice(), output, self.executable)?
@@ -50,35 +73,27 @@ impl Entry {
     }
 }
 
+fn streamed_name(name: &str) -> bool {
+    DATABASE_ENTRIES.contains(&name) || architect_artifact_prefix(name).is_some()
+}
+
 pub(super) fn stage(
     root: &Arc<TempDir>,
     name: &str,
     input: impl Read,
     executable: bool,
 ) -> Result<Entry> {
-    if architect_artifact_prefix(name).is_none() {
-        return Err("Unexpected Architect backup entry".into());
+    if !streamed_name(name) {
+        return Err("Unexpected streamed profile backup entry".into());
     }
-    let output = create_stage_file(root.path(), &root.path().join(name))?;
+    let output = super::create_private_file(&staged_path(root.path(), name), false)
+        .map_err(|error| error.to_string())?;
     Ok(Entry {
         data: String::new(),
         sha256: stream_hash(input, output, executable).map_err(|e| e.to_string())?,
         executable,
         native: Some(Arc::clone(root)),
     })
-}
-
-pub(super) fn create_stage_file(root: &Path, path: &Path) -> Result<File> {
-    super::storage::ensure_dir(root, path.parent().ok_or("Missing artifact parent")?)
-        .map_err(|error| error.to_string())?;
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options.open(path).map_err(|error| error.to_string())
 }
 
 pub(super) fn write(archive: &Archive, file: &mut File) -> io::Result<()> {
@@ -94,7 +109,7 @@ pub(super) fn write(archive: &Archive, file: &mut File) -> io::Result<()> {
     zip.write_all(&manifest)?;
     for (name, entry) in &archive.files {
         if let Some(root) = &entry.native {
-            let size = fs::metadata(root.path().join(name))?.len();
+            let size = fs::metadata(staged_path(root.path(), name))?.len();
             zip.start_file(name, options.large_file(size >= u64::from(u32::MAX)))?;
             entry.copy_verified(name, &mut zip)?;
         }
@@ -146,9 +161,7 @@ pub(super) fn load(path: &Path, data: &Path) -> Result<Archive> {
         let entry = archive
             .files
             .get_mut(&name)
-            .filter(|entry| {
-                name.starts_with(ARCHITECT_FILES) && entry.native.is_none() && entry.data.is_empty()
-            })
+            .filter(|entry| streamed_name(&name) && entry.native.is_none() && entry.data.is_empty())
             .ok_or("Unexpected file in profile backup bundle")?;
         if !member.is_file()
             || member.compression() != CompressionMethod::Stored
