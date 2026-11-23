@@ -931,3 +931,41 @@ async fn migration_normalizes_interior_uri_separators_but_refuses_rooted_paths()
         StorageState::Recovery
     );
 }
+
+#[tokio::test]
+async fn migration_keeps_a_skill_with_rejected_members_out_of_frozen_archives() {
+    let temp = tempfile::tempdir().unwrap();
+    let pool = create_pool(&temp.path().join("macro.db")).await.unwrap();
+    let mut document = editor("Colliding skill assets");
+    document
+        .annexes
+        .insert("agents/assets/Guide.txt".into(), "First".into());
+    document
+        .annexes
+        .insert("agents/assets/guide.txt".into(), "Second".into());
+    let raw = envelope(&document);
+    seed(&pool, &raw).await;
+    historical(&pool, 1, 3, &raw).await;
+    let storage = Storage::new(temp.path());
+    migration::migrate(&pool, &storage).await.unwrap();
+
+    assert_eq!(draft_artifact(&pool).await.state, StorageState::Draft);
+    let draft = storage.open_draft_project(&pool, BLUEPRINT).await.unwrap();
+    assert!(draft.project.diagnostics.iter().any(|issue| issue
+        .message
+        .contains("Missing declared skill resource agents/assets/guide.txt")));
+    assert!(storage
+        .freeze(&pool, BLUEPRINT.into(), 5, None, None)
+        .await
+        .is_err());
+    assert_eq!(
+        version_artifact(&pool, 1).await.state,
+        StorageState::Recovery
+    );
+    let retained = temp.path().join("skill-original.json");
+    storage
+        .export_original(&pool, BLUEPRINT.into(), 3, Some(1), &retained)
+        .await
+        .unwrap();
+    assert_eq!(fs::read(retained).unwrap(), raw.as_bytes());
+}

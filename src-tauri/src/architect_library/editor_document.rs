@@ -284,6 +284,14 @@ pub(super) fn split(mut document: Document) -> std::result::Result<Split, String
         }
     });
 
+    let skill_dirs: BTreeSet<_> = manifest
+        .get("skills")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|skills| skills.values())
+        .filter_map(|skill| local_uri(skill.get("uri")?))
+        .filter_map(|(path, _)| path.rsplit_once('/').map(|(dir, _)| path_key(dir)))
+        .collect();
     let mut authoring = Authoring {
         metadata: document.metadata,
         diagnostics,
@@ -302,19 +310,29 @@ pub(super) fn split(mut document: Document) -> std::result::Result<Split, String
     let mut files = BTreeMap::new();
     let mut annexes: Vec<_> = document.annexes.into_iter().collect();
     annexes.sort_by_key(|(name, _)| !declared.contains(name));
+    let mut resources_complete = true;
     for (name, text) in annexes {
         if portable_path(&name) && registry.reserve(&name) {
             files.insert(name.clone(), text.into_bytes());
             authoring.annex_paths.insert(name.clone(), name);
         } else {
-            authoring
-                .diagnostics
-                .push(format!("Annex kept privately: {name}"));
+            if name
+                .match_indices('/')
+                .any(|(end, _)| skill_dirs.contains(&path_key(&name[..end])))
+            {
+                resources_complete = false;
+                authoring
+                    .diagnostics
+                    .push(format!("Missing declared skill resource {name}"));
+            } else {
+                authoring
+                    .diagnostics
+                    .push(format!("Annex kept privately: {name}"));
+            }
             authoring.private_annexes.insert(name, text);
         }
     }
 
-    let mut resources_complete = true;
     for missing in declared
         .iter()
         .filter(|path| !authoring.annex_paths.contains_key(*path))
