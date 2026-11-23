@@ -9,7 +9,7 @@
     "confirmFolderReuse": "Diesen Ordner trotzdem verwenden",
     "replacementModel": "Ersatzmodell für {{agent}}",
     "chooseModel": "Modell auswählen",
-    "completionCheck": "Macro führt diese Prüfung aus, nachdem der Agent ein Ergebnis eingereicht hat.",
+    "completionCheck": "Macro führt diese Prüfung nach jedem vom Agenten eingereichten Ergebnis aus.",
     "completionCheckChoices": "Nachdem der Agent eine dieser Optionen eingereicht hat: {{choices}}.",
     "invalidArchive": "Macro konnte das Versionsarchiv nicht validieren.",
     "message": "Startnachricht",

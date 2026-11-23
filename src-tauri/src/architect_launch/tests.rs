@@ -301,6 +301,117 @@ async fn archive_launch_admits_pinned_snapshot_and_rediscovers_named_run() {
 }
 
 #[tokio::test]
+async fn a_completion_check_that_runs_on_more_answers_needs_new_consent() {
+    let data = tempfile::tempdir().unwrap();
+    let mut doc = manifest();
+    doc["agents"]["worker"]["permissions"] = json!("workspace");
+    doc["agents"]["worker"]["completionCheck"] = json!({"command":"echo check","choices":["done"]});
+    doc["flow"]["steps"]["run"]["next"] = json!({"done":[],"retry":[]});
+    let (pool, initial) = archive_fixture(data.path(), doc.clone()).await;
+    let storage = Storage::new(data.path());
+    let manager = manager_for_test(data.path()).await;
+    observe_fixture(&manager);
+    let machine = machine_id(manager.root()).unwrap();
+    let input = VersionInput::read(&pool, &storage, initial.clone())
+        .await
+        .unwrap();
+    let mut projected = input.preview().unwrap();
+    let summary = |preview: &ImportPreview| permissions(&input, preview).unwrap();
+    let restricted = summary(&projected);
+    projected
+        .agents
+        .get_mut("worker")
+        .unwrap()
+        .completion_check_choices = vec!["retry".into(), "done".into()];
+    let two_choices = summary(&projected);
+    assert!(two_choices.covers(&restricted));
+    assert!(!restricted.covers(&two_choices));
+    projected
+        .agents
+        .get_mut("worker")
+        .unwrap()
+        .completion_check_choices
+        .reverse();
+    assert!(two_choices.covers(&summary(&projected)));
+    projected
+        .agents
+        .get_mut("worker")
+        .unwrap()
+        .completion_check_choices
+        .clear();
+    let all_results = summary(&projected);
+    assert!(all_results.covers(&two_choices));
+    assert!(!two_choices.covers(&all_results));
+    let legacy: Permissions = serde_json::from_value(json!({
+        "capabilities": ["worker:read", "worker:write", "worker:shell", "worker:delegate",
+            "[\"completionCheck\",\"worker\",\"echo check\"]"],
+        "mcp": {}
+    }))
+    .unwrap();
+    assert!(!legacy.covers(&restricted));
+
+    let mut approved = restricted;
+    let policy = manager.lock_execution_tools(PROJECT_ID).await.unwrap();
+    record_host_permissions(&mut approved, &policy.agsdl_host_permissions).unwrap();
+    drop(policy);
+    sqlx::query("INSERT INTO architect_launch_consents VALUES (?,?,?,?)")
+        .bind(&initial.blueprint_id)
+        .bind(initial.number)
+        .bind(machine)
+        .bind(serde_json::to_string(&approved).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(preview(&manager, &pool, data.path(), initial.clone(), None)
+        .await
+        .consent_token
+        .is_none());
+    drop(input);
+
+    doc["agents"]["worker"]["completionCheck"]
+        .as_object_mut()
+        .unwrap()
+        .remove("choices");
+    let draft = storage
+        .open_draft_project(&pool, &initial.blueprint_id)
+        .await
+        .unwrap();
+    let batch = serde_json::from_value(json!({
+        "files": [{"kind":"write","path":"agsdl.json","text":doc.to_string()}],
+    }))
+    .unwrap();
+    let saved = storage
+        .edit_project(
+            &pool,
+            &initial.blueprint_id,
+            draft.project.revision,
+            batch,
+            true,
+        )
+        .await
+        .unwrap();
+    storage
+        .freeze(
+            &pool,
+            initial.blueprint_id.clone(),
+            saved.revision,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let expanded = VersionKey {
+        number: 2,
+        ..initial
+    };
+    let prepared = preview(&manager, &pool, data.path(), expanded, None).await;
+    assert!(prepared.permissions.agents["worker"]
+        .completion_check_choices
+        .is_empty());
+    assert!(prepared.consent_token.is_some());
+}
+
+#[tokio::test]
 async fn retained_snapshot_cleanup_obeys_both_profiles() {
     let data = tempfile::tempdir().unwrap();
     let first = tempfile::tempdir_in(data.path()).unwrap();

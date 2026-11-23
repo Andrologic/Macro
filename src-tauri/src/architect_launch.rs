@@ -153,6 +153,22 @@ impl Blocker {
 struct Permissions {
     capabilities: BTreeSet<String>,
     mcp: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    completion_checks: BTreeMap<String, CompletionCheck>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CompletionCheck {
+    command: String,
+    choices: BTreeSet<String>,
+}
+
+impl CompletionCheck {
+    fn covers(&self, requested: &Self) -> bool {
+        self.command == requested.command
+            && (self.choices.is_empty()
+                || (!requested.choices.is_empty() && requested.choices.is_subset(&self.choices)))
+    }
 }
 
 impl Permissions {
@@ -162,6 +178,11 @@ impl Permissions {
                 .mcp
                 .iter()
                 .all(|(name, digest)| self.mcp.get(name) == Some(digest))
+            && other.completion_checks.iter().all(|(agent, check)| {
+                self.completion_checks
+                    .get(agent)
+                    .is_some_and(|known| known.covers(check))
+            })
     }
 }
 
@@ -251,11 +272,13 @@ fn permissions(input: &VersionInput, preview: &ImportPreview) -> Result<Permissi
             continue;
         }
         if let Some(command) = &agent.completion_check {
-            permissions.capabilities.insert(serde_json::to_string(&(
-                "completionCheck",
-                id,
-                command,
-            ))?);
+            permissions.completion_checks.insert(
+                id.clone(),
+                CompletionCheck {
+                    command: command.clone(),
+                    choices: agent.completion_check_choices.iter().cloned().collect(),
+                },
+            );
         }
         let requested = &agent.permissions;
         let simple = requested.directories.is_empty()

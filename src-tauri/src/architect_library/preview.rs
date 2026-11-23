@@ -180,6 +180,9 @@ pub(crate) fn inspect(
             for server in &mcp_servers {
                 record_use(&mut mcp_uses, server.clone(), usage.min(Usage::Unknown));
             }
+            let mut completion_check_choices = strings(&agent["completionCheck"]["choices"]);
+            completion_check_choices.sort_unstable();
+            completion_check_choices.dedup();
             (
                 id.clone(),
                 AgentRequirement {
@@ -193,7 +196,7 @@ pub(crate) fn inspect(
                     permissions: permissions(&agent["permissions"]),
                     mcp_servers,
                     completion_check: optional_text(&agent["completionCheck"]["command"]),
-                    completion_check_choices: strings(&agent["completionCheck"]["choices"]),
+                    completion_check_choices,
                 },
             )
         })

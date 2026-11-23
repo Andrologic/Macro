@@ -9,7 +9,7 @@
     "confirmFolderReuse": "이 폴더를 계속 사용",
     "replacementModel": "{{agent}}의 대체 모델",
     "chooseModel": "모델 선택",
-    "completionCheck": "에이전트가 결과를 제출한 뒤 Macro가 이 검사를 실행합니다.",
+    "completionCheck": "에이전트가 결과를 제출할 때마다 Macro가 이 검사를 실행합니다.",
     "completionCheckChoices": "에이전트가 다음 선택지 중 하나를 제출한 뒤 실행합니다. {{choices}}.",
     "invalidArchive": "Macro가 버전 아카이브를 검증하지 못했습니다.",
     "message": "시작 메시지",

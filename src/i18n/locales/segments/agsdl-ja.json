@@ -9,7 +9,7 @@
     "confirmFolderReuse": "このフォルダーを使用する",
     "replacementModel": "{{agent}} の代替モデル",
     "chooseModel": "モデルを選択",
-    "completionCheck": "エージェントが結果を提出した後、Macro がこのチェックを実行します。",
+    "completionCheck": "エージェントが結果を提出するたびに、Macro はこのチェックを実行します。",
     "completionCheckChoices": "エージェントが次のいずれかの選択肢を提出した後に実行します：{{choices}}。",
     "invalidArchive": "Macro はバージョンのアーカイブを検証できませんでした。",
     "message": "開始メッセージ",

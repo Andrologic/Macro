@@ -9,7 +9,7 @@
     "confirmFolderReuse": "Utiliser quand même ce dossier",
     "replacementModel": "Modèle de remplacement pour {{agent}}",
     "chooseModel": "Choisir un modèle",
-    "completionCheck": "Macro exécute cette vérification après la remise du résultat par l’agent.",
+    "completionCheck": "Macro lance cette vérification après chaque résultat soumis par l’agent.",
     "completionCheckChoices": "Macro exécute cette vérification après une réponse avec l’un de ces choix : {{choices}}.",
     "invalidArchive": "Macro n’a pas pu valider l’archive de la version.",
     "message": "Message de départ",
