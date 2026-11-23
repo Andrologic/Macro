@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type ArchitectView = "flow" | "agents" | "skills" | "tools" | "files";
+export type ArchitectView = "flow" | "agents" | "skills" | "tools" | "launch" | "files";
 
 const FILES_KEY = "macro_architect_show_files_v1";
 const readFilesPreference = () => {

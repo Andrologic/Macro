@@ -1759,7 +1759,8 @@
         "skills": "Una skill es un conjunto de instrucciones que un agente puede usar cuando las necesita. Añada una y asígnela después a un agente.",
         "tools": "Un servidor de herramientas da a los agentes acceso a un servicio, como un alojamiento de código o una base de conocimiento. Añada uno y asígnelo después a un agente."
       },
-      "emptyReadOnly": "Esta versión es de solo lectura. Adáptela para añadir o cambiar elementos."
+      "emptyReadOnly": "Esta versión es de solo lectura. Adáptela para añadir o cambiar elementos.",
+      "launch": "Lanzamiento"
     },
     "add": {
       "agent": {
@@ -1839,6 +1840,17 @@
         "invalid": "El borrador guardado no se puede leer como sistema: corríjalo primero.",
         "unsaved": "Guarde primero el borrador: tiene cambios sin guardar."
       }
+    },
+    "launch": {
+      "intro": "Lo que la persona que lanza este sistema debe o puede ajustar. Son ajustes propios de Macro: acompañan a cada versión guardada y no se incluyen en la exportación.",
+      "unavailable": "Estos ajustes no están disponibles para este borrador.",
+      "folderHelp": {
+        "perExecution": "Cada ejecución recibe su propia carpeta, creada por Macro y consultable desde Operate.",
+        "atLaunch": "La persona que lanza elige la carpeta. Macro le avisa si otra ejecución ya la usa."
+      },
+      "startMessage": "Mensaje de inicio",
+      "startMessageHelp": "Desactívelo si el sistema no necesita ningún mensaje para empezar: el campo desaparece entonces de la ventana de lanzamiento.",
+      "startMessageOptional": "No se pide ningún mensaje de inicio al lanzar."
     }
   }
 }

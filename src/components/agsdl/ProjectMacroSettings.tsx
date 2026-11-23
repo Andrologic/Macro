@@ -66,41 +66,52 @@ export function ProjectMacroSettings({ target, agentId }: { target: BlueprintDoc
   const folderMode = settings.workingFolderMode;
   const startRequired = settings.startMessageRequired ?? true;
   const folderLabel = t(folderMode === "atLaunch" ? "agsdl.library.folderAtLaunch" : "agsdl.library.folderPerExecution");
-  if (!editable) return <div className="space-y-1">
-    <p>{t("agsdl.library.workingFolderMode")} · {folderLabel}</p>
-    {startRequired && <p>{t("agsdl.library.startMessageRequired")}</p>}
-    {settings.entryMessageHint && <p>{t("agsdl.library.entryHint")} · {settings.entryMessageHint}</p>}
+  const heading = "m-0 text-[11px] font-medium text-muted-foreground";
+  if (!editable) return <div className="space-y-4">
+    <section className="space-y-1"><h4 className={heading}>{t("agsdl.library.workingFolderMode")}</h4><p className="!m-0">{folderLabel}</p>
+      <p className="!m-0 text-xs text-muted-foreground">{t(`agsdl.architect.launch.folderHelp.${folderMode}`)}</p></section>
+    <section className="space-y-1"><h4 className={heading}>{t("agsdl.architect.launch.startMessage")}</h4>
+      <p className="!m-0">{t(startRequired ? "agsdl.library.startMessageRequired" : "agsdl.architect.launch.startMessageOptional")}</p>
+      {startRequired && settings.entryMessageHint && <p className="!m-0 whitespace-pre-wrap break-words text-muted-foreground">{t("agsdl.library.entryHint")} · {settings.entryMessageHint}</p>}</section>
   </div>;
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (hint !== undefined && !disabled) void persist({ entryMessageHint: hint || null }, { entryMessageHint: settings.entryMessageHint ?? null });
   };
-  return <div>
-    {/* These two are saved at once, like the checkbox above; the hint is text and keeps an explicit Save. */}
-    <label className="agsdl-edit-field">{t("agsdl.library.workingFolderMode")}
-      <select value={folderMode} disabled={disabled} onChange={event => {
-        const mode = event.target.value === "atLaunch" ? "atLaunch" : "perExecution";
-        void persist({ workingFolderMode: mode }, { workingFolderMode: folderMode });
-      }}>
-        <option value="perExecution">{t("agsdl.library.folderPerExecution")}</option>
-        <option value="atLaunch">{t("agsdl.library.folderAtLaunch")}</option>
-      </select>
-    </label>
-    <label className="mt-2 flex min-w-0 items-center gap-2">
-      <input type="checkbox" className="size-3.5 shrink-0 accent-primary" checked={startRequired} disabled={disabled} onChange={event => {
-        void persist({ startMessageRequired: event.target.checked }, { startMessageRequired: settings.startMessageRequired ?? null });
-      }} />
-      <span>{t("agsdl.library.startMessageRequired")}</span>
-    </label>
-    <form onSubmit={submit}>
-      <label className="agsdl-edit-field">{t("agsdl.library.entryHint")}
-        <textarea value={hint ?? settings.entryMessageHint ?? ""} disabled={disabled} onChange={event => setHint(event.target.value)} />
+  return <div className="space-y-5">
+    {/* The folder and the checkbox are saved at once; the hint is text and keeps an explicit Save. */}
+    <section className="space-y-1.5" aria-label={t("agsdl.library.workingFolderMode")}>
+      <label className="agsdl-edit-field !mt-0"><span className={heading}>{t("agsdl.library.workingFolderMode")}</span>
+        <select value={folderMode} disabled={disabled} onChange={event => {
+          const mode = event.target.value === "atLaunch" ? "atLaunch" : "perExecution";
+          void persist({ workingFolderMode: mode }, { workingFolderMode: folderMode });
+        }}>
+          <option value="perExecution">{t("agsdl.library.folderPerExecution")}</option>
+          <option value="atLaunch">{t("agsdl.library.folderAtLaunch")}</option>
+        </select>
       </label>
-      <p className="text-xs text-muted-foreground">{t("agsdl.architect.operate.entryHintHelp")}</p>
-      <div className="flex items-center gap-2">
-        <button type="submit" className="agsdl-link" disabled={hint === undefined || disabled}>{t("agsdl.save")}</button>
-        {feedback}
-      </div>
-    </form>
+      <p className="!m-0 text-xs text-muted-foreground">{t(`agsdl.architect.launch.folderHelp.${folderMode}`)}</p>
+    </section>
+    <section className="space-y-1.5" aria-label={t("agsdl.architect.launch.startMessage")}>
+      <h4 className={heading}>{t("agsdl.architect.launch.startMessage")}</h4>
+      <label className="flex min-w-0 items-center gap-2">
+        <input type="checkbox" className="size-3.5 shrink-0 accent-primary" checked={startRequired} disabled={disabled} onChange={event => {
+          void persist({ startMessageRequired: event.target.checked }, { startMessageRequired: settings.startMessageRequired ?? null });
+        }} />
+        <span>{t("agsdl.library.startMessageRequired")}</span>
+      </label>
+      <p className="!m-0 text-xs text-muted-foreground">{t("agsdl.architect.launch.startMessageHelp")}</p>
+      {startRequired && <form onSubmit={submit}>
+        <label className="agsdl-edit-field">{t("agsdl.library.entryHint")}
+          <textarea rows={3} value={hint ?? settings.entryMessageHint ?? ""} disabled={disabled} onChange={event => setHint(event.target.value)} />
+        </label>
+        <p className="text-xs text-muted-foreground">{t("agsdl.architect.operate.entryHintHelp")}</p>
+        <div className="flex items-center gap-2">
+          <button type="submit" className="agsdl-link" disabled={hint === undefined || disabled}>{t("agsdl.save")}</button>
+          {feedback}
+        </div>
+      </form>}
+      {!startRequired && <div className="min-h-4">{feedback}</div>}
+    </section>
   </div>;
 }

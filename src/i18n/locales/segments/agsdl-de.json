@@ -1759,7 +1759,8 @@
         "skills": "Eine Skill ist eine Anleitung, die ein Agent bei Bedarf nutzen kann. Fügen Sie eine hinzu und geben Sie sie dann einem Agenten.",
         "tools": "Ein Werkzeugserver gibt Agenten Zugriff auf einen Dienst, etwa eine Code-Plattform oder eine Wissensdatenbank. Fügen Sie einen hinzu und geben Sie ihn dann einem Agenten."
       },
-      "emptyReadOnly": "Diese Version ist schreibgeschützt. Passen Sie sie an, um Elemente hinzuzufügen oder zu ändern."
+      "emptyReadOnly": "Diese Version ist schreibgeschützt. Passen Sie sie an, um Elemente hinzuzufügen oder zu ändern.",
+      "launch": "Start"
     },
     "add": {
       "agent": {
@@ -1839,6 +1840,17 @@
         "invalid": "Der gespeicherte Entwurf lässt sich nicht als System lesen: Korrigieren Sie ihn zuerst.",
         "unsaved": "Speichern Sie zuerst den Entwurf: Er hat ungespeicherte Änderungen."
       }
+    },
+    "launch": {
+      "intro": "Was die Person, die dieses System startet, einstellen muss oder kann. Das sind Macro-Einstellungen: Sie begleiten jede gespeicherte Version und werden nicht exportiert.",
+      "unavailable": "Diese Einstellungen sind für diesen Entwurf nicht verfügbar.",
+      "folderHelp": {
+        "perExecution": "Jede Ausführung erhält einen eigenen Ordner, den Macro anlegt und der in Operate einsehbar ist.",
+        "atLaunch": "Die startende Person wählt den Ordner. Macro warnt, wenn ihn bereits eine andere Ausführung nutzt."
+      },
+      "startMessage": "Startnachricht",
+      "startMessageHelp": "Schalten Sie es aus, wenn das System keine Nachricht zum Start braucht: Das Feld verschwindet dann aus dem Startfenster.",
+      "startMessageOptional": "Beim Start wird keine Startnachricht verlangt."
     }
   }
 }

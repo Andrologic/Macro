@@ -116,6 +116,7 @@ function ArchitectPanelHeader({ draft, versionNumber, view }: { draft: Blueprint
     { id: "agents", count: inventory?.counts.agents },
     { id: "skills", count: inventory?.counts.skills },
     { id: "tools", count: inventory?.counts.tools },
+    { id: "launch" },
     ...(filesVisible ? [{ id: "files" as const }] : []),
   ];
   const menuButton = "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent";

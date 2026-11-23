@@ -83,7 +83,7 @@ it("puts what to do first in the header: the draft state, saving a version, and 
   expect(header.textContent).toContain("Revue de code");
   expect(header.querySelector('[role="status"]')?.textContent).toBe("Draft · saved");
   expect(headerButtons()).toEqual(["Save version"]);
-  expect([...panel().querySelectorAll('[role="tab"]')].map(item => item.textContent?.trim())).toEqual(["Flow", "Agents2", "Skills", "Tools"]);
+  expect([...panel().querySelectorAll('[role="tab"]')].map(item => item.textContent?.trim())).toEqual(["Flow", "Agents2", "Skills", "Tools", "Launch"]);
   expect(tab("Flow").getAttribute("aria-selected")).toBe("true");
   expect(panel().querySelectorAll(".agsdl-graph-node").length).toBeGreaterThan(0);
   // Every tab points at the one panel that shows the chosen view.
@@ -272,4 +272,25 @@ it("offers to add an agent by hand on the draft, and not on a saved version", as
   await flush();
   await click(tab("Agents"));
   expect(byText("button", "Add an agent", panel())).toBeUndefined();
+});
+
+it("holds the launch settings in their own tab, saved at once, and keeps them out of the document dialog", async () => {
+  await mount();
+  await click(tab("Launch"));
+  expect(tab("Launch").getAttribute("aria-selected")).toBe("true");
+  expect(panel().querySelector(".agsdl-graph-node")).toBeNull();
+  const text = panel().textContent ?? "";
+  expect(text).toContain("Working folder");
+  expect(text).toContain("Each run gets its own folder");
+  expect(text).toContain("Require a start message");
+  expect(text).toContain("Entry message hint");
+  const folder = panel().querySelector<HTMLSelectElement>("select")!;
+  await act(async () => { folder.value = "atLaunch"; folder.dispatchEvent(new Event("change", { bubbles: true })); });
+  await flush();
+  expect(settings.workingFolderMode).toBe("atLaunch");
+  expect(panel().textContent).toContain("The person who launches chooses the folder.");
+  await click(panel().querySelector('button[aria-label="Document and definitions"]'));
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.textContent).not.toContain("Working folder");
+  expect(dialog.textContent).not.toContain("Require a start message");
 });

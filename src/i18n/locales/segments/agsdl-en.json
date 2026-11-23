@@ -1759,7 +1759,8 @@
         "skills": "A skill is a set of instructions an agent can pick up when it needs it. Add one, then give it to an agent.",
         "tools": "A tool server gives agents access to a service, such as a code host or a knowledge base. Add one, then give it to an agent."
       },
-      "emptyReadOnly": "This version is read-only. Adapt it to add or change items."
+      "emptyReadOnly": "This version is read-only. Adapt it to add or change items.",
+      "launch": "Launch"
     },
     "add": {
       "agent": {
@@ -1839,6 +1840,17 @@
         "invalid": "The saved draft cannot be read as a system: fix it first.",
         "unsaved": "Save the draft first: it has changes that are not saved yet."
       }
+    },
+    "launch": {
+      "intro": "What the person who launches this system is asked or allowed to set. These are Macro settings: they follow each saved version and are not included in exports.",
+      "unavailable": "These settings are not available for this draft.",
+      "folderHelp": {
+        "perExecution": "Each run gets its own folder, created by Macro and available from Operate.",
+        "atLaunch": "The person who launches chooses the folder. Macro warns them if another run already uses it."
+      },
+      "startMessage": "Start message",
+      "startMessageHelp": "Turn it off if the system needs no message to start: the field then disappears from the launch window.",
+      "startMessageOptional": "No start message is asked at launch."
     }
   }
 }

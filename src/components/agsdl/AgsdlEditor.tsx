@@ -32,11 +32,12 @@ import { agsdlErrorText, agsdlProjectIssueText } from "./errorText";
 import { ProjectMacroSettings } from "./ProjectMacroSettings";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { ArchitectComponentList, type ComponentAdding, type ComponentListKind } from "../architect/ArchitectComponentList";
+import { ArchitectLaunchSettings } from "../architect/ArchitectLaunchSettings";
 import { projectInventory } from "../../services/agsdl/projectInventory";
 import { projectSettings } from "../../stores/agsdl/projectEdits";
 
-/** Which projection of a project the canvas area shows. The flow is the graph; the others are plain lists. */
-export type AgsdlEditorView = "flow" | "agents" | "skills" | "tools";
+/** Which projection of a project the canvas area shows. The flow is the graph; the lists show its parts; launch holds what is asked at launch. */
+export type AgsdlEditorView = "flow" | "agents" | "skills" | "tools" | "launch";
 
 // Chat and focused component edits share the same versioned document store.
 export const AgsdlEditor: React.FC<{
@@ -428,7 +429,6 @@ export const AgsdlEditor: React.FC<{
           }}><label className="agsdl-edit-field">{t("agsdl.design.name")}<input value={nameDraft?.value ?? document?.title ?? ""} disabled={session.status !== "draft" || session.saving || !!conflict || (!!planStatus && planStatus !== "draft")} onChange={event => setNameDraft({ value: event.target.value, version: nameDraft?.version ?? session.version })} /></label>
             <button type="submit" className="agsdl-link" disabled={!nameDraft || session.saving || !!conflict}>{t("agsdl.save")}</button>
           </form>}
-          {projectTarget && <ProjectMacroSettings target={projectTarget} />}
           {conflictNotice}
           {!conflict && nameError && <p role="alert" className="agsdl-unresolved">{nameError}</p>}
         </div>
@@ -492,7 +492,8 @@ export const AgsdlEditor: React.FC<{
       {!session ? <div className="agsdl-empty">{t("agsdl.loading")}</div>
         : !source ? legacyTarget && session.status === "draft" && (!planStatus || planStatus === "draft") ? <DesignStart onChoose={setLibrary} /> : <div className="agsdl-empty">{t("agsdl.emptyTitle")}</div>
         : document && <>
-          {listView ? <ArchitectComponentList kind={listView} cards={document.declarations} inventory={inventory}
+          {view === "launch" && blueprintTarget ? <ArchitectLaunchSettings target={blueprintTarget} />
+          : listView ? <ArchitectComponentList kind={listView} cards={document.declarations} inventory={inventory}
             hiddenAgents={hiddenAgents} adding={adding} onSelect={select} />
           : cards.length > 0 ? <WorkflowGraph
             key={`${key}:${graph?.path ?? "declarations"}`}

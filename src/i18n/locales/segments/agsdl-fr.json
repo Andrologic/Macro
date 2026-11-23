@@ -1759,7 +1759,8 @@
         "skills": "Une skill est un savoir-faire qu’un agent peut utiliser quand il en a besoin. Ajoutez-en une, puis donnez-la à un agent.",
         "tools": "Un serveur d’outils donne aux agents accès à un service, comme une forge de code ou une base de connaissances. Ajoutez-en un, puis donnez-le à un agent."
       },
-      "emptyReadOnly": "Cette version est en lecture seule. Adaptez-la pour ajouter ou modifier des éléments."
+      "emptyReadOnly": "Cette version est en lecture seule. Adaptez-la pour ajouter ou modifier des éléments.",
+      "launch": "Lancement"
     },
     "add": {
       "agent": {
@@ -1839,6 +1840,17 @@
         "invalid": "Le brouillon enregistré n’est pas lisible comme un système : corrigez-le d’abord.",
         "unsaved": "Enregistrez d’abord le brouillon : il a des modifications non enregistrées."
       }
+    },
+    "launch": {
+      "intro": "Ce que la personne qui lance ce système doit ou peut régler. Ce sont des réglages propres à Macro : ils suivent chaque version enregistrée et ne sont pas transmis à l’export.",
+      "unavailable": "Ces réglages ne sont pas disponibles pour ce brouillon.",
+      "folderHelp": {
+        "perExecution": "Chaque exécution reçoit son propre dossier, créé par Macro et consultable depuis Operate.",
+        "atLaunch": "La personne qui lance choisit le dossier. Macro la prévient si une autre exécution l’utilise déjà."
+      },
+      "startMessage": "Message de départ",
+      "startMessageHelp": "Désactivez-le si le système n’a pas besoin de message pour démarrer : le champ disparaît alors de la fenêtre de lancement.",
+      "startMessageOptional": "Aucun message de départ n’est demandé au lancement."
     }
   }
 }
