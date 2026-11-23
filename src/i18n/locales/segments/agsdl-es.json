@@ -1578,7 +1578,10 @@
       "repairOrigin": "Procede de una versión por reparar. Corrija los puntos señalados y guarde una versión."
     },
     "import": {
-      "titleNamed": "Importar «{{name}}»",
+      "titleNamed": {
+        "archive": "Importar el archivo «{{name}}»",
+        "folder": "Importar la carpeta «{{name}}»"
+      },
       "action": "Importar",
       "importing": "Importando…",
       "reading": "Leyendo el archivo…",
@@ -1617,7 +1620,11 @@
       "reasonName": "Dé un nombre al blueprint.",
       "reasonProject": "Elija un proyecto.",
       "done": "«{{name}}» importado",
-      "failed": "La importación falló. No se añadió nada."
+      "failed": "La importación falló. No se añadió nada.",
+      "title": {
+        "archive": "Importar un archivo",
+        "folder": "Importar una carpeta de proyecto"
+      }
     },
     "menu": {
       "newProject": "Nuevo proyecto",

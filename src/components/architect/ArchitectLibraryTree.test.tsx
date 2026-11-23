@@ -259,7 +259,7 @@ it("imports a chosen file through a preview, into the project the menu belongs t
   await flush();
   expect(calls.find(call => call.command === "plugin:dialog|open")?.args).toMatchObject({ options: { directory: false } });
   expect(calls.find(call => call.command === "architect_inspect_import")?.args).toEqual({ path: "/tmp/revue.agsdl" });
-  expect(dialogText()).toContain("Import “Revue de code”");
+  expect(dialogText()).toContain("Import the archive “Revue de code”");
   expect(document.querySelector<HTMLSelectElement>("#architect-import-project")!.value).toBe("p2");
 });
 

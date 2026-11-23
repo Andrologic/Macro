@@ -213,3 +213,23 @@ it("states what the import creates: a version 1 for an archive, a draft for a fo
   await mount("/tmp/revue");
   expect(dialogText()).toContain("The folder becomes an editable draft.");
 });
+
+it("names the dialog for what is imported: an archive file, or a project folder", async () => {
+  native(() => ({ handle: "h1", preview: previewFixture({ title: "" }) }));
+  await mount("/tmp/revue.agsdl");
+  expect(document.querySelector('[role="dialog"] header strong')?.textContent).toBe("Import an archive");
+  view.unmount();
+  native(() => ({ handle: "h2", preview: previewFixture({ title: "", packageFormat: "agsdl-project-1" }) }));
+  await mount("/tmp/revue");
+  expect(document.querySelector('[role="dialog"] header strong')?.textContent).toBe("Import a project folder");
+  view.unmount();
+  native(() => ({ handle: "h3", preview: previewFixture({ title: "Veille", packageFormat: "agsdl-project-1" }) }));
+  await mount("/tmp/revue");
+  expect(document.querySelector('[role="dialog"] header strong')?.textContent).toBe("Import the folder “Veille”");
+});
+
+it("already uses the archive wording while the file is being read", async () => {
+  native(() => new Promise<InspectedImport>(() => {}));
+  await mount("/tmp/revue.AGSDL");
+  expect(document.querySelector('[role="dialog"] header strong')?.textContent).toBe("Import an archive");
+});

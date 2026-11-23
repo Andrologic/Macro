@@ -60,7 +60,8 @@ export function ArchitectImportDialog({ path, projectId: initialProjectId, onClo
   const effectiveName = (name ?? (preview?.title || preview?.authoredId || "")).trim();
   const taken = projectBlueprints[projectId]?.status === "ready"
     && projectBlueprints[projectId].value.some(blueprint => blueprint.name.trim().toLowerCase() === effectiveName.toLowerCase());
-  const archive = preview?.packageFormat === "agsdl-archive-1";
+  // A .agsdl file is an archive and anything else is a project folder, even before the preview says so.
+  const archive = preview ? preview.packageFormat === "agsdl-archive-1" : /\.agsdl$/i.test(path);
   const summary = preview ? summarizePermissions(preview) : undefined;
   const otherWarnings = preview ? preview.warnings.filter(warning => !warning.launchBlocker).length : 0;
   const points = otherWarnings + (summary?.externalContent ? 1 : 0) + (summary?.launchBlockers ? 1 : 0);
@@ -84,7 +85,8 @@ export function ArchitectImportDialog({ path, projectId: initialProjectId, onClo
     }
   };
 
-  const title = preview?.title ? t("agsdl.architect.import.titleNamed", { name: preview.title }) : t("agsdl.library.importProject");
+  const kind = archive ? "archive" : "folder";
+  const title = preview?.title ? t(`agsdl.architect.import.titleNamed.${kind}`, { name: preview.title }) : t(`agsdl.architect.import.title.${kind}`);
   return <ArchitectDialogShell title={title} wide locked={busy} onClose={onClose}
     subtitle={<span title={path}>{baseName(path)}{preview ? ` · ${t("agsdl.architect.import.files", { count: preview.files.length })}` : ""}</span>}
     footer={<>

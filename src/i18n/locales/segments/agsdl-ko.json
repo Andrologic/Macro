@@ -1578,7 +1578,10 @@
       "repairOrigin": "복구가 필요한 버전에서 만들어졌습니다. 표시된 문제를 고친 뒤 버전을 저장하세요."
     },
     "import": {
-      "titleNamed": "“{{name}}” 가져오기",
+      "titleNamed": {
+        "archive": "아카이브 “{{name}}” 가져오기",
+        "folder": "폴더 “{{name}}” 가져오기"
+      },
       "action": "가져오기",
       "importing": "가져오는 중…",
       "reading": "파일을 읽는 중…",
@@ -1617,7 +1620,11 @@
       "reasonName": "블루프린트 이름을 입력하세요.",
       "reasonProject": "프로젝트를 선택하세요.",
       "done": "“{{name}}” 가져옴",
-      "failed": "가져오기에 실패했습니다. 아무것도 추가되지 않았습니다."
+      "failed": "가져오기에 실패했습니다. 아무것도 추가되지 않았습니다.",
+      "title": {
+        "archive": "아카이브 가져오기",
+        "folder": "프로젝트 폴더 가져오기"
+      }
     },
     "menu": {
       "newProject": "새 프로젝트",
