@@ -149,6 +149,7 @@ it.each([
   await act(async () => submit().click());
   expect(dialog().textContent).toContain(guidance);
   expect(dialog().querySelector("a")?.textContent).toBe("Codex setup guide");
+  expect(dialog().querySelector("a")?.pathname).toBe("/Andrologic/Macro/blob/main/docs/agsdl-codex-native.md");
   expect(submit().disabled).toBe(true);
 });
 

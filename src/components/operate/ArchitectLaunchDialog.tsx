@@ -11,7 +11,7 @@ import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { Dialog } from "../ui/Dialog";
 import { notify } from "../ui/toastService";
 
-const codexSetupGuide = "https://github.com/Andrologic/Macro/blob/develop/docs/agsdl-codex-native.md#private-login";
+const codexSetupGuide = "https://github.com/Andrologic/Macro/blob/main/docs/agsdl-codex-native.md#private-login";
 
 const interpreterEnvironment = new Set([
   "HOME", "TMPDIR", "TMP", "TEMP", "IFS", "CDPATH", "FPATH", "ZDOTDIR",
