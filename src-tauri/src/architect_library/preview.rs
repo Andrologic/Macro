@@ -303,6 +303,7 @@ pub(super) fn inspect(
     let report = argentic_core::validate_document_json(source.authored_json().as_bytes(), None)
         .map_err(|error| super::Error::Agsdl {
             code: error.code,
+            file: None,
             pointer: error.pointer,
             message: error.message,
         })?;

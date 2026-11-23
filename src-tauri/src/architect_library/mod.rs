@@ -22,8 +22,17 @@ pub enum Error {
     #[error("{message}")]
     Agsdl {
         code: String,
+        file: Option<String>,
         pointer: String,
         message: String,
+    },
+    #[error("Could not read project file {path:?} at {file}#{pointer}: {source}")]
+    ProjectIo {
+        file: String,
+        pointer: String,
+        path: String,
+        #[source]
+        source: io::Error,
     },
     #[error("The selected project path is a symbolic link: {0}")]
     SymbolicLink(std::path::PathBuf),
@@ -55,12 +64,48 @@ pub enum Error {
 
 impl From<EngineFailure> for Error {
     fn from(error: EngineFailure) -> Self {
+        let mut file = None;
+        if error.code == "PROJECT" {
+            // The pinned runtime flattens its project failure into
+            // file#pointer: detail. Parse that boundary before mapping IO.
+            let separator = format!("#{}: ", error.pointer);
+            if let Some((location, detail)) = error.message.split_once(&separator) {
+                if let Some((path, source)) = project_io(location, detail) {
+                    return Self::ProjectIo {
+                        file: location.into(),
+                        pointer: error.pointer,
+                        path: path.into(),
+                        source,
+                    };
+                }
+                file = Some(location.into());
+            }
+        }
         Self::Agsdl {
             code: error.code,
+            file,
             pointer: error.pointer,
             message: error.message,
         }
     }
+}
+
+fn project_io<'a>(file: &'a str, detail: &'a str) -> Option<(&'a str, io::Error)> {
+    let (_, code) = detail.rsplit_once(" (os error ")?;
+    let source = io::Error::from_raw_os_error(code.strip_suffix(')')?.parse().ok()?);
+    // Match the entire system message. JSON diagnostics can quote arbitrary
+    // strings, including text that merely ends with an OS error number.
+    let description = source.to_string();
+    let path = if detail == description {
+        file
+    } else {
+        let path = detail.strip_suffix(&description)?.strip_suffix(": ")?;
+        if !editor_document::portable_path(path) {
+            return None;
+        }
+        path
+    };
+    Some((path, source))
 }
 
 fn destination_parent(destination: &Path) -> Result<&Path> {

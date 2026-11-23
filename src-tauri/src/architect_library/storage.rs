@@ -200,10 +200,11 @@ impl Storage {
         let stage = private_directory(&self.staging()?, ".draft-")?;
         let root = stage.path().join(PROJECT);
         ensure_dir(&root)?;
-        for (name, bytes) in &split.files {
-            write_project_file(&root, name, bytes)?;
+        let written: BTreeSet<_> = split.files.keys().cloned().collect();
+        for (name, bytes) in split.files {
+            write_project_file(&root, &name, &bytes)?;
         }
-        let source = match OpenedSource::open_path(&root) {
+        let source = match OpenedSource::open_path(&root).map_err(Error::from) {
             Ok(source) => {
                 let reopened = argentic_core::durable_json::value(source.authored_json())?;
                 if reopened == split.normalized {
@@ -216,17 +217,23 @@ impl Storage {
                     None
                 }
             }
-            Err(error) if matches!(error.code.as_str(), "STORAGE" | "SOURCE_UNAVAILABLE") => {
-                return Err(error.into());
+            Err(error)
+                if match &error {
+                    // A missing annex is repairable. Errors reading any generated
+                    // file or other OS failures must leave cutover retryable.
+                    Error::ProjectIo { path, source, .. } => {
+                        source.kind() != io::ErrorKind::NotFound || written.contains(path)
+                    }
+                    Error::Agsdl { code, .. } => {
+                        matches!(code.as_str(), "STORAGE" | "SOURCE_UNAVAILABLE")
+                    }
+                    _ => true,
+                } =>
+            {
+                return Err(error)
             }
             Err(error) => {
-                // The reader reports path I/O and invalid project data with
-                // the same code. Our own files must still be accessible before
-                // we treat a missing authored resource as a draft diagnostic.
-                for path in split.files.keys() {
-                    File::open(root.join(path))?;
-                }
-                split.authoring.diagnostics.push(error.message);
+                split.authoring.diagnostics.push(error.to_string());
                 None
             }
         };

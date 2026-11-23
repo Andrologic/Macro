@@ -294,6 +294,56 @@ fn stored_archive_can_export_from_its_private_snapshot_after_original_disappears
 }
 
 #[test]
+fn declared_component_errors_keep_the_file_and_distinguish_invalid_json() {
+    let temp = tempfile::tempdir().unwrap();
+    fixture(temp.path());
+    write(temp.path(), "agents/lead.json", b"{ invalid");
+    assert!(matches!(
+        ImportCandidate::open(temp.path()),
+        Err(Error::Agsdl { file: Some(file), code, .. })
+            if file == "agents/lead.json" && code == "PROJECT"
+    ));
+
+    fixture(temp.path());
+    fs::remove_file(temp.path().join("notes.md")).unwrap();
+    assert!(matches!(
+        ImportCandidate::open(temp.path()),
+        Err(Error::ProjectIo { file, pointer, path, source })
+            if file == MANIFEST && pointer == "/content/notes/uri" && path == "notes.md"
+                && source.kind() == std::io::ErrorKind::NotFound
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn temporarily_unreadable_component_retains_the_native_io_cause() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    fixture(temp.path());
+    let path = temp.path().join("agents/lead.json");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    let denial = fs::File::open(&path).err();
+    let actual = ImportCandidate::open(temp.path());
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    if let Some(denial) = denial {
+        assert!(matches!(
+            actual,
+            Err(Error::ProjectIo { file, path, source, .. })
+                if file == "agents/lead.json" && path == file
+                    && source.kind() == std::io::ErrorKind::PermissionDenied
+                    && source.raw_os_error() == denial.raw_os_error()
+        ));
+    } else {
+        // Privileged users can read chmod 000. Still exercise the pinned
+        // runtime's exact OS error representation in that environment.
+        let denial = std::io::Error::from_raw_os_error(libc::EACCES);
+        let detail = denial.to_string();
+        let (_, source) = super::project_io("agents/lead.json", &detail).unwrap();
+        assert_eq!(source.raw_os_error(), denial.raw_os_error());
+    }
+}
+
+#[test]
 fn preview_reports_reachability_permissions_calls_and_external_references() {
     let temp = tempfile::tempdir().unwrap();
     fixture(temp.path());
