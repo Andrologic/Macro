@@ -1,5 +1,6 @@
 import type { AgsdlEditorDocument } from "../../types/agsdl";
 import { snapshotLegacyLocalStorage } from "../agsdl/legacyLocalStorage";
+import { AgsdlUserError } from "../agsdl/userErrors";
 import { invoke } from "../tauriRuntimeBridge";
 
 export const ARCHITECT_LIBRARY_IMPORT_STEP = "Architect library import";
@@ -69,8 +70,17 @@ export const architectLibrary = {
     invoke<BlueprintSummary>("architect_attach_conversation", { blueprintId, conversationId }),
   saveDraft: (blueprintId: string, expectedRevision: number, document: BlueprintDocument) =>
     invoke<BlueprintDraft>("architect_save_draft", { blueprintId, expectedRevision, document }),
-  saveVersion: (blueprintId: string, expectedRevision: number, note: string | null = null) =>
-    invoke<BlueprintVersionSummary & { convertedDraft?: BlueprintDocument }>("architect_save_version", { blueprintId, expectedRevision, note }),
+  async saveVersion(blueprintId: string, expectedRevision: number, note: string | null = null, editedDraft?: BlueprintDocument) {
+    try {
+      return await invoke<BlueprintVersionSummary & { convertedDraft?: BlueprintDocument }>("architect_save_version", { blueprintId, expectedRevision, note, editedDraft });
+    } catch (error) {
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "AGSDL_UPGRADE_INVALID"
+        && "message" in error && typeof error.message === "string") {
+        throw new AgsdlUserError("agsdl.library.upgradeInvalid", error.message, error.message);
+      }
+      throw error;
+    }
+  },
   listVersions: (blueprintId: string) => invoke<BlueprintVersionSummary[]>("architect_list_versions", { blueprintId }),
   getVersion: (key: VersionKey) => invoke<BlueprintVersion>("architect_get_version", { key }),
   deleteVersion: (key: VersionKey) => invoke<void>("architect_delete_version", { key }),

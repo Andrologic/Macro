@@ -16,6 +16,7 @@ function libraryPort() {
   const versions = new Map<string, BlueprintVersion[]>();
   const delayedReads = new Map<string, Promise<BlueprintDraft>>();
   const writes: Array<{ blueprintId: string; expectedRevision: number }> = [];
+  const versionFailures = new Map<string, unknown>();
   let id = 0;
 
   const createProject = (name: string) => {
@@ -71,8 +72,17 @@ function libraryPort() {
       case "architect_save_version": {
         const draft = readDraft(blueprintId);
         if (draft.revision !== expectedRevision) throw { message: "Validation error: stale_revision" };
-        const { document: _document, ...summary } = freeze(draft, args.note as string | null);
-        return summary;
+        if (versionFailures.has(blueprintId)) throw versionFailures.get(blueprintId);
+        const edited = (args.editedDraft as BlueprintDocument | undefined) ?? draft.document;
+        const convertedDraft = JSON.parse(edited.source).contract === "agsdl-0.3.0"
+          ? { ...edited, source: edited.source.replace("agsdl-0.3.0", "agsdl-0.4.0").replace("v0.3.0/schema/", "v0.4.0/schema/") }
+          : undefined;
+        const saved = convertedDraft || args.editedDraft
+          ? { ...draft, revision: draft.revision + 1, document: convertedDraft ?? edited }
+          : draft;
+        drafts.set(blueprintId, saved);
+        const { document: _document, ...summary } = freeze(saved, args.note as string | null);
+        return { ...summary, convertedDraft };
       }
       case "architect_list_versions": return (versions.get(blueprintId) ?? []).map(({ document: _document, ...summary }) => summary);
       case "architect_get_version": return structuredClone(readVersion(key));
@@ -81,7 +91,7 @@ function libraryPort() {
     }
   };
 
-  return { invoke, createProject, createDraft, freeze, projects, drafts, versions, delayedReads, writes };
+  return { invoke, createProject, createDraft, freeze, projects, drafts, versions, delayedReads, writes, versionFailures };
 }
 
 let host: HTMLDivElement;
@@ -458,6 +468,60 @@ it("requires adopting the saved revision before retrying a conflicting version s
   await submit();
   expect(port.versions.get(blueprint.id)?.[0].revision).toBe(2);
   expect(port.writes).toEqual([]);
+});
+
+it("keeps the editor undo and redo across a successful version upgrade", async () => {
+  const port = libraryPort();
+  const project = port.createProject("Project");
+  const source = '{"contract":"agsdl-0.3.0","$schema":"https://raw.githubusercontent.com/Andrologic/AgSDL/v0.3.0/schema/agsdl.schema.json","id":"example","agents":{},"content":{"exact":{"value":9007199254740993}}}';
+  const draft = port.createDraft(project.id, "Original", { source, annexes: { guide: "first" } });
+  const target = { blueprintId: draft.id };
+  const store = useAgsdlStore.getState();
+  const session = () => useAgsdlStore.getState().sessions[agsdlSessionKey(target)];
+
+  await mount(port);
+  store.openBlueprintDocument(draft);
+  store.replace(target, source.replace('"example"', '"edited"'), { guide: "second" });
+  store.replace(target, source.replace('"example"', '"future"'), { guide: "third" });
+  store.replace(target, "invalid JSON", { guide: "fourth" });
+  store.undo(target);
+  store.undo(target);
+
+  await store.saveVersion(draft.id, null);
+  const upgraded = source.replace("agsdl-0.3.0", "agsdl-0.4.0").replace("v0.3.0/schema/", "v0.4.0/schema/");
+  expect(session()).toMatchObject({ source: upgraded.replace('"example"', '"edited"'), persistedRevision: 2,
+    dirty: false, annexes: { guide: "second" } });
+  expect(port.writes).toEqual([]);
+  store.undo(target);
+  expect(session()).toMatchObject({ source: upgraded, annexes: { guide: "first" }, dirty: true });
+  store.undo(target, true);
+  expect(session().source).toBe(upgraded.replace('"example"', '"edited"'));
+  store.undo(target, true);
+  expect(session()).toMatchObject({ source: upgraded.replace('"example"', '"future"'), annexes: { guide: "third" } });
+  store.undo(target, true);
+  expect(session()).toMatchObject({ source: "invalid JSON", annexes: { guide: "fourth" } });
+});
+
+it("shows conversion diagnostics and keeps local edits when version saving is refused", async () => {
+  const port = libraryPort();
+  const project = port.createProject("Project");
+  const draft = port.createDraft(project.id, "Original", createExampleDocument("feature", "agsdl-0.3.0"));
+  const target = { blueprintId: draft.id };
+  const diagnostic = "MESSAGE_PATH /flow/steps/collect/next/each";
+  port.versionFailures.set(draft.id, { code: "AGSDL_UPGRADE_INVALID", message: diagnostic });
+  await mount(port);
+  await pick(projectPicker, project.id);
+  await click('nav button[title="Original"]');
+  act(() => useAgsdlStore.getState().edit(target, [{ op: "set", path: "/title", valueJson: '"Local edits"' }]));
+  const previous = useAgsdlStore.getState().sessions[agsdlSessionKey(target)];
+  await click('aside button[aria-label="Save version"]');
+  await submit();
+  const alert = document.querySelector('[role="dialog"] [role="alert"]');
+  expect(alert?.textContent).toContain("Fix these issues before saving an AgSDL 0.4.0 version.");
+  expect(alert?.textContent).toContain(diagnostic);
+  expect(useAgsdlStore.getState().sessions[agsdlSessionKey(target)]).toEqual(previous);
+  expect(port.writes).toEqual([]);
+  expect(port.versions.get(draft.id)).toBeUndefined();
 });
 
 it("accepts another title in the same dialog after explicit conflict overwrite", async () => {

@@ -22,6 +22,7 @@
     "backToDraft": "Volver al borrador",
     "backToArchive": "Volver al archivo",
     "origin": "Adaptado de la versión {{number}} de {{blueprint}}",
+    "upgradeInvalid": "Corrige estos problemas antes de guardar una versión de AgSDL 0.4.0.\n{{details}}",
     "revisionConflict": "El borrador cambió en otro lugar. Resuelve el conflicto en el editor antes de guardar.",
     "conflictViewing": "Estás viendo el borrador local basado en la revisión {{revision}}.",
     "conflictSaved": "Última revisión guardada que se ha leído: {{revision}}.",

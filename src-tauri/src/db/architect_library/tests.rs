@@ -134,10 +134,12 @@ async fn conflicting_edits_versions_and_pinned_uses() {
         save_draft(&pool, id.clone(), 1, document())
     );
     assert_ne!(a.is_ok(), b.is_ok());
-    assert!(save_version(&pool, id.clone(), 1, None).await.is_err());
+    assert!(save_version(&pool, id.clone(), 1, None, None)
+        .await
+        .is_err());
     let (a, b) = tokio::join!(
-        save_version(&pool, id.clone(), 2, Some("first caller".into())),
-        save_version(&pool, id.clone(), 2, None)
+        save_version(&pool, id.clone(), 2, Some("first caller".into()), None),
+        save_version(&pool, id.clone(), 2, None, None)
     );
     let (a, b) = (a.unwrap().summary, b.unwrap().summary);
     assert_ne!(a.key.number, b.key.number);
@@ -187,7 +189,7 @@ async fn conflicting_edits_versions_and_pinned_uses() {
     }
     delete_version(&pool, key).await.unwrap();
     assert_eq!(
-        save_version(&pool, id, 2, None)
+        save_version(&pool, id, 2, None, None)
             .await
             .unwrap()
             .summary
@@ -691,7 +693,9 @@ async fn saving_a_legacy_draft_upgrades_only_the_new_version() {
         .unwrap();
 
     sqlx::raw_sql("CREATE TRIGGER inject_failure BEFORE INSERT ON architect_versions BEGIN SELECT RAISE(ABORT,'injected'); END;").execute(&pool).await.unwrap();
-    assert!(save_version(&pool, id.clone(), 1, None).await.is_err());
+    assert!(save_version(&pool, id.clone(), 1, None, None)
+        .await
+        .is_err());
     let draft = get_draft(&pool, id.clone()).await.unwrap();
     assert_eq!(draft.summary.revision, 1);
     assert_eq!(encode(&draft.document).unwrap(), encode(&original).unwrap());
@@ -700,7 +704,9 @@ async fn saving_a_legacy_draft_upgrades_only_the_new_version() {
         .await
         .unwrap();
 
-    let saved = save_version(&pool, id.clone(), 1, None).await.unwrap();
+    let saved = save_version(&pool, id.clone(), 1, None, None)
+        .await
+        .unwrap();
     assert_eq!(saved.summary.revision, 2);
     assert_eq!(saved.summary.key.number, 2);
     let expected = original
@@ -733,7 +739,87 @@ async fn saving_a_legacy_draft_upgrades_only_the_new_version() {
         encode(&original).unwrap(),
         encode(&get_version(&pool, old).await.unwrap().document).unwrap()
     );
-    let next = save_version(&pool, id, 2, None).await.unwrap();
+    let next = save_version(&pool, id, 2, None, None).await.unwrap();
     assert_eq!(next.summary.revision, 2);
     assert!(next.converted_draft.is_none());
+}
+
+#[tokio::test]
+async fn save_version_preserves_sources_without_an_exact_legacy_object_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = create_pool(&dir.path().join("macro.db")).await.unwrap();
+    let project = create_project(&pool, "Example".into()).await.unwrap();
+    for source in [
+        r#"{"contract":42,"id":"draft","agents":{}}"#,
+        r#"["agsdl-0.3.0",null]"#,
+        r#"{"nested":{"contract":"agsdl-0.3.0"}}"#,
+        r#"{"contract":"agsdl-0.3.0-beta"}"#,
+    ] {
+        let mut document = legacy_document();
+        document.source = source.into();
+        let expected = encode(&document).unwrap();
+        let draft = create_blueprint(&pool, project.id.clone(), source.into(), document)
+            .await
+            .unwrap();
+        let id = draft.summary.id;
+        let saved = save_version(&pool, id.clone(), 1, None, None)
+            .await
+            .unwrap();
+        assert!(saved.converted_draft.is_none());
+        assert_eq!(saved.summary.revision, 1);
+        let draft = get_draft(&pool, id).await.unwrap();
+        let version = get_version(&pool, saved.summary.key).await.unwrap();
+        assert_eq!(encode(&draft.document).unwrap(), expected);
+        assert_eq!(encode(&version.document).unwrap(), expected);
+    }
+}
+
+#[tokio::test]
+async fn save_version_rejects_invalid_converted_selectors_atomically() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = create_pool(&dir.path().join("macro.db")).await.unwrap();
+    let project = create_project(&pool, "Example".into()).await.unwrap();
+    for (name, fixture, path) in [
+        (
+            "Approval comments",
+            include_str!("../../../../dev/agsdl/fixtures/v0.4/conformance/cases/approval-comments-path.json"),
+            "/flow/steps/approve/next/revise/message/resources/note/from",
+        ),
+        (
+            "Join text",
+            include_str!("../../../../dev/agsdl/fixtures/v0.4/conformance/cases/fanout-join-text-not-list.json"),
+            "/flow/steps/collect/next/each",
+        ),
+    ] {
+        let mut document = legacy_document();
+        document.source = fixture.replace("agsdl-0.4.0", "agsdl-0.3.0").replace(
+            r#""harness": "example""#,
+            r#""harness": "codex""#,
+        );
+        let report = argentic_core::validate_document_json(document.source.as_bytes(), None).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&report).unwrap()["valid"], true);
+        let draft = create_blueprint(&pool, project.id.clone(), name.into(), document.clone())
+            .await
+            .unwrap();
+        let id = draft.summary.id;
+
+        for edited in [None, Some(document.clone())] {
+            let error = save_version(&pool, id.clone(), 1, None, edited).await.unwrap_err();
+            let command: crate::core::command_error::CommandError = error.into();
+            assert_eq!(command.code(), Some("AGSDL_UPGRADE_INVALID"));
+            assert!(command.message.contains("MESSAGE_PATH"), "{}", command.message);
+            assert!(command.message.contains(path), "{}", command.message);
+        }
+        let unchanged = get_draft(&pool, id.clone()).await.unwrap();
+        assert_eq!(unchanged.summary.revision, 1);
+        assert_eq!(encode(&unchanged.document).unwrap(), encode(&document).unwrap());
+        assert!(list_versions(&pool, id.clone()).await.unwrap().is_empty());
+
+        let mut repaired = document;
+        repaired.source = r#"{"contract":"agsdl-0.3.0","id":"repaired","agents":{}}"#.into();
+        let saved = save_version(&pool, id, 1, None, Some(repaired)).await.unwrap();
+        assert_eq!(saved.summary.key.number, 1);
+        assert_eq!(saved.summary.revision, 2);
+        assert!(saved.converted_draft.unwrap().source.contains("agsdl-0.4.0"));
+    }
 }

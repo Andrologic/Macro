@@ -22,6 +22,7 @@
     "backToDraft": "下書きに戻る",
     "backToArchive": "アーカイブに戻る",
     "origin": "{{blueprint}} のバージョン {{number}} を元に作成",
+    "upgradeInvalid": "AgSDL 0.4.0 のバージョンを保存する前に、次の問題を修正してください。\n{{details}}",
     "revisionConflict": "下書きが別の場所で変更されました。保存する前にエディターで競合を解決してください。",
     "conflictViewing": "リビジョン {{revision}} を元にしたローカルの下書きを表示しています。",
     "conflictSaved": "最後に読み込んだ保存済みリビジョン：{{revision}}。",

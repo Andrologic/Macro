@@ -22,6 +22,7 @@
     "backToDraft": "초안으로 돌아가기",
     "backToArchive": "보관함으로 돌아가기",
     "origin": "{{blueprint}}의 버전 {{number}}에서 생성됨",
+    "upgradeInvalid": "AgSDL 0.4.0 버전을 저장하기 전에 다음 문제를 수정하세요.\n{{details}}",
     "revisionConflict": "다른 곳에서 초안이 변경되었습니다. 저장하기 전에 편집기에서 충돌을 해결하세요.",
     "conflictViewing": "리비전 {{revision}}을 기반으로 한 로컬 초안을 보고 있습니다.",
     "conflictSaved": "마지막으로 읽은 저장된 리비전: {{revision}}.",

@@ -2,9 +2,12 @@ import { create } from "zustand";
 import { adaptationChanges,readDesign,retainDesignOrigin,withDocumentDesign,type AgsdlEnvelopeMetadata,type DesignMetadata } from "../services/agsdl/design";
 import {
 applyChanges,
+AGSDL_CONTRACT,
 AGSDL_020_CONTRACT,
 MAX_AGSDL_BYTES,
 readDocument,
+scanSource,
+object,
 validateDocument,
 } from "../services/agsdl/document";
 import { AgsdlUserError } from "../services/agsdl/userErrors";
@@ -75,12 +78,13 @@ interface AgsdlState {
   validate: (target: AgsdlDocumentTarget) => Promise<void>;
 }
 const pendingLoads = new Map<string, Promise<AgsdlSession>>();
+function draftContract(source: string): unknown {
+  try { return readDocument(source).contract; }
+  catch { return undefined; } // Malformed drafts remain repairable.
+}
 function assertEditableEdition(...sources: string[]): void {
   for (const source of sources) {
-    let contract: unknown;
-    try { contract = readDocument(source).contract; }
-    catch { continue; } // Malformed drafts remain repairable.
-    if (contract === AGSDL_020_CONTRACT) {
+    if (draftContract(source) === AGSDL_020_CONTRACT) {
       throw new AgsdlUserError("agsdl.unsupportedEdition020", "AgSDL 0.2 is no longer supported. This document cannot be edited or run.");
     }
   }
@@ -88,6 +92,31 @@ function assertEditableEdition(...sources: string[]): void {
 const snapshot = ({ source, annexes, design, display, migration }: Snapshot): Snapshot => structuredClone({
   source, annexes, design, display, migration,
 });
+/** Convert the legacy header in an editor snapshot. Keep exact JSON outside its two tokens. */
+function upgradeLegacyFlowHeader(source: string): string {
+  try {
+    const { tree, spans, bytes } = scanSource(source);
+    const document = object(tree);
+    if (document.contract !== "agsdl-0.3.0") return source;
+    const legacySchema = "https://raw.githubusercontent.com/Andrologic/AgSDL/v0.3.0/schema/agsdl.schema.json";
+    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+    const edits = [{ span: spans.get("/contract")!, value: AGSDL_CONTRACT }];
+    if (document.$schema === legacySchema) {
+      edits.push({ span: spans.get("/$schema")!, value: legacySchema.replace("v0.3.0", "v0.4.0") });
+    }
+    let result = "";
+    let offset = 0;
+    for (const { span, value } of edits.sort((a, b) => a.span.start - b.span.start)) {
+      result += decoder.decode(bytes.subarray(offset, span.start)) + JSON.stringify(value);
+      offset = span.end;
+    }
+    return result + decoder.decode(bytes.subarray(offset));
+  } catch {
+    return source; // Keep malformed editor snapshots available to undo or redo.
+  }
+}
+
+const upgradeSnapshot = (entry: Snapshot): Snapshot => ({ ...entry, source: upgradeLegacyFlowHeader(entry.source) });
 const isStaleRevision = (error: unknown) => {
   const message = typeof error === "object" && error !== null && "message" in error ? error.message : error;
   return message === "Validation error: stale_revision";
@@ -238,24 +267,39 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       if (current.saving) throw new AgsdlUserError("agsdl.userError.saving", "A save is already in progress.");
       if (current.draftConflict) throw draftConflictError();
       assertEditableEdition(current.source);
-      if (current.dirty) await get().save(target);
+      // Validate and freeze a legacy edit in one native transaction so a
+      // rejected conversion cannot persist the edit as a side effect.
+      const atomicEdit = current.dirty && draftContract(current.source) === "agsdl-0.3.0"
+        ? { ...current.libraryDocument, ...snapshot(current) }
+        : undefined;
+      if (current.dirty && !atomicEdit) await get().save(target);
       const saved = session(target);
-      if (!isCurrent() || saved.version !== current.version || saved.saving || saved.dirty)
+      if (!isCurrent() || saved.version !== current.version || saved.saving || (saved.dirty && !atomicEdit))
         throw new AgsdlUserError("agsdl.viewer.editConflict", "The document changed. Read it again before editing.");
       update(target, { ...saved, saving: true });
       try {
-        const { convertedDraft, ...version } = await architectLibrary.saveVersion(blueprintId, saved.persistedRevision, note);
+        const { convertedDraft, ...version } = await architectLibrary.saveVersion(blueprintId, saved.persistedRevision, note, atomicEdit);
+        const latest = session(target);
         if (convertedDraft) {
-          if (session(target).version === saved.version) {
+          if (latest.version === saved.version) {
             update(target, {
               ...newSession(convertedDraft, version.revision, saved.status),
               libraryDocument: convertedDraft,
+              history: latest.history.map(upgradeSnapshot),
+              future: latest.future.map(upgradeSnapshot),
               saving: true,
             });
           } else {
             try { await readConflictingDraft(target); }
             catch { /* Keep the newer local edits and let the user retry the conflict read. */ }
           }
+        } else if (atomicEdit) {
+          update(target, {
+            ...latest,
+            libraryDocument: atomicEdit,
+            persistedRevision: version.revision,
+            dirty: latest.version !== saved.version,
+          });
         }
         return version;
       } catch (error) {

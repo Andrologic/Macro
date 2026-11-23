@@ -22,6 +22,7 @@
     "backToDraft": "Retour au brouillon",
     "backToArchive": "Retour à l’archive",
     "origin": "Adapté de la version {{number}} de {{blueprint}}",
+    "upgradeInvalid": "Corrigez ces problèmes avant d’enregistrer une version AgSDL 0.4.0.\n{{details}}",
     "revisionConflict": "Le brouillon a été modifié ailleurs. Résolvez le conflit dans l’éditeur avant d’enregistrer.",
     "conflictViewing": "Vous consultez le brouillon local basé sur la révision {{revision}}.",
     "conflictSaved": "Dernière révision enregistrée consultée : {{revision}}.",

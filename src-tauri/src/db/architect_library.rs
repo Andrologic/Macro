@@ -602,12 +602,15 @@ fn upgrade_draft(mut document: Document) -> DbResult<Option<Document>> {
         #[serde(rename = "$schema", borrow)]
         schema: Option<&'a RawValue>,
     }
+    if !document.source.trim_start().starts_with('{') {
+        return Ok(None);
+    }
     let Ok(header) = serde_json::from_str::<Header<'_>>(&document.source) else {
         return Ok(None);
     };
-    let contract: String =
-        serde_json::from_str(header.contract.get()).map_err(|error| invalid(&error.to_string()))?;
-    if contract != "agsdl-0.3.0" {
+    if !serde_json::from_str::<String>(header.contract.get())
+        .is_ok_and(|contract| contract == "agsdl-0.3.0")
+    {
         return Ok(None);
     }
     const LEGACY_SCHEMA: &str =
@@ -634,11 +637,41 @@ fn upgrade_draft(mut document: Document) -> DbResult<Option<Document>> {
     Ok(Some(document))
 }
 
+fn validate_upgrade(source: &str) -> DbResult<()> {
+    #[derive(Deserialize)]
+    struct Diagnostic {
+        severity: String,
+        code: String,
+        path: String,
+        message: String,
+    }
+    #[derive(Deserialize)]
+    struct Report {
+        valid: bool,
+        diagnostics: Vec<Diagnostic>,
+    }
+    let report = argentic_core::validate_document_json(source.as_bytes(), None)
+        .map_err(|error| DbError::AgsdlUpgrade(error.message))?;
+    let report: Report =
+        serde_json::from_str(&report).map_err(|error| invalid(&error.to_string()))?;
+    if report.valid {
+        return Ok(());
+    }
+    let errors = report
+        .diagnostics
+        .into_iter()
+        .filter(|issue| issue.severity == "error")
+        .map(|issue| format!("{} {} — {}", issue.code, issue.path, issue.message))
+        .collect::<Vec<_>>();
+    Err(DbError::AgsdlUpgrade(errors.join("\n")))
+}
+
 pub(crate) async fn save_version(
     pool: &SqlitePool,
     blueprint_id: String,
     expected_revision: i64,
     note: Option<String>,
+    edited_draft: Option<Document>,
 ) -> DbResult<SavedVersion> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let row = sqlx::query("SELECT document FROM architect_blueprints WHERE id=? AND revision=?")
@@ -647,8 +680,15 @@ pub(crate) async fn save_version(
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| invalid("stale_revision"))?;
-    let converted_draft = upgrade_draft(decode(&row)?)?;
-    let revision = if let Some(document) = &converted_draft {
+    let original = match &edited_draft {
+        Some(document) => document.clone(),
+        None => decode(&row)?,
+    };
+    let converted_draft = upgrade_draft(original)?;
+    if let Some(document) = &converted_draft {
+        validate_upgrade(&document.source)?;
+    }
+    let revision = if let Some(document) = converted_draft.as_ref().or(edited_draft.as_ref()) {
         sqlx::query_scalar(
             "UPDATE architect_blueprints SET document=?,revision=revision+1 WHERE id=? RETURNING revision",
         )

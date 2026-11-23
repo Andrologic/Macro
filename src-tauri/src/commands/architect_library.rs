@@ -64,10 +64,14 @@ pub(crate) async fn architect_save_version(
     blueprint_id: String,
     expected_revision: i64,
     note: Option<String>,
+    edited_draft: Option<Document>,
 ) -> CommandResult<SavedVersion> {
     let pool = get_pool(&pool).await?;
     architect_library::require_editable(&pool, &blueprint_id).await?;
-    Ok(architect_library::save_version(&pool, blueprint_id, expected_revision, note).await?)
+    Ok(
+        architect_library::save_version(&pool, blueprint_id, expected_revision, note, edited_draft)
+            .await?,
+    )
 }
 
 #[tauri::command]

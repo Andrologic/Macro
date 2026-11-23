@@ -50,6 +50,8 @@ pub enum DbError {
     AppDataDir,
     #[error("Validation error: {0}")]
     Validation(String),
+    #[error("{0}")]
+    AgsdlUpgrade(String),
     #[error("Migration error: {0}")]
     Migration(String),
 }

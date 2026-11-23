@@ -130,6 +130,8 @@ pub enum BackendError {
 
     #[error("Validation error: {0}")]
     Validation(String),
+    #[error("{0}")]
+    AgsdlUpgrade(String),
 
     #[error("Revision conflict: {message}")]
     RevisionConflict { message: String },
@@ -180,6 +182,7 @@ impl BackendError {
             BackendError::NotFound(_) => "NotFound",
             BackendError::PermissionDenied(_) => "PermissionDenied",
             BackendError::Validation(_) => "Validation",
+            BackendError::AgsdlUpgrade(_) => "AGSDL_UPGRADE_INVALID",
             BackendError::RevisionConflict { .. } => "REVISION_CONFLICT",
             BackendError::ToolExecutionCancelled { .. } => "TOOL_EXECUTION_CANCELLED",
             BackendError::ToolExecutionTimeout { .. } => "TOOL_EXECUTION_TIMEOUT",
@@ -223,6 +226,7 @@ impl BackendError {
             | BackendError::Internal { message } => message,
             BackendError::NotFound(message)
             | BackendError::PermissionDenied(message)
+            | BackendError::AgsdlUpgrade(message)
             | BackendError::Validation(message) => message,
         }
     }

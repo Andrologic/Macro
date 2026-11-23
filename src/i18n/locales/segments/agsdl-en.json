@@ -22,6 +22,7 @@
     "backToDraft": "Back to draft",
     "backToArchive": "Back to archive",
     "origin": "Adapted from version {{number}} of {{blueprint}}",
+    "upgradeInvalid": "Fix these issues before saving an AgSDL 0.4.0 version.\n{{details}}",
     "revisionConflict": "The draft changed elsewhere. Resolve the conflict in the editor before saving.",
     "conflictViewing": "You are viewing the local draft based on revision {{revision}}.",
     "conflictSaved": "Latest saved revision read: {{revision}}.",

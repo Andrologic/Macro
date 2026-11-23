@@ -22,6 +22,7 @@
     "backToDraft": "Zurück zum Entwurf",
     "backToArchive": "Zurück zum Archiv",
     "origin": "Übernommen aus Version {{number}} von {{blueprint}}",
+    "upgradeInvalid": "Behebe diese Probleme, bevor du eine AgSDL-0.4.0-Version speicherst.\n{{details}}",
     "revisionConflict": "Der Entwurf wurde an anderer Stelle geändert. Löse den Konflikt vor dem Speichern im Editor.",
     "conflictViewing": "Du siehst den lokalen Entwurf auf Basis von Revision {{revision}}.",
     "conflictSaved": "Zuletzt gelesene gespeicherte Revision: {{revision}}.",

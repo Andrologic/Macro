@@ -75,7 +75,7 @@ function LibraryActionDialog({ title, disabled, children, onSave, onClose }: {
     <header><strong>{title}</strong></header>
     <form id={formId} className="agsdl-inspector-body space-y-3" onSubmit={event => void submit(event)}>
       <fieldset className="space-y-3" disabled={busy}>{children}</fieldset>
-      {error && <p role="alert" className="agsdl-unresolved">{error}</p>}
+      {error && <p role="alert" className="agsdl-unresolved whitespace-pre-line break-words">{error}</p>}
     </form>
     <footer>
       <button type="button" disabled={busy} onClick={onClose}>{t("agsdl.cancel")}</button>
