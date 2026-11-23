@@ -121,6 +121,7 @@
     }
   },
   "startup": {
+    "architectCutoverProgress": "Migrating Architect library ({{completed}}/{{total}})",
     "interrupted": "Startup interrupted",
     "failedTitle": "Macro could not finish booting.",
     "failedDescription": "Macro could not initialize its local data. You can retry safely.",

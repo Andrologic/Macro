@@ -121,6 +121,7 @@
     }
   },
   "startup": {
+    "architectCutoverProgress": "Architect ライブラリを移行中 ({{completed}}/{{total}})",
     "interrupted": "起動が中断されました",
     "failedTitle": "Macro は起動を完了できませんでした。",
     "failedDescription": "Macro はローカルデータを初期化できませんでした。安全に再試行できます。",

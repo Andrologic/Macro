@@ -121,6 +121,7 @@
     }
   },
   "startup": {
+    "architectCutoverProgress": "Migrando la biblioteca de Architect ({{completed}}/{{total}})",
     "interrupted": "Inicio interrumpido",
     "failedTitle": "Macro no pudo completar el inicio.",
     "failedDescription": "Macro no pudo inicializar los datos locales. Puedes volver a intentarlo de forma segura.",

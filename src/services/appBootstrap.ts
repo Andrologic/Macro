@@ -236,8 +236,7 @@ export const createAppBootstrapController = (
         const migrate = () => initWithTracking(step, migrateArchitectLibrary, 'critical', {
           warningOnly: true,
         });
-        await migrate();
-        if (!isActive()) return;
+        void scope.track(migrate());
         let retry: Promise<void> | undefined;
         retryArchitectLibraryForRun = async () => {
           if (!isActive() || !snapshot.warnings[step]) return;

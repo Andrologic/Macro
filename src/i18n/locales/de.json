@@ -121,6 +121,7 @@
     }
   },
   "startup": {
+    "architectCutoverProgress": "Architect-Bibliothek wird migriert ({{completed}}/{{total}})",
     "interrupted": "Start unterbrochen",
     "failedTitle": "Macro konnte den Start nicht abschließen.",
     "failedDescription": "Macro konnte die lokalen Daten nicht initialisieren. Sie können den Vorgang sicher wiederholen.",

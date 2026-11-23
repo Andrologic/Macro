@@ -1,6 +1,8 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { hasUnreadNotifications, useNotificationCenterStore } from '../../stores/useNotificationCenterStore';
+import { isTauriAvailable } from '../../services/tauriIpc';
+import { listen } from '../../services/tauriRuntimeBridge';
 import { cn } from '../../utils/cn';
 import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
@@ -14,6 +16,19 @@ const UpdateStatusButton = React.lazy(() =>
 
 export const Footer: React.FC = () => {
   const { t } = useTranslation();
+  const [migration, setMigration] = useState<{ completed: number; total: number } | null>(null);
+  useEffect(() => {
+    if (!isTauriAvailable()) return;
+    let active = true;
+    const subscription = listen<typeof migration>('architect:cutover-progress', ({ payload }) => {
+      if (active) setMigration(payload);
+    });
+    void subscription.catch(console.error);
+    return () => {
+      active = false;
+      void subscription.then((unlisten) => unlisten(), () => {});
+    };
+  }, []);
   const hasUnread = useNotificationCenterStore((state) => hasUnreadNotifications(state.items));
   const isNotificationCenterOpen = useNotificationCenterStore((state) => state.isCenterOpen);
   const setNotificationCenterOpen = useNotificationCenterStore((state) => state.setCenterOpen);
@@ -26,6 +41,9 @@ export const Footer: React.FC = () => {
         data-tour-id="footer-status-bar"
       >
         <div className="flex h-full items-center justify-end gap-1.5">
+          {migration && <span role="status" className="mr-auto truncate">
+            {t('startup.architectCutoverProgress', migration)}
+          </span>}
           <React.Suspense fallback={<span className="h-7 min-w-7" aria-hidden="true" />}>
             <UpdateStatusButton />
           </React.Suspense>

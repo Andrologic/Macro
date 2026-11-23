@@ -121,6 +121,7 @@
     }
   },
   "startup": {
+    "architectCutoverProgress": "Architect 라이브러리 마이그레이션 중 ({{completed}}/{{total}})",
     "interrupted": "시작이 중단되었습니다",
     "failedTitle": "Macro가 시작을 완료하지 못했습니다.",
     "failedDescription": "Macro가 로컬 데이터를 초기화하지 못했습니다. 안전하게 다시 시도할 수 있습니다.",
