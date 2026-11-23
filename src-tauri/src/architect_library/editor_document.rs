@@ -522,17 +522,21 @@ fn local_uri(uri: &Value) -> Option<(String, &str)> {
     let uri = uri.as_str().filter(|uri| is_local_uri(uri))?;
     let split = uri.find(['?', '#']).unwrap_or(uri.len());
     let decoded = percent_decode_str(&uri[..split]).decode_utf8().ok()?;
-    if decoded.is_empty() {
+    if decoded.is_empty()
+        || decoded.starts_with('/')
+        || decoded.len() > 4096
+        || decoded.split('/').count() > 64
+    {
         return None;
     }
     let mut normalized = Vec::new();
     for part in decoded.split('/') {
         match part {
-            "." => {}
+            "" | "." => {}
             ".." => {
                 normalized.pop()?;
             }
-            part if portable_path(part) && !part.is_empty() => normalized.push(part),
+            part if portable_path(part) => normalized.push(part),
             _ => return None,
         }
     }

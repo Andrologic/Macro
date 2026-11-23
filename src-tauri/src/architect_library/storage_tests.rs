@@ -898,3 +898,36 @@ async fn schema_hint_survives_migration_without_blocking_archive_or_freeze() {
         .unwrap();
     assert_eq!(fs::read(retained).unwrap(), raw.as_bytes());
 }
+
+#[tokio::test]
+async fn migration_normalizes_interior_uri_separators_but_refuses_rooted_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let pool = create_pool(&temp.path().join("macro.db")).await.unwrap();
+    let mut document = editor("Relative URI");
+    document.source = document.source.replace(
+        "./notes/étude.md?x=1#title",
+        "notes//%C3%A9tude.md?x=1#title",
+    );
+    let raw = envelope(&document);
+    seed(&pool, &raw).await;
+    historical(&pool, 1, 2, &raw).await;
+    document.source = document.source.replace("notes//", "%2Fnotes//");
+    historical(&pool, 2, 3, &envelope(&document)).await;
+    let storage = Storage::new(temp.path());
+    migration::migrate(&pool, &storage).await.unwrap();
+
+    let version = storage
+        .open_archive(&version_artifact(&pool, 1).await)
+        .unwrap();
+    assert!(version
+        .source()
+        .authored_json()
+        .contains("notes/%C3%A9tude.md?x=1#title"));
+    assert!(version
+        .members()
+        .any(|file| file.path == "notes/étude.md" && file.bytes == "# Étude\r\n".as_bytes()));
+    assert_eq!(
+        version_artifact(&pool, 2).await.state,
+        StorageState::Recovery
+    );
+}
