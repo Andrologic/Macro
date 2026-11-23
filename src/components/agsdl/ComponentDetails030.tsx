@@ -118,16 +118,20 @@ function BusinessFields030({ fields, values = fields.map(field => field.value), 
 }) {
   const { t } = useAgsdlTranslation();
   const controls = authoringFields030(fields, values);
+  let first = true;
   return <>{(["general", "instructions", "mission", "information", "choices", "instance", "join"] as const).map(group => {
     const members = controls.filter(field => field.group === group && (onChange || field.value));
     const resources = group === "information" ? fields.findIndex(field => field.label === "resources") : -1;
     const choices = group === "choices" ? fields.findIndex(field => field.label === "next") : -1;
     if (!members.length && !(onChange && (resources >= 0 || choices >= 0))) return null;
-    return <details key={group} className="agsdl-details" open={["general", "instructions", "mission"].includes(group)} style={{ minWidth: 0 }}>
+    // The first group sits right under the header: a rule above it would separate nothing.
+    const top = first; first = false;
+    return <details key={group} className="agsdl-details" open={["general", "instructions", "mission"].includes(group)}
+      style={top ? { minWidth: 0, marginTop: 0, paddingTop: 0, borderTopWidth: 0 } : { minWidth: 0 }}>
       <DisclosureSummary>{t(`agsdl.authoring030.groups.${group}`)}</DisclosureSummary>
       {["instructions", "mission", "information", "instance", "join"].includes(group) && <p className="agsdl-muted">{t(`agsdl.authoring030.hints.${group}`)}</p>}
       {members.map(field => <label className="agsdl-edit-field" style={{ marginTop: 8, gap: 4 }} key={`${field.index}:${field.path}`}>
-        <span>{t(`agsdl.authoring030.fields.${field.label}`)}{field.name ? ` · ${field.name}` : ""}</span>
+        <span>{t(`agsdl.authoring030.fields.${field.label}`)}{field.name && !/^\d+$/.test(field.name) ? ` · ${field.name}` : ""}</span>
         {!onChange ? <span style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{field.kind === "select" ? field.optionLabels ? field.optionLabels[field.value] ?? field.value : t(`agsdl.authoring030.options.${field.value}`, { defaultValue: field.value }) : field.value}</span>
           : field.kind === "select" ? <select value={field.value} disabled={disabled || locked?.(field.index)} onChange={event => onChange(updateAuthoringField030(values, field, event.target.value))}>
             {!["workType", "joinMode", "destination"].includes(field.label) && <option value="">{t("agsdl.authoring030.default")}</option>}
