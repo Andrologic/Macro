@@ -1551,13 +1551,22 @@ fn preserved_path(dir: &Path, journal: &RestoreJournal) -> Result<PathBuf> {
     Ok(dir.join(&journal.preserved))
 }
 
-// Resolve a relocated app-data root before checking its managed descendants.
-fn resolve_backup_data_root(data: &Path) -> Result<PathBuf> {
-    if fs::symlink_metadata(data).is_ok_and(|meta| storage::is_link_or_reparse_point(&meta)) {
-        data.canonicalize().map_err(|error| error.to_string())
+// Resolve a relocated profile root before checking its managed descendants.
+fn resolve_backup_root(root: &Path) -> Result<PathBuf> {
+    if fs::symlink_metadata(root).is_ok_and(|meta| storage::is_link_or_reparse_point(&meta)) {
+        root.canonicalize().map_err(|error| error.to_string())
     } else {
-        Ok(data.to_owned())
+        Ok(root.to_owned())
     }
+}
+
+fn resolve_backup_roots(data: &Path, config: &Path) -> Result<(PathBuf, PathBuf)> {
+    let data = resolve_backup_root(data)?;
+    #[cfg(test)]
+    if profile::mutated("skip-config-root-resolution") {
+        return Ok((data, config.to_owned()));
+    }
+    Ok((data, resolve_backup_root(config)?))
 }
 
 fn safe_parent(path: &Path, root: &Path) -> Result<()> {
@@ -2025,7 +2034,7 @@ pub async fn process_startup(
         return Ok(());
     }
     startup.map_err(|diagnostics| {
-        let resolved = resolve_backup_data_root(data);
+        let resolved = resolve_backup_root(data);
         let data = resolved.as_deref().unwrap_or(data);
         let dir = data.join("local-backup");
         let journal = dir.join("restoring.json");
@@ -2130,8 +2139,7 @@ async fn process_startup_with_preserver(
     preserve: fn(&Archive, &Path) -> Result<()>,
 ) -> Result<()> {
     create_private_root(data).map_err(|error| error.to_string())?;
-    let data = resolve_backup_data_root(data)?;
-    let config = config.to_owned();
+    let (data, config) = resolve_backup_roots(data, config)?;
     let runtime = tokio::runtime::Handle::current();
     #[cfg(not(test))]
     let owner = crate::secrets::policy::POLICY.clone();
@@ -2326,7 +2334,25 @@ pub async fn local_backup_schedule(
         return Err("Explicit confirmation and an absolute file path are required".into());
     }
     validate_browser(&browser)?;
-    let data = resolve_backup_data_root(&app.path().app_data_dir().map_err(|e| e.to_string())?)?;
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config = crate::config::resolve_config_root(
+        &app.path().app_config_dir().map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.message)?;
+    schedule_backup(
+        &data,
+        &config,
+        Request {
+            operation,
+            path,
+            browser,
+        },
+    )
+    .await
+}
+
+async fn schedule_backup(data: &Path, config: &Path, request: Request) -> Result<()> {
+    let (data, config) = resolve_backup_roots(data, config)?;
     let dir = data.join("local-backup");
     safe_parent(&dir, &data)?;
     storage::ensure_dir(&data, &dir).map_err(|error| error.to_string())?;
@@ -2337,23 +2363,15 @@ pub async fn local_backup_schedule(
     if dir.join("request.json").exists() || dir.join("restoring.json").exists() {
         return Err("A profile operation is already pending. Restart Macro first.".into());
     }
-    let config = crate::config::resolve_config_root(
-        &app.path().app_config_dir().map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.message)?;
-    if operation == "restore" {
-        let archive = load_restore_archive(Path::new(&path), &data).await?;
+    let path = Path::new(&request.path);
+    if request.operation == "restore" {
+        let archive = load_restore_archive(path, &data).await?;
         check_restore_targets(&archive, &data, &config, false)?;
         stage_incoming(&dir, &archive)?;
     } else {
-        validate_export_path(Path::new(&path), &data, &config)?;
+        validate_export_path(path, &data, &config)?;
     }
-    let bytes = serde_json::to_vec(&Request {
-        operation,
-        path,
-        browser,
-    })
-    .map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
     write_atomically(
         &dir.join("request.json"),
         &staging_root(&dir)?,
@@ -2363,7 +2381,7 @@ pub async fn local_backup_schedule(
 }
 #[tauri::command]
 pub fn local_backup_status(app: tauri::AppHandle) -> Result<BackupStatus> {
-    let data = resolve_backup_data_root(&app.path().app_data_dir().map_err(|e| e.to_string())?)?;
+    let data = resolve_backup_root(&app.path().app_data_dir().map_err(|e| e.to_string())?)?;
     let path = data.join("local-backup/status.json");
     if !path.exists() {
         return Ok(BackupStatus::default());
@@ -2381,7 +2399,7 @@ pub fn local_backup_status(app: tauri::AppHandle) -> Result<BackupStatus> {
 }
 #[tauri::command]
 pub fn local_backup_acknowledge(app: tauri::AppHandle) -> Result<()> {
-    let data = resolve_backup_data_root(&app.path().app_data_dir().map_err(|e| e.to_string())?)?;
+    let data = resolve_backup_root(&app.path().app_data_dir().map_err(|e| e.to_string())?)?;
     let path = data.join("local-backup/status.json");
     let dir = path.parent().ok_or("Missing backup directory")?;
     if !dir.exists() {

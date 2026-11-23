@@ -1181,6 +1181,8 @@ async fn profile_fault_assertions_detect_deliberate_mutations() {
         ("skip-restore-space-check", "local_backup::fault_tests::restore_space_check_counts_preservation_and_both_volumes"),
         #[cfg(unix)]
         ("reject-symlinked-profile-root", "local_backup::fault_tests::relocated_profile_opens_and_exports_through_symlinks"),
+        #[cfg(unix)]
+        ("skip-config-root-resolution", "local_backup::fault_tests::relocated_profile_round_trips_linked_config"),
     ];
     for (mutation, test) in mutations {
         let control = child_command(test)
@@ -1253,6 +1255,94 @@ async fn relocated_profile_opens_and_exports_through_symlinks() {
         fs::metadata(&outside).unwrap().permissions().mode(),
         external_mode
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn relocated_profile_round_trips_linked_config() {
+    use std::os::unix::fs::symlink;
+
+    const EXPORTED: &[u8] =
+        br#"{"$schema":"settings.schema.json","schemaVersion":1,"language":"fr"}"#;
+    const CURRENT: &[u8] =
+        br#"{"$schema":"settings.schema.json","schemaVersion":1,"language":"en"}"#;
+
+    for shared_root in [true, false] {
+        let (temp, data, config) = tests::profile().await;
+        let (profile_data, config, profile_config) = if shared_root {
+            let linked = temp.path().join("linked-profile");
+            symlink(&data, &linked).unwrap();
+            (linked.clone(), data.clone(), linked)
+        } else {
+            let linked_config = temp.path().join("linked-config");
+            symlink(&config, &linked_config).unwrap();
+            (data.clone(), config, linked_config)
+        };
+
+        let settings = config.join("settings.json");
+        let dir = data.join("local-backup");
+        let out = temp.path().join("relocated.zip");
+        let request = |operation: &str| Request {
+            operation: operation.into(),
+            path: out.to_str().unwrap().into(),
+            browser: BTreeMap::new(),
+        };
+        let assert_status = |expected| {
+            assert_eq!(
+                status_code(&dir),
+                Some(expected),
+                "shared root: {shared_root}: {}",
+                fs::read_to_string(dir.join("status.json")).unwrap()
+            );
+        };
+
+        fs::write(&settings, EXPORTED).unwrap();
+        schedule_backup(&profile_data, &profile_config, request("export"))
+            .await
+            .unwrap();
+        process_startup(&profile_data, &profile_config)
+            .await
+            .unwrap();
+        assert_status(BackupStatusCode::Exported);
+
+        fs::write(&settings, CURRENT).unwrap();
+        schedule_backup(&profile_data, &profile_config, request("restore"))
+            .await
+            .unwrap();
+        process_startup(&profile_data, &profile_config)
+            .await
+            .unwrap();
+        assert_status(BackupStatusCode::Restored);
+        let settings_value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+        assert_eq!(settings_value["language"], "fr");
+
+        fs::write(&settings, CURRENT).unwrap();
+        schedule_backup(&profile_data, &profile_config, request("restore"))
+            .await
+            .unwrap();
+        run_fault(
+            &profile_data,
+            &profile_config,
+            "restore",
+            "write:/settings.json",
+            "crash",
+            1,
+        )
+        .await;
+        assert!(dir.join("restoring.json").is_file());
+        process_startup(&profile_data, &profile_config)
+            .await
+            .unwrap();
+        assert_status(BackupStatusCode::RolledBack);
+        assert_eq!(fs::read(settings).unwrap(), CURRENT);
+        assert!(!dir.join("restoring.json").exists());
+        assert!(!dir.join("request.json").exists());
+        let pool = db::open_desktop_profile(&profile_data).await.unwrap();
+        assert_eq!(assert_database(&pool).await, "Original");
+        pool.close().await;
+        assert_staging_empty(&data);
+    }
 }
 
 #[cfg(unix)]
