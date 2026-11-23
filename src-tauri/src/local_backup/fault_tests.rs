@@ -454,6 +454,106 @@ async fn open_and_migrate(data: &Path) -> crate::db::DbResult<sqlx::SqlitePool> 
     Ok(pool)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct MigrationOutcome {
+    blueprint: String,
+    number: i64,
+    state: index::StorageState,
+    diagnostics: Vec<String>,
+}
+
+async fn migration_outcomes(pool: &sqlx::SqlitePool, data: &Path) -> Vec<MigrationOutcome> {
+    // Each row retains its conversion diagnostics alongside the original bytes.
+    // The messages in these fixtures are stable, so compare the whole diagnostic.
+    let storage = Storage::new(data);
+    let rows: Vec<(String, i64, String, String)> = sqlx::query_as(
+        "SELECT rows.blueprint_id, rows.number, rows.storage_state, originals.artifact_id
+         FROM (SELECT id AS blueprint_id, 0 AS number, revision, storage_state FROM architect_blueprints
+               UNION ALL SELECT blueprint_id, number, revision, storage_state FROM architect_versions) AS rows
+         JOIN architect_library_originals AS originals
+         ON (rows.blueprint_id, rows.number, rows.revision) =
+            (originals.blueprint_id, originals.version_number, originals.revision)
+         ORDER BY 1, 2",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    rows.into_iter()
+        .map(|(blueprint, number, state, original)| {
+            let artifact = index::Artifact {
+                blueprint_id: blueprint.clone(),
+                id: uuid::Uuid::parse_str(&original).unwrap(),
+                state: index::StorageState::Recovery,
+                sha256: None,
+            };
+            let diagnostics =
+                fs::read(storage.artifact_path(&artifact).join("diagnostics.json")).unwrap();
+            MigrationOutcome {
+                blueprint,
+                number,
+                state: index::StorageState::parse(&state).unwrap(),
+                diagnostics: serde_json::from_slice(&diagnostics).unwrap(),
+            }
+        })
+        .collect()
+}
+
+async fn assert_migration_recovery(
+    legacy_data: &Path,
+    expected: &[MigrationOutcome],
+    data: &Path,
+    config: &Path,
+    point: &str,
+    action: &str,
+    nth: usize,
+) {
+    copy_fixture(legacy_data, data);
+    run_fault(data, config, "migration", point, action, nth).await;
+    let pool = db::open_desktop_profile(data).await.unwrap();
+    assert!(migration::migrate(&pool, &Storage::new(data))
+        .await
+        .unwrap());
+    assert_eq!(
+        migration_outcomes(&pool, data).await,
+        expected,
+        "{point}/{nth}/{action}"
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn disk_full_during_migration_keeps_rows_retryable() {
+    let (_temp, legacy_data, _) = tests::profile().await;
+    let bytes = envelope(BTreeMap::from([("notes.md".into(), "original".into())]));
+    let rows = [(BLUEPRINT, bytes.as_slice())];
+    seed(&legacy_data, &rows).await;
+
+    let temp = tempfile::tempdir().unwrap();
+    let baseline = temp.path().join("baseline");
+    copy_fixture(&legacy_data, &baseline);
+    let pool = open_and_migrate(&baseline).await.unwrap();
+    let expected = migration_outcomes(&pool, &baseline).await;
+    assert_eq!(
+        expected.iter().map(|row| row.state).collect::<Vec<_>>(),
+        [index::StorageState::Draft, index::StorageState::Archive]
+    );
+    pool.close().await;
+
+    let data = temp.path().join("data");
+    let config = temp.path().join("config");
+    assert_migration_recovery(
+        &legacy_data,
+        &expected,
+        &data,
+        &config,
+        "write:/staging/.draft-",
+        "ENOSPC",
+        1,
+    )
+    .await;
+    assert_originals(&data, &rows).await;
+}
+
 fn child_command(test: &str) -> Command {
     let mut child = Command::new(std::env::current_exe().unwrap());
     child
@@ -811,6 +911,8 @@ async fn generated_profile_recovers_from_io_faults_and_process_death() {
     create_private_root(&source_config).unwrap();
     copy_fixture(&legacy_data, &source_data);
     let pool = open_and_migrate(&source_data).await.unwrap();
+    let expected_migration = migration_outcomes(&pool, &source_data).await;
+    assert_eq!(expected_migration.len(), rows.len() * 2);
     let row = index::draft_row(&pool, BLUEPRINT).await.unwrap();
     let artifact = index::Artifact::from_row(&row, "id").unwrap();
     let project = Storage::new(&source_data)
@@ -893,13 +995,16 @@ async fn generated_profile_recovers_from_io_faults_and_process_death() {
             let config = temp.path().join("config");
             create_private_root(&config).unwrap();
             if mode == "migration" {
-                copy_fixture(&legacy_data, &data);
-                run_fault(&data, &config, mode, point, action, nth).await;
-                let pool = db::open_desktop_profile(&data).await.unwrap();
-                assert!(migration::migrate(&pool, &Storage::new(&data))
-                    .await
-                    .unwrap());
-                pool.close().await;
+                assert_migration_recovery(
+                    &legacy_data,
+                    &expected_migration,
+                    &data,
+                    &config,
+                    point,
+                    action,
+                    nth,
+                )
+                .await;
                 assert_originals(&data, &rows).await;
             } else {
                 copy_fixture(&original_tree, &data);
@@ -1020,6 +1125,7 @@ async fn profile_fault_assertions_detect_deliberate_mutations() {
         ("skip-rollback-pruning", "local_backup::tests::architect_library_rollback_removes_unpublished_files_before_next_restore"),
         ("ignore-recovery-error", "local_backup::qualification::unreadable_journal_blocks_profile_even_when_backup_lock_fails"),
         ("skip-member-checksum", "local_backup::qualification::damaged_preservation_blocks_recovery_and_retains_journal_for_retry"),
+        ("classify-disk-full-as-permanent", "local_backup::fault_tests::disk_full_during_migration_keeps_rows_retryable"),
         #[cfg(unix)]
         ("reject-symlinked-profile-root", "local_backup::fault_tests::relocated_profile_opens_and_exports_through_symlinks"),
     ];
