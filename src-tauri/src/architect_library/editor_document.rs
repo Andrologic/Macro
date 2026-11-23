@@ -101,12 +101,30 @@ pub(super) struct Authoring {
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub(super) executable_paths: BTreeSet<String>,
     pub(super) diagnostics: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub(super) unresolved_resources: BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub(super) unresolved_skill_files: BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    repair_candidates: BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    restored_skill_files: BTreeMap<String, String>,
 }
 
 impl Authoring {
     pub(super) fn forget_file(&mut self, path: &str) {
         self.annex_paths.retain(|_, annex_path| annex_path != path);
         self.executable_paths.remove(path);
+        self.repair_candidates.remove(path);
+        self.restored_skill_files.retain(|missing, replacement| {
+            if replacement != path {
+                return true;
+            }
+            self.unresolved_skill_files.insert(missing.clone());
+            self.diagnostics
+                .push(format!("Missing declared skill resource {missing}"));
+            false
+        });
     }
 
     pub(super) fn merge_diagnostics(&mut self, diagnostics: &[String]) {
@@ -123,6 +141,103 @@ impl Authoring {
 
     pub(super) fn has_fallback(&self) -> bool {
         self.fallback_source.is_some()
+    }
+
+    pub(super) fn restore_migration_guards(&mut self) {
+        for diagnostic in &self.diagnostics {
+            if let Some(path) = diagnostic.strip_prefix("Missing declared resource ") {
+                self.unresolved_resources.insert(path.into());
+            }
+            if let Some(path) = diagnostic.strip_prefix("Missing declared skill resource ") {
+                self.unresolved_skill_files.insert(path.into());
+            }
+        }
+    }
+
+    pub(super) fn has_unresolved_resources(&self) -> bool {
+        !self.unresolved_resources.is_empty() || !self.unresolved_skill_files.is_empty()
+    }
+
+    pub(super) fn resolve_resource(&mut self, path: &str) -> bool {
+        let resolved =
+            self.unresolved_resources.remove(path) | self.unresolved_skill_files.remove(path);
+        if resolved {
+            self.diagnostics.retain(|message| {
+                message.strip_prefix("Missing declared resource ") != Some(path)
+                    && message.strip_prefix("Missing declared skill resource ") != Some(path)
+            });
+        }
+        resolved
+    }
+
+    pub(super) fn record_repair_candidates(&mut self, added_paths: BTreeSet<String>) {
+        if self.has_unresolved_resources() {
+            self.repair_candidates.extend(added_paths);
+        } else {
+            self.repair_candidates.clear();
+        }
+    }
+
+    pub(super) fn accept_restored_files(&mut self, source: &OpenedSource) -> Result<()> {
+        if self.repair_candidates.is_empty() {
+            return Ok(());
+        }
+        for member in project::members(source)? {
+            if !self.repair_candidates.contains(member.path) {
+                continue;
+            }
+            if self.unresolved_resources.contains(member.path) {
+                self.resolve_resource(member.path);
+                self.repair_candidates.remove(member.path);
+                continue;
+            }
+            let Some((directory, _)) = member.path.rsplit_once('/') else {
+                continue;
+            };
+            let restored = self
+                .unresolved_skill_files
+                .iter()
+                .find(|path| {
+                    path.rsplit_once('/').is_some_and(|(old_directory, _)| {
+                        path_key(directory) == path_key(old_directory)
+                            && self
+                                .private_annexes
+                                .get(*path)
+                                .is_some_and(|text| text.as_bytes() == member.bytes)
+                    })
+                })
+                .cloned();
+            // A new file can replace only one missing member.
+            if let Some(path) = restored {
+                self.resolve_resource(&path);
+                self.repair_candidates.remove(member.path);
+                self.restored_skill_files
+                    .insert(path, member.path.to_owned());
+            }
+        }
+        if !self.has_unresolved_resources() {
+            self.repair_candidates.clear();
+        }
+        Ok(())
+    }
+
+    pub(super) fn project_diagnostics(&self) -> impl Iterator<Item = super::Diagnostic> + '_ {
+        self.diagnostics.iter().map(|message| {
+            let mut diagnostic = super::Diagnostic::migration(message.clone());
+            let file = message
+                .strip_prefix("Missing declared resource ")
+                .filter(|path| self.unresolved_resources.contains(*path))
+                .or_else(|| {
+                    message
+                        .strip_prefix("Missing declared skill resource ")
+                        .filter(|path| self.unresolved_skill_files.contains(*path))
+                });
+            if let Some(path) = file {
+                diagnostic.code = "MIGRATION_RESOURCE".into();
+                diagnostic.file = Some(path.into());
+            }
+            diagnostic
+        })
     }
 
     pub(super) fn set_fallback(&mut self, source: String) {
@@ -206,6 +321,7 @@ impl Authoring {
             .map(|file| file.path.to_owned())
             .collect();
         authoring.fallback_source = None;
+        authoring.restored_skill_files.clear();
         for path in self.annex_paths.values() {
             if !selected.contains(path.as_str()) {
                 let target = root.join(path);
@@ -328,6 +444,7 @@ pub(super) fn split(mut document: Document) -> std::result::Result<Split, String
                 .any(|(end, _)| skill_dirs.contains(&path_key(&name[..end])))
             {
                 resources_complete = false;
+                authoring.unresolved_skill_files.insert(name.clone());
                 authoring
                     .diagnostics
                     .push(format!("Missing declared skill resource {name}"));
@@ -344,6 +461,7 @@ pub(super) fn split(mut document: Document) -> std::result::Result<Split, String
         .iter()
         .filter(|path| !authoring.annex_paths.contains_key(*path))
     {
+        authoring.unresolved_resources.insert(missing.clone());
         authoring
             .diagnostics
             .push(format!("Missing declared resource {missing}"));

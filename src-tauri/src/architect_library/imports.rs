@@ -65,12 +65,28 @@ pub(crate) fn inspect(app_data: PathBuf, path: &Path) -> Result<InspectedImport>
 
 pub(crate) struct Claim {
     handle: Uuid,
-    pub candidate: Option<ImportCandidate>,
+    candidate: Option<ImportCandidate>,
+}
+
+impl Claim {
+    pub(crate) fn candidate(&self) -> &ImportCandidate {
+        self.candidate.as_ref().expect("live import claim")
+    }
+
+    pub(crate) fn commit(mut self) {
+        self.candidate = None;
+    }
 }
 
 impl Drop for Claim {
     fn drop(&mut self) {
         if let Ok(mut imports) = IMPORTS.lock() {
+            if let Some(entry) = imports.get_mut(&self.handle) {
+                if entry.expires > Instant::now() && self.candidate.is_some() {
+                    entry.candidate = self.candidate.take();
+                    return;
+                }
+            }
             imports.remove(&self.handle);
         }
     }

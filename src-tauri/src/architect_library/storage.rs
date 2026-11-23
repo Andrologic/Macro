@@ -477,7 +477,7 @@ impl Storage {
             let (settings, authoring) = read_sidecars(&path)?;
             let root = path.join(PROJECT);
             require_dir(&self.root, &root).map_err(Error::from)?;
-            if authoring.has_fallback() {
+            if authoring.has_fallback() || authoring.has_unresolved_resources() {
                 return Err(DbError::AgsdlUpgrade(authoring.diagnostics.join("\n")));
             }
             let source = OpenedSource::open_path(&root).map_err(Error::from)?;
@@ -850,7 +850,11 @@ fn read_sidecars(path: &Path) -> Result<(MacroSettings, Authoring)> {
 }
 
 fn read_authoring(path: &Path) -> Result<Authoring> {
-    match read_json(&path.join(AUTHORING)) {
+    match read_json::<Authoring>(&path.join(AUTHORING)) {
+        Ok(mut authoring) => {
+            authoring.restore_migration_guards();
+            Ok(authoring)
+        }
         Err(Error::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
             Ok(Authoring::default())
         }

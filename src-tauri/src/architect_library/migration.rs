@@ -71,10 +71,19 @@ pub(crate) async fn migrate(pool: &SqlitePool, storage: &Storage) -> DbResult<bo
             .map_err(|error| error.to_string())
             .and_then(editor_document::split);
         let (replacement, diagnostics) = match split {
+            Ok(split) if number == 0 && !super::project_editor::fits_inventory(&split.files) => {
+                let mut diagnostics = split.authoring.diagnostics;
+                diagnostics.push(
+                    "The migrated project exceeds the editor inventory limit. Download the original envelope, then adapt this draft for repair and restore the resources in a smaller project."
+                        .into(),
+                );
+                (None, diagnostics)
+            }
             Ok(split) => {
                 let mut draft = storage.stage_split(split)?;
                 let mut diagnostics = draft.authoring.diagnostics.clone();
                 let replacement = if number == 0 {
+                    super::project_editor::validate_storage(&draft.root())?;
                     Some(storage.publish_draft(&blueprint, draft)?)
                 } else if let Some(source) = draft.source.take() {
                     match storage.publish_archive(

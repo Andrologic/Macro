@@ -287,10 +287,14 @@ pub(crate) async fn original(
 ) -> DbResult<Option<Artifact>> {
     let row = sqlx::query(
         "SELECT blueprint_id,artifact_id,'recovery' AS storage_state,NULL AS archive_sha256
-         FROM architect_library_originals WHERE blueprint_id=? AND version_number=? AND revision=?",
+         FROM architect_library_originals
+         WHERE blueprint_id=? AND version_number=? AND
+             (revision=? OR (version_number=0 AND revision<=?))
+         ORDER BY revision DESC LIMIT 1",
     )
     .bind(blueprint_id)
     .bind(number)
+    .bind(revision)
     .bind(revision)
     .fetch_optional(pool)
     .await?;

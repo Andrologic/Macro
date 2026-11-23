@@ -90,12 +90,11 @@ impl ImportCandidate {
         super::preview::inspect(&self.source, format, digest, history)
     }
 
-    pub fn stage_version(self, staging_root: &Path) -> Result<archive::StagedVersion> {
-        if let Some(archive) = self.archive.filter(|archive| !archive.has_history) {
-            drop(self.source);
+    pub fn stage_version(&self, staging_root: &Path) -> Result<archive::StagedVersion> {
+        if let Some(archive) = self.archive.as_ref().filter(|archive| !archive.has_history) {
             return archive::stage_exact(archive, staging_root);
         }
-        archive::stage_version(self.source, staging_root)
+        archive::stage_borrowed_version(&self.source, staging_root)
     }
 }
 
@@ -138,7 +137,10 @@ pub fn materialize(source: &OpenedSource, staging_root: &Path) -> Result<TempDir
         write_member(&path, member.bytes, member.executable)?;
     }
     #[cfg(windows)]
-    write_executable_sidecar(source, root)?;
+    write_executable_sidecar(
+        root,
+        members(source)?.map(|file| (file.path, file.executable)),
+    )?;
     for path in directories.iter().rev() {
         sync_directory(path)?;
     }
@@ -161,21 +163,23 @@ fn write_member(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn write_executable_sidecar(source: &OpenedSource, root: &Path) -> Result<()> {
-    let roots: BTreeSet<_> = members(source)?
-        .map(|member| {
-            member
-                .path
-                .split('/')
+pub(super) fn write_executable_sidecar<'a>(
+    root: &Path,
+    files: impl Iterator<Item = (&'a str, bool)>,
+) -> Result<()> {
+    let mut roots = BTreeSet::new();
+    let mut executable = Vec::new();
+    for (path, is_executable) in files {
+        roots.insert(
+            path.split('/')
                 .next()
                 .unwrap_or_default()
-                .to_ascii_lowercase()
-        })
-        .collect();
-    let executable: Vec<_> = members(source)?
-        .filter(|member| member.executable)
-        .map(|member| member.path)
-        .collect();
+                .to_ascii_lowercase(),
+        );
+        if is_executable {
+            executable.push(path);
+        }
+    }
     if executable.is_empty() {
         return Ok(());
     }
@@ -196,10 +200,15 @@ pub fn export_project(source: &OpenedSource, destination: &Path) -> Result<usize
     let parent = destination_parent(destination)?;
     let count = members(source)?.len();
     let staged = materialize(source, parent)?;
+    publish_export(staged, parent, destination)?;
+    Ok(count)
+}
+
+pub(super) fn publish_export(staged: TempDir, parent: &Path, destination: &Path) -> Result<()> {
     publish_path(staged.path(), destination)?;
     let _ = staged.keep();
     sync_publication(parent, destination)?;
-    Ok(count)
+    Ok(())
 }
 
 /// Step B's starter document as a project. With no named components or flow

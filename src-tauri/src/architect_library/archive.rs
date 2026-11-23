@@ -163,21 +163,42 @@ pub(super) fn stage_with_executables(
     staging_root: &Path,
     executable_paths: &BTreeSet<String>,
 ) -> Result<StagedVersion> {
+    let directory = encode_version(&source, staging_root, executable_paths)?;
+    drop(source);
+    verify_staged(directory)
+}
+
+pub(super) fn stage_borrowed_version(
+    source: &OpenedSource,
+    staging_root: &Path,
+) -> Result<StagedVersion> {
+    verify_staged(encode_version(source, staging_root, &BTreeSet::new())?)
+}
+
+fn encode_version(
+    source: &OpenedSource,
+    staging_root: &Path,
+    executable_paths: &BTreeSet<String>,
+) -> Result<TempDir> {
     let directory = private_directory(staging_root, ".agsdl-version-")?;
     let path = directory.path().join(VERSION_FILENAME);
     {
         let mut file = create_archive_file(&path)?;
         let needs_override = !executable_paths.is_empty()
-            && project::members(&source)?
+            && project::members(source)?
                 .any(|member| !member.executable && executable_paths.contains(member.path));
         if needs_override {
-            write_archive_with_executables(&source, executable_paths, &mut file)?;
+            write_archive_with_executables(source, executable_paths, &mut file)?;
         } else {
             source.write_archive(&mut file)?;
         }
         file.sync_all()?;
     }
-    drop(source);
+    Ok(directory)
+}
+
+fn verify_staged(directory: TempDir) -> Result<StagedVersion> {
+    let path = directory.path().join(VERSION_FILENAME);
     OpenedSource::open_path(&path)?;
     let sha256 = digest(&path)?;
     Ok(StagedVersion { directory, sha256 })
@@ -221,12 +242,12 @@ fn write_archive_with_executables(
     Ok(())
 }
 
-pub(super) fn stage_exact(archive: VerifiedArchive, staging_root: &Path) -> Result<StagedVersion> {
+pub(super) fn stage_exact(archive: &VerifiedArchive, staging_root: &Path) -> Result<StagedVersion> {
     let directory = private_directory(staging_root, ".agsdl-version-")?;
     archive.copy_to(&directory.path().join(VERSION_FILENAME))?;
     Ok(StagedVersion {
         directory,
-        sha256: archive.sha256,
+        sha256: archive.sha256.clone(),
     })
 }
 

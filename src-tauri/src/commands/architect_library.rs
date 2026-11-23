@@ -339,17 +339,19 @@ pub(crate) async fn architect_commit_import(
     project_id: String,
     name: String,
 ) -> CommandResult<ImportedProject> {
+    Storage::validate_project_name(&name).map_err(project_error)?;
     let pool = get_pool(&pool).await?;
     let storage = project_storage(&app, &pool).await?;
     let data = app_data(&app)?;
-    let mut claim = tokio::task::spawn_blocking(move || imports::take(&data, handle))
+    let claim = tokio::task::spawn_blocking(move || imports::take(&data, handle))
         .await
         .map_err(|error| super::command_error(error.to_string()))?
         .map_err(project_error)?;
-    let candidate = claim.candidate.take().expect("import claimed once");
-    Ok(storage
-        .import_project(&pool, &project_id, &name, candidate)
-        .await?)
+    let imported = storage
+        .import_project(&pool, &project_id, &name, claim.candidate())
+        .await?;
+    claim.commit();
+    Ok(imported)
 }
 
 #[tauri::command]

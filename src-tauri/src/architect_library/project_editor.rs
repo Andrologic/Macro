@@ -7,7 +7,7 @@ use crate::db::architect_library::VersionKey;
 use argentic_runtime::source::OpenedSource;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{self, Read},
     path::{Path, PathBuf},
@@ -31,10 +31,20 @@ pub(crate) enum ProjectTarget {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub(crate) enum FileChange {
-    Write { path: String, text: String },
-    Remove { path: String },
+    Write {
+        path: String,
+        text: String,
+        executable: Option<bool>,
+    },
+    Remove {
+        path: String,
+    },
 }
 
 impl FileChange {
@@ -64,11 +74,14 @@ fn nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 pub(crate) struct EditBatch {
     files: Vec<FileChange>,
     settings: Option<SettingsChange>,
+    #[serde(default)]
+    discard_migration_files: Vec<String>,
 }
 
 impl EditBatch {
     pub(super) fn has_file_changes(&self) -> bool {
-        self.files.iter().any(|file| file.path() != RECOVERY_SOURCE)
+        !self.discard_migration_files.is_empty()
+            || self.files.iter().any(|file| file.path() != RECOVERY_SOURCE)
     }
 
     pub(super) fn check(&self) -> Result<()> {
@@ -93,7 +106,12 @@ impl EditBatch {
                     .map_or(0, String::len),
             );
         }
-        if size > TEXT_LIMIT || self.files.len() > PROJECT_FILES {
+        for path in &self.discard_migration_files {
+            size = size.saturating_add(path.len() + 1);
+        }
+        if size > TEXT_LIMIT
+            || self.files.len() + self.discard_migration_files.len() > PROJECT_FILES
+        {
             return Err(Error::Editor("EDITOR_LIMIT"));
         }
         Ok(())
@@ -104,13 +122,29 @@ impl EditBatch {
         root: &Path,
         settings: &mut MacroSettings,
         authoring: &mut Authoring,
-    ) -> Result<()> {
+    ) -> Result<BTreeSet<String>> {
         let mut paths = disk_inventory(root)?;
+        let mut added = BTreeSet::new();
+        let mut inverse_size = 0usize;
         for change in self.files {
             let target = root.join(change.path());
+            let inverse_cost = change.path().len()
+                + 1
+                + paths
+                    .get(change.path())
+                    .map_or(0, |file| file.size as usize);
             match change {
-                FileChange::Write { path, text } => {
+                FileChange::Write {
+                    path,
+                    text,
+                    executable,
+                } => {
                     let previous = paths.get(&path);
+                    let executable = executable.unwrap_or_else(|| {
+                        previous.is_some_and(|file| {
+                            file.executable || authoring.executable_paths.contains(&path)
+                        })
+                    });
                     if let Some(previous) = previous {
                         match read_disk_file(root, previous)? {
                             ProjectFile::Text { .. } => {}
@@ -118,24 +152,34 @@ impl EditBatch {
                         }
                     } else {
                         reserve(paths.keys().map(String::as_str).chain([path.as_str()]))?;
+                        added.insert(path.clone());
+                    }
+                    inverse_size = inverse_size.saturating_add(inverse_cost);
+                    if inverse_size > TEXT_LIMIT {
+                        return Err(Error::Editor("EDITOR_LIMIT"));
                     }
                     if previous.is_some() {
                         fs::remove_file(&target)?;
                     }
                     super::storage::write_project_file(root, &path, text.as_bytes())?;
                     #[cfg(unix)]
-                    if previous.is_some_and(|file| file.executable) {
+                    if executable {
                         use std::os::unix::fs::PermissionsExt;
                         let file = fs::File::open(&target)?;
                         file.set_permissions(fs::Permissions::from_mode(0o700))?;
                         file.sync_all()?;
+                    }
+                    if executable {
+                        authoring.executable_paths.insert(path.clone());
+                    } else {
+                        authoring.executable_paths.remove(&path);
                     }
                     paths.insert(
                         path.clone(),
                         FileEntry {
                             path,
                             size: text.len() as u64,
-                            executable: previous.is_some_and(|file| file.executable),
+                            executable,
                         },
                     );
                 }
@@ -144,8 +188,13 @@ impl EditBatch {
                         return Err(Error::Editor("MANIFEST_REQUIRED"));
                     }
                     if let Some(file) = paths.remove(&path) {
+                        added.remove(&path);
                         if !matches!(read_disk_file(root, &file)?, ProjectFile::Text { .. }) {
                             return Err(Error::Editor("OPAQUE_PROJECT_FILE"));
+                        }
+                        inverse_size = inverse_size.saturating_add(inverse_cost);
+                        if inverse_size > TEXT_LIMIT {
+                            return Err(Error::Editor("EDITOR_LIMIT"));
                         }
                         fs::remove_file(&target)?;
                         let mut parent = target.parent().expect("portable path has a parent");
@@ -166,6 +215,18 @@ impl EditBatch {
         }
         check_inventory(&paths)?;
         if let Some(patch) = self.settings {
+            let ids = patch
+                .hidden_agent_ids
+                .as_ref()
+                .map(|_| &settings.hidden_agent_ids);
+            inverse_size = inverse_size.saturating_add(serde_json::to_vec(&ids)?.len());
+            if patch.entry_message_hint.is_some() {
+                inverse_size = inverse_size
+                    .saturating_add(settings.entry_message_hint.as_ref().map_or(0, String::len));
+            }
+            if inverse_size > TEXT_LIMIT {
+                return Err(Error::Editor("EDITOR_LIMIT"));
+            }
             if let Some(ids) = patch.hidden_agent_ids {
                 settings.hidden_agent_ids = ids
                     .into_iter()
@@ -177,7 +238,12 @@ impl EditBatch {
                 settings.entry_message_hint = hint;
             }
         }
-        Ok(())
+        for path in self.discard_migration_files {
+            if !authoring.resolve_resource(&path) {
+                return Err(Error::Editor("UNKNOWN_MIGRATION_FILE"));
+            }
+        }
+        Ok(added)
     }
 }
 
@@ -322,7 +388,12 @@ fn check_inventory(files: &BTreeMap<String, FileEntry>) -> Result<()> {
     Ok(())
 }
 
-fn disk_inventory(root: &Path) -> Result<BTreeMap<String, FileEntry>> {
+pub(super) fn fits_inventory(files: &BTreeMap<String, Vec<u8>>) -> bool {
+    files.len() <= PROJECT_FILES
+        && files.values().map(|file| file.len() as u64).sum::<u64>() <= PROJECT_BYTES
+}
+
+pub(super) fn disk_inventory(root: &Path) -> Result<BTreeMap<String, FileEntry>> {
     let mut pending = vec![(root.to_path_buf(), String::new())];
     super::storage::require_dir(root, root)?;
     let mut files = BTreeMap::new();
@@ -371,8 +442,16 @@ pub(super) fn validate_storage(root: &Path) -> Result<()> {
 
 pub(super) fn copy_project(source: &Path, destination: &Path) -> Result<()> {
     let files = disk_inventory(source)?;
+    copy_files(source, destination, files.keys())
+}
+
+fn copy_files<'a>(
+    source: &Path,
+    destination: &Path,
+    paths: impl Iterator<Item = &'a String>,
+) -> Result<()> {
     super::storage::ensure_dir(destination, destination)?;
-    for path in files.keys() {
+    for path in paths {
         let target = destination.join(path);
         let parent = target.parent().expect("portable path has a parent");
         super::storage::ensure_dir(destination, parent)?;
@@ -381,6 +460,41 @@ pub(super) fn copy_project(source: &Path, destination: &Path) -> Result<()> {
         sync_directory(parent)?;
     }
     Ok(())
+}
+
+pub(super) fn export_draft(
+    root: &Path,
+    destination: &Path,
+    authoring: &Authoring,
+) -> Result<usize> {
+    let files = disk_inventory(root)?;
+    if !files.contains_key(project::MANIFEST) {
+        return Err(Error::Editor("MANIFEST_REQUIRED"));
+    }
+    let parent = destination_parent(destination)?;
+    let staged = private_directory(parent, ".agsdl-project-")?;
+    copy_files(root, staged.path(), files.keys())?;
+    #[cfg(windows)]
+    project::write_executable_sidecar(
+        staged.path(),
+        files.values().map(|file| {
+            (
+                file.path.as_str(),
+                file.executable || authoring.executable_paths.contains(&file.path),
+            )
+        }),
+    )?;
+    #[cfg(unix)]
+    for path in &authoring.executable_paths {
+        if files.get(path).is_some_and(|file| !file.executable) {
+            use std::os::unix::fs::PermissionsExt;
+            let file = fs::File::open(staged.path().join(path))?;
+            file.set_permissions(fs::Permissions::from_mode(0o700))?;
+            file.sync_all()?;
+        }
+    }
+    project::publish_export(staged, parent, destination)?;
+    Ok(files.len())
 }
 
 #[derive(Debug, Serialize)]
@@ -446,28 +560,38 @@ impl ProjectView {
         settings: MacroSettings,
         authoring: &Authoring,
     ) -> Result<Self> {
-        let files = disk_inventory(root)?
+        let files = disk_inventory(root)?;
+        Self::folder_from_source(
+            files,
+            revision,
+            settings,
+            authoring,
+            OpenedSource::open_path(root).map_err(Error::from),
+        )
+    }
+
+    pub(super) fn folder_from_source(
+        files: BTreeMap<String, FileEntry>,
+        revision: i64,
+        settings: MacroSettings,
+        authoring: &Authoring,
+        source: Result<OpenedSource>,
+    ) -> Result<Self> {
+        let files = files
             .into_values()
             .map(|mut file| {
                 file.executable |= authoring.executable_paths.contains(&file.path);
                 file
             })
             .collect();
-        let (projection, mut diagnostics) = match OpenedSource::open_path(root).map_err(Error::from)
-        {
+        let (projection, mut diagnostics) = match source {
             Ok(source) => (Some(projection(&source)?), Vec::new()),
             Err(error @ (Error::Agsdl { .. } | Error::ProjectIo { .. })) => {
                 (None, vec![error.diagnostic()])
             }
             Err(error) => return Err(error),
         };
-        diagnostics.extend(
-            authoring
-                .diagnostics
-                .iter()
-                .cloned()
-                .map(super::Diagnostic::migration),
-        );
+        diagnostics.extend(authoring.project_diagnostics());
         Ok(Self {
             revision,
             files,
