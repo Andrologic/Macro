@@ -237,3 +237,6 @@ pub(crate) async fn remove_reference_schema(
 
 #[cfg(test)]
 mod tests;
+
+mod operator_controls;
+pub(crate) use operator_controls::{control_run, read_runtime};

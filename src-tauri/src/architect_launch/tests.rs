@@ -1544,7 +1544,7 @@ async fn archive_operator_replays_the_exact_receipt_after_retirement() {
         request_id: key.into(),
         action: api::OperatorAction::PauseRun,
     };
-    let replay = crate::agsdl_host_flow030::control_run(&restarted, &pool, request.clone())
+    let replay = crate::db::operate_inbox::control_run(&restarted, &pool, request.clone())
         .await
         .unwrap();
     assert_eq!(serde_json::to_value(replay).unwrap(), receipt);
@@ -1553,7 +1553,7 @@ async fn archive_operator_replays_the_exact_receipt_after_retirement() {
         ..request
     };
     assert_eq!(
-        crate::agsdl_host_flow030::control_run(&restarted, &pool, wrong)
+        crate::db::operate_inbox::control_run(&restarted, &pool, wrong)
             .await
             .unwrap_err()
             .code,
