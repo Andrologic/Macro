@@ -1,7 +1,7 @@
 import { isFlowDocumentContract } from "../../services/agsdl/contract";
 import { Background,getViewportForBounds,Handle,MarkerType,Panel,Position,ReactFlow,ReactFlowProvider,useReactFlow,type Node,type NodeChange,type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Bot,Boxes,Braces,ChevronDown,ChevronRight,ChevronUp,CircleHelp,Info,Layers,List,LocateFixed,MessageSquare,MessageSquarePlus,Minus,Plus,RotateCcw,Shuffle,Sparkles,Terminal,UserCheck,Zap } from "lucide-react";
+import { Bot,Boxes,Braces,ChevronDown,ChevronRight,ChevronUp,CircleHelp,EyeOff,Info,Layers,List,LocateFixed,MessageSquare,MessageSquarePlus,Minus,Plus,RotateCcw,Shuffle,Sparkles,Terminal,UserCheck,Zap } from "lucide-react";
 import { useCallback,useEffect,useId,useMemo,useRef,useState,type ReactNode } from "react";
 import { useElementSize } from "../../hooks/useElementSize";
 import { blockDetails,type BlockDetail } from "../../services/agsdl/blockDetails";
@@ -126,6 +126,8 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         {data.changed && <span className="agsdl-graph-change-dot" title={t("agsdl.designGraph.changed", { defaultValue: "Modified" })} />}
         {data.pending && <span className="agsdl-graph-pending" title={t("agsdl.designGraph.instructionsMissing", { defaultValue: "Instructions to complete" })}><CircleHelp size={12} aria-hidden="true" /></span>}
         {warning && <CircleHelp size={12} className="agsdl-node-warning" aria-hidden="true" />}
+        {card.hiddenInOperate && <EyeOff size={11} className="absolute right-1.5 top-1.5 text-muted-foreground" role="img"
+          aria-label={t("agsdl.library.hiddenAgent")}><title>{t("agsdl.library.hiddenAgent")}</title></EyeOff>}
         {/* Failures leave through the block's own edge, on the right. */}
         <Handle type="source" position={Position.Right} id="error" />
       </button>

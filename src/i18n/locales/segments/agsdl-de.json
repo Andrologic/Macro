@@ -1381,5 +1381,252 @@
     "loginInstructions": "Öffnen Sie die Codex-Konfiguration eines Agenten, um das private Profil von Macro vorzubereiten. Folgen Sie der Anleitung und prüfen Sie erneut. Ihre Anweisungen bleiben erhalten.",
     "retryLogin": "Anmeldung prüfen",
     "loginGuide": "Anleitung für das private Profil"
+  },
+  "architect": {
+    "adapt": {
+      "title": "Version {{number}} anpassen",
+      "intro": "Macro erstellt aus dieser Version ein neues Blueprint. Das Original bleibt unverändert, das neue merkt sich seine Herkunft.",
+      "introRepair": "Macro erstellt ein neues Blueprint mit dem Inhalt dieser Version, das Sie korrigieren und speichern können.",
+      "defaultName": "{{name}} (angepasst)",
+      "done": "Blueprint „{{name}}“ erstellt"
+    },
+    "delete": {
+      "title": "Version {{number}} löschen?",
+      "description": "Diese Version wird dauerhaft aus diesem Blueprint entfernt. Die anderen Versionen bleiben unverändert.",
+      "used": "Diese Version wird von einer Ausführung oder Planung verwendet und kann nicht gelöscht werden.",
+      "confirm": "Löschen",
+      "done": "Version {{number}} gelöscht",
+      "checking": "Prüfe, ob diese Version verwendet wird…"
+    },
+    "export": {
+      "titleVersion": "Version {{number}} exportieren",
+      "titleDraft": "Entwurf exportieren",
+      "format": {
+        "archive": "Archiv (.agsdl)",
+        "archiveHint": "Eine einzelne Datei zum Versenden oder Importieren an anderer Stelle.",
+        "project": "Projektordner",
+        "projectHint": "Lesbare Dateien zum manuellen Bearbeiten."
+      },
+      "draftHint": "Ein Entwurf ist nicht eingefroren und wird als Ordner exportiert. Für eine .agsdl-Datei speichern Sie zuerst eine Version.",
+      "settingsNotIncluded": "Macros eigene Einstellungen (ausgeblendete Threads usw.) sind nicht im Export enthalten.",
+      "leftBehind": "Die Macro-Einstellungen dieser Version sind nicht im Export enthalten: {{items}}.",
+      "setting": {
+        "hidden": "in Operate ausgeblendete Agenten",
+        "hint": "Hinweis zur Startnachricht",
+        "folder": "Arbeitsordner-Modus",
+        "fields": "Startfelder"
+      },
+      "why": "Das AgSDL-Format bietet noch keinen Platz für Anwendungseinstellungen (AgSDL#32). Ein importiertes Blueprint übernimmt die Standardwerte.",
+      "whyTitle": "Warum?",
+      "choose": "Speicherort wählen…",
+      "exporting": "Exportiere…",
+      "doneVersion": "Version {{number}} exportiert",
+      "doneDraft": "Entwurf exportiert",
+      "failed": "Der Export ist fehlgeschlagen. Versuchen Sie es erneut oder wählen Sie einen anderen Speicherort."
+    },
+    "header": {
+      "saved": "Entwurf · gespeichert",
+      "unsaved": "Entwurf · ungespeicherte Änderungen",
+      "saving": "Entwurf · speichere…",
+      "readOnly": "schreibgeschützt",
+      "adapt": "Anpassen",
+      "export": "Exportieren",
+      "exportAs": {
+        "archive": "Archiv (.agsdl)…",
+        "project": "Projektordner…"
+      },
+      "more": "Weitere Aktionen",
+      "showFiles": "Projektdateien anzeigen",
+      "saveHint": "Version speichern (Strg/Cmd+S). Der Entwurf wird bereits automatisch gespeichert.",
+      "saveBlocked": "Ein Speichervorgang oder Konflikt läuft: versuchen Sie es gleich noch einmal.",
+      "showMore": "Mehr anzeigen",
+      "less": "Weniger anzeigen",
+      "origin": "Angepasst aus Version {{number}} von „{{blueprint}}“",
+      "originUnknown": "Angepasst aus Version {{number}} eines anderen Blueprints",
+      "repairOrigin": "Stammt aus einer zu reparierenden Version. Beheben Sie die gemeldeten Punkte und speichern Sie dann eine Version."
+    },
+    "import": {
+      "titleNamed": "„{{name}}“ importieren",
+      "action": "Importieren",
+      "importing": "Importiere…",
+      "reading": "Datei wird gelesen…",
+      "valid": "Gültige Datei – beim Import wird nichts gestartet.",
+      "validWithPoints_one": "Gültige Datei, mit {{count}} Hinweis",
+      "validWithPoints_other": "Gültige Datei, mit {{count}} Hinweisen",
+      "blocked": "Import nicht möglich",
+      "blocker": {
+        "invalidArchive": "Diese Datei ist kein gültiges AgSDL-Archiv.",
+        "integrity": "Der Inhalt der Datei stimmt nicht mit ihrem Inventar überein: Sie ist möglicherweise beschädigt oder verändert. Bitten Sie die Autorin oder den Autor, sie erneut zu exportieren.",
+        "unsafePath": "Die Datei enthält einen Pfad, der ihren Ordner verlässt. Macro öffnet sie nicht.",
+        "tooLarge": "Diese Datei ist zu groß für den Import.",
+        "notAProject": "Das ist weder ein AgSDL-Archiv noch ein AgSDL-Projektordner. Wählen Sie eine .agsdl-Datei oder den Ordner, der die Datei agsdl.json enthält.",
+        "projectInvalid": "AgSDL konnte dieses Projekt nicht öffnen: Der Inhalt ist ungültig oder verwendet ein Format, das diese Macro-Version nicht unterstützt.",
+        "expired": "Die Vorschau ist abgelaufen. Wählen Sie die Datei oder den Ordner erneut.",
+        "unreadable": "Macro konnte diese Quelle nicht lesen."
+      },
+      "system": "Dieses System",
+      "counts": "Agenten: {{agents}} · Werkzeuge: {{tools}}",
+      "files_one": "{{count}} Datei",
+      "files_other": "{{count}} Dateien",
+      "warnings_one": "Das AgSDL-Format meldet {{count}} Warnung. Sie steht unter „Alle Details“.",
+      "warnings_other": "Das AgSDL-Format meldet {{count}} Warnungen. Sie stehen unter „Alle Details“.",
+      "macroSettings": "Macros Einstellungen (ausgeblendete Threads, Hinweis zur Startnachricht, Arbeitsordner …) sind nicht Teil dieses Formats: Es gelten die Standardwerte.",
+      "historyRemoved": "Der Verlauf im Archiv wird nicht übernommen: Es wird nur der aktuelle Stand importiert.",
+      "allDetails": "Alle Details",
+      "detailAgents": "Agenten",
+      "detailTools": "Werkzeuge",
+      "detailExternal": "Externe Adressen (nicht enthalten)",
+      "detailWarnings": "Warnungen",
+      "unreachable": "außerhalb des Ablaufs",
+      "notRequested": "wird beim Start nicht abgefragt",
+      "nameTaken": "Ein Blueprint in diesem Projekt trägt bereits diesen Namen.",
+      "reasonReading": "Lesevorgang läuft…",
+      "reasonBlocked": "Beheben Sie die Probleme der Datei vor dem Import.",
+      "reasonName": "Geben Sie dem Blueprint einen Namen.",
+      "reasonProject": "Wählen Sie ein Projekt.",
+      "done": "„{{name}}“ importiert",
+      "failed": "Der Import ist fehlgeschlagen. Es wurde nichts hinzugefügt."
+    },
+    "menu": {
+      "newProject": "Neues Projekt",
+      "newBlueprint": "Neues Blueprint",
+      "importFile": "Eine .agsdl-Datei importieren …",
+      "importFolder": "Einen Projektordner importieren …",
+      "saveVersion": "Version speichern …",
+      "exportDraft": "Entwurf exportieren (Ordner) …",
+      "open": "Öffnen",
+      "adapt": "Anpassen …",
+      "adaptRepair": "Zum Reparieren anpassen …",
+      "exportArchive": "Archiv exportieren (.agsdl) …",
+      "exportFolder": "Als Ordner exportieren …",
+      "downloadOriginal": "Original herunterladen",
+      "delete": "Löschen …"
+    },
+    "permissions": {
+      "title": "Was es tun kann",
+      "none": "Dieses System fordert keine besonderen Berechtigungen an.",
+      "attention": "Achtung:",
+      "cap": {
+        "readFiles": "Dateien im Ausführungsordner lesen",
+        "readOutside": "Dateien außerhalb des Ausführungsordners lesen",
+        "writeFiles": "Dateien im Ausführungsordner erstellen und ändern",
+        "writeFolders": "Dateien in zusätzlichen Ordnern ändern ({{subject}})",
+        "writeAnywhere": "Dateien überall auf diesem Computer ändern",
+        "runCommands": "Befehle auf diesem Computer ausführen",
+        "runCommand": "Den Befehl „{{subject}}“ ausführen",
+        "network": "Auf das Internet zugreifen"
+      },
+      "useTool": "Das Werkzeug „{{name}}“ verwenden",
+      "useRemoteTool": "Das Werkzeug „{{name}}“ verwenden (Remote-Server)",
+      "engines": "Engines und Modelle",
+      "engineModel": "{{engine}} (Modell {{model}})",
+      "enginesHint": "Werden beim Start geprüft.",
+      "prepare": "Vorzubereiten",
+      "prepareNothing": "Vor dem Start ist nichts vorzubereiten.",
+      "secret": "Geheimnis angefordert: {{name}} (Werkzeug „{{server}}“)",
+      "secretHint": "Die Werte stehen nie in der Datei. Sie geben sie beim ersten Start ein.",
+      "programs_one": "Erforderliches Programm: {{programs}}",
+      "programs_other": "Erforderliche Programme: {{programs}}",
+      "programsHint": "Werden beim Start geprüft, nie von Macro installiert.",
+      "external_one": "{{count}} Inhalt verweist auf eine externe Adresse und ist nicht in der Datei enthalten.",
+      "external_other": "{{count}} Inhalte verweisen auf externe Adressen und sind nicht in der Datei enthalten.",
+      "launchBlockers_one": "{{count}} externe Skill muss vor dem Start ersetzt werden.",
+      "launchBlockers_other": "{{count}} externe Skills müssen vor dem Start ersetzt werden."
+    },
+    "recovery": {
+      "caption": "{{name}} · Version {{number}}",
+      "captionDraft": "{{name}} · Entwurf",
+      "title": "Diese Version konnte nicht wiederhergestellt werden",
+      "titleDraft": "Dieser Entwurf konnte nicht wiederhergestellt werden",
+      "body": "Der Inhalt bleibt erhalten, aber Macro konnte ihn nicht umwandeln: Er kann so weder gestartet noch exportiert werden. Sie können ihn zum Reparieren anpassen oder das Original herunterladen.",
+      "why": "Betroffenes Element: {{item}}",
+      "downloaded": "Original heruntergeladen",
+      "downloadFailed": "Der Download ist fehlgeschlagen"
+    },
+    "saveVersion": {
+      "title": "Version {{number}} speichern",
+      "action": "Version {{number}} speichern",
+      "notePlaceholder": "Was sich in dieser Version ändert …",
+      "checking": "System wird geprüft…",
+      "oldFormat": "Dieses System liegt in einem älteren Format vor",
+      "convertNotice": "Macro aktualisiert es, um Version {{number}} zu erstellen. Der Entwurf wird gleichzeitig umgewandelt; bereits gespeicherte Versionen bleiben unverändert.",
+      "convertDetails": "AgSDL 0.3.0 → 0.4.0.",
+      "cannotConvert": "Diese Version kann nicht gespeichert werden",
+      "cannotSave": "Das System enthält Fehler",
+      "issueCount_one": "{{count}} Element zu korrigieren.",
+      "issueCount_other": "{{count}} Elemente zu korrigieren.",
+      "item": {
+        "agent": "Agent „{{name}}“",
+        "step": "Schritt „{{name}}“",
+        "skill": "Skill „{{name}}“",
+        "tool": "Werkzeug „{{name}}“",
+        "content": "Inhalt „{{name}}“",
+        "document": "Das System als Ganzes"
+      },
+      "show": "Anzeigen",
+      "warnings_one": "{{count}} Warnung, nichts blockiert das Speichern",
+      "warnings_other": "{{count}} Warnungen, nichts blockiert das Speichern",
+      "reasonChecking": "Prüfung läuft…",
+      "reasonBlocked": "Beheben Sie zuerst die obigen Punkte.",
+      "done": "Version {{number}} gespeichert"
+    },
+    "tree": {
+      "title": "Bibliothek",
+      "search": "Projekt oder Blueprint suchen …",
+      "import": "Importieren …",
+      "new": "Neu …",
+      "empty": "Noch kein Projekt vorhanden.",
+      "noResults": "Kein Blueprint entspricht dieser Suche.",
+      "archived": "Archiviert ({{count}})",
+      "modified": "geändert",
+      "versionShort": "v{{number}}",
+      "olderVersions": "Ältere Versionen ({{count}})",
+      "hasRepair": "Eine Version muss repariert werden",
+      "projectActions": "Aktionen für Projekt „{{name}}“",
+      "blueprintActions": "Aktionen für Blueprint „{{name}}“",
+      "versionActions": "Aktionen für Version {{number}}"
+    },
+    "operate": {
+      "title": "In Operate",
+      "hideHint": "Die Konversationen dieses Agenten (alle Instanzen) erscheinen nicht in der Operate-Spalte. Sie tauchen wieder auf, wenn der Agent Sie braucht. Eine Macro-Einstellung: Sie ist nicht im Export enthalten.",
+      "saved": "Gespeichert",
+      "notSaved": "Die Einstellung wurde nicht gespeichert.",
+      "entryHintHelp": "Hilft beim Verfassen der Startnachricht, wenn das System gestartet wird. Eine Macro-Einstellung, nicht im Export enthalten."
+    },
+    "views": {
+      "label": "Systemansicht",
+      "flow": "Ablauf",
+      "agents": "Agenten",
+      "skills": "Skills",
+      "tools": "Werkzeuge",
+      "files": "Dateien",
+      "empty": {
+        "agents": "Dieses System enthält keinen Agenten.",
+        "skills": "Dieses System verwendet keine Skill.",
+        "tools": "Dieses System verwendet keinen Werkzeugserver.",
+        "files": "Dieses Projekt enthält keine Datei."
+      },
+      "filesHint": "Schreibgeschützt. Um ein Element zu ändern, öffnen Sie seine Karte oder fragen Sie den Architect-Agenten.",
+      "fileGroup": {
+        "agents": "Agenten",
+        "flow": "Ablauf",
+        "skills": "Skills",
+        "tools": "Werkzeugserver (MCP)",
+        "other": "Weitere Dateien"
+      },
+      "inFlow": "im Ablauf verwendet",
+      "notInFlow": "nicht verwendet",
+      "unused": "nicht verwendet",
+      "usedBy": {
+        "skills_one": "von {{count}} Agent verwendet",
+        "skills_other": "von {{count}} Agenten verwendet",
+        "tools_one": "von {{count}} Agent verwendet",
+        "tools_other": "von {{count}} Agenten verwendet"
+      },
+      "transport": {
+        "local": "lokal",
+        "remote": "remote"
+      }
+    }
   }
 }

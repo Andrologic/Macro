@@ -1381,5 +1381,252 @@
     "loginInstructions": "Ouvrez la configuration Codex d’un agent pour préparer le profil privé de Macro. Suivez la procédure de connexion privée, puis vérifiez à nouveau. Votre consigne est conservée.",
     "retryLogin": "Vérifier la connexion",
     "loginGuide": "Guide de connexion au profil privé"
+  },
+  "architect": {
+    "adapt": {
+      "title": "Adapter la version {{number}}",
+      "intro": "Macro crée un nouveau blueprint à partir de cette version. L’original ne change pas et le nouveau garde la trace de son origine.",
+      "introRepair": "Macro crée un nouveau blueprint avec le contenu de cette version, que vous pourrez corriger puis enregistrer.",
+      "defaultName": "{{name}} (adapté)",
+      "done": "Blueprint « {{name}} » créé"
+    },
+    "delete": {
+      "title": "Supprimer la version {{number}} ?",
+      "description": "Cette version disparaît définitivement de ce blueprint. Les autres versions ne changent pas.",
+      "used": "Cette version est utilisée par une exécution ou une programmation : elle ne peut pas être supprimée.",
+      "confirm": "Supprimer",
+      "done": "Version {{number}} supprimée",
+      "checking": "Vérification de l’utilisation de cette version…"
+    },
+    "export": {
+      "titleVersion": "Exporter la version {{number}}",
+      "titleDraft": "Exporter le brouillon",
+      "format": {
+        "archive": "Archive (.agsdl)",
+        "archiveHint": "Un seul fichier, à envoyer ou à importer ailleurs.",
+        "project": "Dossier de projet",
+        "projectHint": "Des fichiers lisibles, pour travailler à la main."
+      },
+      "draftHint": "Un brouillon n’est pas figé : il s’exporte en dossier. Pour obtenir un fichier .agsdl, enregistrez d’abord une version.",
+      "settingsNotIncluded": "Les réglages propres à Macro (threads masqués, etc.) ne sont pas inclus dans l’export.",
+      "leftBehind": "Les réglages Macro de cette version ne sont pas dans l’export : {{items}}.",
+      "setting": {
+        "hidden": "agents masqués dans Operate",
+        "hint": "indication du message de départ",
+        "folder": "mode de dossier de travail",
+        "fields": "champs de lancement"
+      },
+      "why": "Le format AgSDL n’a pas encore de place pour les réglages d’une application (AgSDL#32). Un blueprint importé reprend les valeurs par défaut.",
+      "whyTitle": "Pourquoi ?",
+      "choose": "Choisir l’emplacement…",
+      "exporting": "Exportation…",
+      "doneVersion": "Version {{number}} exportée",
+      "doneDraft": "Brouillon exporté",
+      "failed": "L’export a échoué. Réessayez ou choisissez un autre emplacement."
+    },
+    "header": {
+      "saved": "Brouillon · enregistré",
+      "unsaved": "Brouillon · modifications non enregistrées",
+      "saving": "Brouillon · enregistrement…",
+      "readOnly": "lecture seule",
+      "adapt": "Adapter",
+      "export": "Exporter",
+      "exportAs": {
+        "archive": "Archive (.agsdl)…",
+        "project": "Dossier de projet…"
+      },
+      "more": "Autres actions",
+      "showFiles": "Afficher les fichiers du projet",
+      "saveHint": "Enregistrer une version (Ctrl/Cmd+S). Le brouillon s’enregistre déjà seul.",
+      "saveBlocked": "Un enregistrement ou un conflit est en cours : réessayez dans un instant.",
+      "showMore": "Voir plus",
+      "less": "Voir moins",
+      "origin": "Adapté de la version {{number}} de « {{blueprint}} »",
+      "originUnknown": "Adapté de la version {{number}} d’un autre blueprint",
+      "repairOrigin": "Issu d’une version à réparer. Corrigez les points signalés, puis enregistrez une version."
+    },
+    "import": {
+      "titleNamed": "Importer « {{name}} »",
+      "action": "Importer",
+      "importing": "Importation…",
+      "reading": "Lecture du fichier…",
+      "valid": "Fichier valide — rien n’est lancé en l’important.",
+      "validWithPoints_one": "Fichier valide, avec {{count}} point à connaître",
+      "validWithPoints_other": "Fichier valide, avec {{count}} points à connaître",
+      "blocked": "Importation impossible",
+      "blocker": {
+        "invalidArchive": "Ce fichier n’est pas une archive AgSDL valide.",
+        "integrity": "Le contenu du fichier ne correspond pas à son inventaire : il est peut-être abîmé ou modifié. Demandez à son auteur de l’exporter de nouveau.",
+        "unsafePath": "Le fichier contient un chemin qui sort de son dossier. Macro refuse de l’ouvrir.",
+        "tooLarge": "Ce fichier est trop volumineux pour être importé.",
+        "notAProject": "Ce n’est ni une archive AgSDL ni un dossier de projet AgSDL. Choisissez un fichier .agsdl, ou le dossier qui contient le fichier agsdl.json.",
+        "projectInvalid": "AgSDL n’a pas pu ouvrir ce projet : son contenu n’est pas valide ou utilise un format que cette version de Macro ne prend pas en charge.",
+        "expired": "L’aperçu a expiré. Choisissez de nouveau le fichier ou le dossier.",
+        "unreadable": "Macro n’a pas pu lire cette source."
+      },
+      "system": "Ce système",
+      "counts": "Agents : {{agents}} · Outils : {{tools}}",
+      "files_one": "{{count}} fichier",
+      "files_other": "{{count}} fichiers",
+      "warnings_one": "Le format AgSDL signale {{count}} avertissement. Il est détaillé dans « Tout le détail ».",
+      "warnings_other": "Le format AgSDL signale {{count}} avertissements. Ils sont détaillés dans « Tout le détail ».",
+      "macroSettings": "Les réglages Macro (threads masqués, indication du message de départ, dossier de travail…) ne sont pas dans ce format : les valeurs par défaut s’appliquent.",
+      "historyRemoved": "L’historique contenu dans l’archive n’est pas conservé : seul l’état actuel est importé.",
+      "allDetails": "Tout le détail",
+      "detailAgents": "Agents",
+      "detailTools": "Outils",
+      "detailExternal": "Adresses extérieures (non incluses)",
+      "detailWarnings": "Avertissements",
+      "unreachable": "hors du flow",
+      "notRequested": "non demandé au lancement",
+      "nameTaken": "Un blueprint de ce projet porte déjà ce nom.",
+      "reasonReading": "Lecture en cours…",
+      "reasonBlocked": "Corrigez le fichier avant de l’importer.",
+      "reasonName": "Donnez un nom au blueprint.",
+      "reasonProject": "Choisissez un projet.",
+      "done": "« {{name}} » importé",
+      "failed": "L’import a échoué. Rien n’a été ajouté."
+    },
+    "menu": {
+      "newProject": "Nouveau projet",
+      "newBlueprint": "Nouveau blueprint",
+      "importFile": "Importer un fichier .agsdl…",
+      "importFolder": "Importer un dossier de projet…",
+      "saveVersion": "Enregistrer une version…",
+      "exportDraft": "Exporter le brouillon (dossier)…",
+      "open": "Ouvrir",
+      "adapt": "Adapter…",
+      "adaptRepair": "Adapter pour réparer…",
+      "exportArchive": "Exporter l’archive (.agsdl)…",
+      "exportFolder": "Exporter en dossier…",
+      "downloadOriginal": "Télécharger l’original",
+      "delete": "Supprimer…"
+    },
+    "permissions": {
+      "title": "Ce qu’il pourra faire",
+      "none": "Ce système ne demande aucune autorisation particulière.",
+      "attention": "Attention :",
+      "cap": {
+        "readFiles": "Lire des fichiers dans le dossier de l’exécution",
+        "readOutside": "Lire des fichiers en dehors du dossier de l’exécution",
+        "writeFiles": "Créer et modifier des fichiers dans le dossier de l’exécution",
+        "writeFolders": "Modifier des fichiers dans des dossiers supplémentaires ({{subject}})",
+        "writeAnywhere": "Modifier des fichiers n’importe où sur cet ordinateur",
+        "runCommands": "Lancer des commandes sur cet ordinateur",
+        "runCommand": "Lancer la commande « {{subject}} »",
+        "network": "Accéder à Internet"
+      },
+      "useTool": "Utiliser l’outil « {{name}} »",
+      "useRemoteTool": "Utiliser l’outil « {{name}} » (serveur distant)",
+      "engines": "Moteurs et modèles",
+      "engineModel": "{{engine}} (modèle {{model}})",
+      "enginesHint": "Vérifiés au moment du lancement.",
+      "prepare": "À prévoir",
+      "prepareNothing": "Rien à prévoir avant le lancement.",
+      "secret": "Secret demandé : {{name}} (outil « {{server}} »)",
+      "secretHint": "Les valeurs ne sont jamais dans le fichier. Vous les saisirez au premier lancement.",
+      "programs_one": "Programme requis : {{programs}}",
+      "programs_other": "Programmes requis : {{programs}}",
+      "programsHint": "Vérifiés au lancement, jamais installés par Macro.",
+      "external_one": "{{count}} contenu pointe vers une adresse extérieure, non inclus dans le fichier.",
+      "external_other": "{{count}} contenus pointent vers une adresse extérieure, non inclus dans le fichier.",
+      "launchBlockers_one": "{{count}} skill externe devra être remplacée avant le lancement.",
+      "launchBlockers_other": "{{count}} skills externes devront être remplacées avant le lancement."
+    },
+    "recovery": {
+      "caption": "{{name}} · version {{number}}",
+      "captionDraft": "{{name}} · brouillon",
+      "title": "Cette version n’a pas pu être récupérée",
+      "titleDraft": "Ce brouillon n’a pas pu être récupéré",
+      "body": "Son contenu est conservé, mais Macro n’a pas réussi à le transformer : il ne peut être ni lancé ni exporté en l’état. Vous pouvez l’adapter pour le réparer, ou télécharger l’original.",
+      "why": "Élément en cause : {{item}}",
+      "downloaded": "Original téléchargé",
+      "downloadFailed": "Le téléchargement a échoué"
+    },
+    "saveVersion": {
+      "title": "Enregistrer la version {{number}}",
+      "action": "Enregistrer la version {{number}}",
+      "notePlaceholder": "Ce qui change dans cette version…",
+      "checking": "Vérification du système…",
+      "oldFormat": "Ce système est dans un ancien format",
+      "convertNotice": "Macro va le mettre à jour pour créer la version {{number}}. Le brouillon est converti en même temps ; les versions déjà enregistrées ne changent pas.",
+      "convertDetails": "AgSDL 0.3.0 → 0.4.0.",
+      "cannotConvert": "Cette version ne peut pas être enregistrée",
+      "cannotSave": "Le système contient des erreurs",
+      "issueCount_one": "{{count}} élément à corriger.",
+      "issueCount_other": "{{count}} éléments à corriger.",
+      "item": {
+        "agent": "Agent « {{name}} »",
+        "step": "Étape « {{name}} »",
+        "skill": "Skill « {{name}} »",
+        "tool": "Outil « {{name}} »",
+        "content": "Contenu « {{name}} »",
+        "document": "Le système dans son ensemble"
+      },
+      "show": "Voir",
+      "warnings_one": "{{count}} avertissement, rien ne bloque l’enregistrement",
+      "warnings_other": "{{count}} avertissements, rien ne bloque l’enregistrement",
+      "reasonChecking": "Vérification en cours…",
+      "reasonBlocked": "Corrigez d’abord les points ci-dessus.",
+      "done": "Version {{number}} enregistrée"
+    },
+    "tree": {
+      "title": "Bibliothèque",
+      "search": "Rechercher un projet ou un blueprint…",
+      "import": "Importer…",
+      "new": "Nouveau…",
+      "empty": "Aucun projet pour l’instant.",
+      "noResults": "Aucun blueprint ne correspond à cette recherche.",
+      "archived": "Archivés ({{count}})",
+      "modified": "modifié",
+      "versionShort": "v{{number}}",
+      "olderVersions": "Versions plus anciennes ({{count}})",
+      "hasRepair": "Une version est à réparer",
+      "projectActions": "Actions du projet « {{name}} »",
+      "blueprintActions": "Actions du blueprint « {{name}} »",
+      "versionActions": "Actions de la version {{number}}"
+    },
+    "operate": {
+      "title": "Dans Operate",
+      "hideHint": "Les conversations de cet agent (toutes ses instances) n’apparaissent pas dans la colonne d’Operate. Elles remontent quand l’agent a besoin de vous. Réglage propre à Macro : il n’est pas transmis à l’export.",
+      "saved": "Enregistré",
+      "notSaved": "Réglage non enregistré.",
+      "entryHintHelp": "Aide la personne qui lance le système à rédiger son message de départ. Réglage propre à Macro, non transmis à l’export."
+    },
+    "views": {
+      "label": "Vue du système",
+      "flow": "Flow",
+      "agents": "Agents",
+      "skills": "Skills",
+      "tools": "Outils",
+      "files": "Fichiers",
+      "empty": {
+        "agents": "Ce système ne contient aucun agent.",
+        "skills": "Ce système n’utilise aucune skill.",
+        "tools": "Ce système n’utilise aucun serveur d’outils.",
+        "files": "Ce projet ne contient aucun fichier."
+      },
+      "filesHint": "Lecture seule. Pour modifier un élément, ouvrez sa fiche ou demandez à l’agent d’Architect.",
+      "fileGroup": {
+        "agents": "Agents",
+        "flow": "Flow",
+        "skills": "Skills",
+        "tools": "Serveurs d’outils (MCP)",
+        "other": "Autres fichiers"
+      },
+      "inFlow": "utilisé dans le flow",
+      "notInFlow": "non utilisé",
+      "unused": "non utilisé",
+      "usedBy": {
+        "skills_one": "utilisée par {{count}} agent",
+        "skills_other": "utilisée par {{count}} agents",
+        "tools_one": "utilisé par {{count}} agent",
+        "tools_other": "utilisé par {{count}} agents"
+      },
+      "transport": {
+        "local": "local",
+        "remote": "distant"
+      }
+    }
   }
 }

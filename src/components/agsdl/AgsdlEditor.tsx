@@ -31,6 +31,12 @@ import "./agsdl.css";
 import { agsdlErrorText, agsdlProjectIssueText } from "./errorText";
 import { ProjectMacroSettings } from "./ProjectMacroSettings";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
+import { ArchitectComponentList } from "../architect/ArchitectComponentList";
+import { projectInventory } from "../../services/agsdl/projectInventory";
+import { projectSettings } from "../../stores/agsdl/projectEdits";
+
+/** Which projection of a project the canvas area shows. The flow is the graph; the others are plain lists. */
+export type AgsdlEditorView = "flow" | "agents" | "skills" | "tools";
 
 // Chat and focused component edits share the same versioned document store.
 export const AgsdlEditor: React.FC<{
@@ -40,7 +46,8 @@ export const AgsdlEditor: React.FC<{
   expanded?: boolean;
   onExpand?: () => void;
   canvasActions?: React.ReactNode;
-}> = ({ target, planStatus, expanded, onExpand, canvasActions, onAttachContext }) => {
+  view?: AgsdlEditorView;
+}> = ({ target, planStatus, expanded, onExpand, canvasActions, onAttachContext, view = "flow" }) => {
   const { t } = useAgsdlTranslation();
   const demoJourney = import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1';
   const persistenceTitle = t(demoJourney ? 'agsdl.persistence.export' : 'agsdl.persistence.title');
@@ -108,6 +115,8 @@ export const AgsdlEditor: React.FC<{
     }
   }, [source, displayMetadata, migrationMetadata, reports, projectTarget]);
   const document = parsed.document;
+  const inventory = useMemo(() => view !== "flow" && source ? projectInventory(source) : null, [view, source]);
+  const hiddenAgents = useMemo(() => project ? projectSettings(project).hiddenAgentIds : [], [project]);
   const visibleGraphIndex = Math.max(0, Math.min(graphIndex, Math.max(0, (document?.graphs.length ?? 0) - 1)));
   const edition030 = isFlowDocumentContract(document?.contract);
   const graph = edition030 && (definitions030 || (!Object.hasOwn(document.systemDetails, "flow") && !graphChosen030)) ? undefined : document?.graphs[visibleGraphIndex];
@@ -135,7 +144,8 @@ export const AgsdlEditor: React.FC<{
     } catch (error) { setDiagnosticError(agsdlErrorText(error, t)); }
     finally { setAttaching(false); }
   };
-  const cards = useMemo(() => system.cards.map(card => ({ ...card, issueCount: diagnostics.filter(issue => issue.targets.includes(card.path)).length })), [system.cards, diagnostics]);
+  const cards = useMemo(() => system.cards.map(card => ({ ...card, issueCount: diagnostics.filter(issue => issue.targets.includes(card.path)).length,
+    ...(typeof card.details.agentName === "string" && hiddenAgents.includes(card.details.agentName) ? { hiddenInOperate: true } : {}) })), [system.cards, diagnostics, hiddenAgents]);
   const selectedEdge = system.edges.find(edge => edge.id === selected);
   const currentCard = cards.find(item => item.path === selected) ?? graph?.cards.find(item => item.path === selected) ?? document?.declarations.find(item => item.path === selected);
   // Keep an open form alive if an agent removes its component. Its captured
@@ -459,7 +469,9 @@ export const AgsdlEditor: React.FC<{
       {!session ? <div className="agsdl-empty">{t("agsdl.loading")}</div>
         : !source ? legacyTarget && session.status === "draft" && (!planStatus || planStatus === "draft") ? <DesignStart onChoose={setLibrary} /> : <div className="agsdl-empty">{t("agsdl.emptyTitle")}</div>
         : document && <>
-          {cards.length > 0 ? <WorkflowGraph
+          {view !== "flow" && projectTarget ? <ArchitectComponentList kind={view} cards={document.declarations} inventory={inventory}
+            hiddenAgents={hiddenAgents} onSelect={select} />
+          : cards.length > 0 ? <WorkflowGraph
             key={`${key}:${graph?.path ?? "declarations"}`}
             cards={cards} edges={system.edges} entry={system.entry} compositions={document.graphs} declarations={document.declarations} selected={selected}
             select={select} title={nodeTitle} source={source}

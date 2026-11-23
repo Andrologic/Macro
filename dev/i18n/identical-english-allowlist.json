@@ -187,7 +187,20 @@
     "agsdl.preview.agents": "Agents",
     "agsdl.messages030.title": "Messages",
     "agsdl.messages030.agent": "Agent",
-    "agsdl.messages030.prompt": "Message"
+    "agsdl.messages030.prompt": "Message",
+    "agsdl.architect.export.format.archive": "Archive (.agsdl)",
+    "agsdl.architect.header.exportAs.archive": "Archive (.agsdl)…",
+    "agsdl.architect.import.detailAgents": "Agents",
+    "agsdl.architect.recovery.caption": "{{name}} · version {{number}}",
+    "agsdl.architect.saveVersion.convertDetails": "AgSDL 0.3.0 → 0.4.0.",
+    "agsdl.architect.tree.versionShort": "v{{number}}",
+    "agsdl.architect.views.flow": "Flow",
+    "agsdl.architect.views.agents": "Agents",
+    "agsdl.architect.views.skills": "Skills",
+    "agsdl.architect.views.fileGroup.agents": "Agents",
+    "agsdl.architect.views.fileGroup.flow": "Flow",
+    "agsdl.architect.views.fileGroup.skills": "Skills",
+    "agsdl.architect.views.transport.local": "local"
   },
   "de": {
     "agsdl.library.blueprints": "Blueprints",
@@ -334,7 +347,13 @@
     "settings.pilot.availability.offline": "Offline",
     "settings.pilot.online": "Online",
     "settings.pilot.clientKind.desktop": "Desktop",
-    "agsdl.messages030.agent": "Agent"
+    "agsdl.messages030.agent": "Agent",
+    "agsdl.architect.saveVersion.convertDetails": "AgSDL 0.3.0 → 0.4.0.",
+    "agsdl.architect.tree.versionShort": "v{{number}}",
+    "agsdl.architect.operate.title": "In Operate",
+    "agsdl.architect.views.skills": "Skills",
+    "agsdl.architect.views.fileGroup.skills": "Skills",
+    "agsdl.architect.views.transport.remote": "remote"
   },
   "es": {
     "agsdl.library.blueprints": "Blueprints",
@@ -421,7 +440,12 @@
     "settings.pilot.label": "Macro Connect",
     "settings.pilot.title": "Macro Connect",
     "settings.connectReader.chat": "Chat",
-    "settings.connectReader.attention.error": "Error"
+    "settings.connectReader.attention.error": "Error",
+    "agsdl.architect.saveVersion.convertDetails": "AgSDL 0.3.0 → 0.4.0.",
+    "agsdl.architect.tree.versionShort": "v{{number}}",
+    "agsdl.architect.views.skills": "Skills",
+    "agsdl.architect.views.fileGroup.skills": "Skills",
+    "agsdl.architect.views.transport.local": "local"
   },
   "ja": {
     "header.architect": "Architect",
@@ -482,7 +506,8 @@
     "implement.taskKindHotfix": "Hotfix",
     "implement.taskTodoProgressCompact": "{{done}}/{{total}}",
     "settings.pilot.label": "Macro Connect",
-    "settings.pilot.title": "Macro Connect"
+    "settings.pilot.title": "Macro Connect",
+    "agsdl.architect.tree.versionShort": "v{{number}}"
   },
   "ko": {
     "header.architect": "Architect",
@@ -543,6 +568,8 @@
     "implement.taskKindHotfix": "Hotfix",
     "implement.taskTodoProgressCompact": "{{done}}/{{total}}",
     "settings.pilot.label": "Macro Connect",
-    "settings.pilot.title": "Macro Connect"
+    "settings.pilot.title": "Macro Connect",
+    "agsdl.architect.saveVersion.convertDetails": "AgSDL 0.3.0 → 0.4.0.",
+    "agsdl.architect.tree.versionShort": "v{{number}}"
   }
 }
