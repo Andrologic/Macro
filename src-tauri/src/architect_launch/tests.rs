@@ -13,7 +13,15 @@ use std::{
     time::Duration,
 };
 
-async fn archive_fixture(data: &Path, mut manifest: Value) -> (SqlitePool, VersionKey) {
+async fn archive_fixture(data: &Path, manifest: Value) -> (SqlitePool, VersionKey) {
+    archive_fixture_with_mcp(data, manifest, &[]).await
+}
+
+async fn archive_fixture_with_mcp(
+    data: &Path,
+    mut manifest: Value,
+    files: &[(&str, bool)],
+) -> (SqlitePool, VersionKey) {
     let pool = crate::db::create_pool(&data.join("launch.db"))
         .await
         .unwrap();
@@ -28,6 +36,17 @@ async fn archive_fixture(data: &Path, mut manifest: Value) -> (SqlitePool, Versi
         .await
         .unwrap();
     let project = tempfile::tempdir_in(data).unwrap();
+    for &(name, executable) in files {
+        let path = project.path().join(name);
+        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        if executable {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        #[cfg(not(unix))]
+        let _ = executable;
+    }
     if let Some(secrets) = manifest.get_mut("secrets") {
         fs::write(project.path().join("secrets.json"), secrets.to_string()).unwrap();
         *secrets = json!({"file":"secrets.json"});
@@ -367,7 +386,7 @@ async fn mcp_requirements_use_reachable_calls_and_refuse_unqualified_launch() {
     assert!(prepared
         .blockers
         .iter()
-        .any(|blocker| blocker.code == "missingProgram"));
+        .any(|blocker| blocker.code == "mcpRetainedProgramRequired"));
     let host = HostState::new();
     let refused = start::launch(
         runtime(&host, &manager, &pool, data.path()),
@@ -392,15 +411,107 @@ async fn mcp_requirements_use_reachable_calls_and_refuse_unqualified_launch() {
 }
 
 #[tokio::test]
+async fn mcp_requires_retained_code_and_rejects_reserved_secrets() {
+    let data = tempfile::tempdir().unwrap();
+    let mut doc = manifest();
+    doc["mcpServers"] = json!({"used":{"command":["sh","serve.sh"]}});
+    doc["mcpFiles"] = json!({"used":["serve.sh","program"]});
+    doc["secrets"] = json!({"used":["PATH"]});
+    doc["flow"] = json!({"entry":"tool","steps":{"tool":{"type":"call","mcp":{"server":"used","tool":"hello"}}}});
+    let (pool, version) =
+        archive_fixture_with_mcp(data.path(), doc, &[("serve.sh", false), ("program", true)]).await;
+    let manager = manager_for_test(data.path()).await;
+    let prepared = preview(&manager, &pool, data.path(), version.clone(), None).await;
+    assert_eq!(prepared.blockers[0].code, "mcpReservedSecret");
+    assert!(prepared.secrets.is_empty());
+    let host = HostState::new();
+    let refused = start::launch(
+        runtime(&host, &manager, &pool, data.path()),
+        request(version.clone(), prepared.consent_token),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert_eq!(refused.code, "mcpReservedSecret");
+    let refused = set_secret(
+        &manager,
+        &pool,
+        data.path(),
+        version.clone(),
+        "used",
+        "PATH",
+        "value",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.code, "INVALID_LAUNCH_SECRET");
+
+    let input = VersionInput::read(&pool, &Storage::new(data.path()), version)
+        .await
+        .unwrap();
+    let mut preview = input.preview().unwrap();
+    let server = preview.mcp_servers.get_mut("used").unwrap();
+    server.required_secrets.clear();
+    for command in [
+        vec!["/bin/cat"],
+        vec!["cat"],
+        vec!["./undeclared"],
+        vec!["serve.sh"],
+        vec!["/bin/sh", "-c", "exit 0"],
+        vec!["sh", "../serve.sh"],
+    ] {
+        server.transport = McpTransport::Local {
+            command: command.into_iter().map(str::to_owned).collect(),
+        };
+        assert_eq!(
+            qualify_mcp(&input, "used", server).unwrap_err().code,
+            "mcpRetainedProgramRequired"
+        );
+    }
+    for command in [vec!["sh", "./serve.sh"], vec!["/bin/sh", "serve.sh"]] {
+        server.transport = McpTransport::Local {
+            command: command.into_iter().map(str::to_owned).collect(),
+        };
+        assert!(qualify_mcp(&input, "used", server).is_ok());
+    }
+    #[cfg(unix)]
+    {
+        server.transport = McpTransport::Local {
+            command: vec!["./program".into()],
+        };
+        assert!(qualify_mcp(&input, "used", server).is_ok());
+    }
+    for name in [
+        "ENV",
+        "BASH_ENV",
+        "BASHOPTS",
+        "SHELLOPTS",
+        "PS4",
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+    ] {
+        server.transport = McpTransport::Local {
+            command: vec!["sh".into(), "serve.sh".into()],
+        };
+        server.required_secrets = vec![name.into()];
+        assert_eq!(
+            qualify_mcp(&input, "used", server).unwrap_err().code,
+            "mcpReservedSecret"
+        );
+    }
+}
+
+#[tokio::test]
 async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
     let _guard = crate::secrets::lock_test_store();
     let data = tempfile::tempdir().unwrap();
     crate::secrets::init(data.path()).unwrap();
     let mut doc = manifest();
-    doc["mcpServers"] = json!({"used":{"command":["sh"]},"spare":{"command":["sh"]}});
+    doc["mcpServers"] = json!({"used":{"command":["sh","./serve.sh"]},"spare":{"command":["sh"]}});
+    doc["mcpFiles"] = json!({"used":["serve.sh"]});
     doc["secrets"] = json!({"used":["TOKEN","SECOND"],"spare":["UNUSED"]});
     doc["flow"] = json!({"entry":"tool","steps":{"tool":{"type":"call","mcp":{"server":"used","tool":"hello"}}}});
-    let (pool, version) = archive_fixture(data.path(), doc).await;
+    let (pool, version) = archive_fixture_with_mcp(data.path(), doc, &[("serve.sh", false)]).await;
     let input = VersionInput::read(&pool, &Storage::new(data.path()), version)
         .await
         .unwrap();

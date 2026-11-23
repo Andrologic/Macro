@@ -43,7 +43,8 @@
       "modelUnavailable": "The model or effort for agent {{subject}} is unavailable.",
       "mcpIsolationUnavailable": "Macro cannot isolate the MCP server {{subject}} on this machine.",
       "mcpWorkspaceRequired": "MCP server {{subject}} requires workspace permissions in Settings.",
-      "missingProgram": "Required program unavailable. {{subject}}",
+      "mcpRetainedProgramRequired": "MCP server {{subject}} needs an executable declared in the archive, or sh with a declared script.",
+      "mcpReservedSecret": "Choose another name for this reserved MCP secret. {{subject}}",
       "unsupportedHarness": "Agent {{subject}} uses an unsupported harness.",
       "workingFolderRequired": "Choose an available working folder.",
       "codexUnavailable": "Codex is unavailable. {{subject}}"

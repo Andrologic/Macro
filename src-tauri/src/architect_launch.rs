@@ -2,7 +2,7 @@
 use crate::architect_library::{
     archive::{VersionArchive, ARCHIVE_FORMAT},
     editor_document::{MacroSettings, WorkingFolderMode},
-    preview::{self, CallTarget, ImportPreview, McpTransport, Usage},
+    preview::{self, CallTarget, ImportPreview, McpServer, McpTransport, Usage},
     storage::Storage,
 };
 use crate::config::ConfigManager;
@@ -571,48 +571,64 @@ async fn folder_in_use(db: &mut SqliteConnection, folder: &Path) -> Result<bool>
     .await?)
 }
 
-fn program_exists(name: &str, files: &[String], input: &VersionInput) -> bool {
+fn declared_mcp_path(argument: &str, files: &[String]) -> Option<String> {
     use std::path::Component;
-    let path = Path::new(name);
+
+    // Match Argentic's retained path lookup, including relative path aliases.
+    if argument.contains('\\') {
+        return None;
+    }
     let mut parts = Vec::new();
-    let relative = !name.contains('\\')
-        && path.components().all(|part| match part {
-            Component::Normal(part) => {
-                parts.push(part.to_string_lossy());
-                true
+    for part in Path::new(argument).components() {
+        match part {
+            Component::Normal(part) => parts.push(part.to_str()?),
+            Component::CurDir => (),
+            Component::ParentDir => {
+                parts.pop()?;
             }
-            Component::CurDir => true,
-            Component::ParentDir => parts.pop().is_some(),
-            _ => false,
-        });
-    if relative {
-        let member_path = parts.join("/");
-        if files.contains(&member_path) {
+            _ => return None,
+        }
+    }
+    let path = parts.join("/");
+    files.contains(&path).then_some(path)
+}
+
+fn qualify_mcp(
+    input: &VersionInput,
+    id: &str,
+    server: &McpServer,
+) -> std::result::Result<(), Blocker> {
+    let McpTransport::Local { command } = &server.transport else {
+        return Err(Blocker::new("mcpIsolationUnavailable", id));
+    };
+    let files = &server.packaged_files;
+    let qualified = command.first().is_some_and(|program| {
+        if let Some(path) = declared_mcp_path(program, files) {
             return input
                 .archive
                 .members()
-                .any(|member| member.path == member_path && member.executable);
+                .any(|member| member.path == path && member.executable);
         }
+        matches!(program.as_str(), "sh" | "/bin/sh")
+            && command
+                .get(1)
+                .and_then(|script| declared_mcp_path(script, files))
+                .is_some()
+    });
+    if !qualified {
+        return Err(Blocker::new("mcpRetainedProgramRequired", id));
     }
-    if path.is_absolute() {
-        return executable(path);
+    // Argentic gives local calls a fixed PATH and refuses these launcher names.
+    if let Some(name) = server.required_secrets.iter().find(|name| {
+        matches!(
+            name.as_str(),
+            "PATH" | "ENV" | "BASH_ENV" | "BASHOPTS" | "SHELLOPTS" | "PS4"
+        ) || name.starts_with("LD_")
+            || name.starts_with("DYLD_")
+    }) {
+        return Err(Blocker::new("mcpReservedSecret", format!("{id} · {name}")));
     }
-    !name.contains('/')
-        && ["/usr/bin", "/bin"]
-            .iter()
-            .any(|dir| executable(&Path::new(dir).join(name)))
-}
-
-fn executable(path: &Path) -> bool {
-    path.metadata().is_ok_and(|meta| {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            meta.is_file() && meta.permissions().mode() & 0o111 != 0
-        }
-        #[cfg(not(unix))]
-        meta.is_file()
-    })
+    Ok(())
 }
 
 fn call_permissions(policy: &crate::config::ExecutionToolsLease) -> Result<Value> {
@@ -645,29 +661,15 @@ fn requirements(
         if !reachable && !equipment {
             continue;
         }
-        let McpTransport::Local { command } = &server.transport else {
+        if let Err(blocker) = qualify_mcp(input, id, server) {
+            blockers.push(blocker);
+        } else if equipment || !local_mcp_supported || calls_refused {
             blockers.push(Blocker::new("mcpIsolationUnavailable", id));
-            continue;
-        };
-        let mut supported = true;
-        if equipment || !local_mcp_supported || calls_refused {
-            blockers.push(Blocker::new("mcpIsolationUnavailable", id));
-            supported = false;
         } else if policy["agsdlHostPermissions"] != "workspace"
             || crate::core::tool_policy::agsdl_native_read_only(policy)
         {
             blockers.push(Blocker::new("mcpWorkspaceRequired", id));
-            supported = false;
-        }
-        if let Some(program) = command.first() {
-            if !program_exists(program, &server.packaged_files, input) {
-                blockers.push(Blocker::new("missingProgram", program));
-                supported = false;
-            }
         } else {
-            supported = false;
-        }
-        if supported {
             servers.insert(id.clone(), server.required_secrets.clone());
         }
     }

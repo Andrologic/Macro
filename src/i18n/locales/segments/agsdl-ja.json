@@ -43,7 +43,8 @@
       "modelUnavailable": "エージェント {{subject}} のモデルまたは推論レベルを利用できません。",
       "mcpIsolationUnavailable": "このコンピューターでは MCP サーバー {{subject}} を隔離できません。",
       "mcpWorkspaceRequired": "MCP サーバー {{subject}} には設定でワークスペース権限を付与する必要があります。",
-      "missingProgram": "必要なプログラムが見つかりません。{{subject}}",
+      "mcpRetainedProgramRequired": "MCP サーバー {{subject}} には、アーカイブで宣言した実行ファイル、または宣言したスクリプトを引数に渡した sh が必要です。",
+      "mcpReservedSecret": "この MCP シークレットには予約名が使われています。別の名前を選んでください。{{subject}}",
       "unsupportedHarness": "エージェント {{subject}} の実行環境はサポートされていません。",
       "workingFolderRequired": "利用可能な作業フォルダーを選択してください。",
       "codexUnavailable": "Codex は利用できません。{{subject}}"

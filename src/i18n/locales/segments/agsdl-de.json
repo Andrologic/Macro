@@ -43,7 +43,8 @@
       "modelUnavailable": "Das Modell oder die Aufwandsstufe für Agent {{subject}} ist nicht verfügbar.",
       "mcpIsolationUnavailable": "Macro kann den MCP-Server {{subject}} auf diesem Gerät nicht isolieren.",
       "mcpWorkspaceRequired": "Der MCP-Server {{subject}} benötigt Arbeitsbereichsberechtigungen in den Einstellungen.",
-      "missingProgram": "Erforderliches Programm nicht verfügbar. {{subject}}",
+      "mcpRetainedProgramRequired": "Der MCP-Server {{subject}} benötigt eine im Archiv deklarierte ausführbare Datei oder sh mit einem deklarierten Skript.",
+      "mcpReservedSecret": "Wähle einen anderen Namen für dieses reservierte MCP-Geheimnis. {{subject}}",
       "unsupportedHarness": "Agent {{subject}} verwendet eine nicht unterstützte Laufzeit.",
       "workingFolderRequired": "Verfügbaren Arbeitsordner auswählen.",
       "codexUnavailable": "Codex ist nicht verfügbar. {{subject}}"
