@@ -507,11 +507,15 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
         if (!entry) return;
         const batch = redo ? entry.forward : entry.backward;
         const queue = queueProjectEdit(project, entry, redo);
+        const version = crypto.randomUUID();
+        const dirty = queue.queued.length > 0;
         update(target, {
-          ...current, version: crypto.randomUUID(), dirty: queue.queued.length > 0, error: null,
+          ...current, version, dirty, error: null,
           project: {
             ...project, buffers: historyBuffers(project, batch),
             ...queue,
+            view: dirty ? project.view : project.saved,
+            graphVersion: !dirty && project.saved.projection ? version : project.graphVersion,
             past: redo ? projectHistoryBudget([...project.past, entry]) : from.slice(0, -1),
             future: redo ? from.slice(0, -1) : projectHistoryBudget([...project.future, entry]),
           },

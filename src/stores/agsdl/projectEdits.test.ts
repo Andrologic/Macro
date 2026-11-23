@@ -77,7 +77,7 @@ beforeEach(() => {
 
 afterEach(() => {
   useAgsdlStore.setState({ sessions: {} });
-  for (const method of [architectLibrary.getDraft, architectLibrary.readProjectFile, architectLibrary.saveProjectDraft, architectLibrary.saveVersion]) {
+  for (const method of [architectLibrary.getDraft, architectLibrary.readProjectFile, architectLibrary.saveProjectDraft, architectLibrary.saveVersion, architectLibrary.validateDraft]) {
     if ("mockRestore" in method && typeof method.mockRestore === "function") method.mockRestore();
   }
 });
@@ -111,6 +111,30 @@ test("an invalid batch retains the graph at its last valid revision and refuses 
   expect(session().project?.graphRevision).toBe(5);
   expect(session().project?.view.diagnostics[0]?.file).toBe("agents/review.json");
   expect(session().persistedRevision).toBe(6);
+});
+
+test("undoing the last unsaved edit restores the saved graph and diagnostics", async () => {
+  const saved = session().project!.saved;
+  spyOn(architectLibrary, "validateDraft").mockResolvedValue({
+    ...saved, projection: null,
+    diagnostics: [{ code: "PROJECT", file: "agents/review.json", pointer: "", message: "Invalid JSON" }],
+  });
+  await store().applyProjectBatch(target, [{ kind: "write", path: "agents/review.json", text: "{bad" }]);
+  await store().validate(target);
+  expect(session().project?.view.diagnostics[0]?.message).toBe("Invalid JSON");
+  const staleVersion = session().version;
+
+  store().undo(target);
+  expect(session().dirty).toBe(false);
+  expect(session().version).not.toBe(staleVersion);
+  expect(session().project?.graphVersion).toBe(session().version);
+  expect(session().project?.view).toBe(saved);
+  expect(session().source).toBe(saved.projection!.source);
+  store().undo(target, true);
+  expect(session().dirty).toBe(true);
+  store().undo(target);
+  await store().edit(target, [{ op: "set", path: "/title", valueJson: '"Corrected"' }], session().version);
+  expect(session().project?.pending.files[0]).toMatchObject({ path: "agsdl.json", text: manifest.replace("Original", "Corrected") });
 });
 
 test("reloading a changed revision preserves local file edits until the user resolves the conflict", async () => {
