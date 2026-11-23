@@ -126,9 +126,10 @@ function ArchitectPanelHeader({ draft, versionNumber, view }: { draft: Blueprint
   const menuButton = "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent";
 
   return <header className="shrink-0 space-y-1.5 border-b border-border px-3 py-2 text-xs">
+    {/* The name keeps the full width it needs: when the buttons do not fit beside it, they go to the next line. */}
     <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
-      <div className="flex min-w-0 flex-1 items-baseline gap-2">
-        <strong className="min-w-0 truncate text-sm" title={draft.name}>{draft.name}</strong>
+      <div className="flex min-w-0 flex-1 basis-56 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <strong className="line-clamp-2 min-w-0 max-w-full break-words text-sm" title={draft.name}>{draft.name}</strong>
         <span className="flex shrink-0 items-center gap-1 text-muted-foreground" role="status">
           {versionNumber !== null && <Icon name="lock" size={11} />}
           {versionNumber !== null

@@ -331,6 +331,16 @@ it("never ignores a version that cannot become an archive when comparing the dra
   expect(byText("button", "Save version", panel().querySelector("header")!)!.disabled).toBe(false);
 });
 
+it("keeps a long blueprint name readable: two lines at most, the full name in a tooltip", async () => {
+  const name = "Revue de code approfondie avec relecture croisée et rapport final";
+  draftState = { name };
+  await mount();
+  const title = panel().querySelector("header strong")!;
+  expect(title.getAttribute("title")).toBe(name);
+  expect(title.className).toContain("line-clamp-2");
+  expect(title.className).not.toContain("truncate");
+});
+
 it("keeps the location of an agent's instructions file under a collapsed detail", async () => {
   const doc = JSON.parse(source);
   doc.agents.implement.instructions = { uri: "agents/implement/instructions.md" };
