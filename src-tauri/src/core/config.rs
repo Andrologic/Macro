@@ -139,18 +139,27 @@ fn finalize_desktop_workspace_path_for_mode(
     config: &mut AppConfig,
     app_data_dir: &Path,
     use_app_data_default: bool,
-) {
+) -> crate::core::Result<()> {
     if config.workspace_path_source.is_default() && use_app_data_default {
-        config.workspace_path = resolve_desktop_default_workspace_path(app_data_dir);
+        let workspace_path = resolve_desktop_default_workspace_path(app_data_dir);
+        std::fs::create_dir_all(&workspace_path).map_err(|error| {
+            crate::core::error::BackendError::Config {
+                message: format!(
+                    "Failed to create default workspace directory {}: {error}",
+                    workspace_path.display()
+                ),
+            }
+        })?;
+        config.workspace_path = workspace_path;
     }
+    Ok(())
 }
 
 pub fn finalize_desktop_workspace_path(
     config: &mut AppConfig,
     app_data_dir: &Path,
 ) -> crate::core::Result<()> {
-    finalize_desktop_workspace_path_for_mode(config, app_data_dir, !cfg!(debug_assertions));
-    Ok(())
+    finalize_desktop_workspace_path_for_mode(config, app_data_dir, !cfg!(debug_assertions))
 }
 
 pub fn apply_runtime_workspace(
@@ -190,8 +199,8 @@ pub(crate) fn test_finalize_desktop_workspace_path_for_mode(
     config: &mut AppConfig,
     app_data_dir: &Path,
     use_app_data_default: bool,
-) {
-    finalize_desktop_workspace_path_for_mode(config, app_data_dir, use_app_data_default);
+) -> crate::core::Result<()> {
+    finalize_desktop_workspace_path_for_mode(config, app_data_dir, use_app_data_default)
 }
 
 fn load_config_from_sources(

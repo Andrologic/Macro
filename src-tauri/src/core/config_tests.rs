@@ -77,13 +77,35 @@ mod tests {
 
     #[test]
     fn test_desktop_default_workspace_resolution_uses_app_data_workspace() {
-        let app_data_dir =
-            PathBuf::from("/Users/example/Library/Application Support/com.macro.desktop");
+        let app_data_dir = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
 
-        test_finalize_desktop_workspace_path_for_mode(&mut config, &app_data_dir, true);
+        test_finalize_desktop_workspace_path_for_mode(&mut config, app_data_dir.path(), true)
+            .unwrap();
 
-        assert_eq!(config.workspace_path, app_data_dir.join("workspace"));
+        assert_eq!(config.workspace_path, app_data_dir.path().join("workspace"));
+        assert!(config.workspace_path.is_dir());
+    }
+
+    #[test]
+    fn default_workspace_blocked_by_a_file_reports_startup_recovery() {
+        use crate::local_backup::{ProfileRecovery, ProfileRecoveryKind};
+
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let workspace = app_data_dir.path().join("workspace");
+        fs::write(&workspace, b"user data").unwrap();
+        let mut config = AppConfig::default();
+
+        let failure = ProfileRecovery::startup_step(
+            "Failed to prepare desktop workspace",
+            test_finalize_desktop_workspace_path_for_mode(&mut config, app_data_dir.path(), true),
+        )
+        .unwrap_err();
+        assert_eq!(failure.kind, ProfileRecoveryKind::Startup);
+        assert!(failure
+            .diagnostics
+            .contains("Failed to create default workspace directory"));
+        assert_eq!(fs::read(&workspace).unwrap(), b"user data");
     }
 
     #[test]
@@ -96,7 +118,7 @@ mod tests {
             ..AppConfig::default()
         };
 
-        test_finalize_desktop_workspace_path_for_mode(&mut config, &app_data_dir, true);
+        test_finalize_desktop_workspace_path_for_mode(&mut config, &app_data_dir, true).unwrap();
 
         assert_eq!(
             config.workspace_path,
@@ -113,7 +135,7 @@ mod tests {
             ..AppConfig::default()
         };
 
-        test_finalize_desktop_workspace_path_for_mode(&mut config, &app_data_dir, false);
+        test_finalize_desktop_workspace_path_for_mode(&mut config, &app_data_dir, false).unwrap();
 
         assert_eq!(config.workspace_path, PathBuf::from("/tmp/project"));
     }

@@ -561,6 +561,183 @@ macro_rules! profile_handler {
     };
 }
 
+fn start_desktop_config_watcher<R: tauri::Runtime>(
+    config_root: std::path::PathBuf,
+    manager: config::ConfigManager,
+    app: tauri::AppHandle<R>,
+) -> Result<config::ConfigWatcherState, local_backup::ProfileRecovery> {
+    local_backup::ProfileRecovery::startup_step(
+        "Failed to initialize Macro configuration watcher",
+        config::ConfigWatcher::start(config_root, manager, app),
+    )
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn missing_config_watch_root_reports_startup_recovery() {
+    use local_backup::ProfileRecoveryKind;
+
+    let root = tempfile::tempdir().unwrap();
+    let manager = config::ConfigManager::initialize(root.path().to_path_buf())
+        .await
+        .unwrap();
+    let app = tauri::test::mock_app();
+    let failure =
+        start_desktop_config_watcher(root.path().join("missing"), manager, app.handle().clone())
+            .err()
+            .expect("missing watch root should block profile startup");
+
+    assert_eq!(failure.kind, ProfileRecoveryKind::Startup);
+    assert!(failure
+        .diagnostics
+        .starts_with("Failed to initialize Macro configuration watcher"));
+}
+
+fn initialize_desktop_profile(app: &tauri::App) -> Result<(), local_backup::ProfileRecovery> {
+    use local_backup::ProfileRecovery;
+
+    #[cfg(target_os = "macos")]
+    {
+        ProfileRecovery::startup_step(
+            "Failed to install the macOS quit handler",
+            native_quit_consent::install(app.handle()),
+        )?;
+        if let Some(window) = app.get_webview_window("main") {
+            ProfileRecovery::startup_step(
+                "Failed to configure the macOS title bar",
+                (|| {
+                    window.set_decorations(true)?;
+                    window.set_title_bar_style(TitleBarStyle::Overlay)?;
+                    window.set_background_color(Some(Color::from((9, 9, 11, 255))))?;
+                    macos_traffic_lights::install_fullscreen_recovery(&window)?;
+                    Ok::<(), Box<dyn std::error::Error>>(())
+                })(),
+            )?;
+        }
+
+        let app_handle = app.handle().clone();
+        if let Err(error) = app_handle.run_on_main_thread(|| {
+            if let Err(error) = macos_window_menu::rebind_visible_windows_menu() {
+                tracing::warn!("Failed to rebind macOS Window menu: {}", error);
+            }
+        }) {
+            tracing::warn!("Failed to schedule macOS Window menu rebinding: {}", error);
+        }
+    }
+
+    let app_handle = app.handle().clone();
+    let pool_state = app.state::<DbPool>().inner().clone();
+    let app_data_dir = ProfileRecovery::startup_step(
+        "Failed to resolve Macro profile directory",
+        app_handle.path().app_data_dir(),
+    )?;
+    let app_config_dir = ProfileRecovery::startup_step(
+        "Failed to resolve desktop configuration directory",
+        app_handle.path().app_config_dir(),
+    )?;
+    let config_root = ProfileRecovery::startup_step(
+        "Failed to resolve Macro configuration directory",
+        config::resolve_config_root(&app_config_dir).map_err(|error| error.message),
+    )?;
+    tauri::async_runtime::block_on(local_backup::process_startup(&app_data_dir, &config_root))?;
+
+    // Prepared recovery must run before parsing potentially damaged runtime.json.
+    let mut config =
+        ProfileRecovery::startup_step("Failed to load Macro configuration", load_config())?;
+    tracing::info!("Configured workspace path: {:?}", config.workspace_path);
+    let state_manager = ProfileRecovery::startup_step(
+        "Failed to initialize Macro state storage",
+        state_manager::StateManager::initialize(&app_data_dir),
+    )?;
+    let config_manager = ProfileRecovery::startup_step(
+        "Failed to initialize Macro configuration",
+        tauri::async_runtime::block_on(config::ConfigManager::initialize(config_root.clone()))
+            .map_err(|error| error.message),
+    )?;
+    let config_snapshot = ProfileRecovery::startup_step(
+        "Failed to read Macro runtime configuration",
+        tauri::async_runtime::block_on(config_manager.get_snapshot(&[]))
+            .map_err(|error| error.message),
+    )?;
+    if let Some(runtime) = config_snapshot.effective.get("runtime") {
+        ProfileRecovery::startup_step(
+            "Failed to apply Macro runtime configuration",
+            apply_runtime_workspace(&mut config, runtime),
+        )?;
+    }
+    ProfileRecovery::startup_step(
+        "Failed to prepare desktop workspace",
+        finalize_desktop_workspace_path(&mut config, &app_data_dir),
+    )?;
+    let config_watcher =
+        start_desktop_config_watcher(config_root, config_manager.clone(), app_handle.clone())?;
+    ProfileRecovery::startup_step(
+        "Failed to install Macro configuration manager",
+        config::install_runtime_config_manager(config_manager.clone())
+            .map_err(|error| error.message),
+    )?;
+
+    // WorkspaceMetadataRoot is stable; WorkspaceRoot can be retargeted at runtime.
+    let workspace_path = config.workspace_path;
+    tracing::info!(
+        "Resolved workspace path: {:?} ({:?})",
+        workspace_path,
+        config.workspace_path_source
+    );
+    let workspace_metadata_root =
+        WorkspaceMetadataRoot(Arc::new(RwLock::new(workspace_path.clone())));
+    let workspace_runtime_root: WorkspaceRoot = Arc::new(RwLock::new(workspace_path));
+    let tool_host_config = ProfileRecovery::startup_step(
+        "Failed to start Macro tool host",
+        tool_host::start(
+            workspace_metadata_root.clone(),
+            app.state::<GitState>().inner().clone(),
+        ),
+    )?;
+    app.manage(state_manager);
+    app.manage(config_manager);
+    app.manage(config_watcher);
+    app.manage(workspace_metadata_root);
+    app.manage(workspace_runtime_root);
+    app.manage(tool_host_config);
+
+    // No frontend consumer subscribes to fs:change. Keep the watcher
+    // dormant until a consumer and workspace-root retargeting exist.
+
+    // Initialize database asynchronously
+    tauri::async_runtime::spawn(async move {
+        match db::init_db(&app_handle).await {
+            Ok(pool) => match agsdl_host_flow030::interrupt_previous_runs030(&pool).await {
+                Ok(()) => match ai::chatgpt::recover_auth_mutations(&pool).await {
+                    Ok(()) => match pool_state.set_ready(pool).await {
+                        Ok(()) => tracing::info!("Database initialized successfully"),
+                        Err(error) => tracing::error!(
+                            "Failed to validate database opening: {}",
+                            error.message
+                        ),
+                    },
+                    Err(error) => {
+                        pool_state.set_failed(error.clone()).await;
+                        tracing::error!(
+                            "Failed to recover durable authentication mutations: {error}"
+                        );
+                    }
+                },
+                Err(error) => {
+                    pool_state.set_failed(error.message.clone()).await;
+                    tracing::error!("Failed to mark interrupted executions: {}", error.message);
+                }
+            },
+            Err(e) => {
+                pool_state.set_failed(e.to_string()).await;
+                tracing::error!("Failed to initialize database: {}", e);
+            }
+        }
+    });
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_process_environment();
@@ -679,174 +856,11 @@ pub fn run() {
                 });
             }
 
-            #[cfg(target_os = "macos")]
-            {
-                native_quit_consent::install(app.handle())?;
-                if let Some(window) = app.get_webview_window("main") {
-                    window.set_decorations(true)?;
-                    window.set_title_bar_style(TitleBarStyle::Overlay)?;
-                    window.set_background_color(Some(Color::from((9, 9, 11, 255))))?;
-                    macos_traffic_lights::install_fullscreen_recovery(&window)?;
-                }
-
-                let app_handle = app.handle().clone();
-                if let Err(error) = app_handle.run_on_main_thread(|| {
-                    if let Err(error) = macos_window_menu::rebind_visible_windows_menu() {
-                        tracing::warn!("Failed to rebind macOS Window menu: {}", error);
-                    }
-                }) {
-                    tracing::warn!("Failed to schedule macOS Window menu rebinding: {}", error);
-                }
-            }
-
-            let app_handle = app.handle().clone();
-            let pool_state = app.state::<DbPool>().inner().clone();
-            let app_data_dir = app_handle.path().app_data_dir()?;
-            let app_config_dir = app_handle.path().app_config_dir()?;
-            let config_root = config::resolve_config_root(&app_config_dir).map_err(|error| {
-                std::io::Error::other(format!(
-                    "Failed to resolve Macro configuration directory: {}",
-                    error.message
-                ))
-            })?;
-            let recovery = tauri::async_runtime::block_on(local_backup::process_startup(
-                &app_data_dir,
-                &config_root,
-            ))
-            .err();
-            let blocked = recovery.is_some();
-            app.manage(local_backup::StartupRecovery(recovery));
-            if blocked {
+            let recovery = initialize_desktop_profile(app).err();
+            if recovery.is_some() {
                 setup_pending_downgrade_activation.store(false, Ordering::Release);
-                return Ok(());
             }
-            // Prepared recovery must run before parsing potentially damaged runtime.json.
-            let mut config =
-                load_config().map_err(|error| std::io::Error::other(error.to_string()))?;
-            tracing::info!("Configured workspace path: {:?}", config.workspace_path);
-            let state_manager =
-                state_manager::StateManager::initialize(&app_data_dir).map_err(|error| {
-                    std::io::Error::other(format!(
-                        "Failed to initialize Macro state storage: {error}"
-                    ))
-                })?;
-            app.manage(state_manager);
-            let config_manager = tauri::async_runtime::block_on(config::ConfigManager::initialize(
-                config_root.clone(),
-            ))
-            .map_err(|error| {
-                std::io::Error::other(format!(
-                    "Failed to initialize Macro configuration: {}",
-                    error.message
-                ))
-            })?;
-            let config_snapshot = tauri::async_runtime::block_on(config_manager.get_snapshot(&[]))
-                .map_err(|error| {
-                    std::io::Error::other(format!(
-                        "Failed to read Macro runtime configuration: {}",
-                        error.message
-                    ))
-                })?;
-            if let Some(runtime) = config_snapshot.effective.get("runtime") {
-                apply_runtime_workspace(&mut config, runtime).map_err(|error| {
-                    std::io::Error::other(format!(
-                        "Failed to apply Macro runtime configuration: {error}"
-                    ))
-                })?;
-            }
-            config::install_runtime_config_manager(config_manager.clone()).map_err(|error| {
-                std::io::Error::other(format!(
-                    "Failed to install Macro configuration manager: {}",
-                    error.message
-                ))
-            })?;
-            let config_watcher = config::ConfigWatcher::start(
-                config_root,
-                config_manager.clone(),
-                app_handle.clone(),
-            )
-            .map_err(|error| {
-                std::io::Error::other(format!(
-                    "Failed to initialize Macro configuration watcher: {error}"
-                ))
-            })?;
-            app.manage(config_manager);
-            app.manage(config_watcher);
-            finalize_desktop_workspace_path(&mut config, &app_data_dir).map_err(|error| {
-                std::io::Error::other(format!(
-                    "Failed to resolve desktop workspace path: {}",
-                    error
-                ))
-            })?;
-
-            // Store workspace paths in app state
-            // - WorkspaceMetadataRoot: stable root used for workspace metadata CRUD
-            // - WorkspaceRoot: runtime root used by file tools/debug execution context
-            let workspace_path = config.workspace_path.clone();
-            if config.workspace_path_source.is_default() && !cfg!(debug_assertions) {
-                std::fs::create_dir_all(&workspace_path).map_err(|error| {
-                    std::io::Error::other(format!(
-                        "Failed to create default workspace directory {}: {}",
-                        workspace_path.display(),
-                        error
-                    ))
-                })?;
-            }
-            tracing::info!(
-                "Resolved workspace path: {:?} ({:?})",
-                workspace_path,
-                config.workspace_path_source
-            );
-            let workspace_metadata_root =
-                WorkspaceMetadataRoot(Arc::new(RwLock::new(workspace_path.clone())));
-            let workspace_runtime_root: WorkspaceRoot =
-                Arc::new(RwLock::new(workspace_path.clone()));
-            app.manage(workspace_metadata_root.clone());
-            app.manage(workspace_runtime_root);
-
-            let tool_host_config = tool_host::start(
-                workspace_metadata_root.clone(),
-                app.state::<GitState>().inner().clone(),
-            )?;
-            app.manage(tool_host_config);
-
-            // No frontend consumer subscribes to fs:change. Keep the watcher
-            // dormant until a consumer and workspace-root retargeting exist.
-
-            // Initialize database asynchronously
-            tauri::async_runtime::spawn(async move {
-                match db::init_db(&app_handle).await {
-                    Ok(pool) => match agsdl_host_flow030::interrupt_previous_runs030(&pool).await {
-                        Ok(()) => match ai::chatgpt::recover_auth_mutations(&pool).await {
-                            Ok(()) => match pool_state.set_ready(pool).await {
-                                Ok(()) => tracing::info!("Database initialized successfully"),
-                                Err(error) => tracing::error!(
-                                    "Failed to validate database opening: {}",
-                                    error.message
-                                ),
-                            },
-                            Err(error) => {
-                                pool_state.set_failed(error.clone()).await;
-                                tracing::error!(
-                                    "Failed to recover durable authentication mutations: {error}"
-                                );
-                            }
-                        },
-                        Err(error) => {
-                            pool_state.set_failed(error.message.clone()).await;
-                            tracing::error!(
-                                "Failed to mark interrupted executions: {}",
-                                error.message
-                            );
-                        }
-                    },
-                    Err(e) => {
-                        pool_state.set_failed(e.to_string()).await;
-                        tracing::error!("Failed to initialize database: {}", e);
-                    }
-                }
-            });
-
+            app.manage(local_backup::StartupRecovery(recovery));
             Ok(())
         })
         .invoke_handler(profile_handler![

@@ -1965,6 +1965,23 @@ pub struct ProfileRecovery {
     preserved_archive: Option<PathBuf>,
 }
 
+impl ProfileRecovery {
+    pub(crate) fn startup_step<T>(
+        context: &str,
+        result: std::result::Result<T, impl std::fmt::Display>,
+    ) -> std::result::Result<T, Self> {
+        result.map_err(|error| {
+            let diagnostics = format!("{context}: {error}");
+            tracing::error!(%diagnostics, "Profile startup failed");
+            Self {
+                kind: ProfileRecoveryKind::Startup,
+                diagnostics,
+                preserved_archive: None,
+            }
+        })
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct StartupRecovery(pub(crate) Option<ProfileRecovery>);
 
