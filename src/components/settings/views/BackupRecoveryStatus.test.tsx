@@ -4,6 +4,7 @@ import { I18nextProvider } from 'react-i18next';
 import { renderToStaticMarkup } from 'react-dom/server';
 import fr from '../../../i18n/locales/fr.json';
 import en from '../../../i18n/locales/en.json';
+import { ProfileStartupRecoveryError } from '../../../services/ipc/backup';
 import { BackupRecoveryStatus, BackupStartupRecovery } from './BackupRecoveryStatus';
 
 test('renders every native recovery status in French with separate technical diagnostics', async () => {
@@ -57,4 +58,19 @@ test('offers retry for a disconnected runtime without claiming the profile is da
     expect(html).not.toContain('archive');
     expect(html).not.toContain('Synthetic transport loss');
   }
+});
+
+test('renders native recovery actions before the profile opens', async () => {
+  const i18n = createInstance();
+  await i18n.init({ lng: 'fr', resources: { fr: { translation: fr } } });
+  const error = new ProfileStartupRecoveryError({
+    diagnostics: 'Synthetic restore failure',
+    preservedArchive: '/synthetic/preserved.zip',
+  });
+  const html = renderToStaticMarkup(<I18nextProvider i18n={i18n}><BackupStartupRecovery error={error} /></I18nextProvider>);
+  expect(html).toContain('Récupération du profil nécessaire');
+  expect(html).toContain('Réessayer</button>');
+  expect(html).toContain('Afficher l’archive conservée');
+  expect(html).toContain('Copier le diagnostic');
+  expect(html).toContain('Synthetic restore failure');
 });

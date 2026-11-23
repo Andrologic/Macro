@@ -220,6 +220,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
       case 'git_worktree_inspect': return { taskId: args.taskId, worktreePath: '/demo/luma', branchName: args.branchName, status: 'ready', isDirty: false };
       case 'db_get_initialization_status':
       case 'db_retry_initialize': return { status: 'ready', message: null };
+      case 'profile_startup_recovery': return null;
       case 'local_backup_status': return { browser: null };
       case 'config_get_snapshot':
       case 'config_list': return { ...structuredClone(config), documents: Object.keys(config.effective).map(k => document(k as ConfigDocumentKind)) };

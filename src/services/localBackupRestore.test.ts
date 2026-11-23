@@ -83,7 +83,8 @@ it('shows native profile recovery before reading backup status or configuration'
     getProfileStartupRecovery: async () => recovery,
     localBackupStatus,
   }));
-  const { restoreBackupBrowserState, ProfileStartupRecoveryError } = await import('./localBackup');
+  const { restoreBackupBrowserState } = await import('./localBackup');
+  const { ProfileStartupRecoveryError } = await import('./ipc/backup');
   const { createApplicationStartup } = await import('./applicationStartup');
   const renderRecovery = mock((error: unknown) => {
     expect(error).toBeInstanceOf(ProfileStartupRecoveryError);

@@ -1,11 +1,5 @@
 import * as ipc from './tauriIpc';
-import type { ProfileStartupRecovery } from './ipc/backup';
-
-export class ProfileStartupRecoveryError extends Error {
-  constructor(readonly recovery: ProfileStartupRecovery) {
-    super(recovery.diagnostics);
-  }
-}
+import { ProfileStartupRecoveryError } from './ipc/backup';
 
 // Keep aligned with CLIENT_KEYS in src-tauri/src/local_backup.rs. Missing keys
 // in historical archives are removed as part of whole-profile replacement.

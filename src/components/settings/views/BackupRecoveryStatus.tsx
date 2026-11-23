@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { revealProfileRecovery, retryProfileRecovery, type LocalBackupStatus } from '../../../services/tauriIpc';
-import { ProfileStartupRecoveryError } from '../../../services/localBackup';
+import { ProfileStartupRecoveryError, revealProfileRecovery, retryProfileRecovery } from '../../../services/ipc/backup';
+import type { LocalBackupStatus } from '../../../services/tauriIpc';
 
 const statusKeys = {
   exported: 'backup.resultExported',

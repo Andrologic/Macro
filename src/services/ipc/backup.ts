@@ -15,6 +15,12 @@ export interface ProfileStartupRecovery {
   preservedArchive: string | null;
 }
 
+export class ProfileStartupRecoveryError extends Error {
+  constructor(readonly recovery: ProfileStartupRecovery) {
+    super(recovery.diagnostics);
+  }
+}
+
 export const getProfileStartupRecovery = (): Promise<ProfileStartupRecovery | null> =>
   invoke('profile_startup_recovery');
 
