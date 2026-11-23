@@ -1950,10 +1950,18 @@ pub(crate) fn has_pending_startup_work(data: &Path) -> Result<bool> {
     Ok(false)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ProfileRecoveryKind {
+    Startup,
+    Restore,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileRecovery {
-    diagnostics: String,
+    pub(crate) kind: ProfileRecoveryKind,
+    pub(crate) diagnostics: String,
     preserved_archive: Option<PathBuf>,
 }
 
@@ -1974,6 +1982,8 @@ pub(crate) fn guard_profile_commands<R: tauri::Runtime>(
                     | "profile_recovery_retry"
                     | "profile_recovery_reveal"
                     | "show_main_window"
+                    | "window_close"
+                    | "window_minimize"
             )
         {
             invoke.resolver.reject("Profile recovery is required");
@@ -1999,6 +2009,11 @@ pub async fn process_startup(
         let data = resolved.as_deref().unwrap_or(data);
         let dir = data.join("local-backup");
         let journal = dir.join("restoring.json");
+        let kind = if safe_parent(&dir, data).is_ok() && fs::symlink_metadata(&journal).is_ok() {
+            ProfileRecoveryKind::Restore
+        } else {
+            ProfileRecoveryKind::Startup
+        };
         let preserved_archive = safe_parent(&journal, data)
             .and_then(|()| read_bounded(&journal))
             .ok()
@@ -2006,6 +2021,7 @@ pub async fn process_startup(
             .and_then(|marker| preserved_path(&dir, &marker).ok());
         tracing::error!(%diagnostics, "Profile recovery is required");
         ProfileRecovery {
+            kind,
             diagnostics,
             preserved_archive,
         }
@@ -2038,6 +2054,9 @@ pub(crate) fn profile_recovery_reveal(
 ) -> Result<()> {
     use tauri_plugin_opener::OpenerExt;
     let recovery = state.0.as_ref().ok_or("Profile recovery is not active")?;
+    if recovery.kind != ProfileRecoveryKind::Restore {
+        return Err("Restore recovery is not active".into());
+    }
     if let Some(path) = &recovery.preserved_archive {
         app.opener().reveal_item_in_dir(path)
     } else {

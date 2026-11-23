@@ -1351,7 +1351,13 @@ pub fn run() {
             commands::pilot_secrets::suspend("window_destroyed");
             app_handle.state::<connect::TransferRuntime>().revoke();
         }
-        tauri::RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
+        tauri::RunEvent::ExitRequested { api, code, .. }
+            if code.is_none()
+                && app_handle
+                    .state::<local_backup::StartupRecovery>()
+                    .0
+                    .is_none() =>
+        {
             tracing::info!(event = "app_shutdown_exit_request", explicit = false);
             api.prevent_exit();
             if let Some(window) = app_handle.get_webview_window("main") {
