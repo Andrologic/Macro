@@ -10,9 +10,9 @@ use crate::db::{
 use sqlx::{Connection, SqlitePool};
 use std::path::Path;
 
-// C3 enables upgrades when the project editor and recovery views are ready.
-// Profiles already on 049 can still open and be restored while this is off.
-const ENABLE_CUTOVER: bool = false;
+// The project editor can open the artifact layout. Keep cutover gated by
+// the legacy discovery marker inside migrate().
+const ENABLE_CUTOVER: bool = true;
 
 pub(crate) async fn startup(pool: &SqlitePool, app_data: &Path) -> DbResult<()> {
     if ENABLE_CUTOVER || index::is_current(&mut *pool.acquire().await?).await? {

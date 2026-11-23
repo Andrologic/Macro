@@ -133,7 +133,9 @@ pub enum BackendError {
     #[error("{0}")]
     AgsdlUpgrade(String),
     #[error("{}", diagnostic.message)]
-    Architect { diagnostic: Box<crate::architect_library::Diagnostic> },
+    Architect {
+        diagnostic: Box<crate::architect_library::Diagnostic>,
+    },
 
     #[error("Revision conflict: {message}")]
     RevisionConflict { message: String },

@@ -158,7 +158,9 @@ pub(crate) fn summary(row: &sqlx::sqlite::SqliteRow) -> DbResult<Summary> {
     })
 }
 
-pub(crate) fn history(row: &sqlx::sqlite::SqliteRow) -> DbResult<Option<serde_json::Map<String, Value>>> {
+pub(crate) fn history(
+    row: &sqlx::sqlite::SqliteRow,
+) -> DbResult<Option<serde_json::Map<String, Value>>> {
     let history: Option<&str> = row.try_get("history")?;
     history
         .map(serde_json::from_str)

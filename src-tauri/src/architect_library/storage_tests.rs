@@ -785,3 +785,75 @@ async fn import_and_exports_share_staged_bytes_and_keep_opaque_files_native() {
         .unwrap();
     assert!(matches!(read.content, ProjectFile::Binary { .. }));
 }
+
+#[tokio::test]
+async fn startup_enables_project_opening_for_a_profile_created_by_step_one_writers() {
+    use crate::legacy_agsdl_import::{migrate_profile, LegacyImportStatus, LegacyLocalStorage};
+    let app_data = tempfile::tempdir().unwrap();
+    let path = app_data.path().join("macro.db");
+    let pool = create_pool(&path).await.unwrap();
+    migration::startup(&pool, app_data.path()).await.unwrap();
+    assert!(!index::is_current(&mut *pool.acquire().await.unwrap())
+        .await
+        .unwrap());
+
+    let project = db::create_project(&pool, "Step One".into()).await.unwrap();
+    let project_id = serde_json::to_value(project).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let source = r#"{"contract":"agsdl-0.4.0","id":"first-system","title":"Step One","agents":{"reviewer":{"harness":"codex","permissions":"read-only","instructions":"Review the changes."}}}"#;
+    let draft = db::create_blueprint(
+        &pool,
+        project_id,
+        "Blueprint".into(),
+        Document {
+            source: source.into(),
+            annexes: Default::default(),
+            metadata: Default::default(),
+        },
+    )
+    .await
+    .unwrap();
+    let id = draft.summary.id;
+    db::save_version(&pool, id.clone(), 1, Some("Step one version".into()), None)
+        .await
+        .unwrap();
+    let import = migrate_profile(
+        &pool,
+        Ok(Vec::new()),
+        None,
+        LegacyLocalStorage::NotApplicable,
+    )
+    .await
+    .unwrap();
+    assert_eq!(import.status, LegacyImportStatus::Complete);
+    pool.close().await;
+
+    let pool = create_pool(&path).await.unwrap();
+    migration::startup(&pool, app_data.path()).await.unwrap();
+    let storage = Storage::new(app_data.path());
+    let draft = storage.open_draft_project(&pool, &id).await.unwrap();
+    let draft_project = draft.project.projection.unwrap();
+    assert_eq!(draft.project.revision, 1);
+    assert_eq!(draft_project.origins["/agents/reviewer"].pointer, "");
+    assert!(draft_project.source.contains("Review the changes."));
+    let version = storage
+        .open_version_project(
+            &pool,
+            &VersionKey {
+                blueprint_id: id,
+                number: 1,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        version.project.projection.unwrap().source,
+        draft_project.source
+    );
+    assert_eq!(
+        serde_json::to_value(version.summary).unwrap()["note"],
+        "Step one version"
+    );
+}
