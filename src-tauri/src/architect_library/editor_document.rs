@@ -386,6 +386,11 @@ pub(super) fn split(mut document: Document) -> std::result::Result<Split, String
         project::MANIFEST.into(),
         serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
     );
+    // Argentic keeps the schema hint on disk but omits it from the assembled document.
+    normalized
+        .as_object_mut()
+        .expect("object checked above")
+        .remove("$schema");
     Ok(Split {
         settings,
         authoring,

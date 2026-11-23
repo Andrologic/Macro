@@ -857,3 +857,44 @@ async fn startup_enables_project_opening_for_a_profile_created_by_step_one_write
         "Step one version"
     );
 }
+
+#[tokio::test]
+async fn schema_hint_survives_migration_without_blocking_archive_or_freeze() {
+    let temp = tempfile::tempdir().unwrap();
+    let pool = create_pool(&temp.path().join("macro.db")).await.unwrap();
+    let mut document = editor("Schema hint");
+    let legacy_schema =
+        "https://raw.githubusercontent.com/Andrologic/AgSDL/v0.3.0/schema/agsdl.schema.json";
+    document.source =
+        document
+            .source
+            .replacen('{', &format!(r#"{{"$schema":"{legacy_schema}","#), 1);
+    let raw = envelope(&document);
+    seed(&pool, &raw).await;
+    historical(&pool, 1, 3, &raw).await;
+    let storage = Storage::new(temp.path());
+    migration::migrate(&pool, &storage).await.unwrap();
+
+    let draft = storage.open_draft_project(&pool, BLUEPRINT).await.unwrap();
+    assert!(draft.project.projection.is_some());
+    let archive = storage
+        .open_archive(&version_artifact(&pool, 1).await)
+        .unwrap();
+    let manifest = archive
+        .members()
+        .find(|file| file.path == "agsdl.json")
+        .unwrap();
+    let value: Value = serde_json::from_slice(manifest.bytes).unwrap();
+    assert_eq!(value["$schema"], legacy_schema.replace("v0.3.0", "v0.4.0"));
+    storage
+        .freeze(&pool, BLUEPRINT.into(), 5, None, None)
+        .await
+        .unwrap();
+
+    let retained = temp.path().join("original.json");
+    storage
+        .export_original(&pool, BLUEPRINT.into(), 3, Some(1), &retained)
+        .await
+        .unwrap();
+    assert_eq!(fs::read(retained).unwrap(), raw.as_bytes());
+}
