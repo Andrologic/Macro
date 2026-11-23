@@ -13,6 +13,13 @@ import { notify } from "../ui/toastService";
 
 const codexSetupGuide = "https://github.com/Andrologic/Macro/blob/develop/docs/agsdl-codex-native.md#private-login";
 
+const interpreterEnvironment = new Set([
+  "HOME", "TMPDIR", "TMP", "TEMP", "IFS", "CDPATH", "FPATH", "ZDOTDIR",
+  "NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP",
+  "RUBYOPT", "RUBYLIB", "PERL5OPT", "PERL5LIB", "PERLLIB", "LUA_PATH", "LUA_CPATH",
+  "CLASSPATH", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS",
+]);
+
 function archiveErrorText(failure: unknown, t: ReturnType<typeof useAgsdlTranslation>["t"]): string {
   const diagnostic = failure as { code?: string; source?: { path: string; pointer: string } } | null;
   if (diagnostic?.code === "MCP_SECRET_RESERVED") {
@@ -359,6 +366,13 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
             </li>)}
           {current.permissions.directCalls.filter(call => call.usage === "reachable").map(({ location, target }) =>
             <li key={JSON.stringify(location)}>{target.type === "shell" ? target.command : `${target.server} · ${target.tool}`}</li>)}
+          {Object.entries(current.permissions.mcpServers).some(([, server]) => server.usage !== "declaredOnly") && (
+            <li>{t("agsdl.launch.mcpConsentScope")}</li>
+          )}
+          {current.secrets.filter(secret => interpreterEnvironment.has(secret.name)).map(secret =>
+            <li key={JSON.stringify([secret.server, secret.name])}>
+              {t("agsdl.launch.mcpInterpreterSecret", { server: secret.server, name: secret.name })}
+            </li>)}
           {current.permissions.externalReferences.filter(reference => reference.usage !== "declaredOnly").map(reference =>
             <li key={JSON.stringify(reference.location)}>{reference.uri}</li>)}
         </ul>}

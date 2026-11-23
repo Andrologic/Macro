@@ -37,6 +37,8 @@
     "failed": "Macro could not complete the operation.",
     "modelUnavailable": "The requested model or effort is unavailable in the installed harness.",
     "secrets": "MCP secrets",
+    "mcpConsentScope": "Approval covers the MCP server code and its declared files. Review any files the server reads or runs in your working folder separately.",
+    "mcpInterpreterSecret": "{{server}} receives {{name}} as a secret. Its interpreter may use this variable to change what it loads or runs.",
     "noSecrets": "This version requires no MCP secrets.",
     "secretStored": "Saved in the local vault",
     "saveSecret": "Save secret",

@@ -37,6 +37,8 @@
     "failed": "Macro konnte den Vorgang nicht abschließen.",
     "modelUnavailable": "Das angeforderte Modell oder die Aufwandsstufe ist in der installierten Laufzeit nicht verfügbar.",
     "secrets": "MCP-Geheimnisse",
+    "mcpConsentScope": "Die Freigabe gilt für den Code des MCP-Servers und seine deklarierten Dateien. Prüfe separat alle Dateien, die der Server in deinem Arbeitsordner liest oder ausführt.",
+    "mcpInterpreterSecret": "{{server}} erhält {{name}} als Geheimnis. Der Interpreter kann diese Variable verwenden, um zu ändern, was er lädt oder ausführt.",
     "noSecrets": "Diese Version benötigt keine MCP-Geheimnisse.",
     "secretStored": "Im lokalen Tresor gespeichert",
     "saveSecret": "Geheimnis speichern",

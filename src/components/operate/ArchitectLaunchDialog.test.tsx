@@ -191,3 +191,30 @@ it("preserves the file and pointer when a reserved secret prevents archive previ
   expect(alert).toContain("secrets.json#/worker/0");
   expect(submit().disabled).toBe(true);
 });
+
+it("explains the approval scope and flags interpreter environment secrets", async () => {
+  const current = preview({
+    consentToken: "permission-review",
+    secrets: [
+      { server: "worker", name: "HOME", stored: true },
+      { server: "worker", name: "NODE_OPTIONS", stored: true },
+      { server: "worker", name: "API_TOKEN", stored: true },
+    ],
+  });
+  current.permissions.mcpServers.worker = {
+    usage: "reachable", transport: { type: "local", command: ["serve"] },
+    packagedFiles: ["serve"], requiredSecrets: ["HOME", "NODE_OPTIONS", "API_TOKEN"],
+  };
+  install(command => {
+    if (command === "architect_launch_prepare") return current;
+    throw new Error(command);
+  });
+  await show(archive);
+  await act(async () => submit().click());
+  const text = dialog().textContent;
+  expect(text).toContain("Approval covers the MCP server code and its declared files.");
+  expect(text).toContain("Review any files the server reads or runs in your working folder separately.");
+  expect(text).toContain("worker receives HOME as a secret.");
+  expect(text).toContain("worker receives NODE_OPTIONS as a secret.");
+  expect(text).not.toContain("API_TOKEN");
+});

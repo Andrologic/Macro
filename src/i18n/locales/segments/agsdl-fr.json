@@ -37,6 +37,8 @@
     "failed": "Macro n’a pas pu terminer l’opération.",
     "modelUnavailable": "Le modèle ou le niveau d’effort demandé est indisponible dans le harnais installé.",
     "secrets": "Secrets MCP",
+    "mcpConsentScope": "Votre accord couvre le code du serveur MCP et les fichiers qu’il déclare. Vérifiez séparément les fichiers que le serveur lit ou exécute dans votre dossier de travail.",
+    "mcpInterpreterSecret": "Le serveur {{server}} reçoit le secret {{name}}. Son interpréteur peut utiliser cette variable pour modifier les fichiers qu’il charge ou exécute.",
     "noSecrets": "Cette version ne demande aucun secret MCP.",
     "secretStored": "Enregistré dans le coffre local",
     "saveSecret": "Enregistrer le secret",

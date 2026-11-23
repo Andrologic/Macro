@@ -340,6 +340,7 @@ fn permissions(input: &VersionInput, preview: &ImportPreview) -> Result<Permissi
             })
             .collect();
         let digest = Sha256::digest(serde_json::to_vec(&(
+            "archive-mcp-consent/2",
             &server.transport,
             &server.required_secrets,
             assets,

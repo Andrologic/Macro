@@ -37,6 +37,8 @@
     "failed": "Macro no pudo completar la operación.",
     "modelUnavailable": "El modelo o nivel de esfuerzo solicitado no está disponible en el entorno instalado.",
     "secrets": "Secretos de MCP",
+    "mcpConsentScope": "La aprobación cubre el código del servidor MCP y los archivos que declara. Revisa por separado los archivos que el servidor lea o ejecute en tu carpeta de trabajo.",
+    "mcpInterpreterSecret": "{{server}} recibe {{name}} como secreto. Su intérprete puede usar esta variable para cambiar lo que carga o ejecuta.",
     "noSecrets": "Esta versión no requiere secretos de MCP.",
     "secretStored": "Guardado en el almacén local",
     "saveSecret": "Guardar secreto",
