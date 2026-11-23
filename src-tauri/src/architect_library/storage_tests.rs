@@ -408,3 +408,98 @@ async fn current_ui_can_repair_an_incomplete_draft_after_cutover() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn executable_archive_members_survive_adaptation_and_freeze_without_unix_modes() {
+    let temp = tempfile::tempdir().unwrap();
+    let pool = create_pool(&temp.path().join("macro.db")).await.unwrap();
+    seed(&pool, &envelope(&editor("Executable"))).await;
+    let storage = Storage::new(temp.path());
+    migration::migrate(&pool, &storage).await.unwrap();
+
+    let member = "agents/assets/résumé.md";
+    let original_artifact = storage.artifact_path(&draft_artifact(&pool).await);
+    let sidecar = original_artifact.join(super::storage::AUTHORING);
+    let mut authoring: Value = serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
+    authoring["executablePaths"] = json!([member]);
+    fs::write(&sidecar, serde_json::to_vec(&authoring).unwrap()).unwrap();
+    storage
+        .freeze(&pool, BLUEPRINT.into(), 5, None, None)
+        .await
+        .unwrap();
+    let original = storage
+        .open_archive(&version_artifact(&pool, 8).await)
+        .unwrap();
+    assert!(
+        original
+            .members()
+            .find(|file| file.path == member)
+            .unwrap()
+            .executable
+    );
+    drop(original);
+
+    let draft = storage
+        .adapt_version(&pool, key(8), "project".into(), "Adapted".into())
+        .await
+        .unwrap();
+    let view = serde_json::to_value(draft).unwrap();
+    let adapted = view["id"].as_str().unwrap();
+    let row = index::draft_row(&pool, adapted).await.unwrap();
+    let artifact = Artifact::from_row(&row, "id").unwrap();
+    let path = storage.artifact_path(&artifact);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            path.join(PROJECT).join(member),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+    }
+    let opened = argentic_runtime::source::OpenedSource::open_path(&path.join(PROJECT)).unwrap();
+    assert!(
+        !opened
+            .selected_files()
+            .unwrap()
+            .find(|file| file.path == member)
+            .unwrap()
+            .executable
+    );
+    drop(opened);
+
+    storage
+        .freeze(&pool, adapted.into(), 1, None, None)
+        .await
+        .unwrap();
+    storage
+        .save_draft(&pool, adapted.into(), 1, editor("Edited"))
+        .await
+        .unwrap();
+    storage
+        .freeze(
+            &pool,
+            adapted.into(),
+            2,
+            None,
+            Some(editor("Edited at freeze")),
+        )
+        .await
+        .unwrap();
+    for number in [1, 2] {
+        let version = VersionKey {
+            blueprint_id: adapted.into(),
+            number,
+        };
+        let row = index::version_row(&pool, &version).await.unwrap();
+        let artifact = Artifact::from_row(&row, "blueprint_id").unwrap();
+        let archive = storage.open_archive(&artifact).unwrap();
+        assert!(
+            archive
+                .members()
+                .find(|file| file.path == member)
+                .unwrap()
+                .executable
+        );
+    }
+}

@@ -98,6 +98,8 @@ pub(super) struct Authoring {
     // A version carries unselected files here so local adaptation can recover them.
     unselected_files: BTreeMap<String, String>,
     fallback_source: Option<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub(super) executable_paths: BTreeSet<String>,
     pub(super) diagnostics: Vec<String>,
 }
 
@@ -188,6 +190,10 @@ impl Authoring {
     pub(super) fn for_version(&self, root: &Path, source: &OpenedSource) -> Result<Self> {
         let selected: BTreeSet<_> = project::members(source)?.map(|file| file.path).collect();
         let mut authoring = self.clone();
+        authoring.executable_paths = project::members(source)?
+            .filter(|file| file.executable || self.executable_paths.contains(file.path))
+            .map(|file| file.path.to_owned())
+            .collect();
         authoring.fallback_source = None;
         for path in self.annex_paths.values() {
             if !selected.contains(path.as_str()) {
@@ -220,6 +226,15 @@ pub(super) struct Split {
     pub resources_complete: bool,
     pub upgraded: bool,
     pub source: String,
+}
+
+impl Split {
+    pub(super) fn inherit_executables(&mut self, paths: BTreeSet<String>) {
+        self.authoring.executable_paths = paths
+            .into_iter()
+            .filter(|path| self.files.contains_key(path))
+            .collect();
+    }
 }
 
 const SECTIONS: &[(&str, &str)] = &[

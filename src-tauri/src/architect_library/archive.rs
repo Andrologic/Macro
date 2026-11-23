@@ -4,12 +4,13 @@ use super::{
 };
 use argentic_runtime::source::{OpenedSource, SelectedFile};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use uuid::Uuid;
-use zip::ZipArchive;
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 pub const ARCHIVE_FORMAT: &str = "agsdl-archive-1";
 pub const VERSION_FILENAME: &str = "version.agsdl";
@@ -150,17 +151,70 @@ impl StagedVersion {
 /// Build a deterministic archive. Drop the original decoded members before
 /// verifying the archive, so the verifier holds the only decoded selection.
 pub fn stage_version(source: OpenedSource, staging_root: &Path) -> Result<StagedVersion> {
+    stage_with_executables(source, staging_root, &BTreeSet::new())
+}
+
+pub(super) fn stage_with_executables(
+    source: OpenedSource,
+    staging_root: &Path,
+    executable_paths: &BTreeSet<String>,
+) -> Result<StagedVersion> {
     let directory = private_directory(staging_root, ".agsdl-version-")?;
     let path = directory.path().join(VERSION_FILENAME);
     {
         let mut file = create_archive_file(&path)?;
-        source.write_archive(&mut file)?;
+        let needs_override = !executable_paths.is_empty()
+            && project::members(&source)?
+                .any(|member| !member.executable && executable_paths.contains(member.path));
+        if needs_override {
+            write_archive_with_executables(&source, executable_paths, &mut file)?;
+        } else {
+            source.write_archive(&mut file)?;
+        }
         file.sync_all()?;
     }
     drop(source);
     OpenedSource::open_path(&path)?;
     let sha256 = digest(&path)?;
     Ok(StagedVersion { directory, sha256 })
+}
+
+// The pinned writer takes the mode from the opened filesystem. Windows
+// materialization keeps modes in Macro metadata because NTFS has no execute bit.
+fn write_archive_with_executables(
+    source: &OpenedSource,
+    executable_paths: &BTreeSet<String>,
+    file: &mut File,
+) -> Result<()> {
+    let mut zip = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    let mut files = serde_json::Map::new();
+    for member in project::members(source)? {
+        let executable = member.executable || executable_paths.contains(member.path);
+        zip.start_file(
+            format!("project/{}", member.path),
+            options.unix_permissions(if executable { 0o755 } else { 0o644 }),
+        )?;
+        zip.write_all(member.bytes)?;
+        files.insert(
+            member.path.to_owned(),
+            serde_json::json!({
+                "size": member.bytes.len(),
+                "sha256": format!("{:x}", Sha256::digest(member.bytes)),
+                "executable": executable,
+            }),
+        );
+    }
+    zip.start_file("archive.json", options.unix_permissions(0o644))?;
+    serde_json::to_writer(
+        &mut zip,
+        &serde_json::json!({
+            "archiveFormat": ARCHIVE_FORMAT, "files": files,
+        }),
+    )?;
+    zip.write_all(b"\n")?;
+    zip.finish()?;
+    Ok(())
 }
 
 pub(super) fn stage_exact(archive: VerifiedArchive, staging_root: &Path) -> Result<StagedVersion> {

@@ -164,7 +164,11 @@ impl Storage {
         authoring: &Authoring,
     ) -> Result<Artifact> {
         let version_authoring = authoring.for_version(root, &source)?;
-        let stage = archive::stage_version(source, &self.staging()?)?;
+        let stage = archive::stage_with_executables(
+            source,
+            &self.staging()?,
+            &version_authoring.executable_paths,
+        )?;
         sidecars(stage.directory(), settings, &version_authoring)?;
         let bucket = self.bucket(blueprint_id, StorageState::Archive);
         ensure_dir(&bucket)?;
@@ -251,9 +255,11 @@ impl Storage {
         &self,
         blueprint: &str,
         document: Document,
+        executable_paths: BTreeSet<String>,
     ) -> Result<(Artifact, Document, Vec<String>)> {
         match editor_document::split(document.clone()) {
-            Ok(split) => {
+            Ok(mut split) => {
+                split.inherit_executables(executable_paths);
                 let draft = self.stage_split(split)?;
                 let document = draft.document()?;
                 let diagnostics = draft.authoring.diagnostics.clone();
@@ -270,6 +276,14 @@ impl Storage {
                 Ok((artifact, document, diagnostics))
             }
         }
+    }
+
+    fn draft_executables(&self, artifact: &Artifact) -> Result<BTreeSet<String>> {
+        if artifact.state != StorageState::Draft {
+            return Ok(BTreeSet::new());
+        }
+        let (_, authoring) = read_sidecars(&self.artifact_path(artifact))?;
+        Ok(authoring.executable_paths)
     }
 
     fn read_draft(&self, artifact: &Artifact) -> Result<(Document, Vec<String>)> {
@@ -353,7 +367,8 @@ impl Storage {
     ) -> DbResult<Draft> {
         let _lease = self.lease(true).await?;
         let id = Uuid::new_v4().to_string();
-        let (artifact, document, diagnostics) = self.publish_editor(&id, document)?;
+        let (artifact, document, diagnostics) =
+            self.publish_editor(&id, document, BTreeSet::new())?;
         let mut writer = index::durable_writer(pool).await?;
         let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
         let row = index::insert_draft(&mut tx, &project, &name, &artifact, None).await?;
@@ -377,7 +392,10 @@ impl Storage {
         document: Document,
     ) -> DbResult<Draft> {
         let _lease = self.lease(true).await?;
-        let (artifact, document, diagnostics) = self.publish_editor(&id, document)?;
+        let row = index::draft_row(pool, &id).await?;
+        let current = Artifact::from_row(&row, "id")?;
+        let paths = self.draft_executables(&current)?;
+        let (artifact, document, diagnostics) = self.publish_editor(&id, document, paths)?;
         let mut writer = index::durable_writer(pool).await?;
         let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
         let row = index::update_draft(&mut tx, expected, &artifact).await?;
@@ -407,7 +425,8 @@ impl Storage {
         let mut updated = None;
         let mut converted = None;
         let artifact = if let Some(document) = edited {
-            let split = editor_document::split(document).map_err(DbError::AgsdlUpgrade)?;
+            let mut split = editor_document::split(document).map_err(DbError::AgsdlUpgrade)?;
+            split.inherit_executables(self.draft_executables(&Artifact::from_row(&row, "id")?)?);
             let mut draft = self.stage_split(split)?;
             if draft.upgraded {
                 converted = Some(draft.document()?);
@@ -511,7 +530,12 @@ impl Storage {
             let root = stage.path().join(PROJECT);
             fs::rename(project.path(), &root).map_err(Error::from)?;
             let _ = project.keep();
-            let authoring = authoring.restore_unselected(&root)?;
+            let mut authoring = authoring.restore_unselected(&root)?;
+            authoring.executable_paths = version
+                .members()
+                .filter(|file| file.executable)
+                .map(|file| file.path.to_owned())
+                .collect();
             let document = authoring.project_document(&settings, &root, Some(version.source()))?;
             let diagnostics = authoring.diagnostics.clone();
             sidecars(stage.path(), &settings, &authoring)?;
