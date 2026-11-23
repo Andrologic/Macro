@@ -1,6 +1,7 @@
 //! Local profile archives. All profile mutations run before DB/config initialization.
 use crate::architect_library::{
     editor_document::{portable_path, Paths},
+    private_directory,
     storage::{self, Storage},
 };
 use crate::db::architect_library::storage_index;
@@ -96,6 +97,20 @@ pub enum BackupStatusCode {
     RolledBack,
     Failed,
     InvalidRequest,
+}
+
+fn private_staging(data: &Path) -> Result<tempfile::TempDir> {
+    #[cfg(unix)]
+    let root = {
+        let _ = data;
+        std::env::temp_dir()
+    };
+    #[cfg(windows)]
+    let root = {
+        storage::ensure_dir(data, data).map_err(|error| error.to_string())?;
+        data.to_path_buf()
+    };
+    private_directory(&root, ".macro-backup-").map_err(|error| error.to_string())
 }
 
 fn hash(bytes: &[u8]) -> String {
@@ -724,6 +739,7 @@ async fn check_database_startup(path: &Path) -> Result<()> {
 }
 async fn snapshot_database(source: &Path, target: &Path, portable: bool) -> Result<()> {
     let mut db = connection(source).await?;
+    write_new(target, &[])?;
     sqlx::query("VACUUM INTO ?")
         .bind(target.to_string_lossy().as_ref())
         .execute(&mut db)
@@ -1003,7 +1019,7 @@ async fn capture(
 ) -> Result<Archive> {
     validate_profile_paths(data, config)?;
     validate_browser(&browser)?;
-    let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let temp = private_staging(data)?;
     let db_path = temp.path().join("macro.db");
     let storage = Storage::new(data);
     let _lease = storage
@@ -1013,7 +1029,7 @@ async fn capture(
     snapshot_database(&data.join("macro.db"), &db_path, portable).await?;
     let mut files = BTreeMap::new();
     add_file(&mut files, "data/macro.db".into(), read_bounded(&db_path)?)?;
-    let artifacts = Arc::new(tempfile::tempdir().map_err(|error| error.to_string())?);
+    let artifacts = Arc::new(private_staging(data)?);
     for artifact in architect_references(&db_path).await? {
         let path = storage.artifact_path(&artifact);
         safe_parent(&path, data)?;
@@ -1067,7 +1083,7 @@ async fn capture(
         browser,
     })
 }
-async fn validate(archive: &Archive) -> Result<()> {
+async fn validate(archive: &Archive, data: &Path) -> Result<()> {
     if archive.format != "macro-local-profile"
         || archive.version != 1
         || archive.app_version != env!("CARGO_PKG_VERSION")
@@ -1088,7 +1104,7 @@ async fn validate(archive: &Archive) -> Result<()> {
     {
         return Err("Browser state integrity check failed".into());
     }
-    let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let temp = private_staging(data)?;
     let mut total = 0usize;
     for (name, entry) in &archive.files {
         let path = destination(name, temp.path(), temp.path())?;
@@ -1099,9 +1115,10 @@ async fn validate(archive: &Archive) -> Result<()> {
             return Err("Backup too large".into());
         }
         if name.starts_with(ARCHITECT_FILES) {
-            atomic_write(&path, entry.executable, |file| {
-                entry.copy_verified(name, file)
-            })?;
+            let output = bundle::create_stage_file(temp.path(), &path)?;
+            entry
+                .copy_verified(name, output)
+                .map_err(|error| error.to_string())?;
             continue;
         }
         let bytes = STANDARD.decode(&entry.data).map_err(|e| e.to_string())?;
@@ -1109,7 +1126,7 @@ async fn validate(archive: &Archive) -> Result<()> {
             return Err(format!("Integrity check failed for {name}"));
         }
         if name == "data/macro.db" {
-            fs::write(temp.path().join("macro.db"), &bytes).map_err(|e| e.to_string())?;
+            write_new(&path, &bytes)?;
         }
         if name == "data/state.json" {
             crate::state_manager::validate_backup_state(&bytes)?;
@@ -1168,7 +1185,7 @@ fn capture_raw(data: &Path, config: &Path, browser: BTreeMap<String, String>) ->
     for file in PROVIDER_SECRETS_RECOVERY_FILES {
         add_optional_raw(&mut files, format!("data/{file}"), &data.join(file))?;
     }
-    let artifacts = Arc::new(tempfile::tempdir().map_err(|error| error.to_string())?);
+    let artifacts = Arc::new(private_staging(data)?);
     collect_artifacts(
         data,
         &data.join("architect-library/blueprints"),
@@ -1246,7 +1263,8 @@ fn preserve_raw(archive: &Archive, path: &Path) -> Result<()> {
     fs::File::open(path.parent().ok_or("Missing preservation directory")?)
         .and_then(|file| file.sync_all())
         .map_err(|e| e.to_string())?;
-    validate_raw(&load_archive(path)?)
+    let directory = path.parent().ok_or("Missing preservation directory")?;
+    validate_raw(&load_archive(path, directory)?)
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1506,15 +1524,15 @@ fn apply_files(archive: &Archive, data: &Path, config: &Path, raw: bool) -> Resu
     }
     Ok(())
 }
-fn load_archive(path: &Path) -> Result<Archive> {
-    bundle::load(path)
+fn load_archive(path: &Path, data: &Path) -> Result<Archive> {
+    bundle::load(path, data)
 }
 
-async fn load_restore_archive(path: &Path) -> Result<Archive> {
-    let mut archive = load_archive(path)?;
+async fn load_restore_archive(path: &Path, data: &Path) -> Result<Archive> {
+    let mut archive = load_archive(path, data)?;
     if archive.format == "macro-raw-profile" {
         validate_raw(&archive)?;
-        let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let temp = private_staging(data)?;
         for name in ["data/macro.db", "data/macro.db-wal", "data/macro.db-shm"] {
             if let Some(entry) = archive.files.get(name) {
                 let bytes = STANDARD
@@ -1554,11 +1572,11 @@ async fn load_restore_archive(path: &Path) -> Result<Archive> {
         archive.format = "macro-local-profile".into();
     } else {
         // Verify original checksums before detaching identities in older portable archives.
-        validate(&archive).await?;
+        validate(&archive, data).await?;
         make_config_file_portable(&mut archive.files, "tools.json")?;
     }
     make_state_file_portable(&mut archive.files)?;
-    validate(&archive).await?;
+    validate(&archive, data).await?;
     Ok(archive)
 }
 
@@ -1611,8 +1629,9 @@ async fn process_startup_locked(
         -> std::result::Result<(), crate::secrets::SecretError>,
 ) -> Result<()> {
     let dir = data.join("local-backup");
-    safe_parent(&dir, dir.parent().ok_or("Missing profile root")?)?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    safe_parent(&dir, data)?;
+    fs::create_dir_all(data).map_err(|error| error.to_string())?;
+    storage::ensure_dir(data, &dir).map_err(|error| error.to_string())?;
     let journal = dir.join("restoring.json");
     if journal.exists() {
         let mut marker: RestoreJournal =
@@ -1623,7 +1642,7 @@ async fn process_startup_locked(
                 .lease(true)
                 .await
                 .map_err(|error| error.to_string())?;
-            let original = load_archive(&preserved_path(&dir, &marker)?)?;
+            let original = load_archive(&preserved_path(&dir, &marker)?, data)?;
             validate_raw(&original)?;
             apply_files(&original, data, config, true)?;
             let status = BackupStatus {
@@ -1679,13 +1698,13 @@ async fn process_startup_locked(
         if request.operation == "export" {
             validate_export_path(Path::new(&request.path), data, config)?;
             let archive = capture(data, config, request.browser, true).await?;
-            validate(&archive).await?;
+            validate(&archive, data).await?;
             publish_new(Path::new(&request.path), |file| bundle::write(&archive, file))?;
             Ok(BackupStatus { message: String::new(), code: Some(BackupStatusCode::Exported), path: Some(request.path), browser: None })
         } else if request.operation == "restore" {
             let storage = Storage::new(data);
             let _lease = storage.lease(true).await.map_err(|error| error.to_string())?;
-            let archive = load_restore_archive(&dir.join("incoming.json")).await?;
+            let archive = load_restore_archive(&dir.join("incoming.json"), data).await?;
             let original = capture_raw(data, config, request.browser)?;
             let mut marker = RestoreJournal { preserved: format!("preserved-{}.zip", uuid::Uuid::new_v4()), phase: RestorePhase::Rollback };
             let preservation = preserved_path(&dir, &marker)?;
@@ -1751,18 +1770,15 @@ pub async fn local_backup_schedule(
         return Err("Explicit confirmation and an absolute file path are required".into());
     }
     validate_browser(&browser)?;
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("local-backup");
-    safe_parent(&dir, dir.parent().ok_or("Missing profile root")?)?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = data.join("local-backup");
+    safe_parent(&dir, &data)?;
+    storage::ensure_dir(&data, &dir).map_err(|error| error.to_string())?;
     if dir.join("request.json").exists() {
         return Err("A profile operation is already pending. Restart Macro first.".into());
     }
     if operation == "restore" {
-        let archive = load_restore_archive(Path::new(&path)).await?;
+        let archive = load_restore_archive(Path::new(&path), &data).await?;
         atomic_write(&dir.join("incoming.json"), false, |file| {
             bundle::write(&archive, file)
         })?;
@@ -2223,7 +2239,7 @@ mod tests {
                 .unwrap();
         assert_eq!(versions, [1, 3, 4]);
         archived.close().await.unwrap();
-        validate(&archive).await.unwrap();
+        validate(&archive, &data).await.unwrap();
 
         // Change the source without running migrations, so restoration must recover it.
         let mut db = connection(&database).await.unwrap();
@@ -2402,7 +2418,7 @@ mod tests {
         let archive = capture(&data, &config, BTreeMap::new(), true)
             .await
             .unwrap();
-        validate(&archive).await.unwrap();
+        validate(&archive, &data).await.unwrap();
         let mut source = connection(&database).await.unwrap();
         let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM schema_migrations")
             .fetch_one(&mut source)
@@ -2435,7 +2451,7 @@ mod tests {
         let archive = capture(&data, &config, BTreeMap::new(), true)
             .await
             .unwrap();
-        validate(&archive).await.unwrap();
+        validate(&archive, &data).await.unwrap();
         let mut source = connection(&database).await.unwrap();
         let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM schema_migrations")
             .fetch_one(&mut source)
@@ -2461,7 +2477,7 @@ mod tests {
         let archive = capture(&data, &config, BTreeMap::new(), true)
             .await
             .unwrap();
-        validate(&archive).await.unwrap();
+        validate(&archive, &data).await.unwrap();
         let mut source = connection(&database).await.unwrap();
         let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM schema_migrations")
             .fetch_one(&mut source)
@@ -2567,7 +2583,7 @@ mod tests {
         let archive = capture(&data, &config, BTreeMap::new(), true)
             .await
             .unwrap();
-        validate(&archive).await.unwrap();
+        validate(&archive, &data).await.unwrap();
     }
 
     #[tokio::test]
@@ -2618,7 +2634,7 @@ mod tests {
             fs::read(database).unwrap(),
         )
         .unwrap();
-        assert!(validate(&archive).await.is_err());
+        assert!(validate(&archive, &data).await.is_err());
         queue_restore(&data, &archive);
         process_startup(&data, &config).await.unwrap();
         assert_eq!(fs::read(data.join("macro.db")).unwrap(), before);
@@ -2643,7 +2659,7 @@ mod tests {
             b"new leaf".to_vec(),
         )
         .unwrap();
-        validate(&archive).await.unwrap();
+        validate(&archive, &data).await.unwrap();
         queue_restore(&data, &archive);
         let dir = data.join("local-backup");
         // Fail after application, when the success status should be published.
@@ -2673,12 +2689,12 @@ mod tests {
             .unwrap();
         let valid = format!("data/direct-checkpoints/{}leaf", "d/".repeat(30));
         add_file(&mut archive.files, valid.clone(), b"boundary".to_vec()).unwrap();
-        validate(&archive).await.unwrap();
+        validate(&archive, &data).await.unwrap();
         apply(&archive, &data, &config).unwrap();
         validate_raw(&capture_raw(&data, &config, BTreeMap::new()).unwrap()).unwrap();
         let deep = format!("data/direct-checkpoints/{}leaf", "d/".repeat(31));
         add_file(&mut archive.files, deep, vec![]).unwrap();
-        assert!(validate(&archive).await.unwrap_err().contains("depth"));
+        assert!(validate(&archive, &data).await.unwrap_err().contains("depth"));
         archive
             .files
             .retain(|key, _| !key.starts_with("data/direct-checkpoints/"));
@@ -2690,7 +2706,7 @@ mod tests {
             )
             .unwrap();
         }
-        assert!(validate(&archive)
+        assert!(validate(&archive, &data)
             .await
             .unwrap_err()
             .contains("entry limit"));
@@ -2709,7 +2725,7 @@ mod tests {
             vec![],
         )
         .unwrap();
-        assert!(validate(&archive)
+        assert!(validate(&archive, &data)
             .await
             .unwrap_err()
             .contains("both a file"));
@@ -2724,7 +2740,7 @@ mod tests {
         let archive = capture(&data, &config, browser.clone(), true)
             .await
             .unwrap();
-        validate(&archive).await.unwrap();
+        validate(&archive, &data).await.unwrap();
         let mut db = connection(&data.join("macro.db")).await.unwrap();
         sqlx::query("UPDATE conversations SET title='Changed'")
             .execute(&mut db)
@@ -2835,7 +2851,7 @@ mod tests {
         let archive = capture(&data, &config, BTreeMap::new(), true)
             .await
             .unwrap();
-        validate(&archive).await.unwrap();
+        validate(&archive, &data).await.unwrap();
         let mut db = connection(&database).await.unwrap();
         sqlx::query("UPDATE conversation_goals SET objective = 'Changed'")
             .execute(&mut db)
@@ -2893,13 +2909,13 @@ mod tests {
         )
         .unwrap();
         process_startup(&data, &config).await.unwrap();
-        let archive = load_archive(&path).unwrap_or_else(|error| {
+        let archive = load_archive(&path, &data).unwrap_or_else(|error| {
             panic!(
                 "{error}: {}",
                 fs::read_to_string(dir.join("status.json")).unwrap()
             )
         });
-        validate(&archive).await.unwrap();
+        validate(&archive, &data).await.unwrap();
         fs::write(
             config.join("settings.json"),
             br#"{"$schema":"settings.schema.json","schemaVersion":1,"language":"en"}"#,
@@ -2948,9 +2964,9 @@ mod tests {
                     .starts_with("preserved-")
             })
             .unwrap();
-        let rollback = load_archive(&preserved).unwrap();
+        let rollback = load_archive(&preserved, &data).unwrap();
         validate_raw(&rollback).unwrap();
-        validate(&load_restore_archive(&preserved).await.unwrap())
+        validate(&load_restore_archive(&preserved, &data).await.unwrap(), &data)
             .await
             .unwrap();
         assert_eq!(
@@ -2976,10 +2992,10 @@ mod tests {
         let archive = capture(&data, &config, browser.clone(), true)
             .await
             .unwrap();
-        validate(&archive).await.unwrap();
+        validate(&archive, &data).await.unwrap();
         let path = temp.path().join("recovery.json");
         write_new(&path, &serde_json::to_vec(&archive).unwrap()).unwrap();
-        assert_eq!(load_restore_archive(&path).await.unwrap().browser, browser);
+        assert_eq!(load_restore_archive(&path, &data).await.unwrap().browser, browser);
 
         // Version 1 archives predating recovery keys remain valid and replace the whole browser profile.
         let historical = capture(&data, &config, BTreeMap::new(), true)
@@ -3007,7 +3023,7 @@ mod tests {
             serde_json::from_slice(&fs::read(dir.join("status.json")).unwrap()).unwrap();
         assert_eq!(status.browser, Some(BTreeMap::new()));
         let preserved = PathBuf::from(status.path.unwrap());
-        let original = load_archive(&preserved).unwrap();
+        let original = load_archive(&preserved, &data).unwrap();
         validate_raw(&original).unwrap();
         assert_eq!(original.browser, browser);
 
@@ -3037,10 +3053,10 @@ mod tests {
             .await
             .unwrap();
         archive.version = 2;
-        assert!(validate(&archive).await.is_err());
+        assert!(validate(&archive, &data).await.is_err());
         archive.version = 1;
         archive.files.get_mut("data/macro.db").unwrap().sha256 = "bad".into();
-        assert!(validate(&archive).await.is_err());
+        assert!(validate(&archive, &data).await.is_err());
         assert_eq!(fs::read(data.join("macro.db")).unwrap(), original);
     }
     #[tokio::test]
@@ -3251,13 +3267,13 @@ mod tests {
         }
         let archive_path = temp.path().join("legacy.json");
         fs::write(&archive_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
-        let restored = load_restore_archive(&archive_path).await.unwrap();
+        let restored = load_restore_archive(&archive_path, &data).await.unwrap();
         assert_eq!(archived_tools(&restored, active), approved);
         assert!(!restored.files.contains_key(pending));
         let mut unproven = legacy;
         unproven.files.remove(baseline);
         fs::write(&archive_path, serde_json::to_vec(&unproven).unwrap()).unwrap();
-        let restored_unproven = load_restore_archive(&archive_path).await.unwrap();
+        let restored_unproven = load_restore_archive(&archive_path, &data).await.unwrap();
         assert!(archived_tools(&restored_unproven, active)
             .get("languageServer")
             .is_none());
@@ -3388,7 +3404,7 @@ mod tests {
                     .starts_with("preserved-")
             })
             .unwrap();
-        let rollback = load_archive(&preserved).unwrap();
+        let rollback = load_archive(&preserved, &data).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -3535,6 +3551,35 @@ mod tests {
         assert_eq!((retried.inserted, retried.already_imported), (0, 1));
     }
 
+    fn assert_private_artifact_staging(archive: &Archive, data: &Path) {
+        let mut count = 0;
+        for (name, entry) in &archive.files {
+            if !name.starts_with(ARCHITECT_FILES) {
+                continue;
+            }
+            count += 1;
+            let root = entry.native.as_ref().unwrap().path();
+            #[cfg(windows)]
+            assert!(root.starts_with(data));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = data;
+                let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+                let path = root.join(name);
+                assert_eq!(mode(&path), 0o600, "{name}");
+                for parent in path
+                    .ancestors()
+                    .skip(1)
+                    .take_while(|parent| parent.starts_with(root))
+                {
+                    assert_eq!(mode(parent), 0o700, "{}", parent.display());
+                }
+            }
+        }
+        assert!(count > 0);
+    }
+
     #[tokio::test]
     async fn architect_library_artifacts_round_trip_with_recovery_and_executable_metadata() {
         use crate::architect_library::{migration, storage::Storage};
@@ -3607,7 +3652,8 @@ mod tests {
         let archive = capture(&data, &config, BTreeMap::new(), true)
             .await
             .unwrap();
-        validate(&archive).await.unwrap();
+        validate(&archive, &data).await.unwrap();
+        assert_private_artifact_staging(&archive, &data);
         let archived_script = archive
             .files
             .iter()
@@ -3629,18 +3675,21 @@ mod tests {
             .unwrap()
             .clone();
         incomplete.files.remove(&version_name);
-        assert!(validate(&incomplete).await.is_err());
+        assert!(validate(&incomplete, &data).await.is_err());
         let mut tampered = archive.clone();
         tampered
             .files
             .get_mut(archived_script.0)
             .unwrap()
             .executable = !archived_script.1.executable;
-        assert!(validate(&tampered).await.is_err());
+        assert!(validate(&tampered, &data).await.is_err());
 
         pool.close().await;
         fs::write(&script, "changed").unwrap();
         queue_restore(&data, &archive);
+        let extracted = load_archive(&data.join("local-backup/incoming.json"), &data).unwrap();
+        assert_private_artifact_staging(&extracted, &data);
+        drop(extracted);
         process_startup(&data, &config).await.unwrap();
         let status: BackupStatus =
             serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap())
@@ -3686,6 +3735,7 @@ mod tests {
         // The restore's raw preservation uses the same managed paths and can
         // recover a file after an interrupted replacement.
         let original = capture_raw(&data, &config, BTreeMap::new()).unwrap();
+        assert_private_artifact_staging(&original, &data);
         let dir = data.join("local-backup");
         let marker = RestoreJournal {
             preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()),
@@ -3765,7 +3815,7 @@ mod tests {
         )
         .unwrap();
         process_startup(&data, &config).await.unwrap();
-        let exported = load_archive(&export).unwrap();
+        let exported = load_archive(&export, &data).unwrap();
         let (name, entry) = exported
             .files
             .iter()
@@ -4054,7 +4104,7 @@ mod tests {
                     .starts_with("preserved-")
             })
             .unwrap();
-        let raw = load_archive(&preserved).unwrap();
+        let raw = load_archive(&preserved, &data).unwrap();
         validate_raw(&raw).unwrap();
         for (name, bytes) in [
             ("data/macro.db", &b"damaged database"[..]),
@@ -4099,7 +4149,7 @@ mod tests {
                 .await
                 .unwrap();
             add_file(&mut archive.files, "data/state.json".into(), bytes.to_vec()).unwrap();
-            assert!(validate(&archive).await.is_err());
+            assert!(validate(&archive, &data).await.is_err());
             queue_restore(&data, &archive);
             process_startup(&data, &config).await.unwrap();
             assert_eq!(fs::read(data.join("macro.db")).unwrap(), current);
@@ -4129,7 +4179,7 @@ mod tests {
         entry.sha256 = hash(&bytes);
         entry.data = STANDARD.encode(bytes);
 
-        assert!(validate(&archive).await.is_err());
+        assert!(validate(&archive, &data).await.is_err());
         queue_restore(&data, &archive);
         process_startup(&data, &config).await.unwrap();
 
@@ -4158,7 +4208,7 @@ mod tests {
         entry.sha256 = hash(&bytes);
         entry.data = STANDARD.encode(bytes);
 
-        let error = validate(&archive).await.expect_err("reject extra trigger");
+        let error = validate(&archive, &data).await.expect_err("reject extra trigger");
         assert!(error.contains("schema objects do not match"));
     }
 
@@ -4191,7 +4241,7 @@ mod tests {
         entry.sha256 = hash(&bytes);
         entry.data = STANDARD.encode(bytes);
 
-        let error = validate(&archive)
+        let error = validate(&archive, &data)
             .await
             .expect_err("reject modified FTS definition");
         assert!(error.contains("schema objects do not match"));
@@ -4320,7 +4370,7 @@ mod tests {
         let raw_path = temp.path().join("raw-profile.json");
         preserve_raw(&raw, &raw_path).unwrap();
 
-        let portable = load_restore_archive(&raw_path).await.unwrap();
+        let portable = load_restore_archive(&raw_path, &data).await.unwrap();
         let portable_db = temp.path().join("portable.db");
         fs::write(
             &portable_db,
@@ -4465,7 +4515,7 @@ mod tests {
         let archive = capture(&data, &config, BTreeMap::new(), true)
             .await
             .unwrap();
-        validate(&archive).await.unwrap();
+        validate(&archive, &data).await.unwrap();
         queue_restore(&data, &archive);
         process_startup(&data, &config).await.unwrap();
         let mut db = connection(&path).await.unwrap();
@@ -5202,8 +5252,8 @@ mod catalog_backup_tests {
         )
         .unwrap();
         process_startup(&data, &config).await.unwrap();
-        let archive = load_archive(&path).unwrap();
-        validate(&archive).await.unwrap();
+        let archive = load_archive(&path, &data).unwrap();
+        validate(&archive, &data).await.unwrap();
         let mut db = connection(&data.join("macro.db")).await.unwrap();
         sqlx::query("UPDATE engine_flow030_runs SET state_json='{}'")
             .execute(&mut db)
@@ -5253,7 +5303,7 @@ mod catalog_backup_tests {
         let archive = capture(&old_data, &config, BTreeMap::new(), false)
             .await
             .unwrap();
-        validate(&archive).await.unwrap();
+        validate(&archive, &target_data).await.unwrap();
         tests::queue_restore(&target_data, &archive);
         process_startup(&target_data, &config).await.unwrap();
         let pool = crate::db::create_pool(&target_data.join("macro.db"))

@@ -62,6 +62,14 @@ pub(super) fn read(
     path: &Path,
     expected_sha256: Option<&str>,
 ) -> Result<(OpenedSource, VerifiedArchive)> {
+    read_in(path, expected_sha256, &std::env::temp_dir())
+}
+
+fn read_in(
+    path: &Path,
+    expected_sha256: Option<&str>,
+    staging_root: &Path,
+) -> Result<(OpenedSource, VerifiedArchive)> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -91,7 +99,7 @@ pub(super) fn read(
     if metadata.len() > MAX_ARCHIVE_BYTES {
         return Err(Error::ArchiveLimit);
     }
-    let snapshot = private_directory(&std::env::temp_dir(), ".agsdl-archive-")?;
+    let snapshot = private_directory(staging_root, ".agsdl-archive-")?;
     let staged_path = snapshot.path().join(VERSION_FILENAME);
     let mut staged = create_archive_file(&staged_path)?;
     if io::copy(&mut file.take(MAX_ARCHIVE_BYTES + 1), &mut staged)? > MAX_ARCHIVE_BYTES {
@@ -260,7 +268,15 @@ pub struct VersionArchive {
 }
 
 pub fn open_version(path: &Path, expected_sha256: &str) -> Result<VersionArchive> {
-    let (source, archive) = read(path, Some(expected_sha256))?;
+    open_version_in(path, expected_sha256, &std::env::temp_dir())
+}
+
+pub(super) fn open_version_in(
+    path: &Path,
+    expected_sha256: &str,
+    staging_root: &Path,
+) -> Result<VersionArchive> {
+    let (source, archive) = read_in(path, Some(expected_sha256), staging_root)?;
     if archive.has_history {
         return Err(Error::UnexpectedHistory);
     }

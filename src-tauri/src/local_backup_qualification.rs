@@ -280,7 +280,7 @@ async fn startup_wal_round_trip_preserves_all_message_and_conversation_fields_on
     // Executes the real native export branch with a committed, uncheckpointed WAL.
     process_startup(&data, &config).await.unwrap();
     assert_eq!(status(&data).code, Some(BackupStatusCode::Exported));
-    let archive = load_restore_archive(&archive_path).await.unwrap();
+    let archive = load_restore_archive(&archive_path, &data).await.unwrap();
     assert!(!archive
         .files
         .contains_key("config/.runtime/pending/user/settings.json"));

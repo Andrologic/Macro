@@ -59,16 +59,26 @@ pub(super) fn stage(
     if architect_artifact_prefix(name).is_none() {
         return Err("Unexpected Architect backup entry".into());
     }
-    let path = root.path().join(name);
-    fs::create_dir_all(path.parent().ok_or("Missing artifact parent")?)
-        .map_err(|e| e.to_string())?;
-    let output = File::create_new(path).map_err(|e| e.to_string())?;
+    let output = create_stage_file(root.path(), &root.path().join(name))?;
     Ok(Entry {
         data: String::new(),
         sha256: stream_hash(input, output, executable).map_err(|e| e.to_string())?,
         executable,
         native: Some(Arc::clone(root)),
     })
+}
+
+pub(super) fn create_stage_file(root: &Path, path: &Path) -> Result<File> {
+    super::storage::ensure_dir(root, path.parent().ok_or("Missing artifact parent")?)
+        .map_err(|error| error.to_string())?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path).map_err(|error| error.to_string())
 }
 
 pub(super) fn write(archive: &Archive, file: &mut File) -> io::Result<()> {
@@ -93,7 +103,7 @@ pub(super) fn write(archive: &Archive, file: &mut File) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn load(path: &Path) -> Result<Archive> {
+pub(super) fn load(path: &Path, data: &Path) -> Result<Archive> {
     let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if !metadata.is_file() || crate::architect_library::storage::is_link_or_reparse_point(&metadata)
     {
@@ -124,7 +134,7 @@ pub(super) fn load(path: &Path) -> Result<Archive> {
         serde_json::from_slice(&bytes).map_err(|e| e.to_string())?
     };
     super::validate_architect_paths(&archive.files)?;
-    let root = Arc::new(tempfile::tempdir().map_err(|e| e.to_string())?);
+    let root = Arc::new(super::private_staging(data)?);
     let mut manifest_seen = false;
     for index in 0..zip.len() {
         let mut member = zip.by_index(index).map_err(|e| e.to_string())?;

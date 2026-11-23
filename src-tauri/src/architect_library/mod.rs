@@ -156,7 +156,7 @@ thread_local! {
     static FAIL_PUBLICATION_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-fn private_directory(root: &Path, prefix: &str) -> io::Result<tempfile::TempDir> {
+pub(crate) fn private_directory(root: &Path, prefix: &str) -> io::Result<tempfile::TempDir> {
     let mut builder = tempfile::Builder::new();
     builder.prefix(prefix);
     #[cfg(unix)]

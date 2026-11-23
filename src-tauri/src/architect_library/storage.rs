@@ -400,6 +400,13 @@ impl Storage {
             StorageState::Archive => {
                 let path = self.checked_artifact_path(artifact)?;
                 let (settings, authoring) = read_sidecars(&path)?;
+                #[cfg(windows)]
+                let version = archive::open_version_in(
+                    &path.join(archive::VERSION_FILENAME),
+                    artifact.sha256.as_deref().ok_or(Error::DigestMismatch)?,
+                    &self.root,
+                )?;
+                #[cfg(not(windows))]
                 let version = self.open_archive(artifact)?;
                 authoring.archive_document(&settings, version.source())?;
             }
