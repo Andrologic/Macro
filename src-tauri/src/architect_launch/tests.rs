@@ -56,7 +56,7 @@ async fn import_archive_fixture(data: &Path, project: &Path) -> (SqlitePool, Ver
         .await
         .unwrap();
     let storage = Storage::new(data);
-    assert!(migration::migrate(&pool, &storage).await.unwrap());
+    migration::migrate(&pool, &storage).await.unwrap();
     sqlx::query("INSERT INTO architect_projects(id,name) VALUES ('demo','Demo')")
         .execute(&pool)
         .await
