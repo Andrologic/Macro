@@ -84,6 +84,10 @@ it("puts what to do first in the header: the draft state, saving a version, and 
   expect([...panel().querySelectorAll('[role="tab"]')].map(item => item.textContent?.trim())).toEqual(["Flow", "Agents2", "Skills", "Tools"]);
   expect(tab("Flow").getAttribute("aria-selected")).toBe("true");
   expect(panel().querySelectorAll(".agsdl-graph-node").length).toBeGreaterThan(0);
+  // Every tab points at the one panel that shows the chosen view.
+  const panelId = panel().querySelector('[role="tabpanel"]')?.id;
+  expect(panelId).toBeTruthy();
+  expect([...panel().querySelectorAll('[role="tab"]')].every(item => item.getAttribute("aria-controls") === panelId)).toBe(true);
 });
 
 it("lists agents as plain rows that open the same card as a block of the graph", async () => {

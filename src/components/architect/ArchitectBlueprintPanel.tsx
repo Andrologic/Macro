@@ -17,6 +17,8 @@ import { ArchitectRecoveryCard } from "./ArchitectRecoveryCard";
 import { ArchitectViewer } from "./ArchitectViewer";
 import { LibraryReadFailure } from "./BlueprintVersionDialogs";
 
+const VIEW_PANEL_ID = "architect-view-panel";
+
 export function ArchitectBlueprintPanel() {
   const { t } = useAgsdlTranslation();
   const { projectId, blueprintId, draft, draftStatus, version, versionNumber } = useArchitectLibraryStore();
@@ -52,10 +54,12 @@ export function ArchitectBlueprintPanel() {
       technical={record?.diagnostics} />;
   } else body = <>
     <ArchitectPanelHeader draft={draft} versionNumber={versionNumber} view={filesVisible || view !== "files" ? view : "flow"} />
-    {view === "files" && filesVisible
-      ? <ArchitectFilesInspector target={target} />
-      : <ArchitectViewer key={key} target={target} view={view === "files" ? "flow" : view}
-        onAttachContext={versionNumber === null && !draft.archived ? selection => prepareAgsdlChatContext(target, selection) : undefined} />}
+    <div id={VIEW_PANEL_ID} role="tabpanel" className="flex min-h-0 flex-1 flex-col">
+      {view === "files" && filesVisible
+        ? <ArchitectFilesInspector target={target} />
+        : <ArchitectViewer key={key} target={target} view={view === "files" ? "flow" : view}
+          onAttachContext={versionNumber === null && !draft.archived ? selection => prepareAgsdlChatContext(target, selection) : undefined} />}
+    </div>
   </>;
 
   return <aside className="flex h-full min-h-0 min-w-0 flex-col border-l border-border bg-card" data-tour-id="architect-agsdl-panel"
@@ -167,7 +171,7 @@ function ArchitectPanelHeader({ draft, versionNumber, view }: { draft: Blueprint
         : t("agsdl.architect.header.originUnknown", { number: draft.origin.number })}</p>}
     <Tabs value={view} defaultValue="flow" onValueChange={setView}>
       <TabsList className="!rounded-md !p-0.5 text-xs" aria-label={t("agsdl.architect.views.label")}>
-        {tabs.map(({ id, count }) => <TabsTrigger key={id} value={id} data-empty={count === 0 ? "true" : undefined}
+        {tabs.map(({ id, count }) => <TabsTrigger key={id} value={id} aria-controls={VIEW_PANEL_ID} data-empty={count === 0 ? "true" : undefined}
           className={cn("!rounded !px-2.5 !py-1 !text-xs", count === 0 && "opacity-60")}>
           {t(`agsdl.architect.views.${id}`)}{!!count && count > 1 && <span className="ml-1 text-[10px] text-muted-foreground">{count}</span>}
         </TabsTrigger>)}
