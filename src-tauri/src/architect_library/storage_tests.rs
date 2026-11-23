@@ -159,7 +159,7 @@ async fn migrates_each_revision_with_lossless_originals_and_preserves_library_id
     // The SQL-only opening leaves the old documents and native disk untouched.
     assert!(!data.join(super::storage::ROOT).exists());
     let storage = Storage::new(data);
-    assert!(migration::migrate(&pool, &storage).await.unwrap());
+    migration::migrate(&pool, &storage).await.unwrap();
     assert!(sqlx::query("SELECT document FROM architect_blueprints")
         .execute(&pool)
         .await
@@ -286,7 +286,7 @@ async fn migrates_each_revision_with_lossless_originals_and_preserves_library_id
     assert!(saved["createdAt"].is_string());
     pool.close().await;
     let reopened = create_pool(&data.join("macro.db")).await.unwrap();
-    assert!(migration::migrate(&reopened, &storage).await.unwrap());
+    migration::migrate(&reopened, &storage).await.unwrap();
     assert_eq!(draft_artifact(&reopened).await.id, artifact.id);
 }
 
@@ -315,7 +315,7 @@ async fn native_publication_recovers_failures_and_serializes_save_freeze_and_del
     // BeforeCommit retained a whole plan. A retry can finish even if every
     // attempted artifact publication would fail.
     let no_publication = Storage::new(data).with_failure(Failure::BeforePublish);
-    assert!(migration::migrate(&pool, &no_publication).await.unwrap());
+    migration::migrate(&pool, &no_publication).await.unwrap();
     let initial = draft_artifact(&pool).await;
     for failure in [
         Failure::BeforePublish,
@@ -865,7 +865,6 @@ async fn startup_enables_project_opening_for_a_profile_created_by_step_one_write
     let app_data = tempfile::tempdir().unwrap();
     let path = app_data.path().join("macro.db");
     let pool = create_pool(&path).await.unwrap();
-    migration::startup(&pool, app_data.path()).await.unwrap();
     assert!(!index::is_current(&mut *pool.acquire().await.unwrap())
         .await
         .unwrap());
@@ -1106,30 +1105,28 @@ async fn architect_cutover_releases_the_writer_during_publication() {
     seed(&pool, &envelope(&editor("Draft"))).await;
     let runtime = tokio::runtime::Handle::current();
     let storage = Storage::new(temp.path());
-    assert!(
-        migration::migrate_with_progress(&pool, &storage, |progress| {
-            if progress.completed == 0 {
-                return;
-            }
-            tokio::task::block_in_place(|| {
-                runtime.block_on(async {
-                    tokio::time::timeout(
-                        std::time::Duration::from_secs(2),
-                        sqlx::query(
-                            "INSERT INTO app_settings (key,value_json,updated_at)
+    migration::migrate_with_progress(&pool, &storage, |progress| {
+        if progress.completed == 0 {
+            return;
+        }
+        tokio::task::block_in_place(|| {
+            runtime.block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    sqlx::query(
+                        "INSERT INTO app_settings (key,value_json,updated_at)
                          VALUES ('parallel-chat-write','true','2026-01-01')",
-                        )
-                        .execute(&pool),
                     )
-                    .await
-                    .expect("cutover blocked a concurrent SQLite writer")
-                    .unwrap();
-                });
+                    .execute(&pool),
+                )
+                .await
+                .expect("cutover blocked a concurrent SQLite writer")
+                .unwrap();
             });
-        })
-        .await
-        .unwrap()
-    );
+        });
+    })
+    .await
+    .unwrap();
 }
 
 #[cfg(unix)]

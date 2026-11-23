@@ -3,6 +3,7 @@
 mod discovery;
 mod journal;
 
+use crate::architect_library::{migration, storage::Storage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -219,16 +220,65 @@ async fn record_legacy_chat_claims(db: &mut sqlx::SqliteConnection) -> crate::db
     Ok(())
 }
 
+pub(crate) async fn bootstrap_profile(
+    pool: &sqlx::SqlitePool,
+    storage: &Storage,
+    workspace_paths: Result<Vec<PathBuf>, LegacyImportIssue>,
+    fallback_workspace: Option<PathBuf>,
+    local_storage: LegacyLocalStorage,
+    progress: impl Fn(Option<migration::Progress>) + Send + Sync,
+) -> crate::db::DbResult<LegacyImportReport> {
+    // SQLite already owns these rows. Their cutover can finish even if a
+    // separate historical source cannot be read on this launch.
+    let cutover =
+        migration::migrate_with_progress(pool, storage, |update| progress(Some(update))).await;
+    progress(None);
+    cutover?;
+    import_profile(
+        pool,
+        Some(storage),
+        workspace_paths,
+        fallback_workspace,
+        local_storage,
+    )
+    .await
+}
+
 /// Read the native profile and publish its entire legacy library once. The write
 /// lock also serializes a second bootstrap and the conversation-link snapshot.
+#[cfg(test)]
 pub(crate) async fn migrate_profile(
     pool: &sqlx::SqlitePool,
     workspace_paths: Result<Vec<PathBuf>, LegacyImportIssue>,
     fallback_workspace: Option<PathBuf>,
     local_storage: LegacyLocalStorage,
 ) -> crate::db::DbResult<LegacyImportReport> {
+    import_profile(
+        pool,
+        None,
+        workspace_paths,
+        fallback_workspace,
+        local_storage,
+    )
+    .await
+}
+
+/// Publish a complete scan into the profile, including after the index cutover.
+pub(crate) async fn import_profile(
+    pool: &sqlx::SqlitePool,
+    storage: Option<&Storage>,
+    workspace_paths: Result<Vec<PathBuf>, LegacyImportIssue>,
+    fallback_workspace: Option<PathBuf>,
+    local_storage: LegacyLocalStorage,
+) -> crate::db::DbResult<LegacyImportReport> {
     use crate::db::{architect_library, DbError};
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    use sqlx::Connection;
+    let _lease = match storage {
+        Some(storage) => Some(storage.lease(true).await?),
+        None => None,
+    };
+    let mut writer = architect_library::storage_index::durable_writer(pool).await?;
+    let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
     let finished: Option<(u32, u32)> = sqlx::query_as(
         "SELECT discovered,divergent_plans FROM architect_legacy_import WHERE singleton=1",
     )
@@ -341,7 +391,7 @@ pub(crate) async fn migrate_profile(
         let result = async {
             let input = serde_json::from_value(blueprint.destination_input())
                 .map_err(|error| DbError::Validation(error.to_string()))?;
-            architect_library::import_in(&mut tx, input).await
+            architect_library::import_in(&mut tx, input, storage).await
         }
         .await;
         match result {

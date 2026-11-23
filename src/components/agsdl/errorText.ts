@@ -12,6 +12,7 @@ export function agsdlErrorText(error: unknown, t: TFunction = i18n.getFixedT(nul
       case "OPAQUE_PROJECT_FILE": return t("agsdl.library.opaqueFile");
       case "PROJECT_FILE_NOT_FOUND": return t("agsdl.library.fileMissing");
       case "PROJECT_BATCH_REQUIRED": return t("agsdl.library.projectBatchRequired");
+      case "LEGACY_LIBRARY": return t("agsdl.library.cutoverRequired");
       case "IMPORT_HANDLE_EXPIRED": return t("agsdl.library.importExpired");
       case "DESTINATION_EXISTS": return t("agsdl.library.destinationExists");
       case "ARCHIVE_LAYOUT":

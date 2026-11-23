@@ -265,13 +265,15 @@ pub(crate) async fn freeze(
     })
 }
 
-pub(crate) async fn retain_draft_original(
+pub(crate) async fn retain_original(
     db: &mut SqliteConnection,
+    number: i64,
     revision: i64,
     artifact: &Artifact,
 ) -> DbResult<()> {
-    sqlx::query("INSERT INTO architect_library_originals VALUES (?,0,?,?)")
+    sqlx::query("INSERT INTO architect_library_originals VALUES (?,?,?,?)")
         .bind(&artifact.blueprint_id)
+        .bind(number)
         .bind(revision)
         .bind(artifact.id.to_string())
         .execute(db)

@@ -27,6 +27,7 @@
     "hiddenAgent": "In Operate ausgeblendet",
     "hideAgent": "Diesen Thread in Operate ausblenden",
     "entryHint": "Hinweis zur Startnachricht",
+    "cutoverRequired": "Architect aktualisiert die Bibliothek noch. Prüfen Sie den Starthinweis und versuchen Sie die Aktualisierung erneut.",
     "importExpired": "Die Importvorschau ist abgelaufen. Wähle die Quelle erneut aus.",
     "destinationExists": "Dieses Ziel existiert bereits. Wähle einen anderen Namen.",
     "projectInvalid": "AgSDL konnte dieses Projekt nicht öffnen.",

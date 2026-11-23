@@ -389,7 +389,7 @@ impl Storage {
         let mut writer = index::durable_writer(pool).await?;
         let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
         let row = index::insert_draft(&mut tx, project_id, name, &draft, None).await?;
-        index::retain_draft_original(&mut tx, row.try_get("revision")?, &retained).await?;
+        index::retain_original(&mut tx, 0, row.try_get("revision")?, &retained).await?;
         let opened = self.draft_project_view(&row, &draft)?;
         self.check(Failure::BeforeCommit)?;
         tx.commit().await?;

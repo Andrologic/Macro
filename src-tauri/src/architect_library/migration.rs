@@ -30,7 +30,7 @@ pub(crate) async fn startup(pool: &SqlitePool, app_data: &Path) -> DbResult<()> 
 }
 
 #[cfg(test)]
-pub(crate) async fn migrate(pool: &SqlitePool, storage: &Storage) -> DbResult<bool> {
+pub(crate) async fn migrate(pool: &SqlitePool, storage: &Storage) -> DbResult<()> {
     migrate_with_progress(pool, storage, |_| {}).await
 }
 
@@ -80,7 +80,7 @@ pub(crate) async fn migrate_with_progress(
     pool: &SqlitePool,
     storage: &Storage,
     progress: impl Fn(Progress) + Send + Sync,
-) -> DbResult<bool> {
+) -> DbResult<()> {
     let _lease = storage.lease(true).await?;
     let mut reader = pool.acquire().await?;
     if index::is_current(&mut reader).await? {
@@ -89,15 +89,7 @@ pub(crate) async fn migrate_with_progress(
             tracing::warn!(%error, "Could not discard completed Architect migration plans");
         }
         storage.reclaim_after_commit(pool).await;
-        return Ok(true);
-    }
-    let imported: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM architect_legacy_import WHERE singleton=1)",
-    )
-    .fetch_one(&mut *reader)
-    .await?;
-    if !imported {
-        return Ok(false);
+        return Ok(());
     }
     let keys = legacy_keys(&mut reader).await?;
     drop(reader);
@@ -166,7 +158,7 @@ pub(crate) async fn migrate_with_progress(
         tracing::warn!(%error, "Could not discard completed Architect migration plans");
     }
     storage.reclaim_after_commit(pool).await;
-    Ok(true)
+    Ok(())
 }
 
 async fn prepare_blueprint(
@@ -238,6 +230,40 @@ async fn prepare_blueprint(
         write_plan(path, &rows)?;
     }
     Ok(rows)
+}
+
+/// Publish a historical blueprint discovered after the index cutover.
+pub(crate) async fn insert_discovered_blueprint(
+    db: &mut sqlx::SqliteConnection,
+    storage: &Storage,
+    project_id: &str,
+    name: &str,
+    document: String,
+) -> DbResult<String> {
+    use sqlx::Row;
+
+    let blueprint = uuid::Uuid::new_v4().to_string();
+    let (draft, draft_original, version, version_original) = tokio::task::spawn_blocking({
+        let storage = storage.clone();
+        let blueprint = blueprint.clone();
+        move || -> super::Result<_> {
+            let (draft, draft_original) =
+                convert_original(&storage, &blueprint, true, document.as_bytes())?;
+            let (version, version_original) =
+                convert_original(&storage, &blueprint, false, document.as_bytes())?;
+            Ok((draft, draft_original, version, version_original))
+        }
+    })
+    .await
+    .map_err(io::Error::other)
+    .map_err(Error::from)??;
+    let row = index::insert_draft(db, project_id, name, &draft, None).await?;
+    let revision = row.try_get("revision")?;
+    index::freeze(db, revision, None, &version, None).await?;
+    // The imported draft is new, so the frozen version is always version 1.
+    index::retain_original(db, 0, revision, &draft_original).await?;
+    index::retain_original(db, 1, revision, &version_original).await?;
+    Ok(blueprint)
 }
 
 fn convert_original(

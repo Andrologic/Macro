@@ -472,7 +472,7 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
   useEffect(() => {
     if (!initStatus.critical || !architectImportWarning) return;
     notify.actionRequired(t("startup.architectImportIncomplete", "Architect library import is incomplete."), {
-      description: architectImportWarning,
+      description: t("startup.architectImportRetryHint", "Check the reported problem, then choose Retry.") + " " + architectImportWarning,
       tone: "warning",
       notificationKey: "architect-library-import",
       actions: [{

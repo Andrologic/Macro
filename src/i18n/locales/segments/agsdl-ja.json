@@ -27,6 +27,7 @@
     "hiddenAgent": "Operate で非表示",
     "hideAgent": "このスレッドを Operate で非表示にする",
     "entryHint": "開始メッセージのヒント",
+    "cutoverRequired": "Architect ライブラリの更新が保留中です。起動時の警告を確認し、更新を再試行してください。",
     "importExpired": "プレビューの有効期限が切れました。ソースを選び直してください。",
     "destinationExists": "この保存先はすでに存在します。別の名前を選んでください。",
     "projectInvalid": "AgSDL がこのプロジェクトを開けませんでした。",

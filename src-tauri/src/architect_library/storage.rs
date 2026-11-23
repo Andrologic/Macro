@@ -695,8 +695,9 @@ impl Storage {
         let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
         let row = index::insert_draft(&mut tx, &project_id, &name, &draft, Some(&key)).await?;
         if artifact.state == StorageState::Recovery {
-            index::retain_draft_original(
+            index::retain_original(
                 &mut tx,
+                0,
                 row.try_get("revision")?,
                 original.as_ref().unwrap_or(&draft),
             )

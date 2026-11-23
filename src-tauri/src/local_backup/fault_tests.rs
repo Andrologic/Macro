@@ -263,7 +263,7 @@ async fn generated_legacy_profiles_preserve_exact_originals() {
     let after_first = index::artifact_references(&mut *pool.acquire().await.unwrap())
         .await
         .unwrap();
-    assert!(migration::migrate(&pool, &storage).await.unwrap());
+    migration::migrate(&pool, &storage).await.unwrap();
     let after_retry = index::artifact_references(&mut *pool.acquire().await.unwrap())
         .await
         .unwrap();
@@ -364,7 +364,7 @@ async fn desktop_opens_the_legacy_index_when_an_artifact_directory_is_unusable()
     assert!(artifact_hashes(&legacy).is_empty());
     drop(legacy);
     fs::remove_file(state).unwrap();
-    assert!(migration::migrate(&pool, &storage).await.unwrap());
+    migration::migrate(&pool, &storage).await.unwrap();
     pool.close().await;
     assert_originals(&data, &rows).await;
 }
@@ -510,9 +510,9 @@ async fn assert_migration_recovery(
     copy_fixture(legacy_data, data);
     run_fault(data, config, "migration", point, action, nth).await;
     let pool = db::open_desktop_profile(data).await.unwrap();
-    assert!(migration::migrate(&pool, &Storage::new(data))
+    migration::migrate(&pool, &Storage::new(data))
         .await
-        .unwrap());
+        .unwrap();
     assert_eq!(
         migration_outcomes(&pool, data).await,
         expected,
@@ -1317,9 +1317,9 @@ async fn profile_scale() {
         .await
         .unwrap();
     let start = Instant::now();
-    assert!(migration::migrate(&pool, &Storage::new(&data))
+    migration::migrate(&pool, &Storage::new(&data))
         .await
-        .unwrap());
+        .unwrap();
     let migration = start.elapsed();
     eprintln!("500×10 migration {migration:?}");
     pool.close().await;

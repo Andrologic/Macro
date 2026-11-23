@@ -27,6 +27,7 @@
     "hiddenAgent": "Masqué dans Operate",
     "hideAgent": "Masquer ce thread dans Operate",
     "entryHint": "Indication du message de départ",
+    "cutoverRequired": "La mise à niveau de la bibliothèque Architect est en attente. Consultez l’avertissement de démarrage, puis réessayez la mise à niveau.",
     "importExpired": "L’aperçu a expiré. Sélectionnez de nouveau la source.",
     "destinationExists": "Cette destination existe déjà. Choisissez un autre nom.",
     "projectInvalid": "AgSDL n’a pas pu ouvrir ce projet.",

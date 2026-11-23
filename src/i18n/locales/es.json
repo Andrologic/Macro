@@ -127,6 +127,7 @@
     "failedDescription": "Macro no pudo inicializar los datos locales. Puedes volver a intentarlo de forma segura.",
     "failedSteps": "Pasos fallidos",
     "architectImportIncomplete": "La importación de la biblioteca de Architect está incompleta.",
+    "architectImportRetryHint": "Revisa el problema que se indica a continuación y selecciona Reintentar.",
     "metadataRecovery": {
       "restoredWithCommit": "Metadatos de @macro restaurados desde el historial ({{commit}})",
       "restored": "Metadatos de @macro restaurados desde el historial",

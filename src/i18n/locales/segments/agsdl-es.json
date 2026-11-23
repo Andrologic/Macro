@@ -27,6 +27,7 @@
     "hiddenAgent": "Oculto en Operate",
     "hideAgent": "Ocultar este hilo en Operate",
     "entryHint": "Indicación del mensaje inicial",
+    "cutoverRequired": "La biblioteca de Architect aún se está actualizando. Revisa el aviso de inicio y vuelve a intentar la actualización.",
     "importExpired": "La vista previa ha caducado. Selecciona de nuevo el origen.",
     "destinationExists": "Este destino ya existe. Elige otro nombre.",
     "projectInvalid": "AgSDL no pudo abrir este proyecto.",

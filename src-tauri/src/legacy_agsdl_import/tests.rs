@@ -985,6 +985,124 @@ async fn unavailable_invalid_and_empty_sources_have_distinct_outcomes() {
     );
 }
 
+#[tokio::test]
+async fn broken_registered_checkout_does_not_block_cutover_or_a_later_import() {
+    use crate::db::architect_library::{self, storage_index as index, Document};
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let pool = crate::db::create_pool(&root.join("macro.db"))
+        .await
+        .unwrap();
+    let storage = Storage::new(&root);
+    let workspace = root.join("workspace");
+    let project = root.join("registered");
+    let repo = git2::Repository::init(&project).unwrap();
+    let checkout = metadata_checkout(&repo);
+    let registration = repo
+        .path()
+        .join("worktrees")
+        .join(crate::git::MACRO_WORKTREE_NAME)
+        .join("gitdir");
+    let original_pointer = fs::read(&registration).unwrap();
+    let other_pointer = root.join("other.git");
+    fs::write(&other_pointer, b"synthetic").unwrap();
+    fs::write(&registration, format!("{}\n", other_pointer.display())).unwrap();
+    put(
+        &workspace.join(".macro/workspace.json"),
+        &json!({"standaloneProjects": [{"id":"registered","path":project}]}),
+    );
+    store(&checkout, "main", &blueprint("historical"));
+    let project = serde_json::to_value(
+        architect_library::create_project(&pool, "Existing".into())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let project_id = project["id"].as_str().unwrap();
+    let existing = architect_library::create_blueprint(
+        &pool,
+        project_id.into(),
+        "Existing".into(),
+        Document {
+            source: r#"{"contract":"agsdl-0.4.0","id":"existing","title":"Existing","agents":{}}"#
+                .into(),
+            annexes: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        },
+    )
+    .await
+    .unwrap()
+    .summary
+    .id;
+    let run = || {
+        bootstrap_profile(
+            &pool,
+            &storage,
+            Ok(vec![workspace.clone()]),
+            None,
+            LegacyLocalStorage::Snapshot(BTreeMap::new()),
+            |_| {},
+        )
+    };
+
+    let pending = run().await.unwrap();
+    assert_eq!(pending.status, LegacyImportStatus::DiscoveryIncomplete);
+    assert!(
+        pending
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains("registration does not point back")),
+        "{:?}",
+        pending.issues
+    );
+    assert!(index::is_current(&mut pool.acquire().await.unwrap())
+        .await
+        .unwrap());
+    assert!(storage.open_draft_project(&pool, &existing).await.is_ok());
+    storage
+        .create_project_draft(&pool, project_id, "New draft")
+        .await
+        .unwrap();
+    assert!(
+        !sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM architect_legacy_import)")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    );
+
+    fs::write(&registration, original_pointer).unwrap();
+    let imported = run().await.unwrap();
+    assert_eq!(
+        imported.status,
+        LegacyImportStatus::Complete,
+        "{:?}",
+        imported.issues
+    );
+    assert_eq!(imported.inserted, 1);
+    let id = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM architect_blueprints WHERE source_id IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for number in [None, Some(1)] {
+        let original = index::original(&pool, &id, 1, number.unwrap_or(0))
+            .await
+            .unwrap()
+            .unwrap();
+        let output = root.join(format!("original-{number:?}.json"));
+        assert!(storage.artifact_path(&original).is_dir());
+        storage
+            .export_original(&pool, id.clone(), 1, number, &output)
+            .await
+            .unwrap();
+        let envelope: Value = serde_json::from_slice(&fs::read(output).unwrap()).unwrap();
+        assert_eq!(envelope["source"], EXACT_SOURCE);
+    }
+    assert_eq!(run().await.unwrap().already_imported, 1);
+}
+
 #[test]
 fn invalid_temp_does_not_hide_a_valid_backup() {
     let dir = tempfile::tempdir().unwrap();

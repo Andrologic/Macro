@@ -4217,7 +4217,7 @@ mod tests {
         .await
         .unwrap();
         let storage = Storage::new(&data);
-        assert!(migration::migrate(&pool, &storage).await.unwrap());
+        migration::migrate(&pool, &storage).await.unwrap();
         let draft = storage_index::draft_row(&pool, "blueprint").await.unwrap();
         let artifact = storage_index::Artifact::from_row(&draft, "id").unwrap();
         let script = storage
@@ -4368,7 +4368,7 @@ mod tests {
         .await
         .unwrap();
         let storage = Storage::new(&data);
-        assert!(migration::migrate(&pool, &storage).await.unwrap());
+        migration::migrate(&pool, &storage).await.unwrap();
         let folder = temp.path().join("import");
         fs::create_dir_all(folder.join("skill")).unwrap();
         fs::write(
@@ -4453,7 +4453,7 @@ mod tests {
 
     #[tokio::test]
     async fn architect_library_v45_archive_preserves_legacy_conversation_links() {
-        use crate::legacy_agsdl_import::{migrate_profile, LegacyImportStatus, LegacyLocalStorage};
+        use crate::legacy_agsdl_import::{import_profile, LegacyImportStatus, LegacyLocalStorage};
 
         let (_temp, data, config) = profile().await;
         let path = data.join("macro.db");
@@ -4495,11 +4495,9 @@ mod tests {
         process_startup(&data, &config).await.unwrap();
         let pool = crate::db::create_pool(&path).await.unwrap();
         let storage = Storage::new(&data);
-        assert!(
-            !crate::architect_library::migration::migrate(&pool, &storage)
-                .await
-                .unwrap()
-        );
+        crate::architect_library::migration::migrate(&pool, &storage)
+            .await
+            .unwrap();
         let local = LegacyLocalStorage::Snapshot(BTreeMap::from([(
             "macro_architect_plan:main:legacy".into(),
             serde_json::json!({"id":"legacy","agsdl":{
@@ -4507,7 +4505,7 @@ mod tests {
             }})
             .to_string(),
         )]));
-        let report = migrate_profile(&pool, Ok(vec![data.clone()]), None, local)
+        let report = import_profile(&pool, Some(&storage), Ok(vec![data.clone()]), None, local)
             .await
             .unwrap();
         assert_eq!(
@@ -4517,11 +4515,6 @@ mod tests {
             report.issues
         );
         assert_eq!(report.inserted, 1);
-        assert!(
-            crate::architect_library::migration::migrate(&pool, &storage)
-                .await
-                .unwrap()
-        );
         crate::architect_library::migration::startup(&pool, &data)
             .await
             .unwrap();

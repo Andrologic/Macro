@@ -127,6 +127,7 @@
     "failedDescription": "Macro はローカルデータを初期化できませんでした。安全に再試行できます。",
     "failedSteps": "失敗した手順",
     "architectImportIncomplete": "Architect ライブラリのインポートが完了していません。",
+    "architectImportRetryHint": "以下の問題を確認し、再試行を選択してください。",
     "metadataRecovery": {
       "restoredWithCommit": "履歴から @macro メタデータを復元しました ({{commit}})",
       "restored": "履歴から @macro メタデータを復元しました",

@@ -127,6 +127,7 @@
     "failedDescription": "Macro could not initialize its local data. You can retry safely.",
     "failedSteps": "Failed steps",
     "architectImportIncomplete": "Architect library import is incomplete.",
+    "architectImportRetryHint": "Check the problem below, then choose Retry.",
     "metadataRecovery": {
       "restoredWithCommit": "Metadata @macro restored from history ({{commit}})",
       "restored": "Metadata @macro restored from history",

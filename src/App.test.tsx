@@ -343,7 +343,8 @@ describe('App layout containment', () => {
     expect(container.querySelector('[data-testid="panel-center"]')).not.toBeNull();
     expect(notification).toHaveBeenCalledTimes(1);
     const [, options] = notification.mock.calls[0];
-    expect(options.description).toBe('workspace.json: Unreadable registry');
+    expect(options.description).toContain('workspace.json: Unreadable registry');
+    expect(options.description).toContain('choose Retry');
     const { useArchitectLibraryStore } = await import('./stores/useArchitectLibraryStore');
     const { architectLibrary } = await import('./services/ipc/architectLibrary');
     const project = { id: 'project', name: 'Notes' };
