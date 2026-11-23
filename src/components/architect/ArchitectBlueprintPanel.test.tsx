@@ -41,6 +41,8 @@ beforeEach(() => {
       case "architect_list_blueprints": return [{ id: "bp", projectId: "p", name: "Revue de code", revision, origin: null, archived: false, conversationId: null }];
       case "architect_list_versions": return versions;
       case "architect_get_draft": return draft();
+      case "plugin:dialog|save": return "/tmp/original.json";
+      case "architect_export_original_envelope": return undefined;
       case "architect_get_version": return { ...versions.find(item => item.number === (args.key as { number: number }).number)!, project: { ...projectView(), settings: { ...settings, hiddenAgentIds: [] } } };
       case "architect_save_draft": {
         if (saveFailures-- > 0) throw new Error("disk full");
@@ -88,6 +90,18 @@ it("puts what to do first in the header: the draft state, saving a version, and 
   const panelId = panel().querySelector('[role="tabpanel"]')?.id;
   expect(panelId).toBeTruthy();
   expect([...panel().querySelectorAll('[role="tab"]')].every(item => item.getAttribute("aria-controls") === panelId)).toBe(true);
+});
+
+it("downloads the original of an editable draft with a missing migration resource", async () => {
+  draftState.project = {
+    ...projectView(),
+    diagnostics: [{ code: "MIGRATION_RESOURCE", file: "missing.txt", pointer: "", message: "File not found" }],
+  };
+  await mount();
+  await click(byText("button", "Download original", panel()));
+  await flush();
+  expect(calls.find(call => call.command === "architect_export_original_envelope")?.args)
+    .toEqual({ blueprintId: "bp", revision, number: null, destination: "/tmp/original.json" });
 });
 
 it("lists agents as plain rows that open the same card as a block of the graph", async () => {

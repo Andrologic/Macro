@@ -817,6 +817,46 @@ async fn current_database_reopens_without_ddl_or_compatibility_inspection() {
 }
 
 #[tokio::test]
+async fn desktop_open_upgrades_a_cut_over_c3_profile_for_archive_launch() {
+    use crate::architect_launch::{
+        OWNER_SCHEMA_NAME, OWNER_SCHEMA_VERSION, SCHEMA_NAME, SCHEMA_VERSION,
+    };
+    use crate::db::architect_library::storage_index;
+
+    let data = TempDir::new().unwrap();
+    let pool = open_desktop_profile(data.path()).await.unwrap();
+    assert!(!crate::architect_launch::schema_ready(&pool).await.unwrap());
+    let mut tx = pool.begin().await.unwrap();
+    storage_index::begin_cutover(&mut tx).await.unwrap();
+    storage_index::finish_cutover(&mut tx).await.unwrap();
+    tx.commit().await.unwrap();
+    pool.close().await;
+
+    for _ in 0..2 {
+        let pool = open_desktop_profile(data.path()).await.unwrap();
+        let stamps: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT version,name FROM schema_migrations WHERE version>=49 ORDER BY version",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            stamps,
+            [
+                (storage_index::VERSION, storage_index::NAME.to_owned()),
+                (SCHEMA_VERSION, SCHEMA_NAME.to_owned()),
+                (OWNER_SCHEMA_VERSION, OWNER_SCHEMA_NAME.to_owned()),
+            ]
+        );
+        assert!(crate::architect_launch::run_systems(&pool)
+            .await
+            .unwrap()
+            .is_empty());
+        pool.close().await;
+    }
+}
+
+#[tokio::test]
 async fn failed_stamp_rolls_back_schema_data_and_versions_then_can_retry() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("failed.db");

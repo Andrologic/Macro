@@ -64,13 +64,10 @@ async fn archive_fixture_with_mcp(
         .unwrap();
     let path = data.join("fixture.agsdl");
     fs::write(&path, archive).unwrap();
+    let staging = tempfile::tempdir_in(data).unwrap();
+    let candidate = ImportCandidate::open(&path, staging.path()).unwrap();
     let imported = storage
-        .import_project(
-            &pool,
-            "demo",
-            "Example system",
-            ImportCandidate::open(&path).unwrap(),
-        )
+        .import_project(&pool, "demo", "Example system", &candidate)
         .await
         .unwrap();
     assert!(imported.version.is_some());
@@ -768,7 +765,7 @@ fn project_open_preserves_the_reserved_secret_location() {
     doc["secrets"] = json!({"file":"secrets.json"});
     fs::write(project.path().join("agsdl.json"), doc.to_string()).unwrap();
     fs::write(project.path().join("secrets.json"), r#"{"used":["PATH"]}"#).unwrap();
-    let error = match ImportCandidate::open(project.path()) {
+    let error = match ImportCandidate::open(project.path(), project.path()) {
         Err(error) => error,
         Ok(_) => panic!("opened a project with a reserved MCP secret"),
     };
