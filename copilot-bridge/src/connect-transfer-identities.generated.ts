@@ -82,7 +82,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/agsdl/document.ts",
-    "sha256": "3613cd04d5553488c8fc7b8057b813207a80498dc70d225ddb0c702f47914e15"
+    "sha256": "dca29117236e3e1d210f129d20cbd0a2060e900e87c6ac3bb6e619d0af3182b3"
   },
   {
     "path": "src/services/agsdl/reader030WorkerProtocol.ts",
@@ -334,7 +334,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/shared/macroToolRegistry.ts",
-    "sha256": "ae574252d36c55de3598468d2305c9143615738b630da677c91c0575410868ae"
+    "sha256": "af079e505afacda4e3960798866d957ecf40988088fdf7005ac07dfcaac54c21"
   },
   {
     "path": "src/shared/toolOutputLimits.ts",
@@ -460,5 +460,5 @@ export const TRANSFER_RESOURCES = [
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "710a9152b00d540d4f36973183c976187fb3927bd605a64e71dbddf274d2988c"
+  "preparation_set_sha256": "0d43dbea58ed265429eaaf4addf7f239b6fe021a8b929f6b273ec4d100fb87fe"
 } as const;
