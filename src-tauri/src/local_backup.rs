@@ -221,6 +221,34 @@ fn remove_durable(path: &Path) -> Result<()> {
         .map_err(|error| error.to_string())?;
     Ok(())
 }
+fn remove_incoming(dir: &Path) -> io::Result<()> {
+    match fs::remove_file(dir.join("incoming.json")) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
+fn cleanup_incoming(dir: &Path) {
+    if let Err(error) = remove_incoming(dir) {
+        tracing::warn!(%error, "Could not remove the unused profile restore staging file");
+    }
+}
+
+fn stage_incoming(dir: &Path, archive: &Archive) -> Result<()> {
+    // The request is published only after this file is complete and durable.
+    // An interrupted write leaves an unreferenced incoming.json for startup.
+    remove_incoming(dir).map_err(|error| error.to_string())?;
+    let mut file = bundle::create_stage_file(dir, &dir.join("incoming.json"))?;
+    bundle::write(archive, &mut file)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    fs::File::open(dir)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn architect_artifact_prefix(name: &str) -> Option<&str> {
     let relative = name.strip_prefix(ARCHITECT_FILES)?;
     let mut parts = relative.splitn(4, '/');
@@ -1672,6 +1700,7 @@ async fn process_startup_locked(
     }
     let request_path = dir.join("request.json");
     if !request_path.exists() {
+        cleanup_incoming(&dir);
         return Ok(());
     }
     let request: Request = match read_bounded(&request_path)
@@ -1691,6 +1720,7 @@ async fn process_startup_locked(
                 &dir.join("status.json"),
                 &serde_json::to_vec(&status).map_err(|e| e.to_string())?,
             )?;
+            cleanup_incoming(&dir);
             return Ok(());
         }
     };
@@ -1717,6 +1747,7 @@ async fn process_startup_locked(
                 marker.phase = RestorePhase::InstallHold;
                 atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
                 install_restore_hold(data).await?;
+                remove_durable(&request_path)?;
                 rotate_before_journal_removal().map_err(|error| error.to_string())?;
                 remove_durable(&journal)?;
                 return Err(error);
@@ -1750,6 +1781,7 @@ async fn process_startup_locked(
     if request_path.exists() {
         remove_durable(&request_path)?;
     }
+    cleanup_incoming(&dir);
     Ok(())
 }
 
@@ -1779,9 +1811,7 @@ pub async fn local_backup_schedule(
     }
     if operation == "restore" {
         let archive = load_restore_archive(Path::new(&path), &data).await?;
-        atomic_write(&dir.join("incoming.json"), false, |file| {
-            bundle::write(&archive, file)
-        })?;
+        stage_incoming(&dir, &archive)?;
     } else {
         let config = crate::config::resolve_config_root(
             &app.path().app_config_dir().map_err(|e| e.to_string())?,
@@ -2641,6 +2671,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_cleans_unreferenced_incoming_backup_only() {
+        let (_temp, data, config) = profile().await;
+        let dir = data.join("local-backup");
+        fs::create_dir(&dir).unwrap();
+        let incoming = dir.join("incoming.json");
+        let preserved = dir.join(format!("preserved-{}.zip", uuid::Uuid::new_v4()));
+        fs::write(&incoming, b"incomplete, unreferenced backup").unwrap();
+        fs::write(&preserved, b"rollback preservation").unwrap();
+        process_startup(&data, &config).await.unwrap();
+        assert!(!incoming.exists());
+        assert_eq!(fs::read(preserved).unwrap(), b"rollback preservation");
+    }
+
+    #[tokio::test]
     async fn interrupted_restore_recovers_file_directory_transitions_without_replaying_request() {
         let (_temp, data, config) = profile().await;
         let object = data.join("direct-checkpoints/synthetic/object");
@@ -2667,11 +2711,17 @@ mod tests {
         assert!(process_startup(&data, &config).await.is_err());
         assert!(object.join("new").exists());
         assert!(dir.join("restoring.json").exists());
+        assert!(dir.join("incoming.json").is_file());
+        let marker: RestoreJournal =
+            serde_json::from_slice(&fs::read(dir.join("restoring.json")).unwrap()).unwrap();
+        let preserved = preserved_path(&dir, &marker).unwrap();
         fs::remove_dir(dir.join("status.json")).unwrap();
         process_startup(&data, &config).await.unwrap();
         assert_eq!(fs::read(&object).unwrap(), b"original leaf");
         assert!(!dir.join("restoring.json").exists());
         assert!(!dir.join("request.json").exists());
+        assert!(!dir.join("incoming.json").exists());
+        assert!(preserved.is_file());
         let recovered = capture_raw(&data, &config, BTreeMap::new()).unwrap();
         // Startup creates the empty policy document; all archived files remain checked below.
         assert_empty_policy(&data);
@@ -2694,7 +2744,10 @@ mod tests {
         validate_raw(&capture_raw(&data, &config, BTreeMap::new()).unwrap()).unwrap();
         let deep = format!("data/direct-checkpoints/{}leaf", "d/".repeat(31));
         add_file(&mut archive.files, deep, vec![]).unwrap();
-        assert!(validate(&archive, &data).await.unwrap_err().contains("depth"));
+        assert!(validate(&archive, &data)
+            .await
+            .unwrap_err()
+            .contains("depth"));
         archive
             .files
             .retain(|key, _| !key.starts_with("data/direct-checkpoints/"));
@@ -2964,11 +3017,15 @@ mod tests {
                     .starts_with("preserved-")
             })
             .unwrap();
+        assert!(!dir.join("incoming.json").exists());
         let rollback = load_archive(&preserved, &data).unwrap();
         validate_raw(&rollback).unwrap();
-        validate(&load_restore_archive(&preserved, &data).await.unwrap(), &data)
-            .await
-            .unwrap();
+        validate(
+            &load_restore_archive(&preserved, &data).await.unwrap(),
+            &data,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             STANDARD
                 .decode(&rollback.files["data/direct-checkpoints/example/objects/snapshot"].data)
@@ -2995,7 +3052,10 @@ mod tests {
         validate(&archive, &data).await.unwrap();
         let path = temp.path().join("recovery.json");
         write_new(&path, &serde_json::to_vec(&archive).unwrap()).unwrap();
-        assert_eq!(load_restore_archive(&path, &data).await.unwrap().browser, browser);
+        assert_eq!(
+            load_restore_archive(&path, &data).await.unwrap().browser,
+            browser
+        );
 
         // Version 1 archives predating recovery keys remain valid and replace the whole browser profile.
         let historical = capture(&data, &config, BTreeMap::new(), true)
@@ -3460,10 +3520,7 @@ mod tests {
     pub(super) fn queue_restore(data: &Path, archive: &Archive) {
         let dir = data.join("local-backup");
         fs::create_dir_all(&dir).unwrap();
-        atomic_write(&dir.join("incoming.json"), false, |file| {
-            bundle::write(archive, file)
-        })
-        .unwrap();
+        stage_incoming(&dir, archive).unwrap();
         atomic(
             &dir.join("request.json"),
             &serde_json::to_vec(&Request {
@@ -4208,7 +4265,9 @@ mod tests {
         entry.sha256 = hash(&bytes);
         entry.data = STANDARD.encode(bytes);
 
-        let error = validate(&archive, &data).await.expect_err("reject extra trigger");
+        let error = validate(&archive, &data)
+            .await
+            .expect_err("reject extra trigger");
         assert!(error.contains("schema objects do not match"));
     }
 
