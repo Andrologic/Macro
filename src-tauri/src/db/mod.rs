@@ -178,7 +178,10 @@ pub(crate) fn schedule_architect_launch_cleanup(app: &AppHandle, pool: SqlitePoo
     let Ok(data) = app.path().app_data_dir() else {
         return;
     };
-    let host = app.state::<crate::config::ConfigManager>().root().to_owned();
+    let host = app
+        .state::<crate::config::ConfigManager>()
+        .root()
+        .to_owned();
     tauri::async_runtime::spawn(async move {
         if let Err(error) = crate::architect_launch::cleanup(&pool, &data, &host).await {
             tracing::warn!(error = %error.message, "Could not clean up retained Architect launch resources");

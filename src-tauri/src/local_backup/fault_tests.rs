@@ -455,7 +455,8 @@ async fn open_and_migrate(data: &Path) -> crate::db::DbResult<sqlx::SqlitePool> 
 }
 
 fn child_command(test: &str) -> Command {
-    let mut child = Command::new(std::env::current_exe().unwrap());
+    let mut child =
+        crate::core::process::background_tokio_command(std::env::current_exe().unwrap());
     child
         .kill_on_drop(true)
         .args(["--exact", test, "--nocapture"]);
