@@ -2,11 +2,12 @@ use super::{
     archive, destination_parent, private_directory, publish_path, sync_directory, sync_publication,
     Error, ImportPreview, Result,
 };
+use crate::fs::profile::create_private_file;
 use argentic_runtime::source::OpenedSource;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::fs::{self, File};
+use std::fs;
 use std::io::Write;
 use std::path::Path;
 use tempfile::TempDir;
@@ -125,9 +126,10 @@ pub fn materialize(source: &OpenedSource, staging_root: &Path) -> Result<TempDir
     let root = directory.path();
     let mut directories = BTreeSet::from([root.to_path_buf()]);
     for member in files {
+        super::storage::check_project_path(root, member.path)?;
         let path = root.join(member.path);
         let parent = path.parent().expect("selected member has a parent");
-        fs::create_dir_all(parent)?;
+        super::storage::ensure_dir(root, parent)?;
         directories.extend(
             parent
                 .ancestors()
@@ -148,16 +150,8 @@ pub fn materialize(source: &OpenedSource, staging_root: &Path) -> Result<TempDir
 }
 
 fn write_member(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
-    let mut file = File::create_new(path)?;
+    let mut file = create_private_file(path, executable)?;
     file.write_all(bytes)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = if executable { 0o700 } else { 0o600 };
-        file.set_permissions(fs::Permissions::from_mode(mode))?;
-    }
-    #[cfg(not(unix))]
-    let _ = executable;
     file.sync_all()?;
     Ok(())
 }
@@ -199,6 +193,9 @@ pub(super) fn write_executable_sidecar<'a>(
 pub fn export_project(source: &OpenedSource, destination: &Path) -> Result<usize> {
     let parent = destination_parent(destination)?;
     let count = members(source)?.len();
+    for member in members(source)? {
+        super::storage::check_project_path(destination, member.path)?;
+    }
     let staged = materialize(source, parent)?;
     publish_export(staged, parent, destination)?;
     Ok(count)

@@ -1097,7 +1097,7 @@ async fn migration_checks_the_longer_published_draft_path_before_cutover() {
     let length = libc::PATH_MAX as usize - base.as_os_str().as_bytes().len() - 1;
     let annex: String = (1..=length)
         .map(|index| {
-            if index % 128 == 0 && index < length {
+            if (index % 128 == 0 && index < length - 2) || index == length - 1 {
                 '/'
             } else {
                 'a'

@@ -361,6 +361,12 @@ pub(super) struct Split {
 }
 
 impl Split {
+    pub(super) fn paths(&self) -> impl Iterator<Item = &String> {
+        self.files
+            .keys()
+            .chain(self.authoring.unresolved_resources.iter())
+    }
+
     pub(super) fn inherit_executables(&mut self, paths: BTreeSet<String>) {
         self.authoring.executable_paths = paths
             .into_iter()

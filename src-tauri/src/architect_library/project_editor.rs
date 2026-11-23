@@ -380,17 +380,21 @@ fn entry(path: String, meta: &fs::Metadata) -> FileEntry {
 }
 
 fn check_inventory(files: &BTreeMap<String, FileEntry>) -> Result<()> {
-    if files.len() > PROJECT_FILES
-        || files.values().map(|file| file.size).sum::<u64>() > PROJECT_BYTES
-    {
+    if !inventory_fits(files.len(), files.values().map(|file| file.size).sum()) {
         return Err(Error::Editor("PROJECT_LIMIT"));
     }
     Ok(())
 }
 
 pub(super) fn fits_inventory(files: &BTreeMap<String, Vec<u8>>) -> bool {
-    files.len() <= PROJECT_FILES
-        && files.values().map(|file| file.len() as u64).sum::<u64>() <= PROJECT_BYTES
+    inventory_fits(
+        files.len(),
+        files.values().map(|file| file.len() as u64).sum(),
+    )
+}
+
+pub(crate) fn inventory_fits(count: usize, bytes: u64) -> bool {
+    count <= PROJECT_FILES && bytes <= PROJECT_BYTES
 }
 
 pub(super) fn disk_inventory(root: &Path) -> Result<BTreeMap<String, FileEntry>> {
@@ -420,7 +424,7 @@ pub(super) fn disk_inventory(root: &Path) -> Result<BTreeMap<String, FileEntry>>
                 pending.push((item.path(), format!("{path}/")));
             } else if metadata.is_file() {
                 total = total.saturating_add(metadata.len());
-                if files.len() == PROJECT_FILES || total > PROJECT_BYTES {
+                if !inventory_fits(files.len() + 1, total) {
                     return Err(Error::Editor("PROJECT_LIMIT"));
                 }
                 files.insert(path.clone(), entry(path, &metadata));
@@ -452,11 +456,15 @@ fn copy_files<'a>(
 ) -> Result<()> {
     super::storage::ensure_dir(destination, destination)?;
     for path in paths {
+        super::storage::check_project_path(destination, path)?;
         let target = destination.join(path);
         let parent = target.parent().expect("portable path has a parent");
         super::storage::ensure_dir(destination, parent)?;
-        fs::copy(source.join(path), &target)?;
-        fs::File::open(&target)?.sync_all()?;
+        let mut input = fs::File::open(source.join(path))?;
+        let executable = entry(path.clone(), &input.metadata()?).executable;
+        let mut output = crate::fs::profile::create_private_file(&target, executable)?;
+        io::copy(&mut input, &mut output)?;
+        output.sync_all()?;
         sync_directory(parent)?;
     }
     Ok(())
@@ -472,6 +480,9 @@ pub(super) fn export_draft(
         return Err(Error::Editor("MANIFEST_REQUIRED"));
     }
     let parent = destination_parent(destination)?;
+    for path in files.keys() {
+        super::storage::check_project_path(destination, path)?;
+    }
     let staged = private_directory(parent, ".agsdl-project-")?;
     copy_files(root, staged.path(), files.keys())?;
     #[cfg(windows)]

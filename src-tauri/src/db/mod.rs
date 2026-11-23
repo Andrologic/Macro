@@ -148,10 +148,7 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
     // Create the directory if it doesn't exist
     std::fs::create_dir_all(&app_dir).map_err(|e| DbError::Migration(e.to_string()))?;
 
-    let db_path = app_db_path(&app_dir);
-
-    let pool = create_pool(&db_path).await?;
-    crate::architect_library::migration::startup(&pool, &app_dir).await?;
+    let pool = open_desktop_profile(&app_dir).await?;
     // A restarted producer must install a fresh authority generation locally.
     sqlx::query("UPDATE pilot_file_authorities SET active = 0")
         .execute(&pool)
@@ -180,6 +177,23 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
 }
 
 /// The startup path used by init_db, exercised with real reopened SQLite pools.
+pub(crate) async fn open_desktop_profile(app_dir: &Path) -> DbResult<SqlitePool> {
+    let path = app_db_path(app_dir);
+    // SQLite uses the database mode to create its WAL and shared-memory files.
+    match crate::fs::profile::create_private_file(&path, false) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(DbError::Migration(error.to_string())),
+    }
+    let pool = create_pool(&path).await?;
+    // The Architect IPC import retries cutover and reports failures through
+    // the existing Architect warning. The SQLite index remains transactional.
+    if let Err(error) = crate::architect_library::migration::startup(&pool, app_dir).await {
+        tracing::warn!(%error, "Architect library cutover will retry");
+    }
+    Ok(pool)
+}
+
 pub(crate) async fn reconcile_runtime_after_restart(pool: &SqlitePool) -> DbResult<()> {
     agent_runs::reconcile_active_agent_runs_after_restart(pool).await?;
     conversation_goals::reconcile_audits_after_restart(pool).await?;

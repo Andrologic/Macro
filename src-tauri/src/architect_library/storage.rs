@@ -11,10 +11,11 @@ use crate::db::{
     },
     DbError, DbResult,
 };
+use crate::fs::profile::{admits_file, checkpoint, create_private_file};
 use argentic_runtime::source::OpenedSource;
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{Connection, Row, SqlitePool};
+use sqlx::{Connection, Row, SqliteConnection, SqlitePool};
 use std::{
     collections::BTreeSet,
     fs::{self, File, OpenOptions},
@@ -143,15 +144,18 @@ impl Storage {
         ensure_dir(&self.root, &bucket)?;
         sync_directory(stage.path())?;
         self.check(Failure::BeforePublish)?;
+        checkpoint("migration.before_publish")?;
         crate::fs::operations::rename_without_replacement(
             stage.path(),
             &bucket.join(id.to_string()),
         )
         .map_err(publish_error)?;
         let _ = stage.keep();
+        checkpoint("migration.after_rename")?;
         sync_directory(&bucket)?;
         sync_directory(&self.staging()?)?;
         self.check(Failure::AfterPublish)?;
+        checkpoint("migration.after_publish")?;
         Ok(Artifact {
             blueprint_id: blueprint_id.into(),
             id,
@@ -188,7 +192,9 @@ impl Storage {
         let bucket = self.bucket(blueprint_id, StorageState::Archive);
         ensure_dir(&self.root, &bucket)?;
         self.check(Failure::BeforePublish)?;
+        checkpoint("migration.before_archive_publish")?;
         let published = stage.publish(&bucket)?;
+        checkpoint("migration.after_archive_publish")?;
         sync_directory(&self.staging()?)?;
         self.check(Failure::AfterPublish)?;
         Ok(Artifact {
@@ -207,6 +213,7 @@ impl Storage {
         executable_paths: BTreeSet<String>,
     ) -> Result<Artifact> {
         let stage = private_directory(&self.staging()?, ".recovery-")?;
+        checkpoint("migration.recovery_stage_created")?;
         write_file(&stage.path().join(ORIGINAL), envelope)?;
         write_json(&stage.path().join("diagnostics.json"), &diagnostics)?;
         if !executable_paths.is_empty() {
@@ -214,6 +221,7 @@ impl Storage {
             authoring.executable_paths = executable_paths;
             write_json(&stage.path().join(AUTHORING), &authoring)?;
         }
+        checkpoint("migration.recovery_written")?;
         self.publish(stage, blueprint_id, StorageState::Recovery)
     }
 
@@ -223,22 +231,17 @@ impl Storage {
         draft_blueprint: Option<&str>,
     ) -> Result<PreparedDraft> {
         let stage = private_directory(&self.staging()?, ".draft-")?;
+        checkpoint("migration.stage_created")?;
         let root = stage.path().join(PROJECT);
-        let published = draft_blueprint.map(|blueprint| {
-            self.bucket(blueprint, StorageState::Draft)
-                .join(Uuid::nil().to_string())
-                .join(PROJECT)
-        });
-        for name in split.files.keys() {
-            let fits = |base: &Path| project_path_fits(&base.join(name));
-            if !fits(&root) || published.as_deref().is_some_and(|base| !fits(base)) {
-                return Err(Error::Diagnostic(Diagnostic {
-                    code: "PROJECT_PATH".into(),
-                    file: Some(name.clone()),
-                    pointer: String::new(),
-                    message: format!("Project file {name:?} exceeds the filesystem path limit"),
-                    source: None,
-                }));
+        let published = draft_blueprint.map(|blueprint| self.draft_root(blueprint));
+        for base in std::iter::once(root.as_path()).chain(published.as_deref()) {
+            if !admits_file(&base.join(project::MANIFEST)) {
+                return Err(Error::Storage(
+                    "Architect profile directory exceeds the filesystem path limit".into(),
+                ));
+            }
+            for name in split.paths() {
+                check_project_path(base, name)?;
             }
         }
         ensure_dir(&self.root, &root)?;
@@ -254,6 +257,7 @@ impl Storage {
                 error => error,
             })?;
         }
+        checkpoint("migration.files_written")?;
         let source = match OpenedSource::open_path(&root).map_err(Error::from) {
             Ok(source) => {
                 let reopened = argentic_core::durable_json::value(source.authored_json())?;
@@ -300,12 +304,31 @@ impl Storage {
         })
     }
 
+    fn draft_root(&self, blueprint: &str) -> PathBuf {
+        self.bucket(blueprint, StorageState::Draft)
+            .join(Uuid::nil().to_string())
+            .join(PROJECT)
+    }
+
+    fn check_draft_paths(&self, blueprint: &str, root: &Path) -> Result<()> {
+        let destination = self.draft_root(blueprint);
+        for name in super::project_editor::disk_inventory(root)?.keys() {
+            check_project_path(&destination, name)?;
+        }
+        Ok(())
+    }
+
+    fn publish_project_stage(&self, blueprint: &str, stage: TempDir) -> Result<Artifact> {
+        self.check_draft_paths(blueprint, &stage.path().join(PROJECT))?;
+        self.publish(stage, blueprint, StorageState::Draft)
+    }
+
     pub(super) fn publish_draft(
         &self,
         blueprint: &str,
         prepared: PreparedDraft,
     ) -> Result<Artifact> {
-        self.publish(prepared.stage, blueprint, StorageState::Draft)
+        self.publish_project_stage(blueprint, prepared.stage)
     }
 
     #[cfg(test)]
@@ -344,7 +367,11 @@ impl Storage {
     #[cfg(test)]
     fn read_draft(&self, artifact: &Artifact) -> Result<(Document, Vec<String>)> {
         if artifact.state == StorageState::Recovery {
-            return self.read_recovery(artifact);
+            let (bytes, diagnostics) = self.read_recovery(artifact)?;
+            return Ok((
+                recovery_document(&bytes).unwrap_or_else(empty_recovery_document),
+                diagnostics,
+            ));
         }
         let path = self.checked_artifact_path(artifact)?;
         let (settings, authoring) = read_sidecars(&path)?;
@@ -361,19 +388,12 @@ impl Storage {
         ))
     }
 
-    fn read_recovery(&self, artifact: &Artifact) -> Result<(Document, Vec<String>)> {
+    fn read_recovery(&self, artifact: &Artifact) -> Result<(Vec<u8>, Vec<String>)> {
         let path = self.checked_artifact_path(artifact)?;
-        let bytes = read_file(&path.join(ORIGINAL))?;
-        let document = serde_json::from_slice(&bytes)
-            .or_else(|_| {
-                String::from_utf8(bytes).map(|source| Document {
-                    source,
-                    annexes: Default::default(),
-                    metadata: Default::default(),
-                })
-            })
-            .map_err(io::Error::other)?;
-        Ok((document, read_json(&path.join("diagnostics.json"))?))
+        Ok((
+            read_file(&path.join(ORIGINAL))?,
+            read_json(&path.join("diagnostics.json"))?,
+        ))
     }
 
     /// The caller holds a lease or is validating a private backup copy.
@@ -381,11 +401,12 @@ impl Storage {
         if artifact.state != StorageState::Archive {
             return Err(Error::Storage("Version needs repair".into()));
         }
-        archive::open_version(
+        archive::open_version_in(
             &self
                 .checked_artifact_path(artifact)?
                 .join(archive::VERSION_FILENAME),
             artifact.sha256.as_deref().ok_or(Error::DigestMismatch)?,
+            &self.staging()?,
         )
     }
 
@@ -400,19 +421,14 @@ impl Storage {
             StorageState::Archive => {
                 let path = self.checked_artifact_path(artifact)?;
                 let (settings, authoring) = read_sidecars(&path)?;
-                #[cfg(windows)]
-                let version = archive::open_version_in(
-                    &path.join(archive::VERSION_FILENAME),
-                    artifact.sha256.as_deref().ok_or(Error::DigestMismatch)?,
-                    &self.root,
-                )?;
-                #[cfg(not(windows))]
                 let version = self.open_archive(artifact)?;
                 authoring.archive_document(&settings, version.source())?;
             }
             StorageState::Recovery => {
-                self.read_recovery(artifact)?;
-                read_authoring(&self.checked_artifact_path(artifact)?)?;
+                let path = self.checked_artifact_path(artifact)?;
+                open_regular_file(&path.join(ORIGINAL))?;
+                read_json::<Vec<String>>(&path.join("diagnostics.json"))?;
+                read_authoring(&path)?;
             }
         }
         Ok(())
@@ -546,7 +562,11 @@ impl Storage {
         let row = index::version_row(pool, &key).await?;
         let artifact = Artifact::from_row(&row, "blueprint_id")?;
         let (document, diagnostics) = if artifact.state == StorageState::Recovery {
-            self.read_recovery(&artifact)?
+            let (bytes, diagnostics) = self.read_recovery(&artifact)?;
+            (
+                recovery_document(&bytes).unwrap_or_else(empty_recovery_document),
+                diagnostics,
+            )
         } else {
             let (settings, authoring) = read_sidecars(&self.checked_artifact_path(&artifact)?)?;
             let version = self.open_archive(&artifact)?;
@@ -571,34 +591,40 @@ impl Storage {
         let id = Uuid::new_v4().to_string();
         let mut original = None;
         let (draft, document, diagnostics) = if artifact.state == StorageState::Recovery {
-            let (document, diagnostics) = self.read_recovery(&artifact)?;
-            let envelope = read_file(&self.checked_artifact_path(&artifact)?.join(ORIGINAL))
-                .map_err(Error::from)?;
+            let (envelope, mut diagnostics) = self.read_recovery(&artifact)?;
+            let document = recovery_document(&envelope).unwrap_or_else(empty_recovery_document);
             let paths = self.draft_executables(&artifact)?;
-            let retained =
-                self.publish_recovery(&id, &envelope, diagnostics.clone(), paths.clone())?;
-            match editor_document::split(document.clone()) {
-                Ok(mut split) => {
-                    split.inherit_executables(paths);
+            let starter_source = document.source.clone();
+            let prepared = match editor_document::split(document) {
+                Ok(mut split) if super::project_editor::fits_inventory(&split.files) => {
+                    split.inherit_executables(paths.clone());
                     split.authoring.merge_diagnostics(&diagnostics);
-                    let prepared = self.stage_split(split, Some(&id))?;
-                    let diagnostics = prepared.authoring.diagnostics.clone();
-                    let projected = prepared.document()?;
-                    let draft = self.publish_draft(&id, prepared)?;
-                    original = Some(retained);
-                    (draft, projected, diagnostics)
+                    match self.stage_split(split, Some(&id)) {
+                        Ok(prepared) => Some(prepared),
+                        Err(error) if super::migration::permanent_row_error(&error) => {
+                            diagnostics.push(error.to_string());
+                            None
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
                 }
-                Err(_) => {
-                    let (draft, projected) = self.publish_repair_starter(
-                        &id,
-                        &name,
-                        document.source,
-                        &diagnostics,
-                        paths,
-                    )?;
-                    original = Some(retained);
-                    (draft, projected, diagnostics)
+                Ok(_) => None,
+                Err(diagnostic) => {
+                    diagnostics.push(diagnostic);
+                    None
                 }
+            };
+            original =
+                Some(self.publish_recovery(&id, &envelope, diagnostics.clone(), paths.clone())?);
+            if let Some(prepared) = prepared {
+                let projected = prepared.document()?;
+                let diagnostics = prepared.authoring.diagnostics.clone();
+                let draft = self.publish_draft(&id, prepared)?;
+                (draft, projected, diagnostics)
+            } else {
+                let (draft, projected) =
+                    self.publish_repair_starter(&id, &name, starter_source, &diagnostics, paths)?;
+                (draft, projected, diagnostics)
             }
         } else {
             let version = self.open_archive(&artifact)?;
@@ -617,7 +643,7 @@ impl Storage {
             let document = authoring.project_document(&settings, &root, Some(version.source()))?;
             let diagnostics = authoring.diagnostics.clone();
             sidecars(stage.path(), &settings, &authoring)?;
-            let draft = self.publish(stage, &id, StorageState::Draft)?;
+            let draft = self.publish_project_stage(&id, stage)?;
             (draft, document, diagnostics)
         };
         let mut writer = index::durable_writer(pool).await?;
@@ -673,8 +699,9 @@ impl Storage {
         } else {
             return Err(DbError::Validation("original_envelope_unavailable".into()));
         };
-        let bytes = read_file(&self.checked_artifact_path(&artifact)?.join(ORIGINAL))
-            .map_err(Error::from)?;
+        let mut original =
+            open_regular_file(&self.checked_artifact_path(&artifact)?.join(ORIGINAL))
+                .map_err(Error::from)?;
         let parent = destination_parent(destination)?;
         if parent
             .canonicalize()
@@ -684,7 +711,7 @@ impl Storage {
             return Err(Error::InvalidDestination.into());
         }
         let mut file = tempfile::NamedTempFile::new_in(parent).map_err(Error::from)?;
-        file.write_all(&bytes).map_err(Error::from)?;
+        io::copy(&mut original, file.as_file_mut()).map_err(Error::from)?;
         file.as_file().sync_all().map_err(Error::from)?;
         file.persist_noclobber(destination)
             .map_err(|error| publish_error(error.error))?;
@@ -700,8 +727,13 @@ impl Storage {
 
     /// Only called under the exclusive lease, when the index is committed.
     pub(super) async fn reclaim(&self, pool: &SqlitePool) -> DbResult<()> {
+        self.reclaim_on_connection(&mut *pool.acquire().await?)
+            .await
+    }
+
+    pub(super) async fn reclaim_on_connection(&self, db: &mut SqliteConnection) -> DbResult<()> {
         self.check(Failure::Reclaim)?;
-        let references: BTreeSet<_> = index::artifact_references(&mut *pool.acquire().await?)
+        let references: BTreeSet<_> = index::artifact_references(db)
             .await?
             .iter()
             .map(|artifact| self.artifact_path(artifact))
@@ -714,6 +746,7 @@ impl Storage {
                 ".recovery-",
                 ".agsdl-version-",
                 ".agsdl-project-",
+                ".agsdl-archive-",
             ]
             .iter()
             .any(|prefix| entry.file_name().to_string_lossy().starts_with(prefix))
@@ -908,37 +941,58 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     Ok(serde_json::from_slice(&read_file(path)?)?)
 }
 
+pub(super) fn recovery_document(bytes: &[u8]) -> Option<Document> {
+    let source = std::str::from_utf8(bytes).ok()?;
+    Some(serde_json::from_str(source).unwrap_or_else(|_| Document {
+        source: source.to_owned(),
+        ..empty_recovery_document()
+    }))
+}
+
+pub(super) fn empty_recovery_document() -> Document {
+    Document {
+        source: String::new(),
+        annexes: Default::default(),
+        metadata: Default::default(),
+    }
+}
+
 pub(super) fn read_file(path: &Path) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    open_regular_file(path)?.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn open_regular_file(path: &Path) -> io::Result<File> {
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_file() || is_link_or_reparse_point(&metadata) {
         return Err(io::Error::other("Expected regular Architect storage file"));
     }
-    fs::read(path)
+    File::open(path)
 }
 
 fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     write_file(path, &serde_json::to_vec(value)?)
 }
 
-#[cfg(unix)]
-fn project_path_fits(path: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    path.as_os_str().as_bytes().len() < libc::PATH_MAX as usize
-}
-
-#[cfg(windows)]
-fn project_path_fits(path: &Path) -> bool {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::MAX_PATH;
-    let units = |path: &Path| path.as_os_str().encode_wide().count();
-    // Profile paths must also work when Win32 long paths are disabled.
-    units(path) < MAX_PATH as usize
-        && path
-            .parent()
-            .is_some_and(|parent| units(parent) <= MAX_PATH as usize - 12)
+pub(super) fn check_project_path(root: &Path, name: &str) -> Result<()> {
+    if !editor_document::portable_path(name) || !admits_file(&root.join(name)) {
+        return Err(Error::Diagnostic(Diagnostic {
+            code: "PROJECT_PATH".into(),
+            file: Some(name.into()),
+            pointer: String::new(),
+            message: format!(
+                "Project file {name:?} exceeds the filesystem path limit or uses an invalid name"
+            ),
+            source: None,
+        }));
+    }
+    Ok(())
 }
 
 pub(super) fn write_project_file(root: &Path, path: &str, bytes: &[u8]) -> Result<()> {
+    check_project_path(root, path)?;
     let path = root.join(path);
     let parent = path.parent().ok_or(Error::InvalidDestination)?;
     ensure_dir(root, parent)?;
@@ -948,14 +1002,7 @@ pub(super) fn write_project_file(root: &Path, path: &str, bytes: &[u8]) -> Resul
 }
 
 fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
+    let mut file = create_private_file(path, false)?;
     file.write_all(bytes)?;
     file.sync_all()?;
     Ok(())

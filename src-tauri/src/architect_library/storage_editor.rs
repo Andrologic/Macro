@@ -185,7 +185,7 @@ impl Storage {
             return Ok(view);
         }
         sidecars(stage.path(), &view.settings, &authoring)?;
-        let published = self.publish(stage, id, StorageState::Draft)?;
+        let published = self.publish_project_stage(id, stage)?;
         let mut writer = index::durable_writer(pool).await?;
         let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
         let saved = index::update_draft(&mut tx, expected, &published).await?;
@@ -238,7 +238,7 @@ impl Storage {
         if view.projection.is_none() {
             return Err(self.invalid_projection(view).into());
         }
-        let draft = self.publish(stage, &id, StorageState::Draft)?;
+        let draft = self.publish_project_stage(&id, stage)?;
         let version = version
             .map(|version| self.publish_staged_version(&id, version, &settings, &authoring))
             .transpose()?;
@@ -350,7 +350,7 @@ impl Storage {
         let mut authoring = Authoring::default();
         authoring.executable_paths = executable_paths;
         authoring.merge_diagnostics(diagnostics);
-        if original_source.len() <= 8 * editor::TEXT_LIMIT {
+        if !original_source.is_empty() && original_source.len() <= 8 * editor::TEXT_LIMIT {
             write_project_file(&root, editor::RECOVERY_SOURCE, original_source.as_bytes())?;
         }
         authoring.set_fallback(original_source);
@@ -358,7 +358,7 @@ impl Storage {
         sidecars(stage.path(), &settings, &authoring)?;
         let source = OpenedSource::open_path(&root)?;
         let projected = authoring.project_document(&settings, &root, Some(&source))?;
-        let draft = self.publish(stage, id, StorageState::Draft)?;
+        let draft = self.publish_project_stage(id, stage)?;
         Ok((draft, projected))
     }
 
@@ -379,9 +379,8 @@ impl Storage {
         if original.state != StorageState::Recovery {
             return Err(Error::Editor("PROJECT_NEEDS_REPAIR").into());
         }
-        let (document, diagnostics) = self.read_recovery(&original)?;
-        let envelope = read_file(&self.checked_artifact_path(&original)?.join(ORIGINAL))
-            .map_err(Error::from)?;
+        let (envelope, diagnostics) = self.read_recovery(&original)?;
+        let document = recovery_document(&envelope).unwrap_or_else(empty_recovery_document);
         let id = Uuid::new_v4().to_string();
         let paths = self.draft_executables(&original)?;
         let retained = self.publish_recovery(&id, &envelope, diagnostics.clone(), paths.clone())?;

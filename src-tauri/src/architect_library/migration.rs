@@ -7,8 +7,9 @@ use crate::db::{
     architect_library::{storage_index as index, Document},
     DbResult,
 };
+use crate::fs::profile::checkpoint;
 use sqlx::{Connection, SqlitePool};
-use std::{io, path::Path};
+use std::path::Path;
 
 // The project editor can open the artifact layout. Keep cutover gated by
 // the legacy discovery marker inside migrate().
@@ -25,6 +26,7 @@ pub(crate) async fn startup(pool: &SqlitePool, app_data: &Path) -> DbResult<()> 
 /// direct upgrade waits for that import's durable marker before switching.
 pub(crate) async fn migrate(pool: &SqlitePool, storage: &Storage) -> DbResult<bool> {
     let _lease = storage.lease(true).await?;
+    checkpoint("migration.locked").map_err(Error::from)?;
     let mut writer = index::durable_writer(pool).await?;
     let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
     if index::is_current(&mut tx).await? {
@@ -43,7 +45,8 @@ pub(crate) async fn migrate(pool: &SqlitePool, storage: &Storage) -> DbResult<bo
     }
     // Interrupted publications are unreachable while the old index is active.
     // Free that space first so an earlier disk-full error can be retried.
-    storage.reclaim(pool).await?;
+    storage.reclaim_on_connection(&mut tx).await?;
+    checkpoint("migration.reclaimed").map_err(Error::from)?;
     index::begin_cutover(&mut tx).await?;
     let keys: Vec<(String, i64, i64)> = sqlx::query_as(
         "SELECT id,0,revision FROM architect_blueprints
@@ -53,22 +56,26 @@ pub(crate) async fn migrate(pool: &SqlitePool, storage: &Storage) -> DbResult<bo
     .fetch_all(&mut *tx)
     .await?;
     for (blueprint, number, revision) in keys {
-        let original: String = if number == 0 {
-            sqlx::query_scalar("SELECT document FROM architect_blueprints WHERE id=?")
+        let original: Vec<u8> = if number == 0 {
+            sqlx::query_scalar("SELECT CAST(document AS BLOB) FROM architect_blueprints WHERE id=?")
                 .bind(&blueprint)
                 .fetch_one(&mut *tx)
                 .await?
         } else {
             sqlx::query_scalar(
-                "SELECT document FROM architect_versions WHERE blueprint_id=? AND number=?",
+                "SELECT CAST(document AS BLOB) FROM architect_versions WHERE blueprint_id=? AND number=?",
             )
             .bind(&blueprint)
             .bind(number)
             .fetch_one(&mut *tx)
             .await?
         };
-        let split = serde_json::from_str::<Document>(&original)
+        checkpoint("migration.row_read").map_err(Error::from)?;
+        let split = std::str::from_utf8(&original)
             .map_err(|error| error.to_string())
+            .and_then(|text| {
+                serde_json::from_str::<Document>(text).map_err(|error| error.to_string())
+            })
             .and_then(editor_document::split);
         let (replacement, diagnostics) = match split {
             Ok(split) => {
@@ -86,12 +93,8 @@ pub(crate) async fn migrate(pool: &SqlitePool, storage: &Storage) -> DbResult<bo
             }
             Err(diagnostic) => (None, vec![diagnostic]),
         };
-        let original = storage.publish_recovery(
-            &blueprint,
-            original.as_bytes(),
-            diagnostics,
-            Default::default(),
-        )?;
+        let original =
+            storage.publish_recovery(&blueprint, &original, diagnostics, Default::default())?;
         index::plan(
             &mut tx,
             number,
@@ -101,9 +104,12 @@ pub(crate) async fn migrate(pool: &SqlitePool, storage: &Storage) -> DbResult<bo
         )
         .await?;
     }
+    checkpoint("migration.rows_planned").map_err(Error::from)?;
     index::finish_cutover(&mut tx).await?;
+    checkpoint("migration.before_commit").map_err(Error::from)?;
     storage.check(Failure::BeforeCommit)?;
     tx.commit().await?;
+    checkpoint("migration.after_commit").map_err(Error::from)?;
     drop(writer);
     storage.reclaim_after_commit(pool).await;
     Ok(true)
@@ -123,7 +129,8 @@ fn convert_row(
         );
         return Ok(None);
     }
-    let mut draft = storage.stage_split(split, is_draft.then_some(blueprint))?;
+    // Frozen projects can later become drafts through version adaptation.
+    let mut draft = storage.stage_split(split, Some(blueprint))?;
     *diagnostics = draft.authoring.diagnostics.clone();
     if is_draft {
         super::project_editor::validate_storage(&draft.root())?;
@@ -145,20 +152,10 @@ fn convert_row(
 
 // A row that cannot be converted keeps its original envelope as its current
 // artifact. Operational failures leave the SQLite cutover retryable.
-fn permanent_row_error(error: &Error) -> bool {
+pub(super) fn permanent_row_error(error: &Error) -> bool {
     use zip::result::ZipError;
     match error {
-        Error::Io(source) => permanent_path_error(source),
-        Error::ProjectIo { source, .. } => {
-            permanent_path_error(source)
-                || matches!(
-                    source.kind(),
-                    io::ErrorKind::AlreadyExists
-                        | io::ErrorKind::IsADirectory
-                        | io::ErrorKind::NotADirectory
-                )
-        }
-        Error::InvalidArchive(ZipError::Io(source)) => permanent_path_error(source),
+        Error::Io(_) | Error::ProjectIo { .. } | Error::InvalidArchive(ZipError::Io(_)) => false,
         Error::Json(error) => !error.is_io(),
         Error::Agsdl { code, .. } => !matches!(code.as_str(), "STORAGE" | "SOURCE_UNAVAILABLE"),
         Error::UnsupportedSource
@@ -172,17 +169,4 @@ fn permanent_row_error(error: &Error) -> bool {
         | Error::InvalidDestination => true,
         Error::DestinationExists | Error::PublishedNotSynced { .. } | Error::Storage(_) => false,
     }
-}
-
-fn permanent_path_error(error: &io::Error) -> bool {
-    #[cfg(unix)]
-    let invalid = matches!(error.raw_os_error(), Some(libc::ENAMETOOLONG));
-    #[cfg(windows)]
-    let invalid = {
-        use windows_sys::Win32::Foundation::{ERROR_FILENAME_EXCED_RANGE, ERROR_INVALID_NAME};
-        error.raw_os_error().is_some_and(|code| {
-            matches!(code as u32, ERROR_FILENAME_EXCED_RANGE | ERROR_INVALID_NAME)
-        })
-    };
-    invalid
 }

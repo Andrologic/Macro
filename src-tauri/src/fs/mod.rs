@@ -897,3 +897,4 @@ mod tests {
 pub mod operations;
 
 pub(crate) mod mutation_locks;
+pub(crate) mod profile;
