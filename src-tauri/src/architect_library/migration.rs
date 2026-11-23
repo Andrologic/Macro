@@ -8,7 +8,7 @@ use crate::db::{
     DbResult,
 };
 use sqlx::{Connection, SqlitePool};
-use std::path::Path;
+use std::{io, path::Path};
 
 // The project editor can open the artifact layout. Keep cutover gated by
 // the legacy discovery marker inside migrate().
@@ -71,41 +71,17 @@ pub(crate) async fn migrate(pool: &SqlitePool, storage: &Storage) -> DbResult<bo
             .map_err(|error| error.to_string())
             .and_then(editor_document::split);
         let (replacement, diagnostics) = match split {
-            Ok(split) if number == 0 && !super::project_editor::fits_inventory(&split.files) => {
-                let mut diagnostics = split.authoring.diagnostics;
-                diagnostics.push(
-                    "The migrated project exceeds the editor inventory limit. Download the original envelope, then adapt this draft for repair and restore the resources in a smaller project."
-                        .into(),
-                );
-                (None, diagnostics)
-            }
             Ok(split) => {
-                let mut draft = storage.stage_split(split)?;
-                let mut diagnostics = draft.authoring.diagnostics.clone();
-                let replacement = if number == 0 {
-                    super::project_editor::validate_storage(&draft.root())?;
-                    Some(storage.publish_draft(&blueprint, draft)?)
-                } else if let Some(source) = draft.source.take() {
-                    match storage.publish_archive(
-                        &blueprint,
-                        source,
-                        &draft.root(),
-                        &draft.settings,
-                        &draft.authoring,
-                    ) {
-                        Ok(archive) => Some(archive),
-                        Err(Error::Agsdl { code, message, .. })
-                            if (code == "PROJECT" && message.starts_with("archive.json#:"))
-                                || code == "INPUT_LIMIT" =>
-                        {
-                            diagnostics.push(message);
+                let mut diagnostics = split.authoring.diagnostics.clone();
+                let replacement =
+                    match convert_row(storage, &blueprint, number == 0, split, &mut diagnostics) {
+                        Ok(replacement) => replacement,
+                        Err(error) if permanent_row_error(&error) => {
+                            diagnostics.push(error.to_string());
                             None
                         }
                         Err(error) => return Err(error.into()),
-                    }
-                } else {
-                    None
-                };
+                    };
                 (replacement, diagnostics)
             }
             Err(diagnostic) => (None, vec![diagnostic]),
@@ -131,4 +107,82 @@ pub(crate) async fn migrate(pool: &SqlitePool, storage: &Storage) -> DbResult<bo
     drop(writer);
     storage.reclaim_after_commit(pool).await;
     Ok(true)
+}
+
+fn convert_row(
+    storage: &Storage,
+    blueprint: &str,
+    is_draft: bool,
+    split: editor_document::Split,
+    diagnostics: &mut Vec<String>,
+) -> super::Result<Option<index::Artifact>> {
+    if is_draft && !super::project_editor::fits_inventory(&split.files) {
+        diagnostics.push(
+            "The migrated project exceeds the editor inventory limit. Download the original envelope, then adapt this draft for repair and restore the resources in a smaller project."
+                .into(),
+        );
+        return Ok(None);
+    }
+    let mut draft = storage.stage_split(split, is_draft.then_some(blueprint))?;
+    *diagnostics = draft.authoring.diagnostics.clone();
+    if is_draft {
+        super::project_editor::validate_storage(&draft.root())?;
+        return storage.publish_draft(blueprint, draft).map(Some);
+    }
+    match draft.source.take() {
+        Some(source) => storage
+            .publish_archive(
+                blueprint,
+                source,
+                &draft.root(),
+                &draft.settings,
+                &draft.authoring,
+            )
+            .map(Some),
+        None => Ok(None),
+    }
+}
+
+// A row that cannot be converted keeps its original envelope as its current
+// artifact. Operational failures leave the SQLite cutover retryable.
+fn permanent_row_error(error: &Error) -> bool {
+    use zip::result::ZipError;
+    match error {
+        Error::Io(source) => permanent_path_error(source),
+        Error::ProjectIo { source, .. } => {
+            permanent_path_error(source)
+                || matches!(
+                    source.kind(),
+                    io::ErrorKind::AlreadyExists
+                        | io::ErrorKind::IsADirectory
+                        | io::ErrorKind::NotADirectory
+                )
+        }
+        Error::InvalidArchive(ZipError::Io(source)) => permanent_path_error(source),
+        Error::Json(error) => !error.is_io(),
+        Error::Agsdl { code, .. } => !matches!(code.as_str(), "STORAGE" | "SOURCE_UNAVAILABLE"),
+        Error::UnsupportedSource
+        | Error::SymbolicLink(_)
+        | Error::ArchiveLimit
+        | Error::InvalidArchive(_)
+        | Error::DigestMismatch
+        | Error::UnexpectedHistory
+        | Error::Editor(_)
+        | Error::Diagnostic(_)
+        | Error::InvalidDestination => true,
+        Error::DestinationExists | Error::PublishedNotSynced { .. } | Error::Storage(_) => false,
+    }
+}
+
+fn permanent_path_error(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    let invalid = matches!(error.raw_os_error(), Some(libc::ENAMETOOLONG));
+    #[cfg(windows)]
+    let invalid = {
+        use windows_sys::Win32::Foundation::{ERROR_FILENAME_EXCED_RANGE, ERROR_INVALID_NAME};
+        error.raw_os_error().is_some_and(|code| {
+            matches!(code as u32, ERROR_FILENAME_EXCED_RANGE | ERROR_INVALID_NAME)
+        })
+    };
+    invalid
 }

@@ -1,7 +1,7 @@
 use super::{
     archive, destination_parent,
     editor_document::{self, Authoring, MacroSettings},
-    private_directory, project, publish_error, sync_directory, Error, Result,
+    private_directory, project, publish_error, sync_directory, Diagnostic, Error, Result,
 };
 use crate::db::{
     architect_library::{
@@ -217,13 +217,42 @@ impl Storage {
         self.publish(stage, blueprint_id, StorageState::Recovery)
     }
 
-    pub(super) fn stage_split(&self, mut split: editor_document::Split) -> Result<PreparedDraft> {
+    pub(super) fn stage_split(
+        &self,
+        mut split: editor_document::Split,
+        draft_blueprint: Option<&str>,
+    ) -> Result<PreparedDraft> {
         let stage = private_directory(&self.staging()?, ".draft-")?;
         let root = stage.path().join(PROJECT);
+        let published = draft_blueprint.map(|blueprint| {
+            self.bucket(blueprint, StorageState::Draft)
+                .join(Uuid::nil().to_string())
+                .join(PROJECT)
+        });
+        for name in split.files.keys() {
+            let fits = |base: &Path| project_path_fits(&base.join(name));
+            if !fits(&root) || published.as_deref().is_some_and(|base| !fits(base)) {
+                return Err(Error::Diagnostic(Diagnostic {
+                    code: "PROJECT_PATH".into(),
+                    file: Some(name.clone()),
+                    pointer: String::new(),
+                    message: format!("Project file {name:?} exceeds the filesystem path limit"),
+                    source: None,
+                }));
+            }
+        }
         ensure_dir(&self.root, &root)?;
         let written: BTreeSet<_> = split.files.keys().cloned().collect();
         for (name, bytes) in split.files {
-            write_project_file(&root, &name, &bytes)?;
+            write_project_file(&root, &name, &bytes).map_err(|error| match error {
+                Error::Io(source) => Error::ProjectIo {
+                    file: name.clone(),
+                    pointer: String::new(),
+                    path: name,
+                    source,
+                },
+                error => error,
+            })?;
         }
         let source = match OpenedSource::open_path(&root).map_err(Error::from) {
             Ok(source) => {
@@ -289,7 +318,7 @@ impl Storage {
         match editor_document::split(document.clone()) {
             Ok(mut split) => {
                 split.inherit_executables(executable_paths);
-                let draft = self.stage_split(split)?;
+                let draft = self.stage_split(split, Some(blueprint))?;
                 let document = draft.document()?;
                 let diagnostics = draft.authoring.diagnostics.clone();
                 let artifact = self.publish_draft(blueprint, draft)?;
@@ -454,7 +483,7 @@ impl Storage {
         let artifact = if let Some(document) = edited {
             let mut split = editor_document::split(document).map_err(DbError::AgsdlUpgrade)?;
             split.inherit_executables(self.draft_executables(&Artifact::from_row(&row, "id")?)?);
-            let mut draft = self.stage_split(split)?;
+            let mut draft = self.stage_split(split, Some(&id))?;
             if draft.upgraded {
                 converted = Some(draft.document()?);
             }
@@ -545,7 +574,7 @@ impl Storage {
                 Ok(mut split) => {
                     split.inherit_executables(paths);
                     split.authoring.merge_diagnostics(&diagnostics);
-                    let prepared = self.stage_split(split)?;
+                    let prepared = self.stage_split(split, Some(&id))?;
                     let diagnostics = prepared.authoring.diagnostics.clone();
                     let projected = prepared.document()?;
                     let draft = self.publish_draft(&id, prepared)?;
@@ -791,6 +820,12 @@ fn walk_directories(root: &Path, path: &Path, create: bool) -> io::Result<()> {
         }
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.is_dir() && !is_link_or_reparse_point(&metadata) => continue,
+            Ok(metadata) if metadata.is_file() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotADirectory,
+                    "Expected Architect storage directory",
+                ));
+            }
             Ok(_) => return Err(invalid()),
             Err(error) if create && error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
@@ -876,6 +911,24 @@ pub(super) fn read_file(path: &Path) -> io::Result<Vec<u8>> {
 
 fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     write_file(path, &serde_json::to_vec(value)?)
+}
+
+#[cfg(unix)]
+fn project_path_fits(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    path.as_os_str().as_bytes().len() < libc::PATH_MAX as usize
+}
+
+#[cfg(windows)]
+fn project_path_fits(path: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::MAX_PATH;
+    let units = |path: &Path| path.as_os_str().encode_wide().count();
+    // Profile paths must also work when Win32 long paths are disabled.
+    units(path) < MAX_PATH as usize
+        && path
+            .parent()
+            .is_some_and(|parent| units(parent) <= MAX_PATH as usize - 12)
 }
 
 pub(super) fn write_project_file(root: &Path, path: &str, bytes: &[u8]) -> Result<()> {

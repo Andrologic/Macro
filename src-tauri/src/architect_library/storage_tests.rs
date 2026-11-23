@@ -1033,6 +1033,100 @@ async fn editor_inventory_limit_routes_migrated_draft_to_recovery() {
 }
 
 #[tokio::test]
+async fn startup_recovers_overlong_legacy_paths_and_migrates_other_rows() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("macro.db");
+    let pool = create_pool(&path).await.unwrap();
+    let valid = editor("Valid historical version");
+    let mut overlong = valid.clone();
+    let annex = format!(
+        "{}/{}.md",
+        vec!["a".repeat(250); 16].join("/"),
+        "b".repeat(60)
+    );
+    assert_eq!(annex.len(), 4079);
+    assert!(super::editor_document::portable_path(&annex));
+    overlong
+        .annexes
+        .insert(annex.clone(), "original bytes".into());
+    let raw = envelope(&overlong);
+    seed(&pool, &raw).await;
+    historical(&pool, 1, 3, &raw).await;
+    historical(&pool, 2, 4, &envelope(&valid)).await;
+    pool.close().await;
+
+    let pool = create_pool(&path).await.unwrap();
+    migration::startup(&pool, temp.path()).await.unwrap();
+    let storage = Storage::new(temp.path());
+    for recovery in [
+        draft_artifact(&pool).await,
+        version_artifact(&pool, 1).await,
+    ] {
+        assert_eq!(recovery.state, StorageState::Recovery);
+        let root = storage.artifact_path(&recovery);
+        assert_eq!(fs::read_to_string(root.join(ORIGINAL)).unwrap(), raw);
+        let diagnostics: Vec<String> =
+            serde_json::from_slice(&fs::read(root.join("diagnostics.json")).unwrap()).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|issue| issue.contains(&annex) && issue.contains("filesystem path limit")));
+    }
+    assert_eq!(
+        version_artifact(&pool, 2).await.state,
+        StorageState::Archive
+    );
+    migration::startup(&pool, temp.path()).await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn migration_checks_the_longer_published_draft_path_before_cutover() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let pool = create_pool(&temp.path().join("macro.db")).await.unwrap();
+    let storage = Storage::new(temp.path());
+    let base = storage
+        .artifact_path(&Artifact {
+            blueprint_id: BLUEPRINT.into(),
+            id: uuid::Uuid::nil(),
+            state: StorageState::Draft,
+            sha256: None,
+        })
+        .join(PROJECT);
+    let length = libc::PATH_MAX as usize - base.as_os_str().as_bytes().len() - 1;
+    let annex: String = (1..=length)
+        .map(|index| {
+            if index % 128 == 0 && index < length {
+                '/'
+            } else {
+                'a'
+            }
+        })
+        .collect();
+    let mut document = editor("Fits staging only");
+    document.annexes.insert(annex.clone(), "preserve".into());
+    let staged = storage
+        .stage_split(
+            super::editor_document::split(document.clone()).unwrap(),
+            None,
+        )
+        .unwrap();
+    assert!(staged.root().join(&annex).is_file());
+    drop(staged);
+    seed(&pool, &envelope(&document)).await;
+
+    migration::startup(&pool, temp.path()).await.unwrap();
+    let draft = storage.open_draft_project(&pool, BLUEPRINT).await.unwrap();
+    assert_eq!(draft.storage_state, "recovery");
+    assert!(draft
+        .project
+        .diagnostics
+        .iter()
+        .any(|issue| issue.message.contains(&annex)));
+}
+
+#[tokio::test]
 async fn migration_keeps_a_skill_with_rejected_members_out_of_frozen_archives() {
     let temp = tempfile::tempdir().unwrap();
     let pool = create_pool(&temp.path().join("macro.db")).await.unwrap();
