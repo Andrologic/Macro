@@ -491,7 +491,6 @@ impl StartAuthority030 for ArchiveStart<'_> {
         )
         .await?;
         if !self.owns_folder {
-            let occupied = folder_in_use(db, self.folder).await?;
             let changed = || launch_failure("WORKING_FOLDER_CHANGED", "workingFolder");
             let scope = scope_for(self.folder, &request.source.owner).map_err(|_| changed())?;
             if scope != self.root_scope
@@ -503,7 +502,7 @@ impl StartAuthority030 for ArchiveStart<'_> {
                 if *confirmed != folder_reuse_token(&scope)? {
                     return Err(changed());
                 }
-            } else if occupied {
+            } else if folder_in_use(db, &scope).await? {
                 return Err(launch_failure("WORKING_FOLDER_IN_USE", "workingFolder"));
             }
         }

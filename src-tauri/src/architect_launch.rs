@@ -613,16 +613,22 @@ fn folder_reuse_token(scope: &Value) -> Result<String> {
     ))
 }
 
-async fn folder_in_use(db: &mut SqliteConnection, folder: &Path) -> Result<bool> {
+async fn folder_in_use(db: &mut SqliteConnection, scope: &Value) -> Result<bool> {
     Ok(sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM architect_launch_runs launch
           JOIN engine_flow030_runs run ON run.system_id=launch.system_id
-          WHERE launch.working_folder=? AND (
+          JOIN engine_start030_requests start ON start.system_id=launch.system_id
+          WHERE (
             json_extract(run.state_json,'$.verdict') IS NULL OR
             EXISTS(SELECT 1 FROM json_each(run.state_json,'$.activations') WHERE json_extract(value,'$.physical')=1)
+          ) AND (
+            launch.working_folder=? OR
+            json_extract(json_extract(json_extract(start.capture_json,'$.privateCaptureJson'),
+              '$.callScopeJson'),'$.rootIdentity')=?
           ))",
     )
-    .bind(folder.to_str())
+    .bind(scope["root"].as_str())
+    .bind(scope["rootIdentity"].as_str())
     .fetch_one(db)
     .await?)
 }
@@ -861,7 +867,7 @@ pub(crate) async fn prepare(
             .and_then(|path| chosen_folder(path, app_data, manager.root()));
         if let Some(folder) = folder {
             let scope = start::scope_for(&folder, &owner(&input.key.blueprint_id))?;
-            if folder_in_use(&mut *pool.acquire().await?, &folder).await? {
+            if folder_in_use(&mut *pool.acquire().await?, &scope).await? {
                 reuse_token = Some(folder_reuse_token(&scope)?);
             }
             configuration.working_folder = Some(folder);

@@ -1075,6 +1075,21 @@ async fn admission_rechecks_folder_sharing_after_two_unoccupied_previews() {
         let backup = renamed.path().join("original");
         fs::rename(&path, &backup).unwrap();
         fs::create_dir(&path).unwrap();
+        let mut moved = preview(
+            &manager,
+            &pool,
+            data.path(),
+            version.clone(),
+            Some(LaunchConfiguration {
+                working_folder: Some(backup.clone()),
+            }),
+        )
+        .await;
+        assert!(moved.folder_reuse_token.take().is_some());
+        assert_eq!(
+            launch(&moved).await.err().unwrap().code,
+            "WORKING_FOLDER_IN_USE"
+        );
         assert_eq!(
             launch(&confirmed).await.err().unwrap().code,
             "WORKING_FOLDER_CHANGED"
