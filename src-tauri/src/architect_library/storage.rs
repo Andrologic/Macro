@@ -11,7 +11,7 @@ use crate::db::{
     },
     DbError, DbResult,
 };
-use crate::fs::profile::{admits_file, checkpoint, create_private_file};
+use crate::fs::profile::{checkpoint, create_private_file, fits_existing_file};
 use argentic_runtime::source::OpenedSource;
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
@@ -235,7 +235,7 @@ impl Storage {
         let root = stage.path().join(PROJECT);
         let published = draft_blueprint.map(|blueprint| self.draft_root(blueprint));
         for base in std::iter::once(root.as_path()).chain(published.as_deref()) {
-            if !admits_file(&base.join(project::MANIFEST)) {
+            if !fits_existing_file(&base.join(project::MANIFEST)) {
                 return Err(Error::Storage(
                     "Architect profile directory exceeds the filesystem path limit".into(),
                 ));
@@ -248,6 +248,13 @@ impl Storage {
         let written: BTreeSet<_> = split.files.keys().cloned().collect();
         for (name, bytes) in split.files {
             write_project_file(&root, &name, &bytes).map_err(|error| match error {
+                Error::Io(source) if invalid_stage_path(&source) => Error::Diagnostic(Diagnostic {
+                    code: "PROJECT_PATH".into(),
+                    file: Some(name.clone()),
+                    pointer: String::new(),
+                    message: format!("Could not materialize project file {name:?}: {source}"),
+                    source: None,
+                }),
                 Error::Io(source) => Error::ProjectIo {
                     file: name.clone(),
                     pointer: String::new(),
@@ -976,8 +983,27 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     write_file(path, &serde_json::to_vec(value)?)
 }
 
+// Only classify errors from materializing a member inside a new private
+// project. The same errors at the library root can require operator repair.
+fn invalid_stage_path(error: &io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::AlreadyExists | io::ErrorKind::NotADirectory | io::ErrorKind::IsADirectory
+    ) {
+        return true;
+    }
+    #[cfg(unix)]
+    return error.raw_os_error() == Some(libc::ENAMETOOLONG);
+    #[cfg(windows)]
+    return matches!(
+        error.raw_os_error(),
+        Some(code) if code == windows_sys::Win32::Foundation::ERROR_INVALID_NAME as i32
+            || code == windows_sys::Win32::Foundation::ERROR_FILENAME_EXCED_RANGE as i32
+    );
+}
+
 pub(super) fn check_project_path(root: &Path, name: &str) -> Result<()> {
-    if !editor_document::portable_path(name) || !admits_file(&root.join(name)) {
+    if !editor_document::portable_path(name) || !fits_existing_file(&root.join(name)) {
         return Err(Error::Diagnostic(Diagnostic {
             code: "PROJECT_PATH".into(),
             file: Some(name.into()),

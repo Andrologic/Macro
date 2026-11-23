@@ -747,6 +747,10 @@ pub(crate) fn portable_path(path: &str) -> bool {
                 && part.len() <= 255
                 && !part.ends_with([' ', '.'])
                 && !reserved
+                && !part
+                    .as_bytes()
+                    .windows(2)
+                    .any(|pair| pair[0] == b'~' && pair[1].is_ascii_digit())
                 && !matches!(folded.as_str(), ".git" | ".env" | ".agsdl-history.bundle")
                 && !folded.starts_with(".env.")
                 && !part.chars().any(|c| {

@@ -39,8 +39,9 @@ fn fits_file(path: &Path, margin: usize) -> bool {
 
 #[cfg(any(windows, test))]
 pub(crate) fn fits_win32(file: usize, parent: usize, margin: usize) -> bool {
-    // Include the terminating NUL and the directory creation allowance.
-    fits_path(file, parent, margin, 260) && parent <= 248
+    // std::fs uses extended-length wide paths on Windows. The system limit
+    // includes the terminating NUL and any verbatim prefix.
+    fits_path(file, parent, margin, 32_767 - 8)
 }
 
 fn fits_path(file: usize, parent: usize, margin: usize, limit: usize) -> bool {

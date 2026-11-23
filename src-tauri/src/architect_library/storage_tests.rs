@@ -1032,6 +1032,7 @@ async fn editor_inventory_limit_routes_migrated_draft_to_recovery() {
     assert!(repair.project.projection.is_some());
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn startup_recovers_overlong_legacy_paths_and_migrates_other_rows() {
     let temp = tempfile::tempdir().unwrap();

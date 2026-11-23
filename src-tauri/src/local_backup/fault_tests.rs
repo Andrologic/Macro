@@ -78,6 +78,7 @@ fn generated_envelopes() -> Vec<(Vec<u8>, bool)> {
         (
             envelope(BTreeMap::from([
                 ("CON.md".into(), "reserved".into()),
+                ("a-long~1.md".into(), "8.3 alias".into()),
                 ("com¹.txt".into(), "reserved".into()),
                 ("trailing.".into(), "invalid component".into()),
                 ("Notes/A.md".into(), "directory spelling 1".into()),
@@ -105,7 +106,7 @@ fn generated_envelopes() -> Vec<(Vec<u8>, bool)> {
                 format!("{}/end.md", vec!["x".repeat(252); 16].join("/")),
                 "overlong".into(),
             )])),
-            true,
+            cfg!(unix),
         ),
         (
             br#" {"source":1,"annexes":{},"future":[null,true]} "#.to_vec(),
@@ -272,7 +273,7 @@ async fn generated_legacy_profiles_preserve_exact_originals() {
             *recovery,
             "{id}"
         );
-        if id == &ids[3] {
+        if id == &ids[3] && *recovery {
             let repaired = storage
                 .adapt_version(&pool, key, "project".into(), "Repair".into())
                 .await
@@ -423,11 +424,11 @@ fn win32_path_budget_counts_utf16_and_directory_margin() {
     let units = |path: &str| path.encode_utf16().count();
     let allowed = "é".repeat(55) + &"🐈".repeat(80);
     assert_eq!(units(&allowed), 215);
-    assert!(!fits_win32(216, units(&allowed), 44));
-    assert!(fits_win32(259, units(&allowed) - 1, 44));
-    assert!(!fits_win32(260, units(&allowed) - 1, 44));
-    assert!(fits_win32(250, 248, 0));
-    assert!(!fits_win32(251, 249, 0));
+    assert!(fits_win32(260, units(&allowed), 0));
+    assert!(fits_win32(30_000, 29_999, 0));
+    assert!(fits_win32(32_750, 32_748, 0));
+    assert!(!fits_win32(32_750, 32_748, 44));
+    assert!(!fits_win32(32_767, 32_748, 0));
 }
 
 async fn run_fault(data: &Path, config: &Path, mode: &str, point: &str, action: &str) {
