@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openExternalUrl } from "../../services/externalUrlOpener";
 import { architectLaunch, type LaunchConfiguration, type LaunchModelOverrides, type LaunchPreview, type LaunchSecret } from "../../services/ipc/architectLaunch";
 import { architectLibrary, type BlueprintVersionSummary, type VersionKey } from "../../services/ipc/architectLibrary";
 import { openWorkflowRun030, refreshArchiveRunAccess } from "../../services/workflowAgentTasks";
@@ -8,6 +9,14 @@ import { useArchitectLaunchStore } from "../../stores/useArchitectLaunchStore";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { Dialog } from "../ui/Dialog";
 import { notify } from "../ui/toastService";
+
+const codexSetupGuide = "https://github.com/Andrologic/Macro/blob/develop/docs/agsdl-codex-native.md#private-login";
+
+function codexAuthBlocker(code: unknown) {
+  if (code === "CODEX_AUTH_VERSION_UNQUALIFIED") return "codexAuthVersionUnqualified";
+  if (code === "CODEX_LOGIN_REQUIRED") return "codexLoginRequired";
+  return null;
+}
 
 interface SystemChoice {
   id: string;
@@ -212,7 +221,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
       const folderChanged = code === "WORKING_FOLDER_IN_USE" || code === "WORKING_FOLDER_CHANGED" ||
         code === "WORKING_FOLDER_UNAVAILABLE" || code === "workingFolderRequired";
       if (folderChanged || code === "CONSENT_REQUIRED" || code === "MODEL_UNAVAILABLE" ||
-          code === "MCP_SECRETS_UNAVAILABLE") {
+          code === "MCP_SECRETS_UNAVAILABLE" || codexAuthBlocker(code)) {
         setConsent(false);
         if (folderChanged) setConfirmedFolderToken(null);
         checkAgain();
@@ -284,11 +293,18 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
           {(!systems || (!!version && (!current || checking))) && !error && <p role="status">{t("agsdl.launch.checking")}</p>}
           {!!current?.blockers.length && <section aria-label={t("agsdl.launch.blockers")}>
             <strong>{t("agsdl.launch.blockers")}</strong>
-            <ul>{current.blockers.map(({ code, subject }) => <li key={JSON.stringify([code, subject])}>
-              {t(`agsdl.launch.blocker.${code}`, { subject, defaultValue: subject })}
-              {code === "workingFolderRequired" && <button type="button" onClick={() => void chooseFolder()}>{t("agsdl.launch.chooseFolder")}</button>}
-              {code === "codexUnavailable" && <button type="button" onClick={() => useAppStore.getState().openSettings("providers")}>{t("agsdl.launch.connect")}</button>}
-            </li>)}</ul>
+            <ul>{current.blockers.map(({ code, subject }) => {
+              const auth = code === "codexUnavailable" ? codexAuthBlocker(subject) : null;
+              return <li key={JSON.stringify([code, subject])}>
+                {t(`agsdl.launch.blocker.${auth ?? code}`, { subject, defaultValue: subject })}
+                {code === "workingFolderRequired" && <button type="button" onClick={() => void chooseFolder()}>{t("agsdl.launch.chooseFolder")}</button>}
+                {auth && <> <a href={codexSetupGuide} onClick={event => {
+                  event.preventDefault();
+                  void openExternalUrl(codexSetupGuide).catch(() => setError("failed"));
+                }}>{t("agsdl.launch.codexSetupGuide")}</a></>}
+                {code === "codexUnavailable" && !auth && <button type="button" onClick={() => useAppStore.getState().openSettings("providers")}>{t("agsdl.launch.connect")}</button>}
+              </li>;
+            })}</ul>
             <button type="button" onClick={checkAgain}>{t("agsdl.launch.recheck")}</button>
           </section>}
           {current && current.availableModels.length > 0 && [...modelAgents].map(agent =>

@@ -32,6 +32,7 @@
     "launched": "Run launched",
     "viewRun": "View run",
     "recheck": "Check again",
+    "codexSetupGuide": "Codex setup guide",
     "connect": "Connect…",
     "failed": "Macro could not complete the operation.",
     "modelUnavailable": "The requested model or effort is unavailable in the installed harness.",
@@ -47,6 +48,8 @@
       "mcpReservedSecret": "Choose another name for this reserved MCP secret. {{subject}}",
       "unsupportedHarness": "Agent {{subject}} uses an unsupported harness.",
       "workingFolderRequired": "Choose an available working folder.",
+      "codexAuthVersionUnqualified": "Existing-file login requires Codex 0.167.0. Select that version, or restart Macro without ARGENTIC_CODEX_AUTH_FILE and sign in to its private Codex profile.",
+      "codexLoginRequired": "Use the setup guide to sign in to Macro’s private Codex profile, then check again.",
       "codexUnavailable": "Codex is unavailable. {{subject}}"
     },
     "preset": {

@@ -32,6 +32,7 @@
     "launched": "Ejecución iniciada",
     "viewRun": "Ver ejecución",
     "recheck": "Volver a comprobar",
+    "codexSetupGuide": "Guía de configuración de Codex",
     "connect": "Conectar…",
     "failed": "Macro no pudo completar la operación.",
     "modelUnavailable": "El modelo o nivel de esfuerzo solicitado no está disponible en el entorno instalado.",
@@ -47,6 +48,8 @@
       "mcpReservedSecret": "Elige otro nombre para este secreto MCP reservado. {{subject}}",
       "unsupportedHarness": "El agente {{subject}} utiliza un entorno no compatible.",
       "workingFolderRequired": "Elige una carpeta de trabajo disponible.",
+      "codexAuthVersionUnqualified": "Para usar un archivo de sesión existente se necesita Codex 0.167.0. Selecciona esa versión o reinicia Macro sin ARGENTIC_CODEX_AUTH_FILE e inicia sesión en su perfil privado de Codex.",
+      "codexLoginRequired": "Sigue la guía para iniciar sesión en el perfil privado de Codex de Macro y vuelve a comprobarlo.",
       "codexUnavailable": "Codex no está disponible. {{subject}}"
     },
     "preset": {

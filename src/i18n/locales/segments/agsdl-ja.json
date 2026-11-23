@@ -32,6 +32,7 @@
     "launched": "実行を開始しました",
     "viewRun": "実行を表示",
     "recheck": "再確認",
+    "codexSetupGuide": "Codex の設定ガイド",
     "connect": "接続…",
     "failed": "Macro は処理を完了できませんでした。",
     "modelUnavailable": "指定されたモデルまたは推論レベルは、インストール済みの実行環境で利用できません。",
@@ -47,6 +48,8 @@
       "mcpReservedSecret": "この MCP シークレットには予約名が使われています。別の名前を選んでください。{{subject}}",
       "unsupportedHarness": "エージェント {{subject}} の実行環境はサポートされていません。",
       "workingFolderRequired": "利用可能な作業フォルダーを選択してください。",
+      "codexAuthVersionUnqualified": "既存の認証ファイルを使用するには Codex 0.167.0 が必要です。そのバージョンを選ぶか、ARGENTIC_CODEX_AUTH_FILE を設定せずに Macro を起動し直して、専用の Codex プロファイルにログインしてください。",
+      "codexLoginRequired": "設定ガイドに沿って Macro 専用の Codex プロファイルにログインし、もう一度確認してください。",
       "codexUnavailable": "Codex は利用できません。{{subject}}"
     },
     "preset": {

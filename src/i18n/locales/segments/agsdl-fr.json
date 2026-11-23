@@ -32,6 +32,7 @@
     "launched": "Exécution lancée",
     "viewRun": "Voir l’exécution",
     "recheck": "Revérifier",
+    "codexSetupGuide": "Guide de configuration de Codex",
     "connect": "Connecter…",
     "failed": "Macro n’a pas pu terminer l’opération.",
     "modelUnavailable": "Le modèle ou le niveau d’effort demandé est indisponible dans le harnais installé.",
@@ -47,6 +48,8 @@
       "mcpReservedSecret": "Choisissez un autre nom pour ce secret MCP réservé. {{subject}}",
       "unsupportedHarness": "Le harnais de l’agent {{subject}} n’est pas pris en charge.",
       "workingFolderRequired": "Choisissez un dossier de travail disponible.",
+      "codexAuthVersionUnqualified": "L’utilisation d’une connexion existante nécessite Codex 0.167.0. Sélectionnez cette version, ou redémarrez Macro sans ARGENTIC_CODEX_AUTH_FILE et connectez-vous à son profil Codex privé.",
+      "codexLoginRequired": "Suivez le guide pour vous connecter au profil Codex privé de Macro, puis relancez la vérification.",
       "codexUnavailable": "Codex est indisponible. {{subject}}"
     },
     "preset": {

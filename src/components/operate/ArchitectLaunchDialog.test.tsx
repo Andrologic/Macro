@@ -130,6 +130,28 @@ it("rechecks when the folder becomes occupied and requires an explicit confirmat
   expect(requests.map(request => request.folderReuseToken)).toEqual([null, "folder-identity-1", "folder-identity-2"]);
 });
 
+it.each([
+  ["CODEX_AUTH_VERSION_UNQUALIFIED", "ARGENTIC_CODEX_AUTH_FILE"],
+  ["CODEX_LOGIN_REQUIRED", "sign in to Macro’s private Codex profile"],
+])("shows how to resolve %s when Codex auth changes at launch", async (code, guidance) => {
+  let blocked = false;
+  install((command) => {
+    if (command === "architect_launch_prepare") return preview({
+      blockers: blocked ? [{ code: "codexUnavailable", subject: code }] : [],
+    });
+    if (command === "architect_launch_start") {
+      blocked = true;
+      throw { code };
+    }
+    throw new Error(command);
+  });
+  await show(archive);
+  await act(async () => submit().click());
+  expect(dialog().textContent).toContain(guidance);
+  expect(dialog().querySelector("a")?.textContent).toBe("Codex setup guide");
+  expect(submit().disabled).toBe(true);
+});
+
 it("applies the selected replacement model to this launch", async () => {
   const requests: LaunchRequest[] = [];
   install((command, input) => {

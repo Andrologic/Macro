@@ -32,6 +32,7 @@
     "launched": "Ausführung gestartet",
     "viewRun": "Ausführung anzeigen",
     "recheck": "Erneut prüfen",
+    "codexSetupGuide": "Codex-Einrichtungsanleitung",
     "connect": "Verbinden…",
     "failed": "Macro konnte den Vorgang nicht abschließen.",
     "modelUnavailable": "Das angeforderte Modell oder die Aufwandsstufe ist in der installierten Laufzeit nicht verfügbar.",
@@ -47,6 +48,8 @@
       "mcpReservedSecret": "Wähle einen anderen Namen für dieses reservierte MCP-Geheimnis. {{subject}}",
       "unsupportedHarness": "Agent {{subject}} verwendet eine nicht unterstützte Laufzeit.",
       "workingFolderRequired": "Verfügbaren Arbeitsordner auswählen.",
+      "codexAuthVersionUnqualified": "Für die Anmeldung mit einer vorhandenen Datei ist Codex 0.167.0 erforderlich. Wähle diese Version oder starte Macro ohne ARGENTIC_CODEX_AUTH_FILE neu und melde dich im privaten Codex-Profil an.",
+      "codexLoginRequired": "Melde dich anhand der Anleitung im privaten Codex-Profil von Macro an und prüfe den Start erneut.",
       "codexUnavailable": "Codex ist nicht verfügbar. {{subject}}"
     },
     "preset": {
