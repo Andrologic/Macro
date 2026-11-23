@@ -1020,7 +1020,12 @@
     },
     "exactHint": "Los demás valores siguen disponibles en la pestaña JSON exacto.",
     "ownerChangeHint": "El agente responsable ha cambiado. Sus propiedades están bloqueadas. Guarde y vuelva a abrir esta ficha para editar el nuevo agente.",
-    "definitionChangeHint": "La definición del agente tiene cambios pendientes. Guarde y vuelva a abrir esta ficha antes de cambiar el agente responsable."
+    "definitionChangeHint": "La definición del agente tiene cambios pendientes. Guarde y vuelva a abrir esta ficha antes de cambiar el agente responsable.",
+    "location": {
+      "file": "El texto está en un archivo del proyecto.",
+      "web": "El texto proviene de una dirección web.",
+      "details": "Dónde está guardado"
+    }
   },
   "graph030": {
     "keyboardHint": "Flecha derecha abre la vista previa y los detalles avanzados. Mayús+F10 abre las acciones.",

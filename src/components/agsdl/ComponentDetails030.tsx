@@ -140,11 +140,8 @@ function BusinessFields030({ fields, values = fields.map(field => field.value), 
     if (!members.length && !(onChange && (resources >= 0 || choices >= 0))) return null;
     // The first group sits right under the header: a rule above it would separate nothing.
     const top = first; first = false;
-    return <details key={group} className="agsdl-details" open={["general", "instructions", "mission"].includes(group)}
-      style={top ? { minWidth: 0, marginTop: 0, paddingTop: 0, borderTopWidth: 0 } : { minWidth: 0 }}>
-      <DisclosureSummary>{t(`agsdl.authoring030.groups.${group}`)}</DisclosureSummary>
-      {["instructions", "mission", "information", "instance", "join"].includes(group) && <p className="agsdl-muted">{t(`agsdl.authoring030.hints.${group}`)}</p>}
-      {members.map(field => <label className="agsdl-edit-field" style={{ marginTop: 8, gap: 4 }} key={`${field.index}:${field.path}`}>
+    const locations = members.filter(field => field.label === "uri");
+    const renderField = (field: (typeof members)[number]) => <label className="agsdl-edit-field" style={{ marginTop: 8, gap: 4 }} key={`${field.index}:${field.path}`}>
         <span>{t(`agsdl.authoring030.fields.${field.label}`)}{field.name && !/^\d+$/.test(field.name) ? ` · ${field.name}` : ""}</span>
         {!onChange ? <span style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{field.kind === "select" ? field.optionLabels ? field.optionLabels[field.value] ?? field.value : t(`agsdl.authoring030.options.${field.value}`, { defaultValue: field.value }) : field.value}</span>
           : field.kind === "select" ? <select value={field.value} disabled={disabled || locked?.(field.index)} onChange={event => onChange(updateAuthoringField030(values, field, event.target.value))}>
@@ -153,7 +150,19 @@ function BusinessFields030({ fields, values = fields.map(field => field.value), 
             {field.options?.map(value => <option key={value} value={value}>{field.optionLabels ? field.optionLabels[value] : t(`agsdl.authoring030.options.${value}`)}</option>)}
           </select> : ["multiline", "lines"].includes(field.kind) ? <textarea rows={3} value={field.value} disabled={disabled || locked?.(field.index)} onChange={event => field.kind === "lines" ? onLinesChange?.(field, event.target.value) : onChange(updateAuthoringField030(values, field, event.target.value))} />
             : <input value={field.value} inputMode={field.kind === "integer" ? "numeric" : undefined} disabled={disabled || locked?.(field.index)} onChange={event => onChange(updateAuthoringField030(values, field, event.target.value))} />}
-      </label>)}
+      </label>;
+    return <details key={group} className="agsdl-details" open={["general", "instructions", "mission"].includes(group)}
+      style={top ? { minWidth: 0, marginTop: 0, paddingTop: 0, borderTopWidth: 0 } : { minWidth: 0 }}>
+      <DisclosureSummary>{t(`agsdl.authoring030.groups.${group}`)}</DisclosureSummary>
+      {["instructions", "mission", "information", "instance", "join"].includes(group) && <p className="agsdl-muted">{t(`agsdl.authoring030.hints.${group}`)}</p>}
+      {/* Where a text lives (a file of the project, an address) is a detail: it stays one click away. */}
+      {members.filter(field => field.label !== "uri").map(renderField)}
+      {locations.length > 0 && <>
+        {!onChange && <p className="agsdl-muted">{t(locations.every(field => /^[a-z][a-z0-9+.-]*:\/\//i.test(field.value)) ? "agsdl.authoring030.location.web" : "agsdl.authoring030.location.file")}</p>}
+        <details className="agsdl-details"><DisclosureSummary>{t("agsdl.authoring030.location.details")}</DisclosureSummary>
+          {locations.map(renderField)}
+        </details>
+      </>}
       {onChange && resources >= 0 && <AddProperty030 kind="resource" disabled={disabled || locked?.(resources)} value={values[resources]} onChange={value => onChange(values.map((old, i) => i === resources ? value : old))} />}
       {onChange && choices >= 0 && <AddProperty030 kind="choice" disabled={disabled || locked?.(choices)} value={values[choices]} onChange={value => onChange(values.map((old, i) => i === choices ? value : old))} />}
     </details>;

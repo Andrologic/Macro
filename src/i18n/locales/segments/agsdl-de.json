@@ -1020,7 +1020,12 @@
     },
     "exactHint": "Weitere Werte bleiben im Reiter für exaktes JSON verfügbar.",
     "ownerChangeHint": "Der verantwortliche Agent wurde geändert. Seine Definition ist gesperrt. Speichern und öffnen Sie diese Ansicht erneut, um den neuen Agenten zu bearbeiten.",
-    "definitionChangeHint": "Die Agentendefinition enthält ungespeicherte Änderungen. Speichern und öffnen Sie diese Ansicht erneut, bevor Sie den verantwortlichen Agenten ändern."
+    "definitionChangeHint": "Die Agentendefinition enthält ungespeicherte Änderungen. Speichern und öffnen Sie diese Ansicht erneut, bevor Sie den verantwortlichen Agenten ändern.",
+    "location": {
+      "file": "Der Text steht in einer Datei des Projekts.",
+      "web": "Der Text stammt von einer Webadresse.",
+      "details": "Speicherort"
+    }
   },
   "graph030": {
     "keyboardHint": "Pfeil rechts öffnet Vorschau und erweiterte Details. Umschalt+F10 öffnet die Aktionen.",

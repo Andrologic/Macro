@@ -1020,7 +1020,12 @@
     },
     "exactHint": "Les autres valeurs restent accessibles dans l’onglet JSON exact.",
     "ownerChangeHint": "L’agent responsable a changé. Ses propriétés de définition sont bloquées. Enregistrez puis rouvrez cette fiche pour modifier le nouvel agent.",
-    "definitionChangeHint": "La définition de l’agent a des modifications en attente. Enregistrez puis rouvrez cette fiche avant de changer l’agent responsable."
+    "definitionChangeHint": "La définition de l’agent a des modifications en attente. Enregistrez puis rouvrez cette fiche avant de changer l’agent responsable.",
+    "location": {
+      "file": "Le texte est dans un fichier du projet.",
+      "web": "Le texte vient d’une adresse web.",
+      "details": "Où il est rangé"
+    }
   },
   "graph030": {
     "keyboardHint": "Flèche droite ouvre l’aperçu et les détails avancés. Maj+F10 ouvre les actions.",

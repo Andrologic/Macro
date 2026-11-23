@@ -1020,7 +1020,12 @@
     },
     "exactHint": "Advanced values stay available in the exact JSON tab.",
     "ownerChangeHint": "The responsible agent has changed. Its definition fields are locked. Save, then reopen this panel to edit the new agent.",
-    "definitionChangeHint": "The agent definition has pending changes. Save, then reopen this panel before changing the responsible agent."
+    "definitionChangeHint": "The agent definition has pending changes. Save, then reopen this panel before changing the responsible agent.",
+    "location": {
+      "file": "The text is in a file of the project.",
+      "web": "The text comes from a web address.",
+      "details": "Where it is stored"
+    }
   },
   "graph030": {
     "keyboardHint": "Press Right Arrow for the preview and advanced details, or Shift+F10 for actions.",

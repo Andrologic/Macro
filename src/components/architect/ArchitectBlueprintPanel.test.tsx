@@ -294,3 +294,23 @@ it("holds the launch settings in their own tab, saved at once, and keeps them ou
   expect(dialog.textContent).not.toContain("Working folder");
   expect(dialog.textContent).not.toContain("Require a start message");
 });
+
+it("keeps the location of an agent's instructions file under a collapsed detail", async () => {
+  const doc = JSON.parse(source);
+  doc.agents.implement.instructions = { uri: "agents/implement/instructions.md" };
+  const text = JSON.stringify(doc);
+  draftState = { document: { source: text, annexes: {} }, project: { ...projectView(), projection: { source: text, origins: {} } } };
+  await mount();
+  await click(tab("Agents"));
+  await click([...panel().querySelectorAll('ul[aria-label="Agents"] li button')].find(button => button.textContent?.includes("implement")));
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.textContent).toContain("The text is in a file of the project.");
+  const where = [...dialog.querySelectorAll("details")].find(item => item.querySelector("summary")?.textContent?.includes("Where it is stored"))!;
+  expect(where).toBeDefined();
+  expect(where.open).toBe(false);
+  expect(where.textContent).toContain("agents/implement/instructions.md");
+  // Outside the collapsed details (this one and the advanced properties), the path is not shown.
+  const clone = dialog.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll("details").forEach(item => item.remove());
+  expect(clone.textContent).not.toContain("agents/implement/instructions.md");
+});
