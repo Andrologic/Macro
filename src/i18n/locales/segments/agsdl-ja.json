@@ -43,6 +43,8 @@
     "secretStored": "ローカル保管庫に保存済み",
     "saveSecret": "シークレットを保存",
     "blocker": {
+      "mcpRemoteUnsupported": "このバージョンの Macro は、AgSDL の実行でリモートツールサーバー「{{subject}}」を使用できません。",
+      "mcpRemoteDeclaredSecrets": "宣言されている認証情報は {{names}} です。",
       "mcpIsolationUnavailable": "この端末ではツール「{{subject}}」を保護された環境で実行できないため、Macro は起動しません。",
       "mcpWorkspaceRequired": "ツール「{{subject}}」は実行用フォルダーで作業する必要がありますが、現在の権限設定では許可されていません。",
       "mcpRetainedProgramRequired": "ツール「{{subject}}」はシステムに含まれていないプログラムに依存しているため、Macro は何が実行されるか確実に判断できません。",

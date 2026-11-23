@@ -43,6 +43,8 @@
     "secretStored": "Guardado en el almacén local",
     "saveSecret": "Guardar secreto",
     "blocker": {
+      "mcpRemoteUnsupported": "Esta versión de Macro no puede usar el servidor de herramientas remoto «{{subject}}» en una ejecución de AgSDL.",
+      "mcpRemoteDeclaredSecrets": "Credenciales declaradas: {{names}}.",
       "mcpIsolationUnavailable": "Macro no puede ejecutar la herramienta «{{subject}}» en un espacio protegido en este equipo, así que no la iniciará.",
       "mcpWorkspaceRequired": "La herramienta «{{subject}}» necesita poder trabajar en la carpeta de la ejecución, y los ajustes de permisos actuales no lo permiten.",
       "mcpRetainedProgramRequired": "La herramienta «{{subject}}» depende de un programa que no se incluye con el sistema, así que Macro no puede saber con certeza qué ejecutaría.",

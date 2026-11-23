@@ -17,8 +17,10 @@ export function LaunchConsent({ preview }: { preview: LaunchPreview }) {
   const { permissions } = preview;
   const reachable = Object.entries(permissions.agents).filter(([, agent]) => agent.usage === "reachable");
   const checks = reachable.filter(([, agent]) => agent.completionCheck);
-  const toolsInUse = Object.values(permissions.mcpServers).some(server => server.usage !== "declaredOnly");
-  const interpreterSecrets = preview.secrets.filter(secret => interpreterEnvironment.has(secret.name));
+  const localToolsInUse = Object.values(permissions.mcpServers)
+    .some(server => server.usage !== "declaredOnly" && server.transport.type === "local");
+  const interpreterSecrets = preview.secrets.filter(secret =>
+    permissions.mcpServers[secret.server]?.transport.type === "local" && interpreterEnvironment.has(secret.name));
   const addresses = permissions.externalReferences.filter(reference => reference.usage !== "declaredOnly");
   return <div className="space-y-3">
     <InfoBlock icon={<Info size={13} />}><p className="!m-0">{t("agsdl.launch.consentIntro")}</p></InfoBlock>
@@ -46,7 +48,7 @@ export function LaunchConsent({ preview }: { preview: LaunchPreview }) {
       <Icon name="triangle-alert" size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
       <span>{t("agsdl.launch.mcpInterpreterSecret", { server: secret.server, name: secret.name })}</span>
     </p>)}
-    {toolsInUse && <InfoBlock icon={<Info size={13} />}><p className="!m-0">{t("agsdl.launch.mcpConsentScope")}</p></InfoBlock>}
+    {localToolsInUse && <InfoBlock icon={<Info size={13} />}><p className="!m-0">{t("agsdl.launch.mcpConsentScope")}</p></InfoBlock>}
     {reachable.length > 0 && <details className="agsdl-details">
       <DisclosureSummary>{t("agsdl.launch.permissionDetails")}</DisclosureSummary>
       <ul className="space-y-2 text-[11px]">{reachable.map(([id, agent]) => <li key={id}>

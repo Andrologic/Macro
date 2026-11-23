@@ -240,8 +240,30 @@ it("sends a Codex connection problem to the connection settings", async () => {
   opened.mockRestore();
 });
 
-it("moves to the permission step before the first launch of a version and shows what approval does not cover", async () => {
-  install(() => preview({ consentToken: "review" }));
+const remoteEndpoint = "https://mcp.example.com/issues";
+const remotePermissions: LaunchPreview["permissions"] = {
+  ...preview().permissions,
+  mcpServers: {
+    issues: { transport: { type: "remote", url: remoteEndpoint }, usage: "reachable", requiredSecrets: ["ISSUES_TOKEN"], packagedFiles: [] },
+  },
+  externalReferences: [{ kind: "mcpEndpoint", uri: remoteEndpoint, location: { file: "mcp/issues.json", pointer: "/url" }, usage: "reachable" }],
+};
+
+it("shows the remote MCP endpoint and declared credentials when the runtime cannot use the server", async () => {
+  install(() => preview({
+    blockers: [{ code: "mcpRemoteUnsupported", subject: "issues" }],
+    permissions: remotePermissions,
+  }));
+  await show();
+  expect(dialog().textContent).toContain("This version of Macro cannot use the remote tool server “issues”");
+  expect(dialog().textContent).toContain(remoteEndpoint);
+  expect(dialog().textContent).toContain("ISSUES_TOKEN");
+  expect(dialog().querySelector('input[type="password"]')).toBeNull();
+  expect(primary().disabled).toBe(true);
+});
+
+it("shows the remote endpoint in the launch consent step", async () => {
+  install(() => preview({ consentToken: "review", permissions: remotePermissions }));
   await show();
   expect(primary().textContent).toBe("Continue");
   await click(primary());
@@ -249,6 +271,7 @@ it("moves to the permission step before the first launch of a version and shows 
   expect(dialog().querySelector("header strong")?.textContent).toBe("What this system can do");
   expect(dialog().textContent).toContain("Step 2 of 2 · Code review · Version 2 · This machine");
   expect(dialog().textContent).toContain("You have not approved what this version can do yet");
+  expect(dialog().textContent).toContain(remoteEndpoint);
   expect(primary().textContent).toBe("Allow and launch");
   await click(byText("button", "Back", dialog()));
   expect(dialog().querySelector("header strong")?.textContent).toBe("Launch “Code review”");

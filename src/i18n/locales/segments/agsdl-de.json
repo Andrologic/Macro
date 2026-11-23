@@ -43,6 +43,8 @@
     "secretStored": "Im lokalen Tresor gespeichert",
     "saveSecret": "Geheimnis speichern",
     "blocker": {
+      "mcpRemoteUnsupported": "Diese Macro-Version kann den entfernten Werkzeugserver „{{subject}}“ in einer AgSDL-Ausführung nicht verwenden.",
+      "mcpRemoteDeclaredSecrets": "Angegebene Zugangsdaten: {{names}}.",
       "mcpIsolationUnavailable": "Macro kann das Werkzeug „{{subject}}“ auf diesem Computer nicht in einem geschützten Bereich ausführen und startet es daher nicht.",
       "mcpWorkspaceRequired": "Das Werkzeug „{{subject}}“ muss im Ordner der Ausführung arbeiten dürfen, und die aktuellen Berechtigungseinstellungen erlauben das nicht.",
       "mcpRetainedProgramRequired": "Das Werkzeug „{{subject}}“ stützt sich auf ein Programm, das nicht mit dem System geliefert wird; Macro kann daher nicht sicher wissen, was es ausführen würde.",

@@ -21,6 +21,7 @@ type Blocker = LaunchPreview["blockers"][number];
 export type BlockerView =
   | { kind: "model"; agent: string }
   | { kind: "folder" }
+  | { kind: "mcpRemote"; server: string; technical: string }
   | { kind: "codexGuide"; textKey: "codexAuthVersionUnqualified" | "codexLoginRequired"; technical: string }
   | { kind: "codexConnect"; technical: string }
   | { kind: "author"; textKey: string; subject: string; technical: string };
@@ -34,6 +35,7 @@ export function classifyBlocker({ code, subject }: Blocker): BlockerView {
   const technical = [code, subject].filter(Boolean).join(" · ");
   if (code === "modelUnavailable") return { kind: "model", agent: subject };
   if (code === "workingFolderRequired") return { kind: "folder" };
+  if (code === "mcpRemoteUnsupported") return { kind: "mcpRemote", server: subject, technical };
   if (code === "codexUnavailable") {
     if (subject === "CODEX_AUTH_VERSION_UNQUALIFIED") return { kind: "codexGuide", textKey: "codexAuthVersionUnqualified", technical };
     if (subject === "CODEX_LOGIN_REQUIRED") return { kind: "codexGuide", textKey: "codexLoginRequired", technical };

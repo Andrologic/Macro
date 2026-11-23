@@ -676,7 +676,8 @@ fn qualify_mcp(
     server: &McpServer,
 ) -> std::result::Result<(), Blocker> {
     let McpTransport::Local { command } = &server.transport else {
-        return Err(Blocker::new("mcpIsolationUnavailable", id));
+        // The pinned Argentic runtime supports only local stdio call steps.
+        return Err(Blocker::new("mcpRemoteUnsupported", id));
     };
     let files = &server.packaged_files;
     let program_required = || Blocker::new("mcpRetainedProgramRequired", id);

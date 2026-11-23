@@ -22,19 +22,6 @@ async fn archive_fixture_with_mcp(
     mut manifest: Value,
     files: &[(&str, bool)],
 ) -> (SqlitePool, VersionKey) {
-    let pool = crate::db::create_pool(&data.join("launch.db"))
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO architect_legacy_import VALUES (1,0,0)")
-        .execute(&pool)
-        .await
-        .unwrap();
-    let storage = Storage::new(data);
-    assert!(migration::migrate(&pool, &storage).await.unwrap());
-    sqlx::query("INSERT INTO architect_projects(id,name) VALUES ('demo','Demo')")
-        .execute(&pool)
-        .await
-        .unwrap();
     let project = tempfile::tempdir_in(data).unwrap();
     for &(name, executable) in files {
         let path = project.path().join(name);
@@ -57,8 +44,25 @@ async fn archive_fixture_with_mcp(
         *secrets = json!({"file":"secrets.json"});
     }
     fs::write(project.path().join("agsdl.json"), manifest.to_string()).unwrap();
+    import_archive_fixture(data, project.path()).await
+}
+
+async fn import_archive_fixture(data: &Path, project: &Path) -> (SqlitePool, VersionKey) {
+    let pool = crate::db::create_pool(&data.join("launch.db"))
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO architect_legacy_import VALUES (1,0,0)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let storage = Storage::new(data);
+    assert!(migration::migrate(&pool, &storage).await.unwrap());
+    sqlx::query("INSERT INTO architect_projects(id,name) VALUES ('demo','Demo')")
+        .execute(&pool)
+        .await
+        .unwrap();
     let mut archive = Vec::new();
-    OpenedSource::open_path(project.path())
+    OpenedSource::open_path(project)
         .unwrap()
         .write_archive(&mut archive)
         .unwrap();
@@ -755,6 +759,53 @@ async fn mcp_requirements_use_reachable_calls_and_refuse_unqualified_launch() {
     )
     .await
     .is_err());
+}
+
+#[tokio::test]
+async fn archive_remote_mcp_reports_missing_runtime_support() {
+    let data = tempfile::tempdir().unwrap();
+    let (pool, version) = if let Some(path) = std::env::var_os("MACRO_TEST_REVIEW_PROJECT") {
+        import_archive_fixture(data.path(), Path::new(&path)).await
+    } else {
+        let mut doc = manifest();
+        doc["mcpServers"] = json!({"issues":{"url":"https://mcp.example.com/issues"}});
+        doc["agents"]["worker"]["mcpServers"] = json!(["issues"]);
+        doc["agents"]["worker"]["permissions"] =
+            json!({"preset":"read-only","rules":[{"action":"mcp","effect":"allow"}]});
+        doc["secrets"] = json!({"issues":["ISSUES_TOKEN"]});
+        archive_fixture(data.path(), doc).await
+    };
+    let manager = manager_for_test(data.path()).await;
+    observe_fixture(&manager);
+    let input = VersionInput::read(&pool, &Storage::new(data.path()), version.clone())
+        .await
+        .unwrap();
+    let authored = input.archive.source().authored_json();
+    let slice = api::product_slice(authored, None).unwrap();
+    assert_eq!(slice.pointer, "/mcpServers/issues/url");
+    let codex = api::validate_codex_document(&serde_json::from_str(authored).unwrap()).unwrap_err();
+    assert_eq!(codex.code, "HARNESS_CAPABILITY");
+    drop(input);
+
+    let prepared = preview(&manager, &pool, data.path(), version.clone(), None).await;
+    assert_eq!(prepared.blockers[0].code, "mcpRemoteUnsupported");
+    assert_eq!(prepared.blockers[0].subject, "issues");
+    let server = &prepared.permissions.mcp_servers["issues"];
+    assert!(
+        matches!(&server.transport, McpTransport::Remote { url } if url == "https://mcp.example.com/issues")
+    );
+    assert_eq!(server.required_secrets, ["ISSUES_TOKEN"]);
+    assert!(prepared.secrets.is_empty());
+
+    let host = HostState::new();
+    let refused = start::launch(
+        runtime(&host, &manager, &pool, data.path()),
+        request(version, prepared.consent_token),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert_eq!(refused.code, "mcpRemoteUnsupported");
 }
 
 #[test]

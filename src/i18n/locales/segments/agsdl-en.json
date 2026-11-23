@@ -43,6 +43,8 @@
     "secretStored": "Saved in the local vault",
     "saveSecret": "Save secret",
     "blocker": {
+      "mcpRemoteUnsupported": "This version of Macro cannot use the remote tool server “{{subject}}” in an AgSDL run.",
+      "mcpRemoteDeclaredSecrets": "Declared credentials: {{names}}.",
       "mcpIsolationUnavailable": "Macro cannot run the tool “{{subject}}” in a protected space on this computer, so it will not start it.",
       "mcpWorkspaceRequired": "The tool “{{subject}}” needs permission to work in the run’s folder, and the current permission settings do not allow it.",
       "mcpRetainedProgramRequired": "The tool “{{subject}}” relies on a program that is not shipped with the system, so Macro cannot be sure what it would run.",
