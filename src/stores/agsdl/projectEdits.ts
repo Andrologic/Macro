@@ -110,6 +110,8 @@ export async function prepareProjectEdit(
   const undoSettings: MacroSettingsChange | undefined = settings && {};
   if (undoSettings && settings?.hiddenAgentIds !== undefined) undoSettings.hiddenAgentIds = currentSettings.hiddenAgentIds;
   if (undoSettings && settings?.entryMessageHint !== undefined) undoSettings.entryMessageHint = currentSettings.entryMessageHint ?? null;
+  if (undoSettings && settings?.workingFolderMode !== undefined) undoSettings.workingFolderMode = currentSettings.workingFolderMode;
+  if (undoSettings && settings?.startMessageRequired !== undefined) undoSettings.startMessageRequired = currentSettings.startMessageRequired ?? null;
   return {
     buffers,
     entry: { forward: { files, settings }, backward: { files: inverse, settings: undoSettings } },

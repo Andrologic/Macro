@@ -8,6 +8,7 @@ export function agsdlErrorText(error: unknown, t: TFunction = i18n.getFixedT(nul
   const diagnostic = architectProjectDiagnostic(error);
   if (diagnostic) {
     switch (diagnostic.code) {
+      case "INPUT_LIMIT":
       case "EDITOR_LIMIT": return t("agsdl.library.projectLimit");
       case "OPAQUE_PROJECT_FILE": return t("agsdl.library.opaqueFile");
       case "PROJECT_FILE_NOT_FOUND": return t("agsdl.library.fileMissing");

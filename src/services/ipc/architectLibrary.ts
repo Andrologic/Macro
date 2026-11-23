@@ -123,7 +123,7 @@ export interface ImportPreview {
     model: { name: string | null; effort: string | null } | null;
     permissions: { preset: string | null; directories: Record<string, string>; outside: string | null;
       reviewer: string | null; rules: { action: string; match: string | null; effect: string }[] };
-    mcpServers: string[]; completionCheck: string | null;
+    mcpServers: string[]; completionCheck: string | null; completionCheckChoices?: string[];
   }>;
   directCalls: { location: ProjectLocation; usage: Usage;
     target: { type: "shell"; command: string } | { type: "mcp"; server: string; tool: string } }[];

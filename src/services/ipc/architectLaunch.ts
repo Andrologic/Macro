@@ -8,6 +8,8 @@ export interface LaunchConfiguration {
   workingFolder: string | null;
 }
 
+export type LaunchModelOverrides = Readonly<Record<string, { name: string; effort?: string }>>;
+
 export interface LaunchSecret {
   server: string;
   name: string;
@@ -23,6 +25,7 @@ export interface LaunchPreview {
   configuration: LaunchConfiguration;
   folderInUse: boolean;
   blockers: Array<{ code: string; subject: string }>;
+  availableModels: string[];
   permissions: ImportPreview;
   consentToken: string | null;
   secrets: LaunchSecret[];
@@ -34,6 +37,8 @@ export interface LaunchRequest {
   startMessage: string | null;
   name: string | null;
   consentToken: string | null;
+  confirmFolderReuse: boolean;
+  modelOverrides: LaunchModelOverrides;
 }
 
 interface LaunchReceipt {
@@ -50,8 +55,10 @@ export interface ArchiveRunRecord {
 }
 
 export const architectLaunch = {
-  prepare: (version: VersionKey, configuration?: LaunchConfiguration) =>
-    invoke<LaunchPreview>("architect_launch_prepare", { version, configuration: configuration ?? null }),
+  prepare: (version: VersionKey, configuration?: LaunchConfiguration, modelOverrides?: LaunchModelOverrides) =>
+    invoke<LaunchPreview>("architect_launch_prepare", {
+      version, configuration: configuration ?? null, modelOverrides: modelOverrides ?? null,
+    }),
   start: (request: LaunchRequest) => invoke<LaunchReceipt>("architect_launch_start", { request }),
   setSecret: (version: VersionKey, server: string, name: string, value: string) =>
     invoke<void>("architect_launch_set_secret", { version, server, name, value }),

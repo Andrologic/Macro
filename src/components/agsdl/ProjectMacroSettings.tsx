@@ -8,7 +8,7 @@ import { useAgsdlTranslation } from "./useAgsdlTranslation";
 export function ProjectMacroSettings({ target, agentId }: { target: BlueprintDocumentTarget; agentId?: string }) {
   const { t } = useAgsdlTranslation();
   const session = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]);
-  const [hint, setHint] = useState<string>();
+  const [changes, setChanges] = useState<MacroSettingsChange>({});
   const [error, setError] = useState("");
   if (!session?.project) return null;
   const settings = projectSettings(session.project);
@@ -20,7 +20,7 @@ export function ProjectMacroSettings({ target, agentId }: { target: BlueprintDoc
     try {
       await store.applyProjectBatch(target, [], patch, session.version);
       await store.save(target);
-      setHint(undefined);
+      setChanges({});
     } catch (failure) { setError(agsdlErrorText(failure, t)); }
   };
   if (agentId) {
@@ -34,17 +34,35 @@ export function ProjectMacroSettings({ target, agentId }: { target: BlueprintDoc
       {error && <p role="alert">{error}</p>}
     </section>;
   }
-  if (!editable) return settings.entryMessageHint
-    ? <p>{t("agsdl.library.entryHint")} · {settings.entryMessageHint}</p> : null;
+  const current = { ...settings, ...changes };
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (hint !== undefined && !disabled) void persist({ entryMessageHint: hint || null });
+    if (editable && !disabled && Object.keys(changes).length > 0) void persist(changes);
   };
   return <form onSubmit={submit}>
-    <label className="agsdl-edit-field">{t("agsdl.library.entryHint")}
-      <textarea value={hint ?? settings.entryMessageHint ?? ""} disabled={disabled} onChange={event => setHint(event.target.value)} />
+    <label className="agsdl-edit-field">{t("agsdl.library.workingFolderMode")}
+      <select value={current.workingFolderMode} disabled={!editable || disabled} onChange={event => {
+        const mode = event.target.value === "atLaunch" ? "atLaunch" : "perExecution";
+        setChanges(previous => ({ ...previous, workingFolderMode: mode }));
+      }}>
+        <option value="perExecution">{t("agsdl.library.folderPerExecution")}</option>
+        <option value="atLaunch">{t("agsdl.library.folderAtLaunch")}</option>
+      </select>
     </label>
-    <button type="submit" className="agsdl-link" disabled={hint === undefined || disabled}>{t("agsdl.save")}</button>
+    <label className="agsdl-edit-field">
+      <span><input type="checkbox" checked={current.startMessageRequired ?? true} disabled={!editable || disabled}
+        onChange={event => {
+          const required = event.target.checked;
+          setChanges(previous => ({ ...previous, startMessageRequired: required }));
+        }} /> {t("agsdl.library.startMessageRequired")}</span>
+    </label>
+    <label className="agsdl-edit-field">{t("agsdl.library.entryHint")}
+      <textarea value={current.entryMessageHint ?? ""} disabled={!editable || disabled} onChange={event => {
+        const hint = event.target.value;
+        setChanges(previous => ({ ...previous, entryMessageHint: hint || null }));
+      }} />
+    </label>
+    {editable && <button type="submit" className="agsdl-link" disabled={!Object.keys(changes).length || disabled}>{t("agsdl.save")}</button>}
     {error && <p role="alert">{error}</p>}
   </form>;
 }

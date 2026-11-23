@@ -102,7 +102,8 @@ export default function OperateNavigator() {
   return <nav className="flex h-full min-h-0 flex-col" aria-label={t('agsdl.shell030.executions')} data-tour-id="operate-executions">
     <header className="border-b border-border p-2 text-xs">
       <button type="button" className="agsdl-link" onClick={() => openLaunch()}>{t('agsdl.launch.title')}</button>
-      {launchWindow && <ArchitectLaunchDialog initialVersion={launchWindow.version} />}
+      {launchWindow && <ArchitectLaunchDialog
+        key={JSON.stringify(launchWindow.version ?? null)} initialVersion={launchWindow.version} />}
       <h2 className="text-sm font-medium">{t('agsdl.shell030.executions')}</h2>
       <input type="search" aria-label={t('agsdl.inbox.search')} placeholder={t('agsdl.inbox.search')}
         value={filter.query ?? ''} onChange={event => setFilter({ ...filter, query: event.target.value })} />

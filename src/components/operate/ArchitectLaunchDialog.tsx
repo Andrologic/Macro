@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { architectLaunch, type LaunchConfiguration, type LaunchPreview, type LaunchSecret } from "../../services/ipc/architectLaunch";
+import { architectLaunch, type LaunchConfiguration, type LaunchModelOverrides, type LaunchPreview, type LaunchSecret } from "../../services/ipc/architectLaunch";
 import { architectLibrary, type BlueprintVersionSummary, type VersionKey } from "../../services/ipc/architectLibrary";
 import { openWorkflowRun030, refreshArchiveRunAccess } from "../../services/workflowAgentTasks";
 import { useAppStore } from "../../stores/useAppStore";
@@ -92,6 +92,9 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
   const [blueprintId, setBlueprintId] = useState(initialVersion?.blueprintId ?? "");
   const [number, setNumber] = useState(initialVersion?.number);
   const [preview, setPreview] = useState<LaunchPreview>();
+  const [unavailableVersion, setUnavailableVersion] = useState<VersionKey>();
+  const [confirmedFolder, setConfirmedFolder] = useState<string | null>(null);
+  const [modelOverrides, setModelOverrides] = useState<LaunchModelOverrides>({});
   const [configuration, setConfiguration] = useState<LaunchConfiguration>();
   const [message, setMessage] = useState("");
   const [name, setName] = useState("");
@@ -101,7 +104,10 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState("");
   const selected = systems?.find(system => system.id === blueprintId);
-  const version = selected?.versions.find(version => version.number === number) ?? selected?.versions[0];
+  const version = number === undefined ? selected?.versions[0] :
+    selected?.versions.find(version => version.number === number &&
+      !(unavailableVersion?.blueprintId === blueprintId && unavailableVersion.number === number));
+  const versionMissing = !!systems && number !== undefined && !version;
   const versionNumber = version?.number;
   const refresh = () => setRevision(current => current + 1);
   const title = t(consent ? "agsdl.launch.permissions" : "agsdl.launch.title");
@@ -119,25 +125,39 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
   useEffect(() => {
     if (versionNumber === undefined) return;
     let active = true;
-    void architectLaunch.prepare({ blueprintId, number: versionNumber }, configuration).then(value => {
+    void architectLaunch.prepare({ blueprintId, number: versionNumber }, configuration, modelOverrides).then(value => {
       if (!active) return;
       setPreview(value);
       setChecking(false);
-    }, () => {
+    }, failure => {
       if (!active) return;
       setPreview(undefined);
       setChecking(false);
-      setError("failed");
+      if (failure?.code === "ARCHIVE_UNAVAILABLE") {
+        setNumber(versionNumber);
+        setUnavailableVersion({ blueprintId, number: versionNumber });
+      } else {
+        const invalid = ["GRAPH_LIMIT", "INPUT_LIMIT", "ARCHIVE_LAYOUT", "ARCHIVE_LIMIT", "ARCHIVE_INTEGRITY"].includes(failure?.code);
+        setError(invalid ? "invalidArchive" : "failed");
+      }
     });
     return () => { active = false; };
-  }, [blueprintId, versionNumber, configuration, revision]);
+  }, [blueprintId, versionNumber, configuration, modelOverrides, revision]);
 
   const current = preview?.version.blueprintId === blueprintId && preview.version.number === versionNumber ? preview : undefined;
+  const folderConfirmed = !!current?.configuration.workingFolder && current.configuration.workingFolder === confirmedFolder;
   const ready = current && !checking && !busy && !current.blockers.length &&
+    !current.secrets.some(secret => !secret.stored) && (!current.folderInUse || folderConfirmed) &&
     (!current.startMessageRequired || message.trim());
+  const modelAgents = new Set([
+    ...Object.keys(modelOverrides),
+    ...current?.blockers.filter(blocker => blocker.code === "modelUnavailable").map(blocker => blocker.subject) ?? [],
+  ]);
   const reset = () => {
     setPreview(undefined);
     setConfiguration(undefined);
+    setModelOverrides({});
+    setConfirmedFolder(null);
     setError("");
   };
   const chooseFolder = async () => {
@@ -145,6 +165,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
       const folder = await open({ directory: true });
       if (!folder) return;
       setChecking(true);
+      setConfirmedFolder(null);
       setConfiguration({ workingFolder: folder });
     } catch {
       setError("failed");
@@ -171,6 +192,8 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
         startMessage: current.startMessageRequired ? message : null,
         name: name.trim() || null,
         consentToken: consent ? current.consentToken : null,
+        confirmFolderReuse: folderConfirmed,
+        modelOverrides,
       }).then(({ identity, source }) => {
         close();
         void refreshArchiveRunAccess().catch(() => {});
@@ -186,11 +209,19 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
       });
     } catch (failure) {
       const code = failure && typeof failure === "object" && "code" in failure ? failure.code : "";
-      if (code === "CONSENT_REQUIRED") {
+      if (code === "WORKING_FOLDER_IN_USE" || code === "CONSENT_REQUIRED" || code === "MODEL_UNAVAILABLE" ||
+          code === "MCP_SECRETS_UNAVAILABLE") {
         setConsent(false);
+        if (code === "WORKING_FOLDER_IN_USE") setConfirmedFolder(null);
         checkAgain();
+      } else if (code === "ARCHIVE_UNAVAILABLE") {
+        setConsent(false);
+        setNumber(current.version.number);
+        setUnavailableVersion(current.version);
+      } else {
+        const diagnostic = ["GRAPH_LIMIT", "INPUT_LIMIT", "ARCHIVE_LAYOUT", "ARCHIVE_LIMIT", "ARCHIVE_INTEGRITY"].some(refusal => refusal === code);
+        setError(diagnostic ? "invalidArchive" : "failed");
       }
-      setError(code === "MODEL_UNAVAILABLE" ? "modelUnavailable" : "failed");
     } finally {
       setBusy(false);
     }
@@ -201,7 +232,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
     <form className="agsdl-inspector-body space-y-3" onSubmit={event => void start(event)}>
       <fieldset className="space-y-3" disabled={busy}>
         {!consent && <>
-          {!initialVersion && <label className="agsdl-edit-field">{t("agsdl.launch.system")}
+          {(!initialVersion || (systems && !selected)) && <label className="agsdl-edit-field">{t("agsdl.launch.system")}
             <select value={blueprintId} onChange={event => {
               setBlueprintId(event.target.value);
               setNumber(undefined);
@@ -211,7 +242,16 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
               {systems?.map(system => <option key={system.id} value={system.id}>{system.name}</option>)}
             </select>
           </label>}
-          {systems && !version && <p role="status">{t("agsdl.launch.noVersion")}{" "}
+          {versionMissing && <p role="alert">{t("agsdl.launch.versionMissing", { number })}</p>}
+          {versionMissing && !!selected?.versions.some(option => option.number !== number) &&
+            <label className="agsdl-edit-field">{t("agsdl.library.versions")}
+              <select value="" onChange={event => { setNumber(Number(event.target.value)); reset(); }}>
+                <option value="" disabled>{t("agsdl.launch.chooseVersion")}</option>
+                {selected.versions.filter(option => option.number !== number).map(option =>
+                  <option key={option.number} value={option.number}>{t("agsdl.library.version", { number: option.number })}</option>)}
+              </select>
+            </label>}
+          {systems && !version && !selected?.versions.length && <p role="status">{t("agsdl.launch.noVersion")}{" "}
             <button type="button" onClick={() => { close(); useAppStore.getState().setMode("Architect"); }}>
               {t("agsdl.launch.openArchitect")}
             </button>
@@ -224,7 +264,9 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
             <summary>{t("agsdl.library.version", { number: version.number })} · {t("agsdl.inbox.local")} · {t("agsdl.launch.now")} · {t("agsdl.launch.edit")}</summary>
             <label className="agsdl-edit-field">{t("agsdl.library.versions")}
               <select value={version.number} onChange={event => { setNumber(Number(event.target.value)); reset(); }}>
-                {selected?.versions.map(option => <option key={option.number} value={option.number}>
+                {selected?.versions.filter(option =>
+                  !(unavailableVersion?.blueprintId === blueprintId && unavailableVersion.number === option.number)
+                ).map(option => <option key={option.number} value={option.number}>
                   {t("agsdl.library.version", { number: option.number })}{option.note && ` · ${option.note}`}
                 </option>)}
               </select>
@@ -237,7 +279,6 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
               {current.configuration.workingFolder} <button type="button" onClick={() => void chooseFolder()}>{t("agsdl.launch.chooseFolder")}</button>
             </p>}
           </details>}
-          {current?.folderInUse && <p role="status">{t("agsdl.launch.folderInUse")}</p>}
           {(!systems || (!!version && (!current || checking))) && !error && <p role="status">{t("agsdl.launch.checking")}</p>}
           {!!current?.blockers.length && <section aria-label={t("agsdl.launch.blockers")}>
             <strong>{t("agsdl.launch.blockers")}</strong>
@@ -248,15 +289,42 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
             </li>)}</ul>
             <button type="button" onClick={checkAgain}>{t("agsdl.launch.recheck")}</button>
           </section>}
+          {current && current.availableModels.length > 0 && [...modelAgents].map(agent =>
+            <label className="agsdl-edit-field" key={agent}>{t("agsdl.launch.replacementModel", { agent })}
+              <select value={Object.hasOwn(modelOverrides, agent) ? modelOverrides[agent].name : ""} onChange={event => {
+                const model = event.target.value;
+                setChecking(true);
+                setModelOverrides(previous => {
+                  if (model) return { ...previous, [agent]: { name: model } };
+                  const next = { ...previous };
+                  delete next[agent];
+                  return next;
+                });
+              }}>
+                <option value="">{t("agsdl.launch.chooseModel")}</option>
+                {current.availableModels.map(model => <option key={model} value={model}>{model}</option>)}
+              </select>
+            </label>)}
           {current && <div>{current.secrets.filter(secret => !secret.stored).map(secret =>
             <SecretField key={JSON.stringify([current.version, secret.server, secret.name])}
               version={current.version} secret={secret} onSaved={refresh} />)}</div>}
         </>}
+        {current?.folderInUse && <label className="agsdl-edit-field">
+          <span>{t("agsdl.launch.folderInUse")}</span>
+          <span><input type="checkbox" checked={folderConfirmed} onChange={event =>
+            setConfirmedFolder(event.target.checked ? current.configuration.workingFolder : null)} /> {t("agsdl.launch.confirmFolderReuse")}</span>
+        </label>}
         {consent && current && <ul className="space-y-1">
           {Object.entries(current.permissions.agents).filter(([, agent]) => agent.usage === "reachable").map(([id, agent]) =>
             <li key={id}>{id} · {t(`agsdl.launch.preset.${agent.permissions.preset ?? "read-only"}`, {
               defaultValue: agent.permissions.preset ?? "",
             })}
+              {agent.completionCheck && <p>
+                {agent.completionCheckChoices?.length
+                  ? t("agsdl.launch.completionCheckChoices", { choices: agent.completionCheckChoices.join(", ") })
+                  : t("agsdl.launch.completionCheck")}{" "}
+                <code className="whitespace-pre-wrap">{agent.completionCheck}</code>
+              </p>}
               {(Object.keys(agent.permissions.directories).length > 0 || agent.permissions.rules.length > 0 || agent.permissions.outside) && <details>
                 <summary>{t("agsdl.launch.permissionDetails")}</summary>
                 <pre className="whitespace-pre-wrap">{JSON.stringify(agent.permissions, null, 2)}</pre>

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { architectLibrary, type BlueprintDraft, type ProjectBatch, type ProjectView } from "../../services/ipc/architectLibrary";
+import { architectLibrary, type BlueprintDraft, type MacroProjectSettings, type ProjectBatch, type ProjectView } from "../../services/ipc/architectLibrary";
 import { agsdlSessionKey, useAgsdlStore } from "../useAgsdlStore";
 import { handleAgsdlToolCall } from "./tools";
 
@@ -13,7 +13,7 @@ const opaque = "skill/nested/data";
 let source: Map<string, string>;
 let revision: number;
 let lastBatch: ProjectBatch | undefined;
-let hidden: string[];
+let settings: MacroProjectSettings;
 
 function view(): ProjectView {
   const text = source.get("agents/review.json");
@@ -21,7 +21,7 @@ function view(): ProjectView {
   const invalid = text?.startsWith("{bad");
   return {
     revision, files: [...source].map(([path, raw]) => file(path, raw)),
-    settings: { schemaVersion: 1, hiddenAgentIds: hidden, workingFolderMode: "perExecution" },
+    settings,
     projection: invalid ? null : {
       source: `{"contract":"agsdl-0.4.0","id":"p","title":${JSON.stringify(JSON.parse(source.get("agsdl.json")!).title)},"agents":{"review":${text}}}`,
       origins: { "/agents/review": { file: "agents/review.json", pointer: "" } },
@@ -42,7 +42,7 @@ beforeEach(() => {
   revision = 5;
   source = new Map([["agsdl.json", manifest], ["agents/review.json", agent], [opaque, ""]]);
   lastBatch = undefined;
-  hidden = [];
+  settings = { schemaVersion: 1, hiddenAgentIds: [], workingFolderMode: "perExecution" };
   store().openBlueprintDocument(draft());
   spyOn(architectLibrary, "getDraft").mockImplementation(async () => draft());
   spyOn(architectLibrary, "readProjectFile").mockImplementation(async (ref, path) => {
@@ -57,7 +57,7 @@ beforeEach(() => {
       if (file.kind === "write") source.set(file.path, file.text);
       else source.delete(file.path);
     }
-    if (batch.settings?.hiddenAgentIds) hidden = batch.settings.hiddenAgentIds;
+    settings = { ...settings, ...batch.settings };
     revision++;
     return view();
   });
@@ -117,7 +117,7 @@ test("reloading a changed revision preserves local file edits until the user res
 test("version creation flushes file and settings changes before freeze", async () => {
   const freeze = spyOn(architectLibrary, "saveVersion").mockImplementation(async (id, expected) => {
     expect(expected).toBe(6);
-    expect(hidden).toEqual(["review"]);
+    expect(settings.hiddenAgentIds).toEqual(["review"]);
     expect(source.get("agsdl.json")).toContain("Changed title");
     return { blueprintId: id, number: 1, revision: expected, note: null };
   });
@@ -150,5 +150,18 @@ test("agents page source files at a revision and apply one ordered file-local ba
   expect(updated.persisted_revision).toBe(7);
   expect(source.has("notes.txt")).toBe(false);
   expect(source.get("agents/review.json")).toContain("Edited");
-  expect(hidden).toEqual(["review"]);
+  expect(settings.hiddenAgentIds).toEqual(["review"]);
+});
+
+test("launch settings save through the draft batch and can be undone", async () => {
+  const patch = { workingFolderMode: "atLaunch", startMessageRequired: false } as const;
+  await store().applyProjectBatch(target, [], patch);
+  await store().save(target);
+  expect(lastBatch).toEqual({ files: [], settings: patch });
+  expect(session().project?.saved.settings).toMatchObject(patch);
+  store().undo(target);
+  await store().save(target);
+  expect(session().project?.saved.settings).toMatchObject({
+    workingFolderMode: "perExecution", startMessageRequired: null,
+  });
 });
