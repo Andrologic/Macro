@@ -1349,6 +1349,7 @@
         "fields": "실행 필드"
       },
       "why": "AgSDL 형식에는 아직 애플리케이션 설정을 담을 자리가 없습니다(AgSDL#32). 가져온 블루프린트는 기본값을 사용합니다.",
+      "whyTitle": "이유는?",
       "choose": "위치 선택…",
       "exporting": "내보내는 중…",
       "doneVersion": "버전 {{number}} 내보냄",
@@ -1470,7 +1471,7 @@
       "title": "이 버전을 복구할 수 없습니다",
       "titleDraft": "이 초안을 복구할 수 없습니다",
       "body": "내용은 보존되어 있지만 Macro가 변환하지 못했습니다. 이대로는 실행하거나 내보낼 수 없습니다. 복구용으로 파생하거나 원본을 다운로드하세요.",
-      "why": "수정 필요: {{item}}",
+      "why": "해당 항목: {{item}}",
       "downloaded": "원본 다운로드됨",
       "downloadFailed": "다운로드에 실패했습니다"
     },
@@ -1487,12 +1488,12 @@
       "issueCount_one": "수정할 항목이 {{count}}개 있습니다.",
       "issueCount_other": "수정할 항목이 {{count}}개 있습니다.",
       "item": {
-        "agent": "에이전트 “{{name}}” 수정 필요",
-        "step": "단계 “{{name}}” 수정 필요",
-        "skill": "스킬 “{{name}}” 수정 필요",
-        "tool": "도구 “{{name}}” 수정 필요",
-        "content": "콘텐츠 “{{name}}” 수정 필요",
-        "document": "시스템 전체에 오류가 있습니다"
+        "agent": "에이전트 “{{name}}”",
+        "step": "단계 “{{name}}”",
+        "skill": "스킬 “{{name}}”",
+        "tool": "도구 “{{name}}”",
+        "content": "콘텐츠 “{{name}}”",
+        "document": "시스템 전체"
       },
       "show": "보기",
       "warnings_one": "경고 {{count}}개, 저장은 막지 않습니다",

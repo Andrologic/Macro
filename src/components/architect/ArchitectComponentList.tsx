@@ -5,6 +5,11 @@ import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { Badge } from "../ui/Badge";
 import { Icon } from "../ui/Icon";
 
+/** One line for a row: what the author wrote to describe the item, else the start of what it does. */
+const summaryOf = (card: ViewerCard) => {
+  const description = card.details.description;
+  return (typeof description === "string" && description.trim() ? description : card.mission).replace(/\s+/g, " ").trim();
+};
 export type ComponentListKind = "agents" | "skills" | "tools";
 export const componentKind: Record<ComponentListKind, string> = { agents: "Agent", skills: "Skill", tools: "McpServer" };
 
@@ -23,7 +28,7 @@ export function ArchitectComponentList({ kind, cards, inventory, hiddenAgents, o
   const { t } = useAgsdlTranslation();
   const items = cards.filter(card => card.kind === componentKind[kind]);
   if (!items.length) return <p className="agsdl-empty text-xs text-muted-foreground">{t(`agsdl.architect.views.empty.${kind}`)}</p>;
-  return <ul className="min-h-0 flex-1 divide-y divide-border overflow-y-auto text-xs" aria-label={t(`agsdl.architect.views.${kind}`)}>
+  return <ul className="min-h-0 flex-1 divide-y divide-border overflow-y-auto pt-12 text-xs" aria-label={t(`agsdl.architect.views.${kind}`)}>
     {items.map(card => {
       const users = (kind === "skills" ? inventory?.skillUsers : inventory?.toolUsers)?.get(card.id)?.length ?? 0;
       const inFlow = inventory?.agentsInFlow;
@@ -42,7 +47,7 @@ export function ArchitectComponentList({ kind, cards, inventory, hiddenAgents, o
               {hidden && <Icon name="eye-off" size={11} className="shrink-0 text-muted-foreground" />}
               {hidden && <span className="sr-only">{t("agsdl.library.hiddenAgent")}</span>}
             </span>
-            {card.mission && <span className="line-clamp-1 block text-muted-foreground">{card.mission}</span>}
+            {summaryOf(card) && <span className="line-clamp-1 text-muted-foreground">{summaryOf(card)}</span>}
           </span>
           {transport && <Badge size="sm" className="shrink-0 !px-1.5 !py-0 !text-[10px]">{t(`agsdl.architect.views.transport.${transport}`)}</Badge>}
           {unused

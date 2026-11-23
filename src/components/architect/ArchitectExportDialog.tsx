@@ -103,7 +103,7 @@ export function ArchitectExportDialog({ dialog, onClose }: { dialog: ExportDialo
         ? t("agsdl.architect.export.leftBehind", { items: left.map(item => t(`agsdl.architect.export.setting.${item}`)).join(", ") })
         : t("agsdl.architect.export.settingsNotIncluded")}</p>
       <details className="agsdl-details !mt-1 !border-0 !pt-0">
-        <DisclosureSummary>{t("agsdl.viewer.technicalDetails")}</DisclosureSummary>
+        <DisclosureSummary>{t("agsdl.architect.export.whyTitle")}</DisclosureSummary>
         <p className="!m-0 text-muted-foreground">{t("agsdl.architect.export.why")}</p>
       </details>
     </InfoBlock>

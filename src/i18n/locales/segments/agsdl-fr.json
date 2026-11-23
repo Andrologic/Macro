@@ -1349,6 +1349,7 @@
         "fields": "champs de lancement"
       },
       "why": "Le format AgSDL n’a pas encore de place pour les réglages d’une application (AgSDL#32). Un blueprint importé reprend les valeurs par défaut.",
+      "whyTitle": "Pourquoi ?",
       "choose": "Choisir l’emplacement…",
       "exporting": "Exportation…",
       "doneVersion": "Version {{number}} exportée",
@@ -1470,7 +1471,7 @@
       "title": "Cette version n’a pas pu être récupérée",
       "titleDraft": "Ce brouillon n’a pas pu être récupéré",
       "body": "Son contenu est conservé, mais Macro n’a pas réussi à le transformer : il ne peut être ni lancé ni exporté en l’état. Vous pouvez l’adapter pour le réparer, ou télécharger l’original.",
-      "why": "À corriger : {{item}}",
+      "why": "Élément en cause : {{item}}",
       "downloaded": "Original téléchargé",
       "downloadFailed": "Le téléchargement a échoué"
     },
@@ -1487,12 +1488,12 @@
       "issueCount_one": "{{count}} élément à corriger.",
       "issueCount_other": "{{count}} éléments à corriger.",
       "item": {
-        "agent": "Agent « {{name}} » à corriger",
-        "step": "Étape « {{name}} » à corriger",
-        "skill": "Skill « {{name}} » à corriger",
-        "tool": "Outil « {{name}} » à corriger",
-        "content": "Contenu « {{name}} » à corriger",
-        "document": "Le système contient une erreur d’ensemble"
+        "agent": "Agent « {{name}} »",
+        "step": "Étape « {{name}} »",
+        "skill": "Skill « {{name}} »",
+        "tool": "Outil « {{name}} »",
+        "content": "Contenu « {{name}} »",
+        "document": "Le système dans son ensemble"
       },
       "show": "Voir",
       "warnings_one": "{{count}} avertissement, rien ne bloque l’enregistrement",

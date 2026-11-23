@@ -1,8 +1,7 @@
-import { TriangleAlert } from "lucide-react";
+import { ChevronDown, TriangleAlert } from "lucide-react";
 import { diagnosticIssue } from "../../services/agsdl/itemIssues";
 import type { ProjectDiagnostic } from "../../services/ipc/architectLibrary";
 import { useArchitectDialogStore } from "../../stores/useArchitectDialogStore";
-import { DisclosureSummary } from "../agsdl/DisclosureSummary";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { Button } from "../ui/Button";
 import { downloadOriginal } from "./architectLibraryActions";
@@ -39,7 +38,7 @@ export function ArchitectRecoveryCard({ blueprintId, name, projectId, number, re
     <p className="m-0 max-w-md leading-relaxed text-muted-foreground">{t("agsdl.architect.recovery.body")}</p>
     {first?.name && <p className="m-0 max-w-md">{t("agsdl.architect.recovery.why", { item: t(`agsdl.architect.saveVersion.item.${first.kind}`, { name: first.name }) })}</p>}
     {(issues.length > 0 || technical.length > 0) && <details className="agsdl-details w-full max-w-md text-left">
-      <DisclosureSummary>{t("agsdl.viewer.technicalDetails")}</DisclosureSummary>
+      <summary className="flex cursor-pointer items-center justify-between gap-2 py-1 text-xs font-medium">{t("agsdl.viewer.technicalDetails")}<ChevronDown size={14} aria-hidden="true" /></summary>
       <ul className="space-y-1 font-mono text-[11px]">
         {issues.map((issue, index) => <li key={index} className="break-words">{issue.technical}</li>)}
         {technical.map((line, index) => <li key={`t${index}`} className="break-words">{line}</li>)}

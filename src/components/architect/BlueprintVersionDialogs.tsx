@@ -11,8 +11,10 @@ export function architectLibraryLabel(item: ArchitectProject, peers: ArchitectPr
     : item.name;
 }
 
-export function BlueprintNameDialog({ title, initialName = "", destinations, onSave, onClose, children }: {
+export function BlueprintNameDialog({ title, actionLabel, initialName = "", destinations, onSave, onClose, children }: {
   title: string;
+  /** The confirm button says what it does when the title alone would not. */
+  actionLabel?: string;
   initialName?: string;
   destinations?: { projects: ArchitectProject[]; projectId: string };
   children?: React.ReactNode;
@@ -22,7 +24,7 @@ export function BlueprintNameDialog({ title, initialName = "", destinations, onS
   const { t } = useAgsdlTranslation();
   const [name, setName] = useState(initialName);
   const [projectId, setProjectId] = useState(destinations?.projectId ?? "");
-  return <LibraryActionDialog title={title} onClose={onClose}
+  return <LibraryActionDialog title={title} actionLabel={actionLabel} onClose={onClose}
     disabled={!name.trim() || (!!destinations && !projectId)} onSave={() => onSave(name.trim(), projectId)}>
     {children}
     {destinations && <label className="agsdl-edit-field">{t("agsdl.library.project")}
@@ -49,8 +51,9 @@ export function SaveBlueprintVersionDialog({ blueprintId, onClose }: { blueprint
   </LibraryActionDialog>;
 }
 
-export function LibraryActionDialog({ title, disabled, children, onSave, onClose }: {
+export function LibraryActionDialog({ title, actionLabel, disabled, children, onSave, onClose }: {
   title: string;
+  actionLabel?: string;
   disabled?: boolean;
   children: React.ReactNode;
   onSave: () => Promise<void>;
@@ -81,7 +84,7 @@ export function LibraryActionDialog({ title, disabled, children, onSave, onClose
     </form>
     <footer>
       <button type="button" disabled={busy} onClick={onClose}>{t("agsdl.cancel")}</button>
-      <button type="submit" form={formId} disabled={busy || disabled}>{busy ? t("agsdl.saving") : title}</button>
+      <button type="submit" form={formId} disabled={busy || disabled}>{busy ? t("agsdl.saving") : actionLabel ?? title}</button>
     </footer>
   </Dialog>;
 }

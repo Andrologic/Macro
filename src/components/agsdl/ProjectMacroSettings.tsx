@@ -50,18 +50,17 @@ export function ProjectMacroSettings({ target, agentId }: { target: BlueprintDoc
     const hidden = settings.hiddenAgentIds.includes(agentId);
     if (!editable) return hidden ? <p className="flex items-center gap-1.5"><Icon name="eye-off" size={12} />{t("agsdl.library.hiddenAgent")}</p> : null;
     const change = (next: boolean) => next ? [...settings.hiddenAgentIds, agentId] : settings.hiddenAgentIds.filter(id => id !== agentId);
-    return <section className="agsdl-edit-field" aria-label={t("agsdl.architect.operate.title")}>
+    // Not an .agsdl-edit-field: that class stretches every input to the full width.
+    return <section className="mt-4 space-y-1" aria-label={t("agsdl.architect.operate.title")}>
       <h4 className="m-0 text-[11px] font-medium text-muted-foreground">{t("agsdl.architect.operate.title")}</h4>
-      <div className="flex items-start justify-between gap-2">
-        <label className="flex min-w-0 items-start gap-2">
-          <input type="checkbox" className="mt-0.5 accent-primary" checked={hidden} disabled={disabled} onChange={event => {
-            void persist({ hiddenAgentIds: change(event.target.checked) }, { hiddenAgentIds: settings.hiddenAgentIds });
-          }} />
-          <span><span className="block">{t("agsdl.library.hideAgent")}</span>
-            <span className="block text-xs text-muted-foreground">{t("agsdl.architect.operate.hideHint")}</span></span>
-        </label>
-        {feedback}
-      </div>
+      <label className="flex min-w-0 items-start gap-2">
+        <input type="checkbox" className="mt-0.5 size-3.5 shrink-0 accent-primary" checked={hidden} disabled={disabled} onChange={event => {
+          void persist({ hiddenAgentIds: change(event.target.checked) }, { hiddenAgentIds: settings.hiddenAgentIds });
+        }} />
+        <span><span className="block">{t("agsdl.library.hideAgent")}</span>
+          <span className="block text-xs text-muted-foreground">{t("agsdl.architect.operate.hideHint")}</span></span>
+      </label>
+      <div className="min-h-4 pl-[22px]">{feedback}</div>
     </section>;
   }
   if (!editable) return settings.entryMessageHint

@@ -535,7 +535,7 @@ it("shows conversion diagnostics and keeps local edits when version saving is re
   const alert = document.querySelector('[role="dialog"] [role="alert"]');
   expect(document.querySelector('[role="dialog"]')?.textContent).toContain("This system is in an older format");
   expect(alert?.textContent).toContain("This version cannot be saved");
-  expect(alert?.textContent).toContain("Step “collect” needs fixing");
+  expect(alert?.textContent).toContain("Step “collect”");
   expect(alert?.textContent).toContain(diagnostic);
   expect(useAgsdlStore.getState().sessions[agsdlSessionKey(target)]).toEqual(previous);
   expect(port.writes).toEqual([]);

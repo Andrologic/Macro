@@ -1349,6 +1349,7 @@
         "fields": "launch fields"
       },
       "why": "The AgSDL format has no place yet for an application’s settings (AgSDL#32). An imported blueprint takes the default values.",
+      "whyTitle": "Why?",
       "choose": "Choose location…",
       "exporting": "Exporting…",
       "doneVersion": "Version {{number}} exported",
@@ -1470,7 +1471,7 @@
       "title": "This version could not be recovered",
       "titleDraft": "This draft could not be recovered",
       "body": "Its content is kept, but Macro could not convert it: it can be neither launched nor exported as is. You can adapt it to repair it, or download the original.",
-      "why": "To fix: {{item}}",
+      "why": "Item concerned: {{item}}",
       "downloaded": "Original downloaded",
       "downloadFailed": "The download failed"
     },
@@ -1487,12 +1488,12 @@
       "issueCount_one": "{{count}} item to fix.",
       "issueCount_other": "{{count}} items to fix.",
       "item": {
-        "agent": "Agent “{{name}}” needs fixing",
-        "step": "Step “{{name}}” needs fixing",
-        "skill": "Skill “{{name}}” needs fixing",
-        "tool": "Tool “{{name}}” needs fixing",
-        "content": "Content “{{name}}” needs fixing",
-        "document": "The system as a whole contains an error"
+        "agent": "Agent “{{name}}”",
+        "step": "Step “{{name}}”",
+        "skill": "Skill “{{name}}”",
+        "tool": "Tool “{{name}}”",
+        "content": "Content “{{name}}”",
+        "document": "The system as a whole"
       },
       "show": "Show",
       "warnings_one": "{{count}} warning, nothing blocks the save",

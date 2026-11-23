@@ -36,6 +36,7 @@ export function ArchitectLibraryDialogs() {
     case "adapt": {
       const { source, name, projectId, repair } = dialog;
       return <BlueprintNameDialog key={JSON.stringify(source)} title={t(repair ? "agsdl.library.adaptRepair" : "agsdl.architect.adapt.title", { number: source.kind === "version" ? source.key.number : undefined })}
+        actionLabel={t(repair ? "agsdl.library.adaptRepair" : "agsdl.architect.header.adapt")}
         initialName={repair ? name : t("agsdl.architect.adapt.defaultName", { name })}
         destinations={{ projects: projects.status === "ready" ? projects.value : [], projectId }}
         onSave={async (nextName, destination) => {

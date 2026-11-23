@@ -88,8 +88,8 @@ it("says which agent or step blocks the save, in plain words, with the technical
   const alert = document.querySelector('[role="alert"]')!;
   expect(alert.textContent).toContain("The system contains errors");
   expect(alert.textContent).toContain("2 items to fix.");
-  expect(alert.textContent).toContain("Agent “relecteur” needs fixing");
-  expect(alert.textContent).toContain("Step “review” needs fixing");
+  expect(alert.textContent).toContain("Agent “relecteur”");
+  expect(alert.textContent).toContain("Step “review”");
   expect(alert.querySelector("details")?.textContent).toContain("MISSING_FILE · agents/relecteur.json#/instructions/0 · content file not found");
   // The main text names items, never files.
   const summary = alert.cloneNode(true) as HTMLElement;
@@ -107,7 +107,7 @@ it("lists warnings without blocking the save", async () => {
   open(modern, projectViewFixture(modern));
   await mount();
   expect(dialogText()).toContain("1 warning, nothing blocks the save");
-  expect(dialogText()).toContain("Skill “style” needs fixing");
+  expect(dialogText()).toContain("Skill “style”");
   expect(document.querySelector('[role="alert"]')).toBeNull();
   expect(primary().disabled).toBe(false);
 });
@@ -135,8 +135,8 @@ it("expresses a refused conversion in terms of items and keeps the note for anot
   await flush();
   const alert = document.querySelector('[role="alert"]')!;
   expect(alert.textContent).toContain("This version cannot be saved");
-  expect(alert.textContent).toContain("Agent “relecteur” needs fixing");
-  expect(alert.textContent).toContain("Step “collect” needs fixing");
+  expect(alert.textContent).toContain("Agent “relecteur”");
+  expect(alert.textContent).toContain("Step “collect”");
   expect(alert.querySelector("details")?.textContent).toContain("UNKNOWN_AGENT /agents/relecteur/skills/0 — missing skill");
   expect(dialogText()).not.toContain("Fix these issues before saving an AgSDL 0.4.0 version.");
   expect(document.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("Keep me");

@@ -30,7 +30,7 @@ it("explains calmly that nothing is lost and offers repair or download, never ex
   expect(card.textContent).toContain("Revue de code · version 1");
   expect(card.textContent).toContain("This version could not be recovered");
   expect(card.textContent).toContain("Its content is kept");
-  expect(card.textContent).toContain("To fix: Agent “relecteur” needs fixing");
+  expect(card.textContent).toContain("Item concerned: Agent “relecteur”");
   expect(card.textContent?.toLowerCase()).not.toContain("corrupt");
   const buttons = [...card.querySelectorAll("button")].map(button => button.textContent?.trim()).filter(Boolean);
   expect(buttons).toEqual(expect.arrayContaining(["Adapt for repair", "Download original", "Delete…"]));
