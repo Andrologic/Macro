@@ -381,12 +381,30 @@ async fn current_ui_can_repair_an_incomplete_draft_after_cutover() {
         .freeze(&pool, BLUEPRINT.into(), 5, None, None)
         .await
         .is_err());
+    let mut collision = editor("Annex collides with generated manifest");
+    collision.source = collision
+        .source
+        .replace("./notes/étude.md?x=1#title", "agsdl.json");
+    collision
+        .annexes
+        .insert("agsdl.json".into(), "original authored resource".into());
+    let collided = storage
+        .save_draft(&pool, BLUEPRINT.into(), 5, collision)
+        .await
+        .unwrap();
+    assert!(serde_json::to_value(collided).unwrap()["diagnostics"]
+        .to_string()
+        .contains("Missing declared resource agsdl.json"));
+    assert!(storage
+        .freeze(&pool, BLUEPRINT.into(), 6, None, None)
+        .await
+        .is_err());
     storage
-        .save_draft(&pool, BLUEPRINT.into(), 5, editor("Repaired"))
+        .save_draft(&pool, BLUEPRINT.into(), 6, editor("Repaired"))
         .await
         .unwrap();
     storage
-        .freeze(&pool, BLUEPRINT.into(), 6, None, None)
+        .freeze(&pool, BLUEPRINT.into(), 7, None, None)
         .await
         .unwrap();
 }

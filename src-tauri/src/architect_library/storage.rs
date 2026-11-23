@@ -206,7 +206,7 @@ impl Storage {
             Ok(source) => {
                 let reopened = argentic_core::durable_json::value(source.authored_json())?;
                 if reopened == split.normalized {
-                    Some(source)
+                    split.resources_complete.then_some(source)
                 } else {
                     split
                         .authoring

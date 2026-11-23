@@ -234,7 +234,7 @@ async fn insert_blueprint(
     let row = sqlx::query(
         "INSERT INTO architect_blueprints(id,project_id,name,document,origin_blueprint_id,origin_number,source_id)
          VALUES (?,?,?,?,?,?,?)
-         RETURNING *",
+         RETURNING id,project_id,name,revision,conversation_id,archived,origin_blueprint_id,origin_number,history,document",
     )
         .bind(Uuid::new_v4().to_string()).bind(project_id).bind(name).bind(document)
         .bind(origin.map(|key| &key.blueprint_id)).bind(origin.map(|key| key.number)).bind(source_id)
@@ -260,7 +260,7 @@ pub(crate) async fn create_blueprint(
 }
 
 pub(crate) async fn get_draft(pool: &SqlitePool, blueprint_id: String) -> DbResult<Draft> {
-    let row = sqlx::query("SELECT * FROM architect_blueprints WHERE id=?")
+    let row = sqlx::query("SELECT id,project_id,name,revision,conversation_id,archived,origin_blueprint_id,origin_number,history,document FROM architect_blueprints WHERE id=?")
         .bind(blueprint_id)
         .fetch_one(pool)
         .await?;
@@ -287,7 +287,7 @@ pub(crate) async fn attach_conversation(
          ) AND (conversation_id=?1 OR NOT EXISTS (
              SELECT 1 FROM conversations WHERE id=architect_blueprints.conversation_id
          ))
-         RETURNING *",
+         RETURNING id,project_id,name,revision,conversation_id,archived,origin_blueprint_id,origin_number",
     )
     .bind(conversation_id)
     .bind(blueprint_id)
@@ -363,7 +363,10 @@ pub(crate) async fn ensure_conversation(
     blueprint_id: String,
 ) -> DbResult<ConversationResolution> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let row = sqlx::query("SELECT * FROM architect_blueprints WHERE id=?")
+    let row = sqlx::query(
+        "SELECT id,project_id,name,revision,conversation_id,archived,origin_blueprint_id,origin_number,history
+         FROM architect_blueprints WHERE id=?",
+    )
         .bind(&blueprint_id)
         .fetch_one(&mut *tx)
         .await?;
@@ -529,7 +532,10 @@ pub(crate) async fn ensure_conversation(
         blueprint
     } else {
         let row =
-            sqlx::query("UPDATE architect_blueprints SET conversation_id=? WHERE id=? RETURNING *")
+            sqlx::query(
+                "UPDATE architect_blueprints SET conversation_id=? WHERE id=?
+                 RETURNING id,project_id,name,revision,conversation_id,archived,origin_blueprint_id,origin_number",
+            )
                 .bind(id)
                 .bind(blueprint_id)
                 .fetch_one(&mut *tx)
@@ -563,7 +569,7 @@ pub(crate) async fn save_draft(
     let row = sqlx::query(
         "UPDATE architect_blueprints SET document=?,revision=revision+1
          WHERE id=? AND revision=?
-         RETURNING *",
+         RETURNING id,project_id,name,revision,conversation_id,archived,origin_blueprint_id,origin_number,history,document",
     )
     .bind(encode(&document)?)
     .bind(blueprint_id)
@@ -733,20 +739,25 @@ pub(crate) async fn list_versions(
     pool: &SqlitePool,
     blueprint_id: String,
 ) -> DbResult<Vec<VersionSummary>> {
-    let rows = sqlx::query(
-        "SELECT *
-         FROM architect_versions
-         WHERE blueprint_id=?
-         ORDER BY number DESC",
-    )
-    .bind(blueprint_id)
-    .fetch_all(pool)
-    .await?;
+    // The same read transaction pins the schema during a native cutover.
+    let mut tx = pool.begin().await?;
+    let query = if storage_index::is_current(&mut tx).await? {
+        "SELECT blueprint_id,number,revision,note,storage_state,created_at
+         FROM architect_versions WHERE blueprint_id=? ORDER BY number DESC"
+    } else {
+        "SELECT blueprint_id,number,revision,note
+         FROM architect_versions WHERE blueprint_id=? ORDER BY number DESC"
+    };
+    let rows = sqlx::query(query)
+        .bind(blueprint_id)
+        .fetch_all(&mut *tx)
+        .await?;
+    tx.commit().await?;
     rows.iter().map(version_summary).collect()
 }
 
 pub(crate) async fn get_version(pool: &SqlitePool, key: VersionKey) -> DbResult<Version> {
-    let row = sqlx::query("SELECT * FROM architect_versions WHERE blueprint_id=? AND number=?")
+    let row = sqlx::query("SELECT blueprint_id,number,revision,note,document FROM architect_versions WHERE blueprint_id=? AND number=?")
         .bind(key.blueprint_id)
         .bind(key.number)
         .fetch_one(pool)

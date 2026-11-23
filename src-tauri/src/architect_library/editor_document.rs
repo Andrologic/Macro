@@ -217,6 +217,7 @@ pub(super) struct Split {
     pub authoring: Authoring,
     pub files: BTreeMap<String, Vec<u8>>,
     pub normalized: Value,
+    pub resources_complete: bool,
     pub upgraded: bool,
     pub source: String,
 }
@@ -265,14 +266,6 @@ pub(super) fn split(mut document: Document) -> std::result::Result<Split, String
         ..Authoring::default()
     };
     let settings = MacroSettings::from_authoring(&mut authoring.metadata);
-    for missing in declared
-        .iter()
-        .filter(|path| !document.annexes.contains_key(*path))
-    {
-        authoring
-            .diagnostics
-            .push(format!("Missing declared resource {missing}"));
-    }
     let authored_roots: BTreeSet<_> = document
         .annexes
         .keys()
@@ -295,6 +288,17 @@ pub(super) fn split(mut document: Document) -> std::result::Result<Split, String
                 .push(format!("Annex kept privately: {name}"));
             authoring.private_annexes.insert(name, text);
         }
+    }
+
+    let mut resources_complete = true;
+    for missing in declared
+        .iter()
+        .filter(|path| !authoring.annex_paths.contains_key(*path))
+    {
+        authoring
+            .diagnostics
+            .push(format!("Missing declared resource {missing}"));
+        resources_complete = false;
     }
 
     let mut manifest = manifest.clone();
@@ -363,6 +367,7 @@ pub(super) fn split(mut document: Document) -> std::result::Result<Split, String
         authoring,
         files,
         normalized,
+        resources_complete,
         upgraded: upgraded_source,
         source: document.source,
     })

@@ -1,7 +1,8 @@
 use super::*;
 use sqlx::sqlite::SqliteRow;
 
-const NAME: &str = "049_architect_library_artifacts";
+pub(crate) const VERSION: i64 = 49;
+pub(crate) const NAME: &str = "049_architect_library_artifacts";
 const MIGRATION: &str = include_str!("../migrations/049_architect_library_artifacts.sql");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,8 +69,9 @@ pub(crate) async fn durable_writer(
 
 pub(crate) async fn is_current(db: &mut SqliteConnection) -> DbResult<bool> {
     Ok(sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=49 AND name=?)",
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=? AND name=?)",
     )
+    .bind(VERSION)
     .bind(NAME)
     .fetch_one(db)
     .await?)
@@ -127,12 +129,16 @@ pub(crate) async fn plan(
 }
 
 pub(crate) async fn finish_cutover(db: &mut SqliteConnection) -> DbResult<()> {
-    super::super::apply_migration(db, 49, NAME.into(), MIGRATION.into()).await
+    super::super::apply_migration(db, VERSION, NAME.into(), MIGRATION.into()).await
 }
 
 pub(crate) async fn draft_row(pool: &SqlitePool, id: &str) -> DbResult<SqliteRow> {
     Ok(
-        sqlx::query("SELECT *,NULL AS archive_sha256 FROM architect_blueprints WHERE id=?")
+        sqlx::query(
+            "SELECT id,project_id,name,revision,conversation_id,archived,origin_blueprint_id,origin_number,
+                    history,artifact_id,storage_state,NULL AS archive_sha256
+             FROM architect_blueprints WHERE id=?",
+        )
             .bind(id)
             .fetch_one(pool)
             .await?,
@@ -141,7 +147,10 @@ pub(crate) async fn draft_row(pool: &SqlitePool, id: &str) -> DbResult<SqliteRow
 
 pub(crate) async fn version_row(pool: &SqlitePool, key: &VersionKey) -> DbResult<SqliteRow> {
     Ok(
-        sqlx::query("SELECT * FROM architect_versions WHERE blueprint_id=? AND number=?")
+        sqlx::query(
+            "SELECT blueprint_id,number,revision,note,artifact_id,storage_state,archive_sha256,created_at
+             FROM architect_versions WHERE blueprint_id=? AND number=?",
+        )
             .bind(&key.blueprint_id)
             .bind(key.number)
             .fetch_one(pool)
@@ -185,7 +194,8 @@ pub(crate) async fn insert_draft(
     Ok(sqlx::query(
         "INSERT INTO architect_blueprints
          (id,project_id,name,artifact_id,storage_state,origin_blueprint_id,origin_number)
-         VALUES (?,?,?,?,?,?,?) RETURNING *",
+         VALUES (?,?,?,?,?,?,?)
+         RETURNING id,project_id,name,revision,conversation_id,archived,origin_blueprint_id,origin_number,history,storage_state",
     )
     .bind(&artifact.blueprint_id)
     .bind(project)
@@ -205,7 +215,8 @@ pub(crate) async fn update_draft(
 ) -> DbResult<SqliteRow> {
     sqlx::query(
         "UPDATE architect_blueprints SET artifact_id=?,storage_state=?,revision=revision+1
-         WHERE id=? AND revision=? AND NOT archived RETURNING *",
+         WHERE id=? AND revision=? AND NOT archived
+         RETURNING id,project_id,name,revision,conversation_id,archived,origin_blueprint_id,origin_number,history,storage_state",
     )
     .bind(artifact.id.to_string())
     .bind(artifact.state.as_str())
@@ -235,7 +246,8 @@ pub(crate) async fn freeze(
     let row = sqlx::query(
         "INSERT INTO architect_versions
          (blueprint_id,number,revision,note,artifact_id,storage_state,archive_sha256,created_at)
-         VALUES (?,?,?,?,?,?,?,?) RETURNING *",
+         VALUES (?,?,?,?,?,?,?,?)
+         RETURNING blueprint_id,number,revision,note,storage_state,created_at",
     )
     .bind(&artifact.blueprint_id)
     .bind(number)

@@ -422,7 +422,7 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
-    if versions.contains(&49) {
+    if versions.contains(&storage_index::VERSION) {
         let mut tx = reference.begin().await.map_err(|e| e.to_string())?;
         storage_index::begin_cutover(&mut tx)
             .await

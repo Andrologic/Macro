@@ -118,9 +118,10 @@ const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
+// Stamps supported by the SQL-only pool initialization.
 pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
-    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
+    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
 ];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
@@ -673,10 +674,10 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
 
 // Version 2 is optional: it was a shipped data migration, not a schema dependency.
 fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
-    if applied
-        .iter()
-        .any(|version| !SUPPORTED_MIGRATION_VERSIONS.contains(version))
-        || (!applied.is_empty() && !applied.contains(&1))
+    if applied.iter().any(|version| {
+        *version != architect_library::storage_index::VERSION
+            && !SUPPORTED_MIGRATION_VERSIONS.contains(version)
+    }) || (!applied.is_empty() && !applied.contains(&1))
         || (applied.contains(&4) && !applied.contains(&3))
         || (applied.contains(&5) && !applied.contains(&4))
         || (applied.contains(&6) && !applied.contains(&5))
@@ -692,7 +693,7 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&16) && !applied.contains(&15))
         || (applied.contains(&17) && !applied.contains(&16))
         || (applied.contains(&18) && !applied.contains(&17))
-        || (applied.contains(&49) && !applied.contains(&48))
+        || (applied.contains(&architect_library::storage_index::VERSION) && !applied.contains(&48))
         || (applied.contains(&48) && !applied.contains(&47))
         || (applied.contains(&47) && !applied.contains(&46))
         || (applied.contains(&19) && !applied.contains(&18))
