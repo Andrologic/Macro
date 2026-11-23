@@ -915,10 +915,15 @@ async fn model_override_changes_the_run_registry_and_leaves_version_frozen() {
     let executor = Arc::new(ScriptedAgent::default());
     executor.install(&host);
     let mut launch = request(version.clone(), first.consent_token.clone());
-    let refused = start::launch(runtime(&host, &manager, &pool, data.path()), launch)
-        .await
-        .err()
-        .unwrap();
+    let resources = resources::launch_lease(manager.root()).await.unwrap();
+    let refused = tokio::time::timeout(
+        Duration::from_secs(5),
+        start::launch(runtime(&host, &manager, &pool, data.path()), launch),
+    )
+    .await
+    .expect("Codex qualification must run while another profile holds the resource lease")
+    .unwrap_err();
+    drop(resources);
     assert_eq!(refused.code, "MODEL_UNAVAILABLE");
     assert!(!manager.root().join("agsdl-snapshots").exists());
 

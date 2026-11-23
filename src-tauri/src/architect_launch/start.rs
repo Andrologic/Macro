@@ -100,10 +100,6 @@ pub(crate) async fn launch(
         entry,
     };
 
-    let _resources = resources::launch_lease(context.root()).await?;
-    let database = resources::database_owner(runtime.pool, context.root())
-        .await?
-        .key;
     let policy = runtime
         .manager
         .lock_execution_tools(PROJECT_ID)
@@ -136,22 +132,22 @@ pub(crate) async fn launch(
         return Err(launch_failure("MCP_SECRETS_UNAVAILABLE", &secret.server));
     }
 
-    let private_folder = if owns_folder {
-        Some(resources::new_working_folder(runtime.app_data, &database)?)
-    } else {
-        None
-    };
-    let folder = match chosen {
-        Some(folder) => folder,
-        None => private_folder
-            .as_ref()
-            .expect("private folder created")
-            .path()
-            .to_owned(),
-    };
-    let root_scope = scope_for(&folder, &engine_request.source.owner)?;
+    let chosen_scope = chosen
+        .as_deref()
+        .map(|folder| scope_for(folder, &engine_request.source.owner))
+        .transpose()?;
     let observed = if needs_codex(&preview) {
-        let observed = observe_codex(runtime.manager, &root_scope).await?;
+        let probe;
+        let scope = match &chosen_scope {
+            Some(scope) => scope,
+            None => {
+                // The catalogue probe starts no work. Keep its empty folder
+                // outside managed launch storage until admission.
+                probe = tempfile::tempdir_in(runtime.app_data).map_err(|_| storage_error())?;
+                &scope_for(probe.path(), &engine_request.source.owner)?
+            }
+        };
+        let observed = observe_codex(runtime.manager, scope).await?;
         if codex_write_unqualified(&preview, &call_permissions, &observed) {
             return Err(launch_failure("CODEX_PROFILE_UNQUALIFIED", "codex"));
         }
@@ -165,10 +161,27 @@ pub(crate) async fn launch(
     };
 
     let session = runtime.host.begin_start().await?;
+    let resources = resources::launch_lease(context.root()).await?;
+    let database = resources::database_owner(runtime.pool, context.root()).await?;
+    let private_folder = owns_folder
+        .then(|| resources::new_working_folder(runtime.app_data, &database.key))
+        .transpose()?;
+    let (folder, root_scope) = match (chosen, chosen_scope) {
+        (Some(folder), Some(scope)) => (folder, scope),
+        _ => {
+            let folder = private_folder
+                .as_ref()
+                .expect("private folder created")
+                .path()
+                .to_owned();
+            let scope = scope_for(&folder, &engine_request.source.owner)?;
+            (folder, scope)
+        }
+    };
     let mut scope = root_scope.clone();
     let retained = resources::retain_snapshot(
         context.root(),
-        &database,
+        &database.key,
         input.archive.source(),
         &mut scope,
     )?;
@@ -284,6 +297,7 @@ pub(crate) async fn launch(
         let _ = private_folder.keep();
     }
     let started = start030::start(runtime.pool, &engine_request, &authority).await;
+    drop(resources);
     // Attachment observes policy itself. In particular, do not hold a
     // config read lease across this boundary.
     drop(policy);
