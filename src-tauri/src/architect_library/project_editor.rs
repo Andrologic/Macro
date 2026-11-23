@@ -51,6 +51,9 @@ pub(crate) struct SettingsChange {
     hidden_agent_ids: Option<Vec<String>>,
     #[serde(default, deserialize_with = "nullable")]
     entry_message_hint: Option<Option<String>>,
+    working_folder_mode: Option<super::editor_document::WorkingFolderMode>,
+    #[serde(default, deserialize_with = "nullable")]
+    start_message_required: Option<Option<bool>>,
 }
 
 fn nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
@@ -175,6 +178,12 @@ impl EditBatch {
             }
             if let Some(hint) = patch.entry_message_hint {
                 settings.entry_message_hint = hint;
+            }
+            if let Some(mode) = patch.working_folder_mode {
+                settings.working_folder_mode = mode;
+            }
+            if let Some(required) = patch.start_message_required {
+                settings.start_message_required = required;
             }
         }
         Ok(())

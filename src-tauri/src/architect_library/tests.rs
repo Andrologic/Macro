@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Cursor, Write};
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
 const SCRIPT: &str = "mcp/run.sh";
@@ -547,7 +547,7 @@ fn refuses_to_read_selected_symlinks_and_absolute_file_uris() {
 }
 
 fn run_reference(checkout: &Path, cwd: &Path, action: &str, paths: &[&Path]) -> Output {
-    let output = Command::new("python3")
+    let output = crate::core::process::background_command("python3")
         .args(["-m", "agsdl.archive", action])
         .args(paths)
         .current_dir(cwd)

@@ -143,7 +143,7 @@ pub struct PreviewWarning {
     pub location: Location,
 }
 
-pub(super) fn inspect(
+pub(crate) fn inspect(
     source: &OpenedSource,
     package_format: &'static str,
     staged_sha256: String,

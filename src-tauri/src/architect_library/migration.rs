@@ -28,6 +28,7 @@ pub(crate) async fn migrate(pool: &SqlitePool, storage: &Storage) -> DbResult<bo
     let mut writer = index::durable_writer(pool).await?;
     let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
     if index::is_current(&mut tx).await? {
+        crate::architect_launch::migrate(&mut tx).await?;
         tx.commit().await?;
         drop(writer);
         storage.reclaim_after_commit(pool).await;
@@ -117,6 +118,7 @@ pub(crate) async fn migrate(pool: &SqlitePool, storage: &Storage) -> DbResult<bo
         .await?;
     }
     index::finish_cutover(&mut tx).await?;
+    crate::architect_launch::migrate(&mut tx).await?;
     storage.check(Failure::BeforeCommit)?;
     tx.commit().await?;
     drop(writer);

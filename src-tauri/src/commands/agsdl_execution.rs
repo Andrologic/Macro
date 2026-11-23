@@ -12,6 +12,135 @@ async fn pool(state: &State<'_, DbPool>) -> repository::Result<sqlx::SqlitePool>
         .map_err(|_| repository::failure("STORAGE", "", "Execution database unavailable"))
 }
 
+use crate::architect_launch::{self as launch, start as archive_start, LaunchConfiguration};
+use crate::db::architect_library::VersionKey;
+
+fn launch_data(app: &tauri::AppHandle) -> repository::Result<std::path::PathBuf> {
+    app.path()
+        .app_data_dir()
+        .map_err(|_| repository::failure("STORAGE", "", "Launch storage is unavailable"))
+}
+
+#[tauri::command]
+pub(crate) async fn architect_launch_prepare(
+    app: tauri::AppHandle,
+    state: State<'_, DbPool>,
+    manager: State<'_, crate::config::ConfigManager>,
+    version: VersionKey,
+    configuration: Option<LaunchConfiguration>,
+) -> repository::Result<launch::LaunchPreview> {
+    launch::prepare(
+        &manager,
+        &pool(&state).await?,
+        &launch_data(&app)?,
+        version,
+        configuration,
+    )
+    .await
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ArchiveLaunchReceipt {
+    identity: repository::flow030::FlowIdentity030,
+    source: EngineSourceRevision,
+}
+
+#[tauri::command]
+pub(crate) async fn architect_launch_start(
+    app: tauri::AppHandle,
+    request: archive_start::LaunchRequest,
+) -> repository::Result<ArchiveLaunchReceipt> {
+    tokio::spawn(async move {
+        let state = app.state::<DbPool>();
+        let host = app.state::<crate::agsdl_host::HostState>();
+        let manager = app.state::<crate::config::ConfigManager>();
+        let ai = app.state::<crate::ai::AiState>();
+        let pool = pool(&state).await?;
+        let app_data = launch_data(&app)?;
+        let result = archive_start::launch(
+            archive_start::Runtime {
+                host: &host,
+                manager: &manager,
+                pool: &pool,
+                app_data: &app_data,
+                tasks: ai.stream_tasks.clone(),
+                action_policy: std::sync::Arc::new(
+                    crate::agsdl_host_action_approval030::CurrentActionPolicy030 {
+                        app: app.clone(),
+                        config: manager.inner().clone(),
+                    },
+                ),
+            },
+            request,
+        )
+        .await?;
+        Ok(ArchiveLaunchReceipt {
+            identity: result.receipt.identity,
+            source: result.capture.source,
+        })
+    })
+    .await
+    .map_err(|_| {
+        repository::failure(
+            "RUNTIME_UNAVAILABLE",
+            "",
+            "Native Start task did not acknowledge",
+        )
+    })?
+}
+
+#[tauri::command]
+pub(crate) async fn architect_launch_set_secret(
+    app: tauri::AppHandle,
+    state: State<'_, DbPool>,
+    version: VersionKey,
+    server: String,
+    name: String,
+    value: String,
+) -> repository::Result<()> {
+    launch::set_secret(
+        &pool(&state).await?,
+        &launch_data(&app)?,
+        version,
+        &server,
+        &name,
+        &value,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn architect_launch_run_systems(
+    state: State<'_, DbPool>,
+) -> repository::Result<Vec<launch::RunRecord>> {
+    launch::run_systems(&pool(&state).await?).await
+}
+
+#[tauri::command]
+pub(crate) async fn architect_launch_open_folder(
+    app: tauri::AppHandle,
+    state: State<'_, DbPool>,
+    system_start_id: String,
+) -> repository::Result<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let folder = launch::read_folder(&pool(&state).await?, &system_start_id).await?;
+    if !std::path::Path::new(&folder).is_dir() {
+        return Err(repository::failure(
+            "NOT_FOUND",
+            "workingFolder",
+            "The run folder is unavailable",
+        ));
+    }
+    app.opener().open_path(folder, None::<&str>).map_err(|_| {
+        repository::failure(
+            "OPEN_FAILED",
+            "workingFolder",
+            "The run folder could not be opened",
+        )
+    })
+}
+
 #[tauri::command]
 pub async fn execution_read_runtime_projection030(
     state: State<'_, DbPool>,
@@ -249,6 +378,9 @@ pub(crate) async fn list_runs030_scoped(
     workspace: &std::path::Path,
     request: repository::discovery030::RunListRequest030,
 ) -> repository::Result<crate::db::operate_inbox::RunPage030> {
+    if request.owner.project_id == launch::PROJECT_ID && request.owner.branch == launch::BRANCH {
+        return crate::db::operate_inbox::list_runs(pool, request).await;
+    }
     let metadata = crate::workspace::architect::execution_history_metadata_root(workspace);
     let _scope = crate::workspace::architect::lock_execution_history_owner(
         workspace,
@@ -376,6 +508,9 @@ pub(crate) async fn read_run_correlation030_scoped(
         scope: scope.clone(),
         intent_id: system_start_id.into(),
     })?;
+    if scope.owner.project_id == launch::PROJECT_ID && scope.owner.branch == launch::BRANCH {
+        return intents::read_archive_run_correlation(pool, scope, system_start_id).await;
+    }
     let _guard = crate::workspace::architect::lock_execution_correlation_scope(workspace, scope)
         .await
         .map_err(intent_failure)?;

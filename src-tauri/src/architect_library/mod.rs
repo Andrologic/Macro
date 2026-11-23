@@ -4,7 +4,7 @@ pub mod archive;
 pub(crate) mod editor_document;
 pub(crate) mod imports;
 pub(crate) mod migration;
-mod preview;
+pub(crate) mod preview;
 pub mod project;
 pub(crate) mod project_editor;
 pub(crate) mod storage;

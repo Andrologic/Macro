@@ -114,6 +114,7 @@ mod agsdl_runtime_adapter;
 mod app_quit_state;
 mod app_shutdown;
 mod app_updates;
+mod architect_launch;
 pub mod architect_library;
 // The editor parity suite exercises Argentic internals at the Cargo-locked revision.
 #[cfg(all(test, argentic_editor_parity))]
@@ -964,6 +965,11 @@ pub fn run() {
             commands::goal_audit::db_apply_conversation_goal_verdict,
             commands::db_toggle_pin_conversation,
             commands::db_list_messages,
+            commands::agsdl_execution::architect_launch_prepare,
+            commands::agsdl_execution::architect_launch_start,
+            commands::agsdl_execution::architect_launch_set_secret,
+            commands::agsdl_execution::architect_launch_run_systems,
+            commands::agsdl_execution::architect_launch_open_folder,
             commands::architect_library::architect_migrate_legacy,
             commands::architect_library::architect_export_original_envelope,
             commands::architect_library::architect_list_projects,

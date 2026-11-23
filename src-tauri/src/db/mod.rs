@@ -678,6 +678,7 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
 fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
     if applied.iter().any(|version| {
         *version != architect_library::storage_index::VERSION
+            && *version != crate::architect_launch::SCHEMA_VERSION
             && !SUPPORTED_MIGRATION_VERSIONS.contains(version)
     }) || (!applied.is_empty() && !applied.contains(&1))
         || (applied.contains(&4) && !applied.contains(&3))
@@ -696,6 +697,8 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&17) && !applied.contains(&16))
         || (applied.contains(&18) && !applied.contains(&17))
         || (applied.contains(&architect_library::storage_index::VERSION) && !applied.contains(&48))
+        || (applied.contains(&crate::architect_launch::SCHEMA_VERSION)
+            && !applied.contains(&architect_library::storage_index::VERSION))
         || (applied.contains(&48) && !applied.contains(&47))
         || (applied.contains(&47) && !applied.contains(&46))
         || (applied.contains(&19) && !applied.contains(&18))
@@ -754,7 +757,7 @@ async fn list_applied_migrations(connection: &mut SqliteConnection) -> DbResult<
         .collect())
 }
 
-async fn apply_migration(
+pub(crate) async fn apply_migration(
     connection: &mut SqliteConnection,
     version: i64,
     name: String,

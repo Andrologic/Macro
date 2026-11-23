@@ -347,6 +347,33 @@ impl Storage {
         Ok((document, read_json(&path.join("diagnostics.json"))?))
     }
 
+    /// Keep the library lease through admission so Delete cannot remove the
+    /// version before the transaction records its restrictive execution use.
+    pub(crate) async fn open_launch_version(
+        &self,
+        pool: &SqlitePool,
+        key: &VersionKey,
+    ) -> DbResult<(
+        File,
+        archive::VersionArchive,
+        MacroSettings,
+        String,
+        Option<String>,
+    )> {
+        let lease = self.lease(false).await?;
+        let mut db = pool.acquire().await?;
+        if !index::is_current(&mut db).await? {
+            return Err(DbError::Validation("Archive library is unavailable".into()));
+        }
+        drop(db);
+        let row = index::version_row(pool, key).await?;
+        let artifact = Artifact::from_row(&row, "blueprint_id")?;
+        let archive = self.open_archive(&artifact)?;
+        let (settings, _) = read_sidecars(&self.checked_artifact_path(&artifact)?)?;
+        let digest = artifact.sha256.ok_or(Error::DigestMismatch)?;
+        Ok((lease, archive, settings, digest, row.try_get("note")?))
+    }
+
     /// The caller holds a lease or is validating a private backup copy.
     pub(crate) fn open_archive(&self, artifact: &Artifact) -> Result<archive::VersionArchive> {
         if artifact.state != StorageState::Archive {

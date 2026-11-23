@@ -1614,13 +1614,20 @@ impl ConfigManager {
         &self,
         project_id: &str,
     ) -> Result<ExecutionToolsLease, ConfigApiError> {
-        let registration = self
-            .lock_and_discover_project_documents(&[project_id.to_owned()])
-            .await?;
+        let archived = project_id == crate::architect_launch::PROJECT_ID;
+        let registration = if archived {
+            None
+        } else {
+            Some(
+                self.lock_and_discover_project_documents(&[project_id.to_owned()])
+                    .await?,
+            )
+        };
         let state = self.state.clone().read_owned().await;
-        if !state.project_roots.contains_key(project_id)
-            || state.project_load_errors.contains_key(project_id)
-            || state.unresolved_project_repositories.contains(project_id)
+        if !archived
+            && (!state.project_roots.contains_key(project_id)
+                || state.project_load_errors.contains_key(project_id)
+                || state.unresolved_project_repositories.contains(project_id))
         {
             return Err(ConfigApiError::new(
                 "PROJECT_SCOPE_UNAVAILABLE",
@@ -1641,7 +1648,9 @@ impl ConfigManager {
             .filter_map(|(key, stored)| match &key.scope {
                 ConfigScope::Project {
                     project_id: current,
-                } if current == project_id => Some((key.kind, stored.last_valid_value.clone())),
+                } if !archived && current == project_id => {
+                    Some((key.kind, stored.last_valid_value.clone()))
+                }
                 _ => None,
             })
             .collect::<BTreeMap<_, _>>();

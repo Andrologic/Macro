@@ -1139,3 +1139,63 @@ mod tests {
         assert!(serde_json::from_value::<ExecutionStageIntentRequest>(unknown).is_err());
     }
 }
+
+pub(crate) async fn read_archive_run_correlation(
+    pool: &SqlitePool,
+    scope: &ExecutionIntentScope,
+    system_start_id: &str,
+) -> IntentResult<ExecutionRunCorrelation030> {
+    use ExecutionIntentErrorCode::*;
+    if scope.conversation_id != scope.owner.plan_id {
+        return Err(error(ScopeInvalid));
+    }
+    let ready = crate::architect_launch::schema_ready(pool)
+        .await
+        .map_err(storage)?;
+    if !ready {
+        return Err(error(NotFound));
+    }
+    let record = sqlx::query(
+        "SELECT launch.number,launch.retained_snapshot_id,start.request_json,start.capture_json,start.receipt_json
+         FROM architect_launch_runs launch JOIN engine_start030_requests start USING (system_id)
+         WHERE launch.system_id=? AND launch.blueprint_id=?",
+    )
+    .bind(system_start_id)
+    .bind(&scope.owner.plan_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| error(ScopeInvalid))?;
+    let request: EngineStartRequest = serde_json::from_str(record.try_get("request_json")?)?;
+    let capture: super::start030::StartCapture030 =
+        serde_json::from_str(record.try_get("capture_json")?)?;
+    let receipt: super::start030::StartReceipt030 =
+        serde_json::from_str(record.try_get("receipt_json")?)?;
+    let private: serde_json::Value = serde_json::from_str(&capture.private_capture_json)?;
+    let bound: serde_json::Value = serde_json::from_str(
+        private["callScopeJson"]
+            .as_str()
+            .ok_or_else(|| error(StorageUncertain))?,
+    )?;
+    if capture.source.owner != scope.owner
+        || capture.source != request.source
+        || capture.source.revision != record.try_get::<i64, _>("number")?.to_string()
+        || capture.identity != receipt.identity
+        || capture.identity.system_start_id != system_start_id
+        || bound["projectSnapshot"].as_str() != Some(record.try_get("retained_snapshot_id")?)
+    {
+        return Err(error(StorageUncertain));
+    }
+    Ok(ExecutionRunCorrelation030 {
+        key: ExecutionIntentKey {
+            scope: scope.clone(),
+            intent_id: request.request_id,
+        },
+        receipt: PublicStartReceipt030 {
+            system_start_id: capture.identity.system_start_id,
+            flow_invocation_id: capture.identity.flow_invocation_id,
+            source: capture.source,
+            versions: capture.versions,
+            entry_delivery_id: request.entry.map(|entry| entry.delivery_id),
+        },
+    })
+}

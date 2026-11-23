@@ -19,15 +19,17 @@ pub(crate) struct MacroSettings {
     schema_version: u32,
     pub(super) hidden_agent_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) entry_message_hint: Option<String>,
-    working_folder_mode: WorkingFolderMode,
+    pub(crate) entry_message_hint: Option<String>,
+    pub(crate) working_folder_mode: WorkingFolderMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) start_message_required: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     launch_fields: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-enum WorkingFolderMode {
+pub(crate) enum WorkingFolderMode {
     #[default]
     PerExecution,
     AtLaunch,
@@ -40,6 +42,7 @@ impl Default for MacroSettings {
             hidden_agent_ids: Vec::new(),
             entry_message_hint: None,
             working_folder_mode: WorkingFolderMode::PerExecution,
+            start_message_required: None,
             launch_fields: None,
         }
     }
@@ -67,6 +70,7 @@ impl MacroSettings {
             hidden_agent_ids: take(metadata, "hiddenAgentIds").unwrap_or_default(),
             entry_message_hint: take(metadata, "entryMessageHint"),
             working_folder_mode: take(metadata, "workingFolderMode").unwrap_or_default(),
+            start_message_required: take(metadata, "startMessageRequired"),
             launch_fields: metadata.remove("launchFields"),
             ..Self::default()
         }
@@ -81,6 +85,9 @@ impl MacroSettings {
         }
         if self.working_folder_mode != WorkingFolderMode::PerExecution {
             metadata.insert("workingFolderMode".into(), json!(self.working_folder_mode));
+        }
+        if let Some(required) = self.start_message_required {
+            metadata.insert("startMessageRequired".into(), json!(required));
         }
         if let Some(fields) = &self.launch_fields {
             metadata.insert("launchFields".into(), fields.clone());

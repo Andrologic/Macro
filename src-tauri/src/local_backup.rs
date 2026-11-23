@@ -433,6 +433,11 @@ async fn check_database(path: &Path) -> Result<()> {
         storage_index::finish_cutover(&mut tx)
             .await
             .map_err(|e| e.to_string())?;
+        if versions.contains(&crate::architect_launch::SCHEMA_VERSION) {
+            crate::architect_launch::migrate(&mut tx)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
         tx.commit().await.map_err(|e| e.to_string())?;
     }
     if !versions.contains(&47) {
@@ -601,6 +606,7 @@ async fn check_database(path: &Path) -> Result<()> {
                 | "architect_version_uses"
         ) || table.starts_with("engine_")
             || table.starts_with("operate_inbox_")
+            || table.starts_with("architect_launch_")
             || table == "migration_identity_history"
             || table.starts_with("connect_")
             || table.starts_with("chat_admission_")

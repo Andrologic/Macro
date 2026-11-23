@@ -75,6 +75,9 @@ fn canonical_name(version: i64) -> Option<&'static str> {
     if version == architect_artifacts::VERSION {
         return Some(architect_artifacts::NAME);
     }
+    if version == crate::architect_launch::SCHEMA_VERSION {
+        return Some(crate::architect_launch::SCHEMA_NAME);
+    }
     let index = usize::try_from(version).ok()?.checked_sub(1)?;
     NAMES.get(index).copied()
 }

@@ -77,7 +77,7 @@ pub(crate) struct CompilationCapture {
     pub generation: String,
     pub call_permissions_json: String,
     pub call_scope_json: String,
-    permission_notice030: bool,
+    pub(crate) permission_notice030: bool,
 }
 
 #[cfg(test)]
@@ -582,7 +582,24 @@ impl CompilationCapture {
         )
     }
 
-    fn start_material030_checked(
+    fn start_product_diagnostic(&self, plan: Option<&str>) -> Option<PreflightDiagnostic> {
+        if self.source.owner.project_id == crate::architect_launch::PROJECT_ID {
+            if let Ok(mut document) = exact_json::value(&self.authored_source) {
+                // Agent-only archives can declare unused endpoints. Archive
+                // admission already refuses MCP dispatch and the original
+                // document remains the input and identity of the compiler.
+                if !declared_steps030(&document).any(|(_, step)| step["type"] == "call") {
+                    if let Some(object) = document.as_object_mut() {
+                        object.remove("mcpServers");
+                    }
+                    return product_slice030(&document.to_string(), plan);
+                }
+            }
+        }
+        product_slice030(&self.authored_source, plan)
+    }
+
+    pub(crate) fn start_material030_checked(
         &self,
         locked_revision: &EngineSourceRevision,
         locked_source: &str,
@@ -725,7 +742,7 @@ impl CompilationCapture {
         {
             return Err(refuse());
         }
-        if let Some(diagnostic) = product_slice030(&self.authored_source, Some(plan_json)) {
+        if let Some(diagnostic) = self.start_product_diagnostic(Some(plan_json)) {
             return Err(failure(
                 &diagnostic.code,
                 &diagnostic.pointer,
@@ -927,10 +944,8 @@ impl CompilationCapture {
                 message: "Host or project settings limit this run to read-only access, including agents requesting workspace writes.".into(),
             });
         }
-        let product_diagnostic = product_slice030(
-            &self.authored_source,
-            self.result.get("compiledPlanJson").and_then(Value::as_str),
-        );
+        let product_diagnostic = self
+            .start_product_diagnostic(self.result.get("compiledPlanJson").and_then(Value::as_str));
         let product_supported = product_diagnostic.is_none();
         native_diagnostics.extend(product_diagnostic);
         let incomplete = findings.len().saturating_add(native_diagnostics.len()) > 64;
