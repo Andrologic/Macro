@@ -1292,6 +1292,44 @@ fn remove_empty_checkpoint_dirs(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn prune_rollback_artifacts(
+    root: &Path,
+    path: &Path,
+    files: &BTreeMap<String, Entry>,
+) -> Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let relative = path.strip_prefix(root).map_err(|error| error.to_string())?;
+    if metadata.is_symlink() || relative.components().count() > 70 {
+        return Err("Invalid Architect rollback path".into());
+    }
+    if metadata.is_dir() {
+        for entry in path.read_dir().map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            prune_rollback_artifacts(root, &entry.path(), files)?;
+        }
+        if path
+            .read_dir()
+            .map_err(|error| error.to_string())?
+            .next()
+            .is_none()
+        {
+            fs::remove_dir(path).map_err(|error| error.to_string())?;
+        }
+    } else if !metadata.is_file() {
+        return Err("Invalid Architect rollback file".into());
+    } else {
+        let name = format!("data/{}", archive_relative_path(relative)?);
+        if !files.contains_key(&name) {
+            remove_durable(path)?;
+        }
+    }
+    Ok(())
+}
+
 fn apply(archive: &Archive, data: &Path, config: &Path) -> Result<()> {
     apply_files(archive, data, config, false)
 }
@@ -1324,28 +1362,38 @@ fn apply_files(archive: &Archive, data: &Path, config: &Path, raw: bool) -> Resu
             return Err("Restore target is a directory".into());
         }
     }
-    // Retain unrelated directories for the index's normal reclamation.
-    // Files inside an artifact being restored must match its recorded set.
-    let prefixes: BTreeSet<_> = archive
-        .files
-        .keys()
-        .filter_map(|name| architect_artifact_prefix(name))
-        .collect();
-    let mut budget = 10_000;
-    for prefix in prefixes {
-        let path = data.join(prefix.strip_prefix("data/").unwrap().trim_end_matches('/'));
-        let mut existing = BTreeMap::new();
-        collect_tree_bounded(data, &path, &mut existing, &mut budget)?;
-        for name in existing
+    if raw {
+        // Rollback can encounter both trees plus an interrupted temporary
+        // write. Compare paths without reading unfinished files or imposing
+        // the capture limit on the union of the two trees.
+        prune_rollback_artifacts(
+            data,
+            &data.join("architect-library/blueprints"),
+            &archive.files,
+        )?;
+    } else {
+        // An incoming portable backup only replaces the artifacts it contains.
+        let prefixes: BTreeSet<_> = archive
+            .files
             .keys()
-            .filter(|name| !archive.files.contains_key(*name))
-        {
-            let relative = name
-                .strip_prefix("data/")
-                .ok_or("Invalid existing Architect path")?;
-            remove_durable(&data.join(relative))?;
+            .filter_map(|name| architect_artifact_prefix(name))
+            .collect();
+        let mut budget = 10_000;
+        for prefix in prefixes {
+            let path = data.join(prefix.strip_prefix("data/").unwrap().trim_end_matches('/'));
+            let mut existing = BTreeMap::new();
+            collect_tree_bounded(data, &path, &mut existing, &mut budget)?;
+            for name in existing
+                .keys()
+                .filter(|name| !archive.files.contains_key(*name))
+            {
+                let relative = name
+                    .strip_prefix("data/")
+                    .ok_or("Invalid existing Architect path")?;
+                remove_durable(&data.join(relative))?;
+            }
+            remove_empty_checkpoint_dirs(&path)?;
         }
-        remove_empty_checkpoint_dirs(&path)?;
     }
     for suffix in ["-wal", "-shm"] {
         let path = data.join(format!("macro.db{suffix}"));
@@ -2959,6 +3007,51 @@ mod tests {
         assert!(preserved.exists());
         assert!(!dir.join("restoring.json").exists());
     }
+    #[tokio::test]
+    async fn architect_library_rollback_removes_unpublished_files_before_next_restore() {
+        let (_temp, data, config) = profile().await;
+        let original = capture_raw(&data, &config, BTreeMap::new()).unwrap();
+        let incoming = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        let dir = data.join("local-backup");
+        fs::create_dir_all(&dir).unwrap();
+        let marker = RestoreJournal {
+            phase: RestorePhase::Rollback,
+            preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()),
+        };
+        preserve_raw(&original, &preserved_path(&dir, &marker).unwrap()).unwrap();
+        atomic(
+            &dir.join("restoring.json"),
+            &serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        let introduced = data
+            .join("architect-library/blueprints")
+            .join(uuid::Uuid::new_v4().to_string())
+            .join("versions")
+            .join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&introduced).unwrap();
+        fs::write(
+            introduced.join(format!(".backup-{}", uuid::Uuid::new_v4())),
+            b"durable but unpublished",
+        )
+        .unwrap();
+
+        process_startup(&data, &config).await.unwrap();
+        assert!(!introduced.exists());
+        queue_restore(&data, &incoming);
+        process_startup(&data, &config).await.unwrap();
+        let status: BackupStatus =
+            serde_json::from_slice(&fs::read(dir.join("status.json")).unwrap()).unwrap();
+        assert_eq!(
+            status.code,
+            Some(BackupStatusCode::Restored),
+            "{}",
+            status.message
+        );
+    }
+
     #[tokio::test]
     async fn chat_admission_restore_hold_phase_does_not_reapply_rollback() {
         let (_temp, data, config) = profile().await;
