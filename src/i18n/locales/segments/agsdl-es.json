@@ -1575,7 +1575,9 @@
       "less": "Ver menos",
       "origin": "Adaptado de la versión {{number}} de «{{blueprint}}»",
       "originUnknown": "Adaptado de la versión {{number}} de otro blueprint",
-      "repairOrigin": "Procede de una versión por reparar. Corrija los puntos señalados y guarde una versión."
+      "repairOrigin": "Procede de una versión por reparar. Corrija los puntos señalados y guarde una versión.",
+      "sameAsVersion": "Borrador · igual que la versión {{number}}",
+      "saveUnchanged": "No ha cambiado nada desde la versión {{number}}."
     },
     "import": {
       "titleNamed": {

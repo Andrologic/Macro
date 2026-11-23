@@ -14,6 +14,7 @@ import { Icon } from "../ui/Icon";
 import { SpinnerIcon } from "../ui/SpinnerIcon";
 import { notify } from "../ui/toastService";
 import { ArchitectDialogShell, InfoBlock } from "./ArchitectDialogShell";
+import { useDraftMatchesVersion } from "./useDraftMatchesVersion";
 
 type Check =
   | { status: "checking" }
@@ -63,6 +64,7 @@ export function SaveVersionDialog({ blueprintId, onClose, onShow }: {
   const number = (versions.status === "ready" ? Math.max(0, ...versions.value.map(version => version.number)) : 0) + 1;
   const converting = legacyContract(session?.source);
   const conflict = !!session?.draftConflict;
+  const unchangedSince = useDraftMatchesVersion(blueprintId);
 
   // Dry run: validate what will be frozen, without writing anything.
   const revision = session?.persistedRevision;
@@ -81,7 +83,8 @@ export function SaveVersionDialog({ blueprintId, onClose, onShow }: {
 
   const blocked = check.status === "done" && check.blocking.length > 0;
   const reason = check.status === "checking" ? t("agsdl.architect.saveVersion.reasonChecking")
-    : blocked ? t("agsdl.architect.saveVersion.reasonBlocked") : conflict ? t("agsdl.library.revisionConflict") : undefined;
+    : blocked ? t("agsdl.architect.saveVersion.reasonBlocked") : conflict ? t("agsdl.library.revisionConflict")
+      : unchangedSince !== undefined && !busy ? t("agsdl.architect.header.saveUnchanged", { number: unchangedSince }) : undefined;
 
   const submit = async (launch = false) => {
     if (busy || reason || session?.saving) return;

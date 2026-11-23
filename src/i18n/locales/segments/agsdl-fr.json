@@ -1575,7 +1575,9 @@
       "less": "Voir moins",
       "origin": "Adapté de la version {{number}} de « {{blueprint}} »",
       "originUnknown": "Adapté de la version {{number}} d’un autre blueprint",
-      "repairOrigin": "Issu d’une version à réparer. Corrigez les points signalés, puis enregistrez une version."
+      "repairOrigin": "Issu d’une version à réparer. Corrigez les points signalés, puis enregistrez une version.",
+      "sameAsVersion": "Brouillon · identique à la version {{number}}",
+      "saveUnchanged": "Rien n’a changé depuis la version {{number}}."
     },
     "import": {
       "titleNamed": {

@@ -1575,7 +1575,9 @@
       "less": "간단히 보기",
       "origin": "“{{blueprint}}”의 버전 {{number}}에서 파생",
       "originUnknown": "다른 블루프린트의 버전 {{number}}에서 파생",
-      "repairOrigin": "복구가 필요한 버전에서 만들어졌습니다. 표시된 문제를 고친 뒤 버전을 저장하세요."
+      "repairOrigin": "복구가 필요한 버전에서 만들어졌습니다. 표시된 문제를 고친 뒤 버전을 저장하세요.",
+      "sameAsVersion": "초안 · 버전 {{number}}과(와) 동일",
+      "saveUnchanged": "버전 {{number}} 이후 바뀐 것이 없습니다."
     },
     "import": {
       "titleNamed": {

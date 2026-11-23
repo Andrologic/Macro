@@ -295,6 +295,42 @@ it("holds the launch settings in their own tab, saved at once, and keeps them ou
   expect(dialog.textContent).not.toContain("Require a start message");
 });
 
+it("keeps the draft's Save version button off while nothing changed since the latest version, and says why", async () => {
+  versions = [
+    { blueprintId: "bp", number: 1, revision: 0, note: null, storageState: "archive" },
+    { blueprintId: "bp", number: 2, revision: 1, note: null, storageState: "archive" },
+  ];
+  await mount();
+  const header = panel().querySelector("header")!;
+  const save = byText("button", "Save version", header)!;
+  expect(save.disabled).toBe(true);
+  expect(save.title).toBe("Nothing changed since version 2.");
+  expect(header.querySelector('[role="status"]')?.textContent).toBe("Draft · same as version 2");
+  const event = new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true });
+  await act(async () => header.dispatchEvent(event));
+  expect(useArchitectDialogStore.getState().dialog).toBeNull();
+});
+
+it("offers Save version again once the draft is ahead of the latest version", async () => {
+  versions = [{ blueprintId: "bp", number: 1, revision: 1, note: null, storageState: "archive" }];
+  await mount();
+  const save = () => byText("button", "Save version", panel().querySelector("header")!)!;
+  expect(save().disabled).toBe(true);
+  // A change made after the version: Macro's settings are saved with the draft and with each version.
+  await click(tab("Launch"));
+  const box = panel().querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+  await act(async () => box.click());
+  await flush();
+  expect(save().disabled).toBe(false);
+  expect(panel().querySelector("header")?.querySelector('[role="status"]')?.textContent).toBe("Draft · saved");
+});
+
+it("never ignores a version that cannot become an archive when comparing the draft", async () => {
+  versions = [{ blueprintId: "bp", number: 1, revision: 1, note: null, storageState: "recovery" }];
+  await mount();
+  expect(byText("button", "Save version", panel().querySelector("header")!)!.disabled).toBe(false);
+});
+
 it("keeps the location of an agent's instructions file under a collapsed detail", async () => {
   const doc = JSON.parse(source);
   doc.agents.implement.instructions = { uri: "agents/implement/instructions.md" };

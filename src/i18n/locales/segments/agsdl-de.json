@@ -1575,7 +1575,9 @@
       "less": "Weniger anzeigen",
       "origin": "Angepasst aus Version {{number}} von „{{blueprint}}“",
       "originUnknown": "Angepasst aus Version {{number}} eines anderen Blueprints",
-      "repairOrigin": "Stammt aus einer zu reparierenden Version. Beheben Sie die gemeldeten Punkte und speichern Sie dann eine Version."
+      "repairOrigin": "Stammt aus einer zu reparierenden Version. Beheben Sie die gemeldeten Punkte und speichern Sie dann eine Version.",
+      "sameAsVersion": "Entwurf · wie Version {{number}}",
+      "saveUnchanged": "Seit Version {{number}} hat sich nichts geändert."
     },
     "import": {
       "titleNamed": {

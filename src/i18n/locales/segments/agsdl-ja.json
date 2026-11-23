@@ -1575,7 +1575,9 @@
       "less": "表示を減らす",
       "origin": "「{{blueprint}}」のバージョン {{number}} から派生",
       "originUnknown": "別のブループリントのバージョン {{number}} から派生",
-      "repairOrigin": "修復が必要な版から作成されました。指摘された点を修正してから、バージョンを保存してください。"
+      "repairOrigin": "修復が必要な版から作成されました。指摘された点を修正してから、バージョンを保存してください。",
+      "sameAsVersion": "下書き · バージョン {{number}} と同じ",
+      "saveUnchanged": "バージョン {{number}} から変更はありません。"
     },
     "import": {
       "titleNamed": {

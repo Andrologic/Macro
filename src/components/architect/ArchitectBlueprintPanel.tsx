@@ -17,6 +17,7 @@ import { ArchitectFilesInspector } from "./ArchitectFilesInspector";
 import { ArchitectRecoveryCard } from "./ArchitectRecoveryCard";
 import { ArchitectViewer } from "./ArchitectViewer";
 import { LibraryReadFailure } from "./BlueprintVersionDialogs";
+import { useDraftMatchesVersion } from "./useDraftMatchesVersion";
 
 const VIEW_PANEL_ID = "architect-view-panel";
 
@@ -26,6 +27,7 @@ export function ArchitectBlueprintPanel() {
   const selectBlueprint = useArchitectLibraryStore(state => state.selectBlueprint);
   const selectVersion = useArchitectLibraryStore(state => state.selectVersion);
   const open = useArchitectDialogStore(state => state.open);
+  const unchangedSince = useDraftMatchesVersion(draft?.id ?? "");
   const draftTarget = useMemo(() => ({ blueprintId: draft?.id ?? "" }), [draft?.id]);
   const target = versionNumber === null || !draft ? draftTarget : { blueprintId: draft.id, number: versionNumber };
   const key = agsdlSessionKey(target);
@@ -37,7 +39,7 @@ export function ArchitectBlueprintPanel() {
 
   // Saving a version is the one deliberate act: the draft itself is kept by the editor.
   const saveShortcut = (event: React.KeyboardEvent) => {
-    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s" || !draft || draft.archived || recovery || versionNumber !== null) return;
+    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s" || !draft || draft.archived || recovery || versionNumber !== null || unchangedSince !== undefined) return;
     event.preventDefault();
     if (!session?.saving && !session?.draftConflict) open({ kind: "saveVersion", blueprintId: draft.id });
   };
@@ -90,6 +92,7 @@ function ArchitectPanelHeader({ draft, versionNumber, view }: { draft: Blueprint
   const selectVersion = useArchitectLibraryStore(state => state.selectVersion);
   const open = useArchitectDialogStore(state => state.open);
   const filesVisible = useArchitectViewStore(state => state.filesVisible);
+  const unchangedSince = useDraftMatchesVersion(versionNumber === null ? draft.id : "");
   const [menu, setMenu] = useState<SidebarMenuPosition>();
   const [exportMenu, setExportMenu] = useState<SidebarMenuPosition>();
   const [noteOpen, setNoteOpen] = useState(false);
@@ -108,7 +111,8 @@ function ArchitectPanelHeader({ draft, versionNumber, view }: { draft: Blueprint
   const state = versionNumber !== null ? undefined
     : draft.archived ? t("agsdl.library.archivedReadOnly")
       : session?.saving ? t("agsdl.architect.header.saving")
-        : session?.dirty ? t("agsdl.architect.header.unsaved") : t("agsdl.architect.header.saved");
+        : session?.dirty ? t("agsdl.architect.header.unsaved")
+          : unchangedSince !== undefined ? t("agsdl.architect.header.sameAsVersion", { number: unchangedSince }) : t("agsdl.architect.header.saved");
   const blocked = !!session?.saving || !!session?.draftConflict;
   const setView = (next: string) => useArchitectViewStore.getState().setView(key, next as ArchitectView);
   const tabs: Array<{ id: ArchitectView; count?: number }> = [
@@ -133,8 +137,9 @@ function ArchitectPanelHeader({ draft, versionNumber, view }: { draft: Blueprint
         </span>
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
-        {!readOnly && <Button size="sm" className="!h-7 !px-2.5 !py-0 text-xs" disabled={blocked}
-          title={blocked ? t("agsdl.architect.header.saveBlocked") : t("agsdl.architect.header.saveHint")}
+        {!readOnly && <Button size="sm" className="!h-7 !px-2.5 !py-0 text-xs" disabled={blocked || unchangedSince !== undefined}
+          title={blocked ? t("agsdl.architect.header.saveBlocked")
+            : unchangedSince !== undefined ? t("agsdl.architect.header.saveUnchanged", { number: unchangedSince }) : t("agsdl.architect.header.saveHint")}
           onClick={() => open({ kind: "saveVersion", blueprintId: draft.id })}>{t("agsdl.library.saveVersion")}</Button>}
         {missingMigrationFiles && selected && <Button size="sm" variant="secondary" className="!h-7 !px-2.5 !py-0 text-xs"
           onClick={() => void downloadOriginal({ blueprintId: draft.id, revision: session?.persistedRevision ?? selected.revision, number: versionNumber, name: draft.name })}>

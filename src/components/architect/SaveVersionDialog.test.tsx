@@ -24,7 +24,7 @@ function open(source: string, project?: ProjectView): BlueprintDraft {
     conversationId: null, history: null, document: { source, annexes: {} }, ...(project ? { project } : {}) };
   useAgsdlStore.getState().openBlueprintDocument(draft);
   useArchitectLibraryStore.setState({ blueprintId: "bp", draft, draftStatus: "idle", versionNumber: null,
-    versions: { status: "ready", value: [{ blueprintId: "bp", number: 1, revision: 1, note: null }, { blueprintId: "bp", number: 2, revision: 1, note: "x" }] } });
+    versions: { status: "ready", value: [{ blueprintId: "bp", number: 1, revision: 0, note: null }, { blueprintId: "bp", number: 2, revision: 0, note: "x" }] } });
   return draft;
 }
 
@@ -205,4 +205,15 @@ it("does not offer to save while a revision conflict is unresolved", async () =>
   await mount();
   expect(primary().disabled).toBe(true);
   expect(primary().title).toContain("changed elsewhere");
+});
+
+it("does not save a version that would be the latest one again, and says why", async () => {
+  open(modern, projectViewFixture(modern));
+  useArchitectLibraryStore.setState({ versions: { status: "ready", value: [{ blueprintId: "bp", number: 2, revision: 1, note: "x" }] } });
+  await mount();
+  expect(primary().disabled).toBe(true);
+  expect(primary().title).toBe("Nothing changed since version 2.");
+  expect(dialogText()).toContain("Nothing changed since version 2.");
+  await click(primary());
+  expect(calls.find(call => call.command === "architect_save_version")).toBeUndefined();
 });
