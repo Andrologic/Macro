@@ -1173,6 +1173,68 @@
       "activity": "New activity",
       "snoozeElapsed": "Snooze ended",
       "snoozed": "Snoozed"
+    },
+    "filter": "Filter",
+    "filterSystem": "By system",
+    "chipSystem": "System: {{name}}",
+    "chipHidden": "Hidden threads",
+    "removeFilter": "Remove filter: {{filter}}",
+    "clearFilters": "Clear filters",
+    "noResultsQuery": "No run matches “{{query}}”.",
+    "noResultsFilters": "No run matches the filters.",
+    "emptyTitle": "No runs yet.",
+    "emptyHint": "Runs you launch will appear here.",
+    "nothingWaiting": "Nothing is waiting for you.",
+    "scheduledEmpty": "No scheduled runs.",
+    "showOlder": "Show older ({{count}})",
+    "justNow": "just now",
+    "unread": "Unread",
+    "returns": "Returns {{time}}",
+    "onMachine": "on {{machine}}",
+    "rowActions": "Actions for {{name}}",
+    "threadState": {
+      "working": "working…",
+      "done": "finished",
+      "question": "waiting for your answer",
+      "approval": "waiting for your approval",
+      "interrupted": "interrupted",
+      "error": "failed",
+      "snoozed": "snoozed",
+      "activity": "new activity",
+      "snoozeElapsed": "snooze ended"
+    },
+    "menu": {
+      "openThread": "Open thread",
+      "openRun": "View run",
+      "markRead": "Mark as read",
+      "snooze": "Snooze…",
+      "editSnooze": "Change snooze…",
+      "terminate": "Terminate…"
+    },
+    "snoozeMenu": {
+      "title": "Snooze this thread",
+      "hour": "In 1 hour",
+      "beforeDeadline": "Until {{time}} (before it expires)",
+      "tonight": "This evening ({{time}})",
+      "tomorrow": "Tomorrow morning ({{time}})",
+      "monday": "Monday ({{time}})",
+      "custom": "Pick a date…",
+      "deadlineNote": "This request expires {{time}}.",
+      "deadlineWarn": "Goes past the response deadline ({{time}})."
+    },
+    "snoozeDialog": {
+      "title": "Snooze until",
+      "date": "Day",
+      "time": "Time",
+      "past": "Choose a moment in the future.",
+      "deadlineWarning": "The response deadline for this request is {{time}}, before the snooze ends. If nobody answers by then, it will expire."
+    },
+    "terminateDialog": {
+      "title": "Terminate this run?",
+      "description": "“{{run}}” will stop for good. Running agents will be stopped. The work already produced stays available. This cannot be undone.",
+      "waiting": "Some agents are waiting for your answer; their requests will be abandoned.",
+      "confirm": "Terminate run",
+      "failed": "The run could not be stopped. Try again."
     }
   },
   "run030": {

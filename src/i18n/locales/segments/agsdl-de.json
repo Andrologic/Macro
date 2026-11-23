@@ -1173,6 +1173,68 @@
       "activity": "Neue Aktivität",
       "snoozeElapsed": "Zurückstellung abgelaufen",
       "snoozed": "Zurückgestellt"
+    },
+    "filter": "Filtern",
+    "filterSystem": "Nach System",
+    "chipSystem": "System „{{name}}“",
+    "chipHidden": "Ausgeblendete Threads",
+    "removeFilter": "Filter entfernen: {{filter}}",
+    "clearFilters": "Filter zurücksetzen",
+    "noResultsQuery": "Keine Ausführung passt zu „{{query}}“.",
+    "noResultsFilters": "Keine Ausführung passt zu den Filtern.",
+    "emptyTitle": "Noch keine Ausführungen.",
+    "emptyHint": "Gestartete Ausführungen erscheinen hier.",
+    "nothingWaiting": "Nichts wartet auf Sie.",
+    "scheduledEmpty": "Keine geplanten Ausführungen.",
+    "showOlder": "Ältere anzeigen ({{count}})",
+    "justNow": "gerade eben",
+    "unread": "Ungelesen",
+    "returns": "Kehrt {{time}} zurück",
+    "onMachine": "auf {{machine}}",
+    "rowActions": "Aktionen für {{name}}",
+    "threadState": {
+      "working": "arbeitet…",
+      "done": "abgeschlossen",
+      "question": "wartet auf Ihre Antwort",
+      "approval": "wartet auf Ihre Freigabe",
+      "interrupted": "unterbrochen",
+      "error": "fehlgeschlagen",
+      "snoozed": "zurückgestellt",
+      "activity": "neue Aktivität",
+      "snoozeElapsed": "Zurückstellung abgelaufen"
+    },
+    "menu": {
+      "openThread": "Thread öffnen",
+      "openRun": "Ausführung anzeigen",
+      "markRead": "Als gelesen markieren",
+      "snooze": "Zurückstellen…",
+      "editSnooze": "Zurückstellung ändern…",
+      "terminate": "Beenden…"
+    },
+    "snoozeMenu": {
+      "title": "Diesen Thread zurückstellen",
+      "hour": "In 1 Stunde",
+      "beforeDeadline": "Bis {{time}} (vor Ablauf)",
+      "tonight": "Heute Abend ({{time}})",
+      "tomorrow": "Morgen früh ({{time}})",
+      "monday": "Montag ({{time}})",
+      "custom": "Datum wählen…",
+      "deadlineNote": "Diese Anfrage läuft am {{time}} ab.",
+      "deadlineWarn": "Überschreitet die Antwortfrist ({{time}})."
+    },
+    "snoozeDialog": {
+      "title": "Zurückstellen bis",
+      "date": "Tag",
+      "time": "Uhrzeit",
+      "past": "Wählen Sie einen Zeitpunkt in der Zukunft.",
+      "deadlineWarning": "Die Antwortfrist dieser Anfrage endet am {{time}}, vor Ende der Zurückstellung. Ohne Antwort bis dahin läuft sie ab."
+    },
+    "terminateDialog": {
+      "title": "Diese Ausführung beenden?",
+      "description": "„{{run}}“ wird endgültig angehalten. Laufende Agenten werden gestoppt. Bereits erzeugte Arbeit bleibt einsehbar. Diese Aktion kann nicht rückgängig gemacht werden.",
+      "waiting": "Einige Agenten warten auf Ihre Antwort; ihre Anfragen werden verworfen.",
+      "confirm": "Ausführung beenden",
+      "failed": "Die Ausführung konnte nicht beendet werden. Versuchen Sie es erneut."
     }
   },
   "run030": {

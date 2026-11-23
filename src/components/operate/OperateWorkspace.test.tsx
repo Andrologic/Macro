@@ -26,10 +26,16 @@ import OperateNavigator from './OperateNavigator';
 
 let root: Root | undefined;
 let host: HTMLDivElement;
+// A run is its row (`[data-operate-run]`) plus, once unfolded, the list of its threads next to it.
+const runRows = () => [...host.querySelectorAll<HTMLElement>('nav [data-operate-run]')];
+const runTitle = (row: HTMLElement) => row.querySelector<HTMLButtonElement>(':scope > button:not([aria-expanded])')!;
+const unfold = async (row: HTMLElement) => { await act(async () => row.querySelector<HTMLButtonElement>(':scope > button[aria-expanded]')!.click()); };
+const threadsOf = (row: HTMLElement) => row.parentElement!.querySelector<HTMLButtonElement>('[data-operate-open-thread]')!;
 const originalApp = useAppStore.getState();
 const originalTasks = useTaskStore.getState();
 afterEach(() => {
   act(() => root?.unmount()); host?.remove();
+  window.localStorage.clear();
   configureWorkflowRunAccess030(undefined);
   openWorkflowRun030(null);
   useAppStore.setState(originalApp);
@@ -64,11 +70,13 @@ it('restores the Implement view, filters code tasks and opens the exact run and 
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   await act(async () => root!.render(<><OperateNavigator /><OperateCenter /></>));
   expect(host.textContent).not.toContain(legacy.title);
-  const sections = [...host.querySelectorAll('nav[data-tour-id="operate-executions"] section')];
-  expect(sections).toHaveLength(3);
-  await act(async () => sections[2].querySelector('button')!.click());
+  const rows = runRows();
+  expect(rows).toHaveLength(3);
+  const emptyRow = rows.find(row => !row.querySelector(':scope > button[aria-expanded]'))!;
+  await act(async () => runTitle(emptyRow).click());
   expect(workflowRunTargetSnapshot030()).toMatchObject({ scope: { systemStartId: 'run-empty' }, conversationId: scope.conversationId });
-  await act(async () => sections[1].querySelector<HTMLButtonElement>('[data-operate-open-thread]')!.click());
+  await unfold(rows[1]);
+  await act(async () => threadsOf(rows[1]).click());
   expect(useAppStore.getState().selectedTaskId).toBe(tasks[1].id);
   expect(access.reads).toContain('run-2');
   expect(access.reads).not.toContain('run-1');
@@ -171,12 +179,12 @@ it('discovers two runs and a later human request while Operate stays mounted', a
     });
     expect(list).toHaveBeenCalledTimes(1);
     expect(list).toHaveBeenCalledWith({ persistedOnly: true });
-    expect(host.querySelectorAll('nav section')).toHaveLength(0);
+    expect(runRows()).toHaveLength(0);
     expect(workflowRunAccessSnapshot030()).toHaveLength(0);
     plans = [plan];
     runs = [first];
     await tick();
-    expect(host.querySelectorAll('nav section')).toHaveLength(1);
+    expect(runRows()).toHaveLength(1);
     expect(useTaskStore.getState().tasks.map(task => task.id)).toEqual([workflowAgentTaskId('first', 'native-instance')]);
     const registry = workflowRunAccessSnapshot030();
     stopAttention = subscribeRunAttention030(registry, i18n.getFixedT('en', 'agsdl'));
@@ -184,7 +192,7 @@ it('discovers two runs and a later human request while Operate stays mounted', a
     runs.push(second);
     await tick();
     expect(workflowRunAccessSnapshot030()).toBe(registry);
-    expect(host.querySelectorAll('nav section')).toHaveLength(2);
+    expect(runRows()).toHaveLength(2);
     expect(useTaskStore.getState().planSummaries[0]?.taskCount).toBe(2);
     expect(useTaskStore.getState().tasks.map(task => task.id)).toEqual([
       workflowAgentTaskId('first', 'native-instance'), workflowAgentTaskId('second', 'native-instance'),
@@ -211,10 +219,11 @@ it('discovers two runs and a later human request while Operate stays mounted', a
     expect(workflowRunTargetSnapshot030()).toEqual({ scope: humanScope, requestId: human.id, conversationId: scope.conversationId });
     expect(calls.filter(call => call === 'discovery')).toHaveLength(3);
 
-    const secondRun = host.querySelectorAll('nav section')[1];
-    await act(async () => secondRun.querySelector('button')!.click());
+    const secondRun = runRows()[1];
+    await act(async () => runTitle(secondRun).click());
     expect(workflowRunTargetSnapshot030()).toEqual({ scope: second.scope, conversationId: scope.conversationId });
-    await act(async () => secondRun.querySelector<HTMLButtonElement>('[data-operate-open-thread]')!.click());
+    await unfold(secondRun);
+    await act(async () => threadsOf(secondRun).click());
     expect(useAppStore.getState().selectedTaskId).toBe(secondId);
     expect(host.querySelector('details[open] button[aria-pressed=true]')?.textContent).toContain('worker');
 
@@ -263,15 +272,17 @@ it('terminates only after confirmation and shows the native terminal status', as
   try {
     host = document.createElement('div'); document.body.append(host); root = createRoot(host);
     await act(async () => root!.render(<OperateNavigator />));
-    const label = i18n.t('agsdl.inbox.terminate', { ns: 'agsdl' });
-    const findButton = (within: ParentNode, text: string) =>
-      [...within.querySelectorAll('button')].find(button => button.textContent === text)!;
-    await act(async () => findButton(host, label).click());
+    const t = (key: string) => i18n.t(`agsdl.inbox.${key}`, { ns: 'agsdl' });
+    const findButton = (within: ParentNode, selector: string, text: string) =>
+      [...within.querySelectorAll<HTMLElement>(selector)].find(item => item.textContent === text)!;
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-operate-run] button[aria-haspopup="menu"]')!.click());
+    await act(async () => findButton(document, '[role="menuitem"]', t('menu.terminate')).click());
     expect(calls).toEqual([]);
     const dialog = document.querySelector('[role="dialog"]')!;
-    await act(async () => findButton(dialog, label).click());
+    await act(async () => findButton(dialog, 'button', t('terminateDialog.confirm')).click());
     expect(calls).toEqual([{ request: { systemStartId: active.state.scope.systemStartId,
       requestId: `operate-stop:${active.state.scope.snapshotId}`, activationId: null } }]);
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-operate-section="finished"] h3 button')!.click());
     expect(host.textContent).toContain(i18n.t('agsdl.inbox.status.terminated', { ns: 'agsdl' }));
   } finally {
     removeTauriRuntimeMock();
@@ -343,7 +354,10 @@ it('loads archive run threads from an empty registry without opening the graph',
     await act(async () => { await catalogueLoaded; });
     expect(calls).toContain('runtime');
     expect(host.textContent).toContain('Archive system · Morning run');
-    const thread = host.querySelector<HTMLButtonElement>('[data-operate-open-thread]')!;
+    const [row] = runRows();
+    expect(row.closest('[data-operate-section="active"]')).not.toBeNull();
+    await unfold(row);
+    const thread = threadsOf(row);
     expect(thread.textContent).toContain('worker');
     expect(workflowRunTargetSnapshot030()).toBeNull();
     await act(async () => thread.click());

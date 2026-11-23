@@ -1173,6 +1173,68 @@
       "activity": "新しいアクティビティ",
       "snoozeElapsed": "保留期間終了",
       "snoozed": "保留中"
+    },
+    "filter": "絞り込み",
+    "filterSystem": "システム別",
+    "chipSystem": "システム: {{name}}",
+    "chipHidden": "非表示のスレッド",
+    "removeFilter": "フィルターを解除: {{filter}}",
+    "clearFilters": "フィルターをクリア",
+    "noResultsQuery": "「{{query}}」に一致する実行はありません。",
+    "noResultsFilters": "フィルターに一致する実行はありません。",
+    "emptyTitle": "実行はまだありません。",
+    "emptyHint": "起動した実行がここに表示されます。",
+    "nothingWaiting": "対応が必要なものはありません。",
+    "scheduledEmpty": "予定された実行はありません。",
+    "showOlder": "以前のものを表示 ({{count}})",
+    "justNow": "たった今",
+    "unread": "未読",
+    "returns": "{{time}} に戻る",
+    "onMachine": "{{machine}} 上",
+    "rowActions": "{{name}} の操作",
+    "threadState": {
+      "working": "作業中…",
+      "done": "完了",
+      "question": "回答を待っています",
+      "approval": "承認を待っています",
+      "interrupted": "中断",
+      "error": "エラー",
+      "snoozed": "保留中",
+      "activity": "新しいアクティビティ",
+      "snoozeElapsed": "保留期間終了"
+    },
+    "menu": {
+      "openThread": "スレッドを開く",
+      "openRun": "実行を表示",
+      "markRead": "既読にする",
+      "snooze": "後で対応…",
+      "editSnooze": "保留を変更…",
+      "terminate": "終了する…"
+    },
+    "snoozeMenu": {
+      "title": "このスレッドを後で対応",
+      "hour": "1 時間後",
+      "beforeDeadline": "{{time}} まで（期限前）",
+      "tonight": "今夜 ({{time}})",
+      "tomorrow": "明日の朝 ({{time}})",
+      "monday": "月曜日 ({{time}})",
+      "custom": "日時を選択…",
+      "deadlineNote": "この依頼は {{time}} に期限切れになります。",
+      "deadlineWarn": "回答期限 ({{time}}) を過ぎます。"
+    },
+    "snoozeDialog": {
+      "title": "保留の終了日時",
+      "date": "日付",
+      "time": "時刻",
+      "past": "未来の日時を選んでください。",
+      "deadlineWarning": "この依頼の回答期限は {{time}} で、保留の終了より前です。それまでに回答がないと期限切れになります。"
+    },
+    "terminateDialog": {
+      "title": "この実行を終了しますか？",
+      "description": "「{{run}}」は完全に停止します。実行中のエージェントも停止します。すでに作成された成果は引き続き確認できます。この操作は元に戻せません。",
+      "waiting": "回答を待っているエージェントがあります。その依頼は破棄されます。",
+      "confirm": "実行を終了する",
+      "failed": "実行を停止できませんでした。もう一度お試しください。"
     }
   },
   "run030": {

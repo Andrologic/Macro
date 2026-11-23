@@ -1173,6 +1173,68 @@
       "activity": "새 활동",
       "snoozeElapsed": "미룬 기간 종료",
       "snoozed": "미룬 항목"
+    },
+    "filter": "필터",
+    "filterSystem": "시스템별",
+    "chipSystem": "시스템: {{name}}",
+    "chipHidden": "숨겨진 스레드",
+    "removeFilter": "필터 해제: {{filter}}",
+    "clearFilters": "필터 지우기",
+    "noResultsQuery": "“{{query}}”와 일치하는 실행이 없습니다.",
+    "noResultsFilters": "필터와 일치하는 실행이 없습니다.",
+    "emptyTitle": "아직 실행이 없습니다.",
+    "emptyHint": "시작한 실행이 여기에 표시됩니다.",
+    "nothingWaiting": "처리할 항목이 없습니다.",
+    "scheduledEmpty": "예약된 실행이 없습니다.",
+    "showOlder": "이전 항목 보기 ({{count}})",
+    "justNow": "방금",
+    "unread": "읽지 않음",
+    "returns": "{{time}}에 복귀",
+    "onMachine": "{{machine}}에서",
+    "rowActions": "{{name}} 작업",
+    "threadState": {
+      "working": "작업 중…",
+      "done": "완료",
+      "question": "답변을 기다리는 중",
+      "approval": "승인을 기다리는 중",
+      "interrupted": "중단됨",
+      "error": "오류",
+      "snoozed": "미룸",
+      "activity": "새 활동",
+      "snoozeElapsed": "미룬 기간 종료"
+    },
+    "menu": {
+      "openThread": "스레드 열기",
+      "openRun": "실행 보기",
+      "markRead": "읽음으로 표시",
+      "snooze": "나중에 처리…",
+      "editSnooze": "미루기 변경…",
+      "terminate": "종료…"
+    },
+    "snoozeMenu": {
+      "title": "이 스레드 나중에 처리",
+      "hour": "1시간 후",
+      "beforeDeadline": "{{time}}까지(만료 전)",
+      "tonight": "오늘 저녁 ({{time}})",
+      "tomorrow": "내일 아침 ({{time}})",
+      "monday": "월요일 ({{time}})",
+      "custom": "날짜 선택…",
+      "deadlineNote": "이 요청은 {{time}}에 만료됩니다.",
+      "deadlineWarn": "응답 기한({{time}})을 넘깁니다."
+    },
+    "snoozeDialog": {
+      "title": "미룰 날짜와 시간",
+      "date": "날짜",
+      "time": "시간",
+      "past": "미래의 시점을 선택하세요.",
+      "deadlineWarning": "이 요청의 응답 기한은 {{time}}이며 미룬 기간이 끝나기 전입니다. 그때까지 응답이 없으면 만료됩니다."
+    },
+    "terminateDialog": {
+      "title": "이 실행을 종료할까요?",
+      "description": "“{{run}}” 실행이 완전히 중지됩니다. 실행 중인 에이전트도 중지됩니다. 이미 만들어진 작업은 계속 확인할 수 있습니다. 이 작업은 되돌릴 수 없습니다.",
+      "waiting": "답변을 기다리는 에이전트가 있습니다. 해당 요청은 취소됩니다.",
+      "confirm": "실행 종료",
+      "failed": "실행을 중지하지 못했습니다. 다시 시도하세요."
     }
   },
   "run030": {
