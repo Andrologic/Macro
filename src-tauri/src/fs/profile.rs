@@ -47,6 +47,46 @@ fn fits_path(file: usize, parent: usize, margin: usize, limit: usize) -> bool {
     file.max(parent + 1 + margin) < limit
 }
 
+pub(crate) fn create_private_root(path: &Path) -> io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)?;
+    #[cfg(unix)]
+    set_private_mode(path, true)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) fn set_private_mode(path: &Path, directory: bool) -> io::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(if directory {
+            flags | libc::O_DIRECTORY
+        } else {
+            flags
+        })
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if (directory && !metadata.is_dir()) || (!directory && !metadata.is_file()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Unexpected profile file type",
+        ));
+    }
+    let mode = if directory { 0o700 } else { 0o600 };
+    if metadata.permissions().mode() & 0o7777 != mode {
+        file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+    }
+    Ok(())
+}
+
 pub(crate) fn create_private_file(path: &Path, executable: bool) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);

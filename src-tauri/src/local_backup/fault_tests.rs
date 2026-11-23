@@ -728,3 +728,42 @@ async fn generated_profile_recovers_from_io_faults_and_process_death() {
     }
     eprintln!("{total} filesystem fault cases in {:?}", started.elapsed());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn opening_legacy_profile_restricts_root_database_and_sqlite_sidecars() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_temp, data, _) = tests::profile().await;
+    fs::set_permissions(&data, fs::Permissions::from_mode(0o775)).unwrap();
+    let writer = db::open_desktop_profile(&data).await.unwrap();
+    sqlx::query("UPDATE conversations SET title='Active WAL'")
+        .execute(&writer)
+        .await
+        .unwrap();
+    for name in ["macro.db", "macro.db-wal", "macro.db-shm"] {
+        fs::set_permissions(data.join(name), fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    fs::set_permissions(&data, fs::Permissions::from_mode(0o775)).unwrap();
+    let reopened = db::open_desktop_profile(&data).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT title FROM conversations WHERE id='conversation'")
+            .fetch_one(&reopened)
+            .await
+            .unwrap(),
+        "Active WAL"
+    );
+    assert_eq!(
+        fs::metadata(&data).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_private_tree(&data);
+    for name in ["macro.db", "macro.db-wal", "macro.db-shm"] {
+        assert_eq!(
+            fs::metadata(data.join(name)).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    reopened.close().await;
+    writer.close().await;
+}

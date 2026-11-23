@@ -145,9 +145,6 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
         .app_data_dir()
         .map_err(|_| DbError::AppDataDir)?;
 
-    // Create the directory if it doesn't exist
-    std::fs::create_dir_all(&app_dir).map_err(|e| DbError::Migration(e.to_string()))?;
-
     let pool = open_desktop_profile(&app_dir).await?;
     // A restarted producer must install a fresh authority generation locally.
     sqlx::query("UPDATE pilot_file_authorities SET active = 0")
@@ -178,6 +175,8 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
 
 /// The startup path used by init_db, exercised with real reopened SQLite pools.
 pub(crate) async fn open_desktop_profile(app_dir: &Path) -> DbResult<SqlitePool> {
+    crate::fs::profile::create_private_root(app_dir)
+        .map_err(|error| DbError::Migration(error.to_string()))?;
     let path = app_db_path(app_dir);
     // SQLite uses the database mode to create its WAL and shared-memory files.
     match crate::fs::profile::create_private_file(&path, false) {
@@ -185,6 +184,8 @@ pub(crate) async fn open_desktop_profile(app_dir: &Path) -> DbResult<SqlitePool>
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(DbError::Migration(error.to_string())),
     }
+    #[cfg(unix)]
+    harden_profile_database(app_dir)?;
     let pool = create_pool(&path).await?;
     // The Architect IPC import retries cutover and reports failures through
     // the existing Architect warning. The SQLite index remains transactional.
@@ -192,6 +193,18 @@ pub(crate) async fn open_desktop_profile(app_dir: &Path) -> DbResult<SqlitePool>
         tracing::warn!(%error, "Architect library cutover will retry");
     }
     Ok(pool)
+}
+
+#[cfg(unix)]
+fn harden_profile_database(app_dir: &Path) -> DbResult<()> {
+    for name in ["macro.db", "macro.db-wal", "macro.db-shm"] {
+        match crate::fs::profile::set_private_mode(&app_dir.join(name), false) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(DbError::Migration(error.to_string())),
+        }
+    }
+    Ok(())
 }
 
 pub(crate) async fn reconcile_runtime_after_restart(pool: &SqlitePool) -> DbResult<()> {
@@ -212,6 +225,10 @@ pub(crate) async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
 
 /// Startup restore changes schema/ownership only, not provider defaults or auth.
 pub(crate) async fn restore_admission_hold(db_path: &Path) -> DbResult<()> {
+    #[cfg(unix)]
+    if let Some(app_dir) = db_path.parent() {
+        harden_profile_database(app_dir)?;
+    }
     let pool = open_pool(db_path).await?;
     let result = chat_admission::hold_restored_profile(&pool).await;
     pool.close().await;
