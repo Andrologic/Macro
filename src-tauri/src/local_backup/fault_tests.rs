@@ -1020,6 +1020,8 @@ async fn profile_fault_assertions_detect_deliberate_mutations() {
         ("skip-rollback-pruning", "local_backup::tests::architect_library_rollback_removes_unpublished_files_before_next_restore"),
         ("ignore-recovery-error", "local_backup::qualification::unreadable_journal_blocks_profile_even_when_backup_lock_fails"),
         ("skip-member-checksum", "local_backup::qualification::damaged_preservation_blocks_recovery_and_retains_journal_for_retry"),
+        #[cfg(unix)]
+        ("reject-symlinked-profile-root", "local_backup::fault_tests::relocated_profile_opens_and_exports_through_symlinks"),
     ];
     for (mutation, test) in mutations {
         let control = child_command(test)
@@ -1029,8 +1031,9 @@ async fn profile_fault_assertions_detect_deliberate_mutations() {
             .unwrap();
         assert!(
             control.status.success(),
-            "{test} control: {}",
-            String::from_utf8_lossy(&control.stdout)
+            "{test} control: {}\n{}",
+            String::from_utf8_lossy(&control.stdout),
+            String::from_utf8_lossy(&control.stderr)
         );
         let output = child_command(test)
             .env("MACRO_TEST_PROFILE_MUTATION", mutation)
@@ -1046,6 +1049,51 @@ async fn profile_fault_assertions_detect_deliberate_mutations() {
         assert!(String::from_utf8_lossy(&output.stdout).contains(&format!("{test} ... FAILED")));
         eprintln!("Detected mutation {mutation}");
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn relocated_profile_opens_and_exports_through_symlinks() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let (temp, data, config) = tests::profile().await;
+    let linked_root = temp.path().join("linked-data");
+    symlink(&data, &linked_root).unwrap();
+    let linked_parent = temp.path().join("linked-parent");
+    symlink(temp.path(), &linked_parent).unwrap();
+    let linked_ancestor = linked_parent.join(data.file_name().unwrap());
+
+    for (index, relocated) in [&linked_root, &linked_ancestor].into_iter().enumerate() {
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o775)).unwrap();
+        let out = temp.path().join(format!("relocated-{index}.zip"));
+        create_private_root(&data.join("local-backup")).unwrap();
+        queue_export(relocated, &out);
+        process_startup(relocated, &config).await.unwrap();
+        assert_eq!(
+            status_code(&data.join("local-backup")),
+            Some(BackupStatusCode::Exported),
+            "{}",
+            fs::read_to_string(data.join("local-backup/status.json")).unwrap_or_default()
+        );
+        assert!(out.is_file());
+        let pool = db::open_desktop_profile(relocated).await.unwrap();
+        pool.close().await;
+        assert_eq!(
+            fs::metadata(&data).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    let database = data.join("macro.db");
+    let outside = temp.path().join("external.db");
+    fs::rename(&database, &outside).unwrap();
+    let external_mode = fs::metadata(&outside).unwrap().permissions().mode();
+    symlink(&outside, &database).unwrap();
+    assert!(db::open_desktop_profile(&linked_root).await.is_err());
+    assert_eq!(
+        fs::metadata(&outside).unwrap().permissions().mode(),
+        external_mode
+    );
 }
 
 #[cfg(unix)]

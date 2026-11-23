@@ -65,14 +65,23 @@ pub(crate) fn create_private_root(path: &Path) -> io::Result<()> {
 #[cfg(unix)]
 pub(crate) fn set_private_mode(path: &Path, directory: bool) -> io::Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK;
+    // The app-data root can be relocated via a symlink. Profile files
+    // inside that root still have to be regular, non-symlink files.
+    let flags = libc::O_NONBLOCK
+        | if directory {
+            libc::O_DIRECTORY
+        } else {
+            libc::O_NOFOLLOW
+        };
+    #[cfg(test)]
+    let flags = if directory && mutated("reject-symlinked-profile-root") {
+        flags | libc::O_NOFOLLOW
+    } else {
+        flags
+    };
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(if directory {
-            flags | libc::O_DIRECTORY
-        } else {
-            flags
-        })
+        .custom_flags(flags)
         .open(path)?;
     let metadata = file.metadata()?;
     if (directory && !metadata.is_dir()) || (!directory && !metadata.is_file()) {
