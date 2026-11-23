@@ -1,4 +1,9 @@
 //! Local profile archives. All profile mutations run before DB/config initialization.
+use crate::architect_library::{
+    editor_document::{portable_path, Paths},
+    storage::{self, Storage},
+};
+use crate::db::architect_library::storage_index;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -11,6 +16,7 @@ use std::{
 };
 use tauri::Manager;
 
+const ARCHITECT_FILES: &str = "data/architect-library/blueprints/";
 const LIMIT: u64 = 256 * 1024 * 1024;
 const PROVIDER_SECRETS_FILE: &str = "provider-secrets.json";
 const PROVIDER_SECRETS_RECOVERY_FILES: &[&str] = &[
@@ -42,6 +48,8 @@ type Result<T> = std::result::Result<T, String>;
 struct Entry {
     data: String,
     sha256: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    executable: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -87,6 +95,16 @@ pub enum BackupStatusCode {
 
 fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+fn entry_hash(bytes: &[u8], executable: bool) -> String {
+    if executable {
+        let mut digest = Sha256::new();
+        digest.update(b"macro-backup-executable\0");
+        digest.update(bytes);
+        format!("{:x}", digest.finalize())
+    } else {
+        hash(bytes)
+    }
 }
 fn client_key(key: &str) -> bool {
     CLIENT_KEYS.contains(&key)
@@ -140,10 +158,24 @@ fn publish_new(
     Ok(())
 }
 fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    atomic_with_mode(path, bytes, false)
+}
+
+fn atomic_with_mode(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
     let parent = path.parent().ok_or("Missing parent")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let tmp = parent.join(format!(".backup-{}", uuid::Uuid::new_v4()));
-    write_new(&tmp, bytes)?;
+    publish_new(&tmp, |file| {
+        file.write_all(bytes)?;
+        #[cfg(unix)]
+        if executable {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o700))?;
+        }
+        #[cfg(not(unix))]
+        let _ = executable;
+        Ok(())
+    })?;
     fs::rename(&tmp, path).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     fs::File::open(parent)
@@ -159,6 +191,49 @@ fn remove_durable(path: &Path) -> Result<()> {
         .map_err(|error| error.to_string())?;
     Ok(())
 }
+fn architect_artifact_prefix(name: &str) -> Option<&str> {
+    let relative = name.strip_prefix(ARCHITECT_FILES)?;
+    let mut parts = relative.splitn(4, '/');
+    let blueprint = parts.next()?;
+    let kind = parts.next()?;
+    let artifact = parts.next()?;
+    let member = parts.next()?;
+    if !storage::valid_blueprint_directory(blueprint) || !storage::canonical_uuid(artifact) {
+        return None;
+    }
+    let valid = match kind {
+        "drafts" => {
+            matches!(member, storage::SETTINGS | storage::AUTHORING)
+                || member.strip_prefix("project/").is_some_and(portable_path)
+        }
+        "versions" => matches!(
+            member,
+            "version.agsdl" | storage::SETTINGS | storage::AUTHORING
+        ),
+        "recovery" => matches!(member, storage::ORIGINAL | "diagnostics.json"),
+        _ => false,
+    };
+    valid.then(|| &name[..name.len() - member.len()])
+}
+
+fn validate_architect_paths(files: &BTreeMap<String, Entry>) -> Result<()> {
+    let mut paths = Paths::default();
+    for (name, entry) in files {
+        if name.starts_with(ARCHITECT_FILES) {
+            let prefix =
+                architect_artifact_prefix(name).ok_or("Unexpected Architect backup entry")?;
+            if !paths.reserve(name)
+                || (entry.executable && !name[prefix.len()..].starts_with("project/"))
+            {
+                return Err("Invalid Architect backup entry".into());
+            }
+        } else if entry.executable {
+            return Err("Unexpected executable backup entry".into());
+        }
+    }
+    Ok(())
+}
+
 fn destination(name: &str, data: &Path, config: &Path) -> Result<PathBuf> {
     if name.contains('\\')
         || name.contains(':')
@@ -178,6 +253,7 @@ fn destination(name: &str, data: &Path, config: &Path) -> Result<PathBuf> {
     if name == "data/macro.db"
         || name == "data/state.json"
         || name.starts_with("data/direct-checkpoints/")
+        || architect_artifact_prefix(name).is_some()
     {
         return Ok(data.join(name.strip_prefix("data/").unwrap()));
     }
@@ -346,6 +422,16 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if versions.contains(&49) {
+        let mut tx = reference.begin().await.map_err(|e| e.to_string())?;
+        storage_index::begin_cutover(&mut tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        storage_index::finish_cutover(&mut tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+    }
     if !versions.contains(&47) {
         sqlx::query("DROP TABLE architect_legacy_import")
             .execute(&reference)
@@ -508,6 +594,7 @@ async fn check_database(path: &Path) -> Result<()> {
                 | "architect_legacy_import"
                 | "architect_blueprints"
                 | "architect_versions"
+                | "architect_library_originals"
                 | "architect_version_uses"
         ) || table.starts_with("engine_")
             || table.starts_with("operate_inbox_")
@@ -641,6 +728,15 @@ async fn snapshot_database(source: &Path, target: &Path, portable: bool) -> Resu
     check_database(target).await
 }
 fn add_file(files: &mut BTreeMap<String, Entry>, name: String, bytes: Vec<u8>) -> Result<()> {
+    add_file_with_mode(files, name, bytes, false)
+}
+
+fn add_file_with_mode(
+    files: &mut BTreeMap<String, Entry>,
+    name: String,
+    bytes: Vec<u8>,
+    executable: bool,
+) -> Result<()> {
     if files.len() >= 10_000
         || files.values().map(|e| e.data.len()).sum::<usize>() + bytes.len() * 4 / 3
             > LIMIT as usize
@@ -650,11 +746,24 @@ fn add_file(files: &mut BTreeMap<String, Entry>, name: String, bytes: Vec<u8>) -
     files.insert(
         name,
         Entry {
-            sha256: hash(&bytes),
+            sha256: entry_hash(&bytes, executable),
+            executable,
             data: STANDARD.encode(bytes),
         },
     );
     Ok(())
+}
+fn archive_relative_path(path: &Path) -> Result<String> {
+    path.components()
+        .map(|component| match component {
+            Component::Normal(part) => part
+                .to_str()
+                .filter(|part| !part.contains('\\'))
+                .ok_or("Invalid backup filename".to_owned()),
+            _ => Err("Invalid backup path".into()),
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|parts| parts.join("/"))
 }
 fn collect_tree(root: &Path, path: &Path, files: &mut BTreeMap<String, Entry>) -> Result<()> {
     collect_tree_bounded(root, path, files, &mut 10_000)
@@ -677,8 +786,11 @@ fn collect_tree_bounded(
     if meta.is_symlink() {
         return Err("Symlinks are not supported in profile backups".into());
     }
-    if path.components().count() > root.components().count() + 32 {
-        return Err("Checkpoint tree exceeds depth limit".into());
+    let relative = path.strip_prefix(root).map_err(|e| e.to_string())?;
+    let architect = relative.starts_with("architect-library/blueprints");
+    let depth = if architect { 70 } else { 32 };
+    if relative.components().count() > depth {
+        return Err("Backup tree exceeds depth limit".into());
     }
     if meta.is_dir() {
         for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
@@ -690,17 +802,15 @@ fn collect_tree_bounded(
             )?;
         }
     } else {
-        add_file(
-            files,
-            format!(
-                "data/{}",
-                path.strip_prefix(root)
-                    .map_err(|e| e.to_string())?
-                    .to_string_lossy()
-                    .replace('\\', "/")
-            ),
-            read_bounded(path)?,
-        )?;
+        let name = format!("data/{}", archive_relative_path(relative)?);
+        #[cfg(unix)]
+        let executable = {
+            use std::os::unix::fs::PermissionsExt;
+            architect && meta.permissions().mode() & 0o111 != 0
+        };
+        #[cfg(not(unix))]
+        let executable = false;
+        add_file_with_mode(files, name, read_bounded(path)?, executable)?;
     }
     Ok(())
 }
@@ -795,6 +905,50 @@ fn make_state_file_portable(files: &mut BTreeMap<String, Entry>) -> Result<()> {
     entry.data = STANDARD.encode(bytes);
     Ok(())
 }
+async fn architect_references(database: &Path) -> Result<Vec<storage_index::Artifact>> {
+    let mut db = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(database)
+            .read_only(true),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    storage_index::artifact_references(&mut db)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn architect_prefix(data: &Path, artifact: &Path) -> Result<String> {
+    let path = artifact
+        .strip_prefix(data)
+        .map_err(|error| error.to_string())?;
+    Ok(format!("data/{}/", archive_relative_path(path)?))
+}
+
+async fn validate_architect_artifacts(
+    database: &Path,
+    data: &Path,
+    files: &BTreeMap<String, Entry>,
+) -> Result<()> {
+    let storage = Storage::new(data);
+    let mut expected = BTreeSet::new();
+    for artifact in architect_references(database).await? {
+        expected.insert(architect_prefix(data, &storage.artifact_path(&artifact))?);
+        storage
+            .validate_artifact(&artifact)
+            .map_err(|error| error.to_string())?;
+    }
+    let actual: BTreeSet<_> = files
+        .keys()
+        .filter_map(|name| architect_artifact_prefix(name))
+        .map(str::to_owned)
+        .collect();
+    if actual != expected {
+        return Err("Architect backup files do not match the database".into());
+    }
+    Ok(())
+}
+
 async fn capture(
     data: &Path,
     config: &Path,
@@ -805,9 +959,23 @@ async fn capture(
     validate_browser(&browser)?;
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
     let db_path = temp.path().join("macro.db");
+    let storage = Storage::new(data);
+    let _lease = storage
+        .lease(false)
+        .await
+        .map_err(|error| error.to_string())?;
     snapshot_database(&data.join("macro.db"), &db_path, portable).await?;
     let mut files = BTreeMap::new();
     add_file(&mut files, "data/macro.db".into(), read_bounded(&db_path)?)?;
+    let mut budget = 10_000;
+    for artifact in architect_references(&db_path).await? {
+        let path = storage.artifact_path(&artifact);
+        safe_parent(&path, data)?;
+        collect_tree_bounded(data, &path, &mut files, &mut budget)?;
+        storage
+            .validate_artifact(&artifact)
+            .map_err(|error| error.to_string())?;
+    }
     if data.join("state.json").exists() {
         add_file(
             &mut files,
@@ -862,6 +1030,7 @@ async fn validate(archive: &Archive) -> Result<()> {
         return Err("Incompatible profile backup".into());
     }
     validate_checkpoint_paths(&archive.files)?;
+    validate_architect_paths(&archive.files)?;
     validate_browser(&archive.browser)?;
     if archive.browser_sha256
         != hash(&serde_json::to_vec(&archive.browser).map_err(|e| e.to_string())?)
@@ -871,7 +1040,7 @@ async fn validate(archive: &Archive) -> Result<()> {
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
     let mut total = 0usize;
     for (name, entry) in &archive.files {
-        destination(name, temp.path(), temp.path())?;
+        let path = destination(name, temp.path(), temp.path())?;
         total = total
             .checked_add(entry.data.len())
             .ok_or("Backup too large")?;
@@ -879,11 +1048,14 @@ async fn validate(archive: &Archive) -> Result<()> {
             return Err("Backup too large".into());
         }
         let bytes = STANDARD.decode(&entry.data).map_err(|e| e.to_string())?;
-        if hash(&bytes) != entry.sha256 {
+        if entry_hash(&bytes, entry.executable) != entry.sha256 {
             return Err(format!("Integrity check failed for {name}"));
         }
         if name == "data/macro.db" {
             fs::write(temp.path().join("macro.db"), &bytes).map_err(|e| e.to_string())?;
+        }
+        if name.starts_with(ARCHITECT_FILES) {
+            atomic_with_mode(&path, &bytes, entry.executable)?;
         }
         if name == "data/state.json" {
             crate::state_manager::validate_backup_state(&bytes)?;
@@ -912,6 +1084,7 @@ async fn validate(archive: &Archive) -> Result<()> {
     }
     let database = temp.path().join("macro.db");
     check_database(&database).await?;
+    validate_architect_artifacts(&database, temp.path(), &archive.files).await?;
     check_database_startup(&database).await
 }
 fn raw_destination(name: &str, data: &Path, config: &Path) -> Result<PathBuf> {
@@ -941,6 +1114,7 @@ fn capture_raw(data: &Path, config: &Path, browser: BTreeMap<String, String>) ->
     for file in PROVIDER_SECRETS_RECOVERY_FILES {
         add_optional_raw(&mut files, format!("data/{file}"), &data.join(file))?;
     }
+    collect_tree(data, &data.join("architect-library/blueprints"), &mut files)?;
     let checkpoints = data.join("direct-checkpoints");
     match fs::symlink_metadata(&checkpoints) {
         Ok(_) => collect_tree(data, &checkpoints, &mut files)?,
@@ -975,6 +1149,7 @@ fn validate_raw(archive: &Archive) -> Result<()> {
         return Err("Invalid preserved profile format".into());
     }
     validate_checkpoint_paths(&archive.files)?;
+    validate_architect_paths(&archive.files)?;
     validate_browser(&archive.browser)?;
     if archive.browser_sha256
         != hash(&serde_json::to_vec(&archive.browser).map_err(|e| e.to_string())?)
@@ -991,7 +1166,7 @@ fn validate_raw(archive: &Archive) -> Result<()> {
             return Err("Preserved profile too large".into());
         }
         let bytes = STANDARD.decode(&entry.data).map_err(|e| e.to_string())?;
-        if hash(&bytes) != entry.sha256 {
+        if entry_hash(&bytes, entry.executable) != entry.sha256 {
             return Err("Preserved file checksum mismatch".into());
         }
     }
@@ -1074,6 +1249,7 @@ fn validate_profile_paths(data: &Path, config: &Path) -> Result<()> {
         "macro.db-shm",
         "state.json",
         "direct-checkpoints",
+        "architect-library/blueprints",
     ]
     .into_iter()
     .chain(PROVIDER_SECRETS_RECOVERY_FILES.iter().copied())
@@ -1119,6 +1295,7 @@ fn apply(archive: &Archive, data: &Path, config: &Path) -> Result<()> {
 fn apply_files(archive: &Archive, data: &Path, config: &Path, raw: bool) -> Result<()> {
     validate_profile_paths(data, config)?;
     validate_checkpoint_paths(&archive.files)?;
+    validate_architect_paths(&archive.files)?;
     let target = |name: &str| {
         if raw {
             raw_destination(name, data, config)
@@ -1137,9 +1314,35 @@ fn apply_files(archive: &Archive, data: &Path, config: &Path, raw: bool) -> Resu
                 config
             },
         )?;
-        if path.is_dir() && !name.starts_with("data/direct-checkpoints/") {
+        if path.is_dir()
+            && !name.starts_with("data/direct-checkpoints/")
+            && !name.starts_with(ARCHITECT_FILES)
+        {
             return Err("Restore target is a directory".into());
         }
+    }
+    // Retain unrelated directories for the index's normal reclamation.
+    // Files inside an artifact being restored must match its recorded set.
+    let prefixes: BTreeSet<_> = archive
+        .files
+        .keys()
+        .filter_map(|name| architect_artifact_prefix(name))
+        .collect();
+    let mut budget = 10_000;
+    for prefix in prefixes {
+        let path = data.join(prefix.strip_prefix("data/").unwrap().trim_end_matches('/'));
+        let mut existing = BTreeMap::new();
+        collect_tree_bounded(data, &path, &mut existing, &mut budget)?;
+        for name in existing
+            .keys()
+            .filter(|name| !archive.files.contains_key(*name))
+        {
+            let relative = name
+                .strip_prefix("data/")
+                .ok_or("Invalid existing Architect path")?;
+            remove_durable(&data.join(relative))?;
+        }
+        remove_empty_checkpoint_dirs(&path)?;
     }
     for suffix in ["-wal", "-shm"] {
         let path = data.join(format!("macro.db{suffix}"));
@@ -1182,7 +1385,11 @@ fn apply_files(archive: &Archive, data: &Path, config: &Path, raw: bool) -> Resu
     for (name, entry) in &archive.files {
         let path = target(name)?;
         let bytes = STANDARD.decode(&entry.data).map_err(|e| e.to_string())?;
-        atomic(&path, &bytes)?;
+        if name.starts_with(ARCHITECT_FILES) {
+            storage::ensure_dir(path.parent().ok_or("Missing Architect artifact parent")?)
+                .map_err(|error| error.to_string())?;
+        }
+        atomic_with_mode(&path, &bytes, entry.executable)?;
     }
     Ok(())
 }
@@ -1208,6 +1415,17 @@ async fn load_restore_archive(path: &Path) -> Result<Archive> {
         }
         let normalized = temp.path().join("normalized.db");
         snapshot_database(&temp.path().join("macro.db"), &normalized, true).await?;
+        let storage = Storage::new(temp.path());
+        let mut referenced = BTreeSet::new();
+        for artifact in architect_references(&normalized).await? {
+            referenced.insert(architect_prefix(
+                temp.path(),
+                &storage.artifact_path(&artifact),
+            )?);
+        }
+        archive.files.retain(|name, _| {
+            architect_artifact_prefix(name).is_none_or(|prefix| referenced.contains(prefix))
+        });
         archive.files.remove("data/macro.db-wal");
         archive.files.remove("data/macro.db-shm");
         archive.files.remove("data/macro.db");
@@ -1287,6 +1505,11 @@ async fn process_startup_locked(
         let mut marker: RestoreJournal =
             serde_json::from_slice(&read_bounded(&journal)?).map_err(|e| e.to_string())?;
         if marker.phase == RestorePhase::Rollback {
+            let storage = Storage::new(data);
+            let _lease = storage
+                .lease(true)
+                .await
+                .map_err(|error| error.to_string())?;
             let original = load_archive(&preserved_path(&dir, &marker)?)?;
             validate_raw(&original)?;
             apply_files(&original, data, config, true)?;
@@ -1349,6 +1572,8 @@ async fn process_startup_locked(
             write_new(Path::new(&request.path), &bytes)?;
             Ok(BackupStatus { message: String::new(), code: Some(BackupStatusCode::Exported), path: Some(request.path), browser: None })
         } else if request.operation == "restore" {
+            let storage = Storage::new(data);
+            let _lease = storage.lease(true).await.map_err(|error| error.to_string())?;
             let archive = load_restore_archive(&dir.join("incoming.json")).await?;
             let original = capture_raw(data, config, request.browser)?;
             let mut marker = RestoreJournal { preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()), phase: RestorePhase::Rollback };
@@ -3157,6 +3382,175 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn architect_library_artifacts_round_trip_with_recovery_and_executable_metadata() {
+        use crate::architect_library::{migration, storage::Storage};
+        use crate::db::architect_library::{self as library, storage_index, VersionKey};
+        let (_temp, data, config) = profile().await;
+        let path = data.join("macro.db");
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO architect_projects(id,name) VALUES ('project','Systems');
+            INSERT INTO architect_legacy_import VALUES (1,0,0);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let source = serde_json::json!({
+            "contract":"agsdl-0.4.0","id":"test-suite","title":"Étude",
+            "agents":{"reviewer":{"harness":"codex","permissions":"read-only"}},
+            "skills":{"example":{"uri":"skill/SKILL.md"}},
+            "flow":{"entry":"review","steps":{"review":{"type":"agent","agent":"reviewer"}}}
+        });
+        let envelope = serde_json::json!({
+            "source": source.to_string(),
+            "annexes":{"skill/SKILL.md":"---\nname: example\ndescription: Example\n---\n", "skill/file.sh":"example\r\n"},
+        });
+        let invalid = " {\"source\":\"{bad\",\"annexes\":{}} ";
+        sqlx::query(
+            "INSERT INTO architect_blueprints(id,project_id,name,last_number,document)
+             VALUES ('blueprint','project','Étude',1,?)",
+        )
+        .bind(envelope.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO architect_versions(blueprint_id,number,revision,note,document)
+            VALUES ('blueprint',1,1,'Recover me',?)",
+        )
+        .bind(invalid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let storage = Storage::new(&data);
+        assert!(migration::migrate(&pool, &storage).await.unwrap());
+        let draft = storage_index::draft_row(&pool, "blueprint").await.unwrap();
+        let artifact = storage_index::Artifact::from_row(&draft, "id").unwrap();
+        let script = storage
+            .artifact_path(&artifact)
+            .join("project/skill/file.sh");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        storage
+            .freeze(&pool, "blueprint".into(), 1, Some("saved".into()), None)
+            .await
+            .unwrap();
+        let version = |number| VersionKey {
+            blueprint_id: "blueprint".into(),
+            number,
+        };
+        library::record_use(
+            &pool,
+            version(2),
+            serde_json::from_value(serde_json::json!({"kind":"schedule", "ownerId":"daily"}))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        validate(&archive).await.unwrap();
+        let archived_script = archive
+            .files
+            .iter()
+            .find(|(name, _)| name.ends_with("/project/skill/file.sh"))
+            .unwrap();
+        assert_eq!(
+            STANDARD.decode(&archived_script.1.data).unwrap(),
+            b"example\r\n"
+        );
+        assert_eq!(archived_script.1.executable, cfg!(unix));
+
+        let mut incomplete = archive.clone();
+        let version_name = incomplete
+            .files
+            .keys()
+            .find(|name| name.ends_with("/version.agsdl"))
+            .unwrap()
+            .clone();
+        incomplete.files.remove(&version_name);
+        assert!(validate(&incomplete).await.is_err());
+        let mut tampered = archive.clone();
+        tampered
+            .files
+            .get_mut(archived_script.0)
+            .unwrap()
+            .executable = !archived_script.1.executable;
+        assert!(validate(&tampered).await.is_err());
+
+        pool.close().await;
+        fs::write(&script, "changed").unwrap();
+        queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+        let status: BackupStatus =
+            serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            status.code,
+            Some(BackupStatusCode::Restored),
+            "{}",
+            status.message
+        );
+        assert_eq!(fs::read(&script).unwrap(), b"example\r\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_ne!(
+                fs::metadata(&script).unwrap().permissions().mode() & 0o111,
+                0
+            );
+        }
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        let version_row = storage_index::version_row(&pool, &version(2))
+            .await
+            .unwrap();
+        let artifact = storage_index::Artifact::from_row(&version_row, "blueprint_id").unwrap();
+        let opened = storage.open_archive(&artifact).unwrap();
+        assert_eq!(
+            opened
+                .members()
+                .find(|file| file.path == "skill/file.sh")
+                .unwrap()
+                .executable,
+            cfg!(unix)
+        );
+        assert!(storage.delete_version(&pool, version(2)).await.is_err());
+        let output = data.join("original.json");
+        storage
+            .export_original(&pool, "blueprint".into(), 1, Some(1), &output)
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(output).unwrap(), invalid);
+        pool.close().await;
+
+        // The restore's raw preservation uses the same managed paths and can
+        // recover a file after an interrupted replacement.
+        let original = capture_raw(&data, &config, BTreeMap::new()).unwrap();
+        let dir = data.join("local-backup");
+        let marker = RestoreJournal {
+            preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()),
+            phase: RestorePhase::Rollback,
+        };
+        fs::write(
+            preserved_path(&dir, &marker).unwrap(),
+            serde_json::to_vec(&original).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("restoring.json"),
+            serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        fs::write(&script, "interrupted").unwrap();
+        process_startup(&data, &config).await.unwrap();
+        assert_eq!(fs::read(&script).unwrap(), b"example\r\n");
+    }
+
+    #[tokio::test]
     async fn architect_library_v45_archive_preserves_legacy_conversation_links() {
         use crate::legacy_agsdl_import::{migrate_profile, LegacyImportStatus, LegacyLocalStorage};
 
@@ -3199,6 +3593,12 @@ mod tests {
         queue_restore(&data, &archive);
         process_startup(&data, &config).await.unwrap();
         let pool = crate::db::create_pool(&path).await.unwrap();
+        let storage = Storage::new(&data);
+        assert!(
+            !crate::architect_library::migration::migrate(&pool, &storage)
+                .await
+                .unwrap()
+        );
         let local = LegacyLocalStorage::Snapshot(BTreeMap::from([(
             "macro_architect_plan:main:legacy".into(),
             serde_json::json!({"id":"legacy","agsdl":{
@@ -3206,7 +3606,7 @@ mod tests {
             }})
             .to_string(),
         )]));
-        let report = migrate_profile(&pool, Ok(vec![data]), None, local)
+        let report = migrate_profile(&pool, Ok(vec![data.clone()]), None, local)
             .await
             .unwrap();
         assert_eq!(
@@ -3216,6 +3616,14 @@ mod tests {
             report.issues
         );
         assert_eq!(report.inserted, 1);
+        assert!(
+            crate::architect_library::migration::migrate(&pool, &storage)
+                .await
+                .unwrap()
+        );
+        crate::architect_library::migration::startup(&pool, &data)
+            .await
+            .unwrap();
         assert_eq!(
             sqlx::query_scalar::<_, String>("SELECT conversation_id FROM architect_blueprints")
                 .fetch_one(&pool)
