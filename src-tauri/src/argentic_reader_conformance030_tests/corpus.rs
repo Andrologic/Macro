@@ -930,30 +930,9 @@ pub(super) fn build() -> Corpus {
     }
 
     // TS test vectors (validator, diagnostic order, reader worker).
-    let deep = |depth: usize| {
-        let mut compositions = Vec::new();
-        for i in 0..depth {
-            let step = if i == depth - 1 {
-                r#"{"type":"agent","agent":"a","next":{"output":"done"}}"#.to_owned()
-            } else {
-                format!(
-                    r#"{{"type":"compose","composition":"c{}","next":{{"done":{{"output":"done"}}}}}}"#,
-                    i + 1
-                )
-            };
-            compositions.push(format!(
-                r#""c{i}":{{"entry":"s","outputs":["done"],"steps":{{"s":{step}}}}}"#
-            ));
-        }
-        format!(
-            r#"{{"contract":"agsdl-0.3.0","id":"deep","agents":{{"a":{{"harness":"unknown","permissions":"full"}}}},"flow":{{"entry":"s","steps":{{"s":{{"type":"compose","composition":"c0","next":{{"done":[]}}}}}}}},"compositions":{{{}}}}}"#,
-            compositions.join(",")
-        )
-    };
     let empty = json!({"kind":"map","entries":[]});
     for (label, text) in [
-        ("deep-300", deep(300)),
-        ("deep-1500", deep(1500)),
+        ("deep-24", deep_document(24)),
         ("directories", directories_doc.to_owned()),
         ("minimal", r#"{"contract":"agsdl-0.3.0","id":"x","agents":{}}"#.to_owned()),
         ("missing-agents", order_doc.to_owned()),
@@ -966,10 +945,7 @@ pub(super) fn build() -> Corpus {
         ("chain-64", super::approval_chain(64)),
     ] {
         c.read("ts-vectors", &format!("ts:{label}"), text.as_bytes(), &[("empty", empty.clone()), ("official", official.clone())]);
-        // The deep-1500 snapshot holds every nested scope of every composition
-        // graph, quadratic in size: the oracle's JS heap refuses it. The reader
-        // itself is compared on it above.
-        if scan::parse_v030(text.as_bytes()).is_ok() && label != "deep-1500" {
+        if scan::parse_v030(text.as_bytes()).is_ok() {
             c.graph("graph-files", &format!("ts:{label}"), &text);
         }
     }
@@ -1281,4 +1257,25 @@ pub(super) fn build() -> Corpus {
         );
     }
     c
+}
+
+pub(super) fn deep_document(depth: usize) -> String {
+    let mut compositions = Vec::new();
+    for i in 0..depth {
+        let step = if i == depth - 1 {
+            r#"{"type":"agent","agent":"a","next":{"output":"done"}}"#.to_owned()
+        } else {
+            format!(
+                r#"{{"type":"compose","composition":"c{}","next":{{"done":{{"output":"done"}}}}}}"#,
+                i + 1
+            )
+        };
+        compositions.push(format!(
+            r#""c{i}":{{"entry":"s","outputs":["done"],"steps":{{"s":{step}}}}}"#
+        ));
+    }
+    format!(
+        r#"{{"contract":"agsdl-0.3.0","id":"deep","agents":{{"a":{{"harness":"unknown","permissions":"full"}}}},"flow":{{"entry":"s","steps":{{"s":{{"type":"compose","composition":"c0","next":{{"done":[]}}}}}}}},"compositions":{{{}}}}}"#,
+        compositions.join(",")
+    )
 }

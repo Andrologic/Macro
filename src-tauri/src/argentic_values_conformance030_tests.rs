@@ -59,7 +59,7 @@ fn schema(request: &Json) -> Json {
     let constraint = exact::scan::parse_v030(string(request, "schema").as_bytes())
         .unwrap()
         .tree;
-    if valueschema::check_shape(&constraint).is_err() {
+    if valueschema::consistency(&constraint, &[]).is_err() {
         return ok(json!({"inDomain":false}));
     }
     let value = exact::scan::parse_v030(string(request, "value").as_bytes())

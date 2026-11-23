@@ -145,6 +145,7 @@ async fn compilation_differential() {
     let mut supported = 0;
     let mut limits = 0;
     let mut manifest = vec![];
+    let mut differing_cases = Vec::new();
     for case in cases {
         let id = field(case, "id");
         let family = field(case, "family");
@@ -164,12 +165,29 @@ async fn compilation_differential() {
             .as_str()
             .expect("compilation oracle returns complete raw JSON text");
         let actual = evaluate::evaluate(op, input);
-        assert_eq!(
-            actual,
-            expected,
-            "{id} operation {op} input hash {}",
-            digest(input.as_bytes())
-        );
+        if actual != expected {
+            let difference = actual
+                .bytes()
+                .zip(expected.bytes())
+                .position(|(a, b)| a != b)
+                .unwrap_or(actual.len().min(expected.len()));
+            let excerpt = |value: &str| {
+                value
+                    .chars()
+                    .skip(
+                        value[..value.floor_char_boundary(difference)]
+                            .chars()
+                            .count(),
+                    )
+                    .take(180)
+                    .collect::<String>()
+            };
+            differing_cases.push(format!(
+                "{id} {op} at byte {difference}: native {:?}, oracle {:?}",
+                excerpt(&actual),
+                excerpt(expected)
+            ));
+        }
         let outer = codec::parse(&actual).unwrap();
         let status = outer.get("status").text().unwrap().utf8().unwrap();
         assert!(
@@ -196,6 +214,17 @@ async fn compilation_differential() {
         manifest.push(json!({"id":id,"family":family,"op":op,"inputSha256":digest(input.as_bytes()),"outputSha256":digest(actual.as_bytes())}));
     }
     oracle.close().await;
+    assert!(
+        differing_cases.is_empty(),
+        "{} differing cases:\n{}",
+        differing_cases.len(),
+        differing_cases
+            .iter()
+            .take(30)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     for (family, min) in COMPILE_MINIMUMS {
         assert!(
             counts.get(*family).copied().unwrap_or(0) >= *min,
@@ -222,4 +251,42 @@ fn native_capture_keeps_signed_zero_and_copies_utf16_data() {
     assert_eq!(captured.stringify(), r#"{"\ud800":[0,"\udc00"]}"#);
     let item = &captured.object().unwrap()[0].1.array().unwrap()[0];
     assert!(matches!(item,Value::Number(native::Number::Finite(raw))if raw=="-0"));
+}
+
+#[test]
+fn native_delivery_qualification_distinguishes_flow_editions() {
+    for (contract, flow_can_qualify) in [("agsdl-0.3.0", false), ("agsdl-0.4.0", true)] {
+        let authored = json!({"contract":contract,"id":"delivery","agents":{"worker":{"harness":"codex","permissions":"read-only"}},
+            "flow":{"entry":"work","steps":{"work":{"type":"agent","agent":"worker"}}}}).to_string();
+        for (agent, declared) in [("worker", true), ("undeclared", false)] {
+            let request = json!({
+              "source":{"owner":{"projectId":"test","planId":"test","branch":"test"},"revision":"1","sourceSha256":digest(authored.as_bytes())},
+              "authored":authored,
+              "registry":{"format":"macro-agsdl-registry/030","version":"test","modules":[],"harnesses":[],"agents":[],
+                "deliveryInput":{"agentName":agent,"messageJson":"{}"}}
+            });
+            let result: Json =
+                serde_json::from_str(&evaluate::evaluate("host", &request.to_string())).unwrap();
+            let compiled: Json = serde_json::from_str(field(&result, "json")).unwrap();
+            assert_eq!(
+                compiled["deliveryValidation"]["valid"],
+                flow_can_qualify && declared
+            );
+        }
+    }
+}
+
+#[test]
+fn native_compilation_refuses_unpaired_utf16_in_authored_text() {
+    let request = r#"{"authored":"{\"x\":\"\ud800\"}","registry":{"format":"macro-agsdl-registry/030","version":"test","modules":[],"harnesses":[],"agents":[]}}"#;
+    for operation in ["plan", "host"] {
+        let result: Json = serde_json::from_str(&evaluate::evaluate(operation, request)).unwrap();
+        let compiled: Json = serde_json::from_str(field(&result, "json")).unwrap();
+        let diagnostic = &compiled["static"]["diagnostics"][0];
+        assert_eq!(diagnostic["code"], "PARSE");
+        assert!(diagnostic["message"]
+            .as_str()
+            .unwrap()
+            .contains("unpaired UTF-16"));
+    }
 }

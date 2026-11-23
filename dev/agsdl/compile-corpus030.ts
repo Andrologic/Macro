@@ -76,6 +76,13 @@ export async function buildCompileCorpus030() {
             }
             catch { /* Invalid fixture bytes are intentionally submitted unchanged. */ }
             ;
+            // A live 0.4 flow can qualify delivery to a declared agent in the
+            // native host. That behaviour has its own Rust contract test.
+            let flow040 = false;
+            try {
+                const document = record(decode(authored));
+                flow040 = document.contract === 'agsdl-0.4.0' && document.flow != null;
+            } catch { /* The malformed fixture stays in the shared corpus. */ }
             for (const pinned of [false, true]) {
                 let input;
                 try {
@@ -86,7 +93,7 @@ export async function buildCompileCorpus030() {
                 }
                 ;
                 add(family, 'plan', input);
-                add(family, 'host', { ...input, registry: { ...input.registry, startEntry: null, deliveryInput: { agentName: 'worker', messageJson: '{"prompt":"Fixture"}' }, callInput: { inputJson: '{"value":9007199254740993}' } } });
+                add(family, 'host', { ...input, registry: { ...input.registry, startEntry: null, deliveryInput: { agentName: flow040 ? 'undeclared-in-fixture' : 'worker', messageJson: '{"prompt":"Fixture"}' }, callInput: { inputJson: '{"value":9007199254740993}' } } });
             }
         }
     }
@@ -143,7 +150,7 @@ export async function buildCompileCorpus030() {
         add('native-numbers', 'host', input, { '$number': raw });
         add('native-numbers', 'plan', input, { '$number': raw });
     }
-    for (const authored of ['{', '[]', 'true', '{"x":"\ud800"}', '{"contract":"agsdl-0.3.0","id":"test","agents":{}}', '{"a":1,"a":2}', '\ufeff{}']) {
+    for (const authored of ['{', '[]', 'true', '{"x":"�"}', '{"contract":"agsdl-0.3.0","id":"test","agents":{}}', '{"a":1,"a":2}', '\ufeff{}']) {
         const input = { ...copy(base), authored, source: source(authored) };
         for (const op of ['host', 'plan'])
             add('source-refusals', op, input);
