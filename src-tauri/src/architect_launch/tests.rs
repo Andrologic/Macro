@@ -326,6 +326,26 @@ async fn a_completion_check_that_runs_on_more_answers_needs_new_consent() {
     let mut projected = input.preview().unwrap();
     let summary = |preview: &ImportPreview| permissions(&input, preview).unwrap();
     let restricted = summary(&projected);
+    assert_eq!(
+        projected.agents["worker"]
+            .completion_check_max_failures
+            .as_deref(),
+        Some("3")
+    );
+    let mut larger_budget = input.preview().unwrap();
+    larger_budget
+        .agents
+        .get_mut("worker")
+        .unwrap()
+        .completion_check_max_failures = Some("4".into());
+    assert!(!restricted.covers(&summary(&larger_budget)));
+    assert!(summary(&larger_budget).covers(&restricted));
+    let legacy: CompletionCheck = serde_json::from_value(json!({
+        "command": "echo check",
+        "choices": ["done"],
+    }))
+    .unwrap();
+    assert!(!legacy.covers(&restricted.completion_checks["worker"]));
     projected
         .agents
         .get_mut("worker")
@@ -380,6 +400,7 @@ async fn a_completion_check_that_runs_on_more_answers_needs_new_consent() {
         .as_object_mut()
         .unwrap()
         .remove("choices");
+    doc["agents"]["worker"]["completionCheck"]["maxFailures"] = json!(4);
     let draft = storage
         .open_draft_project(&pool, &initial.blueprint_id)
         .await
@@ -416,6 +437,12 @@ async fn a_completion_check_that_runs_on_more_answers_needs_new_consent() {
     assert!(prepared.permissions.agents["worker"]
         .completion_check_choices
         .is_empty());
+    assert_eq!(
+        prepared.permissions.agents["worker"]
+            .completion_check_max_failures
+            .as_deref(),
+        Some("4")
+    );
     assert!(prepared.consent_token.is_some());
 }
 

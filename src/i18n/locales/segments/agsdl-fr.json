@@ -10,6 +10,7 @@
     "replacementModel": "Modèle de remplacement pour {{agent}}",
     "chooseModel": "Choisir un modèle",
     "completionCheck": "Macro lance cette vérification après chaque résultat soumis par l’agent.",
+    "completionCheckMaxFailures": "Limite d’échecs : {{limit}}.",
     "completionCheckChoices": "Macro exécute cette vérification après une réponse avec l’un de ces choix : {{choices}}.",
     "invalidArchive": "Macro n’a pas pu valider l’archive de la version.",
     "message": "Message de départ",

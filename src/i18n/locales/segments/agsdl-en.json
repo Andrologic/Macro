@@ -10,6 +10,7 @@
     "replacementModel": "Replacement model for {{agent}}",
     "chooseModel": "Choose a model",
     "completionCheck": "Macro runs this check after any result the agent submits.",
+    "completionCheckMaxFailures": "Failure limit {{limit}}.",
     "completionCheckChoices": "After the agent submits one of these choices: {{choices}}.",
     "invalidArchive": "Macro could not validate the version archive.",
     "message": "Start message",

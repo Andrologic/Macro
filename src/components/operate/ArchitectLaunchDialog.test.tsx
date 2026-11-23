@@ -82,7 +82,7 @@ it("shows the completion command and when it runs before sending consent", async
   current.permissions.agents.worker = {
     usage: "reachable", harness: "codex", harnessVersion: null, model: null, mcpServers: [],
     permissions: { preset: "workspace", directories: {}, outside: null, reviewer: null, rules: [] },
-    completionCheck: "echo verify", completionCheckChoices: ["done", "retry"],
+    completionCheck: "echo verify", completionCheckChoices: ["done", "retry"], completionCheckMaxFailures: "3",
   };
   const requests: LaunchRequest[] = [];
   install((command, input) => {
@@ -95,6 +95,7 @@ it("shows the completion command and when it runs before sending consent", async
   expect(requests).toEqual([]);
   expect(dialog().textContent).toContain("After the agent submits one of these choices: done, retry.");
   expect(dialog().querySelector("code")?.textContent).toBe("echo verify");
+  expect(dialog().textContent).toContain("Failure limit 3.");
   await act(async () => submit().click());
   expect(requests[0].consentToken).toBe(consentToken);
 });

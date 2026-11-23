@@ -124,6 +124,7 @@ export interface ImportPreview {
     permissions: { preset: string | null; directories: Record<string, string>; outside: string | null;
       reviewer: string | null; rules: { action: string; match: string | null; effect: string }[] };
     mcpServers: string[]; completionCheck: string | null; completionCheckChoices?: string[];
+    completionCheckMaxFailures?: string;
   }>;
   directCalls: { location: ProjectLocation; usage: Usage;
     target: { type: "shell"; command: string } | { type: "mcp"; server: string; tool: string } }[];

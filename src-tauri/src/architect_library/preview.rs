@@ -45,6 +45,8 @@ pub struct AgentRequirement {
     pub completion_check: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub completion_check_choices: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_check_max_failures: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -180,7 +182,14 @@ pub(crate) fn inspect(
             for server in &mcp_servers {
                 record_use(&mut mcp_uses, server.clone(), usage.min(Usage::Unknown));
             }
-            let mut completion_check_choices = strings(&agent["completionCheck"]["choices"]);
+            let check = &agent["completionCheck"];
+            let completion_check = optional_text(&check["command"]);
+            let completion_check_max_failures = completion_check.as_ref().map(|_| {
+                check["maxFailures"]
+                    .as_number()
+                    .map_or_else(|| "3".into(), ToString::to_string)
+            });
+            let mut completion_check_choices = strings(&check["choices"]);
             completion_check_choices.sort_unstable();
             completion_check_choices.dedup();
             (
@@ -195,8 +204,9 @@ pub(crate) fn inspect(
                     }),
                     permissions: permissions(&agent["permissions"]),
                     mcp_servers,
-                    completion_check: optional_text(&agent["completionCheck"]["command"]),
+                    completion_check,
                     completion_check_choices,
+                    completion_check_max_failures,
                 },
             )
         })

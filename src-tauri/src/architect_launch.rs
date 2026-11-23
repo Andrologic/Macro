@@ -185,11 +185,25 @@ struct Permissions {
 struct CompletionCheck {
     command: String,
     choices: BTreeSet<String>,
+    #[serde(default)]
+    max_failures: Option<String>,
 }
 
 impl CompletionCheck {
     fn covers(&self, requested: &Self) -> bool {
         self.command == requested.command
+            && self
+                .max_failures
+                .as_deref()
+                .zip(requested.max_failures.as_deref())
+                .is_some_and(|(known, requested)| {
+                    known == requested
+                        || known
+                            .parse::<u64>()
+                            .ok()
+                            .zip(requested.parse::<u64>().ok())
+                            .is_some_and(|(known, requested)| known >= requested)
+                })
             && (self.choices.is_empty()
                 || (!requested.choices.is_empty() && requested.choices.is_subset(&self.choices)))
     }
@@ -301,6 +315,7 @@ fn permissions(input: &VersionInput, preview: &ImportPreview) -> Result<Permissi
                 CompletionCheck {
                     command: command.clone(),
                     choices: agent.completion_check_choices.iter().cloned().collect(),
+                    max_failures: agent.completion_check_max_failures.clone(),
                 },
             );
         }

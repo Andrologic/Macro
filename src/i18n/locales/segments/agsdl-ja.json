@@ -10,6 +10,7 @@
     "replacementModel": "{{agent}} の代替モデル",
     "chooseModel": "モデルを選択",
     "completionCheck": "エージェントが結果を提出するたびに、Macro はこのチェックを実行します。",
+    "completionCheckMaxFailures": "失敗の上限は {{limit}} 回です。",
     "completionCheckChoices": "エージェントが次のいずれかの選択肢を提出した後に実行します：{{choices}}。",
     "invalidArchive": "Macro はバージョンのアーカイブを検証できませんでした。",
     "message": "開始メッセージ",

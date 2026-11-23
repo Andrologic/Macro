@@ -357,7 +357,10 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
                 {agent.completionCheckChoices?.length
                   ? t("agsdl.launch.completionCheckChoices", { choices: agent.completionCheckChoices.join(", ") })
                   : t("agsdl.launch.completionCheck")}{" "}
-                <code className="whitespace-pre-wrap">{agent.completionCheck}</code>
+                <code className="whitespace-pre-wrap">{agent.completionCheck}</code>{" "}
+                {agent.completionCheckMaxFailures && t("agsdl.launch.completionCheckMaxFailures", {
+                  limit: agent.completionCheckMaxFailures,
+                })}
               </p>}
               {(Object.keys(agent.permissions.directories).length > 0 || agent.permissions.rules.length > 0 || agent.permissions.outside) && <details>
                 <summary>{t("agsdl.launch.permissionDetails")}</summary>
