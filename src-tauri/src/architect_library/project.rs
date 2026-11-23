@@ -74,13 +74,12 @@ impl ImportCandidate {
         super::preview::inspect(&self.source, format, digest, history)
     }
 
-    pub fn stage_version(&self, staging_root: &Path) -> Result<archive::StagedVersion> {
-        let exact_bytes = self
-            .archive
-            .as_ref()
-            .filter(|archive| !archive.has_history)
-            .map(|archive| archive.bytes.as_slice());
-        archive::stage(staging_root, &self.source, exact_bytes)
+    pub fn stage_version(self, staging_root: &Path) -> Result<archive::StagedVersion> {
+        if let Some(archive) = self.archive.filter(|archive| !archive.has_history) {
+            drop(self.source);
+            return archive::stage_exact(archive, staging_root);
+        }
+        archive::stage_version(self.source, staging_root)
     }
 }
 

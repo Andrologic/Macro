@@ -1,5 +1,5 @@
 use super::{
-    archive::{open_version, stage_version},
+    archive::open_version,
     project::{export_project, materialize, stage_starter, ImportCandidate, MANIFEST},
     CallTarget, Error, McpTransport, ReferenceKind, Usage,
 };
@@ -123,6 +123,14 @@ fn fixture(root: &Path) {
     }
 }
 
+fn member_snapshot(source: &OpenedSource) -> Vec<(String, Vec<u8>, bool)> {
+    source
+        .selected_files()
+        .unwrap()
+        .map(|file| (file.path.to_owned(), file.bytes.to_vec(), file.executable))
+        .collect()
+}
+
 #[test]
 fn round_trip_uses_opened_bytes_and_publishes_without_replacing() {
     let temp = tempfile::tempdir().unwrap();
@@ -134,15 +142,12 @@ fn round_trip_uses_opened_bytes_and_publishes_without_replacing() {
         folder.preview().unwrap().staged_sha256,
         manifest.preview().unwrap().staged_sha256
     );
-    let original = folder
-        .source()
-        .selected_files()
-        .unwrap()
-        .collect::<Vec<_>>();
+    let original = member_snapshot(folder.source());
+    let authored = folder.source().authored_json().to_owned();
     fs::remove_dir_all(&input).unwrap();
 
     let staged = folder.stage_version(temp.path()).unwrap();
-    let second = stage_version(manifest.source(), temp.path()).unwrap();
+    let second = manifest.stage_version(temp.path()).unwrap();
     let first_bytes = fs::read(staged.directory().join("version.agsdl")).unwrap();
     assert_eq!(
         first_bytes,
@@ -165,11 +170,8 @@ fn round_trip_uses_opened_bytes_and_publishes_without_replacing() {
         Err(Error::DigestMismatch)
     ));
     let version = open_version(&published.archive_path, &published.sha256).unwrap();
-    assert_eq!(version.members().collect::<Vec<_>>(), original);
-    assert_eq!(
-        version.source().authored_json(),
-        folder.source().authored_json()
-    );
+    assert_eq!(member_snapshot(version.source()), original);
+    assert_eq!(version.source().authored_json(), authored);
 
     let export = temp.path().join("copy.agsdl");
     version.export_archive(&export).unwrap();
@@ -191,18 +193,15 @@ fn round_trip_uses_opened_bytes_and_publishes_without_replacing() {
         original.len()
     );
     let reopened = OpenedSource::open_path(&dest).unwrap();
-    assert_eq!(
-        reopened.selected_files().unwrap().collect::<Vec<_>>(),
-        original
-    );
+    assert_eq!(member_snapshot(&reopened), original);
     assert_eq!(fs::read(dest.join(SKILL_DATA)).unwrap(), b"\0\xff\n");
     assert!(!dest.join("unused.txt").exists());
     assert_eq!(
         original
             .iter()
-            .find(|file| file.path == SCRIPT)
+            .find(|(path, _, _)| path == SCRIPT)
             .unwrap()
-            .executable,
+            .2,
         cfg!(unix)
     );
 
@@ -256,6 +255,41 @@ fn exports_report_the_published_destination_when_sync_fails() {
     assert!(matches!(
         version.export_archive(&archive_destination),
         Err(Error::DestinationExists)
+    ));
+}
+
+#[test]
+fn stored_archive_can_export_from_its_private_snapshot_after_original_disappears() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    fixture(&root);
+    let artifact = ImportCandidate::open(&root)
+        .unwrap()
+        .stage_version(temp.path())
+        .unwrap()
+        .publish(temp.path())
+        .unwrap();
+    let original = fs::read(&artifact.archive_path).unwrap();
+    let version = open_version(&artifact.archive_path, &artifact.sha256).unwrap();
+    let candidate = ImportCandidate::open(&artifact.archive_path).unwrap();
+    fs::remove_file(&artifact.archive_path).unwrap();
+    let export = temp.path().join("export.agsdl");
+    version.export_archive(&export).unwrap();
+    let staged = candidate.stage_version(temp.path()).unwrap();
+    assert_eq!(fs::read(export).unwrap(), original);
+    assert_eq!(
+        fs::read(staged.directory().join("version.agsdl")).unwrap(),
+        original
+    );
+
+    let oversized = temp.path().join("too-large.agsdl");
+    fs::File::create_new(&oversized)
+        .unwrap()
+        .set_len(512 * 1024 * 1024 + 1)
+        .unwrap();
+    assert!(matches!(
+        ImportCandidate::open(&oversized),
+        Err(Error::ArchiveLimit)
     ));
 }
 
@@ -494,6 +528,7 @@ fn archive_interoperates_with_agsdl_v050_reference_tool() {
     let root = temp.path().join("source");
     fixture(&root);
     let input = ImportCandidate::open(&root).unwrap();
+    let original = member_snapshot(input.source());
     let published = input
         .stage_version(temp.path())
         .unwrap()
@@ -528,14 +563,7 @@ fn archive_interoperates_with_agsdl_v050_reference_tool() {
         &[&unpacked, &from_reference],
     );
     let packed = ImportCandidate::open(&from_reference).unwrap();
-    assert_eq!(
-        packed
-            .source()
-            .selected_files()
-            .unwrap()
-            .collect::<Vec<_>>(),
-        input.source().selected_files().unwrap().collect::<Vec<_>>()
-    );
+    assert_eq!(member_snapshot(packed.source()), original);
     let stored = packed
         .stage_version(temp.path())
         .unwrap()

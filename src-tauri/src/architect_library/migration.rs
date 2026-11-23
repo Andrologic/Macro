@@ -72,11 +72,11 @@ pub(crate) async fn migrate(pool: &SqlitePool, storage: &Storage) -> DbResult<bo
             .and_then(editor_document::split);
         let (replacement, diagnostics) = match split {
             Ok(split) => {
-                let draft = storage.stage_split(split)?;
+                let mut draft = storage.stage_split(split)?;
                 let mut diagnostics = draft.authoring.diagnostics.clone();
                 let replacement = if number == 0 {
                     Some(storage.publish_draft(&blueprint, draft)?)
-                } else if let Some(source) = &draft.source {
+                } else if let Some(source) = draft.source.take() {
                     match storage.publish_archive(
                         &blueprint,
                         source,

@@ -158,17 +158,14 @@ impl Storage {
     pub(super) fn publish_archive(
         &self,
         blueprint_id: &str,
-        source: &OpenedSource,
+        source: OpenedSource,
         root: &Path,
         settings: &MacroSettings,
         authoring: &Authoring,
     ) -> Result<Artifact> {
+        let version_authoring = authoring.for_version(root, &source)?;
         let stage = archive::stage_version(source, &self.staging()?)?;
-        sidecars(
-            stage.directory(),
-            settings,
-            &authoring.for_version(root, source)?,
-        )?;
+        sidecars(stage.directory(), settings, &version_authoring)?;
         let bucket = self.bucket(blueprint_id, StorageState::Archive);
         ensure_dir(&bucket)?;
         self.check(Failure::BeforePublish)?;
@@ -411,8 +408,11 @@ impl Storage {
         let mut converted = None;
         let artifact = if let Some(document) = edited {
             let split = editor_document::split(document).map_err(DbError::AgsdlUpgrade)?;
-            let draft = self.stage_split(split)?;
-            let source = draft.valid_source()?;
+            let mut draft = self.stage_split(split)?;
+            if draft.upgraded {
+                converted = Some(draft.document()?);
+            }
+            let source = draft.take_valid_source()?;
             let artifact = self.publish_archive(
                 &id,
                 source,
@@ -420,9 +420,6 @@ impl Storage {
                 &draft.settings,
                 &draft.authoring,
             )?;
-            if draft.upgraded {
-                converted = Some(draft.document()?);
-            }
             updated = Some(self.publish_draft(&id, draft)?);
             artifact
         } else {
@@ -437,7 +434,7 @@ impl Storage {
                 return Err(DbError::AgsdlUpgrade(authoring.diagnostics.join("\n")));
             }
             let source = OpenedSource::open_path(&root).map_err(Error::from)?;
-            self.publish_archive(&id, &source, &root, &settings, &authoring)?
+            self.publish_archive(&id, source, &root, &settings, &authoring)?
         };
         let mut writer = index::durable_writer(pool).await?;
         let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
@@ -692,9 +689,9 @@ impl PreparedDraft {
             .project_document(&self.settings, &self.root(), self.source.as_ref())
     }
 
-    fn valid_source(&self) -> DbResult<&OpenedSource> {
+    fn take_valid_source(&mut self) -> DbResult<OpenedSource> {
         self.source
-            .as_ref()
+            .take()
             .ok_or_else(|| DbError::AgsdlUpgrade(self.authoring.diagnostics.join("\n")))
     }
 }

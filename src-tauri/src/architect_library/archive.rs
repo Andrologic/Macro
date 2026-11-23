@@ -5,7 +5,7 @@ use super::{
 use argentic_runtime::source::{OpenedSource, SelectedFile};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
-use std::io::{Cursor, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -14,13 +14,43 @@ use zip::ZipArchive;
 pub const ARCHIVE_FORMAT: &str = "agsdl-archive-1";
 pub const VERSION_FILENAME: &str = "version.agsdl";
 
-// Match Argentic's compressed input bound before buffering the exact bytes.
+// Bound the streamed copy before Argentic decodes selected members.
 const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 
 pub(super) struct VerifiedArchive {
-    pub bytes: Vec<u8>,
+    snapshot: TempDir,
     pub sha256: String,
     pub has_history: bool,
+}
+
+impl VerifiedArchive {
+    fn path(&self) -> PathBuf {
+        self.snapshot.path().join(VERSION_FILENAME)
+    }
+
+    fn copy_to(&self, path: &Path) -> Result<()> {
+        let mut target = create_archive_file(path)?;
+        io::copy(&mut File::open(self.path())?, &mut target)?;
+        target.sync_all()?;
+        Ok(())
+    }
+}
+
+fn create_archive_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+fn digest(path: &Path) -> io::Result<String> {
+    let mut hash = Sha256::new();
+    io::copy(&mut File::open(path)?, &mut hash)?;
+    Ok(format!("{:x}", hash.finalize()))
 }
 
 pub(super) fn read(
@@ -56,24 +86,26 @@ pub(super) fn read(
     if metadata.len() > MAX_ARCHIVE_BYTES {
         return Err(Error::ArchiveLimit);
     }
-    let mut bytes = Vec::new();
-    file.take(MAX_ARCHIVE_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_ARCHIVE_BYTES {
+    let snapshot = private_directory(&std::env::temp_dir(), ".agsdl-archive-")?;
+    let staged_path = snapshot.path().join(VERSION_FILENAME);
+    let mut staged = create_archive_file(&staged_path)?;
+    if io::copy(&mut file.take(MAX_ARCHIVE_BYTES + 1), &mut staged)? > MAX_ARCHIVE_BYTES {
         return Err(Error::ArchiveLimit);
     }
-    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    drop(staged);
+    let sha256 = digest(&staged_path)?;
     if expected_sha256.is_some_and(|expected| expected != sha256) {
         return Err(Error::DigestMismatch);
     }
-    let source = OpenedSource::open_archive_bytes(&bytes)?;
-    // Argentic has already verified every ZIP entry, including any history.
-    let has_history = ZipArchive::new(Cursor::new(&bytes))?
+    let source = OpenedSource::open_path(&staged_path)?;
+    // Both readers use the same private file. Only Argentic retains decoded members.
+    let has_history = ZipArchive::new(File::open(&staged_path)?)?
         .index_for_name("history.bundle")
         .is_some();
     Ok((
         source,
         VerifiedArchive {
-            bytes: if has_history { Vec::new() } else { bytes },
+            snapshot,
             sha256,
             has_history,
         },
@@ -115,39 +147,33 @@ impl StagedVersion {
     }
 }
 
-/// Build a deterministic archive from a verified project source.
-pub fn stage_version(source: &OpenedSource, staging_root: &Path) -> Result<StagedVersion> {
-    stage(staging_root, source, None)
-}
-
-pub(super) fn stage(
-    staging_root: &Path,
-    source: &OpenedSource,
-    exact_archive: Option<&[u8]>,
-) -> Result<StagedVersion> {
+/// Build a deterministic archive. Drop the original decoded members before
+/// verifying the archive, so the verifier holds the only decoded selection.
+pub fn stage_version(source: OpenedSource, staging_root: &Path) -> Result<StagedVersion> {
     let directory = private_directory(staging_root, ".agsdl-version-")?;
     let path = directory.path().join(VERSION_FILENAME);
     {
-        let mut file = File::create_new(&path)?;
-        if let Some(bytes) = exact_archive {
-            file.write_all(bytes)?;
-        } else {
-            source.write_archive(&mut file)?;
-        }
+        let mut file = create_archive_file(&path)?;
+        source.write_archive(&mut file)?;
         file.sync_all()?;
     }
+    drop(source);
     OpenedSource::open_path(&path)?;
-    let mut hash = Sha256::new();
-    let mut file = File::open(&path)?;
-    std::io::copy(&mut file, &mut hash)?;
+    let sha256 = digest(&path)?;
+    Ok(StagedVersion { directory, sha256 })
+}
+
+pub(super) fn stage_exact(archive: VerifiedArchive, staging_root: &Path) -> Result<StagedVersion> {
+    let directory = private_directory(staging_root, ".agsdl-version-")?;
+    archive.copy_to(&directory.path().join(VERSION_FILENAME))?;
     Ok(StagedVersion {
         directory,
-        sha256: format!("{:x}", hash.finalize()),
+        sha256: archive.sha256,
     })
 }
 
 /// A version verified against its index digest and Argentic's inventory.
-/// Retains the exact archive bytes for export and the selected members for
+/// Keeps the exact archive on private disk for export and the selected members for
 /// read-only access or adaptation.
 pub struct VersionArchive {
     source: OpenedSource,
@@ -175,10 +201,7 @@ impl VersionArchive {
         let parent = destination_parent(destination)?;
         let staged = private_directory(parent, ".agsdl-export-")?;
         let path = staged.path().join(VERSION_FILENAME);
-        let mut file = File::create_new(&path)?;
-        file.write_all(&self.archive.bytes)?;
-        file.sync_all()?;
-        drop(file);
+        self.archive.copy_to(&path)?;
         publish_path(&path, destination)?;
         sync_publication(parent, destination)?;
         Ok(())
