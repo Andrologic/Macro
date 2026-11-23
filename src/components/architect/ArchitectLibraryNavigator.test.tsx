@@ -9,6 +9,8 @@ import { agsdlSessionKey, useAgsdlStore } from "../../stores/useAgsdlStore";
 import { useArchitectLibraryStore } from "../../stores/useArchitectLibraryStore";
 import ArchitectLibraryNavigator from "./ArchitectLibraryNavigator";
 import ArchitectStrategyPanel from "./ArchitectStrategyPanel";
+import { useArchitectDialogStore } from "../../stores/useArchitectDialogStore";
+import { useArchitectViewStore } from "../../stores/useArchitectViewStore";
 
 function libraryPort() {
   const projects = new Map<string, ArchitectProject>();
@@ -112,6 +114,8 @@ afterEach(() => {
   Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
   useArchitectLibraryStore.setState(initialLibrary);
   useAgsdlStore.setState({ sessions: {} });
+  useArchitectDialogStore.setState({ dialog: null });
+  useArchitectViewStore.setState({ views: {}, filesVisible: false });
 });
 
 async function mount(port: ReturnType<typeof libraryPort>) {
@@ -146,12 +150,14 @@ const pick = async (selector: string, value: string) => {
     select.dispatchEvent(new Event("change", { bubbles: true }));
   });
 };
-const submit = () => click('[role="dialog"] button[type="submit"]');
+const submit = () => click('[role="dialog"] button[type="submit"], [role="dialog"] footer button.is-primary');
 const panel = () => host.querySelector("aside")!;
-const projectPicker = 'nav select[aria-label="Project"]';
+const openProject = (name: string) => click(`nav section[aria-label="${name}"] button[title="${name}"]`);
+const openSave = () => buttonByText("aside header button", "Save version");
 const editDocument = () => click('aside button[aria-label="Document and definitions"]');
 const newNamed = async (action: string, name: string) => {
-  await click(`nav button[aria-label="${action}"]`);
+  await click('nav button[aria-label="New…"]');
+  await buttonByText('[role="menu"] button', action);
   await fill('[role="dialog"] input', name);
   await submit();
 };
@@ -162,7 +168,7 @@ it("creates a project without Git, saves revisioned drafts and adapts the exact 
   await mount(port);
   await newNamed("New project", "Logical project");
   const source = [...port.projects.values()].find(project => project.name === "Logical project")!;
-  expect(document.querySelector<HTMLSelectElement>(projectPicker)?.value).toBe(source.id);
+  expect(useArchitectLibraryStore.getState().projectId).toBe(source.id);
   await newNamed("New blueprint", "Original");
   const blueprint = [...port.drafts.values()][0];
   expect(blueprint.projectId).toBe(source.id);
@@ -171,7 +177,7 @@ it("creates a project without Git, saves revisioned drafts and adapts the exact 
   expect(panel().querySelector('[aria-label="Start"]')).toBeNull();
   expect(panel().querySelector('.agsdl-runs-drawer')).toBeNull();
 
-  await click('aside button[aria-label="Save version"]');
+  await openSave();
   await fill('[role="dialog"] textarea', "Initial baseline");
   await submit();
   const v1 = port.versions.get(blueprint.id)![0];
@@ -184,21 +190,21 @@ it("creates a project without Git, saves revisioned drafts and adapts the exact 
   expect(JSON.parse(port.drafts.get(blueprint.id)!.document.source).title).toBe("Edited draft document");
   expect(panel().textContent).toContain("Edited draft document");
   await click('[role="dialog"] button[aria-label="Close"]');
-  await click('aside button[aria-label="Save version"]');
+  await openSave();
   await submit();
   expect(port.versions.get(blueprint.id)?.[0]).toMatchObject({ number: 2, revision: 2, note: null });
 
-  await buttonByText('nav [aria-label="Versions"] button', "Version 1Initial baseline");
-  expect(panel().textContent).toContain("Version 1 · Read-only");
+  await buttonByText('nav [aria-label="Versions"] button', "v1Initial baseline");
+  expect(panel().textContent).toContain("Version 1 · read-only");
   expect(panel().textContent).toContain("Initial baseline");
   expect(panel().textContent).not.toContain("Edited draft document");
-  expect(panel().querySelector('[aria-label="Save version"]')).toBeNull();
+  expect(panel().textContent).not.toContain("Save version");
   await editDocument();
   expect(document.querySelector<HTMLInputElement>('[role="dialog"] input')?.disabled).toBe(true);
   expect(document.querySelector<HTMLInputElement>('[role="dialog"] input')?.value).toBe("Original");
   await click('[role="dialog"] button[aria-label="Close"]');
 
-  await click('aside button[aria-label="Adapt this version"]');
+  await buttonByText("aside header button", "Adapt");
   await pick('[role="dialog"] select', destination.id);
   await fill('[role="dialog"] input', "Copy of v1");
   await submit();
@@ -217,15 +223,16 @@ it("opens historical archives and their versions as read-only diagrams", async (
   });
   port.freeze(archived, null);
   await mount(port);
-  await pick(projectPicker, project.id);
+  await openProject(project.name);
+  await buttonByText("nav button", "Archived (1)");
   await click('nav [aria-label="Archives"] button[title="Archived system"]');
   expect(panel().textContent).toContain("Archived · Read-only");
   expect(panel().querySelectorAll(".agsdl-graph-node").length).toBeGreaterThan(0);
-  expect(panel().querySelector('[aria-label="Save version"]')).toBeNull();
+  expect(panel().textContent).not.toContain("Save version");
   expect(useArchitectLibraryStore.getState().draft?.conversationId).toBe("historical-conversation");
-  await buttonByText('nav [aria-label="Versions"] button', "Version 1");
-  expect(panel().textContent).toContain("Version 1 · Read-only");
-  expect(panel().querySelector('[aria-label="Adapt this version"]')).not.toBeNull();
+  await buttonByText('nav [aria-label="Versions"] button', "v1");
+  expect(panel().textContent).toContain("Version 1 · read-only");
+  expect([...panel().querySelectorAll("header button")].some(button => button.textContent === "Adapt")).toBe(true);
   await buttonByText("aside button", "Back to archive");
   expect(panel().textContent).toContain("Archived · Read-only");
 });
@@ -238,7 +245,7 @@ it("keeps the selected homonym when an older read completes", async () => {
   const late = Promise.withResolvers<BlueprintDraft>();
   port.delayedReads.set(first.id, late.promise);
   await mount(port);
-  await pick(projectPicker, project.id);
+  await openProject(project.name);
   await click(`nav button[title="Same name · ${first.id}"]`);
   expect(panel().querySelector('[role="status"]')).not.toBeNull();
   await click(`nav button[title="Same name · ${second.id}"]`);
@@ -254,12 +261,12 @@ it("retains local edits and refuses a new version when the stored draft revision
   const project = port.createProject("Project");
   const blueprint = port.createDraft(project.id, "Concurrent", createExampleDocument("feature"));
   await mount(port);
-  await pick(projectPicker, project.id);
+  await openProject(project.name);
   await click('nav button[title="Concurrent"]');
   port.drafts.set(blueprint.id, { ...blueprint, revision: 2 });
   const target = { blueprintId: blueprint.id };
   act(() => useAgsdlStore.getState().edit(target, [{ op: "set", path: "/title", valueJson: '"Local edits"' }]));
-  await click('aside button[aria-label="Save version"]');
+  await openSave();
   await submit();
   expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain("The draft changed elsewhere");
   expect(port.versions.get(blueprint.id)).toBeUndefined();
@@ -279,7 +286,7 @@ it("retries a transient title write failure in the same dialog", async () => {
     return invoke(command, args);
   };
   await mount(port);
-  await pick(projectPicker, project.id);
+  await openProject(project.name);
   await click('nav button[title="Original"]');
   await editDocument();
   await fill('[role="dialog"] input', "Renamed");
@@ -303,12 +310,12 @@ it("an intervening edit during save prevents versioning and survives a draft swi
     return invoke(command, args);
   };
   await mount(port);
-  await pick(projectPicker, project.id);
+  await openProject(project.name);
   await click('nav button[title="Original"]');
   const target = { blueprintId: blueprint.id };
   const rename = (name: string) => useAgsdlStore.getState().edit(target, [{ op: "set", path: "/title", valueJson: JSON.stringify(name) }]);
   act(() => rename("First edit"));
-  await click('aside button[aria-label="Save version"]');
+  await openSave();
   await submit();
   expect(useAgsdlStore.getState().sessions[agsdlSessionKey(target)].saving).toBe(true);
   act(() => rename("Second edit"));
@@ -336,7 +343,7 @@ it("requires a fresh decision after each CAS conflict and preserves edits made d
     ...blueprint, revision, document: { ...blueprint.document, source: JSON.stringify({ ...JSON.parse(blueprint.document.source), title }) },
   });
   await mount(port);
-  await pick(projectPicker, project.id);
+  await openProject(project.name);
   await click('nav button[title="Original"]');
   const release = Promise.withResolvers<BlueprintDraft>();
   port.delayedReads.set(blueprint.id, release.promise);
@@ -380,7 +387,7 @@ it("retries a failed conflict read and can adopt the saved draft without writing
     ? Promise.reject(new Error("Temporary read failure"))
     : invoke(command, args);
   await mount(port);
-  await pick(projectPicker, project.id);
+  await openProject(project.name);
   await click('nav button[title="Original"]');
   port.drafts.set(blueprint.id, { ...blueprint, revision: 2 });
   failRead = true;
@@ -406,13 +413,13 @@ it("reloads a clean draft on return from a version and keeps a dirty draft", asy
   const target = { blueprintId: blueprint.id };
   const local = () => useAgsdlStore.getState().sessions[agsdlSessionKey(target)];
   await mount(port);
-  await pick(projectPicker, project.id);
+  await openProject(project.name);
   await click('nav button[title="Original"]');
-  await buttonByText('nav [aria-label="Versions"] button', "Version 1");
+  await buttonByText('nav [aria-label="Versions"] button', "v1");
   port.drafts.set(blueprint.id, { ...blueprint, revision: 2 });
   await buttonByText("aside button", "Back to draft");
   expect(local().persistedRevision).toBe(2);
-  await buttonByText('nav [aria-label="Versions"] button', "Version 1");
+  await buttonByText('nav [aria-label="Versions"] button', "v1");
   act(() => useAgsdlStore.getState().edit(target, [{ op: "set", path: "/title", valueJson: '"Dirty draft"' }]));
   port.drafts.set(blueprint.id, { ...blueprint, revision: 3 });
   await buttonByText("aside button", "Back to draft");
@@ -427,13 +434,13 @@ it("ignores a delayed return-to-draft read after a newer version selection", asy
   port.freeze(blueprint, null);
   port.freeze(blueprint, null);
   await mount(port);
-  await pick(projectPicker, project.id);
+  await openProject(project.name);
   await click('nav button[title="Original"]');
-  await buttonByText('nav [aria-label="Versions"] button', "Version 1");
+  await buttonByText('nav [aria-label="Versions"] button', "v1");
   const release = Promise.withResolvers<BlueprintDraft>();
   port.delayedReads.set(blueprint.id, release.promise);
   await buttonByText("aside button", "Back to draft");
-  await buttonByText('nav [aria-label="Versions"] button', "Version 2");
+  await buttonByText('nav [aria-label="Versions"] button', "v2");
   await act(async () => release.resolve({ ...blueprint, revision: 2 }));
   expect(useArchitectLibraryStore.getState()).toMatchObject({ versionNumber: 2, draftStatus: "idle" });
   expect(panel().textContent).toContain("Version 2");
@@ -446,9 +453,9 @@ it("keeps a local edit made after a return-to-draft read has started", async () 
   port.freeze(blueprint, null);
   const target = { blueprintId: blueprint.id };
   await mount(port);
-  await pick(projectPicker, project.id);
+  await openProject(project.name);
   await click('nav button[title="Original"]');
-  await buttonByText('nav [aria-label="Versions"] button', "Version 1");
+  await buttonByText('nav [aria-label="Versions"] button', "v1");
   const release = Promise.withResolvers<BlueprintDraft>();
   port.delayedReads.set(blueprint.id, release.promise);
   await buttonByText("aside button", "Back to draft");
@@ -464,16 +471,16 @@ it("requires adopting the saved revision before retrying a conflicting version s
   const project = port.createProject("Project");
   const blueprint = port.createDraft(project.id, "Original", createExampleDocument("feature"));
   await mount(port);
-  await pick(projectPicker, project.id);
+  await openProject(project.name);
   await click('nav button[title="Original"]');
   port.drafts.set(blueprint.id, { ...blueprint, revision: 2 });
-  await click('aside button[aria-label="Save version"]');
+  await openSave();
   await submit();
   expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain("The draft changed elsewhere");
   expect(port.versions.get(blueprint.id)).toBeUndefined();
   await buttonByText('[role="dialog"] button', "Cancel");
   await buttonByText('aside [role="alert"] button', "Use saved draft and discard local edits");
-  await click('aside button[aria-label="Save version"]');
+  await openSave();
   await submit();
   expect(port.versions.get(blueprint.id)?.[0].revision).toBe(2);
   expect(port.writes).toEqual([]);
@@ -516,17 +523,19 @@ it("shows conversion diagnostics and keeps local edits when version saving is re
   const project = port.createProject("Project");
   const draft = port.createDraft(project.id, "Original", createExampleDocument("feature", "agsdl-0.3.0"));
   const target = { blueprintId: draft.id };
-  const diagnostic = "MESSAGE_PATH /flow/steps/collect/next/each";
+  const diagnostic = "MESSAGE_PATH /flow/steps/collect/next/each — The message is invalid";
   port.versionFailures.set(draft.id, { code: "AGSDL_UPGRADE_INVALID", message: diagnostic });
   await mount(port);
-  await pick(projectPicker, project.id);
+  await openProject(project.name);
   await click('nav button[title="Original"]');
   act(() => useAgsdlStore.getState().edit(target, [{ op: "set", path: "/title", valueJson: '"Local edits"' }]));
   const previous = useAgsdlStore.getState().sessions[agsdlSessionKey(target)];
-  await click('aside button[aria-label="Save version"]');
+  await openSave();
   await submit();
   const alert = document.querySelector('[role="dialog"] [role="alert"]');
-  expect(alert?.textContent).toContain("Fix these issues before saving an AgSDL 0.4.0 version.");
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("This system is in an older format");
+  expect(alert?.textContent).toContain("This version cannot be saved");
+  expect(alert?.textContent).toContain("Step “collect” needs fixing");
   expect(alert?.textContent).toContain(diagnostic);
   expect(useAgsdlStore.getState().sessions[agsdlSessionKey(target)]).toEqual(previous);
   expect(port.writes).toEqual([]);
@@ -542,7 +551,7 @@ it("accepts another title in the same dialog after explicit conflict overwrite",
   const release = Promise.withResolvers<BlueprintDraft>();
   const saved = { ...blueprint, revision: 2 };
   await mount(port);
-  await pick(projectPicker, project.id);
+  await openProject(project.name);
   await click('nav button[title="Original"]');
   port.drafts.set(blueprint.id, saved);
   port.delayedReads.set(blueprint.id, release.promise);
@@ -607,14 +616,18 @@ it("switches files in an archived project without exposing draft editor controls
   port.projectFileContents.set("agents/build.json", '{"instructions":"Frozen instructions"}');
   port.freeze(draft, "Native archive");
   await mount(port);
-  await pick(projectPicker, project.id);
+  await openProject(project.name);
   await click('nav button[title="Native project"]');
-  await buttonByText("nav li button span", "Version 1");
-  expect(panel().textContent).toContain("Version 1 · Read-only");
-  expect(panel().querySelector('[aria-label="Save version"]')).toBeNull();
-  await click('aside button[aria-label="Project files"]');
-  await pick('[role="dialog"] select', "agents/build.json");
-  expect(document.querySelector('[role="dialog"] pre')?.textContent).toContain("Frozen instructions");
-  expect(document.querySelector('[role="dialog"] textarea')).toBeNull();
+  await buttonByText("nav li button span", "v1");
+  expect(panel().textContent).toContain("Version 1 · read-only");
+  expect(panel().textContent).not.toContain("Save version");
+  // Files stay hidden until asked for, then open read only.
+  expect(panel().querySelector('[role="tab"][id$="files"]')).toBeNull();
+  await click('aside button[aria-label="More actions"]');
+  await click('[role="menuitemcheckbox"]');
+  await buttonByText('aside [role="tab"]', "Files");
+  await buttonByText("aside nav button", "agents/build.json");
+  expect(panel().querySelector("pre")?.textContent).toContain("Frozen instructions");
+  expect(panel().querySelector("textarea")).toBeNull();
   expect(port.writes).toEqual([]);
 });
