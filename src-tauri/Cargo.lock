@@ -93,7 +93,7 @@ dependencies = [
 [[package]]
 name = "argentic-core"
 version = "0.1.0"
-source = "git+https://github.com/Andrologic/argentic.git?rev=f8f036eb9493a5933fa03fb1b23174d973c26303#f8f036eb9493a5933fa03fb1b23174d973c26303"
+source = "git+https://github.com/Andrologic/argentic.git?rev=f76c81da65d4ee2293031042b1c626adb5fd61ac#f76c81da65d4ee2293031042b1c626adb5fd61ac"
 dependencies = [
  "regex",
  "serde",
@@ -105,7 +105,7 @@ dependencies = [
 [[package]]
 name = "argentic-runtime"
 version = "0.1.0"
-source = "git+https://github.com/Andrologic/argentic.git?rev=f8f036eb9493a5933fa03fb1b23174d973c26303#f8f036eb9493a5933fa03fb1b23174d973c26303"
+source = "git+https://github.com/Andrologic/argentic.git?rev=f76c81da65d4ee2293031042b1c626adb5fd61ac#f76c81da65d4ee2293031042b1c626adb5fd61ac"
 dependencies = [
  "argentic-core",
  "async-trait",
