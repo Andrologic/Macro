@@ -11,6 +11,7 @@ it('requests a fresh bootstrap exactly after applying and acknowledging browser 
   }});
   mock.module('./tauriIpc', () => ({
     isTauriAvailable: () => true,
+    getProfileStartupRecovery: async () => null,
     localBackupStatus: async () => ({ message: '', browser: pending ? { macro_chat_questionnaire_drafts: restored } : null }),
     localBackupAcknowledge: async () => { expect(values.get('macro_chat_questionnaire_drafts')).toBe(restored); pending = false; },
   }));
@@ -37,6 +38,7 @@ it('blocks normal startup on browser storage failure and retries before hydratio
   }});
   mock.module('./tauriIpc', () => ({
     isTauriAvailable: () => true,
+    getProfileStartupRecovery: async () => null,
     localBackupStatus: async () => ({ message: '', browser: pending ? {
       macro_chat_composer_drafts_v1: 'restored',
     } : null }),
@@ -71,4 +73,35 @@ it('blocks normal startup on browser storage failure and retries before hydratio
   await reopened.start();
   expect(events).toEqual(['configuration', 'language', 'search', 'effects', 'hydrate']);
   await reopened.stop();
+});
+
+it('shows native profile recovery before reading backup status or configuration', async () => {
+  const recovery = { diagnostics: 'synthetic error', preservedArchive: '/profile/preserved.zip' };
+  const localBackupStatus = mock(async () => ({ message: '', browser: null }));
+  mock.module('./tauriIpc', () => ({
+    isTauriAvailable: () => true,
+    getProfileStartupRecovery: async () => recovery,
+    localBackupStatus,
+  }));
+  const { restoreBackupBrowserState } = await import('./localBackup');
+  const { ProfileStartupRecoveryError } = await import('./ipc/backup');
+  const { createApplicationStartup } = await import('./applicationStartup');
+  const renderRecovery = mock((error: unknown) => {
+    expect(error).toBeInstanceOf(ProfileStartupRecoveryError);
+    expect((error as InstanceType<typeof ProfileStartupRecoveryError>).recovery).toEqual(recovery);
+  });
+  const initializeConfiguration = mock(async () => {});
+  const render = mock(() => {});
+  const startup = createApplicationStartup({
+    install: () => () => {}, restore: restoreBackupBrowserState,
+    initializeConfiguration, initializeLanguage: async () => {},
+    initializeSearch: async () => {}, installEffects: () => () => {},
+    render, renderRecovery, reload: () => {}, report: () => {},
+  });
+  await startup.start();
+  expect(renderRecovery).toHaveBeenCalledTimes(1);
+  expect(localBackupStatus).not.toHaveBeenCalled();
+  expect(initializeConfiguration).not.toHaveBeenCalled();
+  expect(render).not.toHaveBeenCalled();
+  await startup.stop();
 });

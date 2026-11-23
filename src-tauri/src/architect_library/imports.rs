@@ -44,7 +44,8 @@ pub(crate) fn inspect(app_data: PathBuf, path: &Path) -> Result<InspectedImport>
     if imports.len() == MAX_PENDING {
         return Err(Error::Editor("IMPORT_CANDIDATE_LIMIT"));
     }
-    let candidate = ImportCandidate::open(path)?;
+    let staging = super::storage::Storage::new(&app_data).inspection_staging()?;
+    let candidate = ImportCandidate::open(path, &staging)?;
     let bytes = candidate.retained_bytes()?;
     if bytes + imports.values().map(|entry| entry.bytes).sum::<u64>() > MAX_BYTES {
         return Err(Error::Editor("IMPORT_CANDIDATE_LIMIT"));
@@ -65,12 +66,28 @@ pub(crate) fn inspect(app_data: PathBuf, path: &Path) -> Result<InspectedImport>
 
 pub(crate) struct Claim {
     handle: Uuid,
-    pub candidate: Option<ImportCandidate>,
+    candidate: Option<ImportCandidate>,
+}
+
+impl Claim {
+    pub(crate) fn candidate(&self) -> &ImportCandidate {
+        self.candidate.as_ref().expect("live import claim")
+    }
+
+    pub(crate) fn commit(mut self) {
+        self.candidate = None;
+    }
 }
 
 impl Drop for Claim {
     fn drop(&mut self) {
         if let Ok(mut imports) = IMPORTS.lock() {
+            if let Some(entry) = imports.get_mut(&self.handle) {
+                if entry.expires > Instant::now() && self.candidate.is_some() {
+                    entry.candidate = self.candidate.take();
+                    return;
+                }
+            }
             imports.remove(&self.handle);
         }
     }

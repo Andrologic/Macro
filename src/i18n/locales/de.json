@@ -121,6 +121,7 @@
     }
   },
   "startup": {
+    "architectCutoverProgress": "Architect-Bibliothek wird migriert ({{completed}}/{{total}})",
     "interrupted": "Start unterbrochen",
     "failedTitle": "Macro konnte den Start nicht abschließen.",
     "failedDescription": "Macro konnte die lokalen Daten nicht initialisieren. Sie können den Vorgang sicher wiederholen.",
@@ -3333,7 +3334,7 @@
   "backup": {
     "exclusions": "Projektordner, deren Git-Verlauf und Anbieter-Zugangsdaten sind ausgeschlossen. Sichern Sie Ihre Projekte separat.",
     "limitsTitle": "Kompatibilität, Grenzen und private Daten",
-    "limits": "Maximale Größe: 256 MiB. Verwenden Sie dieselbe Macro-Version. Projektpfade bleiben unverändert; verschobene Projekte werden nicht neu zugeordnet und Profile nicht zusammengeführt.",
+    "limits": "Das Sicherungsmanifest darf bis zu 256 MiB groß sein. Architect-Dateien werden separat im Archiv gespeichert. Verwenden Sie dieselbe Macro-Version. Die Wiederherstellung behält die gespeicherten Projektpfade bei und ersetzt das gesamte Profil.",
     "exportHelp": "Lokale Daten beim nächsten Start in einem neuen Archiv speichern.",
     "restoreHelp": "Lokale Daten durch ein Archiv ersetzen. Das vorherige Profil zur Wiederherstellung behalten.",
     "desktopRequired": "Öffnen Sie Macro auf dem Desktop, um lokale Daten zu sichern oder wiederherzustellen.",
@@ -3355,6 +3356,12 @@
     "runtimeUnavailableTitle": "Desktop-Laufzeit nicht verfügbar",
     "runtimeUnavailableHint": "Macro wird neu gestartet oder läuft nicht. Versuche es erneut, sobald die Desktop-Laufzeit bereit ist.",
     "startupTitle": "Profilwiederherstellung erforderlich",
+    "nativeRecoveryHint": "Macro hat das Öffnen des lokalen Profils ausgesetzt, weil die Wiederherstellung nicht abgeschlossen werden konnte. Starten Sie Macro erneut, um die Wiederherstellung fortzusetzen.",
+    "revealPreservedArchive": "Gesichertes Archiv anzeigen",
+    "revealRecoveryFolder": "Wiederherstellungsordner öffnen",
+    "copyDiagnostics": "Diagnose kopieren",
+    "diagnosticsCopied": "Diagnose kopiert.",
+    "recoveryActionFailed": "Die Aktion ist fehlgeschlagen. Prüfen Sie die Diagnosedetails.",
     "startupRecovery": "Die Wiederherstellung der Browserdaten konnte nicht abgeschlossen werden. Das native Wiederherstellungsarchiv bleibt erhalten. Prüfen Sie die Diagnose, geben Sie bei Bedarf lokalen Speicher frei und starten Sie Macro erneut.",
     "title": "Sicherung und Wiederherstellung",
     "scope": "Lokale Macro-Daten: Unterhaltungen, gespeicherte Anhänge, Code-Checkpoints, Entwürfe, wartende Anweisungen, Wiederherstellungsantworten und allgemeine Einstellungen.",

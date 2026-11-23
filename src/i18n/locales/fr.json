@@ -121,6 +121,7 @@
     }
   },
   "startup": {
+    "architectCutoverProgress": "Migration de la bibliothèque Architect ({{completed}}/{{total}})",
     "interrupted": "Démarrage interrompu",
     "failedTitle": "Macro n’a pas pu terminer son démarrage.",
     "failedDescription": "Macro n’a pas pu initialiser ses données locales. Vous pouvez réessayer sans risque.",
@@ -3338,7 +3339,7 @@
     "desktopRequired": "Ouvrez Macro sur ordinateur pour sauvegarder ou restaurer ses données locales.",
     "restoreHelp": "Remplacer les données locales par une archive. Conserver le profil précédent pour récupération.",
     "exportHelp": "Enregistrer les données locales dans une nouvelle archive au prochain démarrage.",
-    "limits": "Taille maximale : 256 Mio. Restaurez avec la même version de Macro. Les chemins des projets restent ceux enregistrés ; la restauration ne réassocie pas les projets déplacés et ne fusionne pas les profils.",
+    "limits": "Le manifeste de sauvegarde peut atteindre 256 Mio. Les fichiers Architect sont stockés séparément dans l’archive. Restaurez avec la même version de Macro. La restauration conserve les chemins enregistrés des projets et remplace le profil entier.",
     "limitsTitle": "Compatibilité, limites et données privées",
     "exclusions": "Les dossiers des projets et leur historique Git sont exclus, ainsi que les identifiants des fournisseurs. Conservez une copie séparée de vos projets.",
     "title": "Sauvegarde et restauration",
@@ -3366,6 +3367,12 @@
     "runtimeUnavailableTitle": "Moteur de bureau indisponible",
     "runtimeUnavailableHint": "Macro redémarre ou n’est pas lancé. Réessayez lorsque le moteur de bureau est prêt.",
     "startupTitle": "Récupération du profil nécessaire",
+    "nativeRecoveryHint": "Macro a suspendu l’ouverture du profil local, car la récupération a échoué. Réessayez pour redémarrer Macro et reprendre la récupération.",
+    "revealPreservedArchive": "Afficher l’archive conservée",
+    "revealRecoveryFolder": "Ouvrir le dossier de récupération",
+    "copyDiagnostics": "Copier le diagnostic",
+    "diagnosticsCopied": "Diagnostic copié.",
+    "recoveryActionFailed": "L’action a échoué. Consultez le diagnostic.",
     "startupRecovery": "La restauration des données du navigateur n’a pas pu se terminer. L’archive native de récupération est conservée. Consultez le diagnostic, libérez du stockage local si nécessaire, puis redémarrez Macro pour réessayer."
   }
 }

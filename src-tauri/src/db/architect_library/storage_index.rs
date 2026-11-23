@@ -5,7 +5,7 @@ pub(crate) const VERSION: i64 = 49;
 pub(crate) const NAME: &str = "049_architect_library_artifacts";
 const MIGRATION: &str = include_str!("../migrations/049_architect_library_artifacts.sql");
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum StorageState {
     Draft,
     Archive,
@@ -31,7 +31,7 @@ impl StorageState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Artifact {
     pub blueprint_id: String,
     pub id: Uuid,
@@ -287,10 +287,14 @@ pub(crate) async fn original(
 ) -> DbResult<Option<Artifact>> {
     let row = sqlx::query(
         "SELECT blueprint_id,artifact_id,'recovery' AS storage_state,NULL AS archive_sha256
-         FROM architect_library_originals WHERE blueprint_id=? AND version_number=? AND revision=?",
+         FROM architect_library_originals
+         WHERE blueprint_id=? AND version_number=? AND
+             (revision=? OR (version_number=0 AND revision<=?))
+         ORDER BY revision DESC LIMIT 1",
     )
     .bind(blueprint_id)
     .bind(number)
+    .bind(revision)
     .bind(revision)
     .fetch_optional(pool)
     .await?;

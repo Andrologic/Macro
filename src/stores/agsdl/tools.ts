@@ -256,9 +256,7 @@ async function handleProjectToolRequest(params: AgsdlToolCall, target: Blueprint
       throw new AgsdlAuthoringRefusal("Use file_operations and optional macro_settings to edit a project.");
     const operations = projectOperations(args.file_operations);
     const settings = projectSettingsPatch(args.macro_settings);
-    await store().applyProjectBatch(target, operations, settings, session.version, params.isCurrent);
-    if (!params.isCurrent()) throw new AgsdlAuthoringRefusal("The authoring turn has ended.");
-    await store().save(target);
+    await store().applyProjectBatch(target, operations, settings, session.version, params.isCurrent, true);
     const response: Record<string, unknown> = { ...baseFor(), section: "project_diagnostics" };
     addBounded(response, "diagnostics", current().project?.view.diagnostics, "project_diagnostics");
     return JSON.stringify(response);

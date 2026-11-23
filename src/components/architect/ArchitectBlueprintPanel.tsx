@@ -12,6 +12,7 @@ import { Icon } from "../ui/Icon";
 import { SidebarMenu, type SidebarMenuPosition } from "../ui/SidebarMenu";
 import { Tabs, TabsList, TabsTrigger } from "../ui/Tabs";
 import { cn } from "../../utils/cn";
+import { downloadOriginal } from "./architectLibraryActions";
 import { ArchitectFilesInspector } from "./ArchitectFilesInspector";
 import { ArchitectRecoveryCard } from "./ArchitectRecoveryCard";
 import { ArchitectViewer } from "./ArchitectViewer";
@@ -98,6 +99,8 @@ function ArchitectPanelHeader({ draft, versionNumber, view }: { draft: Blueprint
   const inventory = useMemo(() => source ? projectInventory(source) : null, [source]);
   const record = version.status === "ready" ? version.value : undefined;
   const note = versionNumber !== null ? record?.note : undefined;
+  const selected = versionNumber === null ? draft : record;
+  const missingMigrationFiles = (session?.project?.saved ?? selected?.project)?.diagnostics.some(issue => issue.code === "MIGRATION_RESOURCE");
   const createdAt = versionNumber !== null && record?.createdAt && !Number.isNaN(Date.parse(record.createdAt))
     ? new Intl.DateTimeFormat(i18n.language, { day: "numeric", month: "short" }).format(new Date(record.createdAt)) : undefined;
   const originName = draft.origin ? Object.values(projectBlueprints).flatMap(read => read.status === "ready" ? read.value : [])
@@ -132,6 +135,9 @@ function ArchitectPanelHeader({ draft, versionNumber, view }: { draft: Blueprint
         {!readOnly && <Button size="sm" className="!h-7 !px-2.5 !py-0 text-xs" disabled={blocked}
           title={blocked ? t("agsdl.architect.header.saveBlocked") : t("agsdl.architect.header.saveHint")}
           onClick={() => open({ kind: "saveVersion", blueprintId: draft.id })}>{t("agsdl.library.saveVersion")}</Button>}
+        {missingMigrationFiles && selected && <Button size="sm" variant="secondary" className="!h-7 !px-2.5 !py-0 text-xs"
+          onClick={() => void downloadOriginal({ blueprintId: draft.id, revision: session?.persistedRevision ?? selected.revision, number: versionNumber, name: draft.name })}>
+          {t("agsdl.library.downloadOriginal")}</Button>}
         {versionNumber !== null && <>
           <Button size="sm" variant="secondary" className="!h-7 !px-2.5 !py-0 text-xs" leftIcon={<Icon name="copy" size={12} />}
             onClick={() => open({ kind: "adapt", source: { kind: "version", key: { blueprintId: draft.id, number: versionNumber } }, name: draft.name, projectId: draft.projectId, repair: false })}>

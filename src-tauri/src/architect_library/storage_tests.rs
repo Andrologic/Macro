@@ -295,7 +295,10 @@ async fn native_publication_recovers_failures_and_serializes_save_freeze_and_del
         assert_eq!(retained, original);
     }
     let storage = Storage::new(data);
-    assert!(migration::migrate(&pool, &storage).await.unwrap());
+    // BeforeCommit retained a whole plan. A retry can finish even if every
+    // attempted artifact publication would fail.
+    let no_publication = Storage::new(data).with_failure(Failure::BeforePublish);
+    assert!(migration::migrate(&pool, &no_publication).await.unwrap());
     let initial = draft_artifact(&pool).await;
     for failure in [
         Failure::BeforePublish,
@@ -481,7 +484,7 @@ async fn executable_archive_members_survive_adaptation_and_freeze_without_unix_m
     let recovery = index::draft_row(&pool, adapted).await.unwrap();
     let recovery = Artifact::from_row(&recovery, "id").unwrap();
     assert_eq!(recovery.state, StorageState::Recovery);
-    storage.validate_artifact(&recovery).unwrap();
+    storage.validate_artifact(&recovery, None).unwrap();
 
     storage
         .save_draft(&pool, adapted.into(), 2, editor("Repaired"))
@@ -684,23 +687,41 @@ async fn import_and_exports_share_staged_bytes_and_keep_opaque_files_native() {
     .unwrap();
     fs::write(folder.join("skill/binary"), [0xff, 0x00]).unwrap();
     fs::write(folder.join("skill/oversized"), vec![b'x'; TEXT_LIMIT + 1]).unwrap();
+    fs::write(folder.join("skill/boundary"), vec![b'x'; TEXT_LIMIT]).unwrap();
 
     let preview = imports::inspect(data.clone(), &manifest).unwrap();
     assert_eq!(preview.preview.title.as_deref(), Some("Staged"));
     fs::write(&manifest, b"unrelated new bytes").unwrap();
-    let mut claim = imports::take(&data, preview.handle).unwrap();
-    let candidate = claim.candidate.take().unwrap();
+    let claim = imports::take(&data, preview.handle).unwrap();
     assert!(imports::take(&data, preview.handle).is_err());
+    assert!(storage
+        .import_project(&pool, "project", &"x".repeat(1025), claim.candidate())
+        .await
+        .is_err());
+    drop(claim);
+    let claim = imports::take(&data, preview.handle).unwrap();
     let imported = storage
-        .import_project(&pool, "project", "Imported folder", candidate)
+        .import_project(&pool, "project", "Imported folder", claim.candidate())
         .await
         .unwrap();
-    drop(claim);
+    claim.commit();
+    assert!(imports::take(&data, preview.handle).is_err());
     let id = imported.draft.summary.id;
     assert!(imported.version.is_none());
     let revision = imported.draft.project.revision;
     let projection = imported.draft.project.projection.unwrap();
     assert!(projection.source.contains("Staged"));
+    let error = storage
+        .edit_project(
+            &pool,
+            &id,
+            revision,
+            batch(json!({"files": [{"kind": "remove", "path": "skill/boundary"}]})),
+            true,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("EDITOR_LIMIT"));
 
     for path in ["skill/binary", "skill/oversized"] {
         let target = ProjectTarget::Draft {
@@ -731,6 +752,17 @@ async fn import_and_exports_share_staged_bytes_and_keep_opaque_files_native() {
     }
 
     let exported = temp.path().join("exported-project");
+    let revision = storage
+        .edit_project(
+            &pool,
+            &id,
+            revision,
+            batch(json!({"files": [{"kind": "write", "path": "unreferenced.md", "text": "Draft-only notes"}]})),
+            true,
+        )
+        .await
+        .unwrap()
+        .revision;
     assert_eq!(
         storage
             .export_project(
@@ -743,7 +775,11 @@ async fn import_and_exports_share_staged_bytes_and_keep_opaque_files_native() {
             )
             .await
             .unwrap(),
-        4
+        6
+    );
+    assert_eq!(
+        fs::read_to_string(exported.join("unreferenced.md")).unwrap(),
+        "Draft-only notes"
     );
     let exported_preview = imports::inspect(data.clone(), &exported).unwrap();
     assert_eq!(
@@ -760,6 +796,19 @@ async fn import_and_exports_share_staged_bytes_and_keep_opaque_files_native() {
         blueprint_id: id,
         number: 1,
     };
+    let exported_version = temp.path().join("exported-version");
+    assert_eq!(
+        storage
+            .export_project(
+                &pool,
+                ProjectTarget::Version { key: key.clone() },
+                &exported_version
+            )
+            .await
+            .unwrap(),
+        5
+    );
+    assert!(!exported_version.join("unreferenced.md").exists());
     let archive = temp.path().join("first.agsdl");
     storage
         .export_version_archive(&pool, &key, &archive)
@@ -768,16 +817,12 @@ async fn import_and_exports_share_staged_bytes_and_keep_opaque_files_native() {
     let bytes = fs::read(&archive).unwrap();
     let staged = imports::inspect(data.clone(), &archive).unwrap();
     fs::remove_file(&archive).unwrap();
-    let mut claim = imports::take(&data, staged.handle).unwrap();
+    let claim = imports::take(&data, staged.handle).unwrap();
     let imported = storage
-        .import_project(
-            &pool,
-            "project",
-            "Imported archive",
-            claim.candidate.take().unwrap(),
-        )
+        .import_project(&pool, "project", "Imported archive", claim.candidate())
         .await
         .unwrap();
+    claim.commit();
     assert!(imported.version.is_some());
     assert_eq!(imported.draft.project.settings, Default::default());
     let key = VersionKey {
@@ -944,6 +989,181 @@ async fn migration_normalizes_interior_uri_separators_but_refuses_rooted_paths()
 }
 
 #[tokio::test]
+async fn editor_inventory_limit_routes_migrated_draft_to_recovery() {
+    let temp = tempfile::tempdir().unwrap();
+    let pool = create_pool(&temp.path().join("macro.db")).await.unwrap();
+    let mut document = editor("Large step-one draft");
+    for index in 0..8192 {
+        document
+            .annexes
+            .insert(format!("extras/{index}.txt"), "x".into());
+    }
+    let raw = envelope(&document);
+    seed(&pool, &raw).await;
+    let storage = Storage::new(temp.path());
+    migration::migrate(&pool, &storage).await.unwrap();
+    let draft = storage.open_draft_project(&pool, BLUEPRINT).await.unwrap();
+    assert_eq!(draft.storage_state, "recovery");
+    assert!(draft
+        .project
+        .diagnostics
+        .iter()
+        .any(|issue| issue.message.contains("editor inventory limit")));
+    let retained = temp.path().join("large-original.json");
+    storage
+        .export_original(
+            &pool,
+            BLUEPRINT.into(),
+            draft.project.revision,
+            None,
+            &retained,
+        )
+        .await
+        .unwrap();
+    assert_eq!(fs::read(retained).unwrap(), raw.as_bytes());
+    let repair = storage
+        .adapt_recovery_draft(
+            &pool,
+            BLUEPRINT,
+            draft.project.revision,
+            "project",
+            "Repair",
+        )
+        .await
+        .unwrap();
+    assert_eq!(repair.storage_state, "draft");
+    assert!(repair.project.projection.is_some());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn startup_recovers_overlong_legacy_paths_and_migrates_other_rows() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("macro.db");
+    let pool = create_pool(&path).await.unwrap();
+    let valid = editor("Valid historical version");
+    let mut overlong = valid.clone();
+    let annex = format!(
+        "{}/{}.md",
+        vec!["a".repeat(250); 16].join("/"),
+        "b".repeat(60)
+    );
+    assert_eq!(annex.len(), 4079);
+    assert!(super::editor_document::portable_path(&annex));
+    overlong
+        .annexes
+        .insert(annex.clone(), "original bytes".into());
+    let raw = envelope(&overlong);
+    seed(&pool, &raw).await;
+    historical(&pool, 1, 3, &raw).await;
+    historical(&pool, 2, 4, &envelope(&valid)).await;
+    pool.close().await;
+
+    let pool = create_pool(&path).await.unwrap();
+    migration::startup(&pool, temp.path()).await.unwrap();
+    let storage = Storage::new(temp.path());
+    for recovery in [
+        draft_artifact(&pool).await,
+        version_artifact(&pool, 1).await,
+    ] {
+        assert_eq!(recovery.state, StorageState::Recovery);
+        let root = storage.artifact_path(&recovery);
+        assert_eq!(fs::read_to_string(root.join(ORIGINAL)).unwrap(), raw);
+        let diagnostics: Vec<String> =
+            serde_json::from_slice(&fs::read(root.join("diagnostics.json")).unwrap()).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|issue| issue.contains(&annex) && issue.contains("filesystem path limit")));
+    }
+    assert_eq!(
+        version_artifact(&pool, 2).await.state,
+        StorageState::Archive
+    );
+    migration::startup(&pool, temp.path()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn architect_cutover_releases_the_writer_during_publication() {
+    let temp = tempfile::tempdir().unwrap();
+    let pool = create_pool(&temp.path().join("macro.db")).await.unwrap();
+    seed(&pool, &envelope(&editor("Draft"))).await;
+    let runtime = tokio::runtime::Handle::current();
+    let storage = Storage::new(temp.path());
+    assert!(
+        migration::migrate_with_progress(&pool, &storage, |progress| {
+            if progress.completed == 0 {
+                return;
+            }
+            tokio::task::block_in_place(|| {
+                runtime.block_on(async {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        sqlx::query(
+                            "INSERT INTO app_settings (key,value_json,updated_at)
+                         VALUES ('parallel-chat-write','true','2026-01-01')",
+                        )
+                        .execute(&pool),
+                    )
+                    .await
+                    .expect("cutover blocked a concurrent SQLite writer")
+                    .unwrap();
+                });
+            });
+        })
+        .await
+        .unwrap()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn migration_checks_the_longer_published_draft_path_before_cutover() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let pool = create_pool(&temp.path().join("macro.db")).await.unwrap();
+    let storage = Storage::new(temp.path());
+    let base = storage
+        .artifact_path(&Artifact {
+            blueprint_id: BLUEPRINT.into(),
+            id: uuid::Uuid::nil(),
+            state: StorageState::Draft,
+            sha256: None,
+        })
+        .join(PROJECT);
+    let length = libc::PATH_MAX as usize - base.as_os_str().as_bytes().len() - 1;
+    let annex: String = (1..=length)
+        .map(|index| {
+            if (index % 128 == 0 && index < length - 2) || index == length - 1 {
+                '/'
+            } else {
+                'a'
+            }
+        })
+        .collect();
+    let mut document = editor("Fits staging only");
+    document.annexes.insert(annex.clone(), "preserve".into());
+    let staged = storage
+        .stage_split(
+            super::editor_document::split(document.clone()).unwrap(),
+            None,
+        )
+        .unwrap();
+    assert!(staged.root().join(&annex).is_file());
+    drop(staged);
+    seed(&pool, &envelope(&document)).await;
+
+    migration::startup(&pool, temp.path()).await.unwrap();
+    let draft = storage.open_draft_project(&pool, BLUEPRINT).await.unwrap();
+    assert_eq!(draft.storage_state, "recovery");
+    assert!(draft
+        .project
+        .diagnostics
+        .iter()
+        .any(|issue| issue.message.contains(&annex)));
+}
+
+#[tokio::test]
 async fn migration_keeps_a_skill_with_rejected_members_out_of_frozen_archives() {
     let temp = tempfile::tempdir().unwrap();
     let pool = create_pool(&temp.path().join("macro.db")).await.unwrap();
@@ -954,6 +1174,12 @@ async fn migration_keeps_a_skill_with_rejected_members_out_of_frozen_archives() 
     document
         .annexes
         .insert("agents/assets/guide.txt".into(), "Second".into());
+    document
+        .annexes
+        .insert("agents/assets/Readme.txt".into(), "Included".into());
+    document
+        .annexes
+        .insert("agents/assets/readme.txt".into(), "Discarded".into());
     let raw = envelope(&document);
     seed(&pool, &raw).await;
     historical(&pool, 1, 3, &raw).await;
@@ -969,6 +1195,78 @@ async fn migration_keeps_a_skill_with_rejected_members_out_of_frozen_archives() 
         .freeze(&pool, BLUEPRINT.into(), 5, None, None)
         .await
         .is_err());
+    let root = storage
+        .artifact_path(&draft_artifact(&pool).await)
+        .join("project");
+    let manifest = fs::read_to_string(root.join("agsdl.json")).unwrap();
+    let edited = storage.edit_project(&pool, BLUEPRINT, 5, batch(json!({
+        "files": [{"kind": "write", "path": "agsdl.json", "text": manifest.replace("Colliding skill assets", "New title")}]
+    })), true).await.unwrap();
+    assert_eq!(
+        edited
+            .diagnostics
+            .iter()
+            .filter(|issue| issue.code == "MIGRATION_RESOURCE")
+            .count(),
+        2
+    );
+    assert!(storage
+        .freeze(&pool, BLUEPRINT.into(), edited.revision, None, None)
+        .await
+        .is_err());
+    let original_draft = temp.path().join("original-draft.json");
+    storage
+        .export_original(
+            &pool,
+            BLUEPRINT.into(),
+            edited.revision,
+            None,
+            &original_draft,
+        )
+        .await
+        .unwrap();
+    assert_eq!(fs::read(original_draft).unwrap(), raw.as_bytes());
+    let edited = storage.edit_project(&pool, BLUEPRINT, edited.revision, batch(json!({
+        "files": [{"kind": "write", "path": "agents/assets/guide-restored.txt", "text": "Second"}]
+    })), true).await.unwrap();
+    assert_eq!(
+        edited
+            .diagnostics
+            .iter()
+            .filter(|issue| issue.code == "MIGRATION_RESOURCE")
+            .count(),
+        1
+    );
+    assert!(storage
+        .freeze(&pool, BLUEPRINT.into(), edited.revision, None, None)
+        .await
+        .is_err());
+    let edited = storage
+        .edit_project(
+            &pool,
+            BLUEPRINT,
+            edited.revision,
+            batch(json!({
+                "files": [], "discardMigrationFiles": ["agents/assets/readme.txt"]
+            })),
+            true,
+        )
+        .await
+        .unwrap();
+    assert!(!edited
+        .diagnostics
+        .iter()
+        .any(|issue| issue.code == "MIGRATION_RESOURCE"));
+    storage
+        .freeze(&pool, BLUEPRINT.into(), edited.revision, None, None)
+        .await
+        .unwrap();
+    let frozen = storage
+        .open_archive(&version_artifact(&pool, 8).await)
+        .unwrap();
+    assert!(frozen.members().any(
+        |member| member.path == "agents/assets/guide-restored.txt" && member.bytes == b"Second"
+    ));
     assert_eq!(
         version_artifact(&pool, 1).await.state,
         StorageState::Recovery

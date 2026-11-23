@@ -230,7 +230,7 @@ async fn secret_consumer_child() {
     process_startup(&data, &config).await.unwrap();
     let attached = mode == "rollback";
     if attached && root.join("expected-raw.json").exists() {
-        let expected = load_archive(&root.join("expected-raw.json")).unwrap();
+        let expected = load_archive(&root.join("expected-raw.json"), &data).unwrap();
         let initialized = capture_raw(&data, &config, BTreeMap::new()).unwrap();
         super::qualification::assert_held_files(&initialized, &expected).await;
         for name in initialized.files.keys() {
@@ -422,7 +422,7 @@ async fn chosen_raw_preservation_is_portable_not_internal_rollback() {
     let path = temp.path().join("chosen-raw.json");
     preserve_raw(&raw, &path).unwrap();
     private(&path);
-    let portable = load_restore_archive(&path).await.unwrap();
+    let portable = load_restore_archive(&path, &data).await.unwrap();
     for name in portable.files.keys() {
         assert!(!name.contains("provider-secrets"));
     }
@@ -508,7 +508,7 @@ async fn older_portable_archive_detaches_pilot_on_load() {
     .unwrap();
     let path = temp.path().join("old-portable.json");
     fs::write(&path, serde_json::to_vec(&archive).unwrap()).unwrap();
-    let normalized = load_restore_archive(&path).await.unwrap();
+    let normalized = load_restore_archive(&path, &data).await.unwrap();
     let state: Value = serde_json::from_slice(
         &STANDARD
             .decode(&normalized.files["data/state.json"].data)

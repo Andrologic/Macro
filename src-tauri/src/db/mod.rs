@@ -145,17 +145,7 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
         .app_data_dir()
         .map_err(|_| DbError::AppDataDir)?;
 
-    // Create the directory if it doesn't exist
-    std::fs::create_dir_all(&app_dir).map_err(|e| DbError::Migration(e.to_string()))?;
-
-    let db_path = app_db_path(&app_dir);
-
-    let pool = create_pool(&db_path).await?;
-    crate::architect_library::migration::startup(&pool, &app_dir).await?;
-    let config_dir = app_handle.state::<crate::config::ConfigManager>();
-    crate::architect_launch::cleanup(&pool, &app_dir, config_dir.root())
-        .await
-        .map_err(|error| DbError::Validation(error.message))?;
+    let pool = open_desktop_profile(&app_dir).await?;
     // A restarted producer must install a fresh authority generation locally.
     sqlx::query("UPDATE pilot_file_authorities SET active = 0")
         .execute(&pool)
@@ -183,7 +173,47 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
     Ok(pool)
 }
 
+/// Run retained-copy maintenance after publishing a usable desktop profile.
+pub(crate) fn schedule_architect_launch_cleanup(app: &AppHandle, pool: SqlitePool) {
+    let Ok(data) = app.path().app_data_dir() else {
+        return;
+    };
+    let host = app.state::<crate::config::ConfigManager>().root().to_owned();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = crate::architect_launch::cleanup(&pool, &data, &host).await {
+            tracing::warn!(error = %error.message, "Could not clean up retained Architect launch resources");
+        }
+    });
+}
+
 /// The startup path used by init_db, exercised with real reopened SQLite pools.
+pub(crate) async fn open_desktop_profile(app_dir: &Path) -> DbResult<SqlitePool> {
+    crate::fs::profile::create_private_root(app_dir)
+        .map_err(|error| DbError::Migration(error.to_string()))?;
+    let path = app_db_path(app_dir);
+    // SQLite uses the database mode to create its WAL and shared-memory files.
+    match crate::fs::profile::create_private_file(&path, false) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(DbError::Migration(error.to_string())),
+    }
+    #[cfg(unix)]
+    harden_profile_database(app_dir)?;
+    create_pool(&path).await
+}
+
+#[cfg(unix)]
+fn harden_profile_database(app_dir: &Path) -> DbResult<()> {
+    for name in ["macro.db", "macro.db-wal", "macro.db-shm"] {
+        match crate::fs::profile::set_private_mode(&app_dir.join(name), false) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(DbError::Migration(error.to_string())),
+        }
+    }
+    Ok(())
+}
+
 pub(crate) async fn reconcile_runtime_after_restart(pool: &SqlitePool) -> DbResult<()> {
     agent_runs::reconcile_active_agent_runs_after_restart(pool).await?;
     conversation_goals::reconcile_audits_after_restart(pool).await?;
@@ -202,6 +232,10 @@ pub(crate) async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
 
 /// Startup restore changes schema/ownership only, not provider defaults or auth.
 pub(crate) async fn restore_admission_hold(db_path: &Path) -> DbResult<()> {
+    #[cfg(unix)]
+    if let Some(app_dir) = db_path.parent() {
+        harden_profile_database(app_dir)?;
+    }
     let pool = open_pool(db_path).await?;
     let result = chat_admission::hold_restored_profile(&pool).await;
     pool.close().await;
@@ -674,6 +708,11 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
     source_capture::validate_schema(connection).await?;
     chat_admission::validate_schema(connection).await?;
     connect_transfer::validate_schema(connection).await?;
+    // C3 profiles may already have cut over their library without migrations 050/051.
+    // Fresh and legacy profiles install both in the Architect cutover transaction.
+    if applied_migrations.contains(&architect_library::storage_index::VERSION) {
+        crate::architect_launch::migrate(connection).await?;
+    }
 
     Ok(())
 }

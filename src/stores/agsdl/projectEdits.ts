@@ -3,6 +3,7 @@ import type {
   ProjectFileEntry, ProjectView,
 } from "../../services/ipc/architectLibrary";
 import { applyProjectChanges, MAX_AGSDL_BYTES } from "../../services/agsdl/document";
+import { projectLocation } from "../../services/agsdl/projectLocation";
 import { AgsdlUserError } from "../../services/agsdl/userErrors";
 import type { AgsdlChange } from "../../types/agsdl";
 
@@ -12,6 +13,8 @@ export interface FileHistoryEntry {
   forward: ProjectBatch;
   backward: ProjectBatch;
 }
+
+interface QueuedEdit { entry: FileHistoryEntry; forward: boolean }
 
 export interface ProjectEditState {
   /** Native view of the persisted revision. */
@@ -23,6 +26,7 @@ export interface ProjectEditState {
   graphVersion: string | null;
   buffers: ReadonlyMap<string, ProjectFile | null>;
   pending: ProjectBatch;
+  queued: QueuedEdit[];
   past: FileHistoryEntry[];
   future: FileHistoryEntry[];
 }
@@ -30,13 +34,14 @@ export interface ProjectEditState {
 const utf8 = new TextEncoder();
 export const byteSize = (text: string) => utf8.encode(text).byteLength;
 
-export function batchSize({ files, settings }: ProjectBatch) {
+export function batchSize({ files, settings, discardMigrationFiles }: ProjectBatch) {
   return files.reduce((size, file) => size + byteSize(file.path) + 1 + (file.kind === "write" ? byteSize(file.text) : 0), 0)
+    + (discardMigrationFiles?.reduce((size, path) => size + byteSize(path) + 1, 0) ?? 0)
     + (settings ? byteSize(JSON.stringify(settings.hiddenAgentIds ?? null)) + byteSize(settings.entryMessageHint ?? "") : 0);
 }
 
 export function checkBatch(batch: ProjectBatch) {
-  if (batchSize(batch) > MAX_AGSDL_BYTES || batch.files.length > 8192)
+  if (batchSize(batch) > MAX_AGSDL_BYTES || batch.files.length + (batch.discardMigrationFiles?.length ?? 0) > 8192)
     throw new AgsdlUserError("agsdl.library.projectLimit", "Project edits exceed the 1 MiB limit.");
 }
 
@@ -59,14 +64,14 @@ export function initialProject(view: ProjectView, version: string): ProjectEditS
   return {
     saved: view, view, graphRevision: view.projection ? view.revision : null,
     graphVersion: view.projection ? version : null,
-    buffers: new Map(), pending: { files: [] }, past: [], future: [],
+    buffers: new Map(), pending: { files: [] }, queued: [], past: [], future: [],
   };
 }
 
 function fileChange(path: string, file: ProjectFile | null): ProjectFileChange {
   if (!file) return { kind: "remove", path };
   if (file.kind !== "text") throw new AgsdlUserError("agsdl.library.opaqueFile", "This file cannot be edited as text.");
-  return { kind: "write", path, text: file.text };
+  return { kind: "write", path, text: file.text, executable: file.file.executable };
 }
 
 function applyFile(buffers: Map<string, ProjectFile | null>, change: ProjectFileChange) {
@@ -78,7 +83,7 @@ function applyFile(buffers: Map<string, ProjectFile | null>, change: ProjectFile
     throw new AgsdlUserError("agsdl.library.opaqueFile", "This file cannot be edited as UTF-8 text.");
   buffers.set(change.path, {
     kind: "text", text: change.text,
-    file: { path: change.path, size: byteSize(change.text), executable: buffers.get(change.path)?.file.executable ?? false },
+    file: { path: change.path, size: byteSize(change.text), executable: change.executable ?? buffers.get(change.path)?.file.executable ?? false },
   });
 }
 
@@ -96,11 +101,15 @@ export async function prepareProjectEdit(
     const next = operation.kind === "edit" ? {
       kind: "write" as const, path,
       text: previous?.kind === "text" ? applyProjectChanges(previous.text, [operation.change]) : null,
+      executable: previous?.file.executable,
     } : operation;
     if (next.kind === "write" && next.text === null)
       throw new AgsdlUserError("agsdl.library.fileMissing", "Read an existing project file before editing it.");
-    if ((next.kind === "remove" && !previous) || (next.kind === "write" && undo.kind === "write" && next.text === undo.text)) continue;
-    const change: ProjectFileChange = next.kind === "remove" ? next : { ...next, text: next.text! };
+    if ((next.kind === "remove" && !previous) ||
+        (next.kind === "write" && undo.kind === "write" && next.text === undo.text && (next.executable === undefined || next.executable === undo.executable))) continue;
+    const change: ProjectFileChange = next.kind === "remove" ? next : {
+      ...next, text: next.text!, executable: next.executable ?? previous?.file.executable,
+    };
     buffers.set(path, previous);
     applyFile(buffers, change);
     files.push(change);
@@ -112,10 +121,9 @@ export async function prepareProjectEdit(
   if (undoSettings && settings?.entryMessageHint !== undefined) undoSettings.entryMessageHint = currentSettings.entryMessageHint ?? null;
   if (undoSettings && settings?.workingFolderMode !== undefined) undoSettings.workingFolderMode = currentSettings.workingFolderMode;
   if (undoSettings && settings?.startMessageRequired !== undefined) undoSettings.startMessageRequired = currentSettings.startMessageRequired ?? null;
-  return {
-    buffers,
-    entry: { forward: { files, settings }, backward: { files: inverse, settings: undoSettings } },
-  };
+  const entry = { forward: { files, settings }, backward: { files: inverse, settings: undoSettings } };
+  checkBatch(entry.backward);
+  return { buffers, entry };
 }
 
 export function historyBuffers(project: ProjectEditState, batch: ProjectBatch) {
@@ -128,13 +136,31 @@ export function appendProjectBatch(pending: ProjectBatch, next: ProjectBatch): P
   const files = [...pending.files];
   for (const file of next.files) {
     const previous = files.at(-1);
-    if (file.kind === "write" && previous?.kind === "write" && previous.path === file.path) files.pop();
-    files.push(file);
+    if (file.kind === "write" && previous?.kind === "write" && previous.path === file.path) {
+      files.pop();
+      files.push({ ...file, executable: file.executable ?? previous.executable });
+    } else files.push(file);
   }
   const settings = next.settings ? { ...pending.settings, ...next.settings } : pending.settings;
   const result = { files, settings };
   checkBatch(result);
   return result;
+}
+
+export function queueProjectEdit(project: ProjectEditState, entry: FileHistoryEntry, forward: boolean) {
+  const last = project.queued.at(-1);
+  if (last?.entry === entry && last.forward !== forward) {
+    const queued = project.queued.slice(0, -1);
+    const pending = queued.reduce(
+      (batch, edit) => appendProjectBatch(batch, edit.forward ? edit.entry.forward : edit.entry.backward),
+      { files: [] } as ProjectBatch,
+    );
+    return { queued, pending };
+  }
+  return {
+    queued: [...project.queued, { entry, forward }],
+    pending: appendProjectBatch(project.pending, forward ? entry.forward : entry.backward),
+  };
 }
 
 export function projectHistoryBudget(history: FileHistoryEntry[]) {
@@ -146,15 +172,12 @@ export function projectHistoryBudget(history: FileHistoryEntry[]) {
 }
 
 export function localProjectEdit(view: ProjectView, change: AgsdlChange): ProjectOperation {
-  for (let path = change.path; path; path = path.slice(0, path.lastIndexOf("/"))) {
-    const origin = Object.hasOwn(view.projection?.origins ?? {}, path) ? view.projection?.origins[path] : undefined;
-    if (origin) {
-      if (!origin.pointer && path === change.path && change.op === "remove" && !path.endsWith("/harnessSettings"))
-        return { kind: "edit", path: "agsdl.json", change };
-      // Catalog entries in the manifest are links; use the local pointer
-      // reported by Argentic, including the empty pointer in component files.
-      return { kind: "edit", path: origin.file, change: { ...change, path: origin.pointer + change.path.slice(path.length) } };
-    }
+  const origin = projectLocation(view, change.path);
+  if (origin.file !== "agsdl.json" && !origin.pointer && change.op === "remove") {
+    // Clearing an external setting removes its manifest link. The settings file
+    // remains an authored file and can still be edited or reused.
+    const settings = /^\/agents\/([^/]+)\/harnessSettings$/.exec(change.path);
+    return { kind: "edit", path: "agsdl.json", change: settings ? { ...change, path: "/settingsFiles/" + settings[1] } : change };
   }
-  return { kind: "edit", path: "agsdl.json", change };
+  return { kind: "edit", path: origin.file, change: { ...change, path: origin.pointer } };
 }

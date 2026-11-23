@@ -61,6 +61,7 @@ export const AgsdlEditor: React.FC<{
   const [nameError, setNameError] = useState("");
   const [saveOpen, setSaveOpen] = useState(false);
   const [error, setError] = useState("");
+  const [discardMigrationFile, setDiscardMigrationFile] = useState<string>();
   const [library, setLibrary] = useState<"start" | "blueprint" | "system">();
   const [changesOpen, setChangesOpen] = useState(false);
   const [dismissedVersion, setDismissedVersion] = useState("");
@@ -435,8 +436,21 @@ export const AgsdlEditor: React.FC<{
         <DisclosureSummary>{t("agsdl.authoring030.diagnostics.count", { count: project.view.diagnostics.length })}</DisclosureSummary>
         {project.view.diagnostics.map((issue, index) => <p key={index} className="break-words">
           {issue.file && <code>{issue.file}{issue.pointer && `#${issue.pointer}`} · </code>}{agsdlProjectIssueText(issue, t)}
+          {issue.code === "MIGRATION_RESOURCE" && issue.file && session?.status === "draft" && projectTarget &&
+            <button className="agsdl-link ml-2" disabled={session.saving || !!conflict} onClick={() => setDiscardMigrationFile(issue.file!)}>{t("agsdl.library.discardMigrationFile")}</button>}
         </p>)}
       </details>}
+      {discardMigrationFile && projectTarget && <Dialog title={t("agsdl.library.discardMigrationFile")} onClose={() => setDiscardMigrationFile(undefined)} panelClassName="agsdl-detail-modal">
+        <p>{t("agsdl.library.discardMigrationFileConfirm", { path: discardMigrationFile })}</p>
+        <footer>
+          <button onClick={() => setDiscardMigrationFile(undefined)}>{t("agsdl.cancel")}</button>
+          <button disabled={session?.saving} onClick={() => {
+            setDiscardMigrationFile(undefined);
+            void useAgsdlStore.getState().discardProjectMigrationFile(projectTarget, discardMigrationFile)
+              .catch(failure => setError(agsdlErrorText(failure, t)));
+          }}>{t("agsdl.library.discardMigrationFile")}</button>
+        </footer>
+      </Dialog>}
       {!conflict && ((!settingsOpen && canvasError) || parsed.error) && (
         <div role="alert" className="agsdl-error">
           {(!settingsOpen && canvasError) || (

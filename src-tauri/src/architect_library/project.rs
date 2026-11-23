@@ -2,11 +2,12 @@ use super::{
     archive, destination_parent, private_directory, publish_path, sync_directory, sync_publication,
     Error, ImportPreview, Result,
 };
+use crate::fs::profile::create_private_file;
 use argentic_runtime::source::OpenedSource;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::fs::{self, File};
+use std::fs;
 use std::io::Write;
 use std::path::Path;
 use tempfile::TempDir;
@@ -23,7 +24,7 @@ pub struct ImportCandidate {
 }
 
 impl ImportCandidate {
-    pub fn open(path: &Path) -> Result<Self> {
+    pub fn open(path: &Path, staging_root: &Path) -> Result<Self> {
         let path: std::path::PathBuf = std::path::absolute(path)?.components().collect();
         let metadata = fs::symlink_metadata(&path)?;
         if metadata.file_type().is_symlink() {
@@ -34,7 +35,7 @@ impl ImportCandidate {
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("agsdl"))
         {
-            let (source, archive) = archive::read(&path, None)?;
+            let (source, archive) = archive::read(&path, None, staging_root)?;
             return Ok(Self {
                 source,
                 archive: Some(archive),
@@ -90,12 +91,11 @@ impl ImportCandidate {
         super::preview::inspect(&self.source, format, digest, history)
     }
 
-    pub fn stage_version(self, staging_root: &Path) -> Result<archive::StagedVersion> {
-        if let Some(archive) = self.archive.filter(|archive| !archive.has_history) {
-            drop(self.source);
+    pub fn stage_version(&self, staging_root: &Path) -> Result<archive::StagedVersion> {
+        if let Some(archive) = self.archive.as_ref().filter(|archive| !archive.has_history) {
             return archive::stage_exact(archive, staging_root);
         }
-        archive::stage_version(self.source, staging_root)
+        archive::stage_borrowed_version(&self.source, staging_root)
     }
 }
 
@@ -126,9 +126,10 @@ pub fn materialize(source: &OpenedSource, staging_root: &Path) -> Result<TempDir
     let root = directory.path();
     let mut directories = BTreeSet::from([root.to_path_buf()]);
     for member in files {
+        super::storage::check_project_path(root, member.path)?;
         let path = root.join(member.path);
         let parent = path.parent().expect("selected member has a parent");
-        fs::create_dir_all(parent)?;
+        super::storage::ensure_staging_dir(root, parent)?;
         directories.extend(
             parent
                 .ancestors()
@@ -138,7 +139,10 @@ pub fn materialize(source: &OpenedSource, staging_root: &Path) -> Result<TempDir
         write_member(&path, member.bytes, member.executable)?;
     }
     #[cfg(windows)]
-    write_executable_sidecar(source, root)?;
+    write_executable_sidecar(
+        root,
+        members(source)?.map(|file| (file.path, file.executable)),
+    )?;
     for path in directories.iter().rev() {
         sync_directory(path)?;
     }
@@ -146,36 +150,30 @@ pub fn materialize(source: &OpenedSource, staging_root: &Path) -> Result<TempDir
 }
 
 fn write_member(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
-    let mut file = File::create_new(path)?;
+    let mut file = create_private_file(path, executable)?;
     file.write_all(bytes)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = if executable { 0o700 } else { 0o600 };
-        file.set_permissions(fs::Permissions::from_mode(mode))?;
-    }
-    #[cfg(not(unix))]
-    let _ = executable;
     file.sync_all()?;
     Ok(())
 }
 
 #[cfg(windows)]
-fn write_executable_sidecar(source: &OpenedSource, root: &Path) -> Result<()> {
-    let roots: BTreeSet<_> = members(source)?
-        .map(|member| {
-            member
-                .path
-                .split('/')
+pub(super) fn write_executable_sidecar<'a>(
+    root: &Path,
+    files: impl Iterator<Item = (&'a str, bool)>,
+) -> Result<()> {
+    let mut roots = BTreeSet::new();
+    let mut executable = Vec::new();
+    for (path, is_executable) in files {
+        roots.insert(
+            path.split('/')
                 .next()
                 .unwrap_or_default()
-                .to_ascii_lowercase()
-        })
-        .collect();
-    let executable: Vec<_> = members(source)?
-        .filter(|member| member.executable)
-        .map(|member| member.path)
-        .collect();
+                .to_ascii_lowercase(),
+        );
+        if is_executable {
+            executable.push(path);
+        }
+    }
     if executable.is_empty() {
         return Ok(());
     }
@@ -195,11 +193,19 @@ fn write_executable_sidecar(source: &OpenedSource, root: &Path) -> Result<()> {
 pub fn export_project(source: &OpenedSource, destination: &Path) -> Result<usize> {
     let parent = destination_parent(destination)?;
     let count = members(source)?.len();
+    for member in members(source)? {
+        super::storage::check_project_path(destination, member.path)?;
+    }
     let staged = materialize(source, parent)?;
+    publish_export(staged, parent, destination)?;
+    Ok(count)
+}
+
+pub(super) fn publish_export(staged: TempDir, parent: &Path, destination: &Path) -> Result<()> {
     publish_path(staged.path(), destination)?;
     let _ = staged.keep();
     sync_publication(parent, destination)?;
-    Ok(count)
+    Ok(())
 }
 
 /// Step B's starter document as a project. With no named components or flow

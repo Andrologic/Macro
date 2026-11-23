@@ -120,7 +120,8 @@ pub async fn db_retry_initialize(
                     "Database authentication recovery failed: {error}"
                 )));
             }
-            pool.set_ready(sqlite_pool).await?;
+            pool.set_ready(sqlite_pool.clone()).await?;
+            crate::db::schedule_architect_launch_cleanup(&app, sqlite_pool);
         }
         Err(error) => {
             let message = error.to_string();

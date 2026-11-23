@@ -6,7 +6,7 @@ use argentic_runtime::source::{OpenedSource, SelectedFile};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -34,22 +34,11 @@ impl VerifiedArchive {
     }
 
     fn copy_to(&self, path: &Path) -> Result<()> {
-        let mut target = create_archive_file(path)?;
+        let mut target = crate::fs::profile::create_private_file(path, false)?;
         io::copy(&mut File::open(self.path())?, &mut target)?;
         target.sync_all()?;
         Ok(())
     }
-}
-
-fn create_archive_file(path: &Path) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options.open(path)
 }
 
 fn digest(path: &Path) -> io::Result<String> {
@@ -61,6 +50,7 @@ fn digest(path: &Path) -> io::Result<String> {
 pub(super) fn read(
     path: &Path,
     expected_sha256: Option<&str>,
+    staging_root: &Path,
 ) -> Result<(OpenedSource, VerifiedArchive)> {
     let mut options = OpenOptions::new();
     options.read(true);
@@ -91,9 +81,9 @@ pub(super) fn read(
     if metadata.len() > MAX_ARCHIVE_BYTES {
         return Err(Error::ArchiveLimit);
     }
-    let snapshot = private_directory(&std::env::temp_dir(), ".agsdl-archive-")?;
+    let snapshot = private_directory(staging_root, ".agsdl-archive-")?;
     let staged_path = snapshot.path().join(VERSION_FILENAME);
-    let mut staged = create_archive_file(&staged_path)?;
+    let mut staged = crate::fs::profile::create_private_file(&staged_path, false)?;
     if io::copy(&mut file.take(MAX_ARCHIVE_BYTES + 1), &mut staged)? > MAX_ARCHIVE_BYTES {
         return Err(Error::ArchiveLimit);
     }
@@ -137,13 +127,24 @@ impl StagedVersion {
 
     /// Publish under a fresh ID on the same filesystem. The caller owns the
     /// index transaction and must sync any sidecar files it adds.
+    #[cfg(test)]
     pub fn publish(self, versions_root: &Path) -> Result<PublishedVersion> {
+        self.publish_in(versions_root, true)
+    }
+
+    pub(super) fn publish_in(
+        self,
+        versions_root: &Path,
+        sync_bucket: bool,
+    ) -> Result<PublishedVersion> {
         sync_directory(self.directory.path())?;
         let artifact_id = Uuid::new_v4();
         let destination = versions_root.join(artifact_id.to_string());
         publish_path(self.directory.path(), &destination)?;
         let _ = self.directory.keep();
-        sync_publication(versions_root, &destination)?;
+        if sync_bucket {
+            sync_publication(versions_root, &destination)?;
+        }
         Ok(PublishedVersion {
             artifact_id,
             archive_path: destination.join(VERSION_FILENAME),
@@ -163,21 +164,42 @@ pub(super) fn stage_with_executables(
     staging_root: &Path,
     executable_paths: &BTreeSet<String>,
 ) -> Result<StagedVersion> {
+    let directory = encode_version(&source, staging_root, executable_paths)?;
+    drop(source);
+    verify_staged(directory)
+}
+
+pub(super) fn stage_borrowed_version(
+    source: &OpenedSource,
+    staging_root: &Path,
+) -> Result<StagedVersion> {
+    verify_staged(encode_version(source, staging_root, &BTreeSet::new())?)
+}
+
+fn encode_version(
+    source: &OpenedSource,
+    staging_root: &Path,
+    executable_paths: &BTreeSet<String>,
+) -> Result<TempDir> {
     let directory = private_directory(staging_root, ".agsdl-version-")?;
     let path = directory.path().join(VERSION_FILENAME);
     {
-        let mut file = create_archive_file(&path)?;
+        let mut file = crate::fs::profile::create_private_file(&path, false)?;
         let needs_override = !executable_paths.is_empty()
-            && project::members(&source)?
+            && project::members(source)?
                 .any(|member| !member.executable && executable_paths.contains(member.path));
         if needs_override {
-            write_archive_with_executables(&source, executable_paths, &mut file)?;
+            write_archive_with_executables(source, executable_paths, &mut file)?;
         } else {
             source.write_archive(&mut file)?;
         }
         file.sync_all()?;
     }
-    drop(source);
+    Ok(directory)
+}
+
+fn verify_staged(directory: TempDir) -> Result<StagedVersion> {
+    let path = directory.path().join(VERSION_FILENAME);
     OpenedSource::open_path(&path)?;
     let sha256 = digest(&path)?;
     Ok(StagedVersion { directory, sha256 })
@@ -188,7 +210,7 @@ pub(super) fn stage_with_executables(
 fn write_archive_with_executables(
     source: &OpenedSource,
     executable_paths: &BTreeSet<String>,
-    file: &mut File,
+    file: impl Write + Seek,
 ) -> Result<()> {
     let mut zip = ZipWriter::new(file);
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
@@ -221,12 +243,12 @@ fn write_archive_with_executables(
     Ok(())
 }
 
-pub(super) fn stage_exact(archive: VerifiedArchive, staging_root: &Path) -> Result<StagedVersion> {
+pub(super) fn stage_exact(archive: &VerifiedArchive, staging_root: &Path) -> Result<StagedVersion> {
     let directory = private_directory(staging_root, ".agsdl-version-")?;
     archive.copy_to(&directory.path().join(VERSION_FILENAME))?;
     Ok(StagedVersion {
         directory,
-        sha256: archive.sha256,
+        sha256: archive.sha256.clone(),
     })
 }
 
@@ -238,8 +260,35 @@ pub struct VersionArchive {
     archive: VerifiedArchive,
 }
 
-pub fn open_version(path: &Path, expected_sha256: &str) -> Result<VersionArchive> {
-    let (source, archive) = read(path, Some(expected_sha256))?;
+/// In backup validation the file was already copied and hashed in a private
+/// stage. Validate the inventory directly against that verified digest.
+pub(super) fn validate_private_version(
+    path: &Path,
+    expected: &str,
+    verified: &str,
+) -> Result<OpenedSource> {
+    if expected != verified {
+        return Err(Error::DigestMismatch);
+    }
+    if std::fs::metadata(path)?.len() > MAX_ARCHIVE_BYTES {
+        return Err(Error::ArchiveLimit);
+    }
+    let source = OpenedSource::open_path(path)?;
+    if ZipArchive::new(File::open(path)?)?
+        .index_for_name("history.bundle")
+        .is_some()
+    {
+        return Err(Error::UnexpectedHistory);
+    }
+    Ok(source)
+}
+
+pub(super) fn open_version(
+    path: &Path,
+    expected_sha256: &str,
+    staging_root: &Path,
+) -> Result<VersionArchive> {
+    let (source, archive) = read(path, Some(expected_sha256), staging_root)?;
     if archive.has_history {
         return Err(Error::UnexpectedHistory);
     }

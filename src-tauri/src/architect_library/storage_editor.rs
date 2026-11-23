@@ -32,6 +32,13 @@ pub(crate) struct ImportedProject {
 }
 
 impl Storage {
+    pub(crate) fn validate_project_name(name: &str) -> Result<()> {
+        if name.trim().is_empty() || name.len() > 1024 {
+            return Err(Error::Editor("INVALID_BLUEPRINT_NAME"));
+        }
+        Ok(())
+    }
+
     fn draft_project_view(&self, row: &SqliteRow, artifact: &Artifact) -> DbResult<DraftProject> {
         let revision = row.try_get("revision")?;
         let path = self.checked_artifact_path(artifact)?;
@@ -158,16 +165,27 @@ impl Storage {
         let root = stage.path().join(PROJECT);
         editor::copy_project(&artifact_path.join(PROJECT), &root)?;
         let edits_source = batch.has_file_changes();
-        batch.apply(&root, &mut settings, &mut authoring)?;
+        let added = batch.apply(&root, &mut settings, &mut authoring)?;
         if edits_source {
             authoring.clear_fallback();
         }
-        let mut view = ProjectView::folder(&root, expected, settings, &authoring)?;
+        authoring.record_repair_candidates(added);
+        let source = OpenedSource::open_path(&root).map_err(Error::from);
+        if let Ok(source) = &source {
+            authoring.accept_restored_files(source)?;
+        }
+        let mut view = ProjectView::folder_from_source(
+            editor::disk_inventory(&root)?,
+            expected,
+            settings,
+            &authoring,
+            source,
+        )?;
         if !save {
             return Ok(view);
         }
         sidecars(stage.path(), &view.settings, &authoring)?;
-        let published = self.publish(stage, id, StorageState::Draft)?;
+        let published = self.publish_project_stage(id, stage)?;
         let mut writer = index::durable_writer(pool).await?;
         let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
         let saved = index::update_draft(&mut tx, expected, &published).await?;
@@ -212,9 +230,7 @@ impl Storage {
         authoring: Authoring,
         version: Option<archive::StagedVersion>,
     ) -> DbResult<ImportedProject> {
-        if name.trim().is_empty() || name.len() > 1024 {
-            return Err(Error::Editor("INVALID_BLUEPRINT_NAME").into());
-        }
+        Self::validate_project_name(name)?;
         let id = Uuid::new_v4().to_string();
         let settings = MacroSettings::default();
         sidecars(stage.path(), &settings, &authoring)?;
@@ -222,7 +238,7 @@ impl Storage {
         if view.projection.is_none() {
             return Err(self.invalid_projection(view).into());
         }
-        let draft = self.publish(stage, &id, StorageState::Draft)?;
+        let draft = self.publish_project_stage(&id, stage)?;
         let version = version
             .map(|version| self.publish_staged_version(&id, version, &settings, &authoring))
             .transpose()?;
@@ -255,8 +271,9 @@ impl Storage {
         pool: &SqlitePool,
         project_id: &str,
         name: &str,
-        candidate: project::ImportCandidate,
+        candidate: &project::ImportCandidate,
     ) -> DbResult<ImportedProject> {
+        Self::validate_project_name(name)?;
         let _lease = self.lease(true).await?;
         let staging = self.staging()?;
         let source = project::materialize(candidate.source(), &staging)?;
@@ -292,8 +309,7 @@ impl Storage {
                     self.checked_artifact_path(&Self::check_draft(&row, revision, false)?)?;
                 let root = path.join(PROJECT);
                 require_dir(&self.root, &root).map_err(Error::from)?;
-                let source = OpenedSource::open_path(&root).map_err(Error::from)?;
-                project::export_project(&source, destination)?
+                editor::export_draft(&root, destination, &read_authoring(&path)?)?
             }
             ProjectTarget::Version { key } => {
                 let row = index::version_row(pool, &key).await?;
@@ -334,7 +350,7 @@ impl Storage {
         let mut authoring = Authoring::default();
         authoring.executable_paths = executable_paths;
         authoring.merge_diagnostics(diagnostics);
-        if original_source.len() <= 8 * editor::TEXT_LIMIT {
+        if !original_source.is_empty() && original_source.len() <= 8 * editor::TEXT_LIMIT {
             write_project_file(&root, editor::RECOVERY_SOURCE, original_source.as_bytes())?;
         }
         authoring.set_fallback(original_source);
@@ -342,7 +358,7 @@ impl Storage {
         sidecars(stage.path(), &settings, &authoring)?;
         let source = OpenedSource::open_path(&root)?;
         let projected = authoring.project_document(&settings, &root, Some(&source))?;
-        let draft = self.publish(stage, id, StorageState::Draft)?;
+        let draft = self.publish_project_stage(id, stage)?;
         Ok((draft, projected))
     }
 
@@ -363,9 +379,8 @@ impl Storage {
         if original.state != StorageState::Recovery {
             return Err(Error::Editor("PROJECT_NEEDS_REPAIR").into());
         }
-        let (document, diagnostics) = self.read_recovery(&original)?;
-        let envelope = read_file(&self.checked_artifact_path(&original)?.join(ORIGINAL))
-            .map_err(Error::from)?;
+        let (envelope, diagnostics) = self.read_recovery(&original)?;
+        let document = recovery_document(&envelope).unwrap_or_else(empty_recovery_document);
         let id = Uuid::new_v4().to_string();
         let paths = self.draft_executables(&original)?;
         let retained = self.publish_recovery(&id, &envelope, diagnostics.clone(), paths.clone())?;

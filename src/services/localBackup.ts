@@ -1,4 +1,5 @@
 import * as ipc from './tauriIpc';
+import { ProfileStartupRecoveryError } from './ipc/backup';
 
 // Keep aligned with CLIENT_KEYS in src-tauri/src/local_backup.rs. Missing keys
 // in historical archives are removed as part of whole-profile replacement.
@@ -35,6 +36,8 @@ export const applyBackupBrowserState = (browser: Record<string, string>): void =
 
 export const restoreBackupBrowserState = async (): Promise<boolean> => {
   if (!ipc.isTauriAvailable()) return false;
+  const recovery = await ipc.getProfileStartupRecovery();
+  if (recovery) throw new ProfileStartupRecoveryError(recovery);
   const status = await ipc.localBackupStatus();
   if (status.browser !== null) {
     applyBackupBrowserState(status.browser);

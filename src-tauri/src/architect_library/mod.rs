@@ -126,7 +126,7 @@ fn publish_error(error: io::Error) -> Error {
 }
 
 fn publish_path(source: &Path, destination: &Path) -> Result<()> {
-    crate::fs::operations::rename_without_replacement(source, destination).map_err(publish_error)
+    crate::fs::profile::rename_without_replacement(source, destination).map_err(publish_error)
 }
 
 fn sync_publication(parent: &Path, destination: &Path) -> Result<()> {
@@ -149,7 +149,7 @@ thread_local! {
     static FAIL_PUBLICATION_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-fn private_directory(root: &Path, prefix: &str) -> io::Result<tempfile::TempDir> {
+pub(crate) fn private_directory(root: &Path, prefix: &str) -> io::Result<tempfile::TempDir> {
     let mut builder = tempfile::Builder::new();
     builder.prefix(prefix);
     #[cfg(unix)]
@@ -157,15 +157,13 @@ fn private_directory(root: &Path, prefix: &str) -> io::Result<tempfile::TempDir>
         use std::os::unix::fs::PermissionsExt;
         builder.permissions(std::fs::Permissions::from_mode(0o700));
     }
+    #[cfg(test)]
+    crate::fs::profile::check("mkdir", &root.join(prefix))?;
     builder.tempdir_in(root)
 }
 
 fn sync_directory(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    std::fs::File::open(path)?.sync_all()?;
-    #[cfg(not(unix))]
-    let _ = path; // The Windows no-replace move uses MOVEFILE_WRITE_THROUGH.
-    Ok(())
+    crate::fs::profile::sync_directory(path)
 }
 
 #[cfg(test)]

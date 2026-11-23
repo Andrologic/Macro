@@ -121,6 +121,7 @@
     }
   },
   "startup": {
+    "architectCutoverProgress": "Migrando la biblioteca de Architect ({{completed}}/{{total}})",
     "interrupted": "Inicio interrumpido",
     "failedTitle": "Macro no pudo completar el inicio.",
     "failedDescription": "Macro no pudo inicializar los datos locales. Puedes volver a intentarlo de forma segura.",
@@ -3333,7 +3334,7 @@
   "backup": {
     "exclusions": "Se excluyen las carpetas de proyectos, su historial Git y las credenciales de proveedores. Guarde sus proyectos por separado.",
     "limitsTitle": "Compatibilidad, límites y datos privados",
-    "limits": "Tamaño máximo: 256 MiB. Restaure con la misma versión de Macro. Se conservan las rutas de los proyectos; no se reasocian proyectos movidos ni se fusionan perfiles.",
+    "limits": "El manifiesto de la copia puede ocupar hasta 256 MiB. Los archivos de Architect se guardan por separado dentro del archivo ZIP. Restaure con la misma versión de Macro. La restauración conserva las rutas de proyecto registradas y reemplaza todo el perfil.",
     "exportHelp": "Guardar los datos locales en un archivo nuevo al volver a iniciar.",
     "restoreHelp": "Sustituir los datos locales por un archivo. Conservar el perfil anterior para recuperarlo.",
     "desktopRequired": "Abra Macro en el escritorio para guardar o restaurar sus datos locales.",
@@ -3355,6 +3356,12 @@
     "runtimeUnavailableTitle": "Motor de escritorio no disponible",
     "runtimeUnavailableHint": "Macro se está reiniciando o no está en ejecución. Reinténtalo cuando el motor de escritorio esté listo.",
     "startupTitle": "Es necesario recuperar el perfil",
+    "nativeRecoveryHint": "Macro ha detenido la apertura del perfil local porque no se pudo completar la recuperación. Vuelve a intentarlo para reiniciar Macro y reanudar la recuperación.",
+    "revealPreservedArchive": "Mostrar el archivo conservado",
+    "revealRecoveryFolder": "Abrir la carpeta de recuperación",
+    "copyDiagnostics": "Copiar el diagnóstico",
+    "diagnosticsCopied": "Diagnóstico copiado.",
+    "recoveryActionFailed": "La acción falló. Consulta el diagnóstico.",
     "startupRecovery": "No se pudo completar la restauración de los datos del navegador. Se conserva el archivo nativo de recuperación. Consulte el diagnóstico, libere almacenamiento local si es necesario y reinicie Macro para reintentar.",
     "title": "Copia de seguridad y restauración",
     "scope": "Datos locales de Macro: conversaciones, adjuntos guardados, checkpoints de código, borradores, instrucciones en cola, respuestas de recuperación y preferencias generales.",

@@ -1,5 +1,7 @@
 import type { AgsdlChange } from "../../types/agsdl";
-import { keyId, list, object, pointerPart, readDocument, scanSource, text } from "./document";
+import type { ProjectFile, ProjectView } from "../ipc/architectLibrary";
+import { keyId, list, MAX_AGSDL_PROJECTION_BYTES, object, pointerPart, readDocument, scanSource, text } from "./document";
+import { projectLocation } from "./projectLocation";
 import type { ViewerCard } from "./viewer";
 
 export interface PropertyOption { value: string; label: string }
@@ -30,8 +32,8 @@ const same = (a: unknown, b: unknown): boolean => {
 };
 
 /** Project the real owners. Unsupported contracts stay readable and are never rewritten. */
-export function componentProperties(source: string, card: ViewerCard): ComponentProperties {
-  if (card.edition030) return properties030(source, card);
+export function componentProperties(source: string, card: ViewerCard, project = false): ComponentProperties {
+  if (card.edition030) return properties030(source, card, project ? MAX_AGSDL_PROJECTION_BYTES : undefined);
   const doc = readDocument(source);
   if (doc.contract === "agsdl-0.2.0") return { fields: [], shared: false, unsupported: true };
   const parsed = scanSource(source);
@@ -139,6 +141,33 @@ export function componentProperties(source: string, card: ViewerCard): Component
   return { fields, shared: Boolean(agent) || path.startsWith("/definitions/"), unsupported };
 }
 
+export async function projectComponentProperties(
+  view: ProjectView, card: ViewerCard, read: (path: string) => Promise<ProjectFile | null>,
+): Promise<ComponentProperties> {
+  if (!view.projection) return { fields: [], shared: false, unsupported: true };
+  const properties = componentProperties(view.projection.source, card, true);
+  const fields = properties.fields.map(field => ({ field, location: projectLocation(view, field.path) }));
+  const paths = new Set(fields.map(({ location }) => location.file));
+  const files = new Map(await Promise.all([...paths].map(async path => {
+    const file = await read(path);
+    return [path, file?.kind === "text" ? scanSource(file.text) : null] as const;
+  })));
+  const decoder = new TextDecoder();
+  return {
+    ...properties,
+    fields: fields.map(({ field, location }) => {
+      const file = files.get(location.file);
+      if (!file) return { ...field, readonly: true };
+      const span = file.spans.get(location.pointer);
+      return {
+        ...field,
+        value: span ? decoder.decode(file.bytes.subarray(span.start, span.end)) : "",
+        removePath: field.removePath && span ? field.removePath : undefined,
+      };
+    }),
+  };
+}
+
 /** A reassignment and edits to the captured agent definition must be separate transactions. */
 export function agentPropertyLocks030(fields: ComponentProperty[], values: string[]) {
   const changed = (field: ComponentProperty, index: number) => field.exactJson && (values[index] ?? field.value) !== field.value;
@@ -201,8 +230,8 @@ const stepKeys030: Record<string, string[]> = {
 };
 
 /** Full property access uses exact subtrees; blank optional fields remove, never null them. */
-function properties030(source: string, card: ViewerCard): ComponentProperties {
-  const parsed = scanSource(source), fields: ComponentProperty[] = [];
+function properties030(source: string, card: ViewerCard, maxBytes?: number): ComponentProperties {
+  const parsed = scanSource(source, maxBytes), fields: ComponentProperty[] = [];
   const ownerPath = card.edition030?.ownerPath ?? card.path;
   const add = (path: string, keys: string[], required: string[] = []) => {
     const parentSpan = parsed.spans.get(path);

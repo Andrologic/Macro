@@ -17,7 +17,7 @@ export async function chooseImport(directory: boolean, projectId: string): Promi
   if (path) useArchitectDialogStore.getState().open({ kind: "import", path, projectId });
 }
 
-/** Save the original document of a version that could not be recovered, exactly as it was stored. */
+/** Save the original legacy blueprint draft or version exactly as it was stored. */
 export async function downloadOriginal(input: { blueprintId: string; revision: number; number: number | null; name: string }): Promise<void> {
   const translate = t();
   try {

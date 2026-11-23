@@ -111,6 +111,8 @@
     "needsRepair": "Requiere reparación",
     "adaptRepair": "Adaptar para reparar",
     "downloadOriginal": "Descargar original",
+    "discardMigrationFile": "Descartar archivo faltante",
+    "discardMigrationFileConfirm": "¿Descartar {{path}} de este borrador? Podrás recuperarlo al descargar el original.",
     "importProject": "Importar proyecto",
     "importFile": "Importar archivo…",
     "importFolder": "Importar carpeta…",

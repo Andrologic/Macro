@@ -111,6 +111,8 @@
     "needsRepair": "修復が必要",
     "adaptRepair": "修復用に複製",
     "downloadOriginal": "元のファイルをダウンロード",
+    "discardMigrationFile": "不足しているファイルを除外",
+    "discardMigrationFileConfirm": "この下書きから {{path}} を除外しますか？元のデータをダウンロードすれば、ファイルを復元できます。",
     "importProject": "プロジェクトをインポート",
     "importFile": "ファイルをインポート…",
     "importFolder": "フォルダーをインポート…",

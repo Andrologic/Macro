@@ -364,6 +364,21 @@ describe('appBootstrap ownership', () => {
     await controller.stop();
   });
 
+  it('makes Chat available while Architect migration is still running', async () => {
+    const migration = deferred<void>();
+    const migrateArchitectLibrary = mock(() => migration.promise);
+    const initializeChatCritical = mock(async () => {});
+    const controller = createAppBootstrapController(() => bootstrapDependencies({
+      migrateArchitectLibrary, initializeChatCritical,
+    }));
+    await controller.ensureStarted();
+    expect(migrateArchitectLibrary).toHaveBeenCalledTimes(1);
+    expect(initializeChatCritical).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot().ready).toBe(true);
+    migration.resolve();
+    await controller.stop();
+  });
+
   it('retries the Architect import alone and keeps the restored shell ready on SQLite errors', async () => {
     const failure = { code: 'DB_ERROR', message: 'database is locked' };
     const migrateArchitectLibrary = mock(async (): Promise<void> => { throw failure; });
