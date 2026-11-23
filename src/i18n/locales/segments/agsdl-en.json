@@ -1313,5 +1313,251 @@
     "loginInstructions": "Open an agent’s Codex configuration to prepare Macro’s private profile. Follow the private sign-in guide, then check again. Your instructions are kept.",
     "retryLogin": "Check sign-in",
     "loginGuide": "Private sign-in guide"
+  },
+  "architect": {
+    "adapt": {
+      "title": "Adapt version {{number}}",
+      "intro": "Macro creates a new blueprint from this version. The original does not change and the new one remembers where it came from.",
+      "introRepair": "Macro creates a new blueprint with the content of this version, which you can then correct and save.",
+      "defaultName": "{{name}} (adapted)",
+      "done": "Blueprint “{{name}}” created"
+    },
+    "delete": {
+      "title": "Delete version {{number}}?",
+      "description": "This version disappears for good from this blueprint. The other versions do not change.",
+      "used": "This version is used by an execution or a schedule, so it cannot be deleted.",
+      "confirm": "Delete",
+      "done": "Version {{number}} deleted",
+      "checking": "Checking whether this version is in use…"
+    },
+    "export": {
+      "titleVersion": "Export version {{number}}",
+      "titleDraft": "Export the draft",
+      "format": {
+        "archive": "Archive (.agsdl)",
+        "archiveHint": "A single file to send or to import elsewhere.",
+        "project": "Project folder",
+        "projectHint": "Readable files, to work by hand."
+      },
+      "draftHint": "A draft is not frozen, so it exports as a folder. To get a .agsdl file, save a version first.",
+      "settingsNotIncluded": "Macro’s own settings (hidden threads, etc.) are not included in the export.",
+      "leftBehind": "This version’s Macro settings are not in the export: {{items}}.",
+      "setting": {
+        "hidden": "agents hidden in Operate",
+        "hint": "a hint for the starting message",
+        "folder": "working folder mode",
+        "fields": "launch fields"
+      },
+      "why": "The AgSDL format has no place yet for an application’s settings (AgSDL#32). An imported blueprint takes the default values.",
+      "choose": "Choose location…",
+      "exporting": "Exporting…",
+      "doneVersion": "Version {{number}} exported",
+      "doneDraft": "Draft exported",
+      "failed": "The export failed. Try again or choose another location."
+    },
+    "header": {
+      "saved": "Draft · saved",
+      "unsaved": "Draft · unsaved changes",
+      "saving": "Draft · saving…",
+      "readOnly": "read-only",
+      "adapt": "Adapt",
+      "export": "Export",
+      "exportAs": {
+        "archive": "Archive (.agsdl)…",
+        "project": "Project folder…"
+      },
+      "more": "More actions",
+      "showFiles": "Show the project files",
+      "saveHint": "Save a version (Ctrl/Cmd+S). The draft already saves itself.",
+      "saveBlocked": "A save or a conflict is in progress: try again in a moment.",
+      "showMore": "Show more",
+      "less": "Show less",
+      "origin": "Adapted from version {{number}} of “{{blueprint}}”",
+      "originUnknown": "Adapted from version {{number}} of another blueprint",
+      "repairOrigin": "Comes from a version to repair. Fix the issues shown, then save a version."
+    },
+    "import": {
+      "titleNamed": "Import “{{name}}”",
+      "action": "Import",
+      "importing": "Importing…",
+      "reading": "Reading the file…",
+      "valid": "Valid file — nothing runs when you import it.",
+      "validWithPoints_one": "Valid file, with {{count}} point to know about",
+      "validWithPoints_other": "Valid file, with {{count}} points to know about",
+      "blocked": "Import not possible",
+      "blocker": {
+        "invalidArchive": "This file is not a valid AgSDL archive.",
+        "integrity": "The file’s content does not match its inventory: it may be damaged or altered. Ask its author to export it again.",
+        "unsafePath": "The file contains a path that leaves its folder. Macro refuses to open it.",
+        "tooLarge": "This file is too large to import.",
+        "notAProject": "This is neither an AgSDL archive nor an AgSDL project folder. Choose a .agsdl file, or the folder that holds the agsdl.json file.",
+        "projectInvalid": "AgSDL could not open this project: its content is not valid, or it uses a format this version of Macro does not support.",
+        "expired": "The preview has expired. Choose the file or folder again.",
+        "unreadable": "Macro could not read this source."
+      },
+      "system": "This system",
+      "counts": "Agents: {{agents}} · Tools: {{tools}}",
+      "files_one": "{{count}} file",
+      "files_other": "{{count}} files",
+      "warnings_one": "The AgSDL format reports {{count}} warning. It is listed in “All the detail”.",
+      "warnings_other": "The AgSDL format reports {{count}} warnings. They are listed in “All the detail”.",
+      "macroSettings": "Macro’s settings (hidden threads, starting-message hint, working folder…) are not part of this format: the default values apply.",
+      "historyRemoved": "The history inside the archive is not kept: only the current state is imported.",
+      "allDetails": "All the detail",
+      "detailAgents": "Agents",
+      "detailTools": "Tools",
+      "detailExternal": "External addresses (not included)",
+      "detailWarnings": "Warnings",
+      "unreachable": "outside the flow",
+      "notRequested": "not requested at launch",
+      "nameTaken": "A blueprint in this project already has this name.",
+      "reasonReading": "Reading in progress…",
+      "reasonBlocked": "Fix the file before importing it.",
+      "reasonName": "Give the blueprint a name.",
+      "reasonProject": "Choose a project.",
+      "done": "“{{name}}” imported",
+      "failed": "The import failed. Nothing was added."
+    },
+    "menu": {
+      "newProject": "New project",
+      "newBlueprint": "New blueprint",
+      "importFile": "Import a .agsdl file…",
+      "importFolder": "Import a project folder…",
+      "saveVersion": "Save a version…",
+      "exportDraft": "Export the draft (folder)…",
+      "open": "Open",
+      "adapt": "Adapt…",
+      "adaptRepair": "Adapt to repair…",
+      "exportArchive": "Export the archive (.agsdl)…",
+      "exportFolder": "Export as a folder…",
+      "downloadOriginal": "Download the original",
+      "delete": "Delete…"
+    },
+    "permissions": {
+      "title": "What it will be able to do",
+      "none": "This system asks for no particular permission.",
+      "attention": "Attention:",
+      "cap": {
+        "readFiles": "Read files in the execution folder",
+        "readOutside": "Read files outside the execution folder",
+        "writeFiles": "Create and change files in the execution folder",
+        "writeFolders": "Change files in additional folders ({{subject}})",
+        "writeAnywhere": "Change files anywhere on this computer",
+        "runCommands": "Run commands on this computer",
+        "runCommand": "Run the command “{{subject}}”",
+        "network": "Access the Internet"
+      },
+      "useTool": "Use the tool “{{name}}”",
+      "useRemoteTool": "Use the tool “{{name}}” (remote server)",
+      "engines": "Engines and models",
+      "engineModel": "{{engine}} (model {{model}})",
+      "enginesHint": "Checked when launching.",
+      "prepare": "To prepare",
+      "prepareNothing": "Nothing to prepare before launching.",
+      "secret": "Secret requested: {{name}} (tool “{{server}}”)",
+      "secretHint": "The values are never in the file. You will enter them at the first launch.",
+      "programs_one": "Required program: {{programs}}",
+      "programs_other": "Required programs: {{programs}}",
+      "programsHint": "Checked at launch, never installed by Macro.",
+      "external_one": "{{count}} piece of content points to an outside address and is not included in the file.",
+      "external_other": "{{count}} pieces of content point to outside addresses and are not included in the file.",
+      "launchBlockers_one": "{{count}} external skill must be replaced before launching.",
+      "launchBlockers_other": "{{count}} external skills must be replaced before launching."
+    },
+    "recovery": {
+      "caption": "{{name}} · version {{number}}",
+      "captionDraft": "{{name}} · draft",
+      "title": "This version could not be recovered",
+      "titleDraft": "This draft could not be recovered",
+      "body": "Its content is kept, but Macro could not convert it: it can be neither launched nor exported as is. You can adapt it to repair it, or download the original.",
+      "why": "To fix: {{item}}",
+      "downloaded": "Original downloaded",
+      "downloadFailed": "The download failed"
+    },
+    "saveVersion": {
+      "title": "Save version {{number}}",
+      "action": "Save version {{number}}",
+      "notePlaceholder": "What changes in this version…",
+      "checking": "Checking the system…",
+      "oldFormat": "This system is in an older format",
+      "convertNotice": "Macro will update it to create version {{number}}. The draft is converted at the same time; versions already saved do not change.",
+      "convertDetails": "AgSDL 0.3.0 → 0.4.0.",
+      "cannotConvert": "This version cannot be saved",
+      "cannotSave": "The system contains errors",
+      "issueCount_one": "{{count}} item to fix.",
+      "issueCount_other": "{{count}} items to fix.",
+      "item": {
+        "agent": "Agent “{{name}}” needs fixing",
+        "step": "Step “{{name}}” needs fixing",
+        "skill": "Skill “{{name}}” needs fixing",
+        "tool": "Tool “{{name}}” needs fixing",
+        "content": "Content “{{name}}” needs fixing",
+        "document": "The system as a whole contains an error"
+      },
+      "show": "Show",
+      "warnings_one": "{{count}} warning, nothing blocks the save",
+      "warnings_other": "{{count}} warnings, nothing blocks the save",
+      "reasonChecking": "Check in progress…",
+      "reasonBlocked": "Fix the points above first.",
+      "done": "Version {{number}} saved"
+    },
+    "tree": {
+      "title": "Library",
+      "search": "Search a project or a blueprint…",
+      "import": "Import…",
+      "new": "New…",
+      "empty": "No project yet.",
+      "noResults": "No blueprint matches this search.",
+      "archived": "Archived ({{count}})",
+      "modified": "modified",
+      "versionShort": "v{{number}}",
+      "olderVersions": "Older versions ({{count}})",
+      "hasRepair": "A version needs repair",
+      "projectActions": "Actions for project “{{name}}”",
+      "blueprintActions": "Actions for blueprint “{{name}}”",
+      "versionActions": "Actions for version {{number}}"
+    },
+    "operate": {
+      "title": "In Operate",
+      "hideHint": "This agent’s conversations (all its instances) do not appear in Operate’s column. They come back up when the agent needs you. A Macro setting: it is not carried by the export.",
+      "saved": "Saved",
+      "notSaved": "The setting was not saved.",
+      "entryHintHelp": "Helps whoever launches the system write their starting message. A Macro setting, not carried by the export."
+    },
+    "views": {
+      "label": "System view",
+      "flow": "Flow",
+      "agents": "Agents",
+      "skills": "Skills",
+      "tools": "Tools",
+      "files": "Files",
+      "empty": {
+        "agents": "This system contains no agent.",
+        "skills": "This system uses no skill.",
+        "tools": "This system uses no tool server.",
+        "files": "This project contains no file."
+      },
+      "filesHint": "Read only. To change an item, open its card or ask the Architect agent.",
+      "fileGroup": {
+        "agents": "Agents",
+        "flow": "Flow",
+        "skills": "Skills",
+        "tools": "Tool servers (MCP)",
+        "other": "Other files"
+      },
+      "inFlow": "used in the flow",
+      "notInFlow": "not used",
+      "unused": "not used",
+      "usedBy": {
+        "skills_one": "used by {{count}} agent",
+        "skills_other": "used by {{count}} agents",
+        "tools_one": "used by {{count}} agent",
+        "tools_other": "used by {{count}} agents"
+      },
+      "transport": {
+        "local": "local",
+        "remote": "remote"
+      }
+    }
   }
 }

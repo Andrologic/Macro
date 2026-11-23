@@ -20,10 +20,14 @@ interface ArchitectLibraryState {
   version: Read<BlueprintVersion>;
   projects: Read<ArchitectProject[]>;
   blueprints: Read<BlueprintSummary[]>;
+  /** Every project's blueprints, for the library tree. The selected project's entry mirrors `blueprints`. */
+  projectBlueprints: Record<string, Read<BlueprintSummary[]>>;
   versions: Read<BlueprintVersionSummary[]>;
   restoreSelection: () => Promise<void>;
   refreshProjects: () => Promise<void>;
   refreshBlueprints: () => Promise<void>;
+  refreshProjectBlueprints: (projectId: string) => Promise<void>;
+  refreshAllBlueprints: () => Promise<void>;
   refreshVersions: () => Promise<void>;
   selectProject: (projectId: string | null) => Promise<void>;
   selectBlueprint: (projectId: string, blueprintId: string, versionNumber?: number | null) => Promise<void>;
@@ -55,6 +59,21 @@ export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get)
   let draftRequest = 0;
   let versionRequest = 0;
   const catalogRequests = { projects: 0, blueprints: 0, versions: 0 };
+  const projectRequests = new Map<string, number>();
+  const nextProjectRequest = (projectId: string) => {
+    const request = (projectRequests.get(projectId) ?? 0) + 1;
+    projectRequests.set(projectId, request);
+    return request;
+  };
+  // A refresh keeps showing the last list instead of flashing a loading state.
+  const publishProject = (projectId: string, request: number, result: Read<BlueprintSummary[]>) => {
+    if (projectRequests.get(projectId) !== request) return;
+    set(state => {
+      const previous = state.projectBlueprints[projectId];
+      return { projectBlueprints: { ...state.projectBlueprints,
+        [projectId]: result.status === "loading" && previous?.status === "ready" ? previous : result } };
+    });
+  };
 
   async function readCatalog<K extends keyof typeof catalogRequests, T>(
     key: K,
@@ -106,6 +125,7 @@ export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get)
     version: { status: "idle" },
     projects: { status: "idle" },
     blueprints: { status: "idle" },
+    projectBlueprints: {},
     versions: { status: "idle" },
     async restoreSelection() {
       if (get().projectId || draftRequest) return;
@@ -118,7 +138,23 @@ export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get)
     refreshProjects: () => readCatalog("projects", () => architectLibrary.listProjects(), projects => set({ projects })),
     async refreshBlueprints() {
       const { projectId } = get();
-      if (projectId) await readCatalog("blueprints", () => architectLibrary.listBlueprints(projectId), blueprints => set({ blueprints }));
+      if (!projectId) return;
+      const request = nextProjectRequest(projectId);
+      await readCatalog("blueprints", () => architectLibrary.listBlueprints(projectId), blueprints => {
+        set({ blueprints });
+        publishProject(projectId, request, blueprints);
+      });
+    },
+    async refreshProjectBlueprints(projectId) {
+      if (get().projectId === projectId) { await get().refreshBlueprints(); return; }
+      const request = nextProjectRequest(projectId);
+      publishProject(projectId, request, { status: "loading" });
+      try { publishProject(projectId, request, { status: "ready", value: await architectLibrary.listBlueprints(projectId) }); }
+      catch { publishProject(projectId, request, { status: "error" }); }
+    },
+    async refreshAllBlueprints() {
+      const { projects } = get();
+      if (projects.status === "ready") await Promise.all(projects.value.map(project => get().refreshProjectBlueprints(project.id)));
     },
     async refreshVersions() {
       const { draft } = get();

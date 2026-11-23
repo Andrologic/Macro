@@ -1313,5 +1313,251 @@
     "loginInstructions": "エージェントの Codex 設定を開いて Macro 専用プロファイルを準備してください。専用プロファイルへのログイン手順に従い、再確認してください。入力した指示は保持されます。",
     "retryLogin": "ログインを確認",
     "loginGuide": "専用プロファイルのログイン手順"
+  },
+  "architect": {
+    "adapt": {
+      "title": "バージョン {{number}} を基に作成",
+      "intro": "この版から新しいブループリントを作成します。元の版は変わらず、新しいものは元の情報を保持します。",
+      "introRepair": "この版の内容で新しいブループリントを作成します。修正してから保存できます。",
+      "defaultName": "{{name}}（派生）",
+      "done": "ブループリント「{{name}}」を作成しました"
+    },
+    "delete": {
+      "title": "バージョン {{number}} を削除しますか？",
+      "description": "この版はこのブループリントから完全に削除されます。他の版は変わりません。",
+      "used": "この版は実行またはスケジュールで使用中のため、削除できません。",
+      "confirm": "削除",
+      "done": "バージョン {{number}} を削除しました",
+      "checking": "この版が使用中か確認しています…"
+    },
+    "export": {
+      "titleVersion": "バージョン {{number}} をエクスポート",
+      "titleDraft": "下書きをエクスポート",
+      "format": {
+        "archive": "アーカイブ (.agsdl)",
+        "archiveHint": "1 つのファイル。送信や他の場所へのインポートに使います。",
+        "project": "プロジェクトフォルダー",
+        "projectHint": "読める形式のファイル。手作業で編集できます。"
+      },
+      "draftHint": "下書きは固定されていないため、フォルダーとして書き出されます。.agsdl ファイルが必要な場合は、先にバージョンを保存してください。",
+      "settingsNotIncluded": "Macro 固有の設定（非表示のスレッドなど）はエクスポートに含まれません。",
+      "leftBehind": "この版の Macro 設定はエクスポートに含まれません：{{items}}。",
+      "setting": {
+        "hidden": "Operate で非表示のエージェント",
+        "hint": "開始メッセージのヒント",
+        "folder": "作業フォルダーのモード",
+        "fields": "起動フィールド"
+      },
+      "why": "AgSDL 形式にはまだアプリケーション設定の置き場所がありません（AgSDL#32）。インポートしたブループリントは既定値になります。",
+      "choose": "保存先を選択…",
+      "exporting": "エクスポート中…",
+      "doneVersion": "バージョン {{number}} をエクスポートしました",
+      "doneDraft": "下書きをエクスポートしました",
+      "failed": "エクスポートに失敗しました。もう一度試すか、別の保存先を選んでください。"
+    },
+    "header": {
+      "saved": "下書き · 保存済み",
+      "unsaved": "下書き · 未保存の変更あり",
+      "saving": "下書き · 保存中…",
+      "readOnly": "読み取り専用",
+      "adapt": "派生",
+      "export": "エクスポート",
+      "exportAs": {
+        "archive": "アーカイブ (.agsdl)…",
+        "project": "プロジェクトフォルダー…"
+      },
+      "more": "その他の操作",
+      "showFiles": "プロジェクトのファイルを表示",
+      "saveHint": "バージョンを保存 (Ctrl/Cmd+S)。下書きは自動で保存されます。",
+      "saveBlocked": "保存または競合の処理中です。少し待ってからもう一度お試しください。",
+      "showMore": "続きを表示",
+      "less": "表示を減らす",
+      "origin": "「{{blueprint}}」のバージョン {{number}} から派生",
+      "originUnknown": "別のブループリントのバージョン {{number}} から派生",
+      "repairOrigin": "修復が必要な版から作成されました。指摘された点を修正してから、バージョンを保存してください。"
+    },
+    "import": {
+      "titleNamed": "「{{name}}」をインポート",
+      "action": "インポート",
+      "importing": "インポート中…",
+      "reading": "ファイルを読み込んでいます…",
+      "valid": "有効なファイルです。インポートしても何も実行されません。",
+      "validWithPoints_one": "有効なファイルです。確認事項が {{count}} 件あります",
+      "validWithPoints_other": "有効なファイルです。確認事項が {{count}} 件あります",
+      "blocked": "インポートできません",
+      "blocker": {
+        "invalidArchive": "このファイルは有効な AgSDL アーカイブではありません。",
+        "integrity": "ファイルの内容が目録と一致しません。破損または改変されている可能性があります。作成者に再エクスポートを依頼してください。",
+        "unsafePath": "ファイルにフォルダーの外へ出るパスが含まれています。Macro は開きません。",
+        "tooLarge": "このファイルは大きすぎてインポートできません。",
+        "notAProject": "AgSDL アーカイブでも AgSDL プロジェクトフォルダーでもありません。.agsdl ファイル、または agsdl.json を含むフォルダーを選んでください。",
+        "projectInvalid": "AgSDL はこのプロジェクトを開けませんでした。内容が無効か、この版の Macro が対応していない形式です。",
+        "expired": "プレビューの有効期限が切れました。ファイルまたはフォルダーをもう一度選んでください。",
+        "unreadable": "Macro はこのソースを読み取れませんでした。"
+      },
+      "system": "このシステム",
+      "counts": "エージェント：{{agents}} · ツール：{{tools}}",
+      "files_one": "{{count}} ファイル",
+      "files_other": "{{count}} ファイル",
+      "warnings_one": "AgSDL 形式が {{count}} 件の警告を報告しています。「詳細をすべて表示」で確認できます。",
+      "warnings_other": "AgSDL 形式が {{count}} 件の警告を報告しています。「詳細をすべて表示」で確認できます。",
+      "macroSettings": "Macro の設定（非表示スレッド、開始メッセージのヒント、作業フォルダーなど）はこの形式に含まれません。既定値が適用されます。",
+      "historyRemoved": "アーカイブ内の履歴は保持されず、現在の状態だけがインポートされます。",
+      "allDetails": "詳細をすべて表示",
+      "detailAgents": "エージェント",
+      "detailTools": "ツール",
+      "detailExternal": "外部アドレス（含まれません）",
+      "detailWarnings": "警告",
+      "unreachable": "フロー外",
+      "notRequested": "起動時には要求されません",
+      "nameTaken": "このプロジェクトには同じ名前のブループリントがあります。",
+      "reasonReading": "読み込み中…",
+      "reasonBlocked": "インポートする前にファイルを修正してください。",
+      "reasonName": "ブループリントに名前を付けてください。",
+      "reasonProject": "プロジェクトを選んでください。",
+      "done": "「{{name}}」をインポートしました",
+      "failed": "インポートに失敗しました。何も追加されていません。"
+    },
+    "menu": {
+      "newProject": "新規プロジェクト",
+      "newBlueprint": "新規ブループリント",
+      "importFile": ".agsdl ファイルをインポート…",
+      "importFolder": "プロジェクトフォルダーをインポート…",
+      "saveVersion": "バージョンを保存…",
+      "exportDraft": "下書きをエクスポート（フォルダー）…",
+      "open": "開く",
+      "adapt": "派生…",
+      "adaptRepair": "修復用に派生…",
+      "exportArchive": "アーカイブをエクスポート (.agsdl)…",
+      "exportFolder": "フォルダーとしてエクスポート…",
+      "downloadOriginal": "オリジナルをダウンロード",
+      "delete": "削除…"
+    },
+    "permissions": {
+      "title": "実行できること",
+      "none": "このシステムは特別な権限を要求しません。",
+      "attention": "注意：",
+      "cap": {
+        "readFiles": "実行フォルダー内のファイルを読む",
+        "readOutside": "実行フォルダー外のファイルを読む",
+        "writeFiles": "実行フォルダー内のファイルを作成・変更する",
+        "writeFolders": "追加のフォルダー内のファイルを変更する（{{subject}}）",
+        "writeAnywhere": "このコンピューター上のどこでもファイルを変更する",
+        "runCommands": "このコンピューターでコマンドを実行する",
+        "runCommand": "コマンド「{{subject}}」を実行する",
+        "network": "インターネットにアクセスする"
+      },
+      "useTool": "ツール「{{name}}」を使う",
+      "useRemoteTool": "ツール「{{name}}」を使う（リモートサーバー）",
+      "engines": "エンジンとモデル",
+      "engineModel": "{{engine}}（モデル {{model}}）",
+      "enginesHint": "起動時に確認されます。",
+      "prepare": "事前に必要なこと",
+      "prepareNothing": "起動前に準備するものはありません。",
+      "secret": "必要なシークレット：{{name}}（ツール「{{server}}」）",
+      "secretHint": "値はファイルに含まれません。初回の起動時に入力します。",
+      "programs_one": "必要なプログラム：{{programs}}",
+      "programs_other": "必要なプログラム：{{programs}}",
+      "programsHint": "起動時に確認されます。Macro がインストールすることはありません。",
+      "external_one": "{{count}} 件のコンテンツが外部アドレスを指しており、ファイルには含まれません。",
+      "external_other": "{{count}} 件のコンテンツが外部アドレスを指しており、ファイルには含まれません。",
+      "launchBlockers_one": "起動前に外部スキル {{count}} 件を置き換える必要があります。",
+      "launchBlockers_other": "起動前に外部スキル {{count}} 件を置き換える必要があります。"
+    },
+    "recovery": {
+      "caption": "{{name}} · バージョン {{number}}",
+      "captionDraft": "{{name}} · 下書き",
+      "title": "この版は復元できませんでした",
+      "titleDraft": "この下書きは復元できませんでした",
+      "body": "内容は保持されていますが、Macro は変換できませんでした。このままでは起動もエクスポートもできません。修復用に派生するか、オリジナルをダウンロードしてください。",
+      "why": "修正が必要：{{item}}",
+      "downloaded": "オリジナルをダウンロードしました",
+      "downloadFailed": "ダウンロードに失敗しました"
+    },
+    "saveVersion": {
+      "title": "バージョン {{number}} を保存",
+      "action": "バージョン {{number}} を保存",
+      "notePlaceholder": "この版での変更点…",
+      "checking": "システムを確認しています…",
+      "oldFormat": "このシステムは古い形式です",
+      "convertNotice": "Macro はバージョン {{number}} を作成するためにこれを更新します。下書きも同時に変換され、保存済みの版は変わりません。",
+      "convertDetails": "AgSDL 0.3.0 → 0.4.0。",
+      "cannotConvert": "このバージョンは保存できません",
+      "cannotSave": "システムにエラーがあります",
+      "issueCount_one": "修正が必要な項目が {{count}} 件あります。",
+      "issueCount_other": "修正が必要な項目が {{count}} 件あります。",
+      "item": {
+        "agent": "エージェント「{{name}}」の修正が必要です",
+        "step": "ステップ「{{name}}」の修正が必要です",
+        "skill": "スキル「{{name}}」の修正が必要です",
+        "tool": "ツール「{{name}}」の修正が必要です",
+        "content": "コンテンツ「{{name}}」の修正が必要です",
+        "document": "システム全体にエラーがあります"
+      },
+      "show": "表示",
+      "warnings_one": "警告 {{count}} 件。保存は妨げられません",
+      "warnings_other": "警告 {{count}} 件。保存は妨げられません",
+      "reasonChecking": "確認中…",
+      "reasonBlocked": "まず上の項目を修正してください。",
+      "done": "バージョン {{number}} を保存しました"
+    },
+    "tree": {
+      "title": "ライブラリ",
+      "search": "プロジェクトまたはブループリントを検索…",
+      "import": "インポート…",
+      "new": "新規…",
+      "empty": "まだプロジェクトがありません。",
+      "noResults": "この検索に一致するブループリントはありません。",
+      "archived": "アーカイブ済み（{{count}}）",
+      "modified": "変更あり",
+      "versionShort": "v{{number}}",
+      "olderVersions": "以前のバージョン（{{count}}）",
+      "hasRepair": "修復が必要な版があります",
+      "projectActions": "プロジェクト「{{name}}」の操作",
+      "blueprintActions": "ブループリント「{{name}}」の操作",
+      "versionActions": "バージョン {{number}} の操作"
+    },
+    "operate": {
+      "title": "Operate での表示",
+      "hideHint": "このエージェントの会話（すべてのインスタンス）は Operate の列に表示されません。エージェントがあなたを必要とするときは表示されます。Macro 固有の設定のため、エクスポートには含まれません。",
+      "saved": "保存しました",
+      "notSaved": "設定を保存できませんでした。",
+      "entryHintHelp": "システムを起動する人が開始メッセージを書くときの手助けになります。Macro 固有の設定で、エクスポートには含まれません。"
+    },
+    "views": {
+      "label": "システムの表示",
+      "flow": "フロー",
+      "agents": "エージェント",
+      "skills": "スキル",
+      "tools": "ツール",
+      "files": "ファイル",
+      "empty": {
+        "agents": "このシステムにはエージェントがありません。",
+        "skills": "このシステムはスキルを使っていません。",
+        "tools": "このシステムはツールサーバーを使っていません。",
+        "files": "このプロジェクトにはファイルがありません。"
+      },
+      "filesHint": "読み取り専用です。項目を変更するには、そのカードを開くか Architect のエージェントに依頼してください。",
+      "fileGroup": {
+        "agents": "エージェント",
+        "flow": "フロー",
+        "skills": "スキル",
+        "tools": "ツールサーバー (MCP)",
+        "other": "その他のファイル"
+      },
+      "inFlow": "フローで使用",
+      "notInFlow": "未使用",
+      "unused": "未使用",
+      "usedBy": {
+        "skills_one": "{{count}} 個のエージェントが使用",
+        "skills_other": "{{count}} 個のエージェントが使用",
+        "tools_one": "{{count}} 個のエージェントが使用",
+        "tools_other": "{{count}} 個のエージェントが使用"
+      },
+      "transport": {
+        "local": "ローカル",
+        "remote": "リモート"
+      }
+    }
   }
 }
