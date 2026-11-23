@@ -90,7 +90,10 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
   if (command === 'pilot_files_authorize') return;
   if (command === 'pilot_files_list') return [];
   if (command === 'pilot_content_policy') { await policyWait; if (!supported) throw 'content_unavailable'; return secretValues; }
-  if (command === 'host_telemetry_read') return { sampleId: 'sample:synthetic', observedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 5000).toISOString(), availability: 'available', reason: null, cpuPercent: 25, memoryUsedBytes: 1024, memoryTotalBytes: 4096 };
+  if (command === 'host_telemetry_read') {
+    const observed = Date.now();
+    return { sampleId: 'sample:synthetic', observedAt: new Date(observed).toISOString(), expiresAt: new Date(observed + 5000).toISOString(), availability: 'available', reason: null, cpuPercent: 25, memoryUsedBytes: 1024, memoryTotalBytes: 4096 };
+  }
   if (command === 'workspace_resolve_project_icons') {
     const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
     const bytes = Uint8Array.from(atob(data), char => char.charCodeAt(0));
