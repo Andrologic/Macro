@@ -11,6 +11,7 @@ export const localBackupStatus = (): Promise<LocalBackupStatus> => invoke('local
 export const localBackupAcknowledge = (): Promise<void> => invoke('local_backup_acknowledge');
 
 export interface ProfileStartupRecovery {
+  kind: 'startup' | 'restore';
   diagnostics: string;
   preservedArchive: string | null;
 }

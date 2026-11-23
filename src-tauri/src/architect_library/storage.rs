@@ -147,9 +147,13 @@ impl Storage {
         }
     }
 
+    // Called under the exclusive migration lease.
     pub(super) fn migration_plans(&self) -> Result<PathBuf> {
         let dir = self.root.join("migration");
         ensure_dir(&self.root, &dir)?;
+        if let Err(error) = reclaim_migration_temps(&dir) {
+            tracing::warn!(%error, "Could not remove temporary Architect migration plans");
+        }
         Ok(dir)
     }
 
@@ -287,28 +291,7 @@ impl Storage {
         ensure_staging_dir(stage.path(), &root)?;
         let written: BTreeSet<_> = split.files.keys().cloned().collect();
         for (name, bytes) in split.files {
-            write_staged_project_file(&root, &name, &bytes, draft_blueprint.is_some()).map_err(
-                |error| match error {
-                    Error::Io(source) if invalid_stage_path(&source) => {
-                        Error::Diagnostic(Diagnostic {
-                            code: "PROJECT_PATH".into(),
-                            file: Some(name.clone()),
-                            pointer: String::new(),
-                            message: format!(
-                                "Could not materialize project file {name:?}: {source}"
-                            ),
-                            source: None,
-                        })
-                    }
-                    Error::Io(source) => Error::ProjectIo {
-                        file: name.clone(),
-                        pointer: String::new(),
-                        path: name,
-                        source,
-                    },
-                    error => error,
-                },
-            )?;
+            write_staged_project_file(&root, &name, &bytes, draft_blueprint.is_some())?;
         }
         let source = match OpenedSource::open_path(&root).map_err(Error::from) {
             Ok(source) => {
@@ -739,8 +722,9 @@ impl Storage {
         let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
         let row = index::insert_draft(&mut tx, &project_id, &name, &draft, Some(&key)).await?;
         if artifact.state == StorageState::Recovery {
-            index::retain_draft_original(
+            index::retain_original(
                 &mut tx,
+                0,
                 row.try_get("revision")?,
                 original.as_ref().unwrap_or(&draft),
             )
@@ -1004,6 +988,17 @@ pub(super) fn sync_stage_directories(path: &Path) -> io::Result<()> {
     sync_directory(path)
 }
 
+fn reclaim_migration_temps(dir: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name().as_encoded_bytes().starts_with(b".tmp") && entry.file_type()?.is_file()
+        {
+            profile::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
+}
+
 fn remove_entry(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     if is_link_or_reparse_point(&metadata) {
@@ -1083,7 +1078,19 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
 
 // Only classify errors from materializing a member inside a new private
 // project. The same errors at the library root can require operator repair.
-fn invalid_stage_path(error: &io::Error) -> bool {
+fn invalid_stage_path(path: &Path, error: &io::Error) -> bool {
+    if !invalid_path_error(error) {
+        return false;
+    }
+    // A permanent diagnostic needs an observable path conflict or limit.
+    // A failed operation by itself does not prove the member is unpublishable.
+    match fs::symlink_metadata(path) {
+        Ok(_) => error.kind() == io::ErrorKind::AlreadyExists,
+        Err(observed) => invalid_path_error(&observed),
+    }
+}
+
+fn invalid_path_error(error: &io::Error) -> bool {
     if matches!(
         error.kind(),
         io::ErrorKind::AlreadyExists | io::ErrorKind::NotADirectory | io::ErrorKind::IsADirectory
@@ -1116,15 +1123,58 @@ pub(super) fn check_project_path(root: &Path, name: &str) -> Result<()> {
 }
 
 pub(super) fn write_project_file(root: &Path, path: &str, bytes: &[u8]) -> Result<()> {
-    write_staged_project_file(root, path, bytes, true)
+    let mut file = create_project_file(root, path)?;
+    Ok(write_project_contents(&mut file, bytes, true)?)
 }
 
-fn write_staged_project_file(root: &Path, path: &str, bytes: &[u8], durable: bool) -> Result<()> {
-    check_project_path(root, path)?;
-    let path = root.join(path);
+fn write_staged_project_file(root: &Path, name: &str, bytes: &[u8], durable: bool) -> Result<()> {
+    let mut file = create_project_file(root, name).map_err(|error| match error {
+        Error::Io(source) => {
+            let invalid_path = invalid_stage_path(&root.join(name), &source);
+            staged_member_error(name, source, invalid_path)
+        }
+        error => error,
+    })?;
+    write_project_contents(&mut file, bytes, durable)
+        .map_err(|source| staged_member_error(name, source, false))
+}
+
+fn staged_member_error(name: &str, source: io::Error, invalid_path: bool) -> Error {
+    #[cfg(test)]
+    let invalid_path = invalid_path
+        || source.kind() == io::ErrorKind::StorageFull
+            && profile::mutated("classify-disk-full-as-permanent");
+    if invalid_path {
+        Error::Diagnostic(Diagnostic {
+            code: "PROJECT_PATH".into(),
+            file: Some(name.into()),
+            pointer: String::new(),
+            message: format!("Could not materialize project file {name:?}: {source}"),
+            source: None,
+        })
+    } else {
+        Error::ProjectIo {
+            file: name.into(),
+            pointer: String::new(),
+            path: name.into(),
+            source,
+        }
+    }
+}
+
+fn create_project_file(root: &Path, name: &str) -> Result<profile::ProfileFile<File>> {
+    check_project_path(root, name)?;
+    let path = root.join(name);
     let parent = path.parent().ok_or(Error::InvalidDestination)?;
     ensure_staging_dir(root, parent)?;
-    let mut file = create_private_file(&path, false)?;
+    Ok(create_private_file(&path, false)?)
+}
+
+fn write_project_contents(
+    file: &mut profile::ProfileFile<File>,
+    bytes: &[u8],
+    durable: bool,
+) -> io::Result<()> {
     file.write_all(bytes)?;
     if durable {
         file.sync_all()?;

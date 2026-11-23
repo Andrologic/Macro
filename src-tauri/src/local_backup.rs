@@ -1562,6 +1562,24 @@ fn preserved_path(dir: &Path, journal: &RestoreJournal) -> Result<PathBuf> {
     Ok(dir.join(&journal.preserved))
 }
 
+// Resolve a relocated profile root before checking its managed descendants.
+fn resolve_backup_root(root: &Path) -> Result<PathBuf> {
+    if fs::symlink_metadata(root).is_ok_and(|meta| storage::is_link_or_reparse_point(&meta)) {
+        root.canonicalize().map_err(|error| error.to_string())
+    } else {
+        Ok(root.to_owned())
+    }
+}
+
+fn resolve_backup_roots(data: &Path, config: &Path) -> Result<(PathBuf, PathBuf)> {
+    let data = resolve_backup_root(data)?;
+    #[cfg(test)]
+    if profile::mutated("skip-config-root-resolution") {
+        return Ok((data, config.to_owned()));
+    }
+    Ok((data, resolve_backup_root(config)?))
+}
+
 fn safe_parent(path: &Path, root: &Path) -> Result<()> {
     let mut current = root.to_path_buf();
     let relative = path.strip_prefix(root).map_err(|e| e.to_string())?;
@@ -1715,6 +1733,7 @@ fn check_restore_space(
     original: &Archive,
     data: &Path,
     config: &Path,
+    available_space: impl Fn(&Path) -> io::Result<u64>,
 ) -> Result<()> {
     let footprint = |archive: &Archive, prefix: &str| -> Result<u64> {
         archive
@@ -1734,16 +1753,18 @@ fn check_restore_space(
         .ancestors()
         .find(|path| path.is_dir())
         .ok_or("Missing configuration volume")?;
-    let free_data = profile::available_space(data).map_err(|error| error.to_string())?;
-    let free_config = profile::available_space(config_volume).map_err(|error| error.to_string())?;
+    let free_data = available_space(data).map_err(|error| error.to_string())?;
+    let free_config = available_space(config_volume).map_err(|error| error.to_string())?;
     let preservation =
         footprint(original, "data/")?.saturating_add(footprint(original, "config/")?);
-    if free_data
+    let insufficient_space = free_data
         < preservation
             .saturating_add(data_bytes)
             .saturating_add(config_bytes)
-        || free_config < config_bytes
-    {
+        || free_config < config_bytes;
+    #[cfg(test)]
+    let insufficient_space = insufficient_space && !profile::mutated("skip-restore-space-check");
+    if insufficient_space {
         return Err("Insufficient free disk space to restore and recover the profile".into());
     }
     Ok(())
@@ -1952,11 +1973,36 @@ pub(crate) fn has_pending_startup_work(data: &Path) -> Result<bool> {
     Ok(false)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ProfileRecoveryKind {
+    Startup,
+    Restore,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileRecovery {
-    diagnostics: String,
+    pub(crate) kind: ProfileRecoveryKind,
+    pub(crate) diagnostics: String,
     preserved_archive: Option<PathBuf>,
+}
+
+impl ProfileRecovery {
+    pub(crate) fn startup_step<T>(
+        context: &str,
+        result: std::result::Result<T, impl std::fmt::Display>,
+    ) -> std::result::Result<T, Self> {
+        result.map_err(|error| {
+            let diagnostics = format!("{context}: {error}");
+            tracing::error!(%diagnostics, "Profile startup failed");
+            Self {
+                kind: ProfileRecoveryKind::Startup,
+                diagnostics,
+                preserved_archive: None,
+            }
+        })
+    }
 }
 
 #[derive(Default)]
@@ -1976,6 +2022,8 @@ pub(crate) fn guard_profile_commands<R: tauri::Runtime>(
                     | "profile_recovery_retry"
                     | "profile_recovery_reveal"
                     | "show_main_window"
+                    | "window_close"
+                    | "window_minimize"
             )
         {
             invoke.resolver.reject("Profile recovery is required");
@@ -1997,8 +2045,15 @@ pub async fn process_startup(
         return Ok(());
     }
     startup.map_err(|diagnostics| {
+        let resolved = resolve_backup_root(data);
+        let data = resolved.as_deref().unwrap_or(data);
         let dir = data.join("local-backup");
         let journal = dir.join("restoring.json");
+        let kind = if safe_parent(&dir, data).is_ok() && fs::symlink_metadata(&journal).is_ok() {
+            ProfileRecoveryKind::Restore
+        } else {
+            ProfileRecoveryKind::Startup
+        };
         let preserved_archive = safe_parent(&journal, data)
             .and_then(|()| read_bounded(&journal))
             .ok()
@@ -2006,6 +2061,7 @@ pub async fn process_startup(
             .and_then(|marker| preserved_path(&dir, &marker).ok());
         tracing::error!(%diagnostics, "Profile recovery is required");
         ProfileRecovery {
+            kind,
             diagnostics,
             preserved_archive,
         }
@@ -2038,6 +2094,9 @@ pub(crate) fn profile_recovery_reveal(
 ) -> Result<()> {
     use tauri_plugin_opener::OpenerExt;
     let recovery = state.0.as_ref().ok_or("Profile recovery is not active")?;
+    if recovery.kind != ProfileRecoveryKind::Restore {
+        return Err("Restore recovery is not active".into());
+    }
     if let Some(path) = &recovery.preserved_archive {
         app.opener().reveal_item_in_dir(path)
     } else {
@@ -2091,8 +2150,7 @@ async fn process_startup_with_preserver(
     preserve: fn(&Archive, &Path) -> Result<()>,
 ) -> Result<()> {
     create_private_root(data).map_err(|error| error.to_string())?;
-    let data = data.to_owned();
-    let config = config.to_owned();
+    let (data, config) = resolve_backup_roots(data, config)?;
     let runtime = tokio::runtime::Handle::current();
     #[cfg(not(test))]
     let owner = crate::secrets::policy::POLICY.clone();
@@ -2223,7 +2281,7 @@ async fn process_startup_locked(
             let original = capture_raw(data, config, request.browser)?;
             let mut marker = RestoreJournal { preserved: format!("preserved-{}.zip", uuid::Uuid::new_v4()), phase: RestorePhase::Rollback };
             let preservation = preserved_path(&dir, &marker)?;
-            check_restore_space(&archive, &original, data, config)?;
+            check_restore_space(&archive, &original, data, config, profile::available_space)?;
             preserve(&original, &preservation)?;
             drop(original);
             atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
@@ -2288,6 +2346,24 @@ pub async fn local_backup_schedule(
     }
     validate_browser(&browser)?;
     let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config = crate::config::resolve_config_root(
+        &app.path().app_config_dir().map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.message)?;
+    schedule_backup(
+        &data,
+        &config,
+        Request {
+            operation,
+            path,
+            browser,
+        },
+    )
+    .await
+}
+
+async fn schedule_backup(data: &Path, config: &Path, request: Request) -> Result<()> {
+    let (data, config) = resolve_backup_roots(data, config)?;
     let dir = data.join("local-backup");
     safe_parent(&dir, &data)?;
     storage::ensure_dir(&data, &dir).map_err(|error| error.to_string())?;
@@ -2298,23 +2374,15 @@ pub async fn local_backup_schedule(
     if dir.join("request.json").exists() || dir.join("restoring.json").exists() {
         return Err("A profile operation is already pending. Restart Macro first.".into());
     }
-    let config = crate::config::resolve_config_root(
-        &app.path().app_config_dir().map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.message)?;
-    if operation == "restore" {
-        let archive = load_restore_archive(Path::new(&path), &data).await?;
+    let path = Path::new(&request.path);
+    if request.operation == "restore" {
+        let archive = load_restore_archive(path, &data).await?;
         check_restore_targets(&archive, &data, &config, false)?;
         stage_incoming(&dir, &archive)?;
     } else {
-        validate_export_path(Path::new(&path), &data, &config)?;
+        validate_export_path(path, &data, &config)?;
     }
-    let bytes = serde_json::to_vec(&Request {
-        operation,
-        path,
-        browser,
-    })
-    .map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
     write_atomically(
         &dir.join("request.json"),
         &staging_root(&dir)?,
@@ -2324,7 +2392,7 @@ pub async fn local_backup_schedule(
 }
 #[tauri::command]
 pub fn local_backup_status(app: tauri::AppHandle) -> Result<BackupStatus> {
-    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data = resolve_backup_root(&app.path().app_data_dir().map_err(|e| e.to_string())?)?;
     let path = data.join("local-backup/status.json");
     if !path.exists() {
         return Ok(BackupStatus::default());
@@ -2342,11 +2410,8 @@ pub fn local_backup_status(app: tauri::AppHandle) -> Result<BackupStatus> {
 }
 #[tauri::command]
 pub fn local_backup_acknowledge(app: tauri::AppHandle) -> Result<()> {
-    let path = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("local-backup/status.json");
+    let data = resolve_backup_root(&app.path().app_data_dir().map_err(|e| e.to_string())?)?;
+    let path = data.join("local-backup/status.json");
     let dir = path.parent().ok_or("Missing backup directory")?;
     if !dir.exists() {
         return Ok(());
@@ -4181,7 +4246,7 @@ mod tests {
         .await
         .unwrap();
         let storage = Storage::new(&data);
-        assert!(migration::migrate(&pool, &storage).await.unwrap());
+        migration::migrate(&pool, &storage).await.unwrap();
         let draft = storage_index::draft_row(&pool, "blueprint").await.unwrap();
         let artifact = storage_index::Artifact::from_row(&draft, "id").unwrap();
         let script = storage
@@ -4332,7 +4397,7 @@ mod tests {
         .await
         .unwrap();
         let storage = Storage::new(&data);
-        assert!(migration::migrate(&pool, &storage).await.unwrap());
+        migration::migrate(&pool, &storage).await.unwrap();
         let folder = temp.path().join("import");
         fs::create_dir_all(folder.join("skill")).unwrap();
         fs::write(
@@ -4417,7 +4482,7 @@ mod tests {
 
     #[tokio::test]
     async fn architect_library_v45_archive_preserves_legacy_conversation_links() {
-        use crate::legacy_agsdl_import::{migrate_profile, LegacyImportStatus, LegacyLocalStorage};
+        use crate::legacy_agsdl_import::{import_profile, LegacyImportStatus, LegacyLocalStorage};
 
         let (_temp, data, config) = profile().await;
         let path = data.join("macro.db");
@@ -4459,11 +4524,9 @@ mod tests {
         process_startup(&data, &config).await.unwrap();
         let pool = crate::db::create_pool(&path).await.unwrap();
         let storage = Storage::new(&data);
-        assert!(
-            !crate::architect_library::migration::migrate(&pool, &storage)
-                .await
-                .unwrap()
-        );
+        crate::architect_library::migration::migrate(&pool, &storage)
+            .await
+            .unwrap();
         let local = LegacyLocalStorage::Snapshot(BTreeMap::from([(
             "macro_architect_plan:main:legacy".into(),
             serde_json::json!({"id":"legacy","agsdl":{
@@ -4471,7 +4534,7 @@ mod tests {
             }})
             .to_string(),
         )]));
-        let report = migrate_profile(&pool, Ok(vec![data.clone()]), None, local)
+        let report = import_profile(&pool, Some(&storage), Ok(vec![data.clone()]), None, local)
             .await
             .unwrap();
         assert_eq!(
@@ -4481,11 +4544,6 @@ mod tests {
             report.issues
         );
         assert_eq!(report.inserted, 1);
-        assert!(
-            crate::architect_library::migration::migrate(&pool, &storage)
-                .await
-                .unwrap()
-        );
         crate::architect_library::migration::startup(&pool, &data)
             .await
             .unwrap();

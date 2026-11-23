@@ -1,6 +1,6 @@
 use super::{get_pool, CommandResult, DbPool};
 use crate::architect_library::{
-    imports, migration,
+    imports,
     project_editor::{EditBatch, FileRead, ProjectTarget, ProjectView},
     storage::{
         editor::{DraftProject, ImportedProject, VersionProject},
@@ -291,10 +291,17 @@ pub(crate) async fn architect_list_uses(
 
 #[tauri::command]
 pub(crate) async fn architect_import_blueprint(
+    app: tauri::AppHandle,
     pool: State<'_, DbPool>,
     input: Import,
 ) -> CommandResult<ImportResult> {
-    Ok(architect_library::import_blueprint(&get_pool(&pool).await?, input).await?)
+    let storage = Storage::new(&app_data(&app)?);
+    Ok(architect_library::import_blueprint_with_storage(
+        &get_pool(&pool).await?,
+        input,
+        Some(&storage),
+    )
+    .await?)
 }
 
 #[tauri::command]
@@ -416,24 +423,19 @@ pub(crate) async fn architect_migrate_legacy(
     ];
     let data = app_data(&app)?;
     let pool = get_pool(&pool).await?;
-    let report = crate::legacy_agsdl_import::migrate_profile(
+    Ok(crate::legacy_agsdl_import::bootstrap_profile(
         &pool,
+        &Storage::new(&data),
         crate::legacy_agsdl_import::configured_roots(&config, roots).await,
         Some(crate::core::config::resolve_desktop_default_workspace_path(
             &data,
         )),
         local_storage,
+        |progress| {
+            let _ = app.emit("architect:cutover-progress", progress);
+        },
     )
-    .await?;
-    if report.status == crate::legacy_agsdl_import::LegacyImportStatus::Complete {
-        let result = migration::migrate_with_progress(&pool, &Storage::new(&data), |progress| {
-            let _ = app.emit("architect:cutover-progress", Some(progress));
-        })
-        .await;
-        let _ = app.emit("architect:cutover-progress", None::<migration::Progress>);
-        result?;
-    }
-    Ok(report)
+    .await?)
 }
 
 #[tauri::command]

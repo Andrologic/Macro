@@ -882,9 +882,23 @@ pub(crate) async fn list_uses(pool: &SqlitePool, key: VersionKey) -> DbResult<Ve
         .collect())
 }
 
+#[cfg(test)]
 pub(crate) async fn import_blueprint(pool: &SqlitePool, input: Import) -> DbResult<ImportResult> {
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let result = import_in(&mut tx, input).await?;
+    import_blueprint_with_storage(pool, input, None).await
+}
+
+pub(crate) async fn import_blueprint_with_storage(
+    pool: &SqlitePool,
+    input: Import,
+    storage: Option<&crate::architect_library::storage::Storage>,
+) -> DbResult<ImportResult> {
+    let _lease = match storage {
+        Some(storage) => Some(storage.lease(true).await?),
+        None => None,
+    };
+    let mut writer = storage_index::durable_writer(pool).await?;
+    let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
+    let result = import_in(&mut tx, input, storage).await?;
     tx.commit().await?;
     Ok(result)
 }
@@ -924,7 +938,11 @@ fn validate_import_source(source: &str) -> DbResult<()> {
     Ok(())
 }
 
-pub(crate) async fn import_in(db: &mut SqliteConnection, input: Import) -> DbResult<ImportResult> {
+pub(crate) async fn import_in(
+    db: &mut SqliteConnection,
+    input: Import,
+    storage: Option<&crate::architect_library::storage::Storage>,
+) -> DbResult<ImportResult> {
     if input.source_project_id.trim().is_empty() || input.source_id.trim().is_empty() {
         return Err(invalid("missing_source_identity"));
     }
@@ -961,16 +979,22 @@ pub(crate) async fn import_in(db: &mut SqliteConnection, input: Import) -> DbRes
             .bind(input.source_project_id)
             .fetch_one(&mut *db)
             .await?;
-    let draft = insert_blueprint(
-        db,
-        &project_id,
-        &input.name,
-        encode(&input.document)?,
-        None,
-        Some(&input.source_id),
-    )
-    .await?;
-    let blueprint_id = draft.summary.id;
+    let document = encode(&input.document)?;
+    let blueprint_id = if storage_index::is_current(db).await? {
+        let storage = storage.ok_or_else(|| invalid("architect_storage_unavailable"))?;
+        crate::architect_library::migration::insert_discovered_blueprint(
+            db,
+            storage,
+            &project_id,
+            &input.name,
+            document,
+        )
+        .await?
+    } else {
+        let draft = insert_blueprint(db, &project_id, &input.name, document, None, None).await?;
+        freeze(db, &draft.summary.id, draft.summary.revision, None).await?;
+        draft.summary.id
+    };
     let mut history = input.history;
     if let Some(id) = &input.conversation_id {
         history
@@ -980,13 +1004,15 @@ pub(crate) async fn import_in(db: &mut SqliteConnection, input: Import) -> DbRes
     let history = history.map(|value| Value::Object(value).to_string());
     let candidate =
         available_conversation(db, &blueprint_id, input.conversation_id.as_deref()).await?;
-    sqlx::query("UPDATE architect_blueprints SET history=?,conversation_id=? WHERE id=?")
-        .bind(history)
-        .bind(candidate)
-        .bind(&blueprint_id)
-        .execute(&mut *db)
-        .await?;
-    freeze(db, &blueprint_id, draft.summary.revision, None).await?;
+    sqlx::query(
+        "UPDATE architect_blueprints SET history=?,conversation_id=?,source_id=? WHERE id=?",
+    )
+    .bind(history)
+    .bind(candidate)
+    .bind(&input.source_id)
+    .bind(&blueprint_id)
+    .execute(&mut *db)
+    .await?;
     Ok(ImportResult {
         project_id,
         blueprint_id,

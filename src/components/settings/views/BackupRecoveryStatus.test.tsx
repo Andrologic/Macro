@@ -64,13 +64,31 @@ test('renders native recovery actions before the profile opens', async () => {
   const i18n = createInstance();
   await i18n.init({ lng: 'fr', resources: { fr: { translation: fr } } });
   const error = new ProfileStartupRecoveryError({
+    kind: 'restore',
     diagnostics: 'Synthetic restore failure',
     preservedArchive: '/synthetic/preserved.zip',
   });
   const html = renderToStaticMarkup(<I18nextProvider i18n={i18n}><BackupStartupRecovery error={error} /></I18nextProvider>);
-  expect(html).toContain('Récupération du profil nécessaire');
+  expect(html).toContain('La restauration du profil n’a pas pu se terminer');
   expect(html).toContain('Réessayer</button>');
   expect(html).toContain('Afficher l’archive conservée');
   expect(html).toContain('Copier le diagnostic');
   expect(html).toContain('Synthetic restore failure');
+});
+
+test('shows restart and quit controls for a general profile startup failure', async () => {
+  const i18n = createInstance();
+  await i18n.init({ lng: 'fr', resources: { fr: { translation: fr } } });
+  const error = new ProfileStartupRecoveryError({
+    kind: 'startup',
+    diagnostics: 'Synthetic workspace failure',
+    preservedArchive: null,
+  });
+  const html = renderToStaticMarkup(<I18nextProvider i18n={i18n}><BackupStartupRecovery error={error} /></I18nextProvider>);
+  expect(html).toContain('Macro n’a pas pu ouvrir le profil');
+  expect(html).toContain('Réessayer</button>');
+  expect(html).toContain('Quitter</button>');
+  expect(html).toContain('data-tauri-drag-region="true"');
+  expect(html).toContain('Synthetic workspace failure');
+  expect(html).not.toContain('Afficher le dossier de récupération');
 });

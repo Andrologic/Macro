@@ -170,9 +170,11 @@ project and blueprint identities to recognize retries across restarts.
 Version 47 adds the durable completion row. Existing version 46 databases
 keep their library and start with discovery pending.
 
-After SQLite is ready and before restoring the shell, the desktop calls
+After SQLite is ready, the desktop starts
 `architect_migrate_legacy` with a snapshot of the legacy plan keys from its
-webview. The native command scans the configured
+webview. The command first converts the library rows already in SQLite to the
+version 49 artifact index. A source discovery failure leaves the converted
+library usable and the historical import pending. The command then scans the configured
 workspace from the effective runtime configuration, the metadata and active roots,
 and the profile's default workspace if present. An unreadable or unsupported
 runtime configuration leaves discovery pending.

@@ -76,7 +76,7 @@ it('blocks normal startup on browser storage failure and retries before hydratio
 });
 
 it('shows native profile recovery before reading backup status or configuration', async () => {
-  const recovery = { diagnostics: 'synthetic error', preservedArchive: '/profile/preserved.zip' };
+  const recovery = { kind: 'restore' as const, diagnostics: 'synthetic error', preservedArchive: '/profile/preserved.zip' };
   const localBackupStatus = mock(async () => ({ message: '', browser: null }));
   mock.module('./tauriIpc', () => ({
     isTauriAvailable: () => true,

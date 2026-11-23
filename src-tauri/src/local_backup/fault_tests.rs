@@ -263,7 +263,7 @@ async fn generated_legacy_profiles_preserve_exact_originals() {
     let after_first = index::artifact_references(&mut *pool.acquire().await.unwrap())
         .await
         .unwrap();
-    assert!(migration::migrate(&pool, &storage).await.unwrap());
+    migration::migrate(&pool, &storage).await.unwrap();
     let after_retry = index::artifact_references(&mut *pool.acquire().await.unwrap())
         .await
         .unwrap();
@@ -364,7 +364,7 @@ async fn desktop_opens_the_legacy_index_when_an_artifact_directory_is_unusable()
     assert!(artifact_hashes(&legacy).is_empty());
     drop(legacy);
     fs::remove_file(state).unwrap();
-    assert!(migration::migrate(&pool, &storage).await.unwrap());
+    migration::migrate(&pool, &storage).await.unwrap();
     pool.close().await;
     assert_originals(&data, &rows).await;
 }
@@ -452,6 +452,106 @@ async fn open_and_migrate(data: &Path) -> crate::db::DbResult<sqlx::SqlitePool> 
         tracing::warn!(%error, "Architect library cutover will retry");
     }
     Ok(pool)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct MigrationOutcome {
+    blueprint: String,
+    number: i64,
+    state: index::StorageState,
+    diagnostics: Vec<String>,
+}
+
+async fn migration_outcomes(pool: &sqlx::SqlitePool, data: &Path) -> Vec<MigrationOutcome> {
+    // Each row retains its conversion diagnostics alongside the original bytes.
+    // The messages in these fixtures are stable, so compare the whole diagnostic.
+    let storage = Storage::new(data);
+    let rows: Vec<(String, i64, String, String)> = sqlx::query_as(
+        "SELECT rows.blueprint_id, rows.number, rows.storage_state, originals.artifact_id
+         FROM (SELECT id AS blueprint_id, 0 AS number, revision, storage_state FROM architect_blueprints
+               UNION ALL SELECT blueprint_id, number, revision, storage_state FROM architect_versions) AS rows
+         JOIN architect_library_originals AS originals
+         ON (rows.blueprint_id, rows.number, rows.revision) =
+            (originals.blueprint_id, originals.version_number, originals.revision)
+         ORDER BY 1, 2",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    rows.into_iter()
+        .map(|(blueprint, number, state, original)| {
+            let artifact = index::Artifact {
+                blueprint_id: blueprint.clone(),
+                id: uuid::Uuid::parse_str(&original).unwrap(),
+                state: index::StorageState::Recovery,
+                sha256: None,
+            };
+            let diagnostics =
+                fs::read(storage.artifact_path(&artifact).join("diagnostics.json")).unwrap();
+            MigrationOutcome {
+                blueprint,
+                number,
+                state: index::StorageState::parse(&state).unwrap(),
+                diagnostics: serde_json::from_slice(&diagnostics).unwrap(),
+            }
+        })
+        .collect()
+}
+
+async fn assert_migration_recovery(
+    legacy_data: &Path,
+    expected: &[MigrationOutcome],
+    data: &Path,
+    config: &Path,
+    point: &str,
+    action: &str,
+    nth: usize,
+) {
+    copy_fixture(legacy_data, data);
+    run_fault(data, config, "migration", point, action, nth).await;
+    let pool = db::open_desktop_profile(data).await.unwrap();
+    migration::migrate(&pool, &Storage::new(data))
+        .await
+        .unwrap();
+    assert_eq!(
+        migration_outcomes(&pool, data).await,
+        expected,
+        "{point}/{nth}/{action}"
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn disk_full_during_migration_keeps_rows_retryable() {
+    let (_temp, legacy_data, _) = tests::profile().await;
+    let bytes = envelope(BTreeMap::from([("notes.md".into(), "original".into())]));
+    let rows = [(BLUEPRINT, bytes.as_slice())];
+    seed(&legacy_data, &rows).await;
+
+    let temp = tempfile::tempdir().unwrap();
+    let baseline = temp.path().join("baseline");
+    copy_fixture(&legacy_data, &baseline);
+    let pool = open_and_migrate(&baseline).await.unwrap();
+    let expected = migration_outcomes(&pool, &baseline).await;
+    assert_eq!(
+        expected.iter().map(|row| row.state).collect::<Vec<_>>(),
+        [index::StorageState::Draft, index::StorageState::Archive]
+    );
+    pool.close().await;
+
+    let data = temp.path().join("data");
+    let config = temp.path().join("config");
+    assert_migration_recovery(
+        &legacy_data,
+        &expected,
+        &data,
+        &config,
+        "write:/staging/.draft-",
+        "ENOSPC",
+        1,
+    )
+    .await;
+    assert_originals(&data, &rows).await;
 }
 
 fn child_command(test: &str) -> Command {
@@ -812,6 +912,8 @@ async fn generated_profile_recovers_from_io_faults_and_process_death() {
     create_private_root(&source_config).unwrap();
     copy_fixture(&legacy_data, &source_data);
     let pool = open_and_migrate(&source_data).await.unwrap();
+    let expected_migration = migration_outcomes(&pool, &source_data).await;
+    assert_eq!(expected_migration.len(), rows.len() * 2);
     let row = index::draft_row(&pool, BLUEPRINT).await.unwrap();
     let artifact = index::Artifact::from_row(&row, "id").unwrap();
     let project = Storage::new(&source_data)
@@ -894,13 +996,16 @@ async fn generated_profile_recovers_from_io_faults_and_process_death() {
             let config = temp.path().join("config");
             create_private_root(&config).unwrap();
             if mode == "migration" {
-                copy_fixture(&legacy_data, &data);
-                run_fault(&data, &config, mode, point, action, nth).await;
-                let pool = db::open_desktop_profile(&data).await.unwrap();
-                assert!(migration::migrate(&pool, &Storage::new(&data))
-                    .await
-                    .unwrap());
-                pool.close().await;
+                assert_migration_recovery(
+                    &legacy_data,
+                    &expected_migration,
+                    &data,
+                    &config,
+                    point,
+                    action,
+                    nth,
+                )
+                .await;
                 assert_originals(&data, &rows).await;
             } else {
                 copy_fixture(&original_tree, &data);
@@ -1015,12 +1120,70 @@ async fn generated_profile_recovers_from_io_faults_and_process_death() {
     eprintln!("{total} filesystem fault cases in {:?}", started.elapsed());
 }
 
+#[test]
+fn restore_space_check_counts_preservation_and_both_volumes() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let config = temp.path().join("config");
+    fs::create_dir(&data).unwrap();
+    let archive = |data_size, config_size| {
+        let mut files = BTreeMap::new();
+        add_file(&mut files, "data/state.json".into(), vec![0; data_size]).unwrap();
+        add_file(
+            &mut files,
+            "config/settings.json".into(),
+            vec![0; config_size],
+        )
+        .unwrap();
+        Archive {
+            format: String::new(),
+            version: 0,
+            app_version: String::new(),
+            files,
+            browser: BTreeMap::new(),
+            browser_sha256: String::new(),
+        }
+    };
+    let incoming = archive(4097, 1);
+    let original = archive(1, 4097);
+    let check = |data_bytes, config_bytes| {
+        check_restore_space(&incoming, &original, &data, &config, |path| {
+            if path == data {
+                Ok(data_bytes)
+            } else {
+                assert_eq!(path, temp.path());
+                Ok(config_bytes)
+            }
+        })
+    };
+
+    const DATA_REQUIRED: u64 = 7 * 4096;
+    const CONFIG_REQUIRED: u64 = 2 * 4096;
+    let error = "Insufficient free disk space to restore and recover the profile";
+    assert_eq!(
+        check(DATA_REQUIRED - 1, CONFIG_REQUIRED + 1).unwrap_err(),
+        error
+    );
+    assert_eq!(
+        check(DATA_REQUIRED + 1, CONFIG_REQUIRED - 1).unwrap_err(),
+        error
+    );
+    assert!(check(DATA_REQUIRED, CONFIG_REQUIRED).is_ok());
+    assert!(check(DATA_REQUIRED + 1, CONFIG_REQUIRED + 1).is_ok());
+}
+
 #[tokio::test]
 async fn profile_fault_assertions_detect_deliberate_mutations() {
     let mutations = [
         ("skip-rollback-pruning", "local_backup::tests::architect_library_rollback_removes_unpublished_files_before_next_restore"),
         ("ignore-recovery-error", "local_backup::qualification::unreadable_journal_blocks_profile_even_when_backup_lock_fails"),
         ("skip-member-checksum", "local_backup::qualification::damaged_preservation_blocks_recovery_and_retains_journal_for_retry"),
+        ("classify-disk-full-as-permanent", "local_backup::fault_tests::disk_full_during_migration_keeps_rows_retryable"),
+        ("skip-restore-space-check", "local_backup::fault_tests::restore_space_check_counts_preservation_and_both_volumes"),
+        #[cfg(unix)]
+        ("reject-symlinked-profile-root", "local_backup::fault_tests::relocated_profile_opens_and_exports_through_symlinks"),
+        #[cfg(unix)]
+        ("skip-config-root-resolution", "local_backup::fault_tests::relocated_profile_round_trips_linked_config"),
     ];
     for (mutation, test) in mutations {
         let control = child_command(test)
@@ -1030,8 +1193,9 @@ async fn profile_fault_assertions_detect_deliberate_mutations() {
             .unwrap();
         assert!(
             control.status.success(),
-            "{test} control: {}",
-            String::from_utf8_lossy(&control.stdout)
+            "{test} control: {}\n{}",
+            String::from_utf8_lossy(&control.stdout),
+            String::from_utf8_lossy(&control.stderr)
         );
         let output = child_command(test)
             .env("MACRO_TEST_PROFILE_MUTATION", mutation)
@@ -1046,6 +1210,139 @@ async fn profile_fault_assertions_detect_deliberate_mutations() {
         );
         assert!(String::from_utf8_lossy(&output.stdout).contains(&format!("{test} ... FAILED")));
         eprintln!("Detected mutation {mutation}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn relocated_profile_opens_and_exports_through_symlinks() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let (temp, data, config) = tests::profile().await;
+    let linked_root = temp.path().join("linked-data");
+    symlink(&data, &linked_root).unwrap();
+    let linked_parent = temp.path().join("linked-parent");
+    symlink(temp.path(), &linked_parent).unwrap();
+    let linked_ancestor = linked_parent.join(data.file_name().unwrap());
+
+    for (index, relocated) in [&linked_root, &linked_ancestor].into_iter().enumerate() {
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o775)).unwrap();
+        let out = temp.path().join(format!("relocated-{index}.zip"));
+        create_private_root(&data.join("local-backup")).unwrap();
+        queue_export(relocated, &out);
+        process_startup(relocated, &config).await.unwrap();
+        assert_eq!(
+            status_code(&data.join("local-backup")),
+            Some(BackupStatusCode::Exported),
+            "{}",
+            fs::read_to_string(data.join("local-backup/status.json")).unwrap_or_default()
+        );
+        assert!(out.is_file());
+        let pool = db::open_desktop_profile(relocated).await.unwrap();
+        pool.close().await;
+        assert_eq!(
+            fs::metadata(&data).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    let database = data.join("macro.db");
+    let outside = temp.path().join("external.db");
+    fs::rename(&database, &outside).unwrap();
+    let external_mode = fs::metadata(&outside).unwrap().permissions().mode();
+    symlink(&outside, &database).unwrap();
+    assert!(db::open_desktop_profile(&linked_root).await.is_err());
+    assert_eq!(
+        fs::metadata(&outside).unwrap().permissions().mode(),
+        external_mode
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn relocated_profile_round_trips_linked_config() {
+    use std::os::unix::fs::symlink;
+
+    const EXPORTED: &[u8] =
+        br#"{"$schema":"settings.schema.json","schemaVersion":1,"language":"fr"}"#;
+    const CURRENT: &[u8] =
+        br#"{"$schema":"settings.schema.json","schemaVersion":1,"language":"en"}"#;
+
+    for shared_root in [true, false] {
+        let (temp, data, config) = tests::profile().await;
+        let (profile_data, config, profile_config) = if shared_root {
+            let linked = temp.path().join("linked-profile");
+            symlink(&data, &linked).unwrap();
+            (linked.clone(), data.clone(), linked)
+        } else {
+            let linked_config = temp.path().join("linked-config");
+            symlink(&config, &linked_config).unwrap();
+            (data.clone(), config, linked_config)
+        };
+
+        let settings = config.join("settings.json");
+        let dir = data.join("local-backup");
+        let out = temp.path().join("relocated.zip");
+        let request = |operation: &str| Request {
+            operation: operation.into(),
+            path: out.to_str().unwrap().into(),
+            browser: BTreeMap::new(),
+        };
+        let assert_status = |expected| {
+            assert_eq!(
+                status_code(&dir),
+                Some(expected),
+                "shared root: {shared_root}: {}",
+                fs::read_to_string(dir.join("status.json")).unwrap()
+            );
+        };
+
+        fs::write(&settings, EXPORTED).unwrap();
+        schedule_backup(&profile_data, &profile_config, request("export"))
+            .await
+            .unwrap();
+        process_startup(&profile_data, &profile_config)
+            .await
+            .unwrap();
+        assert_status(BackupStatusCode::Exported);
+
+        fs::write(&settings, CURRENT).unwrap();
+        schedule_backup(&profile_data, &profile_config, request("restore"))
+            .await
+            .unwrap();
+        process_startup(&profile_data, &profile_config)
+            .await
+            .unwrap();
+        assert_status(BackupStatusCode::Restored);
+        let settings_value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+        assert_eq!(settings_value["language"], "fr");
+
+        fs::write(&settings, CURRENT).unwrap();
+        schedule_backup(&profile_data, &profile_config, request("restore"))
+            .await
+            .unwrap();
+        run_fault(
+            &profile_data,
+            &profile_config,
+            "restore",
+            "write:/settings.json",
+            "crash",
+            1,
+        )
+        .await;
+        assert!(dir.join("restoring.json").is_file());
+        process_startup(&profile_data, &profile_config)
+            .await
+            .unwrap();
+        assert_status(BackupStatusCode::RolledBack);
+        assert_eq!(fs::read(settings).unwrap(), CURRENT);
+        assert!(!dir.join("restoring.json").exists());
+        assert!(!dir.join("request.json").exists());
+        let pool = db::open_desktop_profile(&profile_data).await.unwrap();
+        assert_eq!(assert_database(&pool).await, "Original");
+        pool.close().await;
+        assert_staging_empty(&data);
     }
 }
 
@@ -1111,9 +1408,9 @@ async fn profile_scale() {
         .await
         .unwrap();
     let start = Instant::now();
-    assert!(migration::migrate(&pool, &Storage::new(&data))
+    migration::migrate(&pool, &Storage::new(&data))
         .await
-        .unwrap());
+        .unwrap();
     let migration = start.elapsed();
     eprintln!("500×10 migration {migration:?}");
     pool.close().await;
