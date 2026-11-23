@@ -1753,6 +1753,91 @@
       "transport": {
         "local": "local",
         "remote": "distant"
+      },
+      "emptyHint": {
+        "agents": "Un agent est un rôle confié à un modèle : il lit, écrit ou vérifie. Ajoutez-en un, puis placez-le dans le flow.",
+        "skills": "Une skill est un savoir-faire qu’un agent peut utiliser quand il en a besoin. Ajoutez-en une, puis donnez-la à un agent.",
+        "tools": "Un serveur d’outils donne aux agents accès à un service, comme une forge de code ou une base de connaissances. Ajoutez-en un, puis donnez-le à un agent."
+      },
+      "emptyReadOnly": "Cette version est en lecture seule. Adaptez-la pour ajouter ou modifier des éléments."
+    },
+    "add": {
+      "agent": {
+        "action": "Ajouter un agent",
+        "title": "Nouvel agent",
+        "intro": "L’agent est ajouté au système, mais pas encore au flow : c’est vous qui décidez où il intervient.",
+        "namePlaceholder": "Relecteur",
+        "description": "Rôle en une ligne (facultatif)",
+        "instructions": "Instructions permanentes (facultatif)",
+        "advancedHelp": "« Lecture seule » est le départ le plus sûr. Vous pourrez changer ces deux choix plus tard, depuis la fiche de l’agent.",
+        "done": "Agent « {{name}} » ajouté. Il n’est pas encore dans le flow."
+      },
+      "skill": {
+        "action": "Ajouter une skill",
+        "title": "Nouvelle skill",
+        "intro": "Une skill s’écrit dans un fichier du projet. Un agent ne s’en sert qu’une fois qu’elle lui est donnée.",
+        "namePlaceholder": "Style rédactionnel",
+        "description": "Quand l’utiliser",
+        "instructions": "Contenu (facultatif)",
+        "done": "Skill « {{name}} » ajoutée. Donnez-la à un agent pour qu’elle serve."
+      },
+      "tool": {
+        "action": "Ajouter un serveur d’outils",
+        "title": "Nouveau serveur d’outils",
+        "intro": "Un agent n’accède à ce serveur qu’une fois qu’il lui est donné.",
+        "namePlaceholder": "Base de connaissances",
+        "address": {
+          "remote": "Adresse web",
+          "local": "Commande"
+        },
+        "addressPlaceholder": {
+          "remote": "https://exemple.org/mcp",
+          "local": "node serveur.js"
+        },
+        "addressHelp": {
+          "remote": "Le serveur doit être joignable depuis l’ordinateur qui exécute le système.",
+          "local": "Un programme suivi de ses arguments, séparés par des espaces. Macro le vérifie au lancement."
+        },
+        "done": "Serveur d’outils « {{name}} » ajouté. Donnez-le à un agent pour qu’il serve."
+      },
+      "field": {
+        "name": "Nom",
+        "transport": "Type de serveur",
+        "harness": "Moteur",
+        "access": "Accès aux fichiers"
+      },
+      "access": {
+        "readOnly": "Lecture seule : ne modifie rien",
+        "workspace": "Peut modifier le dossier de travail"
+      },
+      "transport": {
+        "remote": "Distant (adresse web)",
+        "local": "Local (programme sur cet ordinateur)"
+      },
+      "savedAs": "Sera enregistré sous le nom « {{id}} ».",
+      "files": "Fichiers écrits dans le projet :",
+      "confirm": "Ajouter",
+      "adding": "Ajout…",
+      "notSaved": "Le brouillon n’est pas encore enregistré : réessayez.",
+      "reason": {
+        "name": {
+          "empty": "Donnez-lui un nom.",
+          "invalid": "Le nom doit contenir au moins une lettre ou un chiffre.",
+          "taken": "Ce nom est déjà utilisé. Choisissez-en un autre."
+        },
+        "description": {
+          "empty": "Indiquez quand cette skill doit servir."
+        },
+        "address": {
+          "empty": "Indiquez l’adresse.",
+          "url": "Saisissez une adresse web complète, commençant par https://.",
+          "command": "Séparez le programme et ses arguments par des espaces, sans guillemets."
+        }
+      },
+      "blocked": {
+        "saving": "Un enregistrement est en cours : réessayez dans un instant.",
+        "invalid": "Le brouillon enregistré n’est pas lisible comme un système : corrigez-le d’abord.",
+        "unsaved": "Enregistrez d’abord le brouillon : il a des modifications non enregistrées."
       }
     }
   }

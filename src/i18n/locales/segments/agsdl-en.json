@@ -1753,6 +1753,91 @@
       "transport": {
         "local": "local",
         "remote": "remote"
+      },
+      "emptyHint": {
+        "agents": "An agent is a role given to a model: it reads, writes or checks. Add one, then place it in the flow.",
+        "skills": "A skill is a set of instructions an agent can pick up when it needs it. Add one, then give it to an agent.",
+        "tools": "A tool server gives agents access to a service, such as a code host or a knowledge base. Add one, then give it to an agent."
+      },
+      "emptyReadOnly": "This version is read-only. Adapt it to add or change items."
+    },
+    "add": {
+      "agent": {
+        "action": "Add an agent",
+        "title": "New agent",
+        "intro": "The agent is added to the system but not to the flow yet: you decide where it takes part.",
+        "namePlaceholder": "Reviewer",
+        "description": "Role in one line (optional)",
+        "instructions": "Standing instructions (optional)",
+        "advancedHelp": "Read only is the safe start. You can change both later, from the agent’s card.",
+        "done": "Agent “{{name}}” added. It is not in the flow yet."
+      },
+      "skill": {
+        "action": "Add a skill",
+        "title": "New skill",
+        "intro": "A skill is written as a file of the project. An agent only uses it once you give it to them.",
+        "namePlaceholder": "Writing style",
+        "description": "When to use it",
+        "instructions": "Content (optional)",
+        "done": "Skill “{{name}}” added. Give it to an agent so it gets used."
+      },
+      "tool": {
+        "action": "Add a tool server",
+        "title": "New tool server",
+        "intro": "An agent only reaches this server once you give it to them.",
+        "namePlaceholder": "Knowledge base",
+        "address": {
+          "remote": "Web address",
+          "local": "Command"
+        },
+        "addressPlaceholder": {
+          "remote": "https://example.org/mcp",
+          "local": "node server.js"
+        },
+        "addressHelp": {
+          "remote": "The server must be reachable from the computer that runs the system.",
+          "local": "A program followed by its arguments, separated by spaces. Macro checks it at launch."
+        },
+        "done": "Tool server “{{name}}” added. Give it to an agent so it gets used."
+      },
+      "field": {
+        "name": "Name",
+        "transport": "Kind of server",
+        "harness": "Engine",
+        "access": "Access to files"
+      },
+      "access": {
+        "readOnly": "Read only: changes nothing",
+        "workspace": "Can edit the working folder"
+      },
+      "transport": {
+        "remote": "Remote (web address)",
+        "local": "Local (program on this computer)"
+      },
+      "savedAs": "Saved as “{{id}}”.",
+      "files": "Files written in the project:",
+      "confirm": "Add",
+      "adding": "Adding…",
+      "notSaved": "The draft was not saved yet: try again.",
+      "reason": {
+        "name": {
+          "empty": "Give it a name.",
+          "invalid": "The name needs at least one letter or digit.",
+          "taken": "This name is already used. Choose another one."
+        },
+        "description": {
+          "empty": "Say when this skill should be used."
+        },
+        "address": {
+          "empty": "Enter the address.",
+          "url": "Enter a full web address, starting with https://.",
+          "command": "Separate the program and its arguments with spaces, without quotes."
+        }
+      },
+      "blocked": {
+        "saving": "A save is running: try again in a moment.",
+        "invalid": "The saved draft cannot be read as a system: fix it first.",
+        "unsaved": "Save the draft first: it has changes that are not saved yet."
       }
     }
   }

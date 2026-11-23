@@ -1753,6 +1753,91 @@
       "transport": {
         "local": "local",
         "remote": "remoto"
+      },
+      "emptyHint": {
+        "agents": "Un agente es un rol que se confía a un modelo: lee, escribe o verifica. Añada uno y colóquelo después en el flujo.",
+        "skills": "Una skill es un conjunto de instrucciones que un agente puede usar cuando las necesita. Añada una y asígnela después a un agente.",
+        "tools": "Un servidor de herramientas da a los agentes acceso a un servicio, como un alojamiento de código o una base de conocimiento. Añada uno y asígnelo después a un agente."
+      },
+      "emptyReadOnly": "Esta versión es de solo lectura. Adáptela para añadir o cambiar elementos."
+    },
+    "add": {
+      "agent": {
+        "action": "Añadir un agente",
+        "title": "Nuevo agente",
+        "intro": "El agente se añade al sistema, pero todavía no al flujo: usted decide dónde interviene.",
+        "namePlaceholder": "Revisor",
+        "description": "Rol en una línea (opcional)",
+        "instructions": "Instrucciones permanentes (opcional)",
+        "advancedHelp": "«Solo lectura» es el punto de partida más seguro. Podrá cambiar ambas opciones más tarde, desde la ficha del agente.",
+        "done": "Agente «{{name}}» añadido. Aún no está en el flujo."
+      },
+      "skill": {
+        "action": "Añadir una skill",
+        "title": "Nueva skill",
+        "intro": "Una skill se escribe en un archivo del proyecto. Un agente solo la usa cuando se la asigna.",
+        "namePlaceholder": "Estilo de redacción",
+        "description": "Cuándo usarla",
+        "instructions": "Contenido (opcional)",
+        "done": "Skill «{{name}}» añadida. Asígnela a un agente para que se use."
+      },
+      "tool": {
+        "action": "Añadir un servidor de herramientas",
+        "title": "Nuevo servidor de herramientas",
+        "intro": "Un agente solo accede a este servidor cuando se lo asigna.",
+        "namePlaceholder": "Base de conocimiento",
+        "address": {
+          "remote": "Dirección web",
+          "local": "Comando"
+        },
+        "addressPlaceholder": {
+          "remote": "https://ejemplo.org/mcp",
+          "local": "node servidor.js"
+        },
+        "addressHelp": {
+          "remote": "El servidor debe ser accesible desde el ordenador que ejecuta el sistema.",
+          "local": "Un programa seguido de sus argumentos, separados por espacios. Macro lo comprueba al lanzar."
+        },
+        "done": "Servidor de herramientas «{{name}}» añadido. Asígnelo a un agente para que se use."
+      },
+      "field": {
+        "name": "Nombre",
+        "transport": "Tipo de servidor",
+        "harness": "Motor",
+        "access": "Acceso a los archivos"
+      },
+      "access": {
+        "readOnly": "Solo lectura: no modifica nada",
+        "workspace": "Puede modificar la carpeta de trabajo"
+      },
+      "transport": {
+        "remote": "Remoto (dirección web)",
+        "local": "Local (programa en este ordenador)"
+      },
+      "savedAs": "Se guardará como «{{id}}».",
+      "files": "Archivos escritos en el proyecto:",
+      "confirm": "Añadir",
+      "adding": "Añadiendo…",
+      "notSaved": "El borrador aún no se ha guardado: inténtelo de nuevo.",
+      "reason": {
+        "name": {
+          "empty": "Póngale un nombre.",
+          "invalid": "El nombre debe contener al menos una letra o un número.",
+          "taken": "Este nombre ya se usa. Elija otro."
+        },
+        "description": {
+          "empty": "Indique cuándo debe usarse esta skill."
+        },
+        "address": {
+          "empty": "Indique la dirección.",
+          "url": "Escriba una dirección web completa, que empiece por https://.",
+          "command": "Separe el programa y sus argumentos con espacios, sin comillas."
+        }
+      },
+      "blocked": {
+        "saving": "Se está guardando: inténtelo de nuevo en un momento.",
+        "invalid": "El borrador guardado no se puede leer como sistema: corríjalo primero.",
+        "unsaved": "Guarde primero el borrador: tiene cambios sin guardar."
       }
     }
   }

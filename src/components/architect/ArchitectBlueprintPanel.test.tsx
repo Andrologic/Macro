@@ -234,3 +234,42 @@ it("says a draft comes from a version to repair, with what to do next", async ()
   await mount();
   expect(panel().querySelector("header")?.textContent).toContain("Comes from a version to repair. Fix the issues shown, then save a version.");
 });
+
+const emptySource = '{"contract":"agsdl-0.4.0","id":"blank","title":"Blank","agents":{}}';
+const withoutAgents = () => ({ ...projectView(), projection: { source: emptySource, origins: {} } });
+
+it("gives every component tab its own panel and an empty state, never the graph", async () => {
+  draftState = { document: { source: emptySource, annexes: {} }, project: withoutAgents() };
+  await mount();
+  for (const [label, text] of [["Agents", "This system contains no agent."], ["Skills", "This system uses no skill."], ["Tools", "This system uses no tool server."]]) {
+    await click(tab(label));
+    expect(tab(label).getAttribute("aria-selected")).toBe("true");
+    expect(panel().querySelector(".agsdl-graph-node")).toBeNull();
+    expect(panel().textContent).toContain(text);
+  }
+});
+
+it("shows the same panels when the draft has no project files, as in the legacy library", async () => {
+  draftState = { document: { source: emptySource, annexes: {} }, project: undefined };
+  await mount();
+  await click(tab("Agents"));
+  expect(panel().querySelector(".agsdl-graph-node")).toBeNull();
+  expect(panel().textContent).toContain("This system contains no agent.");
+  expect(byText("button", "Add an agent", panel())).toBeDefined();
+  // Skills are files of the project: without project files they are not offered.
+  await click(tab("Skills"));
+  expect(panel().textContent).toContain("This system uses no skill.");
+  expect(byText("button", "Add a skill", panel())).toBeUndefined();
+});
+
+it("offers to add an agent by hand on the draft, and not on a saved version", async () => {
+  draftState = { document: { source: emptySource, annexes: {} }, project: withoutAgents() };
+  versions = [{ blueprintId: "bp", number: 1, revision: 0, note: null, storageState: "archive" }];
+  await mount();
+  await click(tab("Agents"));
+  expect(byText("button", "Add an agent", panel())).toBeDefined();
+  await click(panel().ownerDocument.querySelector('nav [aria-label="Versions"] button'));
+  await flush();
+  await click(tab("Agents"));
+  expect(byText("button", "Add an agent", panel())).toBeUndefined();
+});

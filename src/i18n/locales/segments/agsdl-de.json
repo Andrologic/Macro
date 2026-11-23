@@ -1753,6 +1753,91 @@
       "transport": {
         "local": "lokal",
         "remote": "remote"
+      },
+      "emptyHint": {
+        "agents": "Ein Agent ist eine Rolle, die einem Modell übertragen wird: Er liest, schreibt oder prüft. Fügen Sie einen hinzu und setzen Sie ihn dann in den Ablauf.",
+        "skills": "Eine Skill ist eine Anleitung, die ein Agent bei Bedarf nutzen kann. Fügen Sie eine hinzu und geben Sie sie dann einem Agenten.",
+        "tools": "Ein Werkzeugserver gibt Agenten Zugriff auf einen Dienst, etwa eine Code-Plattform oder eine Wissensdatenbank. Fügen Sie einen hinzu und geben Sie ihn dann einem Agenten."
+      },
+      "emptyReadOnly": "Diese Version ist schreibgeschützt. Passen Sie sie an, um Elemente hinzuzufügen oder zu ändern."
+    },
+    "add": {
+      "agent": {
+        "action": "Agent hinzufügen",
+        "title": "Neuer Agent",
+        "intro": "Der Agent wird dem System hinzugefügt, aber noch nicht dem Ablauf: Sie entscheiden, wo er mitwirkt.",
+        "namePlaceholder": "Prüfer",
+        "description": "Rolle in einer Zeile (optional)",
+        "instructions": "Dauerhafte Anweisungen (optional)",
+        "advancedHelp": "„Nur lesen“ ist der sicherste Start. Beide Angaben lassen sich später in der Karte des Agenten ändern.",
+        "done": "Agent „{{name}}“ hinzugefügt. Er ist noch nicht im Ablauf."
+      },
+      "skill": {
+        "action": "Skill hinzufügen",
+        "title": "Neue Skill",
+        "intro": "Eine Skill wird als Datei des Projekts geschrieben. Ein Agent nutzt sie erst, wenn Sie sie ihm geben.",
+        "namePlaceholder": "Schreibstil",
+        "description": "Wann sie genutzt wird",
+        "instructions": "Inhalt (optional)",
+        "done": "Skill „{{name}}“ hinzugefügt. Geben Sie sie einem Agenten, damit sie genutzt wird."
+      },
+      "tool": {
+        "action": "Werkzeugserver hinzufügen",
+        "title": "Neuer Werkzeugserver",
+        "intro": "Ein Agent erreicht diesen Server erst, wenn Sie ihn ihm geben.",
+        "namePlaceholder": "Wissensdatenbank",
+        "address": {
+          "remote": "Webadresse",
+          "local": "Befehl"
+        },
+        "addressPlaceholder": {
+          "remote": "https://beispiel.org/mcp",
+          "local": "node dienst.js"
+        },
+        "addressHelp": {
+          "remote": "Der Server muss vom Computer aus erreichbar sein, auf dem das System läuft.",
+          "local": "Ein Programm gefolgt von seinen Argumenten, durch Leerzeichen getrennt. Macro prüft es beim Start."
+        },
+        "done": "Werkzeugserver „{{name}}“ hinzugefügt. Geben Sie ihn einem Agenten, damit er genutzt wird."
+      },
+      "field": {
+        "name": "Bezeichnung",
+        "transport": "Art des Servers",
+        "harness": "Ausführungs-Engine",
+        "access": "Dateizugriff"
+      },
+      "access": {
+        "readOnly": "Nur lesen: ändert nichts",
+        "workspace": "Darf den Arbeitsordner ändern"
+      },
+      "transport": {
+        "remote": "Entfernt (Webadresse)",
+        "local": "Lokal (Programm auf diesem Computer)"
+      },
+      "savedAs": "Wird als „{{id}}“ gespeichert.",
+      "files": "Im Projekt geschriebene Dateien:",
+      "confirm": "Hinzufügen",
+      "adding": "Wird hinzugefügt …",
+      "notSaved": "Der Entwurf wurde noch nicht gespeichert: Versuchen Sie es erneut.",
+      "reason": {
+        "name": {
+          "empty": "Geben Sie einen Namen ein.",
+          "invalid": "Der Name braucht mindestens einen Buchstaben oder eine Ziffer.",
+          "taken": "Dieser Name wird bereits verwendet. Wählen Sie einen anderen."
+        },
+        "description": {
+          "empty": "Geben Sie an, wann diese Skill genutzt werden soll."
+        },
+        "address": {
+          "empty": "Geben Sie die Adresse ein.",
+          "url": "Geben Sie eine vollständige Webadresse ein, die mit https:// beginnt.",
+          "command": "Trennen Sie Programm und Argumente mit Leerzeichen, ohne Anführungszeichen."
+        }
+      },
+      "blocked": {
+        "saving": "Es wird gerade gespeichert: Versuchen Sie es gleich erneut.",
+        "invalid": "Der gespeicherte Entwurf lässt sich nicht als System lesen: Korrigieren Sie ihn zuerst.",
+        "unsaved": "Speichern Sie zuerst den Entwurf: Er hat ungespeicherte Änderungen."
       }
     }
   }

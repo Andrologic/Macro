@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from "bun:test";
 import type { ProjectInventory } from "../../services/agsdl/projectInventory";
 import type { ViewerCard } from "../../services/agsdl/viewer";
-import { ArchitectComponentList } from "./ArchitectComponentList";
+import { ArchitectComponentList, type ComponentAdding } from "./ArchitectComponentList";
 import { click, createHost } from "./architectLibrary.testSupport";
 
 let view: ReturnType<typeof createHost>;
@@ -17,9 +17,9 @@ const inventory = (): ProjectInventory => ({
   toolUsers: new Map([["github", ["reviewer"]]]),
   toolTransport: new Map([["github", "local" as const], ["docs", "remote" as const]]),
 });
-const mount = async (kind: "agents" | "skills" | "tools", cards: ViewerCard[], hidden: string[] = [], onSelect = (_path: string) => {}) => {
+const mount = async (kind: "agents" | "skills" | "tools", cards: ViewerCard[], hidden: string[] = [], onSelect = (_path: string) => {}, adding?: ComponentAdding) => {
   view = createHost();
-  await view.render(<ArchitectComponentList kind={kind} cards={cards} inventory={inventory()} hiddenAgents={hidden} onSelect={onSelect} />);
+  await view.render(<ArchitectComponentList kind={kind} cards={cards} inventory={inventory()} hiddenAgents={hidden} adding={adding} onSelect={onSelect} />);
   return view.host;
 };
 
@@ -77,4 +77,39 @@ it("opens the item's card on click and says plainly when there is none", async (
   view.unmount();
   const empty = await mount("tools", []);
   expect(empty.textContent).toContain("This system uses no tool server.");
+});
+
+const adding = (patch: Partial<ComponentAdding> = {}): ComponentAdding => ({ target: { blueprintId: "bp" }, projectFiles: true, ...patch });
+const addButton = (host: HTMLElement, label: string) => [...host.querySelectorAll("button")].find(button => button.textContent?.trim() === label);
+
+it("explains an empty kind and offers the first addition in the same place", async () => {
+  const host = await mount("agents", [], [], () => {}, adding());
+  expect(host.textContent).toContain("This system contains no agent.");
+  expect(host.textContent).toContain("Add one, then place it in the flow.");
+  expect(host.querySelector("ul")).toBeNull();
+  await click(addButton(host, "Add an agent"));
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("New agent");
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("not to the flow yet");
+});
+
+it("keeps the add action above a populated list", async () => {
+  const host = await mount("tools", [card("McpServer", "github")], [], () => {}, adding());
+  expect(host.querySelectorAll("li")).toHaveLength(1);
+  expect(addButton(host, "Add a tool server")).toBeDefined();
+});
+
+it("says why adding is not possible right now instead of hiding the action", async () => {
+  const host = await mount("agents", [card("Agent", "writer")], [], () => {}, adding({ blockedReason: "Save the draft first: it has changes that are not saved yet." }));
+  const button = addButton(host, "Add an agent")!;
+  expect(button.disabled).toBe(true);
+  expect(button.title).toBe("Save the draft first: it has changes that are not saved yet.");
+});
+
+it("offers no addition on a saved version, and skills only where project files exist", async () => {
+  const readOnly = await mount("agents", [], [], () => {});
+  expect(readOnly.querySelector("button")).toBeNull();
+  expect(readOnly.textContent).toContain("This version is read-only. Adapt it to add or change items.");
+  view.unmount();
+  const document030 = await mount("skills", [], [], () => {}, adding({ projectFiles: false }));
+  expect(addButton(document030, "Add a skill")).toBeUndefined();
 });

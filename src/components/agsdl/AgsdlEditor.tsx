@@ -31,7 +31,7 @@ import "./agsdl.css";
 import { agsdlErrorText, agsdlProjectIssueText } from "./errorText";
 import { ProjectMacroSettings } from "./ProjectMacroSettings";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
-import { ArchitectComponentList } from "../architect/ArchitectComponentList";
+import { ArchitectComponentList, type ComponentAdding, type ComponentListKind } from "../architect/ArchitectComponentList";
 import { projectInventory } from "../../services/agsdl/projectInventory";
 import { projectSettings } from "../../stores/agsdl/projectEdits";
 
@@ -116,7 +116,9 @@ export const AgsdlEditor: React.FC<{
     }
   }, [source, displayMetadata, migrationMetadata, reports, projectTarget]);
   const document = parsed.document;
-  const inventory = useMemo(() => view !== "flow" && source ? projectInventory(source) : null, [view, source]);
+  const listView: ComponentListKind | undefined = view === "agents" || view === "skills" || view === "tools" ? view : undefined;
+  const inventory = useMemo(() => listView && source ? projectInventory(source) : null, [listView, source]);
+  const blueprintTarget = "blueprintId" in target ? target : undefined;
   const hiddenAgents = useMemo(() => project ? projectSettings(project).hiddenAgentIds : [], [project]);
   const visibleGraphIndex = Math.max(0, Math.min(graphIndex, Math.max(0, (document?.graphs.length ?? 0) - 1)));
   const edition030 = isFlowDocumentContract(document?.contract);
@@ -329,6 +331,13 @@ export const AgsdlEditor: React.FC<{
       (settingsOpen ? setNameError : setError)(agsdlErrorText(failure, t));
     }
   };
+  // Adding by hand is offered on the draft only. A document that cannot be saved right now says why instead of hiding the action.
+  const adding: ComponentAdding | undefined = blueprintTarget && blueprintTarget.number === undefined && session?.status === "draft" && !planStatus ? {
+    target: blueprintTarget, projectFiles: !!project,
+    blockedReason: session.saving ? t("agsdl.architect.add.blocked.saving") : conflict ? t("agsdl.library.revisionConflict")
+      : project && !project.saved.projection ? t("agsdl.architect.add.blocked.invalid")
+        : project && session.dirty ? t("agsdl.architect.add.blocked.unsaved") : undefined,
+  } : undefined;
   const conflictNotice = conflict && conflictTarget && <div role="alert" className="agsdl-error">
     <p>{t("agsdl.library.revisionConflict")}</p>
     {recoveryError && recoveryError !== t("agsdl.library.revisionConflict") && <p>{recoveryError}</p>}
@@ -483,8 +492,8 @@ export const AgsdlEditor: React.FC<{
       {!session ? <div className="agsdl-empty">{t("agsdl.loading")}</div>
         : !source ? legacyTarget && session.status === "draft" && (!planStatus || planStatus === "draft") ? <DesignStart onChoose={setLibrary} /> : <div className="agsdl-empty">{t("agsdl.emptyTitle")}</div>
         : document && <>
-          {view !== "flow" && projectTarget ? <ArchitectComponentList kind={view} cards={document.declarations} inventory={inventory}
-            hiddenAgents={hiddenAgents} onSelect={select} />
+          {listView ? <ArchitectComponentList kind={listView} cards={document.declarations} inventory={inventory}
+            hiddenAgents={hiddenAgents} adding={adding} onSelect={select} />
           : cards.length > 0 ? <WorkflowGraph
             key={`${key}:${graph?.path ?? "declarations"}`}
             cards={cards} edges={system.edges} entry={system.entry} compositions={document.graphs} declarations={document.declarations} selected={selected}
