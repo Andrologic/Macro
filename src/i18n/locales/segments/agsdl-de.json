@@ -1005,6 +1005,42 @@
       "workEnded": "Grund: Zugehörige Arbeit beendet"
     }
   },
+    "inbox": {
+      "attention": "Handlungsbedarf",
+      "active": "In Bearbeitung",
+      "snoozed": "Zurückgestellt",
+      "finished": "Abgeschlossen",
+      "scheduled": "Geplant",
+      "search": "Threads und Ausführungen suchen",
+      "systemFilter": "Nach System filtern",
+      "allSystems": "Alle Systeme",
+      "showHidden": "Ausgeblendete Threads anzeigen",
+      "hidden": "Ausgeblendet",
+      "local": "Dieses Gerät",
+      "snooze": "Zurückstellen",
+      "snoozeUntil": "Zurückstellen bis",
+      "deadlineWarning": "Die Freigabefrist endet um {{time}}, bevor die Zurückstellung abläuft.",
+      "terminate": "Beenden",
+      "confirmTerminate": "{{run}} endgültig beenden?",
+      "actionFailed": "Die Aktion konnte nicht abgeschlossen werden.",
+      "status": {
+        "active": "In Bearbeitung",
+        "stopping": "Wird beendet",
+        "succeeded": "Abgeschlossen",
+        "terminated": "Vom Benutzer beendet",
+        "failed": "Fehlgeschlagen"
+      },
+      "reason": {
+        "question": "Frage",
+        "approval": "Freigabe",
+        "error": "Fehler",
+        "interrupted": "Unterbrochen",
+        "finished": "Ausführung beendet",
+        "activity": "Neue Aktivität",
+        "snoozeElapsed": "Zurückstellung abgelaufen",
+        "snoozed": "Zurückgestellt"
+      }
+    },
   "run030": {
     "instanceActivity": "Aktivität der Instanz",
     "instance": "Agenteninstanz",

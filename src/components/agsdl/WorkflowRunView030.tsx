@@ -1,8 +1,10 @@
 import { Maximize2, X } from "lucide-react";
-import { useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { CapturedRunGraph030 } from "./CapturedRunGraph030";
 import { ExecutionMonitor030, type ExecutionMonitorProps030 } from "./ExecutionMonitor030";
 import { HumanRequests030 } from "./HumanRequests030";
+import { markOperateRunOpened } from "../../stores/useOperateInboxStore";
+import { isOperateRequestSnoozed } from "../../services/operateInboxModel";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { subscribeWorkflowRunAccess030, workflowRunAccessSnapshot030, openWorkflowRun030,
   type WorkflowRunAccess030, type WorkflowRunTarget030 } from "../../services/workflowAgentTasks";
@@ -23,6 +25,11 @@ export function WorkflowRunView030({ bundle, currentSource, target, initialInsta
   const focusedTarget = useRef<string>(undefined);
   const snapshot = useSyncExternalStore(access.subscribe.bind(access), access.getSnapshot.bind(access), access.getSnapshot.bind(access));
   const targetRunId = target?.scope.systemStartId;
+  const [visibleRunId, setVisibleRunId] = useState<string>();
+  const selectRun = useCallback((id: string | undefined, active: boolean, viewingRun: boolean) => {
+    setVisibleRunId(viewingRun && !active ? id : undefined);
+    onSelection?.(id, active, viewingRun);
+  }, [onSelection]);
   useEffect(() => {
     if (targetRunId) { void access.refreshHistory().catch(() => {}); void access.refreshRun(targetRunId).catch(() => {}); }
   }, [access, targetRunId]);
@@ -42,6 +49,12 @@ export function WorkflowRunView030({ bundle, currentSource, target, initialInsta
     return () => window.cancelAnimationFrame(frame);
   }, [exact, focusKey, requestVisible, target?.requestId]);
   const registration = registry.find(item => item.access === access);
+  const visibleRead = visibleRunId ? snapshot.runs[visibleRunId] : undefined;
+  const finished = exact && visibleRead?.kind === 'ready' && visibleRead.value.inbox?.opened === false &&
+    visibleRead.value.state.verdict !== null && visibleRead.value.state.physicalPending === '0' ? visibleRead.value : null;
+  useEffect(() => {
+    if (finished) void markOperateRunOpened({ scope: finished.state.scope, conversationId: registration?.scope.conversationId }).catch(() => {});
+  }, [finished, registration?.scope.conversationId]);
   const humans: NonNullable<ExecutionMonitorProps030["renderHumans"]> = (run, pendingOnly, readOnly, openOccurrence, instanceActivationIds) => {
     const humanClient = bundle.humanClient ?? bundle.humanClientForRun?.(run);
     const requests = run.state.humans;
@@ -63,6 +76,8 @@ export function WorkflowRunView030({ bundle, currentSource, target, initialInsta
       ? <>
         {missingLinks && <p role="status">{t('agsdl.run030.instanceRequestLinksUnavailable')}</p>}
         <HumanRequests030 key={captureKey} requests={requests} client={humanClient} captureKey={captureKey} readOnly={readOnly} pendingOnly={pendingOnly}
+          suppressNotification={request => isOperateRequestSnoozed(run, request)}
+          onRequestUpdated={() => { void access.refreshRun(run.state.scope.systemStartId).catch(() => {}); }}
           onOpenRequest={request => openWorkflowRun030({ ...request, conversationId: registration?.scope.conversationId })}
           onOpenOccurrence={activation => openOccurrence?.(activation)} showRequest={showRequest} showOccurrence={initialInstanceId ? belongsToInstance : undefined} />
       </>
@@ -75,7 +90,7 @@ export function WorkflowRunView030({ bundle, currentSource, target, initialInsta
     </div>}
     {exact ? <ExecutionMonitor030 key={target ? JSON.stringify(target) : `${access.scopeKey}:${initialRunId ?? ""}`} access={access}
       taskStale={taskStale}
-      onSelection={onSelection} initialInstanceId={initialInstanceId} initialRunId={targetRunId ?? initialRunId} exactInitialRun={!!target} currentSource={currentSource} canvas={canvas} controls={controls} capturedControls={onExpand && <button className="agsdl-icon-button" aria-label={t(expanded ? "agsdl.shrink" : "agsdl.expand")} title={t(expanded ? "agsdl.shrink" : "agsdl.expand")} onClick={onExpand}>{expanded ? <X size={14} /> : <Maximize2 size={14} />}</button>} projectPicker={projectPicker} renderHumans={humans} renderGraph={value => <CapturedRunGraph030 bridge={value} currentSource={currentSource} onInspect={value.inspect} />}
+      onSelection={selectRun} initialInstanceId={initialInstanceId} initialRunId={targetRunId ?? initialRunId} exactInitialRun={!!target} currentSource={currentSource} canvas={canvas} controls={controls} capturedControls={onExpand && <button className="agsdl-icon-button" aria-label={t(expanded ? "agsdl.shrink" : "agsdl.expand")} title={t(expanded ? "agsdl.shrink" : "agsdl.expand")} onClick={onExpand}>{expanded ? <X size={14} /> : <Maximize2 size={14} />}</button>} projectPicker={projectPicker} renderHumans={humans} renderGraph={value => <CapturedRunGraph030 bridge={value} currentSource={currentSource} onInspect={value.inspect} />}
       openRun={initialInstanceId && target ? () => openWorkflowRun030(target) : undefined} />
       : <p role="status" className="p-3 text-xs">{t('agsdl.shell030.exactUnavailable')}</p>}
     {target?.requestId && exact && !requestVisible &&

@@ -930,6 +930,7 @@ pub fn run() {
             commands::agsdl_execution::execution_model_choices,
             commands::agsdl_execution::execution_preflight,
             commands::agsdl_execution::execution_list_runs030,
+            commands::agsdl_execution::execution_update_operate_inbox,
             commands::agsdl_execution::execution_read_humans030,
             commands::agsdl_execution::execution_submit_human030,
             commands::agsdl_execution::execution_start,

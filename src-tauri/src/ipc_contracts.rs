@@ -21,15 +21,16 @@ pub mod execution {
         DiagnosticRequest, PublicExecutionDiagnostic,
     };
     pub use crate::db::agsdl_execution::discovery::{RunListRequest, RunPage};
-    pub use crate::db::agsdl_execution::discovery030::{
-        PhaseCount030, PublicRunSummary030, RunListRequest030, RunPage030,
-    };
+    pub use crate::db::agsdl_execution::discovery030::{PhaseCount030, RunListRequest030};
     pub use crate::db::agsdl_execution::dto::ipc::*;
     pub use crate::db::agsdl_execution::intents::*;
     pub use crate::db::agsdl_execution::public::ipc::*;
     pub use crate::db::agsdl_execution::public030::ipc::{
         HumanAnswer030, HumanContent030, HumanContinuation030, HumanDecision030, HumanPage030,
         HumanScope030, PublicHumanRequest030,
+    };
+    pub use crate::db::operate_inbox::{
+        OperateInboxAction, OperateRunFacts, OperateThreadFacts, PublicRunSummary030, RunPage030,
     };
 }
 

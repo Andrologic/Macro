@@ -367,7 +367,10 @@ it('keeps fully read history ready on STORAGE_UNCERTAIN and permits manual inspe
   const history = retainedRunValue030(access.getSnapshot().history);
   transport.readExecutionIntentsVersioned = async () => { throw { code: 'STORAGE_UNCERTAIN', currentIntentKey: null }; };
   await expect(access.refreshHistory()).rejects.toMatchObject({ kind: 'uncertain', code: 'STORAGE_UNCERTAIN' });
-  expect(access.getSnapshot().history).toMatchObject({ kind: 'ready', value: history });
+  const after = access.getSnapshot().history;
+  expect(after.kind).toBe('ready');
+  const withoutClock = (entries: NonNullable<typeof history>) => entries.map(({ observation: _observation, ...entry }) => entry);
+  expect(withoutClock(retainedRunValue030(after)!)).toEqual(withoutClock(history!));
   expect(access.getSnapshot().retainedAdmission.kind).toBe('unavailable');
   expect(initialRunSelection030(access.getSnapshot())).toBeUndefined();
   expect(initialRunSelection030(access.getSnapshot(), 'run')).toBe('run');
@@ -384,7 +387,7 @@ it('invalidates retained admission and reports intent failure during run-only re
   transport.readExecutionIntentsVersioned = async () => { throw { code: 'STORAGE_UNCERTAIN', currentIntentKey: null }; };
   await expect(access.refreshRun('run')).rejects.toMatchObject({ kind: 'uncertain', code: 'STORAGE_UNCERTAIN' });
   expect(access.getSnapshot().retainedAdmission.kind).toBe('unavailable');
-  expect(access.getSnapshot().runs.run).toMatchObject({ kind: 'ready', value: old });
+  expect(access.getSnapshot().runs.run).toMatchObject({ kind: 'ready', value: { capture: old?.capture, state: old?.state, inbox: old?.inbox } });
   // No history refresh is needed to recover the independently read admission.
   transport.readExecutionIntentsVersioned = async () => [intentFor(f)];
   await access.refreshRun('run');

@@ -1,4 +1,4 @@
-import { claimHumanAttention030, subscribeRunHumanRequests030 } from '../../services/agsdl/humanAttention030';
+import { claimHumanAttention030, notifiedHumanRequests030, subscribeRunHumanRequests030 } from '../../services/agsdl/humanAttention030';
 import { useEffect, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
@@ -26,6 +26,7 @@ import { Dialog } from '../ui/Dialog';
 import { getWorkflowRunAccess030, subscribeWorkflowRunAccess030, workflowRunAccessSnapshot030,
   subscribeWorkflowRunTarget030, workflowRunTargetSnapshot030, workflowRunOpenSequence030, openWorkflowRun030, type WorkflowRunRegistration030 } from '../../services/workflowAgentTasks';
 import { humanRequestKey030, sameHumanScope030 } from '../../services/agsdl/humanRequests030';
+import { isOperateRequestSnoozed } from '../../services/operateInboxModel';
 import { retainedRunValue030 } from '../../services/agsdl/runtimeProjection030';
 import type { RunHumanRequest030 } from '../../types/agsdlRunUi030';
 
@@ -40,11 +41,13 @@ export function emitRunAttentionNotification030(request: RunHumanRequest030, t: 
   });
 }
 export function subscribeRunAttention030(registrations: readonly WorkflowRunRegistration030[], t: TFunction) {
-  return subscribeRunHumanRequests030(registrations, (request, conversationId) => {
-    if (request.state.kind === 'open') {
+  return subscribeRunHumanRequests030(registrations, (request, conversationId, inspection) => {
+    const snoozed = isOperateRequestSnoozed(inspection, request);
+    if (request.state.kind === 'open' && !snoozed) {
       emitRunAttentionNotification030(request, t, conversationId);
       return;
     }
+    if (snoozed) notifiedHumanRequests030.delete(humanRequestKey030(request));
     const center = useNotificationCenterStore.getState();
     const item = center.items.find(item => item.id === `human030:${humanRequestKey030(request)}`);
     if (item?.sessionToastId != null) notify.dismiss(item.sessionToastId);
@@ -258,6 +261,6 @@ export const WorkflowAttentionNotifications = () => {
   return target ? <Dialog title={runT('agsdl.shell030.executions')} onClose={() => openWorkflowRun030(null)} closeOnBackdropClick
     panelClassName="flex h-[min(90vh,960px)] w-[min(94vw,1000px)] min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
     <header className="flex items-center justify-between border-b border-border p-3 text-sm"><h2>{runT('agsdl.shell030.executions')}</h2><button type="button" onClick={() => openWorkflowRun030(null)}>{runT('agsdl.shell030.close')}</button></header>
-    {bundle ? <WorkflowRunView030 key={opening} bundle={bundle} target={target} /> : <p role="status" className="p-3 text-xs">{runT('agsdl.shell030.unavailable')}</p>}
+    {bundle ? <WorkflowRunView030 key={opening} bundle={bundle} target={target} initialInstanceId={target.instanceId} /> : <p role="status" className="p-3 text-xs">{runT('agsdl.shell030.unavailable')}</p>}
   </Dialog> : null;
 };

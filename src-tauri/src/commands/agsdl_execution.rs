@@ -223,11 +223,22 @@ pub async fn execution_model_choices(
 }
 
 #[tauri::command]
+pub async fn execution_update_operate_inbox(
+    state: State<'_, DbPool>,
+    system_start_id: String,
+    snapshot_id: String,
+    action: crate::db::operate_inbox::OperateInboxAction,
+) -> repository::Result<()> {
+    crate::db::operate_inbox::update(&pool(&state).await?, &system_start_id, &snapshot_id, action)
+        .await
+}
+
+#[tauri::command]
 pub async fn execution_list_runs030(
     app: tauri::AppHandle,
     state: State<'_, DbPool>,
     request: repository::discovery030::RunListRequest030,
-) -> repository::Result<repository::discovery030::RunPage030> {
+) -> repository::Result<crate::db::operate_inbox::RunPage030> {
     let workspace_state = app.state::<crate::WorkspaceMetadataRoot>();
     let workspace = workspace_state.0.read().await.clone();
     list_runs030_scoped(&pool(&state).await?, &workspace, request).await
@@ -237,7 +248,7 @@ pub(crate) async fn list_runs030_scoped(
     pool: &sqlx::SqlitePool,
     workspace: &std::path::Path,
     request: repository::discovery030::RunListRequest030,
-) -> repository::Result<repository::discovery030::RunPage030> {
+) -> repository::Result<crate::db::operate_inbox::RunPage030> {
     let metadata = crate::workspace::architect::execution_history_metadata_root(workspace);
     let _scope = crate::workspace::architect::lock_execution_history_owner(
         workspace,
@@ -245,7 +256,7 @@ pub(crate) async fn list_runs030_scoped(
         &request.owner,
     )
     .await?;
-    repository::discovery030::list_runs030(pool, request).await
+    crate::db::operate_inbox::list_runs(pool, request).await
 }
 
 #[tauri::command]

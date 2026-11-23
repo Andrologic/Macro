@@ -1005,6 +1005,42 @@
       "workEnded": "理由：関連作業の終了"
     }
   },
+    "inbox": {
+      "attention": "対応が必要",
+      "active": "実行中",
+      "snoozed": "保留中",
+      "finished": "終了済み",
+      "scheduled": "スケジュール済み",
+      "search": "スレッドと実行を検索",
+      "systemFilter": "システムで絞り込む",
+      "allSystems": "すべてのシステム",
+      "showHidden": "非表示のスレッドを表示",
+      "hidden": "非表示",
+      "local": "この端末",
+      "snooze": "後で対応",
+      "snoozeUntil": "保留の終了日時",
+      "deadlineWarning": "承認期限の {{time}} は、保留の終了より前です。",
+      "terminate": "終了する",
+      "confirmTerminate": "{{run}} を完全に終了しますか？",
+      "actionFailed": "操作を完了できませんでした。",
+      "status": {
+        "active": "実行中",
+        "stopping": "終了処理中",
+        "succeeded": "完了",
+        "terminated": "ユーザーが終了",
+        "failed": "失敗"
+      },
+      "reason": {
+        "question": "質問",
+        "approval": "承認",
+        "error": "エラー",
+        "interrupted": "中断",
+        "finished": "実行終了",
+        "activity": "新しいアクティビティ",
+        "snoozeElapsed": "保留期間終了",
+        "snoozed": "保留中"
+      }
+    },
   "run030": {
     "instanceActivity": "インスタンスのアクティビティ",
     "instance": "エージェントインスタンス",

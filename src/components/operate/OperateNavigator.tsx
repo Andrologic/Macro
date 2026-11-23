@@ -1,85 +1,121 @@
-import { useSyncExternalStore } from 'react';
-import { useAppStore } from '../../stores/useAppStore';
-import { useTaskStore } from '../../stores/useTaskStore';
-import { retainedRunValue030 } from '../../services/agsdl/runtimeProjection030';
+import { useEffect, useMemo, useState } from 'react';
 import {
-  isWorkflowAgentTask, openWorkflowRun030, sameWorkflowSource030, subscribeWorkflowRunAccess030,
-  workflowRunAccessSnapshot030, type WorkflowRunRegistration030,
-} from '../../services/workflowAgentTasks';
-import type { CatalogedImplementTask } from '../../services/implementTaskCatalog';
+  operateSnoozeDeadlineWarning, selectOperateInbox,
+  type OperateRunRow, type OperateThreadRow,
+} from '../../services/operateInboxModel';
+import {
+  openOperateRun, openOperateThread, snoozeOperateThread, subscribeOperateInbox,
+  terminateOperateRun, useOperateInboxStore,
+} from '../../stores/useOperateInboxStore';
 import { useAgsdlTranslation } from '../agsdl/useAgsdlTranslation';
+import { Dialog } from '../ui/Dialog';
+import { notify } from '../ui/toastService';
 
-function InstanceRow({ task }: { task: CatalogedImplementTask }) {
-  const { t } = useAgsdlTranslation();
-  const selected = useAppStore(state => state.selectedTaskId === task.id);
-  const ref = task.workflow_execution;
-  return <button type="button" aria-current={selected}
-    className="block w-full rounded px-2 py-1.5 text-left hover:bg-accent aria-[current=true]:bg-accent"
-    onClick={() => useAppStore.getState().setSelectedTask(task.id)}>
-    <span className="block break-words font-medium">{task.title}</span>
-    <span className="block truncate text-muted-foreground" title={ref?.agentInstanceId}>{ref?.agentInstanceId ?? task.plan_title}</span>
-    {ref?.stale && <span>{t('agsdl.run030.staleShort')}</span>}
-    {!ref?.stale && ref?.interactionRequired && <span>{t('agsdl.run030.waitingHuman')}</span>}
-  </button>;
+const systemRunLabel = (item: { systemLabel: string; runLabel: string }) => `${item.systemLabel} · ${item.runLabel}`;
+const elapsedLabel = (ms: number, locale: string | undefined) =>
+  new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(-Math.floor(ms / 60_000), 'minute');
+
+function ThreadRow({ thread }: { thread: OperateThreadRow }) {
+  const { t, i18n } = useAgsdlTranslation();
+  const [editing, setEditing] = useState(false);
+  const [date, setDate] = useState('');
+  const untilMs = new Date(date).getTime();
+  const deadline = operateSnoozeDeadlineWarning(thread, untilMs);
+  const showError = () => notify.error(t('agsdl.inbox.actionFailed'));
+  const name = systemRunLabel(thread);
+  return <div className="border-l border-border pl-2">
+    <button type="button" className="block text-left" data-operate-open-thread onClick={() => void openOperateThread(thread).catch(showError)}>
+      {thread.agentLabel}{thread.hidden && <> · {t('agsdl.inbox.hidden')}</>}
+    </button>
+    <button type="button" className="block text-left text-muted-foreground" onClick={() => openOperateRun(thread)}>{name}</button>
+    {(thread.reason || thread.elapsedMs !== null) && <p>
+      {thread.reason && t(`agsdl.inbox.reason.${thread.reason}`)}
+      {thread.elapsedMs !== null && <>{thread.reason && ' · '}{elapsedLabel(thread.elapsedMs, i18n.resolvedLanguage)}</>}</p>}
+    {thread.reason === 'snoozed' && thread.facts?.snoozeUntilMs != null &&
+      <time>{new Date(thread.facts.snoozeUntilMs).toLocaleString(i18n.resolvedLanguage)}</time>}
+    {thread.location.kind === 'remote' && <p>{thread.location.label}</p>}
+    {thread.stale && <p>{t('agsdl.run030.staleShort')}</p>}
+    {thread.canSnooze && thread.reason !== 'snoozed' &&
+      <button type="button" onClick={() => setEditing(!editing)}>{t('agsdl.inbox.snooze')}</button>}
+    {editing && <form onSubmit={event => {
+      event.preventDefault();
+      void snoozeOperateThread(thread, untilMs).then(() => setEditing(false), showError);
+    }}>
+      <label>{t('agsdl.inbox.snoozeUntil')} <input type="datetime-local" value={date} onChange={event => setDate(event.target.value)} required /></label>
+      {deadline !== null && <p role="status">{t('agsdl.inbox.deadlineWarning', { time: new Date(deadline).toLocaleString(i18n.resolvedLanguage) })}</p>}
+      <button disabled={!(untilMs > Date.now())}>{t('agsdl.inbox.snooze')}</button>
+    </form>}
+  </div>;
 }
 
-function RunList({ registration, tasks }: { registration: WorkflowRunRegistration030; tasks: CatalogedImplementTask[] }) {
+function RunRow({ run }: { run: OperateRunRow }) {
   const { t } = useAgsdlTranslation();
-  const { access, scope } = registration;
-  const snapshot = useSyncExternalStore(access.subscribe, access.getSnapshot);
-  const history = retainedRunValue030(snapshot.history) ?? [];
-  const entries = new Map(history.map(run => [run.scope.systemStartId, run]));
-  const runIds = new Set([...snapshot.historyOrder, ...entries.keys(), ...Object.keys(snapshot.runFailures)]);
-  return <>
-    {snapshot.history.kind === 'loading' && !history.length && <p role="status">{t('agsdl.run030.loading')}</p>}
-    {snapshot.history.kind === 'stale' && <p role="status">{t('agsdl.run030.stale')}</p>}
-    {(registration.catalogError || snapshot.history.kind === 'error') && <p role="alert">{t('agsdl.run030.readFailed')}</p>}
-    {[...runIds].map(id => {
-      const entry = entries.get(id);
-      const read = Object.hasOwn(snapshot.runs, id) ? snapshot.runs[id] : undefined;
-      const execution = entry?.scope ?? (read && retainedRunValue030(read)?.state.scope);
-      const failed = Object.hasOwn(snapshot.runFailures, id);
-      if (!execution && !failed) return null;
-      const rows = execution ? tasks.filter(({ workflow_execution: ref }) =>
-        ref && ref.systemStartId === id && sameWorkflowSource030(ref.source, execution.source)) : [];
-      const humans = entry?.humans;
-      return <section className="mb-2" key={id}>
-        {execution ? <button type="button" className="w-full rounded px-2 py-1 text-left hover:bg-accent"
-          onClick={() => openWorkflowRun030({ scope: execution, conversationId: scope.conversationId })}>
-          <strong className="block truncate">{rows[0]?.plan_title || scope.owner.planId}</strong>
-          <span className="block truncate text-muted-foreground" title={id}>{id}</span>
-        </button> : <p className="break-all px-2">{id}</p>}
-        {failed && <p className="px-2" role="alert">{t('agsdl.run030.readFailed')}</p>}
-        {humans?.kind === 'ready' && humans.value.some(request => request.state.kind === 'open') &&
-          !rows.some(task => task.workflow_execution?.interactionRequired) &&
-          <p className="px-2">{t('agsdl.run030.waitingHuman')}</p>}
-        <div className="ml-2 border-l border-border pl-1">{rows.map(task => <InstanceRow key={task.id} task={task} />)}</div>
-      </section>;
-    })}
-    {snapshot.history.kind === 'ready' && runIds.size === 0 && !registration.catalogError &&
-      <p className="p-2 text-muted-foreground">{scope.owner.planId} · {t('agsdl.run030.noRuns')}</p>}
-  </>;
+  const [pending, setPending] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const name = systemRunLabel(run);
+  const terminate = () => {
+    setConfirming(false);
+    setPending(true);
+    void terminateOperateRun(run).catch(() => notify.error(t('agsdl.inbox.actionFailed'))).finally(() => setPending(false));
+  };
+  return <section className="mb-2">
+    <button type="button" className="block text-left font-medium" onClick={() => openOperateRun(run)}>{name}</button>
+    <p>{t(`agsdl.inbox.status.${run.status}`)} · {run.location.kind === 'local' ? t('agsdl.inbox.local') : run.location.label}</p>
+    {run.canTerminate &&
+      <button type="button" disabled={pending || run.status === 'stopping'} onClick={() => setConfirming(true)}>{t('agsdl.inbox.terminate')}</button>}
+    {confirming && <Dialog title={t('agsdl.inbox.terminate')} onClose={() => setConfirming(false)}
+      panelClassName="max-w-sm space-y-3 rounded border border-border bg-card p-4 text-sm">
+      <p>{t('agsdl.inbox.confirmTerminate', { run: name })}</p>
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={() => setConfirming(false)}>{t('agsdl.shell030.close')}</button>
+        <button type="button" className="text-destructive" onClick={terminate}>{t('agsdl.inbox.terminate')}</button>
+      </div>
+    </Dialog>}
+    {run.threads.length > 0 && <details>
+      <summary>{t('agsdl.run030.instances')}</summary>
+      {run.threads.map(thread => <ThreadRow key={thread.key} thread={thread} />)}
+    </details>}
+  </section>;
 }
 
 export default function OperateNavigator() {
-  const { t } = useAgsdlTranslation();
-  const tasks = useTaskStore(state => state.tasks);
-  const loading = useTaskStore(state => state.isLoading);
-  const error = useTaskStore(state => state.lastError);
-  const projects = useAppStore(state => state.standaloneProjects);
-  const groups = useAppStore(state => state.projectGroups);
-  const registrations = useSyncExternalStore(subscribeWorkflowRunAccess030, workflowRunAccessSnapshot030);
-  const scoped = registrations.filter(({ scope }) => projects.some(project => project.id === scope.owner.projectId) ||
-    groups.some(group => group.projects.some(project => project.id === scope.owner.projectId)));
-  const instances = tasks.filter(isWorkflowAgentTask);
+  const { t, i18n } = useAgsdlTranslation();
+  const { runs, filter, hiddenAgents, loading, readFailed, setFilter, nowMs } = useOperateInboxStore();
+  useEffect(subscribeOperateInbox, []);
+  const sections = useMemo(() => selectOperateInbox(runs, filter, nowMs, hiddenAgents,
+    time => new Date(time).toLocaleString(i18n.resolvedLanguage)), [runs, filter, nowMs, hiddenAgents, i18n.resolvedLanguage]);
   return <nav className="flex h-full min-h-0 flex-col" aria-label={t('agsdl.shell030.executions')} data-tour-id="operate-executions">
-    <header className="flex min-h-12 items-center justify-between border-b border-border px-3">
+    <header className="border-b border-border p-2 text-xs">
       <h2 className="text-sm font-medium">{t('agsdl.shell030.executions')}</h2>
+      <input type="search" aria-label={t('agsdl.inbox.search')} placeholder={t('agsdl.inbox.search')}
+        value={filter.query ?? ''} onChange={event => setFilter({ ...filter, query: event.target.value })} />
+      <select aria-label={t('agsdl.inbox.systemFilter')} value={filter.systemId ?? ''}
+        onChange={event => setFilter({ ...filter, systemId: event.target.value || undefined })}>
+        <option value="">{t('agsdl.inbox.allSystems')}</option>
+        {sections.systems.map(system => <option key={system.id} value={system.id}>{system.label}</option>)}
+      </select>
+      <label className="block"><input type="checkbox" checked={!!filter.showHidden}
+        onChange={event => setFilter({ ...filter, showHidden: event.target.checked })} /> {t('agsdl.inbox.showHidden')}</label>
     </header>
     <div className="min-h-0 flex-1 overflow-auto p-2 text-xs">
-      {error && <p role="alert">{error}</p>}
-      {!scoped.length && <p role="status" className="p-2 text-muted-foreground">{t(loading ? 'agsdl.run030.loading' : 'agsdl.run030.noRuns')}</p>}
-      {scoped.map(registration => <RunList key={registration.access.scopeKey} registration={registration} tasks={instances} />)}
+      {readFailed && <p role="alert">{t('agsdl.run030.readFailed')}</p>}
+      {!runs.length && <p role="status">{t(loading ? 'agsdl.run030.loading' : 'agsdl.run030.noRuns')}</p>}
+      <h3>{t('agsdl.inbox.attention')}</h3>
+      {sections.attention.map(item => item.kind === 'thread' ? <ThreadRow key={item.key} thread={item} />
+        : <button type="button" key={item.key} className="block text-left" onClick={() => openOperateRun(item.run, item.requestId)}>
+          {systemRunLabel(item.run)} · {t(`agsdl.inbox.reason.${item.reason}`)}
+          {item.elapsedMs !== null && <> · {elapsedLabel(item.elapsedMs, i18n.resolvedLanguage)}</>}
+        </button>)}
+      <details open><summary>{t('agsdl.inbox.active')}</summary>
+        {sections.active.map(run => <RunRow key={run.key} run={run} />)}
+      </details>
+      <details><summary>{t('agsdl.inbox.snoozed')}</summary>
+        {sections.snoozed.map(thread => <ThreadRow key={thread.key} thread={thread} />)}
+      </details>
+      <details><summary>{t('agsdl.inbox.finished')}</summary>
+        {sections.finished.map(run => <RunRow key={run.key} run={run} />)}
+      </details>
+      <details><summary>{t('agsdl.inbox.scheduled')}</summary></details>
     </div>
   </nav>;
 }

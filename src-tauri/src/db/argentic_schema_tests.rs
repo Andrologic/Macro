@@ -3,7 +3,7 @@ use super::*;
 use sqlx::{Connection, SqlitePool};
 
 async fn objects(pool: &SqlitePool) -> Vec<(String, String, String, String)> {
-    sqlx::query_as("SELECT type,name,tbl_name,coalesce(sql,'') FROM sqlite_schema WHERE tbl_name LIKE 'engine_flow030_%' OR tbl_name LIKE 'engine_start030_%' ORDER BY type,name")
+    sqlx::query_as("SELECT type,name,tbl_name,coalesce(sql,'') FROM sqlite_schema WHERE (tbl_name LIKE 'engine_flow030_%' OR tbl_name LIKE 'engine_start030_%') AND name NOT GLOB 'macro_operate_*' ORDER BY type,name")
         .fetch_all(pool).await.unwrap()
 }
 async fn constraint_probe(pool: &SqlitePool) {

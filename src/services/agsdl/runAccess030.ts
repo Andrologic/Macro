@@ -116,6 +116,8 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
   let snapshot: RunAccessSnapshot030 = freeze({ history: { kind: 'loading', retained: null },
     historyOrder: [], retainedAdmission: unavailable('qualification'), runs: {}, excludedRuns: {}, runFailures: {} });
   const listeners = new Set<() => void>();
+  let observationOrder = 0;
+  const observe = () => ({ order: ++observationOrder, atMs: Date.now() });
   const retainedSummaries = new Map<string, PublicRunSummary030>();
   // This adapter owns exactly one scopeKey. Successful immutable proofs are
   // indexed by run and discovery; failures are deliberately never cached.
@@ -181,9 +183,10 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
   }
   async function historyEntry(run: PublicRunSummary030, capture: RunCapture030): Promise<RunHistoryEntry030> {
     verifyRetained(run);
+    const humans = await readHumanFacts030({ systemStartId: run.systemStartId, source: run.source }, transport.readExecutionHumans030);
     return { capture, scope: { systemStartId: run.systemStartId, snapshotId: run.snapshotId, source: run.source },
-      verdict: verdict(run.verdict), physicalPending: run.physicalPending, interruptedAt: run.interruptedAt,
-      humans: await readHumanFacts030({ systemStartId: run.systemStartId, source: run.source }, transport.readExecutionHumans030),
+      verdict: verdict(run.verdict), physicalPending: run.physicalPending, interruptedAt: run.interruptedAt, inbox: run.inbox,
+      humans, observation: observe(), stopping: run.stopping,
       chronology: unavailable('chronology') };
   }
   async function admission(runs: readonly PublicRunSummary030[]): Promise<NativeFact030<string | null>> {
@@ -266,7 +269,7 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     const sections = runtimeSections030(runtime);
     requireFact(BigInt(sections.activations.filter(activation => activation.physical).length) === BigInt(summary.physicalPending));
     const humans = history?.humans ?? await readHumanFacts030({ systemStartId: scope.systemStartId, source: scope.source }, transport.readExecutionHumans030);
-    return { capture, state: { scope, flowInvocationId: runtime.flowInvocationId,
+    return { capture, inbox: summary.inbox, observation: history?.observation ?? observe(), state: { scope, flowInvocationId: runtime.flowInvocationId,
       revision: runtime.revision, verdict: verdict(runtime.verdict), ownerStatus: summary.ownerStatus as 'live' | 'revoked',
       stopping: runtime.stopping, physicalPending: summary.physicalPending,
       stop: unavailable('stop-proof'), uncertainties: unavailable('uncertainty'), humans,

@@ -2078,6 +2078,30 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "OperateInboxAction",
+      "origin": "macro_lib::db::operate_inbox::OperateInboxAction",
+      "path": "OperateInboxAction.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "OperateRunFacts",
+      "origin": "macro_lib::db::operate_inbox::OperateRunFacts",
+      "path": "OperateRunFacts.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "OperateThreadFacts",
+      "origin": "macro_lib::db::operate_inbox::OperateThreadFacts",
+      "path": "OperateThreadFacts.ts"
+    },
+    {
+      "families": [
         "config_extra"
       ],
       "name": "OrphanSecretDto",
@@ -2651,7 +2675,7 @@
         "execution"
       ],
       "name": "PublicRunSummary030",
-      "origin": "macro_lib::db::agsdl_execution::discovery030::PublicRunSummary030",
+      "origin": "macro_lib::db::operate_inbox::PublicRunSummary030",
       "path": "PublicRunSummary030.ts"
     },
     {
@@ -2835,7 +2859,7 @@
         "execution"
       ],
       "name": "RunPage030",
-      "origin": "macro_lib::db::agsdl_execution::discovery030::RunPage030",
+      "origin": "macro_lib::db::operate_inbox::RunPage030",
       "path": "RunPage030.ts"
     },
     {

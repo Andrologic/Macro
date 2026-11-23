@@ -67,6 +67,7 @@ pub(crate) const NAMES: &[&str] = &[
     "045_connect_target_activation",
     "046_architect_library",
     "047_architect_legacy_import",
+    "048_operate_inbox",
 ];
 
 pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {
@@ -210,6 +211,9 @@ pub(crate) async fn remove_reference_schema(
     c: &mut SqliteConnection,
     versions: &[i64],
 ) -> DbResult<()> {
+    if !versions.contains(&48) {
+        operate_inbox::remove_reference_schema(c).await?;
+    }
     if !versions.contains(&42) {
         restore_execution020_reference(c).await?;
     }

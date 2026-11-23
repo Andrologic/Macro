@@ -1,6 +1,6 @@
 import type { RunHumanRequest030 } from '../../types/agsdlRunUi030';
 import { humanRequestKey030, sameHumanScope030 } from './humanRequests030';
-import type { RunInspectionAccess030 } from './runtimeProjection030';
+import type { RunInspection030, RunInspectionAccess030 } from './runtimeProjection030';
 
 /** Stable request identity excludes refresh revisions and component lifetime. */
 export const notifiedHumanRequests030 = new Set<string>();
@@ -20,7 +20,7 @@ export function subscribeRunHumanRequests030(
     scope: { owner: RunHumanRequest030['scope']['source']['owner']; conversationId?: string };
     access: Pick<RunInspectionAccess030, 'getSnapshot' | 'subscribe'>;
   }[],
-  onRequest: (request: RunHumanRequest030, conversationId?: string) => void,
+  onRequest: (request: RunHumanRequest030, conversationId: string | undefined, inspection: RunInspection030) => void,
 ): () => void {
   const subscriptions = registrations.map(({ access, scope }) => {
     const check = () => {
@@ -34,7 +34,7 @@ export function subscribeRunHumanRequests030(
         if (owner.projectId !== scope.owner.projectId || owner.planId !== scope.owner.planId ||
             owner.branch !== scope.owner.branch) continue;
         for (const request of state.humans.value) {
-          if (sameHumanScope030(request.scope, capture)) onRequest(request, scope.conversationId);
+          if (sameHumanScope030(request.scope, capture)) onRequest(request, scope.conversationId, read.value);
         }
       }
     };

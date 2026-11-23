@@ -18,6 +18,8 @@ export interface HumanRequests030Props {
   /** Navigate to this exact scope/request, including from the notification centre. */
   onOpenRequest: (target: Parameters<ReadHuman030>[0]) => void | Promise<void>;
   onOpenOccurrence: (activation: Extract<RunHumanOccurrence030['activation'], { kind: 'available' }>) => void;
+  suppressNotification?: (request: RunHumanRequest030) => boolean;
+  onRequestUpdated?: () => void;
   showRequest?: (request: RunHumanRequest030) => boolean;
   showOccurrence?: (occurrence: RunHumanOccurrence030) => boolean;
 }
@@ -36,11 +38,13 @@ function AttestedAnswer({ answer }: { answer: RunAttestedHumanAnswer030 }) {
   </div>;
 }
 
-function HumanRequestCard030({ request, client, captureKey, fresh, onOpenRequest, onOpenOccurrence, showOccurrence }: {
+function HumanRequestCard030({ request, client, captureKey, fresh, onOpenRequest, onOpenOccurrence, showOccurrence, suppressNotification, onRequestUpdated }: {
   request: RunHumanRequest030; client: HumanRequestClient030; captureKey?: string; fresh: boolean;
   onOpenRequest: HumanRequests030Props['onOpenRequest'];
   onOpenOccurrence: HumanRequests030Props['onOpenOccurrence'];
   showOccurrence: HumanRequests030Props['showOccurrence'];
+  suppressNotification: HumanRequests030Props['suppressNotification'];
+  onRequestUpdated: HumanRequests030Props['onRequestUpdated'];
 }) {
   const { t } = useAgsdlTranslation();
   const headingId = useId();
@@ -66,7 +70,7 @@ function HumanRequestCard030({ request, client, captureKey, fresh, onOpenRequest
   const view = runHumanView030(request, { plan: t('agsdl.human030.plan'), question: t('agsdl.human030.question'), unknown: t('agsdl.human030.unknown') });
 
   useEffect(() => {
-    if (!fresh || request.state.kind !== 'open' || !qualified) return;
+    if (!fresh || request.state.kind !== 'open' || !qualified || suppressNotification?.(request)) return;
     if (!claimHumanAttention030(request)) return;
     notify.actionRequired(t('agsdl.human030.notification'), {
       description: view.title,
@@ -77,7 +81,7 @@ function HumanRequestCard030({ request, client, captureKey, fresh, onOpenRequest
         card.current?.scrollIntoView?.({ block: 'nearest' });
       } }],
     });
-  }, [fresh, request, qualified, view.title, onOpenRequest, t]);
+  }, [fresh, request, qualified, view.title, onOpenRequest, t, suppressNotification]);
 
   const saveDraft = (next: HumanFormDraft030) => {
     setDraft(next);
@@ -91,6 +95,7 @@ function HumanRequestCard030({ request, client, captureKey, fresh, onOpenRequest
       const next = await client.send(request, answer, captureKey);
       setAttempt({ result: next.result, request: next.current ?? request });
       setReadFailed(next.readFailed);
+      if (next.result?.kind === 'received' || (next.current && next.current.state.kind !== 'open')) onRequestUpdated?.();
     } catch {
       setReadFailed(true);
       setAttempt({ result: { kind: 'uncertain', code: 'UNCERTAIN', receiptId: null }, request });
@@ -177,7 +182,7 @@ function HumanRequestCard030({ request, client, captureKey, fresh, onOpenRequest
 
 /** Receives only a complete typed read. Retained stale requests remain readable
  * but cannot be answered. The execution store and IPC stay outside this view. */
-export function HumanRequests030({ requests, client, captureKey, readOnly, pendingOnly, onOpenRequest, onOpenOccurrence, showRequest, showOccurrence }: HumanRequests030Props) {
+export function HumanRequests030({ requests, client, captureKey, readOnly, pendingOnly, onOpenRequest, onOpenOccurrence, showRequest, showOccurrence, suppressNotification, onRequestUpdated }: HumanRequests030Props) {
   const { t } = useAgsdlTranslation();
   useSyncExternalStore(client.subscribeReadbacks, client.readbackVersion, client.readbackVersion);
   const items = requests.kind === 'ready' ? requests.value : requests.kind === 'loading' || requests.kind === 'stale' ? requests.retained : null;
@@ -191,6 +196,6 @@ export function HumanRequests030({ requests, client, captureKey, readOnly, pendi
     {requests.kind === 'loading' && <p role="status">{t('agsdl.human030.loading')}</p>}
     {(readOnly || requests.kind === 'stale') && <p role="alert">{t('agsdl.human030.stale')}</p>}
     {requests.kind === 'ready' && visible?.length === 0 && <p>{t('agsdl.human030.empty')}</p>}
-    {visible?.map(request => <HumanRequestCard030 key={humanRequestKey030(request)} request={request} client={client} captureKey={captureKey} fresh={!readOnly && requests.kind === 'ready'} onOpenRequest={onOpenRequest} onOpenOccurrence={onOpenOccurrence} showOccurrence={showOccurrence} />)}
+    {visible?.map(request => <HumanRequestCard030 key={humanRequestKey030(request)} request={request} client={client} captureKey={captureKey} fresh={!readOnly && requests.kind === 'ready'} onOpenRequest={onOpenRequest} onOpenOccurrence={onOpenOccurrence} showOccurrence={showOccurrence} suppressNotification={suppressNotification} onRequestUpdated={onRequestUpdated} />)}
   </section>;
 }

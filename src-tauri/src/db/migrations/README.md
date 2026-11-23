@@ -193,3 +193,7 @@ historical files again. Subsequent edits, archive history and identities survive
 Restoring a database with the completion row restores its library and completion
 state together. A restored older database, or one captured before the import
 committed, runs discovery using the restored profile and available legacy sources.
+
+Version 48 adds the local Operate inbox. It records wall-clock dates for new
+runs, acknowledges terminal runs, and tracks per-instance snoozes against an
+activity counter. Older runs remain readable with unknown start and finish dates.

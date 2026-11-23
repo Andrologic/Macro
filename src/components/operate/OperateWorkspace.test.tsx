@@ -9,6 +9,7 @@ import { nativeAgentRunFixture030, nativeTransportFor030 } from '../../services/
 import { createRunInspectionAccess030 } from '../../services/agsdl/runAccess030';
 import { subscribeRunAttention030 } from '../notifications/WorkflowAttentionNotifications';
 import { notify } from '../ui/toastService';
+import { WorkflowRunView030 } from '../agsdl/WorkflowRunView030';
 import i18n from '../../i18n';
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../../test-utils/tauriRuntime';
 import type { RunHumanRequest030 } from '../../types/agsdlRunUi030';
@@ -66,7 +67,7 @@ it('restores the Implement view, filters code tasks and opens the exact run and 
   expect(sections).toHaveLength(3);
   await act(async () => sections[2].querySelector('button')!.click());
   expect(workflowRunTargetSnapshot030()).toMatchObject({ scope: { systemStartId: 'run-empty' }, conversationId: scope.conversationId });
-  await act(async () => sections[1].querySelectorAll('button')[1].click());
+  await act(async () => sections[1].querySelector<HTMLButtonElement>('[data-operate-open-thread]')!.click());
   expect(useAppStore.getState().selectedTaskId).toBe(tasks[1].id);
   expect(access.reads).toContain('run-2');
   expect(access.reads).not.toContain('run-1');
@@ -212,7 +213,7 @@ it('discovers two runs and a later human request while Operate stays mounted', a
     const secondRun = host.querySelectorAll('nav section')[1];
     await act(async () => secondRun.querySelector('button')!.click());
     expect(workflowRunTargetSnapshot030()).toEqual({ scope: second.scope, conversationId: scope.conversationId });
-    await act(async () => secondRun.querySelectorAll('button')[1].click());
+    await act(async () => secondRun.querySelector<HTMLButtonElement>('[data-operate-open-thread]')!.click());
     expect(useAppStore.getState().selectedTaskId).toBe(secondId);
     expect(host.querySelector('details[open] button[aria-pressed=true]')?.textContent).toContain('worker');
 
@@ -233,6 +234,75 @@ it('discovers two runs and a later human request while Operate stays mounted', a
     clearSpy.mockRestore();
     list.mockRestore();
     attention.mockRestore();
+    removeTauriRuntimeMock();
+  }
+});
+
+it('terminates only after confirmation and shows the native terminal status', async () => {
+  const base = inspectionFixture030();
+  const active = { ...base, state: { ...base.state, stopping: false }, inbox: {
+    startedAtMs: 100, finishedAtMs: null, opened: false, stoppedByUser: false, failedInstanceIds: [], threads: [],
+  } };
+  const access = monitorFixture030(active);
+  const owner = active.capture.source.owner;
+  configureWorkflowRunAccess030(() => ({ access }));
+  getWorkflowRunAccess030({ owner, conversationId: 'design-conversation' });
+  useAppStore.setState({ standaloneProjects: [{ id: owner.projectId, name: 'Project' } as typeof originalApp.standaloneProjects[number]], projectGroups: [] });
+  const calls: unknown[] = [];
+  installTauriRuntimeMock(async (command, input) => {
+    if (command !== 'execution_stop') throw new Error(`Unexpected command ${command}`);
+    calls.push(input);
+    const ended = { ...active,
+      state: { ...active.state, verdict: 'cancelled' as const, physicalPending: '0' },
+      inbox: { ...active.inbox, stoppedByUser: true, finishedAtMs: 200 },
+    };
+    access.onRun = async () => access.publish(monitorFixture030(ended).snapshot);
+    return { kind: 'confirmed', requestId: 'stop-receipt' };
+  });
+  try {
+    host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+    await act(async () => root!.render(<OperateNavigator />));
+    const label = i18n.t('agsdl.inbox.terminate', { ns: 'agsdl' });
+    const findButton = (within: ParentNode, text: string) =>
+      [...within.querySelectorAll('button')].find(button => button.textContent === text)!;
+    await act(async () => findButton(host, label).click());
+    expect(calls).toEqual([]);
+    const dialog = document.querySelector('[role="dialog"]')!;
+    await act(async () => findButton(dialog, label).click());
+    expect(calls).toEqual([{ request: { systemStartId: active.state.scope.systemStartId,
+      requestId: `operate-stop:${active.state.scope.snapshotId}`, activationId: null } }]);
+    expect(host.textContent).toContain(i18n.t('agsdl.inbox.status.terminated', { ns: 'agsdl' }));
+  } finally {
+    removeTauriRuntimeMock();
+  }
+});
+
+it('acknowledges a completed run when its graph is opened', async () => {
+  const base = inspectionFixture030();
+  const finished = { ...base, state: { ...base.state, verdict: 'succeeded' as const, physicalPending: '0' },
+    inbox: { startedAtMs: 100, finishedAtMs: 200, opened: false, stoppedByUser: false, failedInstanceIds: [], threads: [] } };
+  const access = monitorFixture030(finished);
+  const conversationId = 'design-conversation';
+  const bundle = { access };
+  configureWorkflowRunAccess030(() => bundle);
+  getWorkflowRunAccess030({ owner: finished.state.scope.source.owner, conversationId });
+  const calls: unknown[] = [];
+  installTauriRuntimeMock(async (command, input) => {
+    if (command !== 'execution_update_operate_inbox') throw new Error(`Unexpected command ${command}`);
+    calls.push(input);
+    access.onRun = async () => access.publish(monitorFixture030({ ...finished,
+      inbox: { ...finished.inbox, opened: true } }).snapshot);
+  });
+  try {
+    host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+    await act(async () => root!.render(<OperateNavigator />));
+    expect(calls).toEqual([]);
+    await act(async () => root!.render(<><OperateNavigator />
+      <WorkflowRunView030 bundle={bundle} target={{ scope: finished.state.scope, conversationId }} />
+    </>));
+    expect(calls).toEqual([{ systemStartId: finished.state.scope.systemStartId, snapshotId: finished.state.scope.snapshotId,
+      action: { kind: 'markOpened' } }]);
+  } finally {
     removeTauriRuntimeMock();
   }
 });

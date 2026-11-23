@@ -553,10 +553,15 @@ async fn existing_private_restore_marker_preserves_subsequent_edits() {
             .await
             .unwrap();
         let pool = if upgrade {
+            super::super::operate_inbox::remove_reference_schema(
+                &mut *pool.acquire().await.unwrap(),
+            )
+            .await
+            .unwrap();
             sqlx::raw_sql(
             "UPDATE architect_blueprints SET history=json_remove(history,'$.legacyConversationId');
              DROP TABLE architect_legacy_import;
-             DELETE FROM schema_migrations WHERE version=47;",
+             DELETE FROM schema_migrations WHERE version IN (47,48);",
         ).execute(&pool).await.unwrap();
             pool.close().await;
             let upgraded = create_pool(&dir.path().join("macro.db")).await.unwrap();

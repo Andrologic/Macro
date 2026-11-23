@@ -1005,6 +1005,42 @@
       "workEnded": "Reason: related work ended"
     }
   },
+    "inbox": {
+      "attention": "Needs attention",
+      "active": "In progress",
+      "snoozed": "Snoozed",
+      "finished": "Finished",
+      "scheduled": "Scheduled",
+      "search": "Search threads and runs",
+      "systemFilter": "Filter by system",
+      "allSystems": "All systems",
+      "showHidden": "Show hidden threads",
+      "hidden": "Hidden",
+      "local": "This machine",
+      "snooze": "Snooze",
+      "snoozeUntil": "Snooze until",
+      "deadlineWarning": "The approval deadline is {{time}}, before this snooze ends.",
+      "terminate": "Terminate",
+      "confirmTerminate": "Permanently terminate {{run}}?",
+      "actionFailed": "The action could not be completed.",
+      "status": {
+        "active": "In progress",
+        "stopping": "Terminating",
+        "succeeded": "Completed",
+        "terminated": "Terminated by the user",
+        "failed": "Failed"
+      },
+      "reason": {
+        "question": "Question",
+        "approval": "Approval",
+        "error": "Error",
+        "interrupted": "Interrupted",
+        "finished": "Run finished",
+        "activity": "New activity",
+        "snoozeElapsed": "Snooze ended",
+        "snoozed": "Snoozed"
+      }
+    },
   "run030": {
     "instanceActivity": "Instance activity",
     "instance": "Agent instance",

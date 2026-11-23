@@ -348,7 +348,10 @@ async fn execution_start_attaches_supervisor_and_completes_write_review() {
     .await
     .unwrap();
     assert_eq!(history.runs.len(), 1);
-    assert_eq!(history.runs[0].system_start_id, receipt.system_start_id);
+    assert_eq!(
+        history.runs[0].summary.system_start_id,
+        receipt.system_start_id
+    );
     assert!(!parent_repo
         .path()
         .join(crate::git::MACRO_WORKTREE_DIR_NAME)
@@ -509,6 +512,21 @@ async fn execution_stop_waits_for_fake_executor_physical_end() {
         .activations
         .iter()
         .all(|work| !work.physical));
+    let runs = crate::db::operate_inbox::list_runs(
+        &f.fixture.pool,
+        repository::discovery030::RunListRequest030 {
+            owner: f.request.source.owner.clone(),
+            after: None,
+            limit: None,
+        },
+    )
+    .await
+    .unwrap();
+    let run = &runs.runs[0];
+    assert!(run.inbox.stopped_by_user);
+    assert_eq!(run.summary.physical_pending, "0");
+    assert!(run.inbox.finished_at_ms.is_some());
+    assert!(!run.inbox.opened);
     f.finish().await;
 }
 
@@ -745,7 +763,7 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
     .unwrap();
     assert_eq!(page.runs.len(), 1);
     assert_eq!(
-        page.runs[0].system_start_id,
+        page.runs[0].summary.system_start_id,
         retained.receipt.identity.system_start_id
     );
     let mut foreign = list_request;
@@ -812,7 +830,7 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
             .await
             .unwrap();
     assert_eq!(
-        page.runs[0].system_start_id,
+        page.runs[0].summary.system_start_id,
         retained.receipt.identity.system_start_id
     );
     assert!(crate::workspace::architect::lock_execution_source_owner(
@@ -1040,7 +1058,7 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
             .await
             .unwrap();
     let system = &retained.receipt.identity.system_start_id;
-    assert_eq!(page.runs[0].system_start_id, *system);
+    assert_eq!(page.runs[0].summary.system_start_id, *system);
     let correlation = crate::commands::agsdl_execution::read_run_correlation030_scoped(
         &pool,
         &workspace,

@@ -1005,6 +1005,42 @@
       "workEnded": "Motif : travail associé terminé"
     }
   },
+    "inbox": {
+      "attention": "À traiter",
+      "active": "En cours",
+      "snoozed": "Reportés",
+      "finished": "Terminés",
+      "scheduled": "Programmés",
+      "search": "Rechercher des threads et des exécutions",
+      "systemFilter": "Filtrer par système",
+      "allSystems": "Tous les systèmes",
+      "showHidden": "Afficher les threads masqués",
+      "hidden": "Masqué",
+      "local": "Cet ordinateur",
+      "snooze": "Reporter",
+      "snoozeUntil": "Reporter jusqu’au",
+      "deadlineWarning": "Le délai d’approbation expire à {{time}}, avant la fin du report.",
+      "terminate": "Terminer",
+      "confirmTerminate": "Terminer définitivement {{run}} ?",
+      "actionFailed": "L’action n’a pas pu aboutir.",
+      "status": {
+        "active": "En cours",
+        "stopping": "Arrêt en cours",
+        "succeeded": "Terminée",
+        "terminated": "Terminée par l’utilisateur",
+        "failed": "En échec"
+      },
+      "reason": {
+        "question": "Question en attente",
+        "approval": "Approbation",
+        "error": "Erreur",
+        "interrupted": "Interrompu",
+        "finished": "Exécution terminée",
+        "activity": "Nouvelle activité",
+        "snoozeElapsed": "Report arrivé à échéance",
+        "snoozed": "Reporté"
+      }
+    },
   "run030": {
     "instanceActivity": "Activité de l’instance",
     "instance": "Instance d’agent",

@@ -4,7 +4,7 @@ use super::{
     decimal,
     dto::{EngineSourceOwner, EngineSourceRevision, EngineStartRequest, EngineVersions},
     failure,
-    flow030::{FlowEvent030, FlowEventKind030, FlowPlan030, FlowState030},
+    flow030::{FlowEvent030, FlowEventKind030, FlowPlan030, FlowState030, WorkResultRecord030},
     json_lexemes030::document_tokens_equal,
     opaque, require,
     start030::{StartCapture030, StartReceipt030},
@@ -13,7 +13,7 @@ use super::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{Connection, Row, SqlitePool};
+use sqlx::{Row, SqliteConnection};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
@@ -32,7 +32,7 @@ pub struct PhaseCount030 {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PublicRunSummary030 {
+pub struct RunSummary030 {
     pub system_start_id: String,
     pub flow_invocation_id: String,
     pub snapshot_id: String,
@@ -47,11 +47,14 @@ pub struct PublicRunSummary030 {
     pub interrupted_at: Option<String>,
     pub phase_counts: Vec<PhaseCount030>,
     pub physical_pending: String,
+    #[serde(skip)]
+    #[ts(skip)]
+    pub failed_instance_ids: Vec<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunPage030 {
-    pub runs: Vec<PublicRunSummary030>,
+    pub runs: Vec<RunSummary030>,
     pub next_cursor: Option<String>,
 }
 
@@ -75,7 +78,7 @@ fn validate_owner(owner: &EngineSourceOwner) -> Result<()> {
 fn validated_summary(
     row: &sqlx::sqlite::SqliteRow,
     owner: &EngineSourceOwner,
-) -> Result<PublicRunSummary030> {
+) -> Result<RunSummary030> {
     // Nullable joined columns are read fallibly: a missing companion row is an
     // integrity failure, not a silently skipped historical run.
     let optional = |name: &str| -> Result<String> {
@@ -186,7 +189,23 @@ fn validated_summary(
             physical_pending += 1;
         }
     }
-    Ok(PublicRunSummary030 {
+    // Latest activation per instance. Successful/ongoing work supersedes an older failure.
+    let mut latest = BTreeMap::new();
+    for activation in &state.activations {
+        if let Some(instance_id) = &activation.instance_id {
+            latest.insert(instance_id, &activation.result);
+        }
+    }
+    let failed_instance_ids = latest
+        .into_iter()
+        .filter_map(|(id, result)| match result {
+            Some(WorkResultRecord030::Failed { error }) if error.code != "CANCELLED" => {
+                Some(id.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    Ok(RunSummary030 {
         system_start_id: id.system_start_id.clone(),
         flow_invocation_id: id.flow_invocation_id.clone(),
         snapshot_id: id.snapshot_id.clone(),
@@ -205,11 +224,12 @@ fn validated_summary(
             })
             .collect(),
         physical_pending: physical_pending.to_string(),
+        failed_instance_ids,
     })
 }
 
-pub(crate) async fn list_runs030(
-    pool: &SqlitePool,
+pub(crate) async fn list_runs_in_transaction030(
+    connection: &mut SqliteConnection,
     request: RunListRequest030,
 ) -> Result<RunPage030> {
     validate_owner(&request.owner)?;
@@ -218,11 +238,9 @@ pub(crate) async fn list_runs030(
         (1..=100).contains(&limit),
         "Run page limit must be between 1 and 100",
     )?;
-    let mut connection = pool.acquire().await?;
-    let mut tx = connection.begin().await?;
     let maximum: i64 =
         sqlx::query_scalar("SELECT coalesce(max(rowid),0) FROM engine_start030_requests")
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut *connection)
             .await?;
     let cursor = if let Some(after) = &request.after {
         require(after.len() <= 4096, "Run 0.3 cursor is too large")?;
@@ -254,7 +272,7 @@ pub(crate) async fn list_runs030(
     let rows = sqlx::query("SELECT s.rowid AS seq,s.request_id,s.request_json,s.capture_json,s.receipt_json,s.system_id,s.invocation_id,s.snapshot_id,s.capture_epoch, r.system_id AS run_system,r.invocation_id AS run_invocation,r.snapshot_id AS run_snapshot,r.epoch AS run_epoch,r.source_json AS run_source,r.plan_json AS run_plan,r.state_json AS run_state, o.system_id AS owner_system,o.invocation_id AS owner_invocation,o.snapshot_id AS owner_snapshot,o.capture_epoch AS owner_capture_epoch,o.status AS owner_status,o.capture_sha256 AS owner_capture_hash, i.interrupted_at AS interrupted_at FROM engine_start030_requests s LEFT JOIN engine_flow030_runs r ON r.system_id=s.system_id AND r.invocation_id=s.invocation_id LEFT JOIN engine_flow030_owners o ON o.system_id=s.system_id LEFT JOIN engine_flow030_interruptions i ON i.system_id=s.system_id WHERE s.rowid<=? AND (?=0 OR s.rowid<?) AND json_extract(s.capture_json,'$.source.owner.projectId')=? AND json_extract(s.capture_json,'$.source.owner.planId')=? AND json_extract(s.capture_json,'$.source.owner.branch')=? ORDER BY s.rowid DESC LIMIT ?")
         .bind(cursor.upper).bind(cursor.before).bind(cursor.before)
         .bind(&cursor.owner.project_id).bind(&cursor.owner.plan_id).bind(&cursor.owner.branch)
-        .bind(i64::from(limit)+1).fetch_all(&mut *tx).await?;
+        .bind(i64::from(limit)+1).fetch_all(&mut *connection).await?;
     let more = rows.len() > limit as usize;
     let mut runs = Vec::new();
     let mut before = 0;
@@ -267,7 +285,6 @@ pub(crate) async fn list_runs030(
     } else {
         None
     };
-    tx.commit().await?;
     Ok(RunPage030 { runs, next_cursor })
 }
 

@@ -1005,6 +1005,42 @@
       "workEnded": "사유: 관련 작업 종료"
     }
   },
+    "inbox": {
+      "attention": "처리 필요",
+      "active": "진행 중",
+      "snoozed": "미룬 항목",
+      "finished": "종료됨",
+      "scheduled": "예약됨",
+      "search": "스레드 및 실행 검색",
+      "systemFilter": "시스템으로 필터링",
+      "allSystems": "모든 시스템",
+      "showHidden": "숨겨진 스레드 표시",
+      "hidden": "숨김",
+      "local": "이 기기",
+      "snooze": "나중에 처리",
+      "snoozeUntil": "미룰 날짜와 시간",
+      "deadlineWarning": "승인 기한 {{time}}이 미룬 기간이 끝나기 전에 지납니다.",
+      "terminate": "종료",
+      "confirmTerminate": "{{run}} 실행을 완전히 종료할까요?",
+      "actionFailed": "작업을 완료하지 못했습니다.",
+      "status": {
+        "active": "진행 중",
+        "stopping": "종료 중",
+        "succeeded": "완료",
+        "terminated": "사용자가 종료함",
+        "failed": "실패"
+      },
+      "reason": {
+        "question": "질문",
+        "approval": "승인",
+        "error": "오류",
+        "interrupted": "중단됨",
+        "finished": "실행 종료",
+        "activity": "새 활동",
+        "snoozeElapsed": "미룬 기간 종료",
+        "snoozed": "미룬 항목"
+      }
+    },
   "run030": {
     "instanceActivity": "인스턴스 활동",
     "instance": "에이전트 인스턴스",

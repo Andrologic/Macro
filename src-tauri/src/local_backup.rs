@@ -510,6 +510,7 @@ async fn check_database(path: &Path) -> Result<()> {
                 | "architect_versions"
                 | "architect_version_uses"
         ) || table.starts_with("engine_")
+            || table.starts_with("operate_inbox_")
             || table == "migration_identity_history"
             || table.starts_with("connect_")
             || table.starts_with("chat_admission_")
@@ -3162,6 +3163,9 @@ mod tests {
         let (_temp, data, config) = profile().await;
         let path = data.join("macro.db");
         let mut db = connection(&path).await.unwrap();
+        crate::db::operate_inbox::remove_reference_schema(&mut db)
+            .await
+            .unwrap();
         crate::db::architect_library::remove_reference_schema(&mut db)
             .await
             .unwrap();
@@ -3253,9 +3257,12 @@ mod tests {
         .await
         .unwrap();
         // Reconstruct the pre-marker schema in the disposable profile.
+        crate::db::operate_inbox::remove_reference_schema(&mut *pool.acquire().await.unwrap())
+            .await
+            .unwrap();
         sqlx::raw_sql(
             "UPDATE architect_blueprints SET conversation_id='old-orphan';
-             DROP TABLE architect_legacy_import; DELETE FROM schema_migrations WHERE version=47;",
+             DROP TABLE architect_legacy_import; DELETE FROM schema_migrations WHERE version IN (47,48);",
         )
         .execute(&pool)
         .await

@@ -89,3 +89,10 @@ export function stopExecution030(request: import('../agsdlExecution/contracts').
 export function deliverExecution030(request: import('../../types/generated/ipc').DeliveryRequest030): Promise<import('../../types/generated/ipc').DeliveryReceipt030> {
   return invoke('execution_deliver030', { request });
 }
+
+export function updateOperateInbox(
+  scope: import('../../types/generated/ipc').RuntimeProjectionScope030,
+  action: import('../../types/generated/ipc').OperateInboxAction,
+): Promise<void> {
+  return invoke('execution_update_operate_inbox', { systemStartId: scope.systemStartId, snapshotId: scope.snapshotId, action });
+}

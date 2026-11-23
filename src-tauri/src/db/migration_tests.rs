@@ -292,6 +292,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (45, "045_connect_target_activation".into()),
             (46, "046_architect_library".into()),
             (47, "047_architect_legacy_import".into()),
+            (48, "048_operate_inbox".into()),
         ]
     );
 }
@@ -429,12 +430,13 @@ async fn fixture(path: &Path, stamped: bool) -> SqliteConnection {
 }
 
 async fn drop_architect_library(c: &mut SqliteConnection) {
+    operate_inbox::remove_reference_schema(c).await.unwrap();
     sqlx::query("DROP TABLE IF EXISTS architect_legacy_import")
         .execute(&mut *c)
         .await
         .unwrap();
     architect_library::remove_reference_schema(c).await.unwrap();
-    sqlx::query("DELETE FROM schema_migrations WHERE version IN (46,47)")
+    sqlx::query("DELETE FROM schema_migrations WHERE version IN (46,47,48)")
         .execute(c)
         .await
         .unwrap();
@@ -518,7 +520,7 @@ pub(crate) async fn drop_human_public(c: &mut SqliteConnection) {
     migration_history::remove_reference_schema(c, &[20, 21, 22, 23, 24, 25, 26, 27, 28])
         .await
         .unwrap();
-    sqlx::query("DELETE FROM schema_migrations WHERE version BETWEEN 29 AND 42")
+    sqlx::query("DELETE FROM schema_migrations WHERE version BETWEEN 29 AND 42 OR version=48")
         .execute(c)
         .await
         .unwrap();
@@ -1689,7 +1691,7 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
         .unwrap(),
         0
     );
-    assert_eq!(sqlx::query_as::<_, (i64,String,String)>("SELECT version,name,applied_at FROM schema_migrations WHERE version NOT BETWEEN 27 AND 42 ORDER BY version").fetch_all(&upgraded).await.unwrap(), stamps);
+    assert_eq!(sqlx::query_as::<_, (i64,String,String)>("SELECT version,name,applied_at FROM schema_migrations WHERE version NOT BETWEEN 27 AND 42 AND version<>48 ORDER BY version").fetch_all(&upgraded).await.unwrap(), stamps);
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM sqlite_schema WHERE name='engine_work_protocol030'"

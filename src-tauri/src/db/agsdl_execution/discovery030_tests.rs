@@ -5,11 +5,19 @@ use super::super::{
         FlowIdentity030, FlowTransition030, Instance030, PhysicalEvidence030, PreparedBatch030,
         PreparedItem030, PreparedResult030, WorkRef030, WorkResult030,
     },
+    SqlitePool,
 };
 use super::*;
 use crate::db::create_pool;
 use serde_json::{json, Value};
 use tempfile::TempDir;
+
+async fn list_runs030(pool: &SqlitePool, request: RunListRequest030) -> Result<RunPage030> {
+    let mut tx = pool.begin().await?;
+    let page = list_runs_in_transaction030(&mut tx, request).await?;
+    tx.commit().await?;
+    Ok(page)
+}
 
 fn owner(project: &str, branch: &str) -> EngineSourceOwner {
     EngineSourceOwner {

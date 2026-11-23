@@ -15,6 +15,7 @@ import { sourceDigest } from './agsdlExecution/sourceDigest';
 import type { ArchitectPlanRecord } from './architectPlanService';
 import { toServiceError } from './contracts/errors';
 import type { CatalogedImplementTask } from './implementTaskCatalog';
+import { workflowHumanInstances030, type OperateLocation } from './operateInboxModel';
 import * as ipc from './ipc/agsdlExecution030';
 
 export function sameWorkflowSource030(a: { owner: WorkflowRunScope030['owner']; revision: string; sourceSha256: string }, b: { owner: WorkflowRunScope030['owner']; revision: string; sourceSha256: string }): boolean {
@@ -29,6 +30,8 @@ export interface WorkflowRunScope030 {
 }
 export interface WorkflowRunAccess030 {
   access: RunInspectionAccess030;
+  systemLabel?: string;
+  location?: OperateLocation;
   humanClient?: HumanRequestClient030;
   catalogError?: { code: string; message: string };
   humanClientForRun?: (run: RunInspection030) => HumanRequestClient030 | undefined;
@@ -75,7 +78,7 @@ export function getWorkflowRunAccess030(scope: WorkflowRunScope030): WorkflowRun
   runAccessListeners030.forEach(listener => listener());
   return bundle;
 }
-export type WorkflowRunTarget030 = Pick<RunHumanRequest030, 'scope'> & { requestId?: string; conversationId?: string };
+export type WorkflowRunTarget030 = Pick<RunHumanRequest030, 'scope'> & { requestId?: string; conversationId?: string; instanceId?: string };
 let runTarget030: WorkflowRunTarget030 | null = null;
 let runOpenSequence030 = 0;
 export const workflowRunOpenSequence030 = () => runOpenSequence030;
@@ -158,13 +161,14 @@ export function projectWorkflowAgentTasks030(plan: ArchitectPlanRecord, inspecti
     if (runCaptureKey030(item.scope) !== runCaptureKey030(state.scope) || activationIds.has(item.activation.id)) throw new Error('Workflow occurrence scope differs');
     activationIds.add(item.activation.id);
   }
+  const waiting = new Set(humans.filter(request => request.state.kind === 'open')
+    .flatMap(request => [...workflowHumanInstances030(inspection, request)]));
   const ids = new Set<string>();
   return state.instances.map((instance, index) => {
     if (!instance.id || ids.has(instance.id)) throw new Error('Duplicate native Agent');
     ids.add(instance.id);
     const items = occurrences.filter(item => item.activation.instanceId === instance.id);
-    const attention = humans.some(request => request.state.kind === 'open' && request.occurrences.some(item =>
-      item.activation.kind === 'available' && runCaptureKey030(item.activation.scope) === runCaptureKey030(state.scope) && items.some(visit => item.activation.kind === 'available' && visit.activation.id === item.activation.activationId)));
+    const attention = waiting.has(instance.id);
     const physical = items.some(item => item.activation.physical);
     const active = instance.currentActivationId !== null || physical;
     const phaseStates: Readonly<Record<string, WorkflowAgentTaskState>> = workflowPhaseStates030;
@@ -253,6 +257,7 @@ export async function loadWorkflowAgentTasks(plans: ArchitectPlanRecord[], proje
         try {
           bundle = getWorkflowRunAccess030({ owner, conversationId: plan.conversationId });
           if (!bundle) throw new Error('Run inspection access unavailable');
+          bundle.systemLabel = plan.label || plan.title;
           const previousRuns = bundle.access.getSnapshot().runs;
           try {
             if (bundle.access.refreshCatalog) await bundle.access.refreshCatalog();

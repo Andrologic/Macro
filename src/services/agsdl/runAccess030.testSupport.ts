@@ -21,7 +21,8 @@ export async function nativeRunFixture030(id = 'run') {
   const scope = { ...template.state.scope, source: capture.source };
   const summary: PublicRunSummary030 = { ...scope, flowInvocationId: 'flow', versions: capture.versions,
     revision: '9007199254740993', stopping: false, verdict: null, ownerStatus: 'live', interruptedAt: null,
-    phaseCounts: [{ phase: 'done', count: '1' }, { phase: 'running', count: '1' }], physicalPending: '1' };
+    phaseCounts: [{ phase: 'done', count: '1' }, { phase: 'running', count: '1' }], physicalPending: '1',
+    inbox: { startedAtMs: null, finishedAtMs: null, opened: false, stoppedByUser: false, failedInstanceIds: [], threads: [] } };
   const runtime: RuntimeProjectionPage030 = { scope, flowInvocationId: 'flow', revision: summary.revision,
     stopping: summary.stopping, verdict: summary.verdict, total: '2', items: [
       { kind: 'activation', value: { ...activation('activation-1', ['first'], 'done', false), callResultJson: JSON.stringify({ kind: 'completed', outputJson: '{"outcome":"passed","data":{"exitCode":0,"output":"first\\n"}}', routeKey: 'passed' }) } },

@@ -1005,6 +1005,42 @@
       "workEnded": "Motivo: trabajo asociado finalizado"
     }
   },
+    "inbox": {
+      "attention": "Pendientes",
+      "active": "En curso",
+      "snoozed": "Pospuestos",
+      "finished": "Finalizados",
+      "scheduled": "Programados",
+      "search": "Buscar hilos y ejecuciones",
+      "systemFilter": "Filtrar por sistema",
+      "allSystems": "Todos los sistemas",
+      "showHidden": "Mostrar hilos ocultos",
+      "hidden": "Oculto",
+      "local": "Este equipo",
+      "snooze": "Posponer",
+      "snoozeUntil": "Posponer hasta",
+      "deadlineWarning": "El plazo de aprobación vence a las {{time}}, antes de que termine el aplazamiento.",
+      "terminate": "Finalizar",
+      "confirmTerminate": "¿Finalizar definitivamente {{run}}?",
+      "actionFailed": "No se pudo completar la acción.",
+      "status": {
+        "active": "En curso",
+        "stopping": "Finalizando",
+        "succeeded": "Completada",
+        "terminated": "Finalizada por el usuario",
+        "failed": "Fallida"
+      },
+      "reason": {
+        "question": "Pregunta",
+        "approval": "Aprobación",
+        "error": "Fallo",
+        "interrupted": "Interrumpido",
+        "finished": "Ejecución finalizada",
+        "activity": "Actividad nueva",
+        "snoozeElapsed": "Aplazamiento vencido",
+        "snoozed": "Pospuesto"
+      }
+    },
   "run030": {
     "instanceActivity": "Actividad de la instancia",
     "instance": "Instancia del agente",
