@@ -3333,7 +3333,7 @@
   "backup": {
     "exclusions": "Projektordner, deren Git-Verlauf und Anbieter-Zugangsdaten sind ausgeschlossen. Sichern Sie Ihre Projekte separat.",
     "limitsTitle": "Kompatibilität, Grenzen und private Daten",
-    "limits": "Maximale Größe: 256 MiB. Verwenden Sie dieselbe Macro-Version. Projektpfade bleiben unverändert; verschobene Projekte werden nicht neu zugeordnet und Profile nicht zusammengeführt.",
+    "limits": "Das Sicherungsmanifest darf bis zu 256 MiB groß sein. Architect-Dateien werden separat im Archiv gespeichert. Verwenden Sie dieselbe Macro-Version. Die Wiederherstellung behält die gespeicherten Projektpfade bei und ersetzt das gesamte Profil.",
     "exportHelp": "Lokale Daten beim nächsten Start in einem neuen Archiv speichern.",
     "restoreHelp": "Lokale Daten durch ein Archiv ersetzen. Das vorherige Profil zur Wiederherstellung behalten.",
     "desktopRequired": "Öffnen Sie Macro auf dem Desktop, um lokale Daten zu sichern oder wiederherzustellen.",

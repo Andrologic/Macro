@@ -3333,7 +3333,7 @@
   "backup": {
     "exclusions": "Se excluyen las carpetas de proyectos, su historial Git y las credenciales de proveedores. Guarde sus proyectos por separado.",
     "limitsTitle": "Compatibilidad, límites y datos privados",
-    "limits": "Tamaño máximo: 256 MiB. Restaure con la misma versión de Macro. Se conservan las rutas de los proyectos; no se reasocian proyectos movidos ni se fusionan perfiles.",
+    "limits": "El manifiesto de la copia puede ocupar hasta 256 MiB. Los archivos de Architect se guardan por separado dentro del archivo ZIP. Restaure con la misma versión de Macro. La restauración conserva las rutas de proyecto registradas y reemplaza todo el perfil.",
     "exportHelp": "Guardar los datos locales en un archivo nuevo al volver a iniciar.",
     "restoreHelp": "Sustituir los datos locales por un archivo. Conservar el perfil anterior para recuperarlo.",
     "desktopRequired": "Abra Macro en el escritorio para guardar o restaurar sus datos locales.",

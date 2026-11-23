@@ -3338,7 +3338,7 @@
     "desktopRequired": "Ouvrez Macro sur ordinateur pour sauvegarder ou restaurer ses données locales.",
     "restoreHelp": "Remplacer les données locales par une archive. Conserver le profil précédent pour récupération.",
     "exportHelp": "Enregistrer les données locales dans une nouvelle archive au prochain démarrage.",
-    "limits": "Taille maximale : 256 Mio. Restaurez avec la même version de Macro. Les chemins des projets restent ceux enregistrés ; la restauration ne réassocie pas les projets déplacés et ne fusionne pas les profils.",
+    "limits": "Le manifeste de sauvegarde peut atteindre 256 Mio. Les fichiers Architect sont stockés séparément dans l’archive. Restaurez avec la même version de Macro. La restauration conserve les chemins enregistrés des projets et remplace le profil entier.",
     "limitsTitle": "Compatibilité, limites et données privées",
     "exclusions": "Les dossiers des projets et leur historique Git sont exclus, ainsi que les identifiants des fournisseurs. Conservez une copie séparée de vos projets.",
     "title": "Sauvegarde et restauration",

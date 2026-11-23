@@ -30,9 +30,9 @@ export function BackupSettingsSection() {
   const chooseFile = async (operation: Operation) => {
     setBusy(true);
     try {
-      const options = { title: t(operation === 'export' ? 'backup.export' : 'backup.restore'), filters: [{ name: 'JSON', extensions: ['json'] }] };
+      const options = { title: t(operation === 'export' ? 'backup.export' : 'backup.restore'), filters: [{ name: 'Macro', extensions: operation === 'export' ? ['zip'] : ['zip', 'json'] }] };
       const selected = operation === 'export'
-        ? await save({ ...options, defaultPath: `macro-profile-${new Date().toISOString().slice(0, 10)}.json` })
+        ? await save({ ...options, defaultPath: `macro-profile-${new Date().toISOString().slice(0, 10)}.zip` })
         : await open({ ...options, multiple: false, directory: false });
       if (selected) {
         setPath(selected);

@@ -11,10 +11,13 @@ use sqlx::{sqlite::SqliteConnectOptions, Connection, SqliteConnection};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{Read, Write},
+    io::{self, Read, Write},
     path::{Component, Path, PathBuf},
+    sync::Arc,
 };
 use tauri::Manager;
+
+mod bundle;
 
 const ARCHITECT_FILES: &str = "data/architect-library/blueprints/";
 const LIMIT: u64 = 256 * 1024 * 1024;
@@ -50,6 +53,8 @@ struct Entry {
     sha256: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     executable: bool,
+    #[serde(skip)]
+    native: Option<Arc<tempfile::TempDir>>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -97,14 +102,16 @@ fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 fn entry_hash(bytes: &[u8], executable: bool) -> String {
+    let mut digest = entry_digest(executable);
+    digest.update(bytes);
+    format!("{:x}", digest.finalize())
+}
+fn entry_digest(executable: bool) -> Sha256 {
+    let mut digest = Sha256::new();
     if executable {
-        let mut digest = Sha256::new();
         digest.update(b"macro-backup-executable\0");
-        digest.update(bytes);
-        format!("{:x}", digest.finalize())
-    } else {
-        hash(bytes)
     }
+    digest
 }
 fn client_key(key: &str) -> bool {
     CLIENT_KEYS.contains(&key)
@@ -162,11 +169,19 @@ fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 fn atomic_with_mode(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
+    atomic_write(path, executable, |file| file.write_all(bytes))
+}
+
+fn atomic_write(
+    path: &Path,
+    executable: bool,
+    write: impl FnOnce(&mut fs::File) -> io::Result<()>,
+) -> Result<()> {
     let parent = path.parent().ok_or("Missing parent")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let tmp = parent.join(format!(".backup-{}", uuid::Uuid::new_v4()));
     publish_new(&tmp, |file| {
-        file.write_all(bytes)?;
+        write(file)?;
         #[cfg(unix)]
         if executable {
             use std::os::unix::fs::PermissionsExt;
@@ -275,7 +290,7 @@ fn destination(name: &str, data: &Path, config: &Path) -> Result<PathBuf> {
     }
     Err("Unexpected backup entry".into())
 }
-// Count the same implicit directories and depth as collect_tree_bounded.
+// Count the same implicit directories and depth as the checkpoint walk.
 fn validate_checkpoint_paths(files: &BTreeMap<String, Entry>) -> Result<()> {
     let mut nodes = BTreeSet::new();
     for name in files
@@ -740,7 +755,11 @@ fn add_file_with_mode(
     bytes: Vec<u8>,
     executable: bool,
 ) -> Result<()> {
-    if files.len() >= 10_000
+    if files
+        .values()
+        .filter(|entry| entry.native.is_none())
+        .count()
+        >= 10_000
         || files.values().map(|e| e.data.len()).sum::<usize>() + bytes.len() * 4 / 3
             > LIMIT as usize
     {
@@ -752,6 +771,7 @@ fn add_file_with_mode(
             sha256: entry_hash(&bytes, executable),
             executable,
             data: STANDARD.encode(bytes),
+            native: None,
         },
     );
     Ok(())
@@ -769,18 +789,46 @@ fn archive_relative_path(path: &Path) -> Result<String> {
         .map(|parts| parts.join("/"))
 }
 fn collect_tree(root: &Path, path: &Path, files: &mut BTreeMap<String, Entry>) -> Result<()> {
-    collect_tree_bounded(root, path, files, &mut 10_000)
+    walk_tree(root, path, &mut Some(10_000), &mut |name, path, _| {
+        add_file(files, name, read_bounded(path)?)
+    })
 }
-fn collect_tree_bounded(
+
+fn collect_artifacts(
     root: &Path,
     path: &Path,
     files: &mut BTreeMap<String, Entry>,
-    budget: &mut usize,
+    snapshot: &Arc<tempfile::TempDir>,
 ) -> Result<()> {
-    if *budget == 0 {
-        return Err("Checkpoint tree exceeds entry limit".into());
+    walk_tree(root, path, &mut None, &mut |name, path, metadata| {
+        #[cfg(unix)]
+        let executable = {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.permissions().mode() & 0o111 != 0
+        };
+        #[cfg(not(unix))]
+        let executable = {
+            let _ = metadata;
+            false
+        };
+        let source = fs::File::open(path).map_err(|error| error.to_string())?;
+        let entry = bundle::stage(snapshot, &name, source, executable)?;
+        files.insert(name, entry);
+        Ok(())
+    })
+}
+
+fn walk_tree(
+    root: &Path,
+    path: &Path,
+    budget: &mut Option<usize>,
+    visit: &mut impl FnMut(String, &Path, &fs::Metadata) -> Result<()>,
+) -> Result<()> {
+    if let Some(remaining) = budget {
+        *remaining = remaining
+            .checked_sub(1)
+            .ok_or("Checkpoint tree exceeds entry limit")?;
     }
-    *budget -= 1;
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -797,23 +845,18 @@ fn collect_tree_bounded(
     }
     if meta.is_dir() {
         for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
-            collect_tree_bounded(
+            walk_tree(
                 root,
                 &entry.map_err(|e| e.to_string())?.path(),
-                files,
                 budget,
+                visit,
             )?;
         }
-    } else {
+    } else if meta.is_file() {
         let name = format!("data/{}", archive_relative_path(relative)?);
-        #[cfg(unix)]
-        let executable = {
-            use std::os::unix::fs::PermissionsExt;
-            architect && meta.permissions().mode() & 0o111 != 0
-        };
-        #[cfg(not(unix))]
-        let executable = false;
-        add_file_with_mode(files, name, read_bounded(path)?, executable)?;
+        visit(name, path, &meta)?;
+    } else {
+        return Err("Backup entry is not a regular file".into());
     }
     Ok(())
 }
@@ -970,11 +1013,11 @@ async fn capture(
     snapshot_database(&data.join("macro.db"), &db_path, portable).await?;
     let mut files = BTreeMap::new();
     add_file(&mut files, "data/macro.db".into(), read_bounded(&db_path)?)?;
-    let mut budget = 10_000;
+    let artifacts = Arc::new(tempfile::tempdir().map_err(|error| error.to_string())?);
     for artifact in architect_references(&db_path).await? {
         let path = storage.artifact_path(&artifact);
         safe_parent(&path, data)?;
-        collect_tree_bounded(data, &path, &mut files, &mut budget)?;
+        collect_artifacts(data, &path, &mut files, &artifacts)?;
         storage
             .validate_artifact(&artifact)
             .map_err(|error| error.to_string())?;
@@ -1028,7 +1071,12 @@ async fn validate(archive: &Archive) -> Result<()> {
     if archive.format != "macro-local-profile"
         || archive.version != 1
         || archive.app_version != env!("CARGO_PKG_VERSION")
-        || archive.files.len() > 10_000
+        || archive
+            .files
+            .values()
+            .filter(|entry| entry.native.is_none())
+            .count()
+            > 10_000
     {
         return Err("Incompatible profile backup".into());
     }
@@ -1050,15 +1098,18 @@ async fn validate(archive: &Archive) -> Result<()> {
         if total > LIMIT as usize {
             return Err("Backup too large".into());
         }
+        if name.starts_with(ARCHITECT_FILES) {
+            atomic_write(&path, entry.executable, |file| {
+                entry.copy_verified(name, file)
+            })?;
+            continue;
+        }
         let bytes = STANDARD.decode(&entry.data).map_err(|e| e.to_string())?;
         if entry_hash(&bytes, entry.executable) != entry.sha256 {
             return Err(format!("Integrity check failed for {name}"));
         }
         if name == "data/macro.db" {
             fs::write(temp.path().join("macro.db"), &bytes).map_err(|e| e.to_string())?;
-        }
-        if name.starts_with(ARCHITECT_FILES) {
-            atomic_with_mode(&path, &bytes, entry.executable)?;
         }
         if name == "data/state.json" {
             crate::state_manager::validate_backup_state(&bytes)?;
@@ -1117,7 +1168,13 @@ fn capture_raw(data: &Path, config: &Path, browser: BTreeMap<String, String>) ->
     for file in PROVIDER_SECRETS_RECOVERY_FILES {
         add_optional_raw(&mut files, format!("data/{file}"), &data.join(file))?;
     }
-    collect_tree(data, &data.join("architect-library/blueprints"), &mut files)?;
+    let artifacts = Arc::new(tempfile::tempdir().map_err(|error| error.to_string())?);
+    collect_artifacts(
+        data,
+        &data.join("architect-library/blueprints"),
+        &mut files,
+        &artifacts,
+    )?;
     let checkpoints = data.join("direct-checkpoints");
     match fs::symlink_metadata(&checkpoints) {
         Ok(_) => collect_tree(data, &checkpoints, &mut files)?,
@@ -1147,7 +1204,14 @@ fn capture_raw(data: &Path, config: &Path, browser: BTreeMap<String, String>) ->
     })
 }
 fn validate_raw(archive: &Archive) -> Result<()> {
-    if archive.format != "macro-raw-profile" || archive.version != 1 || archive.files.len() > 10_000
+    if archive.format != "macro-raw-profile"
+        || archive.version != 1
+        || archive
+            .files
+            .values()
+            .filter(|entry| entry.native.is_none())
+            .count()
+            > 10_000
     {
         return Err("Invalid preserved profile format".into());
     }
@@ -1168,20 +1232,15 @@ fn validate_raw(archive: &Archive) -> Result<()> {
         if total > LIMIT as usize {
             return Err("Preserved profile too large".into());
         }
-        let bytes = STANDARD.decode(&entry.data).map_err(|e| e.to_string())?;
-        if entry_hash(&bytes, entry.executable) != entry.sha256 {
-            return Err("Preserved file checksum mismatch".into());
-        }
+        entry
+            .copy_verified(name, io::sink())
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
 fn preserve_raw(archive: &Archive, path: &Path) -> Result<()> {
     validate_raw(archive)?;
-    let bytes = serde_json::to_vec(archive).map_err(|e| e.to_string())?;
-    if bytes.len() > LIMIT as usize {
-        return Err("Current profile exceeds preservation limit".into());
-    }
-    write_new(path, &bytes)?;
+    publish_new(path, |file| bundle::write(archive, file))?;
     crate::secrets::harden_private_file(path).map_err(|error| error.to_string())?;
     #[cfg(unix)]
     fs::File::open(path.parent().ok_or("Missing preservation directory")?)
@@ -1219,7 +1278,10 @@ fn preserved_path(dir: &Path, journal: &RestoreJournal) -> Result<PathBuf> {
     let id = journal
         .preserved
         .strip_prefix("preserved-")
-        .and_then(|name| name.strip_suffix(".json"))
+        .and_then(|name| {
+            name.strip_suffix(".zip")
+                .or_else(|| name.strip_suffix(".json"))
+        })
         .ok_or("Invalid preservation journal")?;
     uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
     Ok(dir.join(&journal.preserved))
@@ -1380,20 +1442,14 @@ fn apply_files(archive: &Archive, data: &Path, config: &Path, raw: bool) -> Resu
             .keys()
             .filter_map(|name| architect_artifact_prefix(name))
             .collect();
-        let mut budget = 10_000;
         for prefix in prefixes {
             let path = data.join(prefix.strip_prefix("data/").unwrap().trim_end_matches('/'));
-            let mut existing = BTreeMap::new();
-            collect_tree_bounded(data, &path, &mut existing, &mut budget)?;
-            for name in existing
-                .keys()
-                .filter(|name| !archive.files.contains_key(*name))
-            {
-                let relative = name
-                    .strip_prefix("data/")
-                    .ok_or("Invalid existing Architect path")?;
-                remove_durable(&data.join(relative))?;
-            }
+            walk_tree(data, &path, &mut None, &mut |name, path, _| {
+                if !archive.files.contains_key(&name) {
+                    remove_durable(path)?;
+                }
+                Ok(())
+            })?;
             remove_empty_checkpoint_dirs(&path)?;
         }
     }
@@ -1437,7 +1493,6 @@ fn apply_files(archive: &Archive, data: &Path, config: &Path, raw: bool) -> Resu
     }
     for (name, entry) in &archive.files {
         let path = target(name)?;
-        let bytes = STANDARD.decode(&entry.data).map_err(|e| e.to_string())?;
         if name.starts_with(ARCHITECT_FILES) {
             storage::ensure_dir(
                 &data.join(storage::ROOT),
@@ -1445,12 +1500,14 @@ fn apply_files(archive: &Archive, data: &Path, config: &Path, raw: bool) -> Resu
             )
             .map_err(|error| error.to_string())?;
         }
-        atomic_with_mode(&path, &bytes, entry.executable)?;
+        atomic_write(&path, entry.executable, |file| {
+            entry.copy_verified(name, file)
+        })?;
     }
     Ok(())
 }
 fn load_archive(path: &Path) -> Result<Archive> {
-    serde_json::from_slice(&read_bounded(path)?).map_err(|e| e.to_string())
+    bundle::load(path)
 }
 
 async fn load_restore_archive(path: &Path) -> Result<Archive> {
@@ -1623,16 +1680,14 @@ async fn process_startup_locked(
             validate_export_path(Path::new(&request.path), data, config)?;
             let archive = capture(data, config, request.browser, true).await?;
             validate(&archive).await?;
-            let bytes = serde_json::to_vec(&archive).map_err(|e| e.to_string())?;
-            if bytes.len() > LIMIT as usize { return Err("Archive exceeds the 256 MiB limit".into()); }
-            write_new(Path::new(&request.path), &bytes)?;
+            publish_new(Path::new(&request.path), |file| bundle::write(&archive, file))?;
             Ok(BackupStatus { message: String::new(), code: Some(BackupStatusCode::Exported), path: Some(request.path), browser: None })
         } else if request.operation == "restore" {
             let storage = Storage::new(data);
             let _lease = storage.lease(true).await.map_err(|error| error.to_string())?;
             let archive = load_restore_archive(&dir.join("incoming.json")).await?;
             let original = capture_raw(data, config, request.browser)?;
-            let mut marker = RestoreJournal { preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()), phase: RestorePhase::Rollback };
+            let mut marker = RestoreJournal { preserved: format!("preserved-{}.zip", uuid::Uuid::new_v4()), phase: RestorePhase::Rollback };
             let preservation = preserved_path(&dir, &marker)?;
             preserve(&original, &preservation)?;
             atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
@@ -1708,10 +1763,9 @@ pub async fn local_backup_schedule(
     }
     if operation == "restore" {
         let archive = load_restore_archive(Path::new(&path)).await?;
-        atomic(
-            &dir.join("incoming.json"),
-            &serde_json::to_vec(&archive).map_err(|e| e.to_string())?,
-        )?;
+        atomic_write(&dir.join("incoming.json"), false, |file| {
+            bundle::write(&archive, file)
+        })?;
     } else {
         let config = crate::config::resolve_config_root(
             &app.path().app_config_dir().map_err(|e| e.to_string())?,
@@ -3390,10 +3444,9 @@ mod tests {
     pub(super) fn queue_restore(data: &Path, archive: &Archive) {
         let dir = data.join("local-backup");
         fs::create_dir_all(&dir).unwrap();
-        atomic(
-            &dir.join("incoming.json"),
-            &serde_json::to_vec(archive).unwrap(),
-        )
+        atomic_write(&dir.join("incoming.json"), false, |file| {
+            bundle::write(archive, file)
+        })
         .unwrap();
         atomic(
             &dir.join("request.json"),
@@ -3560,10 +3613,12 @@ mod tests {
             .iter()
             .find(|(name, _)| name.ends_with("/project/skill/file.sh"))
             .unwrap();
-        assert_eq!(
-            STANDARD.decode(&archived_script.1.data).unwrap(),
-            b"example\r\n"
-        );
+        let mut script_bytes = Vec::new();
+        archived_script
+            .1
+            .copy_verified(archived_script.0, &mut script_bytes)
+            .unwrap();
+        assert_eq!(script_bytes, b"example\r\n");
         assert_eq!(archived_script.1.executable, cfg!(unix));
 
         let mut incomplete = archive.clone();
@@ -3636,11 +3691,7 @@ mod tests {
             preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()),
             phase: RestorePhase::Rollback,
         };
-        fs::write(
-            preserved_path(&dir, &marker).unwrap(),
-            serde_json::to_vec(&original).unwrap(),
-        )
-        .unwrap();
+        preserve_raw(&original, &preserved_path(&dir, &marker).unwrap()).unwrap();
         fs::write(
             dir.join("restoring.json"),
             serde_json::to_vec(&marker).unwrap(),
@@ -3649,6 +3700,111 @@ mod tests {
         fs::write(&script, "interrupted").unwrap();
         process_startup(&data, &config).await.unwrap();
         assert_eq!(fs::read(&script).unwrap(), b"example\r\n");
+    }
+
+    #[tokio::test]
+    async fn large_architect_import_survives_portable_backup_and_interrupted_restore() {
+        use crate::architect_library::{migration, project::ImportCandidate};
+        const SIZE: u64 = 193 * 1024 * 1024;
+
+        let (temp, data, config) = profile().await;
+        let pool = crate::db::create_pool(&data.join("macro.db"))
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO architect_projects(id,name) VALUES ('project','Systems');
+             INSERT INTO architect_legacy_import VALUES (1,0,0);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let storage = Storage::new(&data);
+        assert!(migration::migrate(&pool, &storage).await.unwrap());
+        let folder = temp.path().join("import");
+        fs::create_dir_all(folder.join("skill")).unwrap();
+        fs::write(
+            folder.join("agsdl.json"),
+            r#"{"projectFormat":"agsdl-project-1","contract":"agsdl-0.4.0","id":"example","agents":{},"skills":{"example":{"uri":"skill/SKILL.md"}}}"#,
+        ).unwrap();
+        fs::write(
+            folder.join("skill/SKILL.md"),
+            "---\nname: example\ndescription: Example\n---\n",
+        )
+        .unwrap();
+        let asset = folder.join("skill/large.bin");
+        let file = fs::File::create(&asset).unwrap();
+        file.set_len(SIZE).unwrap();
+        (&file).write_all(b"Original").unwrap();
+        drop(file);
+        let candidate = ImportCandidate::open(&folder).unwrap();
+        let imported = storage
+            .import_project(&pool, "project", "Large import", &candidate)
+            .await
+            .unwrap();
+        drop(candidate);
+        let row = storage_index::draft_row(&pool, &imported.draft.summary.id)
+            .await
+            .unwrap();
+        let artifact = storage_index::Artifact::from_row(&row, "id").unwrap();
+        let saved_asset = storage
+            .artifact_path(&artifact)
+            .join("project/skill/large.bin");
+        pool.close().await;
+
+        let dir = data.join("local-backup");
+        fs::create_dir_all(&dir).unwrap();
+        let export = temp.path().join("portable.zip");
+        atomic(
+            &dir.join("request.json"),
+            &serde_json::to_vec(&Request {
+                operation: "export".into(),
+                path: export.to_string_lossy().into(),
+                browser: BTreeMap::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        process_startup(&data, &config).await.unwrap();
+        let exported = load_archive(&export).unwrap();
+        let (name, entry) = exported
+            .files
+            .iter()
+            .find(|(name, _)| name.ends_with("/large.bin"))
+            .unwrap();
+        assert!(entry.data.is_empty());
+        assert_eq!(
+            fs::metadata(entry.native.as_ref().unwrap().path().join(name))
+                .unwrap()
+                .len(),
+            SIZE
+        );
+
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&saved_asset)
+            .unwrap()
+            .write_all(b"Replaced")
+            .unwrap();
+        queue_restore(&data, &exported);
+        drop(exported);
+        fs::remove_file(dir.join("status.json")).unwrap();
+        // Interrupt after the incoming backup has been applied.
+        fs::create_dir(dir.join("status.json")).unwrap();
+        assert!(process_startup(&data, &config).await.is_err());
+        let prefix = |path: &Path| {
+            let mut bytes = [0; 8];
+            fs::File::open(path)
+                .unwrap()
+                .read_exact(&mut bytes)
+                .unwrap();
+            bytes
+        };
+        assert_eq!(&prefix(&saved_asset), b"Original");
+        fs::remove_dir(dir.join("status.json")).unwrap();
+        process_startup(&data, &config).await.unwrap();
+        assert_eq!(&prefix(&saved_asset), b"Replaced");
+        assert_eq!(fs::metadata(saved_asset).unwrap().len(), SIZE);
+        assert!(!dir.join("restoring.json").exists());
     }
 
     #[tokio::test]

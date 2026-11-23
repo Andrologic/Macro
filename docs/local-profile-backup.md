@@ -12,7 +12,8 @@ when preparing the request and before restoring. A damaged or incompatible
 archive does not replace the profile. Use the same Macro version that created
 the archive.
 
-The profile includes SQLite conversations, messages, stored citation contents,
+The profile includes Architect drafts, versions and original recovery envelopes,
+SQLite conversations, messages, stored citation contents,
 code checkpoint histories, private direct checkpoints, global approved
 configuration, native UI state, message images and composer/questionnaire
 drafts, queued instructions and unsaved assistant recovery responses. Queued
@@ -46,18 +47,21 @@ snapshots, URLs, command arguments and extension data are preserved and may
 contain private information. Archives are not encrypted; protect them as private
 data.
 
-Archives use the versioned `macro-local-profile` JSON format. Each file and the
+Backups use ZIP with a versioned `macro-local-profile` JSON manifest. Macro also
+reads older JSON backups. Each file and the
 browser state have SHA-256 checksums. SQLite uses `VACUUM INTO` so committed WAL
 contents are included; credentials are removed from the copy and that copy is
 vacuumed again. Validation checks database integrity, foreign keys, supported
 migration versions, tables and column shapes, configuration validity, paths,
-checksums and size. Archives are limited to 256 MiB and 10,000 file entries;
-private checkpoint traversal also has a depth and entry budget.
+checksums and size. The manifest is limited to 256 MiB. Architect artifacts
+are stored as separate ZIP members and streamed during backup and restore.
+The remaining files have a 10,000-entry limit, and private checkpoint
+traversal also has a depth and entry budget.
 
 Before replacing the current profile, Macro preserves its managed files as raw
 bytes, including SQLite WAL/SHM, the managed secret store and migration files,
 Pilot's original state, and invalid configuration or state files, in a new
-private `<app-data>/local-backup/preserved-<id>.json` file. Each preservation
+private `<app-data>/local-backup/preserved-<id>.zip` file. Each preservation
 has its own name and is retained. On Unix, newly written preservation and
 restored profile files have private permissions (0600). The preservation also
 contains the browser recovery values captured at confirmation, including queued

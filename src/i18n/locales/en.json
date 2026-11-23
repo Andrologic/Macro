@@ -3338,7 +3338,7 @@
     "desktopRequired": "Open Macro on the desktop to back up or restore its local data.",
     "restoreHelp": "Replace the local data with an archive. Keep the previous profile for recovery.",
     "exportHelp": "Save the local data to a new archive at the next startup.",
-    "limits": "Maximum archive size: 256 MiB. Restore with the same Macro version. Project paths are kept as recorded; restoring does not reconnect moved projects or merge profiles.",
+    "limits": "The backup manifest can be up to 256 MiB. Architect files are stored separately inside the archive. Restore with the same Macro version. Restoration keeps the recorded project paths and replaces the entire profile.",
     "limitsTitle": "Compatibility, limits and private data",
     "exclusions": "Project folders and their Git history are excluded, as are provider credentials. Keep a separate copy of your projects.",
     "scheduled": "Operation prepared. Quit Macro completely, then reopen it. Keep this session unchanged until you quit.",
