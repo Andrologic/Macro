@@ -101,7 +101,12 @@ pub(crate) async fn migrate(pool: &SqlitePool, storage: &Storage) -> DbResult<bo
             }
             Err(diagnostic) => (None, vec![diagnostic]),
         };
-        let original = storage.publish_recovery(&blueprint, original.as_bytes(), diagnostics)?;
+        let original = storage.publish_recovery(
+            &blueprint,
+            original.as_bytes(),
+            diagnostics,
+            Default::default(),
+        )?;
         index::plan(
             &mut tx,
             number,

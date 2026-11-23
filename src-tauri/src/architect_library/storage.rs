@@ -196,10 +196,16 @@ impl Storage {
         blueprint_id: &str,
         envelope: &[u8],
         diagnostics: Vec<String>,
+        executable_paths: BTreeSet<String>,
     ) -> Result<Artifact> {
         let stage = private_directory(&self.staging()?, ".recovery-")?;
         write_file(&stage.path().join(ORIGINAL), envelope)?;
         write_json(&stage.path().join("diagnostics.json"), &diagnostics)?;
+        if !executable_paths.is_empty() {
+            let mut authoring = Authoring::default();
+            authoring.executable_paths = executable_paths;
+            write_json(&stage.path().join(AUTHORING), &authoring)?;
+        }
         self.publish(stage, blueprint_id, StorageState::Recovery)
     }
 
@@ -287,6 +293,7 @@ impl Storage {
                     blueprint,
                     &serde_json::to_vec(&document)?,
                     diagnostics.clone(),
+                    executable_paths,
                 )?;
                 Ok((artifact, document, diagnostics))
             }
@@ -294,11 +301,7 @@ impl Storage {
     }
 
     fn draft_executables(&self, artifact: &Artifact) -> Result<BTreeSet<String>> {
-        if artifact.state != StorageState::Draft {
-            return Ok(BTreeSet::new());
-        }
-        let (_, authoring) = read_sidecars(&self.artifact_path(artifact))?;
-        Ok(authoring.executable_paths)
+        Ok(read_authoring(&self.artifact_path(artifact))?.executable_paths)
     }
 
     #[cfg(test)]
@@ -362,6 +365,7 @@ impl Storage {
             }
             StorageState::Recovery => {
                 self.read_recovery(artifact)?;
+                read_authoring(&self.artifact_path(artifact))?;
             }
         }
         Ok(())
@@ -522,9 +526,12 @@ impl Storage {
             let (document, diagnostics) = self.read_recovery(&artifact)?;
             let envelope =
                 read_file(&self.artifact_path(&artifact).join(ORIGINAL)).map_err(Error::from)?;
-            let retained = self.publish_recovery(&id, &envelope, diagnostics.clone())?;
+            let paths = self.draft_executables(&artifact)?;
+            let retained =
+                self.publish_recovery(&id, &envelope, diagnostics.clone(), paths.clone())?;
             match editor_document::split(document.clone()) {
                 Ok(mut split) => {
+                    split.inherit_executables(paths);
                     split.authoring.merge_diagnostics(&diagnostics);
                     let prepared = self.stage_split(split)?;
                     let diagnostics = prepared.authoring.diagnostics.clone();
@@ -534,8 +541,13 @@ impl Storage {
                     (draft, projected, diagnostics)
                 }
                 Err(_) => {
-                    let (draft, projected) =
-                        self.publish_repair_starter(&id, &name, document.source, &diagnostics)?;
+                    let (draft, projected) = self.publish_repair_starter(
+                        &id,
+                        &name,
+                        document.source,
+                        &diagnostics,
+                        paths,
+                    )?;
                     original = Some(retained);
                     (draft, projected, diagnostics)
                 }
@@ -780,12 +792,16 @@ fn sidecars(path: &Path, settings: &MacroSettings, authoring: &Authoring) -> Res
 fn read_sidecars(path: &Path) -> Result<(MacroSettings, Authoring)> {
     let settings: MacroSettings = read_json(&path.join(SETTINGS))?;
     settings.check_schema()?;
-    let authoring = match read_json(&path.join(AUTHORING)) {
-        Ok(authoring) => authoring,
-        Err(Error::Io(error)) if error.kind() == io::ErrorKind::NotFound => Authoring::default(),
-        Err(error) => return Err(error),
-    };
-    Ok((settings, authoring))
+    Ok((settings, read_authoring(path)?))
+}
+
+fn read_authoring(path: &Path) -> Result<Authoring> {
+    match read_json(&path.join(AUTHORING)) {
+        Err(Error::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(Authoring::default())
+        }
+        result => result,
+    }
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {

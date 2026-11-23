@@ -472,15 +472,26 @@ async fn executable_archive_members_survive_adaptation_and_freeze_without_unix_m
         .freeze(&pool, adapted.into(), 1, None, None)
         .await
         .unwrap();
+    let mut malformed = editor("Malformed intermediate source");
+    malformed.source = "{malformed".into();
     storage
-        .save_draft(&pool, adapted.into(), 1, editor("Edited"))
+        .save_draft(&pool, adapted.into(), 1, malformed)
+        .await
+        .unwrap();
+    let recovery = index::draft_row(&pool, adapted).await.unwrap();
+    let recovery = Artifact::from_row(&recovery, "id").unwrap();
+    assert_eq!(recovery.state, StorageState::Recovery);
+    storage.validate_artifact(&recovery).unwrap();
+
+    storage
+        .save_draft(&pool, adapted.into(), 2, editor("Repaired"))
         .await
         .unwrap();
     storage
         .freeze(
             &pool,
             adapted.into(),
-            2,
+            3,
             None,
             Some(editor("Edited at freeze")),
         )

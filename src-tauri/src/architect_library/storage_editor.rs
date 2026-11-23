@@ -322,11 +322,13 @@ impl Storage {
         name: &str,
         original_source: String,
         diagnostics: &[String],
+        executable_paths: BTreeSet<String>,
     ) -> Result<(Artifact, Document)> {
         let staging = self.staging()?;
         let starter = project::stage_starter(&staging, name)?;
         let (stage, root) = editor::create_stage(&staging, starter)?;
         let mut authoring = Authoring::default();
+        authoring.executable_paths = executable_paths;
         authoring.merge_diagnostics(diagnostics);
         if original_source.len() <= 8 * editor::TEXT_LIMIT {
             write_project_file(&root, editor::RECOVERY_SOURCE, original_source.as_bytes())?;
@@ -361,8 +363,10 @@ impl Storage {
         let envelope =
             read_file(&self.artifact_path(&original).join(ORIGINAL)).map_err(Error::from)?;
         let id = Uuid::new_v4().to_string();
-        let retained = self.publish_recovery(&id, &envelope, diagnostics.clone())?;
-        let (draft, _) = self.publish_repair_starter(&id, name, document.source, &diagnostics)?;
+        let paths = self.draft_executables(&original)?;
+        let retained = self.publish_recovery(&id, &envelope, diagnostics.clone(), paths.clone())?;
+        let (draft, _) =
+            self.publish_repair_starter(&id, name, document.source, &diagnostics, paths)?;
         let mut writer = index::durable_writer(pool).await?;
         let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
         let row = index::insert_draft(&mut tx, project_id, name, &draft, None).await?;

@@ -210,7 +210,10 @@ fn architect_artifact_prefix(name: &str) -> Option<&str> {
             member,
             "version.agsdl" | storage::SETTINGS | storage::AUTHORING
         ),
-        "recovery" => matches!(member, storage::ORIGINAL | "diagnostics.json"),
+        "recovery" => matches!(
+            member,
+            storage::ORIGINAL | storage::AUTHORING | "diagnostics.json"
+        ),
         _ => false,
     };
     valid.then(|| &name[..name.len() - member.len()])
