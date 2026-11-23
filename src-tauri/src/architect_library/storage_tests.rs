@@ -980,3 +980,51 @@ async fn migration_keeps_a_skill_with_rejected_members_out_of_frozen_archives() 
         .unwrap();
     assert_eq!(fs::read(retained).unwrap(), raw.as_bytes());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn managed_reads_and_publication_refuse_existing_buckets_below_symlinked_ancestors() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().unwrap();
+    let pool = create_pool(&temp.path().join("macro.db")).await.unwrap();
+    seed(&pool, &envelope(&editor("Linked buckets"))).await;
+    let storage = Storage::new(temp.path());
+    migration::migrate(&pool, &storage).await.unwrap();
+    storage
+        .freeze(&pool, BLUEPRINT.into(), 5, None, None)
+        .await
+        .unwrap();
+
+    let version = version_artifact(&pool, 8).await;
+    let blueprints = temp.path().join("architect-library/blueprints");
+    let outside = temp.path().join("other-tree");
+    fs::rename(&blueprints, &outside).unwrap();
+    symlink(&outside, &blueprints).unwrap();
+    assert!(storage
+        .artifact_path(&version)
+        .join(VERSION_FILENAME)
+        .is_file());
+
+    assert!(storage.open_archive(&version).is_err());
+    assert!(storage.open_draft_project(&pool, BLUEPRINT).await.is_err());
+    assert!(storage
+        .freeze(&pool, BLUEPRINT.into(), 5, None, None)
+        .await
+        .is_err());
+    assert!(storage
+        .create_project_draft(&pool, "project", "Other")
+        .await
+        .is_err());
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+    assert_eq!(
+        db::list_versions(&pool, BLUEPRINT.into())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    fs::remove_file(blueprints).unwrap();
+    fs::rename(outside, temp.path().join("architect-library/blueprints")).unwrap();
+    assert!(storage.open_archive(&version).is_ok());
+}

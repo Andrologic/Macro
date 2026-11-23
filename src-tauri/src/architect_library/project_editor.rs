@@ -251,6 +251,7 @@ pub(super) fn archive_file(source: &OpenedSource, path: &str) -> Result<ProjectF
 
 pub(super) fn read_file(root: &Path, path: &str, authoring: &Authoring) -> Result<ProjectFile> {
     check_path(path)?;
+    super::storage::require_dir(root, root)?;
     let mut parent = root.to_path_buf();
     let mut parts = path.split('/').peekable();
     while let Some(part) = parts.next() {
@@ -262,6 +263,9 @@ pub(super) fn read_file(root: &Path, path: &str, authoring: &Authoring) -> Resul
             }
             Err(error) => return Err(error.into()),
         };
+        if super::storage::is_link_or_reparse_point(&meta) {
+            return Err(Error::Editor("INVALID_PROJECT_PATH"));
+        }
         if parts.peek().is_none() && meta.is_file() {
             let mut file = entry(path.into(), &meta);
             file.executable |= authoring.executable_paths.contains(path);
@@ -320,9 +324,7 @@ fn check_inventory(files: &BTreeMap<String, FileEntry>) -> Result<()> {
 
 fn disk_inventory(root: &Path) -> Result<BTreeMap<String, FileEntry>> {
     let mut pending = vec![(root.to_path_buf(), String::new())];
-    if !fs::symlink_metadata(root)?.is_dir() {
-        return Err(Error::Editor("INVALID_PROJECT_PATH"));
-    }
+    super::storage::require_dir(root, root)?;
     let mut files = BTreeMap::new();
     let mut total = 0u64;
     let mut entries = 0;
@@ -340,6 +342,9 @@ fn disk_inventory(root: &Path) -> Result<BTreeMap<String, FileEntry>> {
             let path = format!("{prefix}{name}");
             check_path(&path)?;
             let metadata = fs::symlink_metadata(item.path())?;
+            if super::storage::is_link_or_reparse_point(&metadata) {
+                return Err(Error::Editor("INVALID_PROJECT_PATH"));
+            }
             if metadata.is_dir() {
                 pending.push((item.path(), format!("{path}/")));
             } else if metadata.is_file() {
@@ -366,11 +371,11 @@ pub(super) fn validate_storage(root: &Path) -> Result<()> {
 
 pub(super) fn copy_project(source: &Path, destination: &Path) -> Result<()> {
     let files = disk_inventory(source)?;
-    super::storage::ensure_dir(destination)?;
+    super::storage::ensure_dir(destination, destination)?;
     for path in files.keys() {
         let target = destination.join(path);
         let parent = target.parent().expect("portable path has a parent");
-        super::storage::ensure_dir(parent)?;
+        super::storage::ensure_dir(destination, parent)?;
         fs::copy(source.join(path), &target)?;
         fs::File::open(&target)?.sync_all()?;
         sync_directory(parent)?;

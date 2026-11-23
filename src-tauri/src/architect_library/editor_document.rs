@@ -140,7 +140,9 @@ impl Authoring {
             if !portable_path(path) {
                 return Err(Error::Storage("Invalid stored annex path".into()));
             }
-            let bytes = super::storage::read_file(&root.join(path))?;
+            let target = root.join(path);
+            super::storage::require_dir(root, target.parent().ok_or(Error::InvalidDestination)?)?;
+            let bytes = super::storage::read_file(&target)?;
             annexes.insert(
                 key.clone(),
                 String::from_utf8(bytes).map_err(std::io::Error::other)?,
@@ -206,7 +208,12 @@ impl Authoring {
         authoring.fallback_source = None;
         for path in self.annex_paths.values() {
             if !selected.contains(path.as_str()) {
-                let bytes = super::storage::read_file(&root.join(path))?;
+                let target = root.join(path);
+                super::storage::require_dir(
+                    root,
+                    target.parent().ok_or(Error::InvalidDestination)?,
+                )?;
+                let bytes = super::storage::read_file(&target)?;
                 authoring.unselected_files.insert(
                     path.clone(),
                     String::from_utf8(bytes).map_err(std::io::Error::other)?,

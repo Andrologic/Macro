@@ -34,7 +34,7 @@ pub(crate) struct ImportedProject {
 impl Storage {
     fn draft_project_view(&self, row: &SqliteRow, artifact: &Artifact) -> DbResult<DraftProject> {
         let revision = row.try_get("revision")?;
-        let path = self.artifact_path(artifact);
+        let path = self.checked_artifact_path(artifact)?;
         let project = match artifact.state {
             StorageState::Draft => {
                 let (settings, authoring) = read_sidecars(&path)?;
@@ -80,7 +80,7 @@ impl Storage {
         let row = index::version_row(pool, key).await?;
         let artifact = Artifact::from_row(&row, "blueprint_id")?;
         let revision = row.try_get("revision")?;
-        let path = self.artifact_path(&artifact);
+        let path = self.checked_artifact_path(&artifact)?;
         let project = if artifact.state == StorageState::Recovery {
             ProjectView::recovery(revision, read_json(&path.join("diagnostics.json"))?)
         } else {
@@ -121,7 +121,8 @@ impl Storage {
                 revision,
             } => {
                 let row = index::draft_row(pool, &blueprint_id).await?;
-                let artifact = self.artifact_path(&Self::check_draft(&row, revision, false)?);
+                let artifact =
+                    self.checked_artifact_path(&Self::check_draft(&row, revision, false)?)?;
                 let (_, authoring) = read_sidecars(&artifact)?;
                 let content = editor::read_file(&artifact.join(PROJECT), path, &authoring)?;
                 Ok(FileRead { revision, content })
@@ -149,7 +150,7 @@ impl Storage {
         let _lease = self.lease(save).await?;
         let row = index::draft_row(pool, id).await?;
         let current = Self::check_draft(&row, expected, true)?;
-        let artifact_path = self.artifact_path(&current);
+        let artifact_path = self.checked_artifact_path(&current)?;
         let (mut settings, mut authoring) = read_sidecars(&artifact_path)?;
         // Validation uses a scoped temporary directory that reclamation does not
         // scan. Its shared lease protects the immutable source being copied.
@@ -287,8 +288,11 @@ impl Storage {
                 revision,
             } => {
                 let row = index::draft_row(pool, &blueprint_id).await?;
-                let path = self.artifact_path(&Self::check_draft(&row, revision, false)?);
-                let source = OpenedSource::open_path(&path.join(PROJECT)).map_err(Error::from)?;
+                let path =
+                    self.checked_artifact_path(&Self::check_draft(&row, revision, false)?)?;
+                let root = path.join(PROJECT);
+                require_dir(&self.root, &root).map_err(Error::from)?;
+                let source = OpenedSource::open_path(&root).map_err(Error::from)?;
                 project::export_project(&source, destination)?
             }
             ProjectTarget::Version { key } => {
@@ -360,8 +364,8 @@ impl Storage {
             return Err(Error::Editor("PROJECT_NEEDS_REPAIR").into());
         }
         let (document, diagnostics) = self.read_recovery(&original)?;
-        let envelope =
-            read_file(&self.artifact_path(&original).join(ORIGINAL)).map_err(Error::from)?;
+        let envelope = read_file(&self.checked_artifact_path(&original)?.join(ORIGINAL))
+            .map_err(Error::from)?;
         let id = Uuid::new_v4().to_string();
         let paths = self.draft_executables(&original)?;
         let retained = self.publish_recovery(&id, &envelope, diagnostics.clone(), paths.clone())?;
@@ -398,7 +402,7 @@ impl Storage {
         if artifact.state != StorageState::Archive {
             return Ok(Vec::new());
         }
-        let (settings, _) = read_sidecars(&self.artifact_path(&artifact))?;
+        let (settings, _) = read_sidecars(&self.checked_artifact_path(&artifact)?)?;
         Ok(settings.hidden_agent_ids)
     }
 }

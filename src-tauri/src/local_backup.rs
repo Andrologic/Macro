@@ -786,7 +786,7 @@ fn collect_tree_bounded(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.to_string()),
     };
-    if meta.is_symlink() {
+    if storage::is_link_or_reparse_point(&meta) {
         return Err("Symlinks are not supported in profile backups".into());
     }
     let relative = path.strip_prefix(root).map_err(|e| e.to_string())?;
@@ -1233,7 +1233,9 @@ fn safe_parent(path: &Path, root: &Path) -> Result<()> {
             current.push(part);
         }
         match fs::symlink_metadata(&current) {
-            Ok(meta) if meta.is_symlink() => return Err("Profile target contains a symlink".into()),
+            Ok(meta) if storage::is_link_or_reparse_point(&meta) => {
+                return Err("Profile target contains a symlink".into())
+            }
             Ok(_) => {}
             Err(error)
                 if matches!(
@@ -1303,7 +1305,7 @@ fn prune_rollback_artifacts(
         Err(error) => return Err(error.to_string()),
     };
     let relative = path.strip_prefix(root).map_err(|error| error.to_string())?;
-    if metadata.is_symlink() || relative.components().count() > 70 {
+    if storage::is_link_or_reparse_point(&metadata) || relative.components().count() > 70 {
         return Err("Invalid Architect rollback path".into());
     }
     if metadata.is_dir() {
@@ -1437,8 +1439,11 @@ fn apply_files(archive: &Archive, data: &Path, config: &Path, raw: bool) -> Resu
         let path = target(name)?;
         let bytes = STANDARD.decode(&entry.data).map_err(|e| e.to_string())?;
         if name.starts_with(ARCHITECT_FILES) {
-            storage::ensure_dir(path.parent().ok_or("Missing Architect artifact parent")?)
-                .map_err(|error| error.to_string())?;
+            storage::ensure_dir(
+                &data.join(storage::ROOT),
+                path.parent().ok_or("Missing Architect artifact parent")?,
+            )
+            .map_err(|error| error.to_string())?;
         }
         atomic_with_mode(&path, &bytes, entry.executable)?;
     }

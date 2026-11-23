@@ -19,7 +19,7 @@ use std::{
     collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -76,9 +76,11 @@ impl Storage {
     pub(crate) async fn lease(&self, exclusive: bool) -> Result<File> {
         let root = self.root.clone();
         tokio::task::spawn_blocking(move || {
-            ensure_dir(&root)?;
+            ensure_dir(&root, &root)?;
             let lock = root.join(".lock");
-            if fs::symlink_metadata(&lock).is_ok_and(|meta| !meta.is_file()) {
+            if fs::symlink_metadata(&lock)
+                .is_ok_and(|meta| !meta.is_file() || is_link_or_reparse_point(&meta))
+            {
                 return Err(Error::Storage("Invalid Architect storage lock".into()));
             }
             let mut options = OpenOptions::new();
@@ -102,13 +104,19 @@ impl Storage {
 
     pub(super) fn staging(&self) -> Result<PathBuf> {
         let dir = self.root.join("staging");
-        ensure_dir(&dir)?;
+        ensure_dir(&self.root, &dir)?;
         Ok(dir)
     }
 
     pub(crate) fn artifact_path(&self, artifact: &Artifact) -> PathBuf {
         self.bucket(&artifact.blueprint_id, artifact.state)
             .join(artifact.id.to_string())
+    }
+
+    fn checked_artifact_path(&self, artifact: &Artifact) -> Result<PathBuf> {
+        let path = self.artifact_path(artifact);
+        require_dir(&self.root, &path)?;
+        Ok(path)
     }
 
     fn bucket(&self, blueprint: &str, state: StorageState) -> PathBuf {
@@ -132,7 +140,7 @@ impl Storage {
     fn publish(&self, stage: TempDir, blueprint_id: &str, state: StorageState) -> Result<Artifact> {
         let id = Uuid::new_v4();
         let bucket = self.bucket(blueprint_id, state);
-        ensure_dir(&bucket)?;
+        ensure_dir(&self.root, &bucket)?;
         sync_directory(stage.path())?;
         self.check(Failure::BeforePublish)?;
         crate::fs::operations::rename_without_replacement(
@@ -178,7 +186,7 @@ impl Storage {
     ) -> Result<Artifact> {
         sidecars(stage.directory(), settings, authoring)?;
         let bucket = self.bucket(blueprint_id, StorageState::Archive);
-        ensure_dir(&bucket)?;
+        ensure_dir(&self.root, &bucket)?;
         self.check(Failure::BeforePublish)?;
         let published = stage.publish(&bucket)?;
         sync_directory(&self.staging()?)?;
@@ -212,7 +220,7 @@ impl Storage {
     pub(super) fn stage_split(&self, mut split: editor_document::Split) -> Result<PreparedDraft> {
         let stage = private_directory(&self.staging()?, ".draft-")?;
         let root = stage.path().join(PROJECT);
-        ensure_dir(&root)?;
+        ensure_dir(&self.root, &root)?;
         let written: BTreeSet<_> = split.files.keys().cloned().collect();
         for (name, bytes) in split.files {
             write_project_file(&root, &name, &bytes)?;
@@ -301,7 +309,7 @@ impl Storage {
     }
 
     fn draft_executables(&self, artifact: &Artifact) -> Result<BTreeSet<String>> {
-        Ok(read_authoring(&self.artifact_path(artifact))?.executable_paths)
+        Ok(read_authoring(&self.checked_artifact_path(artifact)?)?.executable_paths)
     }
 
     #[cfg(test)]
@@ -309,9 +317,10 @@ impl Storage {
         if artifact.state == StorageState::Recovery {
             return self.read_recovery(artifact);
         }
-        let path = self.artifact_path(artifact);
+        let path = self.checked_artifact_path(artifact)?;
         let (settings, authoring) = read_sidecars(&path)?;
         let root = path.join(PROJECT);
+        require_dir(&self.root, &root)?;
         let source = if authoring.has_fallback() {
             None
         } else {
@@ -324,7 +333,7 @@ impl Storage {
     }
 
     fn read_recovery(&self, artifact: &Artifact) -> Result<(Document, Vec<String>)> {
-        let path = self.artifact_path(artifact);
+        let path = self.checked_artifact_path(artifact)?;
         let bytes = read_file(&path.join(ORIGINAL))?;
         let document = serde_json::from_slice(&bytes)
             .or_else(|_| {
@@ -344,7 +353,9 @@ impl Storage {
             return Err(Error::Storage("Version needs repair".into()));
         }
         archive::open_version(
-            &self.artifact_path(artifact).join(archive::VERSION_FILENAME),
+            &self
+                .checked_artifact_path(artifact)?
+                .join(archive::VERSION_FILENAME),
             artifact.sha256.as_deref().ok_or(Error::DigestMismatch)?,
         )
     }
@@ -352,20 +363,20 @@ impl Storage {
     pub(crate) fn validate_artifact(&self, artifact: &Artifact) -> Result<()> {
         match artifact.state {
             StorageState::Draft => {
-                let path = self.artifact_path(artifact);
+                let path = self.checked_artifact_path(artifact)?;
                 read_sidecars(&path)?;
                 // A working draft may have invalid JSON or missing references.
                 super::project_editor::validate_storage(&path.join(PROJECT))?;
             }
             StorageState::Archive => {
-                let path = self.artifact_path(artifact);
+                let path = self.checked_artifact_path(artifact)?;
                 let (settings, authoring) = read_sidecars(&path)?;
                 let version = self.open_archive(artifact)?;
                 authoring.archive_document(&settings, version.source())?;
             }
             StorageState::Recovery => {
                 self.read_recovery(artifact)?;
-                read_authoring(&self.artifact_path(artifact))?;
+                read_authoring(&self.checked_artifact_path(artifact)?)?;
             }
         }
         Ok(())
@@ -462,9 +473,10 @@ impl Storage {
             if draft.state != StorageState::Draft {
                 return Err(DbError::Validation("blueprint_needs_repair".into()));
             }
-            let path = self.artifact_path(&draft);
+            let path = self.checked_artifact_path(&draft)?;
             let (settings, authoring) = read_sidecars(&path)?;
             let root = path.join(PROJECT);
+            require_dir(&self.root, &root).map_err(Error::from)?;
             if authoring.has_fallback() {
                 return Err(DbError::AgsdlUpgrade(authoring.diagnostics.join("\n")));
             }
@@ -500,7 +512,7 @@ impl Storage {
         let (document, diagnostics) = if artifact.state == StorageState::Recovery {
             self.read_recovery(&artifact)?
         } else {
-            let (settings, authoring) = read_sidecars(&self.artifact_path(&artifact))?;
+            let (settings, authoring) = read_sidecars(&self.checked_artifact_path(&artifact)?)?;
             let version = self.open_archive(&artifact)?;
             (
                 authoring.archive_document(&settings, version.source())?,
@@ -524,8 +536,8 @@ impl Storage {
         let mut original = None;
         let (draft, document, diagnostics) = if artifact.state == StorageState::Recovery {
             let (document, diagnostics) = self.read_recovery(&artifact)?;
-            let envelope =
-                read_file(&self.artifact_path(&artifact).join(ORIGINAL)).map_err(Error::from)?;
+            let envelope = read_file(&self.checked_artifact_path(&artifact)?.join(ORIGINAL))
+                .map_err(Error::from)?;
             let paths = self.draft_executables(&artifact)?;
             let retained =
                 self.publish_recovery(&id, &envelope, diagnostics.clone(), paths.clone())?;
@@ -554,7 +566,7 @@ impl Storage {
             }
         } else {
             let version = self.open_archive(&artifact)?;
-            let (settings, authoring) = read_sidecars(&self.artifact_path(&artifact))?;
+            let (settings, authoring) = read_sidecars(&self.checked_artifact_path(&artifact)?)?;
             let stage = private_directory(&self.staging()?, ".draft-").map_err(Error::from)?;
             let project = project::materialize(version.source(), stage.path())?;
             let root = stage.path().join(PROJECT);
@@ -625,8 +637,8 @@ impl Storage {
         } else {
             return Err(DbError::Validation("original_envelope_unavailable".into()));
         };
-        let bytes =
-            read_file(&self.artifact_path(&artifact).join(ORIGINAL)).map_err(Error::from)?;
+        let bytes = read_file(&self.checked_artifact_path(&artifact)?.join(ORIGINAL))
+            .map_err(Error::from)?;
         let parent = destination_parent(destination)?;
         if parent
             .canonicalize()
@@ -674,10 +686,12 @@ impl Storage {
             }
         }
         let blueprints = self.root.join("blueprints");
-        ensure_dir(&blueprints).map_err(Error::from)?;
+        ensure_dir(&self.root, &blueprints).map_err(Error::from)?;
         for blueprint in fs::read_dir(&blueprints).map_err(Error::from)? {
             let blueprint = blueprint.map_err(Error::from)?;
-            if !blueprint.file_type().map_err(Error::from)?.is_dir()
+            let metadata = fs::symlink_metadata(blueprint.path()).map_err(Error::from)?;
+            if !metadata.is_dir()
+                || is_link_or_reparse_point(&metadata)
                 || !valid_blueprint_directory(&blueprint.file_name().to_string_lossy())
             {
                 continue;
@@ -685,7 +699,7 @@ impl Storage {
             for bucket in ["drafts", "versions", "recovery"] {
                 let directory = blueprint.path().join(bucket);
                 match fs::symlink_metadata(&directory) {
-                    Ok(metadata) if metadata.is_dir() => {}
+                    Ok(metadata) if metadata.is_dir() && !is_link_or_reparse_point(&metadata) => {}
                     Ok(_) => {
                         return Err(
                             Error::Storage("Invalid Architect artifact directory".into()).into(),
@@ -750,32 +764,72 @@ impl PreparedDraft {
     }
 }
 
-pub(crate) fn ensure_dir(path: &Path) -> io::Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() => return Ok(()),
-        Ok(_) => return Err(io::Error::other("Expected Architect storage directory")),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("Invalid Architect storage path"))?;
-    ensure_dir(parent)?;
-    let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
+pub(crate) fn is_link_or_reparse_point(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
     }
-    match builder.create(path) {
-        Ok(()) => sync_directory(parent),
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => ensure_dir(path),
-        Err(error) => Err(error),
+    metadata.is_symlink()
+}
+
+// The caller supplies a trusted parent of the managed root. Walk from the
+// root, so an existing final directory cannot hide a linked ancestor.
+fn walk_directories(root: &Path, path: &Path, create: bool) -> io::Result<()> {
+    let invalid = || io::Error::other("Expected Architect storage directory");
+    let relative = path.strip_prefix(root).map_err(|_| invalid())?;
+    let mut current = root.to_path_buf();
+    for component in std::iter::once(None).chain(relative.components().map(Some)) {
+        if let Some(component) = component {
+            let Component::Normal(name) = component else {
+                return Err(invalid());
+            };
+            current.push(name);
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() && !is_link_or_reparse_point(&metadata) => continue,
+            Ok(_) => return Err(invalid()),
+            Err(error) if create && error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let parent = current.parent().ok_or_else(invalid)?;
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&current) {
+            Ok(()) => sync_directory(parent)?,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let metadata = fs::symlink_metadata(&current)?;
+                if !metadata.is_dir() || is_link_or_reparse_point(&metadata) {
+                    return Err(invalid());
+                }
+            }
+            Err(error) => return Err(error),
+        }
     }
+    Ok(())
+}
+
+pub(crate) fn ensure_dir(root: &Path, path: &Path) -> io::Result<()> {
+    walk_directories(root, path, true)
+}
+
+pub(super) fn require_dir(root: &Path, path: &Path) -> io::Result<()> {
+    walk_directories(root, path, false)
 }
 
 fn remove_entry(path: &Path) -> Result<()> {
-    if fs::symlink_metadata(path)?.is_dir() {
+    let metadata = fs::symlink_metadata(path)?;
+    if is_link_or_reparse_point(&metadata) {
+        return Err(Error::Storage("Invalid Architect reclamation path".into()));
+    }
+    if metadata.is_dir() {
         fs::remove_dir_all(path)?;
     } else {
         fs::remove_file(path)?;
@@ -809,7 +863,8 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
 }
 
 pub(super) fn read_file(path: &Path) -> io::Result<Vec<u8>> {
-    if !fs::symlink_metadata(path)?.is_file() {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() || is_link_or_reparse_point(&metadata) {
         return Err(io::Error::other("Expected regular Architect storage file"));
     }
     fs::read(path)
@@ -822,7 +877,7 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
 pub(super) fn write_project_file(root: &Path, path: &str, bytes: &[u8]) -> Result<()> {
     let path = root.join(path);
     let parent = path.parent().ok_or(Error::InvalidDestination)?;
-    ensure_dir(parent)?;
+    ensure_dir(root, parent)?;
     write_file(&path, bytes)?;
     sync_directory(parent)?;
     Ok(())
