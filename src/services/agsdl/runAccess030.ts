@@ -97,7 +97,7 @@ function discoveryKey(run: PublicRunSummary030): string {
   return JSON.stringify([run.systemStartId, run.snapshotId, run.flowInvocationId, run.revision,
     owner.projectId, owner.planId, owner.branch, revision, sourceSha256,
     versions.snapshot, versions.contract, versions.profile, versions.compiler, versions.runtime, versions.registry,
-    run.ownerStatus, run.stopping, run.verdict, run.physicalPending, run.phaseCounts.map(item => [item.phase, item.count])]);
+    run.ownerStatus, run.stopping, run.paused, run.verdict, run.physicalPending, run.phaseCounts.map(item => [item.phase, item.count])]);
 }
 
 /** One immutable observation scope per adapter. All refreshes are serialized;
@@ -187,7 +187,7 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     const humans = await readHumanFacts030({ systemStartId: run.systemStartId, source: run.source }, transport.readExecutionHumans030);
     return { capture, scope: { systemStartId: run.systemStartId, snapshotId: run.snapshotId, source: run.source },
       verdict: verdict(run.verdict), physicalPending: run.physicalPending, interruptedAt: run.interruptedAt, inbox: run.inbox,
-      humans, observation: observe(), stopping: run.stopping,
+      humans, observation: observe(), stopping: run.stopping, paused: run.paused,
       chronology: unavailable('chronology') };
   }
   async function admission(runs: readonly PublicRunSummary030[]): Promise<NativeFact030<string | null>> {
@@ -252,7 +252,7 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
       const read = Object.hasOwn(retainedRuns, run.systemStartId) ? retainedRuns[run.systemStartId] : undefined;
       const retained = read && retainedRunValue030(read);
       if (retained && (run.revision !== retained.state.revision || run.ownerStatus !== retained.state.ownerStatus ||
-        run.stopping !== retained.state.stopping || run.physicalPending !== retained.state.physicalPending ||
+        run.stopping !== retained.state.stopping || !!run.paused !== !!retained.state.paused || run.physicalPending !== retained.state.physicalPending ||
         run.verdict !== retained.state.verdict || run.snapshotId !== retained.state.scope.snapshotId ||
         run.flowInvocationId !== retained.state.flowInvocationId || !sameHumanScope030(run, retained.state.scope) ||
         !sameVersions(run.versions, retained.capture.versions))) {
@@ -267,13 +267,15 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     const scope = { systemStartId: summary.systemStartId, source: summary.source, snapshotId: summary.snapshotId };
     const runtime = await loadRuntimeProjection030(scope, summary.flowInvocationId, transport.readExecutionRuntimeProjection030, () => true);
     requireFact(runtime && runtime.revision === summary.revision && runtime.stopping === summary.stopping &&
-      runtime.verdict === summary.verdict, 'REVISION_CONFLICT');
+      runtime.verdict === summary.verdict && !!runtime.paused === !!summary.paused, 'REVISION_CONFLICT');
     const sections = runtimeSections030(runtime);
     requireFact(BigInt(sections.activations.filter(activation => activation.physical).length) === BigInt(summary.physicalPending));
     const humans = history?.humans ?? await readHumanFacts030({ systemStartId: scope.systemStartId, source: scope.source }, transport.readExecutionHumans030);
     return { capture, inbox: summary.inbox, observation: history?.observation ?? observe(), state: { scope, flowInvocationId: runtime.flowInvocationId,
       revision: runtime.revision, verdict: verdict(runtime.verdict), ownerStatus: summary.ownerStatus as 'live' | 'revoked',
       stopping: runtime.stopping, physicalPending: summary.physicalPending, modelOverrides: runtime.modelOverrides,
+      paused: runtime.paused, operatorWorks: runtime.operatorWorks,
+      interruptedWhilePaused: runtime.interruptedWhilePaused, terminationUncertain: runtime.terminationUncertain,
       stop: unavailable('stop-proof'), uncertainties: unavailable('uncertainty'), humans,
       occurrences: { kind: 'ready', revision: runtime.revision, value: sections.activations.map(activation => ({
         scope, activation, details: unavailable('occurrence-details'),

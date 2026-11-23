@@ -33,6 +33,8 @@ export const operateReasonPresentation: Record<OperateReason, OperatePresentatio
 
 export const operateRunPresentation: Record<OperateRunStatus, OperatePresentation & { spin?: boolean }> = {
   active: { icon: 'loader', tone: 'primary', spin: true },
+  paused: { icon: 'pause', tone: 'amber' },
+  interrupted: { icon: 'triangle-alert', tone: 'orange' },
   stopping: { icon: 'loader', tone: 'amber', spin: true },
   succeeded: { icon: 'check-circle', tone: 'emerald' },
   terminated: { icon: 'square', tone: 'muted' },

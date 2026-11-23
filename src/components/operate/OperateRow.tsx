@@ -46,7 +46,9 @@ export function OperateRow({ icon, tone, spin, title, unread, markers, trailing,
     onContextMenu={event => { event.preventDefault(); event.stopPropagation(); setMenu(sidebarMenuPosition(event)); }}>
     <button ref={openRef} type="button" data-operate-open-thread aria-current={selected ? 'page' : undefined}
       aria-label={openLabel} title={openTitle ?? openLabel} onClick={onOpen}
-      className={cn('absolute inset-0 rounded-md', operateRowFocusClass)} />
+      className={cn('absolute inset-0 rounded-md', operateRowFocusClass)}>
+      <span className="sr-only">{title}</span>
+    </button>
     <Icon name={icon} size={12} className={cn('pointer-events-none relative mt-1 shrink-0', operateToneClass[tone], spin && 'animate-spin')} />
     <div className="pointer-events-none relative min-w-0 flex-1">
       <div className="flex min-h-5 items-center gap-1.5">

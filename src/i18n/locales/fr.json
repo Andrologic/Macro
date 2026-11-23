@@ -143,6 +143,7 @@
     "browserRuntimeSessionReplacedReload": "Recharger l’onglet"
   },
   "shutdown": {
+    "executionInterrupted": "Des travaux en cours, en pause ou interrompus peuvent devenir impossibles à reprendre si vous quittez Macro.",
     "activeWorkSingle": "Une tâche est encore en cours. Fermer Macro interrompra son travail.",
     "activeWorkMultiple": "{{count}} tâches sont encore en cours. Fermer Macro interrompra leur travail.",
     "closeTitle": "Fermer Macro ?",

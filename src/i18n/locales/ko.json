@@ -143,6 +143,7 @@
     "browserRuntimeSessionReplacedReload": "탭 새로 고침"
   },
   "shutdown": {
+    "executionInterrupted": "Macro를 닫으면 실행 중이거나 일시 중지 또는 중단된 작업을 재개하지 못할 수 있습니다.",
     "activeWorkSingle": "실행 중인 작업이 있습니다. Macro를 닫으면 작업이 중단됩니다.",
     "activeWorkMultiple": "{{count}}개의 작업이 실행 중입니다. Macro를 닫으면 작업이 중단됩니다.",
     "closeTitle": "Macro를 닫으시겠습니까?",

@@ -1173,6 +1173,22 @@
       "workEnded": "사유: 관련 작업 종료"
     }
   },
+  "operator": {
+    "interruptWork": "중단",
+    "resumeWork": "재개",
+    "pauseRun": "실행 일시 중지",
+    "resumeRun": "실행 재개",
+    "unavailable": "현재 작업에는 이 동작을 사용할 수 없습니다.",
+    "changed": "실행 상태가 바뀌었습니다. 새로 고침 후 다시 시도하세요.",
+    "failed": "동작을 확인하지 못했습니다. 다시 시도하세요.",
+    "holding": "에이전트를 중단하는 중…",
+    "held": "에이전트가 중단되어 머신 시간 사용량 계산이 멈췄습니다.",
+    "interrupted": "중단되었습니다. 이 작업은 재개할 수 없습니다.",
+    "runMenu": "실행 동작",
+    "paused": "실행이 일시 중지되었습니다. 새 작업이 시작되지 않습니다.",
+    "approvalsExpiring": "일시 중지 중에도 대기 중인 승인의 기한이 만료될 수 있습니다.",
+    "stopDescription": "실행이 영구적으로 종료됩니다. 실행 기록은 계속 볼 수 있습니다."
+  },
   "inbox": {
     "attention": "처리 필요",
     "active": "진행 중",
@@ -1192,6 +1208,8 @@
     "confirmTerminate": "{{run}} 실행을 완전히 종료할까요?",
     "actionFailed": "작업을 완료하지 못했습니다.",
     "status": {
+      "paused": "일시 중지됨",
+      "interrupted": "중단됨",
       "active": "진행 중",
       "stopping": "종료 중",
       "succeeded": "완료",
@@ -1238,6 +1256,7 @@
       "snoozeElapsed": "미룬 기간 종료"
     },
     "menu": {
+      "deleteRun": "삭제…",
       "openThread": "스레드 열기",
       "openRun": "실행 보기",
       "markRead": "읽음으로 표시",
@@ -1262,6 +1281,13 @@
       "time": "시간",
       "past": "미래의 시점을 선택하세요.",
       "deadlineWarning": "이 요청의 응답 기한은 {{time}}이며 미룬 기간이 끝나기 전입니다. 그때까지 응답이 없으면 만료됩니다."
+    },
+    "deleteDialog": {
+      "title": "이 실행을 삭제할까요?",
+      "description": "“{{run}}” 및 해당 대화가 삭제됩니다. Macro가 만든 작업 폴더를 지우고, 다른 실행에서 사용하지 않는 보관 사본도 삭제합니다. 사용자가 선택한 폴더는 유지됩니다.",
+      "confirm": "삭제",
+      "failed": "실행을 삭제하지 못했습니다. 다시 시도하세요.",
+      "cleanupPending": "실행이 삭제되었습니다. Macro가 다시 시작할 때 남은 파일 정리를 재시도합니다."
     },
     "terminateDialog": {
       "title": "이 실행을 종료할까요?",

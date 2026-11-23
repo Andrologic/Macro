@@ -143,6 +143,7 @@
     "browserRuntimeSessionReplacedReload": "Reload tab"
   },
   "shutdown": {
+    "executionInterrupted": "Running, paused or interrupted executions may contain work that cannot resume after you close Macro.",
     "activeWorkSingle": "A task is still running. Closing Macro will interrupt it.",
     "activeWorkMultiple": "{{count}} tasks are still running. Closing Macro will interrupt them.",
     "closeTitle": "Close Macro?",

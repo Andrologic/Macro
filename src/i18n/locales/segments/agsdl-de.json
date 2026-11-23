@@ -1173,6 +1173,22 @@
       "workEnded": "Grund: Zugehörige Arbeit beendet"
     }
   },
+  "operator": {
+    "interruptWork": "Unterbrechen",
+    "resumeWork": "Fortsetzen",
+    "pauseRun": "Ausführung pausieren",
+    "resumeRun": "Ausführung fortsetzen",
+    "unavailable": "Diese Aktion ist für die aktuelle Arbeit nicht verfügbar.",
+    "changed": "Die Ausführung wurde geändert. Aktualisiere die Ansicht und versuche es erneut.",
+    "failed": "Die Aktion konnte nicht bestätigt werden. Versuche es erneut.",
+    "holding": "Agent wird unterbrochen…",
+    "held": "Agent unterbrochen. Sein Maschinenzeitbudget ist ausgesetzt.",
+    "interrupted": "Unterbrochen. Diese Arbeit kann nicht fortgesetzt werden.",
+    "runMenu": "Ausführungsaktionen",
+    "paused": "Ausführung pausiert. Es beginnen keine neuen Arbeiten.",
+    "approvalsExpiring": "Ausstehende Genehmigungen können während der Pause ablaufen.",
+    "stopDescription": "Die Ausführung wird endgültig beendet. Ihr Verlauf bleibt verfügbar."
+  },
   "inbox": {
     "attention": "Handlungsbedarf",
     "active": "In Bearbeitung",
@@ -1192,6 +1208,8 @@
     "confirmTerminate": "{{run}} endgültig beenden?",
     "actionFailed": "Die Aktion konnte nicht abgeschlossen werden.",
     "status": {
+      "paused": "Pausiert",
+      "interrupted": "Unterbrochen",
       "active": "In Bearbeitung",
       "stopping": "Wird beendet",
       "succeeded": "Abgeschlossen",
@@ -1238,6 +1256,7 @@
       "snoozeElapsed": "Zurückstellung abgelaufen"
     },
     "menu": {
+      "deleteRun": "Löschen…",
       "openThread": "Thread öffnen",
       "openRun": "Ausführung anzeigen",
       "markRead": "Als gelesen markieren",
@@ -1262,6 +1281,13 @@
       "time": "Uhrzeit",
       "past": "Wählen Sie einen Zeitpunkt in der Zukunft.",
       "deadlineWarning": "Die Antwortfrist dieser Anfrage endet am {{time}}, vor Ende der Zurückstellung. Ohne Antwort bis dahin läuft sie ab."
+    },
+    "deleteDialog": {
+      "title": "Diese Ausführung löschen?",
+      "description": "„{{run}}“ und die zugehörigen Unterhaltungen werden gelöscht. Macro entfernt den für diese Ausführung erstellten Arbeitsordner und die gespeicherte Kopie, sobald keine Ausführung sie mehr verwendet. Ausgewählte Ordner bleiben erhalten.",
+      "confirm": "Löschen",
+      "failed": "Die Ausführung konnte nicht gelöscht werden. Versuche es erneut.",
+      "cleanupPending": "Die Ausführung wurde gelöscht. Macro versucht beim Neustart, die restlichen Dateien zu entfernen."
     },
     "terminateDialog": {
       "title": "Diese Ausführung beenden?",

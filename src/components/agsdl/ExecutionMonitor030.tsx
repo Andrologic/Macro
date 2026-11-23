@@ -1,4 +1,5 @@
 import { Messages030 } from './Messages030';
+import { RunOperatorControls030 } from './RunOperatorControls030';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { RunHumanOccurrence030 } from '../../types/agsdlRunUi030';
 import type { RunInspection030, RunInspectionAccess030 } from '../../services/agsdl/runtimeProjection030';
@@ -27,6 +28,7 @@ export interface ExecutionMonitorProps030 {
   readonly refreshIntervalMs?: number;
   readonly renderHumans?: (inspection: RunInspection030, pendingOnly: boolean, readOnly: boolean, openOccurrence: (activation: Extract<RunHumanOccurrence030['activation'], { kind: 'available' }>) => void, instanceActivationIds?: ReadonlySet<string>) => ReactNode;
   readonly openRun?: () => void;
+  readonly operate?: { readonly local: boolean; readonly conversationId?: string };
 }
 function retainedInspection(read: ReturnType<RunInspectionAccess030['getSnapshot']>['runs'][string]) { return retainedRunValue030(read); }
 
@@ -34,7 +36,7 @@ function retainedInspection(read: ReturnType<RunInspectionAccess030['getSnapshot
 export function ExecutionMonitor030(props: ExecutionMonitorProps030) {
   return <ScopedMonitor030 key={props.access.scopeKey} {...props} />;
 }
-function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, access, initialRunId, exactInitialRun, initialInstanceId, taskStale, onSelection, currentSource, renderGraph, refreshIntervalMs = 5000, renderHumans, openRun }: ExecutionMonitorProps030) {
+function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, access, initialRunId, exactInitialRun, initialInstanceId, taskStale, onSelection, currentSource, renderGraph, refreshIntervalMs = 5000, renderHumans, openRun, operate }: ExecutionMonitorProps030) {
   const { t } = useAgsdlTranslation();
   const tr = (key: string) => t(`agsdl.run030.${key}`);
   const subscribe = useCallback((listener: () => void) => access.subscribe(listener), [access]);
@@ -94,7 +96,7 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
     snapshot.history.kind === 'stale' || snapshot.history.kind === 'loading';
   const state = inspection?.state;
   const interrupted = !!left?.interruptedAt || state?.verdict === 'interrupted';
-  const active = !!state && (state.verdict === null || state.physicalPending !== '0');
+  const active = !!state && state.verdict !== 'interrupted' && (state.verdict === null || state.physicalPending !== '0');
   useEffect(() => { onSelection?.(selected, active, !design); }, [onSelection, selected, active, design]);
   const occurrences = state ? retainedRunValue030(state.occurrences) : null;
   const instanceOccurrences = initialInstance && state?.occurrences.kind === 'ready' && state.occurrences.revision === state.revision
@@ -122,13 +124,17 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
   const inspectorProps = inspection ? { inspection, stale, refreshing: readState?.kind === 'loading', selectedStepId: selection.step, selectedOccurrenceKey: selection.occurrence,
     selectStep: (step: string | undefined) => { choose({ step, occurrence: undefined }); }, selectOccurrence: (occurrence: string) => choose({ occurrence }) } : undefined;
   const canvasMode = canvas !== undefined;
+  const runControls = operate && inspection && !design ? <RunOperatorControls030 key={identity} run={inspection} stale={stale}
+    local={operate.local} conversationId={operate.conversationId} /> : undefined;
   if (initialInstanceId) return <section aria-label={tr('instance')} className="min-h-0 min-w-0 flex-1 space-y-3 overflow-auto p-3 text-xs text-foreground">
     <header className="flex flex-wrap items-start justify-between gap-2">
       <div className="min-w-0">
         <h2 className="break-words font-medium">{initialInstance?.agent ?? tr('instance')}</h2>
         {initialInstance && <p className="break-all text-muted-foreground">{initialInstance.selectorName ?? initialInstance.id}</p>}
       </div>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        {operate && inspection && initialInstance && <RunOperatorControls030 key={identity} run={inspection} instance={initialInstance} stale={stale}
+          local={operate.local} conversationId={operate.conversationId} />}
         <button type="button" className="rounded border border-border px-2 py-1 hover:bg-accent" onClick={refresh}>{tr('refresh')}</button>
         {openRun && <button type="button" className="rounded border border-border px-2 py-1 hover:bg-accent" onClick={openRun}>{tr('openRunInspector')}</button>}
       </div>
@@ -136,7 +142,7 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
     {readFailed && <p role="alert">{tr('readFailed')}</p>}
     {stale && <p role="status">{tr('stale')}</p>}
     {inspection && state && initialInstance ? <>
-      <Messages030 key={JSON.stringify([identity, initialInstanceId])} instanceId={initialInstanceId} run={inspection} stale={stale} refresh={refresh} />
+      <Messages030 key={JSON.stringify([identity, initialInstanceId])} instanceId={initialInstanceId} run={inspection} stale={stale || operate?.local === false} refresh={refresh} />
       {renderHumans?.(inspection, false, stale, openOccurrence, instanceOccurrences && new Set(instanceOccurrences.map(item => item.activation.id)))}
       <details open={instanceDetailsOpen} onToggle={event => {
         if (event.target === event.currentTarget) setInstanceDetailsOpen(event.currentTarget.open);
@@ -152,12 +158,13 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
   return <section aria-label={tr('monitor')} className={canvasMode ? 'agsdl-canvas-shell' : 'min-h-0 min-w-0 flex-1 overflow-auto text-xs text-foreground'}>
     {canvasMode && <>
       {design || !inspectorProps ? canvas : <RunInspector030 {...inspectorProps} graphOnly renderGraph={value => <div className="agsdl-captured-graph" onDoubleClick={() => setDrawerOpen(true)}>{renderGraph?.({ ...value, inspect: () => setDrawerOpen(true) })}</div>} />}
-      <div className="agsdl-launch-tools">{controls}{!design && capturedControls}{!design && <button className="agsdl-icon-button" title={t('agsdl.shell030.design')} aria-label={t('agsdl.shell030.design')} onClick={() => setDesign(true)}>↩</button>}</div>
+      <div className="agsdl-launch-tools">{controls}{runControls}{!design && capturedControls}{!design && <button className="agsdl-icon-button" title={t('agsdl.shell030.design')} aria-label={t('agsdl.shell030.design')} onClick={() => setDesign(true)}>↩</button>}</div>
       {inspection && <div className="agsdl-human-overlay">{renderHumans?.(inspection, true, stale, openOccurrence)}</div>}
       <button className="agsdl-runs-toggle" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(open => !open)}>{t('agsdl.canvas030.runs', { count: history.length })}</button>
     </>}
     <div hidden={canvasMode && !drawerOpen} className={canvasMode ? 'agsdl-runs-drawer' : 'space-y-3 p-3'}>
     {projectPicker}
+    {!canvasMode && runControls}
     <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-medium">{tr('monitor')}</h2>
       <button type="button" className="rounded border border-border px-2 py-1 hover:bg-accent" onClick={refresh}>{tr('refresh')}</button></div>
     {readFailed && <p role="alert">{tr('readFailed')}</p>}
@@ -187,7 +194,7 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
         <ExactContent label={tr('capturedSource')} value={inspection.capture.authoredSource} />
         {currentSource !== undefined && <ExactContent label={tr('currentDocument')} value={currentSource} />}
       </section>
-      <Messages030 key={identity} run={inspection} stale={stale} refresh={refresh} />
+      <Messages030 key={identity} run={inspection} stale={stale || operate?.local === false} refresh={refresh} />
       {inspectorProps && <RunInspector030 {...inspectorProps} renderGraph={canvasMode ? undefined : renderGraph} />}
       <details><summary>{tr('runtimeDetails')}</summary>
         {occurrences === null || state.occurrences.kind !== 'ready' || state.occurrences.revision !== state.revision ? <p>{tr('incomplete')}</p> : <RuntimeProjectionView030

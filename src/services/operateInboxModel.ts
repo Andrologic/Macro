@@ -2,11 +2,12 @@ import type { RunHumanRequest030, RunScope030, RunVerdict030 } from '../types/ag
 import type { OperateRunFacts, OperateThreadFacts } from '../types/generated/ipc';
 import { sameHumanScope030, humanRemainingMs030 } from './agsdl/humanRequests030';
 import { runCaptureKey030 } from './agsdl/runGraphProjection030';
+import type { RunOperatorAction030 } from './ipc/agsdlExecution030';
 import type { RunInspection030 } from './agsdl/runtimeProjection030';
 
 export type OperateReason = 'question' | 'approval' | 'error' | 'interrupted'
   | 'finished' | 'activity' | 'snoozeElapsed' | 'snoozed';
-export type OperateRunStatus = 'active' | 'stopping' | 'succeeded' | 'terminated' | 'failed';
+export type OperateRunStatus = 'active' | 'paused' | 'stopping' | 'succeeded' | 'terminated' | 'failed' | 'interrupted';
 export type OperateLocation = { kind: 'local' } | { kind: 'remote'; machineId: string; label: string };
 
 export interface OperateRunTarget {
@@ -19,6 +20,8 @@ export interface OperateRunInput extends OperateRunTarget {
   runName?: string;
   status: OperateRunStatus;
   facts?: OperateRunFacts;
+  operatorAction?: RunOperatorAction030;
+  physicalPending?: string;
   stale: boolean;
   threads: readonly {
     instanceId: string;
@@ -26,6 +29,7 @@ export interface OperateRunInput extends OperateRunTarget {
     agentLabel: string;
     requests: readonly RunHumanRequest030[];
     reason?: 'error' | 'interrupted';
+    operatorAction?: RunOperatorAction030;
   }[];
   unlinkedRequests: readonly RunHumanRequest030[];
   observedAtMs: number;
@@ -42,6 +46,8 @@ export interface OperateRunRow extends OperateRunTarget {
   stale: boolean;
   unopened: boolean;
   canTerminate: boolean;
+  canDelete: boolean;
+  operatorAction?: RunOperatorAction030;
   startedAtMs: number | null;
   finishedAtMs: number | null;
   threads: readonly OperateThreadRow[];
@@ -61,6 +67,7 @@ export interface OperateThreadRow extends OperateRunTarget {
   hidden: boolean;
   stale: boolean;
   canSnooze: boolean;
+  operatorAction?: RunOperatorAction030;
   elapsedMs: number | null;
   activityAtMs: number | null;
   responseDeadlineMs: number | null;
@@ -93,13 +100,14 @@ const emptyHiddenAgents = new Set<string>();
 const noHiddenAgents: HiddenOperateAgents = () => emptyHiddenAgents;
 
 export function operateRunStatus(
-  verdict: RunVerdict030, physicalPending: string, stopping: boolean, stoppedByUser: boolean,
+  verdict: RunVerdict030, physicalPending: string, stopping: boolean, stoppedByUser: boolean, paused = false,
 ): OperateRunStatus {
-  if (verdict === null || physicalPending !== '0') return stopping ? 'stopping' : 'active';
+  if (verdict === 'interrupted') return 'interrupted';
+  if (verdict === null || physicalPending !== '0') return stopping || stoppedByUser ? 'stopping' : paused ? 'paused' : 'active';
   if (verdict === 'cancelled' && stoppedByUser) return 'terminated';
   return verdict === 'succeeded' ? 'succeeded' : 'failed';
 }
-export const isFinishedOperateRun = (status: OperateRunStatus) => status !== 'active' && status !== 'stopping';
+export const isFinishedOperateRun = (status: OperateRunStatus) => status !== 'active' && status !== 'paused' && status !== 'stopping';
 
 export function snoozeState(facts: OperateThreadFacts | undefined, now: number): 'snoozed' | 'activity' | 'snoozeElapsed' | undefined {
   if (!facts || facts.snoozeUntilMs === null) return undefined;
@@ -171,35 +179,37 @@ export function selectOperateInbox(
     const threadFacts = new Map(facts?.threads.map(item => [item.instanceId, item]));
     const threads: OperateThreadRow[] = [];
     const row: OperateRunRow = { kind: 'run', key, scope, conversationId, location, systemId, systemLabel, runLabel,
-      status, stale, unopened: terminal && !facts?.opened, canTerminate: canAct, startedAtMs, finishedAtMs, threads };
+      status, stale, unopened: terminal && !facts?.opened, canTerminate: canAct,
+      canDelete: terminal && !stale && location.kind === 'local' && input.physicalPending === '0',
+      operatorAction: canAct ? input.operatorAction : undefined, startedAtMs, finishedAtMs, threads };
 
     for (const thread of input.threads) {
       if (!runMatches && !searchKey(thread.agentLabel).includes(query)) continue;
       const meta = threadFacts.get(thread.instanceId);
       const snooze = terminal ? undefined : snoozeState(meta, now);
-      const request = thread.requests.find(item => item.content.kind !== 'question') ?? thread.requests[0];
+      const request = terminal ? undefined : thread.requests.find(item => item.content.kind !== 'question') ?? thread.requests[0];
       const wake = meta?.snoozedForRequest ? undefined : snooze;
-      const failure = (terminal && facts?.opened) || status === 'terminated' ? undefined : thread.reason;
+      const failure = status === 'terminated' ? undefined : thread.reason;
       const reason = snooze === 'snoozed' ? snooze : request ? requestReason(request) : failure ?? wake;
       const at = reason === 'snoozeElapsed' ? meta?.snoozeUntilMs ?? null
         : meta?.activityAtMs ?? startedAtMs;
       const item: OperateThreadRow = { kind: 'thread', key: JSON.stringify([key, thread.instanceId]), runKey: key,
         scope, conversationId, location, systemLabel, runLabel, instanceId: thread.instanceId,
         agentId: thread.agentId, agentLabel: thread.agentLabel, hidden: hidden.has(thread.agentId), stale,
-        reason, requestId: request?.id, canSnooze: canAct, elapsedMs: elapsed(at, now), activityAtMs: at,
+        reason, requestId: request?.id, canSnooze: canAct, operatorAction: canAct ? thread.operatorAction : undefined, elapsedMs: elapsed(at, now), activityAtMs: at,
         facts: meta, responseDeadlineMs: responseDeadline(thread.requests, input.observedAtMs) };
       const visible = !item.hidden || filter.showHidden;
       if (visible && snooze !== 'snoozed') threads.push(item);
       if (snooze === 'snoozed') {
         if (visible || request || thread.reason) snoozed.push(item);
-      } else if (reason) attention.push({ row: item, at });
+      } else if (reason && !(terminal && facts?.opened)) attention.push({ row: item, at });
     }
     threads.sort((a, b) => newestFirst(a.activityAtMs, b.activityAtMs));
     if (!runMatches && !threads.length) continue;
     (terminal ? finished : active).push(row);
     if (row.unopened) attention.push({ row: { kind: 'runAttention', key, run: row, reason: 'finished',
       elapsedMs: elapsed(finishedAtMs, now) }, at: finishedAtMs });
-    for (const request of input.unlinkedRequests) {
+    for (const request of terminal ? [] : input.unlinkedRequests) {
       attention.push({ row: { kind: 'runAttention', key: JSON.stringify([key, request.id]), run: row,
         reason: requestReason(request), requestId: request.id, elapsedMs: elapsed(startedAtMs, now) }, at: startedAtMs });
     }

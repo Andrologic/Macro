@@ -1,11 +1,12 @@
 import { Suspense, lazy, useRef, useState, type KeyboardEvent } from 'react';
 import { formatRelativeTimeShort } from '../../i18n/format';
-import type { OperateRunRow, OperateThreadRow } from '../../services/operateInboxModel';
+import { isFinishedOperateRun, type OperateRunRow } from '../../services/operateInboxModel';
 import { architectLaunch } from '../../services/ipc/architectLaunch';
-import { workflowAgentTaskId, workflowRunAccessSnapshot030 } from '../../services/workflowAgentTasks';
-import { useAppStore } from '../../stores/useAppStore';
+import { workflowRunAccessSnapshot030 } from '../../services/workflowAgentTasks';
+import { operatorErrorKey030 } from '../../services/agsdl/operator030';
+import { OperateThreadRowView } from './OperateAttentionRows';
 import {
-  markOperateRunOpened, openOperateRun, openOperateThread, terminateOperateRun,
+  controlOperateRun, deleteOperateRun, markOperateRunOpened, openOperateRun, terminateOperateRun,
 } from '../../stores/useOperateInboxStore';
 import { cn } from '../../utils/cn';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
@@ -17,36 +18,13 @@ import {
 } from './OperateColumnParts';
 import { OperateMenuSeparator } from './OperateRow';
 import {
-  formatOperateElapsed, operateReasonPresentation, operateRunPresentation, operateThreadState, operateToneClass,
+  formatOperateElapsed, operateRunPresentation, operateToneClass,
 } from './operateColumnModel';
 import { useAgsdlTranslation } from '../agsdl/useAgsdlTranslation';
 
 const ArchiveRunSecrets = lazy(() => import('./ArchitectLaunchDialog').then(module => ({ default: module.ArchiveRunSecrets })));
 
 const runTitle = (run: OperateRunRow) => `${run.systemLabel} · ${run.runLabel}`;
-
-/** A thread listed under its expanded run: agent and state in words. */
-function OperateRunThread({ thread, runFinished }: { thread: OperateThreadRow; runFinished: boolean }) {
-  const { t } = useAgsdlTranslation();
-  const selected = useAppStore(state => thread.location.kind === 'local'
-    && state.selectedTaskId === workflowAgentTaskId(thread.scope.systemStartId, thread.instanceId));
-  const state = operateThreadState(thread, runFinished);
-  const tone = thread.reason ? operateReasonPresentation[thread.reason].tone : 'muted';
-  const word = t(`agsdl.inbox.threadState.${state}`);
-  return <li>
-    <button type="button" data-operate-open-thread aria-current={selected ? 'page' : undefined}
-      title={`${thread.agentLabel} · ${word}`}
-      onClick={() => void openOperateThread(thread).catch(() => notify.error(t('agsdl.inbox.actionFailed')))}
-      className={cn('flex min-h-7 w-full items-center gap-2 rounded-md py-1 pl-8 pr-2 text-left text-[11px] transition-colors',
-        operateRowFocusClass, thread.hidden && 'opacity-70',
-        selected ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground')}>
-      <span className="min-w-0 flex-1 truncate text-foreground">{thread.agentLabel}</span>
-      {thread.hidden && <span title={t('agsdl.inbox.hidden')} className="flex shrink-0"><Icon name="eye-off" size={11} />
-        <span className="sr-only">{t('agsdl.inbox.hidden')}</span></span>}
-      <span className={cn('shrink-0 text-[10px]', operateToneClass[tone])}>{word}</span>
-    </button>
-  </li>;
-}
 
 /** A run of "En cours" or "Terminés": the title opens the graph, the chevron unfolds its threads. */
 export function OperateRunRowView({ run, expanded, onToggle, nowMs }: {
@@ -59,14 +37,14 @@ export function OperateRunRowView({ run, expanded, onToggle, nowMs }: {
   const { locale, full } = useOperateFormat();
   const openRef = useRef<HTMLButtonElement>(null);
   const [menu, setMenu] = useState<SidebarMenuPosition | null>(null);
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, setConfirming] = useState<'stop' | 'delete' | null>(null);
   const [editingSecrets, setEditingSecrets] = useState(false);
   const archiveRun = run.location.kind === 'local' && workflowRunAccessSnapshot030()
     .find(entry => entry.archiveRuns?.has(run.scope.systemStartId))?.archiveRuns?.get(run.scope.systemStartId);
   const [pending, setPending] = useState(false);
-  const [failedStop, setFailedStop] = useState(false);
+  const [failedAction, setFailedAction] = useState(false);
   const title = runTitle(run);
-  const finished = run.finishedAtMs !== null && run.status !== 'active' && run.status !== 'stopping';
+  const finished = isFinishedOperateRun(run.status);
   const { icon, tone, spin } = operateRunPresentation[run.status];
   const hasThreads = run.threads.length > 0;
   const waiting = run.threads.some(thread => thread.reason === 'question' || thread.reason === 'approval');
@@ -85,12 +63,28 @@ export function OperateRunRowView({ run, expanded, onToggle, nowMs }: {
     if (!hasThreads || (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft')) return;
     if ((event.key === 'ArrowRight') !== expanded) { event.preventDefault(); onToggle(); }
   };
-  const terminate = async () => {
-    setPending(true); setFailedStop(false);
-    try { await terminateOperateRun(run); setConfirming(false); }
-    catch { setFailedStop(true); }
+  const submit = async () => {
+    setPending(true); setFailedAction(false);
+    try {
+      if (confirming === 'delete') await deleteOperateRun(run);
+      else await terminateOperateRun(run);
+      setConfirming(null);
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'DELETE_CLEANUP_PENDING') {
+        notify.warning(t('agsdl.inbox.deleteDialog.cleanupPending'));
+        setConfirming(null);
+      } else setFailedAction(true);
+    } finally { setPending(false); }
+  };
+  const action = run.operatorAction;
+  const control = async () => {
+    if (!action) return;
+    setPending(true);
+    try { await controlOperateRun(run, action); }
+    catch (error) { notify.error(t(`agsdl.operator.${operatorErrorKey030(error)}`)); }
     finally { setPending(false); }
   };
+  const dialog = confirming === 'delete' ? 'deleteDialog' : 'terminateDialog';
   return <div>
     <div data-operate-run className="group/run relative flex min-w-0 items-start rounded-md text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
       onContextMenu={event => { event.preventDefault(); event.stopPropagation(); setMenu(sidebarMenuPosition(event)); }}>
@@ -139,29 +133,34 @@ export function OperateRunRowView({ run, expanded, onToggle, nowMs }: {
             {t('agsdl.launch.secrets')}
           </OperateMenuItem>
         </>}
-        {/* Supprimer… (lot Supprimer): finished runs only, below Terminer… with its own confirmation. */}
+        {action && <OperateMenuItem icon={action.kind === 'resumeRun' ? 'play' : 'pause'} disabled={pending}
+          onClick={() => { setMenu(null); void control(); }}>{t(`agsdl.operator.${action.kind}`)}</OperateMenuItem>}
+        {run.canDelete && <>
+          <OperateMenuSeparator />
+          <OperateMenuItem icon="trash" danger disabled={pending} onClick={() => {
+            setMenu(null); setFailedAction(false); setConfirming('delete');
+          }}>{t('agsdl.inbox.menu.deleteRun')}</OperateMenuItem>
+        </>}
         {run.canTerminate && <>
           <OperateMenuSeparator />
-          <OperateMenuItem icon="square" danger disabled={stopping} onClick={() => { setMenu(null); setFailedStop(false); setConfirming(true); }}>
+          <OperateMenuItem icon="square" danger disabled={stopping} onClick={() => { setMenu(null); setFailedAction(false); setConfirming('stop'); }}>
             {t('agsdl.inbox.menu.terminate')}</OperateMenuItem>
         </>}
       </SidebarMenu>}
     </div>
-    {expanded && hasThreads && <ul className="space-y-0.5 pb-1">
-      {run.threads.map(thread => <OperateRunThread key={thread.key} thread={thread} runFinished={finished} />)}
+    {expanded && hasThreads && <ul className="space-y-0.5 pb-1 pl-4">
+      {run.threads.map(thread => <li key={thread.key}><OperateThreadRowView thread={thread} variant="run" runFinished={finished} /></li>)}
     </ul>}
     {editingSecrets && archiveRun && <Suspense fallback={null}>
       <ArchiveRunSecrets version={archiveRun.version} onClose={() => setEditingSecrets(false)} />
     </Suspense>}
-    <ConfirmPromptModal isOpen={confirming} title={t('agsdl.inbox.terminateDialog.title')}
-      description={t('agsdl.inbox.terminateDialog.description', { run: title })}
-      confirmLabel={t('agsdl.inbox.terminateDialog.confirm')} cancelLabel={t('agsdl.cancel')} confirmVariant="error"
+    <ConfirmPromptModal isOpen={confirming !== null} title={t(`agsdl.inbox.${dialog}.title`)}
+      description={t(`agsdl.inbox.${dialog}.description`, { run: title })}
+      confirmLabel={t(`agsdl.inbox.${dialog}.confirm`)} cancelLabel={t('agsdl.cancel')} confirmVariant="error"
       isSubmitting={pending} returnFocusRef={openRef}
-      onCancel={() => setConfirming(false)} onConfirm={() => void terminate()}>
-      {(waiting || failedStop) && <div className="space-y-2">
-        {waiting && <p className="text-xs text-muted-foreground">{t('agsdl.inbox.terminateDialog.waiting')}</p>}
-        {failedStop && <p role="alert" className="text-[11px] text-red-400">{t('agsdl.inbox.terminateDialog.failed')}</p>}
-      </div>}
+      onCancel={() => setConfirming(null)} onConfirm={() => void submit()}>
+      {confirming === 'stop' && waiting && <p className="text-xs text-muted-foreground">{t('agsdl.inbox.terminateDialog.waiting')}</p>}
+      {failedAction && <p role="alert" className="text-[11px] text-red-400">{t(`agsdl.inbox.${dialog}.failed`)}</p>}
     </ConfirmPromptModal>
   </div>;
 }

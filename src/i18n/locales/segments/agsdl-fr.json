@@ -1173,6 +1173,22 @@
       "workEnded": "Motif : travail associé terminé"
     }
   },
+  "operator": {
+    "interruptWork": "Interrompre",
+    "resumeWork": "Reprendre",
+    "pauseRun": "Mettre en pause l’exécution",
+    "resumeRun": "Reprendre l’exécution",
+    "unavailable": "Cette action est indisponible pour le travail en cours.",
+    "changed": "L’exécution a changé. Actualisez et réessayez.",
+    "failed": "L’action n’a pas pu être confirmée. Réessayez.",
+    "holding": "Interruption de l’agent…",
+    "held": "L’agent est interrompu. Son budget de temps machine est suspendu.",
+    "interrupted": "Interrompu. Ce travail ne peut pas reprendre.",
+    "runMenu": "Actions de l’exécution",
+    "paused": "Exécution en pause. Aucun nouveau travail ne démarre.",
+    "approvalsExpiring": "Les approbations en attente peuvent expirer pendant la pause.",
+    "stopDescription": "L’exécution s’arrêtera définitivement. Son historique restera consultable."
+  },
   "inbox": {
     "attention": "À traiter",
     "active": "En cours",
@@ -1192,6 +1208,8 @@
     "confirmTerminate": "Terminer définitivement {{run}} ?",
     "actionFailed": "L’action n’a pas pu aboutir.",
     "status": {
+      "paused": "En pause",
+      "interrupted": "Interrompue",
       "active": "En cours",
       "stopping": "Arrêt en cours",
       "succeeded": "Terminée",
@@ -1238,6 +1256,7 @@
       "snoozeElapsed": "report terminé"
     },
     "menu": {
+      "deleteRun": "Supprimer…",
       "openThread": "Ouvrir le thread",
       "openRun": "Voir l’exécution",
       "markRead": "Marquer comme lu",
@@ -1262,6 +1281,13 @@
       "time": "Heure",
       "past": "Choisissez un moment dans le futur.",
       "deadlineWarning": "Le délai de réponse de cette demande expire le {{time}}, avant la fin du report. Sans réponse d’ici là, elle expirera."
+    },
+    "deleteDialog": {
+      "title": "Supprimer cette exécution ?",
+      "description": "« {{run}} » et ses conversations seront supprimées. Macro effacera le dossier qu’il a créé pour cette exécution et supprimera la copie conservée dès qu’aucune exécution ne l’utilisera. Les dossiers choisis sont conservés.",
+      "confirm": "Supprimer",
+      "failed": "La suppression a échoué. Réessayez.",
+      "cleanupPending": "L’exécution a été supprimée. Macro réessaiera de nettoyer les fichiers restants au redémarrage."
     },
     "terminateDialog": {
       "title": "Terminer cette exécution ?",
