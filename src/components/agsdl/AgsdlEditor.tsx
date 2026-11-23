@@ -28,7 +28,7 @@ import { SaveSystemDialog } from "./SaveSystemDialog";
 import { WorkflowEdgeSummary } from "./WorkflowEdge";
 import { WorkflowGraph } from "./WorkflowGraph";
 import "./agsdl.css";
-import { agsdlErrorText } from "./errorText";
+import { agsdlErrorText, agsdlProjectIssueText } from "./errorText";
 import { ProjectMacroSettings } from "./ProjectMacroSettings";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 
@@ -424,7 +424,7 @@ export const AgsdlEditor: React.FC<{
       {!!project?.view.diagnostics.length && <details className="agsdl-details px-2" open={!project.view.projection}>
         <DisclosureSummary>{t("agsdl.authoring030.diagnostics.count", { count: project.view.diagnostics.length })}</DisclosureSummary>
         {project.view.diagnostics.map((issue, index) => <p key={index} className="break-words">
-          {issue.file && <code>{issue.file}{issue.pointer && `#${issue.pointer}`} · </code>}{issue.message}
+          {issue.file && <code>{issue.file}{issue.pointer && `#${issue.pointer}`} · </code>}{agsdlProjectIssueText(issue, t)}
         </p>)}
       </details>}
       {!conflict && ((!settingsOpen && canvasError) || parsed.error) && (

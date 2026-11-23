@@ -45,6 +45,7 @@
       "mcpIsolationUnavailable": "Macro kann den MCP-Server {{subject}} auf diesem Gerät nicht isolieren.",
       "mcpWorkspaceRequired": "Der MCP-Server {{subject}} benötigt Arbeitsbereichsberechtigungen in den Einstellungen.",
       "mcpRetainedProgramRequired": "Der MCP-Server {{subject}} benötigt eine im Archiv deklarierte ausführbare Datei oder sh mit einem deklarierten Skript.",
+      "mcpAbsoluteInterpreterRequired": "In der #!-Zeile des Skripts für den MCP-Server {{subject}} muss ein absoluter Interpreterpfad stehen.",
       "mcpReservedSecret": "Wähle einen anderen Namen für dieses reservierte MCP-Geheimnis. {{subject}}",
       "unsupportedHarness": "Agent {{subject}} verwendet eine nicht unterstützte Laufzeit.",
       "workingFolderRequired": "Verfügbaren Arbeitsordner auswählen.",
@@ -59,6 +60,7 @@
     }
   },
   "library": {
+    "reservedMcpSecret": "Dieses Projekt deklariert einen reservierten MCP-Geheimnisnamen. Benenne ihn in der Datei für erforderliche Geheimnisse um.",
     "files": "Projektdateien",
     "file": "Datei",
     "binaryFile": "Binärdatei",

@@ -45,6 +45,7 @@
       "mcpIsolationUnavailable": "이 컴퓨터에서 MCP 서버 {{subject}}을 격리할 수 없습니다.",
       "mcpWorkspaceRequired": "MCP 서버 {{subject}}에는 설정의 작업 공간 권한이 필요합니다.",
       "mcpRetainedProgramRequired": "MCP 서버 {{subject}}에는 아카이브에 선언된 실행 파일이나 선언된 스크립트를 인수로 받는 sh가 필요합니다.",
+      "mcpAbsoluteInterpreterRequired": "MCP 서버 {{subject}}가 사용하는 스크립트의 #! 줄에는 인터프리터의 절대 경로가 필요합니다.",
       "mcpReservedSecret": "이 MCP 비밀에는 예약된 이름이 사용되었습니다. 다른 이름을 선택하세요. {{subject}}",
       "unsupportedHarness": "에이전트 {{subject}}의 실행 환경을 지원하지 않습니다.",
       "workingFolderRequired": "사용 가능한 작업 폴더를 선택하세요.",
@@ -59,6 +60,7 @@
     }
   },
   "library": {
+    "reservedMcpSecret": "이 프로젝트는 예약된 MCP 비밀 이름을 선언합니다. 비밀 요구 사항 파일에서 이름을 변경하세요.",
     "files": "프로젝트 파일",
     "file": "파일",
     "binaryFile": "바이너리 파일",

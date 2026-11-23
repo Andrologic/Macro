@@ -1,13 +1,23 @@
 import type { TFunction } from "i18next";
-import { architectProjectDiagnostic } from "../../services/ipc/architectLibrary";
+import { architectProjectDiagnostic, type ProjectDiagnostic } from "../../services/ipc/architectLibrary";
 import i18n from "../../i18n";
 import { AgsdlUserError } from "../../services/agsdl/userErrors";
+
+export function agsdlProjectIssueText(issue: ProjectDiagnostic, t: TFunction): string {
+  return issue.code === "MCP_SECRET_RESERVED" ? t("agsdl.library.reservedMcpSecret") : issue.message;
+}
+
+export function reservedMcpSecretText(t: TFunction, file?: string | null, pointer?: string): string {
+  const message = t("agsdl.library.reservedMcpSecret");
+  return file ? `${message} ${file}${pointer ? `#${pointer}` : ""}` : message;
+}
 
 /** Localize actionable AgSDL errors and use a retry hint for transport failures. */
 export function agsdlErrorText(error: unknown, t: TFunction = i18n.getFixedT(null, "agsdl"), fallbackKey = "agsdl.actionFailed"): string {
   const diagnostic = architectProjectDiagnostic(error);
   if (diagnostic) {
     switch (diagnostic.code) {
+      case "MCP_SECRET_RESERVED": return reservedMcpSecretText(t, diagnostic.file, diagnostic.pointer);
       case "INPUT_LIMIT":
       case "EDITOR_LIMIT": return t("agsdl.library.projectLimit");
       case "OPAQUE_PROJECT_FILE": return t("agsdl.library.opaqueFile");

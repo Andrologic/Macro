@@ -38,7 +38,12 @@ async fn archive_fixture_with_mcp(
     let project = tempfile::tempdir_in(data).unwrap();
     for &(name, executable) in files {
         let path = project.path().join(name);
-        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        let script = if name == "relative-interpreter" {
+            "#!  bin/sh\nexit 0\n"
+        } else {
+            "#!/bin/sh\nexit 0\n"
+        };
+        fs::write(&path, script).unwrap();
         #[cfg(unix)]
         if executable {
             use std::os::unix::fs::PermissionsExt;
@@ -618,42 +623,42 @@ async fn mcp_requirements_use_reachable_calls_and_refuse_unqualified_launch() {
     .is_err());
 }
 
+#[test]
+fn project_open_preserves_the_reserved_secret_location() {
+    let project = tempfile::tempdir().unwrap();
+    let mut doc = manifest();
+    doc["mcpServers"] = json!({"used":{"command":["sh"]}});
+    doc["secrets"] = json!({"file":"secrets.json"});
+    fs::write(project.path().join("agsdl.json"), doc.to_string()).unwrap();
+    fs::write(project.path().join("secrets.json"), r#"{"used":["PATH"]}"#).unwrap();
+    let error = match ImportCandidate::open(project.path()) {
+        Err(error) => error,
+        Ok(_) => panic!("opened a project with a reserved MCP secret"),
+    };
+    let error = library_error(error);
+    assert_eq!(error.code, "MCP_SECRET_RESERVED");
+    let location = error.source.unwrap();
+    assert_eq!(location.path, "secrets.json");
+    assert_eq!(location.pointer, "/used/0");
+}
+
 #[tokio::test]
-async fn mcp_requires_retained_code_and_rejects_reserved_secrets() {
+async fn mcp_qualifies_retained_code_and_defends_against_legacy_secret_names() {
     let data = tempfile::tempdir().unwrap();
     let mut doc = manifest();
     doc["mcpServers"] = json!({"used":{"command":["sh","serve.sh"]}});
-    doc["mcpFiles"] = json!({"used":["serve.sh","program"]});
-    doc["secrets"] = json!({"used":["PATH"]});
+    doc["mcpFiles"] = json!({"used":["serve.sh","program","relative-interpreter"]});
     doc["flow"] = json!({"entry":"tool","steps":{"tool":{"type":"call","mcp":{"server":"used","tool":"hello"}}}});
-    let (pool, version) =
-        archive_fixture_with_mcp(data.path(), doc, &[("serve.sh", false), ("program", true)]).await;
-    let manager = manager_for_test(data.path()).await;
-    let prepared = preview(&manager, &pool, data.path(), version.clone(), None).await;
-    assert_eq!(prepared.blockers[0].code, "mcpReservedSecret");
-    assert!(prepared.secrets.is_empty());
-    let host = HostState::new();
-    let refused = start::launch(
-        runtime(&host, &manager, &pool, data.path()),
-        request(version.clone(), prepared.consent_token),
-    )
-    .await
-    .err()
-    .unwrap();
-    assert_eq!(refused.code, "mcpReservedSecret");
-    let refused = set_secret(
-        &manager,
-        &pool,
+    let (pool, version) = archive_fixture_with_mcp(
         data.path(),
-        version.clone(),
-        "used",
-        "PATH",
-        "value",
+        doc,
+        &[
+            ("serve.sh", false),
+            ("program", true),
+            ("relative-interpreter", true),
+        ],
     )
-    .await
-    .unwrap_err();
-    assert_eq!(refused.code, "INVALID_LAUNCH_SECRET");
-
+    .await;
     let input = VersionInput::read(&pool, &Storage::new(data.path()), version)
         .await
         .unwrap();
@@ -688,8 +693,16 @@ async fn mcp_requires_retained_code_and_rejects_reserved_secrets() {
             command: vec!["./program".into()],
         };
         assert!(qualify_mcp(&input, "used", server).is_ok());
+        server.transport = McpTransport::Local {
+            command: vec!["./relative-interpreter".into()],
+        };
+        assert_eq!(
+            qualify_mcp(&input, "used", server).unwrap_err().code,
+            "mcpAbsoluteInterpreterRequired"
+        );
     }
     for name in [
+        "PATH",
         "ENV",
         "BASH_ENV",
         "BASHOPTS",

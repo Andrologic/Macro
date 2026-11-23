@@ -6,11 +6,21 @@ import { architectLibrary, type BlueprintVersionSummary, type VersionKey } from 
 import { openWorkflowRun030, refreshArchiveRunAccess } from "../../services/workflowAgentTasks";
 import { useAppStore } from "../../stores/useAppStore";
 import { useArchitectLaunchStore } from "../../stores/useArchitectLaunchStore";
+import { reservedMcpSecretText } from "../agsdl/errorText";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { Dialog } from "../ui/Dialog";
 import { notify } from "../ui/toastService";
 
 const codexSetupGuide = "https://github.com/Andrologic/Macro/blob/develop/docs/agsdl-codex-native.md#private-login";
+
+function archiveErrorText(failure: unknown, t: ReturnType<typeof useAgsdlTranslation>["t"]): string {
+  const diagnostic = failure as { code?: string; source?: { path: string; pointer: string } } | null;
+  if (diagnostic?.code === "MCP_SECRET_RESERVED") {
+    return reservedMcpSecretText(t, diagnostic.source?.path, diagnostic.source?.pointer);
+  }
+  const invalid = ["GRAPH_LIMIT", "INPUT_LIMIT", "ARCHIVE_LAYOUT", "ARCHIVE_LIMIT", "ARCHIVE_INTEGRITY"].some(code => diagnostic?.code === code);
+  return t(invalid ? "agsdl.launch.invalidArchive" : "agsdl.launch.failed");
+}
 
 function codexAuthBlocker(code: unknown) {
   if (code === "CODEX_AUTH_VERSION_UNQUALIFIED") return "codexAuthVersionUnqualified";
@@ -127,9 +137,9 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
       if (!active) return;
       setSystems(value);
       if (!initialVersion) setBlueprintId(value.find(system => system.versions.length > 0)?.id ?? "");
-    }, () => { if (active) setError("failed"); });
+    }, () => { if (active) setError(t("agsdl.launch.failed")); });
     return () => { active = false; };
-  }, [initialVersion]);
+  }, [initialVersion, t]);
 
   useEffect(() => {
     if (versionNumber === undefined) return;
@@ -146,12 +156,11 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
         setNumber(versionNumber);
         setUnavailableVersion({ blueprintId, number: versionNumber });
       } else {
-        const invalid = ["GRAPH_LIMIT", "INPUT_LIMIT", "ARCHIVE_LAYOUT", "ARCHIVE_LIMIT", "ARCHIVE_INTEGRITY"].includes(failure?.code);
-        setError(invalid ? "invalidArchive" : "failed");
+        setError(archiveErrorText(failure, t));
       }
     });
     return () => { active = false; };
-  }, [blueprintId, versionNumber, configuration, modelOverrides, revision]);
+  }, [blueprintId, versionNumber, configuration, modelOverrides, revision, t]);
 
   const current = preview?.version.blueprintId === blueprintId && preview.version.number === versionNumber ? preview : undefined;
   const folderConfirmed = !!current?.folderReuseToken && current.folderReuseToken === confirmedFolderToken;
@@ -177,7 +186,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
       setConfirmedFolderToken(null);
       setConfiguration({ workingFolder: folder });
     } catch {
-      setError("failed");
+      setError(t("agsdl.launch.failed"));
     }
   };
   const checkAgain = () => {
@@ -230,8 +239,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
         setNumber(current.version.number);
         setUnavailableVersion(current.version);
       } else {
-        const diagnostic = ["GRAPH_LIMIT", "INPUT_LIMIT", "ARCHIVE_LAYOUT", "ARCHIVE_LIMIT", "ARCHIVE_INTEGRITY"].some(refusal => refusal === code);
-        setError(diagnostic ? "invalidArchive" : "failed");
+        setError(archiveErrorText(failure, t));
       }
     } finally {
       setBusy(false);
@@ -300,7 +308,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
                 {code === "workingFolderRequired" && <button type="button" onClick={() => void chooseFolder()}>{t("agsdl.launch.chooseFolder")}</button>}
                 {auth && <> <a href={codexSetupGuide} onClick={event => {
                   event.preventDefault();
-                  void openExternalUrl(codexSetupGuide).catch(() => setError("failed"));
+                  void openExternalUrl(codexSetupGuide).catch(() => setError(t("agsdl.launch.failed")));
                 }}>{t("agsdl.launch.codexSetupGuide")}</a></>}
                 {code === "codexUnavailable" && !auth && <button type="button" onClick={() => useAppStore.getState().openSettings("providers")}>{t("agsdl.launch.connect")}</button>}
               </li>;
@@ -355,7 +363,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
             <li key={JSON.stringify(reference.location)}>{reference.uri}</li>)}
         </ul>}
       </fieldset>
-      {error && <p role="alert">{t(`agsdl.launch.${error}`)} <button type="button" onClick={checkAgain}>{t("agsdl.launch.recheck")}</button></p>}
+      {error && <p role="alert">{error} <button type="button" onClick={checkAgain}>{t("agsdl.launch.recheck")}</button></p>}
       <footer className="flex justify-end gap-3">
         <button type="button" disabled={busy} onClick={consent ? () => setConsent(false) : close}>
           {t(consent ? "agsdl.launch.back" : "agsdl.cancel")}

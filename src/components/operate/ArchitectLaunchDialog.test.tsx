@@ -176,3 +176,18 @@ it("applies the selected replacement model to this launch", async () => {
   await act(async () => submit().click());
   expect(requests[0].modelOverrides).toEqual({ worker: { name: "available-model" } });
 });
+
+it("preserves the file and pointer when a reserved secret prevents archive preview", async () => {
+  install(command => {
+    if (command !== "architect_launch_prepare") throw new Error(command);
+    throw {
+      code: "MCP_SECRET_RESERVED",
+      source: { path: "secrets.json", pointer: "/worker/0" },
+    };
+  });
+  await show(archive);
+  const alert = dialog().querySelector("[role=alert]")?.textContent;
+  expect(alert).toContain("This project declares a reserved MCP secret name.");
+  expect(alert).toContain("secrets.json#/worker/0");
+  expect(submit().disabled).toBe(true);
+});

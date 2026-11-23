@@ -45,6 +45,7 @@
       "mcpIsolationUnavailable": "Macro no puede aislar el servidor MCP {{subject}} en este equipo.",
       "mcpWorkspaceRequired": "El servidor MCP {{subject}} requiere permisos del espacio de trabajo en la configuración.",
       "mcpRetainedProgramRequired": "El servidor MCP {{subject}} necesita un ejecutable declarado en el archivo o sh con un script declarado.",
+      "mcpAbsoluteInterpreterRequired": "El script del servidor MCP {{subject}} debe indicar una ruta absoluta al intérprete en la línea #!.",
       "mcpReservedSecret": "Elige otro nombre para este secreto MCP reservado. {{subject}}",
       "unsupportedHarness": "El agente {{subject}} utiliza un entorno no compatible.",
       "workingFolderRequired": "Elige una carpeta de trabajo disponible.",
@@ -59,6 +60,7 @@
     }
   },
   "library": {
+    "reservedMcpSecret": "Este proyecto declara un nombre de secreto MCP reservado. Cámbialo en el archivo de secretos requeridos.",
     "files": "Archivos del proyecto",
     "file": "Archivo",
     "binaryFile": "Archivo binario",

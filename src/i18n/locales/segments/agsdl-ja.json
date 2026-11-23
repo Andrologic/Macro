@@ -45,6 +45,7 @@
       "mcpIsolationUnavailable": "このコンピューターでは MCP サーバー {{subject}} を隔離できません。",
       "mcpWorkspaceRequired": "MCP サーバー {{subject}} には設定でワークスペース権限を付与する必要があります。",
       "mcpRetainedProgramRequired": "MCP サーバー {{subject}} には、アーカイブで宣言した実行ファイル、または宣言したスクリプトを引数に渡した sh が必要です。",
+      "mcpAbsoluteInterpreterRequired": "MCP サーバー {{subject}} が使うスクリプトの #! 行には、インタープリターの絶対パスを指定してください。",
       "mcpReservedSecret": "この MCP シークレットには予約名が使われています。別の名前を選んでください。{{subject}}",
       "unsupportedHarness": "エージェント {{subject}} の実行環境はサポートされていません。",
       "workingFolderRequired": "利用可能な作業フォルダーを選択してください。",
@@ -59,6 +60,7 @@
     }
   },
   "library": {
+    "reservedMcpSecret": "このプロジェクトは予約済みの MCP シークレット名を宣言しています。シークレット要件ファイルで名前を変更してください。",
     "files": "プロジェクトファイル",
     "file": "ファイル",
     "binaryFile": "バイナリファイル",

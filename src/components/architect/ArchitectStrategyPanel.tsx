@@ -8,7 +8,7 @@ import { useAppStore } from "../../stores/useAppStore";
 import { useArchitectLibraryStore } from "../../stores/useArchitectLibraryStore";
 import { architectLibrary, type ProjectTarget } from "../../services/ipc/architectLibrary";
 import { open, save } from "../../services/tauriDialog";
-import { agsdlErrorText } from "../agsdl/errorText";
+import { agsdlErrorText, reservedMcpSecretText } from "../agsdl/errorText";
 import { ArchitectProjectFiles } from "./ArchitectProjectFiles";
 import { AgsdlEditor } from "../agsdl/AgsdlEditor";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
@@ -133,7 +133,7 @@ function ArchitectViewer({ target, planStatus, canSaveVersion, adaptation, name,
   return <div className="relative min-h-0 flex-1">
     {recovery ? <div className="agsdl-empty space-y-2">
       <p>{t("agsdl.library.needsRepair")}</p>
-      {project?.view.diagnostics.map((issue, index) => <p key={index}>{issue.message}</p>)}
+      {project?.view.diagnostics.map((issue, index) => <p key={index}>{issue.code === "MCP_SECRET_RESERVED" ? reservedMcpSecretText(t, issue.file, issue.pointer) : issue.message}</p>)}
       {adaptation && <button type="button" className="agsdl-link" onClick={() => setAdaptDialog(true)}>{t("agsdl.library.adaptRepair")}</button>}
       <button type="button" className="agsdl-link" onClick={() => {
         setExportError("");

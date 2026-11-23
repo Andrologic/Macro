@@ -95,7 +95,12 @@ fn library_error(
     let diagnostic = error.diagnostic();
     if !matches!(
         diagnostic.code.as_str(),
-        "GRAPH_LIMIT" | "INPUT_LIMIT" | "ARCHIVE_LAYOUT" | "ARCHIVE_LIMIT" | "ARCHIVE_INTEGRITY"
+        "GRAPH_LIMIT"
+            | "INPUT_LIMIT"
+            | "ARCHIVE_LAYOUT"
+            | "ARCHIVE_LIMIT"
+            | "ARCHIVE_INTEGRITY"
+            | "MCP_SECRET_RESERVED"
     ) {
         return storage_error();
     }
@@ -633,21 +638,28 @@ fn qualify_mcp(
         return Err(Blocker::new("mcpIsolationUnavailable", id));
     };
     let files = &server.packaged_files;
-    let qualified = command.first().is_some_and(|program| {
-        if let Some(path) = declared_mcp_path(program, files) {
-            return input
-                .archive
-                .members()
-                .any(|member| member.path == path && member.executable);
+    let program_required = || Blocker::new("mcpRetainedProgramRequired", id);
+    let program = command.first().ok_or_else(program_required)?;
+    if let Some(path) = declared_mcp_path(program, files) {
+        let member = input
+            .archive
+            .members()
+            .find(|member| member.path == path && member.executable)
+            .ok_or_else(program_required)?;
+        // Match Argentic's private RetainedSource::allows_shebang check.
+        let prefix = &member.bytes[..member.bytes.len().min(256)];
+        if !prefix.strip_prefix(b"#!").is_none_or(|line| {
+            line.iter().find(|&&byte| !matches!(byte, b' ' | b'\t')) == Some(&b'/')
+        }) {
+            return Err(Blocker::new("mcpAbsoluteInterpreterRequired", id));
         }
-        matches!(program.as_str(), "sh" | "/bin/sh")
-            && command
-                .get(1)
-                .and_then(|script| declared_mcp_path(script, files))
-                .is_some()
-    });
-    if !qualified {
-        return Err(Blocker::new("mcpRetainedProgramRequired", id));
+    } else if !matches!(program.as_str(), "sh" | "/bin/sh")
+        || command
+            .get(1)
+            .and_then(|script| declared_mcp_path(script, files))
+            .is_none()
+    {
+        return Err(program_required());
     }
     // Argentic gives local calls a fixed PATH and refuses these launcher names.
     if let Some(name) = server.required_secrets.iter().find(|name| {
