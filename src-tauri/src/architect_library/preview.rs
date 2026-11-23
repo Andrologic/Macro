@@ -43,6 +43,8 @@ pub struct AgentRequirement {
     pub permissions: RequestedPermissions,
     pub mcp_servers: Vec<String>,
     pub completion_check: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub completion_check_choices: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -191,6 +193,7 @@ pub(crate) fn inspect(
                     permissions: permissions(&agent["permissions"]),
                     mcp_servers,
                     completion_check: optional_text(&agent["completionCheck"]["command"]),
+                    completion_check_choices: strings(&agent["completionCheck"]["choices"]),
                 },
             )
         })
@@ -301,11 +304,12 @@ pub(crate) fn inspect(
         })
         .collect();
     let report = argentic_core::validate_document_json(source.authored_json().as_bytes(), None)
-        .map_err(|error| super::Error::Agsdl {
-            code: error.code,
-            file: None,
-            pointer: error.pointer,
-            message: error.message,
+        .map_err(|error| {
+            source.locate_error(argentic_runtime::persistence::failure(
+                &error.code,
+                &error.pointer,
+                &error.message,
+            ))
         })?;
     let report: Value = serde_json::from_str(&report)?;
     warnings.extend(

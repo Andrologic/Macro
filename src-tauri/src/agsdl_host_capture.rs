@@ -586,7 +586,7 @@ impl CompilationCapture {
         if self.source.owner.project_id == crate::architect_launch::PROJECT_ID {
             if let Ok(mut document) = exact_json::value(&self.authored_source) {
                 // Agent-only archives can declare unused endpoints. Archive
-                // admission already refuses MCP dispatch and the original
+                // admission filters MCP by reachable calls, and the original
                 // document remains the input and identity of the compiler.
                 if !declared_steps030(&document).any(|(_, step)| step["type"] == "call") {
                     if let Some(object) = document.as_object_mut() {

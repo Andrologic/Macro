@@ -10,6 +10,7 @@ use crate::db::{
     agsdl_execution::{dto::EngineSourceOwner, failure, Result},
     architect_library::VersionKey,
 };
+use argentic_runtime::{capture::ModelOverride, persistence::dto::EngineSourceRevision};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -20,7 +21,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod resources;
 pub(crate) mod start;
+pub(crate) use resources::cleanup;
 
 pub(crate) const PROJECT_ID: &str = "macro:architect-archive";
 pub(crate) const BRANCH: &str = "versions";
@@ -85,6 +88,28 @@ fn storage_error() -> crate::db::agsdl_execution::dto::EngineFailure {
     )
 }
 
+fn library_error(
+    error: crate::architect_library::Error,
+) -> crate::db::agsdl_execution::dto::EngineFailure {
+    use argentic_runtime::persistence::dto::{SourceDiagnostic, SourceErrorKind};
+    let diagnostic = error.diagnostic();
+    if !matches!(
+        diagnostic.code.as_str(),
+        "GRAPH_LIMIT" | "INPUT_LIMIT" | "ARCHIVE_LAYOUT" | "ARCHIVE_LIMIT" | "ARCHIVE_INTEGRITY"
+    ) {
+        return storage_error();
+    }
+    let mut error = failure(&diagnostic.code, &diagnostic.pointer, &diagnostic.message);
+    error.source = diagnostic.file.map(|path| {
+        Box::new(SourceDiagnostic {
+            path,
+            pointer: diagnostic.pointer,
+            kind: SourceErrorKind::InvalidContent,
+        })
+    });
+    error
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct LaunchConfiguration {
@@ -102,6 +127,7 @@ pub(crate) struct LaunchPreview {
     configuration: LaunchConfiguration,
     folder_in_use: bool,
     blockers: Vec<Blocker>,
+    available_models: Vec<String>,
     permissions: ImportPreview,
     consent_token: Option<String>,
     secrets: Vec<SecretRequirement>,
@@ -150,11 +176,22 @@ struct VersionInput {
 }
 
 impl VersionInput {
+    fn source_revision(&self) -> EngineSourceRevision {
+        EngineSourceRevision {
+            owner: owner(&self.key.blueprint_id),
+            revision: self.key.number.to_string(),
+            source_sha256: self.archive.source().source_sha256(),
+        }
+    }
+
     async fn read(pool: &SqlitePool, storage: &Storage, key: VersionKey) -> Result<Self> {
         let (_lease, archive, settings, digest, note) = storage
             .open_launch_version(pool, &key)
             .await
-            .map_err(|_| storage_error())?;
+            .map_err(|error| match error {
+                crate::db::DbError::Architect(error) => library_error(error),
+                _ => storage_error(),
+            })?;
         // Adaptation creates a separate blueprint and cannot inherit vault
         // entries. The locally recorded origin participates in the key.
         let origin: (Option<String>, Option<i64>) = sqlx::query_as(
@@ -182,7 +219,7 @@ impl VersionInput {
             self.digest.clone(),
             false,
         )
-        .map_err(|_| storage_error())
+        .map_err(library_error)
     }
 
     fn requires_start_message(&self, preview: &ImportPreview) -> bool {
@@ -190,14 +227,21 @@ impl VersionInput {
     }
 
     fn secret_id(&self, server: &str, name: &str) -> Result<String> {
-        let digest = Sha256::digest(serde_json::to_vec(&(
-            &self.key.blueprint_id,
-            &self.origin,
-            server,
-            name,
-        ))?);
-        Ok(format!("architect-launch:{digest:x}"))
+        secret_id(&self.key.blueprint_id, &self.origin, server, name)
     }
+}
+
+fn secret_id(blueprint: &str, origin: &str, server: &str, name: &str) -> Result<String> {
+    let digest = Sha256::digest(serde_json::to_vec(&(blueprint, origin, server, name))?);
+    Ok(format!("architect-launch:{digest:x}"))
+}
+
+fn vault_error() -> crate::db::agsdl_execution::dto::EngineFailure {
+    failure(
+        "VAULT_UNAVAILABLE",
+        "secret",
+        "The local vault is unavailable",
+    )
 }
 
 fn permissions(input: &VersionInput, preview: &ImportPreview) -> Result<Permissions> {
@@ -355,6 +399,48 @@ pub(crate) async fn read_folder(pool: &SqlitePool, id: &str) -> Result<String> {
     ))
 }
 
+pub(crate) async fn current_run_folder(
+    pool: &SqlitePool,
+    capture: &crate::db::agsdl_execution::start030::StartCapture030,
+    scope: &Value,
+) -> Result<PathBuf> {
+    let identity = &capture.identity;
+    let folder: Option<String> = sqlx::query_scalar(
+        "SELECT launch.working_folder FROM architect_launch_runs launch
+         JOIN engine_start030_requests start ON start.system_id=launch.system_id
+         WHERE launch.system_id=? AND launch.blueprint_id=? AND CAST(launch.number AS TEXT)=?
+           AND launch.retained_snapshot_id=? AND start.invocation_id=?
+           AND start.snapshot_id=? AND start.capture_epoch=?",
+    )
+    .bind(&identity.system_start_id)
+    .bind(&capture.source.owner.plan_id)
+    .bind(&capture.source.revision)
+    .bind(scope["projectSnapshot"].as_str())
+    .bind(&identity.flow_invocation_id)
+    .bind(&identity.snapshot_id)
+    .bind(&identity.epoch)
+    .fetch_optional(pool)
+    .await?;
+    let folder = folder
+        .filter(|folder| scope["root"] == folder.as_str())
+        .ok_or_else(|| {
+            failure(
+                "CAPTURE_CHANGED",
+                "approval",
+                "Admitted archive folder differs from capture",
+            )
+        })?;
+    let folder = PathBuf::from(folder);
+    if folder.canonicalize().ok().as_ref() != Some(&folder) {
+        return Err(failure(
+            "CAPTURE_CHANGED",
+            "approval",
+            "Admitted archive folder was replaced",
+        ));
+    }
+    Ok(folder)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SecretRequirement {
@@ -370,35 +456,47 @@ fn direct_mcp(preview: &ImportPreview, id: &str) -> bool {
     })
 }
 
+type ServerSecrets = BTreeMap<String, Vec<String>>;
+
 fn secret_requirements(
     input: &VersionInput,
-    preview: &ImportPreview,
+    servers: &ServerSecrets,
 ) -> Result<Vec<SecretRequirement>> {
     let mut requirements = Vec::new();
-    for (server_id, server) in &preview.mcp_servers {
-        // Agent MCP equipment is unavailable in this engine profile. A
-        // direct reachable call is the only currently qualified way to use it.
-        if !direct_mcp(preview, server_id) {
-            continue;
-        }
-        for name in &server.required_secrets {
-            let stored = crate::secrets::get_api_key(&input.secret_id(server_id, name)?)
-                .map_err(|_| {
-                    failure(
-                        "VAULT_UNAVAILABLE",
-                        "secret",
-                        "The local vault is unavailable",
-                    )
-                })?
-                .is_some();
+    for (server, names) in servers {
+        for name in names {
+            let stored = crate::secrets::get_api_key(&input.secret_id(server, name)?)
+                .map_err(|_| vault_error())?
+                .is_some_and(|value| !value.is_empty() && !value.contains('\0'));
             requirements.push(SecretRequirement {
-                server: server_id.clone(),
+                server: server.clone(),
                 name: name.clone(),
                 stored,
             });
         }
     }
     Ok(requirements)
+}
+
+fn secret_provider(
+    input: &VersionInput,
+    servers: ServerSecrets,
+) -> std::sync::Arc<argentic_runtime::host::McpSecretProvider> {
+    let source = input.source_revision();
+    let origin = input.origin.clone();
+    std::sync::Arc::new(move |revision, server, requested| {
+        if revision != &source || servers.get(server)?.as_slice() != requested {
+            return None;
+        }
+        requested
+            .iter()
+            .map(|name| {
+                let key = secret_id(&source.owner.plan_id, &origin, server, name).ok()?;
+                let value = crate::secrets::get_api_key(&key).ok()??;
+                (!value.is_empty() && !value.contains('\0')).then(|| (name.clone(), value))
+            })
+            .collect()
+    })
 }
 
 async fn consent_token(
@@ -459,7 +557,7 @@ fn chosen_folder(folder: &Path, app_data: &Path, host_root: &Path) -> Option<Pat
     folder.is_dir().then_some(folder)
 }
 
-async fn folder_in_use(pool: &SqlitePool, folder: &Path) -> Result<bool> {
+async fn folder_in_use(db: &mut SqliteConnection, folder: &Path) -> Result<bool> {
     Ok(sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM architect_launch_runs launch
           JOIN engine_flow030_runs run ON run.system_id=launch.system_id
@@ -469,21 +567,33 @@ async fn folder_in_use(pool: &SqlitePool, folder: &Path) -> Result<bool> {
           ))",
     )
     .bind(folder.to_str())
-    .fetch_one(pool)
+    .fetch_one(db)
     .await?)
 }
 
 fn program_exists(name: &str, files: &[String], input: &VersionInput) -> bool {
-    if files
-        .iter()
-        .any(|path| path == name.trim_start_matches("./"))
-    {
-        return input
-            .archive
-            .members()
-            .any(|member| member.path == name.trim_start_matches("./") && member.executable);
-    }
+    use std::path::Component;
     let path = Path::new(name);
+    let mut parts = Vec::new();
+    let relative = !name.contains('\\')
+        && path.components().all(|part| match part {
+            Component::Normal(part) => {
+                parts.push(part.to_string_lossy());
+                true
+            }
+            Component::CurDir => true,
+            Component::ParentDir => parts.pop().is_some(),
+            _ => false,
+        });
+    if relative {
+        let member_path = parts.join("/");
+        if files.contains(&member_path) {
+            return input
+                .archive
+                .members()
+                .any(|member| member.path == member_path && member.executable);
+        }
+    }
     if path.is_absolute() {
         return executable(path);
     }
@@ -505,21 +615,60 @@ fn executable(path: &Path) -> bool {
     })
 }
 
-fn requirements(input: &VersionInput, preview: &ImportPreview) -> Result<Vec<Blocker>> {
+fn call_permissions(policy: &crate::config::ExecutionToolsLease) -> Result<Value> {
+    let mut permissions = crate::agsdl_host_tools::permissions("Implement", false, &policy.tools)?;
+    permissions["agsdlHostPermissions"] = serde_json::to_value(&policy.agsdl_host_permissions)?;
+    Ok(permissions)
+}
+
+fn requirements(
+    input: &VersionInput,
+    preview: &ImportPreview,
+    policy: &Value,
+    local_mcp_supported: bool,
+) -> (Vec<Blocker>, ServerSecrets) {
     let mut blockers = Vec::new();
+    let mut servers = BTreeMap::new();
+    let has_calls = preview
+        .direct_calls
+        .iter()
+        .any(|call| call.usage == Usage::Reachable);
+    let calls_refused = has_calls
+        && argentic_runtime::api::product_slice(input.archive.source().authored_json(), None)
+            .is_some();
     for (id, server) in &preview.mcp_servers {
-        if server.usage == Usage::DeclaredOnly {
+        let reachable = direct_mcp(preview, id);
+        let equipment = preview
+            .agents
+            .values()
+            .any(|agent| agent.usage == Usage::Reachable && agent.mcp_servers.contains(id));
+        if !reachable && !equipment {
             continue;
         }
-        // The pinned runtime cannot receive a retained MCP program or a
-        // per-server environment through HostContext. Refuse before admission.
-        blockers.push(Blocker::new("mcpIsolationUnavailable", id));
-        if let McpTransport::Local { command } = &server.transport {
-            if let Some(program) = command.first() {
-                if !program_exists(program, &server.packaged_files, input) {
-                    blockers.push(Blocker::new("missingProgram", program));
-                }
+        let McpTransport::Local { command } = &server.transport else {
+            blockers.push(Blocker::new("mcpIsolationUnavailable", id));
+            continue;
+        };
+        let mut supported = true;
+        if equipment || !local_mcp_supported || calls_refused {
+            blockers.push(Blocker::new("mcpIsolationUnavailable", id));
+            supported = false;
+        } else if policy["agsdlHostPermissions"] != "workspace"
+            || crate::core::tool_policy::agsdl_native_read_only(policy)
+        {
+            blockers.push(Blocker::new("mcpWorkspaceRequired", id));
+            supported = false;
+        }
+        if let Some(program) = command.first() {
+            if !program_exists(program, &server.packaged_files, input) {
+                blockers.push(Blocker::new("missingProgram", program));
+                supported = false;
             }
+        } else {
+            supported = false;
+        }
+        if supported {
+            servers.insert(id.clone(), server.required_secrets.clone());
         }
     }
     for (id, agent) in &preview.agents {
@@ -527,7 +676,88 @@ fn requirements(input: &VersionInput, preview: &ImportPreview) -> Result<Vec<Blo
             blockers.push(Blocker::new("unsupportedHarness", id));
         }
     }
-    Ok(blockers)
+    (blockers, servers)
+}
+
+const LOCAL_MCP_SUPPORTED: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+
+fn model_blockers(
+    preview: &ImportPreview,
+    observed: &argentic_runtime::api::CodexObservation,
+    overrides: &BTreeMap<String, ModelOverride>,
+) -> Vec<Blocker> {
+    let mut blockers = Vec::new();
+    for id in overrides.keys() {
+        if !preview
+            .agents
+            .get(id)
+            .is_some_and(|agent| agent.usage == Usage::Reachable && agent.harness == "codex")
+        {
+            blockers.push(Blocker::new("modelUnavailable", id));
+        }
+    }
+    for (id, agent) in &preview.agents {
+        if agent.usage != Usage::Reachable || agent.harness != "codex" {
+            continue;
+        }
+        let (name, effort) = if let Some(model) = overrides.get(id) {
+            (Some(model.name.as_str()), model.effort.as_deref())
+        } else {
+            (
+                agent.model.as_ref().and_then(|model| model.name.as_deref()),
+                agent
+                    .model
+                    .as_ref()
+                    .and_then(|model| model.effort.as_deref()),
+            )
+        };
+        let available = observed.models.iter().any(|model| {
+            name.map_or(model["isDefault"] == true, |name| model["name"] == name)
+                && effort.is_none_or(|effort| {
+                    model["efforts"]
+                        .as_array()
+                        .is_some_and(|efforts| efforts.iter().any(|value| value == effort))
+                })
+        });
+        if !available {
+            blockers.push(Blocker::new("modelUnavailable", id));
+        }
+    }
+    blockers
+}
+
+fn codex_write_unqualified(
+    preview: &ImportPreview,
+    policy: &Value,
+    observed: &argentic_runtime::api::CodexObservation,
+) -> bool {
+    let host = &policy["agsdlHostPermissions"];
+    observed.version == "0.171.0"
+        && host != "read-only"
+        && host["preset"] != "read-only"
+        && !host["rules"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|rule| rule["action"] == "write" && rule["effect"] == "ask")
+        && !crate::core::tool_policy::agsdl_native_read_only(policy)
+        && preview.agents.values().any(|agent| {
+            agent.usage == Usage::Reachable
+                && agent.harness == "codex"
+                && agent.permissions.preset.as_deref() == Some("workspace")
+                && !agent
+                    .permissions
+                    .rules
+                    .iter()
+                    .any(|rule| rule.action == "write" && rule.effect == "ask")
+        })
+}
+
+fn needs_codex(preview: &ImportPreview) -> bool {
+    preview
+        .agents
+        .values()
+        .any(|agent| agent.usage == Usage::Reachable && agent.harness == "codex")
 }
 
 pub(crate) async fn prepare(
@@ -536,6 +766,7 @@ pub(crate) async fn prepare(
     app_data: &Path,
     key: VersionKey,
     configuration: Option<LaunchConfiguration>,
+    model_overrides: BTreeMap<String, ModelOverride>,
 ) -> Result<LaunchPreview> {
     let input = VersionInput::read(pool, &Storage::new(app_data), key).await?;
     let permissions_preview = input.preview()?;
@@ -545,19 +776,25 @@ pub(crate) async fn prepare(
         .await
         .map_err(|_| failure("PERMISSION", "policy", "The launch policy is unavailable"))?;
     record_host_permissions(&mut summary, &policy.agsdl_host_permissions)?;
+    let permissions = call_permissions(&policy)?;
     drop(policy);
     let mut configuration = match configuration {
         Some(configuration) => configuration,
         None => saved_configuration(pool, &input.key.blueprint_id).await?,
     };
-    let mut blockers = requirements(&input, &permissions_preview)?;
+    let (mut blockers, servers) = requirements(
+        &input,
+        &permissions_preview,
+        &permissions,
+        LOCAL_MCP_SUPPORTED,
+    );
     let folder_in_use = if input.settings.working_folder_mode == WorkingFolderMode::AtLaunch {
         if let Some(folder) = configuration
             .working_folder
             .as_deref()
             .and_then(|path| chosen_folder(path, app_data, manager.root()))
         {
-            folder_in_use(pool, &folder).await?
+            folder_in_use(&mut *pool.acquire().await?, &folder).await?
         } else {
             blockers.push(Blocker::new("workingFolderRequired", ""));
             false
@@ -566,48 +803,34 @@ pub(crate) async fn prepare(
         configuration.working_folder = None;
         false
     };
-    if permissions_preview
-        .agents
-        .values()
-        .any(|agent| agent.usage == Usage::Reachable && agent.harness == "codex")
-    {
-        let status = argentic_runtime::api::codex_status(&manager.engine_context()).await;
-        if !status.available {
-            blockers.push(Blocker::new("codexUnavailable", status.code));
-        } else {
-            // This workspace is empty and is used only for the native model
-            // and account observation. A preview never starts an agent turn.
-            let probe = tempfile::tempdir_in(app_data).map_err(|_| storage_error())?;
-            let scope = start::scope_for(probe.path(), &owner(&input.key.blueprint_id))?;
-            match start::observe_codex(manager, &scope).await {
-                Ok(observed) => {
-                    for (id, agent) in &permissions_preview.agents {
-                        if agent.usage != Usage::Reachable || agent.harness != "codex" {
-                            continue;
-                        }
-                        let name = agent.model.as_ref().and_then(|model| model.name.as_deref());
-                        let effort = agent
-                            .model
-                            .as_ref()
-                            .and_then(|model| model.effort.as_deref());
-                        let available = observed.models.iter().any(|model| {
-                            name.map_or(model["isDefault"] == true, |name| model["name"] == name)
-                                && effort.is_none_or(|effort| {
-                                    model["efforts"].as_array().is_some_and(|efforts| {
-                                        efforts.iter().any(|value| value == effort)
-                                    })
-                                })
-                        });
-                        if !available {
-                            blockers.push(Blocker::new("modelUnavailable", id));
-                        }
-                    }
+    let mut available_models = Vec::new();
+    if needs_codex(&permissions_preview) {
+        // A preview observes the catalogue without starting an agent turn.
+        let probe = tempfile::tempdir_in(app_data).map_err(|_| storage_error())?;
+        let scope = start::scope_for(probe.path(), &owner(&input.key.blueprint_id))?;
+        match start::observe_codex(manager, &scope).await {
+            Ok(observed) => {
+                if codex_write_unqualified(&permissions_preview, &permissions, &observed) {
+                    blockers.push(Blocker::new(
+                        "codexUnavailable",
+                        "CODEX_PROFILE_UNQUALIFIED",
+                    ));
                 }
-                Err(error) => blockers.push(Blocker::new("codexUnavailable", error.code)),
+                blockers.extend(model_blockers(
+                    &permissions_preview,
+                    &observed,
+                    &model_overrides,
+                ));
+                available_models = observed
+                    .models
+                    .iter()
+                    .filter_map(|model| model["name"].as_str().map(str::to_owned))
+                    .collect();
             }
+            Err(error) => blockers.push(Blocker::new("codexUnavailable", error.code)),
         }
     }
-    let secrets = secret_requirements(&input, &permissions_preview)?;
+    let secrets = secret_requirements(&input, &servers)?;
     let mut db = pool.acquire().await?;
     let machine = machine_id(manager.root())?;
     let consent_token = consent_token(&mut db, &input, &summary, &machine).await?;
@@ -620,6 +843,7 @@ pub(crate) async fn prepare(
         configuration,
         folder_in_use,
         blockers,
+        available_models,
         permissions: permissions_preview,
         consent_token,
         secrets,
@@ -627,6 +851,7 @@ pub(crate) async fn prepare(
 }
 
 pub(crate) async fn set_secret(
+    manager: &ConfigManager,
     pool: &SqlitePool,
     app_data: &Path,
     key: VersionKey,
@@ -636,11 +861,19 @@ pub(crate) async fn set_secret(
 ) -> Result<()> {
     let input = VersionInput::read(pool, &Storage::new(app_data), key).await?;
     let preview = input.preview()?;
-    if !direct_mcp(&preview, server)
-        || !preview.mcp_servers.get(server).is_some_and(|server| {
-            server.usage != Usage::DeclaredOnly
-                && server.required_secrets.iter().any(|secret| secret == name)
-        })
+    let policy = manager
+        .lock_execution_tools(PROJECT_ID)
+        .await
+        .map_err(|_| failure("PERMISSION", "policy", "The launch policy is unavailable"))?;
+    let (_, servers) = requirements(
+        &input,
+        &preview,
+        &call_permissions(&policy)?,
+        LOCAL_MCP_SUPPORTED,
+    );
+    if !servers
+        .get(server)
+        .is_some_and(|names| names.iter().any(|secret| secret == name))
         || value.is_empty()
         || value.contains('\0')
     {
@@ -650,13 +883,7 @@ pub(crate) async fn set_secret(
             "The secret is not required by this version or has no value",
         ));
     }
-    crate::secrets::set_api_key(&input.secret_id(server, name)?, value).map_err(|_| {
-        failure(
-            "VAULT_UNAVAILABLE",
-            "secret",
-            "The local vault is unavailable",
-        )
-    })
+    crate::secrets::set_api_key(&input.secret_id(server, name)?, value).map_err(|_| vault_error())
 }
 
 #[cfg(test)]

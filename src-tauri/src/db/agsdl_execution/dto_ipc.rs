@@ -172,7 +172,18 @@ dto!(EngineSettlement {
     status: String,
     evidence_json: String
 });
-dto!(EngineFailure {code: String, pointer: String, message: String, work: Option<EngineWork>});
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EngineFailure {
+    pub code: String,
+    pub pointer: String,
+    pub message: String,
+    pub work: Option<EngineWork>,
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(type = "{ path: string; pointer: string; kind: 'io' | 'invalidContent' }")]
+    pub source: Option<serde_json::Value>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Admission {

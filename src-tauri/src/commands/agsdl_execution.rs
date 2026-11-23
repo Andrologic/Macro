@@ -28,6 +28,9 @@ pub(crate) async fn architect_launch_prepare(
     manager: State<'_, crate::config::ConfigManager>,
     version: VersionKey,
     configuration: Option<LaunchConfiguration>,
+    model_overrides: Option<
+        std::collections::BTreeMap<String, argentic_runtime::capture::ModelOverride>,
+    >,
 ) -> repository::Result<launch::LaunchPreview> {
     launch::prepare(
         &manager,
@@ -35,6 +38,7 @@ pub(crate) async fn architect_launch_prepare(
         &launch_data(&app)?,
         version,
         configuration,
+        model_overrides.unwrap_or_default(),
     )
     .await
 }
@@ -65,12 +69,6 @@ pub(crate) async fn architect_launch_start(
                 pool: &pool,
                 app_data: &app_data,
                 tasks: ai.stream_tasks.clone(),
-                action_policy: std::sync::Arc::new(
-                    crate::agsdl_host_action_approval030::CurrentActionPolicy030 {
-                        app: app.clone(),
-                        config: manager.inner().clone(),
-                    },
-                ),
             },
             request,
         )
@@ -94,12 +92,14 @@ pub(crate) async fn architect_launch_start(
 pub(crate) async fn architect_launch_set_secret(
     app: tauri::AppHandle,
     state: State<'_, DbPool>,
+    manager: State<'_, crate::config::ConfigManager>,
     version: VersionKey,
     server: String,
     name: String,
     value: String,
 ) -> repository::Result<()> {
     launch::set_secret(
+        &manager,
         &pool(&state).await?,
         &launch_data(&app)?,
         version,

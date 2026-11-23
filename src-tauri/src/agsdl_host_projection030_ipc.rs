@@ -47,6 +47,25 @@ pub struct RuntimeProjectionPage030 {
     pub flow_invocation_id: String,
     pub revision: String,
     pub stopping: bool,
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paused: Option<bool>,
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interrupted_while_paused: Option<bool>,
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(
+        type = "Record<string, { kind: 'holding' } | { kind: 'held' } | { kind: 'interrupted'; code: string }>"
+    )]
+    pub operator_works: Option<serde_json::Value>,
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(type = "Record<string, { name: string; effort?: string }>")]
+    pub model_overrides: Option<serde_json::Value>,
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub termination_uncertain: Option<bool>,
     pub verdict: Option<String>,
     pub total: String,
     pub items: Vec<RuntimeProjectionItem030>,

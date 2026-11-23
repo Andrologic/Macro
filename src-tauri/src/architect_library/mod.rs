@@ -11,7 +11,7 @@ pub(crate) mod storage;
 
 pub use preview::*;
 
-use argentic_runtime::persistence::dto::EngineFailure;
+use argentic_runtime::persistence::dto::{EngineFailure, SourceErrorKind};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -70,48 +70,41 @@ pub enum Error {
 
 impl From<EngineFailure> for Error {
     fn from(error: EngineFailure) -> Self {
-        let mut file = None;
-        if error.code == "PROJECT" {
-            // The pinned runtime flattens its project failure into
-            // file#pointer: detail. Parse that boundary before mapping IO.
-            let separator = format!("#{}: ", error.pointer);
-            if let Some((location, detail)) = error.message.split_once(&separator) {
-                if let Some((path, source)) = project_io(location, detail) {
-                    return Self::ProjectIo {
-                        file: location.into(),
-                        pointer: error.pointer,
-                        path: path.into(),
-                        source,
-                    };
-                }
-                file = Some(location.into());
-            }
+        let location = error.source.as_deref();
+        if let Some(location) = location.filter(|location| location.kind == SourceErrorKind::Io) {
+            // For an unreadable URI, the source points to the missing member
+            // and the error still points to the URI declaration.
+            let declaration = format!("#{}: ", error.pointer);
+            let file = error
+                .message
+                .split_once(&declaration)
+                .map(|(file, _)| file)
+                .unwrap_or(&location.path);
+            return Self::ProjectIo {
+                file: file.into(),
+                pointer: error.pointer,
+                path: location.path.clone(),
+                source: source_io(&error.message),
+            };
         }
         Self::Agsdl {
             code: error.code,
-            file,
-            pointer: error.pointer,
+            file: location.map(|location| location.path.clone()),
+            pointer: location.map_or(error.pointer, |location| location.pointer.clone()),
             message: error.message,
         }
     }
 }
 
-fn project_io<'a>(file: &'a str, detail: &'a str) -> Option<(&'a str, io::Error)> {
-    let (_, code) = detail.rsplit_once(" (os error ")?;
-    let source = io::Error::from_raw_os_error(code.strip_suffix(')')?.parse().ok()?);
-    // Match the entire system message. JSON diagnostics can quote arbitrary
-    // strings, including text that merely ends with an OS error number.
-    let description = source.to_string();
-    let path = if detail == description {
-        file
-    } else {
-        let path = detail.strip_suffix(&description)?.strip_suffix(": ")?;
-        if !editor_document::portable_path(path) {
-            return None;
-        }
-        path
-    };
-    Some((path, source))
+fn source_io(message: &str) -> io::Error {
+    // Argentic exposes the source location and I/O kind, but the OS error
+    // number is still carried in its message. Migration distinguishes a
+    // missing legacy annex from storage errors that must be retried.
+    message
+        .rsplit_once(" (os error ")
+        .and_then(|(_, code)| code.strip_suffix(')')?.parse().ok())
+        .map(io::Error::from_raw_os_error)
+        .unwrap_or_else(|| io::Error::other(message))
 }
 
 fn destination_parent(destination: &Path) -> Result<&Path> {
@@ -246,12 +239,12 @@ impl Error {
                 pointer,
                 message,
             } => Diagnostic {
-                file,
-                pointer,
-                source: (code == "PROJECT").then_some(DiagnosticSource {
+                source: (file.is_some() || code == "PROJECT").then_some(DiagnosticSource {
                     kind: "invalidContent",
                     path: None,
                 }),
+                file,
+                pointer,
                 ..make(&code, message)
             },
             Self::Editor(code) => make(code, message),

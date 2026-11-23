@@ -1,16 +1,14 @@
 use super::*;
 use crate::agsdl_host::HostState;
+use crate::agsdl_host_action_approval030::ArchiveActionPolicy030;
 use crate::agsdl_host_capture::{self as capture, CompilationCapture};
 use crate::db::agsdl_execution::{
-    dto::{EngineEntry, EngineSourceRevision, EngineStartRequest},
+    dto::{EngineEntry, EngineStartRequest},
     flow030::{FlowEffect030, FlowIdentity030},
     flow_store030::{Authority030, CheckFuture, StoreError030},
     start030::{self, RetainedStart030, StartAuthority030, StartCapture030},
 };
-use argentic_runtime::{
-    api::{CodexObservation, StartSession, StreamTasks},
-    host::ActionPolicySource,
-};
+use argentic_runtime::api::{CodexObservation, StartSession, StreamTasks};
 use std::{fs, sync::Arc};
 use uuid::Uuid;
 
@@ -22,6 +20,10 @@ pub(crate) struct LaunchRequest {
     pub start_message: Option<String>,
     pub name: Option<String>,
     pub consent_token: Option<String>,
+    #[serde(default)]
+    pub confirm_folder_reuse: bool,
+    #[serde(default)]
+    pub model_overrides: BTreeMap<String, ModelOverride>,
 }
 
 pub(crate) struct Runtime<'a> {
@@ -30,39 +32,13 @@ pub(crate) struct Runtime<'a> {
     pub pool: &'a SqlitePool,
     pub app_data: &'a Path,
     pub tasks: StreamTasks,
-    pub action_policy: Arc<dyn ActionPolicySource>,
 }
 
 fn launch_failure(code: &str, pointer: &str) -> crate::db::agsdl_execution::dto::EngineFailure {
     failure(code, pointer, "The archive launch could not be admitted")
 }
 
-// Lot E must hold an exclusive lease on this same file while reading
-// architect_launch_runs and removing unreferenced snapshots.
-pub(crate) async fn snapshot_lease(host_root: &Path, exclusive: bool) -> Result<File> {
-    let path = host_root.join(".agsdl-snapshot-lifetime.lock");
-    tokio::task::spawn_blocking(move || {
-        let mut options = fs::OpenOptions::new();
-        options.read(true).write(true).create(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        }
-        let file = options.open(path)?;
-        if exclusive {
-            fs2::FileExt::lock_exclusive(&file)?;
-        } else {
-            fs2::FileExt::lock_shared(&file)?;
-        }
-        Ok::<_, std::io::Error>(file)
-    })
-    .await
-    .map_err(|_| launch_failure("STORAGE", "projectSnapshot"))?
-    .map_err(|_| launch_failure("STORAGE", "projectSnapshot"))
-}
-
-pub(super) fn scope_for(folder: &Path, owner: &EngineSourceOwner) -> Result<Value> {
+pub(crate) fn scope_for(folder: &Path, owner: &EngineSourceOwner) -> Result<Value> {
     let identity = crate::fs::operations::workspace_root_identity(folder)
         .ok()
         .and_then(|identity| identity.observation_key())
@@ -84,102 +60,31 @@ pub(crate) async fn launch(
     )
     .await?;
     let preview = input.preview()?;
-    if let Some(blocker) = requirements(&input, &preview)?.first() {
-        return Err(launch_failure(blocker.code, &blocker.subject));
-    }
-
-    let session = runtime.host.begin_start().await?;
-    let context = runtime.manager.engine_context();
-    let _snapshots = snapshot_lease(context.root(), false).await?;
-    let retained = input.archive.source().retain(context.root())?;
     let mut configuration = request.configuration;
-    let private_folder;
     let owns_folder = input.settings.working_folder_mode == WorkingFolderMode::PerExecution;
-    let folder = if owns_folder {
+    let context = runtime.manager.engine_context();
+    let chosen = if owns_folder {
         configuration.working_folder = None;
-        let root = runtime.app_data.join("agsdl-working-folders");
-        fs::create_dir_all(&root).map_err(|_| launch_failure("STORAGE", "workingFolder"))?;
-        private_folder = tempfile::Builder::new()
-            .prefix("run-")
-            .tempdir_in(root)
-            .map_err(|_| launch_failure("STORAGE", "workingFolder"))?;
-        private_folder
-            .keep()
-            .canonicalize()
-            .map_err(|_| launch_failure("STORAGE", "workingFolder"))?
+        None
     } else {
-        let folder = configuration
+        let path = configuration
             .working_folder
             .as_deref()
             .and_then(|path| chosen_folder(path, runtime.app_data, context.root()))
             .ok_or_else(|| launch_failure("workingFolderRequired", "workingFolder"))?;
-        configuration.working_folder = Some(folder.clone());
-        folder
+        configuration.working_folder = Some(path.clone());
+        Some(path)
     };
 
-    let result = admit(
-        &runtime,
-        &session,
-        &input,
-        &preview,
-        configuration,
-        &folder,
-        owns_folder,
-        retained,
-        request.start_message,
-        request.name,
-        request.consent_token,
-    )
-    .await;
-    if owns_folder && result.is_err() {
-        // A failed acknowledgement can still have committed. Keep the folder
-        // unless a fresh read confirms there is no durable owner.
-        let referenced = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM architect_launch_runs WHERE working_folder=?)",
-        )
-        .bind(folder.to_str())
-        .fetch_one(runtime.pool)
-        .await;
-        if matches!(referenced, Ok(false)) {
-            let _ = fs::remove_dir(&folder);
-        }
-    }
-    result
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn admit(
-    runtime: &Runtime<'_>,
-    session: &StartSession<'_>,
-    input: &VersionInput,
-    preview: &ImportPreview,
-    configuration: LaunchConfiguration,
-    folder: &Path,
-    owns_folder: bool,
-    retained: argentic_runtime::source::RetainedSource,
-    message: Option<String>,
-    name: Option<String>,
-    token: Option<String>,
-) -> Result<RetainedStart030> {
-    let source = EngineSourceRevision {
-        owner: owner(&input.key.blueprint_id),
-        revision: input.key.number.to_string(),
-        source_sha256: input.archive.source().source_sha256(),
-    };
-    let root_scope = scope_for(folder, &source.owner)?;
-    let mut scope = root_scope.clone();
-    retained.bind_scope(&mut scope)?;
-    let snapshot = scope["projectSnapshot"]
-        .as_str()
-        .ok_or_else(|| launch_failure("CORRELATION", "projectSnapshot"))?;
-    let message = message.unwrap_or_default();
+    let source = input.source_revision();
+    let message = request.start_message.unwrap_or_default();
     let entry = if preview.entry_point.is_some() {
-        if input.requires_start_message(preview) && message.trim().is_empty() {
+        if input.requires_start_message(&preview) && message.trim().is_empty() {
             return Err(launch_failure("START_MESSAGE_REQUIRED", "startMessage"));
         }
         Some(EngineEntry {
             delivery_id: Uuid::new_v4().to_string(),
-            message_json: if input.requires_start_message(preview) {
+            message_json: if input.requires_start_message(&preview) {
                 json!({ "prompt": message }).to_string()
             } else {
                 "{}".into()
@@ -188,7 +93,7 @@ async fn admit(
     } else {
         None
     };
-    let request = EngineStartRequest {
+    let engine_request = EngineStartRequest {
         source,
         profile: "macro-agsdl-030-v1".into(),
         associations: Default::default(),
@@ -201,28 +106,72 @@ async fn admit(
         .lock_execution_tools(PROJECT_ID)
         .await
         .map_err(|_| launch_failure("PERMISSION", "policy"))?;
-    let mut call_permissions =
-        crate::agsdl_host_tools::permissions("Implement", false, &policy.tools)?;
-    call_permissions["agsdlHostPermissions"] =
-        serde_json::to_value(&policy.agsdl_host_permissions)?;
-    let mut summary = permissions(input, preview)?;
+    let call_permissions = call_permissions(&policy)?;
+    let (blockers, servers) =
+        requirements(&input, &preview, &call_permissions, LOCAL_MCP_SUPPORTED);
+    if let Some(blocker) = blockers.first() {
+        return Err(launch_failure(blocker.code, &blocker.subject));
+    }
+    let mut summary = permissions(&input, &preview)?;
     record_host_permissions(&mut summary, &policy.agsdl_host_permissions)?;
     let machine = machine_id(runtime.manager.root())?;
     {
         let mut db = runtime.pool.acquire().await?;
-        require_consent(&mut db, input, &summary, &machine, token.as_deref()).await?;
+        require_consent(
+            &mut db,
+            &input,
+            &summary,
+            &machine,
+            request.consent_token.as_deref(),
+        )
+        .await?;
     }
-    let authored = input.archive.source().authored_json();
-    let document: Value = serde_json::from_str(authored)?;
-    let observed = if preview
-        .agents
-        .values()
-        .any(|agent| agent.harness == "codex")
+    if let Some(secret) = secret_requirements(&input, &servers)?
+        .iter()
+        .find(|secret| !secret.stored)
     {
-        Some(observe_codex(runtime.manager, &scope).await?)
+        return Err(launch_failure("MCP_SECRETS_UNAVAILABLE", &secret.server));
+    }
+
+    let _resources = resources::launch_lease(context.root(), false).await?;
+    let private_folder = if owns_folder {
+        Some(resources::new_working_folder(runtime.app_data)?)
     } else {
         None
     };
+    let folder = match chosen {
+        Some(folder) => folder,
+        None => private_folder
+            .as_ref()
+            .expect("private folder created")
+            .path()
+            .to_owned(),
+    };
+    let root_scope = scope_for(&folder, &engine_request.source.owner)?;
+    let observed = if needs_codex(&preview) {
+        let observed = observe_codex(runtime.manager, &root_scope).await?;
+        if codex_write_unqualified(&preview, &call_permissions, &observed) {
+            return Err(launch_failure("CODEX_PROFILE_UNQUALIFIED", "codex"));
+        }
+        if let Some(blocker) = model_blockers(&preview, &observed, &request.model_overrides).first()
+        {
+            return Err(launch_failure("MODEL_UNAVAILABLE", &blocker.subject));
+        }
+        Some(observed)
+    } else {
+        None
+    };
+
+    let session = runtime.host.begin_start().await?;
+    let retained = input.archive.source().retain(context.root())?;
+    let mut scope = root_scope.clone();
+    retained.bind_scope(&mut scope)?;
+    let snapshot = scope["projectSnapshot"]
+        .as_str()
+        .ok_or_else(|| launch_failure("CORRELATION", "projectSnapshot"))?;
+    resources::seal_snapshot(retained.resource_root(), &folder)?;
+    let authored = input.archive.source().authored_json();
+    let document: Value = serde_json::from_str(authored)?;
     let native_catalogue = crate::agsdl_host_catalogue::ModelCapture {
         catalogue: crate::agsdl_host_catalogue::NativeModelCatalogue {
             revision: "native-codex".into(),
@@ -237,22 +186,24 @@ async fn admit(
     };
     let registry = registry(
         &document,
-        &request,
+        &engine_request,
         scope.clone(),
         &call_permissions,
         observed.as_ref(),
-    )?;
+        &request.model_overrides,
+    )
+    .map_err(|error| input.archive.source().locate_error(error))?;
     let compiled = runtime
         .host
         .compile_document(
-            request.source.clone(),
+            engine_request.source.clone(),
             authored.to_owned(),
             registry.to_string(),
         )
         .await
         .map_err(|error| input.archive.source().locate_error(error))?;
     let material = CompilationCapture {
-        source: request.source.clone(),
+        source: engine_request.source.clone(),
         authored_source: authored.to_owned(),
         native_registry_json: registry.to_string(),
         display_cards_json: "[]".into(),
@@ -273,13 +224,15 @@ async fn admit(
             )));
         }
     }
-    let material = material.start_material030_checked(
-        &request.source,
-        authored,
-        "[]",
-        &request,
-        session.generation(),
-    )?;
+    let material = material
+        .start_material030_checked(
+            &engine_request.source,
+            authored,
+            "[]",
+            &engine_request,
+            session.generation(),
+        )
+        .map_err(|error| input.archive.source().locate_error(error))?;
     let capture = StartCapture030 {
         identity: FlowIdentity030 {
             system_start_id: Uuid::new_v4().to_string(),
@@ -297,27 +250,34 @@ async fn admit(
             "nativeCatalogueJson":material.native_catalogue_json,
             "callPermissionsJson":material.call_permissions_json,
             "callScopeJson":material.call_scope_json, "displayCardsJson":material.display_cards_json,
-            "associations":request.associations, "entryUnassessed":material.entry_unassessed,
+            "associations":engine_request.associations, "entryUnassessed":material.entry_unassessed,
         }).to_string(),
     };
     let authority = ArchiveStart {
-        session,
-        input,
+        session: &session,
+        input: &input,
         capture,
         root_scope,
-        folder,
+        folder: &folder,
         owns_folder,
+        confirm_folder_reuse: request.confirm_folder_reuse,
         snapshot,
         configuration,
         summary,
         machine,
-        token,
-        name: name
+        token: request.consent_token,
+        name: request
+            .name
             .as_deref()
             .map(str::trim)
             .filter(|name| !name.is_empty()),
     };
-    let started = start030::start(runtime.pool, &request, &authority).await;
+    // After commit the persisted run owns the directory. Startup reclaims it
+    // if the process exits after keep() and before the transaction commits.
+    if let Some(private_folder) = private_folder {
+        let _ = private_folder.keep();
+    }
+    let started = start030::start(runtime.pool, &engine_request, &authority).await;
     // Attachment observes policy itself. In particular, do not hold a
     // config read lease across this boundary.
     drop(policy);
@@ -326,23 +286,50 @@ async fn admit(
         Ok(started) => session
             .attach_committed_start(
                 runtime.pool,
-                runtime.manager.engine_context(),
+                context.with_mcp_secrets(secret_provider(&input, servers)),
                 runtime.tasks.clone(),
                 identity,
                 &authority.capture,
-                runtime.action_policy.clone(),
+                Arc::new(ArchiveActionPolicy030 {
+                    pool: runtime.pool.clone(),
+                    config: runtime.manager.clone(),
+                }),
             )
             .await
             .map(|()| started),
         Err(error) => Err(error),
     };
     if let Err(error) = &result {
-        session
+        let interrupted = session
             .interrupt_run(runtime.pool, &identity.system_start_id)
-            .await?;
+            .await;
         session.fail_reservation(&identity.system_start_id, error.clone());
+        if owns_folder {
+            // A failed acknowledgement can still have committed.
+            let referenced = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM architect_launch_runs WHERE system_id=?)",
+            )
+            .bind(&identity.system_start_id)
+            .fetch_one(runtime.pool)
+            .await;
+            if matches!(referenced, Ok(false)) {
+                let _ = fs::remove_dir(&folder);
+            }
+        }
+        interrupted?;
     }
     result
+}
+
+async fn check_folder_reuse(
+    db: &mut SqliteConnection,
+    folder: &Path,
+    confirmed: bool,
+) -> Result<()> {
+    if !confirmed && folder_in_use(db, folder).await? {
+        return Err(launch_failure("WORKING_FOLDER_IN_USE", "workingFolder"));
+    }
+    Ok(())
 }
 
 async fn require_consent(
@@ -374,7 +361,11 @@ pub(super) async fn observe_codex(
         return Ok(observed);
     }
     let context = manager.engine_context();
-    if let Some(observed) = argentic_runtime::api::observe_codex(&context, scope, false).await? {
+    // The app-server catalogue on Linux ARM64 is qualified in a read-only
+    // profile. Physical work still qualifies its own effective permissions.
+    let read_only = cfg!(all(target_os = "linux", target_arch = "aarch64"));
+    if let Some(observed) = argentic_runtime::api::observe_codex(&context, scope, read_only).await?
+    {
         return Ok(observed);
     }
     let status = argentic_runtime::api::codex_status(&context).await;
@@ -387,6 +378,7 @@ fn registry(
     scope: Value,
     call_permissions: &Value,
     observed: Option<&CodexObservation>,
+    model_overrides: &BTreeMap<String, ModelOverride>,
 ) -> Result<Value> {
     let (harnesses, agents) = if let Some(observed) = observed {
         let (harness, agents) =
@@ -400,9 +392,10 @@ fn registry(
         "modules":[{"harness":"codex", "moduleJson":argentic_runtime::api::codex_module()}],
         "harnesses":harnesses, "agents":agents,
         "hostCapabilities": if cfg!(all(target_os="macos", target_arch="aarch64")) {
-            json!([{"name":"approval","support":"native","evidenceJson":"{\"runtime\":\"flow-human-clock\"}"},{"name":"call.command","support":"native","evidenceJson":"{\"transport\":\"confined-local\"}"}])
+            json!([{"name":"approval","support":"native","evidenceJson":"{\"runtime\":\"flow-human-clock\"}"},{"name":"call.command","support":"native","evidenceJson":"{\"transport\":\"confined-local\"}"},{"name":"call.mcp","support":"native","evidenceJson":"{\"transport\":\"confined-stdio\"}"}])
         } else { json!([]) }
     });
+    argentic_runtime::capture::apply_model_overrides(&mut registry, model_overrides)?;
     let digest = Sha256::digest(serde_json::to_vec(&(&registry, &scope, call_permissions))?);
     registry["version"] = json!(format!("sha256:{digest:x}"));
     registry["callPermissions"] = call_permissions.clone();
@@ -418,6 +411,7 @@ struct ArchiveStart<'a> {
     root_scope: Value,
     folder: &'a Path,
     owns_folder: bool,
+    confirm_folder_reuse: bool,
     snapshot: &'a str,
     configuration: LaunchConfiguration,
     summary: Permissions,
@@ -501,6 +495,9 @@ impl StartAuthority030 for ArchiveStart<'_> {
             self.token.as_deref(),
         )
         .await?;
+        if !self.owns_folder {
+            check_folder_reuse(db, self.folder, self.confirm_folder_reuse).await?;
+        }
         let key = &self.input.key;
         let id = &capture.identity.system_start_id;
         let configuration = serde_json::to_string(&self.configuration)?;

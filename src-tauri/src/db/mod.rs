@@ -152,6 +152,10 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
 
     let pool = create_pool(&db_path).await?;
     crate::architect_library::migration::startup(&pool, &app_dir).await?;
+    let config_dir = app_handle.state::<crate::config::ConfigManager>();
+    crate::architect_launch::cleanup(&pool, &app_dir, config_dir.root())
+        .await
+        .map_err(|error| DbError::Validation(error.message))?;
     // A restarted producer must install a fresh authority generation locally.
     sqlx::query("UPDATE pilot_file_authorities SET active = 0")
         .execute(&pool)

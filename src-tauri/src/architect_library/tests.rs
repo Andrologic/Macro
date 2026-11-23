@@ -338,7 +338,7 @@ fn temporarily_unreadable_component_retains_the_native_io_cause() {
         // runtime's exact OS error representation in that environment.
         let denial = std::io::Error::from_raw_os_error(libc::EACCES);
         let detail = denial.to_string();
-        let (_, source) = super::project_io("agents/lead.json", &detail).unwrap();
+        let source = super::source_io(&detail);
         assert_eq!(source.raw_os_error(), denial.raw_os_error());
     }
 }

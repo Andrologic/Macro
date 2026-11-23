@@ -5,7 +5,6 @@ use crate::db::agsdl_execution::{discovery030::RunListRequest030, intents::Execu
 use argentic_runtime::{
     api::{self, StreamTasks},
     dev_fixture::ScriptedAgent,
-    host::{ActionPolicyLease, ActionPolicySource, PolicyFuture},
     source::OpenedSource,
 };
 use std::{
@@ -13,18 +12,6 @@ use std::{
     sync::{atomic::Ordering, Arc},
     time::Duration,
 };
-
-struct DenyActions;
-
-impl ActionPolicySource for DenyActions {
-    fn lock_current<'a>(
-        &'a self,
-        _capture: &'a crate::db::agsdl_execution::start030::StartCapture030,
-        _payload: &'a Value,
-    ) -> PolicyFuture<'a, ActionPolicyLease> {
-        Box::pin(async { Ok(ActionPolicyLease::new(false, ())) })
-    }
-}
 
 async fn archive_fixture(data: &Path, mut manifest: Value) -> (SqlitePool, VersionKey) {
     let pool = crate::db::create_pool(&data.join("launch.db"))
@@ -107,8 +94,17 @@ async fn archive_launch_admits_pinned_snapshot_and_rediscovers_named_run() {
         .await
         .unwrap();
     let preview = input.preview().unwrap();
-    assert!(secret_requirements(&input, &preview).unwrap().is_empty());
-    assert!(requirements(&input, &preview).unwrap().is_empty());
+    {
+        let policy = manager.lock_execution_tools(PROJECT_ID).await.unwrap();
+        let (blockers, servers) = requirements(
+            &input,
+            &preview,
+            &call_permissions(&policy).unwrap(),
+            LOCAL_MCP_SUPPORTED,
+        );
+        assert!(secret_requirements(&input, &servers).unwrap().is_empty());
+        assert!(blockers.is_empty());
+    }
     let mut review = permissions(&input, &preview).unwrap();
     {
         let policy = manager.lock_execution_tools(PROJECT_ID).await.unwrap();
@@ -130,7 +126,6 @@ async fn archive_launch_admits_pinned_snapshot_and_rediscovers_named_run() {
                 pool: &pool,
                 app_data: data.path(),
                 tasks: tasks.clone(),
-                action_policy: Arc::new(DenyActions),
             },
             start::LaunchRequest {
                 version: version.clone(),
@@ -138,11 +133,15 @@ async fn archive_launch_admits_pinned_snapshot_and_rediscovers_named_run() {
                 start_message: Some("Start".into()),
                 name: Some("Morning run".into()),
                 consent_token: token,
+                confirm_folder_reuse: false,
+                model_overrides: BTreeMap::new(),
             },
         )
     };
     let denied = launch(None).await.err().expect("consent required");
     assert_eq!(denied.code, "CONSENT_REQUIRED", "{denied:?}");
+    assert!(!manager.root().join("agsdl-snapshots").exists());
+    assert!(!data.path().join("agsdl-working-folders").exists());
     let receipt = launch(token).await.unwrap();
     assert!(consent_token(
         &mut pool.acquire().await.unwrap(),
@@ -193,11 +192,19 @@ async fn archive_launch_admits_pinned_snapshot_and_rediscovers_named_run() {
     let scope: Value = serde_json::from_str(private["callScopeJson"].as_str().unwrap()).unwrap();
     assert_eq!(scope["projectSnapshot"], snapshot);
     assert_eq!(scope["root"], json!(folder));
-    assert!(manager
-        .root()
-        .join("agsdl-snapshots")
-        .join(snapshot)
-        .is_dir());
+    let retained = manager.root().join("agsdl-snapshots").join(&snapshot);
+    assert!(retained.is_dir());
+    assert!(fs::metadata(retained.join("project/agsdl.json"))
+        .unwrap()
+        .permissions()
+        .readonly());
+    #[cfg(unix)]
+    assert!(fs::metadata(retained.join("project"))
+        .unwrap()
+        .permissions()
+        .readonly());
+    assert!(!retained.starts_with(&folder));
+    assert!(!folder.starts_with(&retained));
     drop(input);
     assert!(storage
         .delete_version(&pool, version.clone())
@@ -223,6 +230,19 @@ async fn archive_launch_admits_pinned_snapshot_and_rediscovers_named_run() {
         .unwrap();
     migration::startup(&pool, data.path()).await.unwrap();
     api::interrupt_previous_runs(&pool).await.unwrap();
+    let orphan_snapshot = retained.parent().unwrap().join("a".repeat(64));
+    fs::create_dir_all(orphan_snapshot.join("project")).unwrap();
+    fs::write(orphan_snapshot.join("project/agsdl.json"), "orphan").unwrap();
+    resources::seal_snapshot(&orphan_snapshot.join("project"), &folder).unwrap();
+    let staging = retained.parent().unwrap().join(".tmpAbandoned");
+    fs::create_dir(&staging).unwrap();
+    let folder_without_run = resources::new_working_folder(data.path()).unwrap().keep();
+    fs::write(folder_without_run.join("pre-commit"), "interrupted").unwrap();
+    resources::cleanup(&pool, data.path(), manager.root())
+        .await
+        .unwrap();
+    assert!(retained.is_dir() && folder.is_dir());
+    assert!(!orphan_snapshot.exists() && !staging.exists() && !folder_without_run.exists());
     let records = run_systems(&pool).await.unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].run_name.as_deref(), Some("Morning run"));
@@ -246,17 +266,93 @@ async fn archive_launch_admits_pinned_snapshot_and_rediscovers_named_run() {
             .await
             .unwrap();
     assert_eq!(&proof.receipt.system_start_id, id);
+    resources::remove_snapshot(&retained).unwrap();
     crate::agsdl_host_capture::test_codex_observations030()
         .lock()
         .unwrap()
         .remove(manager.root());
 }
 
+async fn manager_for_test(data: &Path) -> ConfigManager {
+    ConfigManager::initialize(data.join("config"))
+        .await
+        .unwrap()
+}
+
+fn observe_fixture(manager: &ConfigManager) {
+    crate::agsdl_host_capture::test_codex_observations030()
+        .lock()
+        .unwrap()
+        .insert(
+            manager.root().to_owned(),
+            api::synthetic_codex_observation(),
+        );
+}
+
+fn request(version: VersionKey, token: Option<String>) -> start::LaunchRequest {
+    start::LaunchRequest {
+        version,
+        consent_token: token,
+        configuration: Default::default(),
+        name: None,
+        start_message: Some("Start".into()),
+        confirm_folder_reuse: false,
+        model_overrides: BTreeMap::new(),
+    }
+}
+
+fn runtime<'a>(
+    host: &'a HostState,
+    manager: &'a ConfigManager,
+    pool: &'a SqlitePool,
+    data: &'a Path,
+) -> start::Runtime<'a> {
+    start::Runtime {
+        host,
+        manager,
+        pool,
+        app_data: data,
+        tasks: StreamTasks::default(),
+    }
+}
+
+async fn set_host_ceiling(manager: &ConfigManager, permissions: Value) {
+    use crate::config::{ConfigChangeSource, ConfigDocumentKind, ConfigScope};
+    let document = manager
+        .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+        .await
+        .unwrap();
+    let mut value = document.value;
+    value["agsdlHostPermissions"] = permissions;
+    fs::write(document.file_path, serde_json::to_vec(&value).unwrap()).unwrap();
+    let pending = manager
+        .reload(
+            ConfigDocumentKind::Tools,
+            ConfigScope::User,
+            ConfigChangeSource::ExternalEditor,
+        )
+        .await
+        .unwrap()
+        .pending
+        .unwrap();
+    manager.accept_pending_change(&pending.id).await.unwrap();
+}
+
+async fn preview(
+    manager: &ConfigManager,
+    pool: &SqlitePool,
+    data: &Path,
+    version: VersionKey,
+    configuration: Option<LaunchConfiguration>,
+) -> LaunchPreview {
+    prepare(manager, pool, data, version, configuration, BTreeMap::new())
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
 async fn mcp_requirements_use_reachable_calls_and_refuse_unqualified_launch() {
-    let _guard = crate::secrets::lock_test_store();
     let data = tempfile::tempdir().unwrap();
-    crate::secrets::init(data.path()).unwrap();
     let mut doc = manifest();
     doc["mcpServers"] = json!({
         "used":{"command":["never-installed-for-launch-test"]},
@@ -265,48 +361,414 @@ async fn mcp_requirements_use_reachable_calls_and_refuse_unqualified_launch() {
     doc["secrets"] = json!({"used":["TEST_TOKEN"],"spare":["UNUSED_TOKEN"]});
     doc["flow"] = json!({"entry":"tool","steps":{"tool":{"type":"call","mcp":{"server":"used","tool":"hello"}}}});
     let (pool, version) = archive_fixture(data.path(), doc).await;
-    let manager = ConfigManager::initialize(data.path().join("config"))
-        .await
-        .unwrap();
-    let first = prepare(&manager, &pool, data.path(), version.clone(), None)
-        .await
-        .unwrap();
-    assert_eq!(first.secrets.len(), 1);
-    assert_eq!(first.secrets[0].name, "TEST_TOKEN");
-    assert!(!first.secrets[0].stored);
-    assert!(first
+    let manager = manager_for_test(data.path()).await;
+    let prepared = preview(&manager, &pool, data.path(), version.clone(), None).await;
+    assert!(prepared.secrets.is_empty());
+    assert!(prepared
         .blockers
         .iter()
-        .any(|error| error.code == "missingProgram"));
-    assert!(first
-        .blockers
-        .iter()
-        .any(|error| error.code == "mcpIsolationUnavailable"));
+        .any(|blocker| blocker.code == "missingProgram"));
+    let host = HostState::new();
+    let refused = start::launch(
+        runtime(&host, &manager, &pool, data.path()),
+        request(version.clone(), prepared.consent_token),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert_eq!(refused.code, prepared.blockers[0].code);
+    assert!(!manager.root().join("agsdl-snapshots").exists());
     assert!(set_secret(
+        &manager,
         &pool,
         data.path(),
-        version.clone(),
-        "spare",
-        "UNUSED_TOKEN",
-        "test-value"
+        version,
+        "used",
+        "TEST_TOKEN",
+        "value"
     )
     .await
     .is_err());
-    set_secret(
+}
+
+#[tokio::test]
+async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
+    let _guard = crate::secrets::lock_test_store();
+    let data = tempfile::tempdir().unwrap();
+    crate::secrets::init(data.path()).unwrap();
+    let mut doc = manifest();
+    doc["mcpServers"] = json!({"used":{"command":["sh"]},"spare":{"command":["sh"]}});
+    doc["secrets"] = json!({"used":["TOKEN","SECOND"],"spare":["UNUSED"]});
+    doc["flow"] = json!({"entry":"tool","steps":{"tool":{"type":"call","mcp":{"server":"used","tool":"hello"}}}});
+    let (pool, version) = archive_fixture(data.path(), doc).await;
+    let input = VersionInput::read(&pool, &Storage::new(data.path()), version)
+        .await
+        .unwrap();
+    let projected = input.preview().unwrap();
+    let manager = manager_for_test(data.path()).await;
+    {
+        let policy = manager.lock_execution_tools(PROJECT_ID).await.unwrap();
+        let (blockers, servers) = requirements(
+            &input,
+            &projected,
+            &call_permissions(&policy).unwrap(),
+            true,
+        );
+        assert_eq!(blockers[0].code, "mcpWorkspaceRequired");
+        assert!(servers.is_empty());
+    }
+    set_host_ceiling(&manager, json!("workspace")).await;
+    let policy = manager.lock_execution_tools(PROJECT_ID).await.unwrap();
+    let (blockers, servers) = requirements(
+        &input,
+        &projected,
+        &call_permissions(&policy).unwrap(),
+        true,
+    );
+    assert!(blockers.is_empty());
+    assert_eq!(servers.len(), 1);
+    let names = servers["used"].clone();
+    let provider = secret_provider(&input, servers.clone());
+    let source = input.source_revision();
+    assert!(provider(&source, "used", &names).is_none());
+    for name in &names {
+        crate::secrets::set_api_key(&input.secret_id("used", name).unwrap(), name).unwrap();
+    }
+    assert!(secret_requirements(&input, &servers)
+        .unwrap()
+        .iter()
+        .all(|secret| secret.stored));
+    assert!(provider(&source, "spare", &names).is_none());
+    assert!(provider(&source, "used", &names[..1]).is_none());
+    let mut foreign = source.clone();
+    foreign.owner.plan_id = "another-blueprint".into();
+    assert!(provider(&foreign, "used", &names).is_none());
+    assert_ne!(
+        input.secret_id("used", "TOKEN").unwrap(),
+        secret_id(&input.key.blueprint_id, r#"["origin",1]"#, "used", "TOKEN").unwrap()
+    );
+    crate::secrets::set_api_key(&input.secret_id("used", "TOKEN").unwrap(), "changed").unwrap();
+    let values = provider(&source, "used", &names).unwrap();
+    assert_eq!(
+        values,
+        BTreeMap::from([
+            ("TOKEN".into(), "changed".into()),
+            ("SECOND".into(), "SECOND".into())
+        ])
+    );
+}
+
+#[tokio::test]
+async fn model_override_changes_the_run_registry_and_leaves_version_frozen() {
+    let data = tempfile::tempdir().unwrap();
+    let mut doc = manifest();
+    doc["agents"]["worker"]["model"] = json!({"name":"missing-model"});
+    let (pool, version) = archive_fixture(data.path(), doc).await;
+    let manager = manager_for_test(data.path()).await;
+    observe_fixture(&manager);
+    let first = preview(&manager, &pool, data.path(), version.clone(), None).await;
+    assert_eq!(first.available_models, ["fixture"]);
+    assert_eq!(first.blockers[0].code, "modelUnavailable");
+    let host = HostState::new();
+    let executor = Arc::new(ScriptedAgent::default());
+    executor.install(&host);
+    let mut launch = request(version.clone(), first.consent_token.clone());
+    let refused = start::launch(runtime(&host, &manager, &pool, data.path()), launch)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(refused.code, "MODEL_UNAVAILABLE");
+    assert!(!manager.root().join("agsdl-snapshots").exists());
+
+    launch = request(version.clone(), first.consent_token);
+    launch.model_overrides.insert(
+        "worker".into(),
+        ModelOverride {
+            name: "fixture".into(),
+            effort: None,
+        },
+    );
+    let receipt = start::launch(runtime(&host, &manager, &pool, data.path()), launch)
+        .await
+        .unwrap();
+    executor
+        .wait(&host, &receipt.capture.identity.system_start_id)
+        .await
+        .unwrap();
+    let projection = host
+        .runtime_projection(
+            &pool,
+            api::RuntimeProjectionQuery030 {
+                system_start_id: receipt.capture.identity.system_start_id.clone(),
+                source: receipt.capture.source.clone(),
+                snapshot_id: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(projection.model_overrides["worker"].name, "fixture");
+    assert_eq!(
+        projection.model_overrides["worker"].effort.as_deref(),
+        Some("medium")
+    );
+    let after = preview(&manager, &pool, data.path(), version, None).await;
+    assert_eq!(after.blockers[0].code, "modelUnavailable");
+    assert!(receipt.capture.authored_source.contains("missing-model"));
+    remove_test_snapshot(&pool, &manager, &receipt.capture.identity.system_start_id).await;
+}
+
+async fn remove_test_snapshot(pool: &SqlitePool, manager: &ConfigManager, id: &str) {
+    let snapshot: String = sqlx::query_scalar(
+        "SELECT retained_snapshot_id FROM architect_launch_runs WHERE system_id=?",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    resources::remove_snapshot(&manager.root().join("agsdl-snapshots").join(snapshot)).unwrap();
+}
+
+#[tokio::test]
+async fn admission_rechecks_folder_sharing_after_two_unoccupied_previews() {
+    let data = tempfile::tempdir().unwrap();
+    let chosen = tempfile::tempdir().unwrap();
+    let (pool, version) = archive_fixture(data.path(), manifest()).await;
+    let storage = Storage::new(data.path());
+    let draft = storage
+        .open_draft_project(&pool, &version.blueprint_id)
+        .await
+        .unwrap();
+    let batch = serde_json::from_value(json!({
+        "files": [],
+        "settings": {"workingFolderMode":"atLaunch", "startMessageRequired":false},
+    }))
+    .unwrap();
+    let saved = storage
+        .edit_project(
+            &pool,
+            &version.blueprint_id,
+            draft.project.revision,
+            batch,
+            true,
+        )
+        .await
+        .unwrap();
+    storage
+        .freeze(
+            &pool,
+            version.blueprint_id.clone(),
+            saved.revision,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let version = VersionKey {
+        number: 2,
+        ..version
+    };
+    let manager = manager_for_test(data.path()).await;
+    observe_fixture(&manager);
+    let folder = Some(chosen.path().to_owned());
+    let first = preview(
+        &manager,
         &pool,
         data.path(),
         version.clone(),
-        "used",
-        "TEST_TOKEN",
-        "test-value",
+        Some(LaunchConfiguration {
+            working_folder: folder.clone(),
+        }),
+    )
+    .await;
+    let second = preview(
+        &manager,
+        &pool,
+        data.path(),
+        version.clone(),
+        Some(LaunchConfiguration {
+            working_folder: folder,
+        }),
+    )
+    .await;
+    assert!(!first.folder_in_use && !second.folder_in_use);
+    assert!(!second.start_message_required);
+    let host = HostState::new();
+    let executor = Arc::new(ScriptedAgent {
+        cleanup: Some(Arc::new(tokio::sync::Notify::new())),
+        submitted: Some(Arc::new(tokio::sync::Notify::new())),
+        independent_finish: true,
+        ..Default::default()
+    });
+    executor.install(&host);
+    let launch = |plan: &LaunchPreview, confirmed| {
+        let mut request = request(version.clone(), plan.consent_token.clone());
+        request.configuration = plan.configuration.clone();
+        request.confirm_folder_reuse = confirmed;
+        start::launch(runtime(&host, &manager, &pool, data.path()), request)
+    };
+    let first_run = launch(&first, false).await.unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        executor.submitted.as_ref().unwrap().notified(),
     )
     .await
     .unwrap();
-    let second = prepare(&manager, &pool, data.path(), version, None)
+    let error = launch(&second, false).await.err().unwrap();
+    assert_eq!(error.code, "WORKING_FOLDER_IN_USE");
+    let second_run = launch(&second, true).await.unwrap();
+    assert_ne!(
+        first_run.capture.identity.system_start_id,
+        second_run.capture.identity.system_start_id
+    );
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        executor.submitted.as_ref().unwrap().notified(),
+    )
+    .await
+    .unwrap();
+    executor.cleanup.as_ref().unwrap().notify_waiters();
+    executor
+        .wait(&host, &first_run.capture.identity.system_start_id)
         .await
         .unwrap();
-    assert!(second.secrets[0].stored);
-    assert!(!serde_json::to_string(&second)
-        .unwrap()
-        .contains("test-value"));
+    executor
+        .wait(&host, &second_run.capture.identity.system_start_id)
+        .await
+        .unwrap();
+    remove_test_snapshot(&pool, &manager, &first_run.capture.identity.system_start_id).await;
+    assert!(chosen.path().is_dir());
+}
+
+#[tokio::test]
+async fn archive_write_approval_uses_admitted_folder_and_current_ceiling() {
+    use crate::agsdl_host_action_approval030::ArchiveActionPolicy030;
+    let data = tempfile::tempdir().unwrap();
+    let mut doc = manifest();
+    doc["agents"]["worker"]["permissions"] = json!("workspace");
+    let (pool, version) = archive_fixture(data.path(), doc).await;
+    let manager = manager_for_test(data.path()).await;
+    set_host_ceiling(
+        &manager,
+        json!({
+            "preset":"workspace", "reviewer":"person",
+            "rules":[{"action":"write","effect":"ask"}],
+        }),
+    )
+    .await;
+    observe_fixture(&manager);
+    let prepared = preview(&manager, &pool, data.path(), version.clone(), None).await;
+    let host = HostState::new();
+    let executor = Arc::new(ScriptedAgent::default());
+    executor.install(&host);
+    let receipt = start::launch(
+        runtime(&host, &manager, &pool, data.path()),
+        request(version, prepared.consent_token),
+    )
+    .await
+    .unwrap();
+    let id = &receipt.capture.identity.system_start_id;
+    executor.wait(&host, id).await.unwrap();
+    let folder = PathBuf::from(read_folder(&pool, id).await.unwrap());
+    let file = folder.join("existing.txt");
+    fs::write(&file, "fixture").unwrap();
+    let payload = |path: &Path| {
+        json!({"nativeRequest":{"params":{"command":"echo approved > existing.txt",
+        "additionalPermissions":{"fileSystem":{"write":[path]}}}}})
+    };
+    let policy = ArchiveActionPolicy030 {
+        pool: pool.clone(),
+        config: manager.clone(),
+    };
+    assert!(
+        policy
+            .lock_decision(&receipt.capture, &payload(&file))
+            .await
+            .unwrap()
+            .0
+    );
+    let external = data.path().canonicalize().unwrap().join("outside.txt");
+    fs::write(&external, "outside").unwrap();
+    assert!(
+        !policy
+            .lock_decision(&receipt.capture, &payload(&external))
+            .await
+            .unwrap()
+            .0
+    );
+    set_host_ceiling(&manager, json!("read-only")).await;
+    assert!(
+        !policy
+            .lock_decision(&receipt.capture, &payload(&file))
+            .await
+            .unwrap()
+            .0
+    );
+    let backup = folder.with_extension("old");
+    fs::rename(&folder, &backup).unwrap();
+    fs::create_dir(&folder).unwrap();
+    assert_eq!(
+        policy
+            .lock_decision(&receipt.capture, &payload(&file))
+            .await
+            .err()
+            .unwrap()
+            .code,
+        "CAPTURE_CHANGED"
+    );
+    remove_test_snapshot(&pool, &manager, id).await;
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+#[tokio::test]
+#[ignore = "requires a disposable Macro data directory with a logged-in Codex 0.171.0 private profile"]
+async fn real_codex_read_only_launch_from_archive() {
+    let data = PathBuf::from(
+        std::env::var_os("MACRO_ARCHIVE_SMOKE_DATA").expect("disposable data directory"),
+    );
+    let manager = manager_for_test(&data).await;
+    let (pool, version) = archive_fixture(&data, manifest()).await;
+    let prepared = preview(&manager, &pool, &data, version.clone(), None).await;
+    assert!(
+        prepared.blockers.is_empty(),
+        "{}",
+        serde_json::to_string(&prepared.blockers).unwrap()
+    );
+    let host = HostState::new();
+    let receipt = start::launch(
+        runtime(&host, &manager, &pool, &data),
+        request(version, prepared.consent_token),
+    )
+    .await
+    .unwrap();
+    let id = &receipt.capture.identity.system_start_id;
+    let run = tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            let page = host
+                .runtime_projection(
+                    &pool,
+                    api::RuntimeProjectionQuery030 {
+                        system_start_id: id.clone(),
+                        source: receipt.capture.source.clone(),
+                        snapshot_id: None,
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            if page.verdict.is_some() {
+                break page;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("native launch did not complete");
+    remove_test_snapshot(&pool, &manager, id).await;
+    assert_eq!(run.verdict.as_deref(), Some("succeeded"));
+    assert!(run
+        .items
+        .iter()
+        .any(|item| matches!(item, api::RuntimeProjectionItem030::Instance { .. })));
+    eprintln!("Codex 0.171.0 archive launch succeeded; systemStartId={id}");
 }
