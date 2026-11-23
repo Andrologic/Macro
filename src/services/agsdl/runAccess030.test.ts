@@ -416,7 +416,7 @@ it('marks retained projections stale immediately after newer discovery even when
 
 it('uses native-compatible entries, phases, phase counts and distinct request ids for fixture admissions', async () => {
   const requests = new Set<string>();
-  const phases = new Set(['ready', 'queued', 'running', 'body', 'group', 'done', 'preparing', 'barrier', 'stopping']);
+  const phases = new Set(['ready', 'queued', 'running', 'body', 'group', 'done', 'preparing', 'steering', 'withdrawingSteer', 'barrier', 'stopping']);
   for (const id of ['first', 'second']) {
     const f = await fixture(id), intent = intentFor(f);
     if (intent.payload.kind !== 'start' || intent.state.kind !== 'admitted' || intent.state.admission.kind !== 'start030')

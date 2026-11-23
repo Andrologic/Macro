@@ -1,9 +1,14 @@
 use super::super::{
     dto::{EngineAssociations, EngineEntry},
-    flow030::{reduce, FlowEvent030, FlowEventKind030, FlowIdentity030},
+    flow030::{
+        reduce, DeliveryOccurrence030, FlowEffectKind030, FlowEvent030, FlowEventKind030,
+        FlowIdentity030, FlowTransition030, Instance030, PhysicalEvidence030, PreparedBatch030,
+        PreparedItem030, PreparedResult030, WorkRef030, WorkResult030,
+    },
 };
 use super::*;
 use crate::db::create_pool;
+use serde_json::{json, Value};
 use tempfile::TempDir;
 
 fn owner(project: &str, branch: &str) -> EngineSourceOwner {
@@ -34,10 +39,24 @@ async fn seed(
     status: &str,
     bad_hash: bool,
 ) {
-    let mut plan: FlowPlan030 = serde_json::from_str(include_str!(
+    seed_plan(pool, key, scope, status, bad_hash, fork_plan()).await;
+}
+
+fn fork_plan() -> FlowPlan030 {
+    serde_json::from_str(include_str!(
         "../../../tests/fixtures/agsdl030_compiled_plan.json"
     ))
-    .unwrap();
+    .unwrap()
+}
+
+async fn seed_plan(
+    pool: &SqlitePool,
+    key: &str,
+    scope: EngineSourceOwner,
+    status: &str,
+    bad_hash: bool,
+    mut plan: FlowPlan030,
+) -> (FlowPlan030, FlowState030) {
     plan.versions.runtime = format!("runtime-{key}");
     let authored = plan.document_json.clone();
     let source = EngineSourceRevision {
@@ -105,6 +124,181 @@ async fn seed(
     sqlx::query("INSERT INTO engine_flow030_owners(system_id,invocation_id,snapshot_id,capture_epoch,owner_epoch,generation,status,capture_sha256) VALUES(?,?,?,?,'1','native-generation',?,?)")
         .bind(&identity.system_start_id).bind(&identity.flow_invocation_id).bind(&identity.snapshot_id).bind(&identity.epoch).bind(status).bind(hash).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
+    (plan, transition.state)
+}
+
+async fn persist_state(pool: &SqlitePool, system_id: &str, state: &FlowState030) {
+    sqlx::query("UPDATE engine_flow030_runs SET state_json=? WHERE system_id=?")
+        .bind(serde_json::to_string(state).unwrap())
+        .bind(system_id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+fn complete_work(
+    plan: &FlowPlan030,
+    state: &FlowState030,
+    work: WorkRef030,
+    choice: Option<&str>,
+) -> FlowTransition030 {
+    let event_id = format!("complete-{}", work.activation_id);
+    reduce(
+        plan,
+        state,
+        &FlowEvent030 {
+            identity: state.identity.clone(),
+            expected_revision: state.revision.clone(),
+            event_id: event_id.clone(),
+            kind: FlowEventKind030::WorkResult {
+                work,
+                result: WorkResult030::Completed {
+                    output_json: choice.map_or_else(
+                        || "{}".into(),
+                        |choice| json!({"choice": choice}).to_string(),
+                    ),
+                    route_key: choice.map(str::to_owned),
+                },
+                physical: Some(PhysicalEvidence030 {
+                    native_receipt_id: event_id,
+                    descendants_joined: true,
+                }),
+            },
+        },
+    )
+    .unwrap()
+}
+
+fn prepare_fork(plan: &FlowPlan030, state: &FlowState030) -> FlowTransition030 {
+    let reference = state.preparations[0].reference.clone();
+    let native_receipt_id = "prepare-fork";
+    let batches = plan.routes[0]
+        .targets
+        .iter()
+        .enumerate()
+        .map(|(ordinal, target)| PreparedBatch030 {
+            target_ordinal: ordinal,
+            target: target.clone(),
+            items: vec![PreparedItem030 {
+                message_json: Some("{}".into()),
+                item_json: None,
+                occurrence: DeliveryOccurrence030 {
+                    native_receipt_id: native_receipt_id.into(),
+                    target_ordinal: ordinal,
+                    item_index: "0".into(),
+                },
+            }],
+        })
+        .collect();
+    reduce(
+        plan,
+        state,
+        &FlowEvent030 {
+            identity: state.identity.clone(),
+            expected_revision: state.revision.clone(),
+            event_id: native_receipt_id.into(),
+            kind: FlowEventKind030::Prepared {
+                reference,
+                native_receipt_id: native_receipt_id.into(),
+                result: PreparedResult030::Ready { batches },
+            },
+        },
+    )
+    .unwrap()
+}
+
+async fn assert_steer_history(withdraw: bool, expected_phase: &str) {
+    let (_temp, pool) = database().await;
+    let scope = owner("project", "feature/steer");
+    seed(&pool, "other", scope.clone(), "live", false).await;
+    let mut plan = fork_plan();
+    plan.versions.contract = argentic_core::AGSDL_040.into();
+    let mut document: Value = serde_json::from_str(&plan.document_json).unwrap();
+    document["contract"] = json!(plan.versions.contract);
+    for step in &mut plan.steps[1..3] {
+        step.instance = Some(Instance030::Shared);
+        let mut declaration: Value = serde_json::from_str(&step.declaration_json).unwrap();
+        declaration.as_object_mut().unwrap().remove("instance");
+        let delivery = if step.address[0] == "left" {
+            declaration["next"] = json!({"yes":"join"});
+            "queue"
+        } else {
+            "steer"
+        };
+        step.delivery = Some(delivery.into());
+        declaration["delivery"] = json!(delivery);
+        document["flow"]["steps"][&step.address[0]] = declaration.clone();
+        step.declaration_json = declaration.to_string();
+    }
+    plan.routes[1].key = Some("yes".into());
+    let join = &mut plan.joins[0];
+    join.mode = "quorum".into();
+    join.quorum_count_json = Some("1".into());
+    join.accept = vec!["yes".into()];
+    join.remaining = "stop".into();
+    document["flow"]["steps"]["join"] = json!({
+        "type": "join",
+        "quorum": {"count": 1, "accept": ["yes"]},
+        "remaining": "stop",
+        "next": {"reached": [], "missed": []},
+    });
+    plan.steps[3].declaration_json = document["flow"]["steps"]["join"].to_string();
+    plan.routes[3].key = Some("reached".into());
+    let mut missed = plan.routes[3].clone();
+    missed.key = Some("missed".into());
+    plan.routes.push(missed);
+    plan.document_json = document.to_string();
+
+    let (plan, entered) = seed_plan(&pool, "steer", scope.clone(), "live", false, plan).await;
+    let fork = &entered.activations[0];
+    let completed = complete_work(
+        &plan,
+        &entered,
+        WorkRef030 {
+            activation_id: fork.id.clone(),
+            start_effect_id: fork.start_effect_id.clone().unwrap(),
+            agent_instance_id: None,
+        },
+        None,
+    );
+    let transition = prepare_fork(&plan, &completed.state);
+    let work = transition
+        .effects
+        .iter()
+        .find_map(|effect| match &effect.kind {
+            FlowEffectKind030::Steer { work, .. } => Some(work.clone()),
+            _ => None,
+        })
+        .expect("sender should be waiting for a steer receipt");
+    let state = if withdraw {
+        complete_work(&plan, &transition.state, work, Some("yes")).state
+    } else {
+        transition.state
+    };
+    assert_eq!(state.steer_deliveries[0].status, "pending");
+    persist_state(&pool, "system-steer", &state).await;
+
+    let page = list_runs030(&pool, request(scope, None, 20)).await.unwrap();
+    assert_eq!(page.runs.len(), 2);
+    let run = &page.runs[0];
+    assert_eq!(run.system_start_id, "system-steer");
+    assert!(
+        run.phase_counts
+            .iter()
+            .any(|p| p.phase == expected_phase && p.count == "1"),
+        "{:?}",
+        run.phase_counts
+    );
+}
+
+#[tokio::test]
+async fn history_includes_steering_before_receipt() {
+    assert_steer_history(false, "steering").await;
+}
+
+#[tokio::test]
+async fn history_includes_a_steer_withdrawn_by_a_join_before_receipt() {
+    assert_steer_history(true, "withdrawingSteer").await;
 }
 
 #[tokio::test]
@@ -300,11 +494,7 @@ async fn logical_completion_does_not_imply_physical_end_or_verdict() {
     state.activations[0].phase = "done".into();
     assert!(state.activations[0].physical);
     state.verdict = None;
-    sqlx::query("UPDATE engine_flow030_runs SET state_json=? WHERE system_id='system-finishing'")
-        .bind(serde_json::to_string(&state).unwrap())
-        .execute(&pool)
-        .await
-        .unwrap();
+    persist_state(&pool, "system-finishing", &state).await;
     let page = list_runs030(&pool, request(wanted, None, 20))
         .await
         .unwrap();

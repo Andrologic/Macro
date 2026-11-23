@@ -174,6 +174,8 @@ fn validated_summary(
                     | "group"
                     | "done"
                     | "preparing"
+                    | "steering"
+                    | "withdrawingSteer"
                     | "barrier"
                     | "stopping"
             ),

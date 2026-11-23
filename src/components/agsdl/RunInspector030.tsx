@@ -156,5 +156,5 @@ export function ExactContent({ label, value }: { label: string; value: string | 
 
 /** Unknown native phases stay exact in advanced data; never imply success. */
 export function knownPhase(value: RunOccurrence030['activation']['phase']): string {
-  return ['ready', 'stopping', 'done', 'pending', 'preparing', 'barrier', 'body', 'group', 'escaped', 'excluded', 'withdrawn', 'queued', 'running', 'completed', 'succeeded', 'failed', 'cancelled', 'waiting', 'live', 'ended', 'idle', 'absorbed'].includes(value) ? value : 'unknown';
+  return ['ready', 'stopping', 'done', 'pending', 'preparing', 'steering', 'withdrawingSteer', 'barrier', 'body', 'group', 'escaped', 'excluded', 'withdrawn', 'queued', 'running', 'completed', 'succeeded', 'failed', 'cancelled', 'waiting', 'live', 'ended', 'idle', 'absorbed'].includes(value) ? value : 'unknown';
 }

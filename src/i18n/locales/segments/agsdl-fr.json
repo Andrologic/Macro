@@ -1124,6 +1124,8 @@
       "unknown": "Inconnu"
     },
     "phase": {
+      "steering": "En attente de confirmation du guidage",
+      "withdrawingSteer": "Annulation du guidage en attente",
       "queued": "En file d’attente",
       "running": "En cours",
       "completed": "Terminé",

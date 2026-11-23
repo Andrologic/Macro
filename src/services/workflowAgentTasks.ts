@@ -125,6 +125,7 @@ export async function readWorkflowRun030(snapshot: RunCapture030, conversationId
 export const workflowPhaseStates030 = {
   ready: 'active', queued: 'queued', running: 'active', body: 'active', group: 'active',
   done: 'completed', preparing: 'active', barrier: 'active', stopping: 'stopRequested',
+  steering: 'active', withdrawingSteer: 'stopRequested',
 } as const satisfies Record<string, WorkflowAgentTaskState>;
 
 export const workflowAgentTaskId = (system: string, agent: string): string =>

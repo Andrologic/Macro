@@ -1124,6 +1124,8 @@
       "unknown": "Unknown"
     },
     "phase": {
+      "steering": "Waiting for steer receipt",
+      "withdrawingSteer": "Cancelling pending steer",
       "queued": "Queued",
       "running": "In progress",
       "completed": "Completed",

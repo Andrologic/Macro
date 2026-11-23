@@ -82,6 +82,17 @@ it('never publishes a paginated occurrence subset as a complete fan-out', async 
   await act(async () => access.publish({ ...access.snapshot, runs: { 'run-current': ready(run) } }));
   expect(host.textContent).toContain('Recorded occurrences: 2');
 });
+it('shows the two unconfirmed steer phases in the run inspector', async () => {
+  const run = inspectionFixture030();
+  const occurrences = run.state.occurrences;
+  if (occurrences.kind !== 'ready') throw new Error('Missing fixture occurrences');
+  const steers = ready(occurrences.value.map((item, index) => ({
+    ...item, activation: { ...item.activation, phase: index === 0 ? 'steering' : 'withdrawingSteer' },
+  })));
+  await mount(monitorFixture030({ ...run, state: { ...run.state, occurrences: steers } }));
+  expect(host.textContent).toContain('Waiting for steer receipt');
+  expect(host.textContent).toContain('Cancelling pending steer');
+});
 it('uses only attested human occurrence mappings and retains unknown mappings', async () => {
   const run = inspectionFixture030(); const human = humanFixture030(run);
   const mapped = { ...human, workIds: ['activation-1', 'work-2'], occurrences: [

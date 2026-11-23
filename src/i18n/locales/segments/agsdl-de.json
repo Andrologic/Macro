@@ -1124,6 +1124,8 @@
       "unknown": "Unbekannt"
     },
     "phase": {
+      "steering": "Wartet auf Empfangsbestätigung der Anweisung",
+      "withdrawingSteer": "Ausstehende Anweisung wird zurückgezogen",
       "queued": "In Warteschlange",
       "running": "In Bearbeitung",
       "completed": "Abgeschlossen",

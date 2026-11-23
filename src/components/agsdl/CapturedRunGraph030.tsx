@@ -15,10 +15,10 @@ export function CapturedRunGraph030({ bridge, currentSource, onInspect }: { brid
   const graph = document?.graphs[0];
   const system = useMemo(() => projectSystemOverview(graph, document?.declarations ?? []), [graph, document]);
   const badges: Record<string, WorkflowOccurrenceBadge030[]> = {};
-  const stateFor = (phase: string, stop: boolean): NativeCardState => stop ? 'stopRequested'
+  const stateFor = (phase: string, stop: boolean): NativeCardState => stop || phase === 'withdrawingSteer' ? 'stopRequested'
     : ['done', 'completed', 'succeeded', 'ended'].includes(phase) ? 'completed'
     : phase === 'failed' ? 'failed' : ['cancelled', 'withdrawn'].includes(phase) ? 'stopped'
-    : phase === 'waiting' ? 'approval' : ['running', 'live', 'body', 'group', 'barrier'].includes(phase) ? 'active'
+    : phase === 'waiting' ? 'approval' : ['running', 'steering', 'live', 'body', 'group', 'barrier'].includes(phase) ? 'active'
     : ['queued', 'ready', 'pending', 'preparing'].includes(phase) ? 'queued' : 'uncertain';
   for (const visit of bridge.occurrences) {
     if (!visit.staticOccurrenceId) continue;
