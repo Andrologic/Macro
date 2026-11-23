@@ -1271,10 +1271,11 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "agsdl_get",
-    "Read the calling blueprint's AgSDL document and revision with bounded UTF-8 responses. Read section guide for the language contract before designing or editing structures. Use path for exact source reads. Follow outline.next_offset to discover every pointer. Explicit sections provide complete reports and oversized values as text pages; concatenate content before parsing JSON.",
+    "Read the calling blueprint and its revision. For projects, page files using expected_revision and read file with file_path for bounded UTF-8 text. Read guide for the project and language rules. Legacy documents use outline and source with JSON pointers.",
     { type: "object", properties: {
       blueprint_id: { type: "string", description: "Blueprint identity returned by agsdl_get." }, plan_id: { type: "string" }, target_branch: { type: "string" }, path: { type: "string", allowEmpty: true },
-      section: { type: "string", enum: ["outline", "outline_entry", "source", "guide", "report", "design", "display", "models", "annex_ids", "error"], description: "Omit for overview. outline lists pointers; source reads path; guide provides the language authoring rules without searching project files; report reads the original report JSON; models returns a qualified native harness catalogue for 0.3 and 0.4, or not-assessed until runtime is connected; 0.1/0.2 retain macro_models. Other sections read their full JSON text." },
+      file_path: { type: "string", description: "Project-relative path from section files." },
+      section: { type: "string", enum: ["files", "file", "project_settings", "project_diagnostics", "outline", "outline_entry", "source", "guide", "report", "design", "display", "models", "annex_ids", "error"], description: "Projects default to files. Read file_path with file, and use project_settings and project_diagnostics for Macro settings and file-local diagnostics. Legacy documents default to overview. outline lists pointers; source reads path; guide provides the language authoring rules without searching project files; report reads the original report JSON; models returns a qualified native harness catalogue for 0.3 and 0.4, or not-assessed until runtime is connected; 0.1/0.2 retain macro_models. Other sections read their full JSON text." },
       expected_revision: { type: "string", description: "Use the returned revision for every subsequent page; stale reads fail explicitly." },
       offset: { type: "number", description: "Nonnegative integer. Entry offset for outline; UTF-8 byte offset for text sections. Follow next_offset until null." },
       limit: { type: "number", description: "Positive integer. Up to 200 outline entries (default 100) or 16384 text bytes. A byte budget may return fewer; follow next_offset." },
@@ -1285,9 +1286,20 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "agsdl_update",
-    "Edit and save the calling blueprint's AgSDL document. Read agsdl_get first. Supply exactly one of changes, source, example, design_json, or display_json. Use AgSDL 0.4.0 for new designs and preserve the edition of an existing draft while editing. Keep design and display metadata in the Macro envelope. Atomic pointer edits preserve untouched content. Returns a new revision and diagnostics; never runs agents.",
+    "Edit and save the calling blueprint using the revision from agsdl_get. Apply one ordered file_operations batch and optional macro_settings to an AgSDL project. For a legacy document, use one of changes, source, example, design_json, or display_json. Returns revision and diagnostics.",
     { type: "object", properties: {
       blueprint_id: { type: "string", description: "Blueprint identity returned by agsdl_get." }, plan_id: { type: "string" }, target_branch: { type: "string" }, expected_revision: { type: "string" },
+      file_operations: { type: "array", items: { type: "object", properties: {
+        op: { type: "string", enum: ["set", "remove", "write", "remove_file"] },
+        file: { type: "string", description: "Portable path relative to the project root." },
+        pointer: { type: "string", allowEmpty: true, description: "File-local JSON pointer for set/remove." },
+        value_json: { type: "string", description: "Exact JSON value for set." },
+        text: { type: "string", allowEmpty: true, description: "Complete UTF-8 text for write." },
+      }, required: ["op", "file"] } },
+      macro_settings: { type: "object", properties: {
+        hidden_agent_ids: { type: "array", items: { type: "string" } },
+        entry_message_hint: { type: "string", allowEmpty: true, description: "Author's hint for the initial message. Empty clears it." },
+      }, required: [] },
       changes: { type: "array", items: { type: "object", properties: { op: { type: "string", enum: ["set", "remove"] }, path: { type: "string", allowEmpty: true }, value_json: { type: "string", description: "Exact JSON value as text, required for set." } }, required: ["op", "path"] } },
       source: { type: "string", description: "Complete replacement document; prefer changes for focused edits." },
       example: { type: "string", enum: ["release", "feature", "hotfix", "bugfix"], description: "Initialize an empty document in AgSDL 0.4.0." },

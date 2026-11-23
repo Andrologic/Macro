@@ -32,7 +32,7 @@ pub(crate) struct VersionKey {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Summary {
-    id: String,
+    pub(crate) id: String,
     project_id: String,
     name: String,
     revision: i64,
@@ -44,7 +44,7 @@ pub(crate) struct Summary {
 #[derive(Debug, Serialize)]
 pub(crate) struct Draft {
     #[serde(flatten)]
-    summary: Summary,
+    pub(crate) summary: Summary,
     history: Option<serde_json::Map<String, Value>>,
     document: Document,
     #[serde(rename = "storageState", skip_serializing_if = "Option::is_none")]
@@ -138,7 +138,7 @@ fn decode(row: &sqlx::sqlite::SqliteRow) -> DbResult<Document> {
     serde_json::from_str(row.try_get("document")?).map_err(|e| invalid(&e.to_string()))
 }
 
-fn summary(row: &sqlx::sqlite::SqliteRow) -> DbResult<Summary> {
+pub(crate) fn summary(row: &sqlx::sqlite::SqliteRow) -> DbResult<Summary> {
     let origin_id: Option<String> = row.try_get("origin_blueprint_id")?;
     let origin = match origin_id {
         Some(blueprint_id) => Some(VersionKey {
@@ -158,7 +158,7 @@ fn summary(row: &sqlx::sqlite::SqliteRow) -> DbResult<Summary> {
     })
 }
 
-fn history(row: &sqlx::sqlite::SqliteRow) -> DbResult<Option<serde_json::Map<String, Value>>> {
+pub(crate) fn history(row: &sqlx::sqlite::SqliteRow) -> DbResult<Option<serde_json::Map<String, Value>>> {
     let history: Option<&str> = row.try_get("history")?;
     history
         .map(serde_json::from_str)
@@ -176,7 +176,7 @@ fn draft(row: &sqlx::sqlite::SqliteRow) -> DbResult<Draft> {
     })
 }
 
-fn version_summary(row: &sqlx::sqlite::SqliteRow) -> DbResult<VersionSummary> {
+pub(crate) fn version_summary(row: &sqlx::sqlite::SqliteRow) -> DbResult<VersionSummary> {
     Ok(VersionSummary {
         key: VersionKey {
             blueprint_id: row.try_get("blueprint_id")?,

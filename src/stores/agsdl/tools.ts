@@ -1,5 +1,5 @@
 import { isFlowDocumentContract } from "../../services/agsdl/contract";
-import { isSupportedContract } from "../../services/agsdl/document";
+import { isSupportedContract, MAX_AGSDL_PROJECTION_BYTES } from "../../services/agsdl/document";
 import { readDesign,updateDesignMetadata,validDisplayMetadata,type AgsdlDisplayMetadata,type DesignMetadata } from "../../services/agsdl/design";
 import { list,object,pointerPart,readDocument,scanSource,sourceAt,text } from "../../services/agsdl/document";
 import { AGSDL_EXAMPLES,createExampleDocument,type AgsdlExample } from "../../services/agsdl/examples";
@@ -9,7 +9,9 @@ import { macroNativeModelEdition } from "../../services/agsdl/nativeModelEdition
 import { getArchitectPlan } from "../../services/architectPlanService";
 import { paginateTextBytes,TOOL_OUTPUT_LIMITS } from "../../shared/toolOutputLimits";
 import type { AgsdlChange } from "../../types/agsdl";
-import { agsdlSessionKey,useAgsdlStore } from "../useAgsdlStore";
+import type { MacroSettingsChange } from "../../services/ipc/architectLibrary";
+import { localProjectEdit, projectFileEntries, projectSettings, type ProjectOperation } from "./projectEdits";
+import { agsdlSessionKey,useAgsdlStore, type BlueprintDocumentTarget } from "../useAgsdlStore";
 import { useProviderStore } from "../useProviderStore";
 
 /** An authoring request was refused without changing the source. */
@@ -51,6 +53,7 @@ const PAGE_BYTES = 16 * 1024;
 const bytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 const sections = ["outline", "outline_entry", "source", "guide", "report", "design", "display", "models", "annex_ids", "error"] as const;
 type ReadSection = typeof sections[number];
+type ProjectSection = "file" | "project_settings" | "project_diagnostics";
 interface InventoryEntry { catalog: string; path: string; name?: string; type?: unknown; key?: unknown; kind?: unknown }
 const catalogNames = (contract: unknown) => isFlowDocumentContract(contract)
   ? ["agents", "content", "skills", "mcpServers", "compositions"]
@@ -112,14 +115,14 @@ function inventoryPage(doc: Record<string, unknown>, entries: InventoryEntry[], 
   return { contract: doc.contract, ...(bytes(doc.id ?? null) < 256 ? { id: doc.id } : { id_omitted: true }),
     entries: items, ...catalogs, offset, limit, total: entries.length, returned: items.length, next_offset: index < entries.length ? index : null };
 }
-function textPage(content: string, args: Record<string, unknown>, section: ReadSection, base: Record<string, unknown>) {
+function textPage(content: string, args: Record<string, unknown>, section: ReadSection | ProjectSection, base: Record<string, unknown>) {
   const offset = integerArg(args, "offset", 0);
   if (section === "models" && offset > 0 && args.cursor === undefined) throw new AgsdlReadArgumentError("Use the returned cursor to continue the provider catalog read.");
   let limit = Math.min(integerArg(args, "limit", PAGE_BYTES), PAGE_BYTES);
   if (!limit) throw new AgsdlReadArgumentError("limit must be positive.");
   while (true) {
     const page = paginateTextBytes(content, { ...(args.cursor === undefined ? { start_byte: offset } : { cursor: args.cursor, ...(args.offset !== undefined ? { start_byte: offset } : {}) }), max_bytes: limit }, JSON.stringify({ ...base, section, path: typeof args.path === "string" ? args.path : "" }) + "\n" + content);
-    const response = { ...base, section, text_page: { format: "json-text", encoding: "utf-8", content: page.content,
+    const response = { ...base, section, text_page: { format: section === "file" ? "text" : "json-text", encoding: "utf-8", content: page.content,
       offset: page.startByte, limit: page.maxBytes, total_bytes: page.totalBytes, returned_bytes: page.returnedBytes,
       next_offset: page.truncated ? page.endByte : null, next_cursor: page.nextCursor } };
     if (bytes(response) <= AGSDL_TOOL_RESPONSE_BYTES) return JSON.stringify(response);
@@ -127,7 +130,7 @@ function textPage(content: string, args: Record<string, unknown>, section: ReadS
     limit = Math.max(4, Math.floor(limit / 2));
   }
 }
-function addBounded(response: Record<string, unknown>, key: string, value: unknown, section: ReadSection, maxBytes = AGSDL_TOOL_RESPONSE_BYTES - 512) {
+function addBounded(response: Record<string, unknown>, key: string, value: unknown, section: ReadSection | ProjectSection, maxBytes = AGSDL_TOOL_RESPONSE_BYTES - 512) {
   if (value === undefined) return;
   if (bytes({ ...response, [key]: value }) <= maxBytes) response[key] = value;
   else response[`${key}_omitted`] = section === "report" ? { section, report_count: Array.isArray(value) ? value.length : undefined }
@@ -197,6 +200,122 @@ async function resolveLegacyDocument(params: AgsdlToolCall, args: Record<string,
   return { target, editable: plan.status === "draft" };
 }
 
+function projectOperations(value: unknown): ProjectOperation[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 8192) throw new AgsdlAuthoringRefusal("file_operations must be an ordered array of at most 8192 operations.");
+  return value.map(raw => {
+    const operation = object(raw);
+    const path = operation.file;
+    if (typeof path !== "string" || !path) throw new AgsdlAuthoringRefusal("Each operation needs a project-relative file.");
+    if (operation.op === "remove_file") return { kind: "remove", path };
+    if (operation.op === "write" && typeof operation.text === "string") return { kind: "write", path, text: operation.text };
+    if (typeof operation.pointer === "string" && (operation.op === "remove" ||
+      (operation.op === "set" && typeof operation.value_json === "string"))) {
+      return { kind: "edit", path, change: { op: operation.op, path: operation.pointer, valueJson: operation.value_json as string | undefined } };
+    }
+    throw new AgsdlAuthoringRefusal("Use write with text, remove_file, or set/remove with a file-local pointer. A set needs value_json.");
+  });
+}
+
+function projectSettingsPatch(value: unknown): MacroSettingsChange | undefined {
+  if (value === undefined) return;
+  const settings = object(value);
+  const ids = settings.hidden_agent_ids;
+  const hint = settings.entry_message_hint;
+  if ((ids !== undefined && (!Array.isArray(ids) || ids.some(id => typeof id !== "string"))) ||
+      (hint !== undefined && typeof hint !== "string") ||
+      Object.keys(settings).some(key => !["hidden_agent_ids", "entry_message_hint"].includes(key))) {
+    throw new AgsdlAuthoringRefusal("Use hidden_agent_ids (logical agent IDs) or entry_message_hint (text, empty to clear).");
+  }
+  return {
+    ...(ids === undefined ? {} : { hiddenAgentIds: ids as string[] }),
+    ...(hint === undefined ? {} : { entryMessageHint: hint || null }),
+  };
+}
+
+async function handleProjectToolRequest(params: AgsdlToolCall, target: BlueprintDocumentTarget): Promise<string> {
+  const { args } = params;
+  const store = useAgsdlStore.getState;
+  const current = () => store().sessions[agsdlSessionKey(target)];
+  const check = (revision: string) => {
+    if (!params.isCurrent()) throw new AgsdlAuthoringRefusal("The authoring turn has ended.");
+    if (current()?.version !== revision || current()?.draftConflict || current()?.saving)
+      throw new AgsdlAuthoringRefusal("The project changed. Start agsdl_get again with the current revision.");
+  };
+  const session = current();
+  check(session.version);
+  if ((args.expected_revision !== undefined && args.expected_revision !== session.version) ||
+    (params.toolName === "agsdl_update" && args.expected_revision !== session.version))
+    throw new AgsdlAuthoringRefusal("The project changed. Start agsdl_get again with the current revision.");
+  const baseFor = () => ({ blueprint_id: target.blueprintId, revision: current().version,
+    persisted_revision: current().persistedRevision, dirty: current().dirty });
+  if (params.toolName === "agsdl_update") {
+    if (session.status !== "draft") throw new AgsdlAuthoringRefusal("This project is read-only.");
+    if (["changes", "source", "example", "design_json", "display_json"].some(key => Object.hasOwn(args, key)) ||
+        (args.file_operations === undefined && args.macro_settings === undefined))
+      throw new AgsdlAuthoringRefusal("Use file_operations and optional macro_settings to edit a project.");
+    const operations = projectOperations(args.file_operations);
+    const settings = projectSettingsPatch(args.macro_settings);
+    await store().applyProjectBatch(target, operations, settings, session.version, params.isCurrent);
+    if (!params.isCurrent()) throw new AgsdlAuthoringRefusal("The authoring turn has ended.");
+    await store().save(target);
+    const response: Record<string, unknown> = { ...baseFor(), section: "project_diagnostics" };
+    addBounded(response, "diagnostics", current().project?.view.diagnostics, "project_diagnostics");
+    return JSON.stringify(response);
+  }
+  if (params.toolName !== "agsdl_get") throw new AgsdlAuthoringRefusal("Unknown AgSDL tool.");
+  const base = baseFor();
+  if ((integerArg(args, "offset", 0) > 0 || args.cursor !== undefined) && args.expected_revision === undefined)
+    throw new AgsdlReadArgumentError("expected_revision is required after the first page.");
+  const project = session.project!;
+  const section = args.section ?? "files";
+  if (section === "guide") return textPage(JSON.stringify({
+    project: "Read section files and page its inventory using expected_revision. Read section file with file_path for exact text. Concatenate pages until next_offset is null. Use agsdl_update file_operations in order. Each operation names a project-relative file; set/remove use JSON pointers within that file. Write new text files before referencing them in agsdl.json. The manifest declares projectFormat agsdl-project-1 and contract agsdl-0.4.0. Named components may be inline or {file}. Resolve relative resources from the file that declares them. Preserve imported file layout. Validate and inspect file-local diagnostics after each batch.",
+    macro_settings: "Read section project_settings. Update hidden_agent_ids using logical agent IDs and entry_message_hint as text (empty clears it). Keep these values outside the AgSDL files.",
+    language: flowAuthoringGuide(),
+  }), args, "guide", base);
+  if (section === "project_settings") return textPage(JSON.stringify(projectSettings(project)), args, section, base);
+  if (section === "project_diagnostics") return textPage(JSON.stringify(project.view.diagnostics), args, section, base);
+  if (section === "models") {
+    const models = params.readHarnessCatalogue ? await params.readHarnessCatalogue() : unassessedHarnessCatalogue();
+    check(session.version);
+    return textPage(JSON.stringify(models), args, section, base);
+  }
+  if (section === "source") {
+    const source = project.saved.projection?.source;
+    if (!source || session.dirty) throw new AgsdlReadArgumentError("Read the source files while this project's projection is unavailable.");
+    const pointer = typeof args.path === "string" ? args.path : "";
+    const origin = localProjectEdit(project.saved, { op: "set", path: pointer });
+    if (origin.kind !== "edit") throw new AgsdlReadArgumentError("Unknown source location.");
+    return textPage(pointer ? sourceAt(source, pointer, MAX_AGSDL_PROJECTION_BYTES) : source, args, section, {
+      ...base, file_path: origin.path, file_pointer: origin.change.path, read_only_projection: true,
+    });
+  }
+  if (section === "file") {
+    const filePath = args.file_path;
+    if (typeof filePath !== "string" || !filePath) throw new AgsdlReadArgumentError("Supply file_path from the project inventory.");
+    const file = await store().readProjectFile(target, filePath);
+    check(session.version);
+    if (!file) throw new AgsdlReadArgumentError("This file is absent from the project.");
+    const descriptor = { ...base, file: file.file, kind: file.kind };
+    return file.kind === "text" ? textPage(file.text, { ...args, path: filePath }, section, descriptor) : JSON.stringify(descriptor);
+  }
+  if (section !== "files") throw new AgsdlReadArgumentError("Use files, file, guide, project_settings, project_diagnostics or models for this project.");
+  const files = projectFileEntries(project);
+  const offset = integerArg(args, "offset", 0);
+  const limit = Math.min(integerArg(args, "limit", 100), 200);
+  if (!limit || offset > files.length) throw new AgsdlReadArgumentError("Invalid file inventory page.");
+  const entries = [];
+  let next = offset;
+  for (let size = 0; next < files.length && next < offset + limit; next++) {
+    size += bytes(files[next]) + 1;
+    if (size > PAGE_BYTES && entries.length) break;
+    entries.push(files[next]);
+  }
+  return JSON.stringify({ ...base, section, files: entries, offset, total: files.length,
+    next_offset: next < files.length ? next : null });
+}
+
 async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
   if (!params.isCurrent()) throw new Error("The authoring turn has ended.");
   const { args } = params;
@@ -209,6 +328,11 @@ async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
     throw new AgsdlAuthoringRefusal("Read the selected blueprint with agsdl_get before editing.");
   const store = useAgsdlStore.getState;
   await store().load(target);
+  if ("blueprintId" in target && store().sessions[agsdlSessionKey(target)]?.project) {
+    // Pagination and agent writes must see revisions published by other windows.
+    await store().load(target, true);
+    return handleProjectToolRequest(params, target);
+  }
   if (!params.isCurrent()) throw new Error("The authoring turn has ended.");
   const current = () => store().sessions[agsdlSessionKey(target)];
   if (params.toolName === "agsdl_get" && args.expected_revision !== undefined && args.expected_revision !== current().version) {
@@ -248,7 +372,7 @@ async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
           valueJson: item.value_json as string | undefined,
         };
       });
-      store().edit(target, changes, args.expected_revision);
+      await store().edit(target, changes, args.expected_revision);
     } else if (alternatives[0] === "design_json") {
       if (typeof args.design_json !== "string") throw new Error("design_json must be a JSON string.");
       scanSource(args.design_json);

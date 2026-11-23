@@ -58,7 +58,7 @@ function HistoricalComponentDetailsDialog({ title, target, card, canEdit = true,
         }
         const changes = [...componentChanges(draft.fields, draft.values), ...propertyChanges(draft.properties.fields, draft.propertyValues), ...(card && draft.configuration.editable && draft.modelSelected ? macroConfigurationChanges(draft.source, card, draft.providerId, draft.modelId) : [])];
         if (!changes.length) { setDraft(undefined); return; }
-        store.edit(target, changes, draft.version);
+        await store.edit(target, changes, draft.version);
         const version = useAgsdlStore.getState().sessions[agsdlSessionKey(target)].version;
         setDraft({ ...draft, version }); setApplied(true);
       }

@@ -503,3 +503,285 @@ async fn executable_archive_members_survive_adaptation_and_freeze_without_unix_m
         );
     }
 }
+
+fn batch(value: serde_json::Value) -> crate::architect_library::project_editor::EditBatch {
+    serde_json::from_value(value).unwrap()
+}
+
+#[tokio::test]
+async fn file_batches_edit_migrated_projects_and_hold_versions_read_only() {
+    use crate::architect_library::project_editor::{ProjectFile, ProjectTarget, TEXT_LIMIT};
+
+    let temp = tempfile::tempdir().unwrap();
+    let pool = create_pool(&temp.path().join("macro.db")).await.unwrap();
+    seed(&pool, &envelope(&editor("Reviews"))).await;
+    let storage = Storage::new(temp.path());
+    migration::migrate(&pool, &storage).await.unwrap();
+    let original = storage.open_draft_project(&pool, BLUEPRINT).await.unwrap();
+    let graph = original.project.projection.unwrap();
+    let agent = &graph.origins["/agents/reviewer"];
+    let agent_path = agent.file.clone();
+    assert_eq!(agent.pointer, "");
+    assert_ne!(agent_path, super::project::MANIFEST);
+    let previous_agent = storage
+        .read_project_file(
+            &pool,
+            ProjectTarget::Draft {
+                blueprint_id: BLUEPRINT.into(),
+                revision: 5,
+            },
+            &agent_path,
+        )
+        .await
+        .unwrap();
+    let ProjectFile::Text { text, .. } = previous_agent.content else {
+        panic!("agent is text")
+    };
+
+    let invalid = json!({ "files": [
+        { "kind": "write", "path": agent_path, "text": "{bad" },
+        { "kind": "write", "path": "new.txt", "text": "Bonjour" },
+    ] });
+    let preview = storage
+        .edit_project(&pool, BLUEPRINT, 5, batch(invalid.clone()), false)
+        .await
+        .unwrap();
+    assert_eq!(preview.revision, 5);
+    assert!(preview.projection.is_none());
+    assert_eq!(
+        preview.diagnostics[0].file.as_deref(),
+        Some(agent_path.as_str())
+    );
+    assert_eq!(preview.diagnostics[0].code, "PROJECT");
+    let persisted = storage.open_draft_project(&pool, BLUEPRINT).await.unwrap();
+    assert!(persisted.project.projection.is_some());
+    assert!(!persisted
+        .project
+        .files
+        .iter()
+        .any(|file| file.path == "new.txt"));
+
+    let saved = storage
+        .edit_project(&pool, BLUEPRINT, 5, batch(invalid), true)
+        .await
+        .unwrap();
+    assert_eq!(saved.revision, 6);
+    assert!(saved.projection.is_none());
+    assert!(storage
+        .freeze(&pool, BLUEPRINT.into(), 6, None, None)
+        .await
+        .is_err());
+    assert!(storage
+        .read_project_file(
+            &pool,
+            ProjectTarget::Draft {
+                blueprint_id: BLUEPRINT.into(),
+                revision: 5,
+            },
+            &agent_path
+        )
+        .await
+        .is_err());
+
+    let fixed = json!({ "files": [
+        { "kind": "write", "path": agent_path, "text": text },
+        { "kind": "remove", "path": "new.txt" },
+    ], "settings": { "hiddenAgentIds": ["reviewer"], "entryMessageHint": "Review the code" } });
+    let saved = storage
+        .edit_project(&pool, BLUEPRINT, 6, batch(fixed), true)
+        .await
+        .unwrap();
+    assert_eq!(saved.revision, 7);
+    assert_eq!(saved.projection.unwrap().source, graph.source);
+    assert!(!saved.files.iter().any(|file| file.path == "new.txt"));
+
+    let over = json!({ "files": [{ "kind": "write", "path": "oversized.txt", "text": "x".repeat(TEXT_LIMIT + 1) }] });
+    for save in [false, true] {
+        let error = storage
+            .edit_project(&pool, BLUEPRINT, 7, batch(over.clone()), save)
+            .await
+            .unwrap_err();
+        let crate::db::DbError::Architect(error) = error else {
+            panic!("{error:?}")
+        };
+        assert_eq!(error.diagnostic().code, "EDITOR_LIMIT");
+    }
+
+    let frozen = storage
+        .freeze(&pool, BLUEPRINT.into(), 7, None, None)
+        .await
+        .unwrap();
+    assert_eq!(serde_json::to_value(frozen).unwrap()["number"], 8);
+    let version = storage.open_version_project(&pool, &key(8)).await.unwrap();
+    assert_eq!(
+        version.project.settings.entry_message_hint.as_deref(),
+        Some("Review the code")
+    );
+    let read = storage
+        .read_project_file(&pool, ProjectTarget::Version { key: key(8) }, &agent_path)
+        .await
+        .unwrap();
+    assert_eq!(read.revision, 7);
+    assert!(matches!(read.content, ProjectFile::Text { text: frozen, .. } if frozen == text));
+    let copy = storage
+        .adapt_version(&pool, key(8), "project".into(), "Adapted".into())
+        .await
+        .unwrap();
+    storage
+        .edit_project(
+            &pool,
+            &copy.summary.id,
+            1,
+            batch(json!({
+                "files": [], "settings": { "hiddenAgentIds": [], "entryMessageHint": null }
+            })),
+            true,
+        )
+        .await
+        .unwrap();
+    let origin = storage.open_version_project(&pool, &key(8)).await.unwrap();
+    assert_eq!(origin.project.settings.hidden_agent_ids, ["reviewer"]);
+    assert_eq!(
+        origin.project.settings.entry_message_hint.as_deref(),
+        Some("Review the code")
+    );
+}
+
+#[tokio::test]
+async fn import_and_exports_share_staged_bytes_and_keep_opaque_files_native() {
+    use crate::architect_library::{
+        imports,
+        project_editor::{ProjectFile, ProjectTarget, TEXT_LIMIT},
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    fs::create_dir(&data).unwrap();
+    let pool = create_pool(&data.join("macro.db")).await.unwrap();
+    seed(&pool, &envelope(&editor("Reviews"))).await;
+    let storage = Storage::new(&data);
+    migration::migrate(&pool, &storage).await.unwrap();
+
+    let folder = temp.path().join("import-project");
+    fs::create_dir_all(folder.join("skill")).unwrap();
+    let manifest = folder.join("agsdl.json");
+    fs::write(&manifest, r#"{"projectFormat":"agsdl-project-1","contract":"agsdl-0.4.0","id":"example","title":"Staged","agents":{},"skills":{"review":{"uri":"skill/SKILL.md"}}}"#).unwrap();
+    fs::write(
+        folder.join("skill/SKILL.md"),
+        b"---\nname: review\ndescription: Review.\n---\n",
+    )
+    .unwrap();
+    fs::write(folder.join("skill/binary"), [0xff, 0x00]).unwrap();
+    fs::write(folder.join("skill/oversized"), vec![b'x'; TEXT_LIMIT + 1]).unwrap();
+
+    let preview = imports::inspect(data.clone(), &manifest).unwrap();
+    assert_eq!(preview.preview.title.as_deref(), Some("Staged"));
+    fs::write(&manifest, b"unrelated new bytes").unwrap();
+    let mut claim = imports::take(&data, preview.handle).unwrap();
+    let candidate = claim.candidate.take().unwrap();
+    assert!(imports::take(&data, preview.handle).is_err());
+    let imported = storage
+        .import_project(&pool, "project", "Imported folder", candidate)
+        .await
+        .unwrap();
+    drop(claim);
+    let id = imported.draft.summary.id;
+    assert!(imported.version.is_none());
+    let revision = imported.draft.project.revision;
+    let projection = imported.draft.project.projection.unwrap();
+    assert!(projection.source.contains("Staged"));
+
+    for path in ["skill/binary", "skill/oversized"] {
+        let target = ProjectTarget::Draft {
+            blueprint_id: id.clone(),
+            revision,
+        };
+        let file = storage
+            .read_project_file(&pool, target, path)
+            .await
+            .unwrap()
+            .content;
+        match path {
+            "skill/binary" => assert!(matches!(file, ProjectFile::Binary { .. })),
+            _ => assert!(matches!(file, ProjectFile::Oversized { .. })),
+        }
+        assert!(storage
+            .edit_project(
+                &pool,
+                &id,
+                revision,
+                batch(json!({
+                    "files": [{ "kind": "write", "path": path, "text": "replace" }]
+                })),
+                true
+            )
+            .await
+            .is_err());
+    }
+
+    let exported = temp.path().join("exported-project");
+    assert_eq!(
+        storage
+            .export_project(
+                &pool,
+                ProjectTarget::Draft {
+                    blueprint_id: id.clone(),
+                    revision
+                },
+                &exported
+            )
+            .await
+            .unwrap(),
+        4
+    );
+    let exported_preview = imports::inspect(data.clone(), &exported).unwrap();
+    assert_eq!(
+        exported_preview.preview.staged_sha256,
+        preview.preview.staged_sha256
+    );
+    imports::discard(&data, exported_preview.handle);
+
+    storage
+        .freeze(&pool, id.clone(), revision, None, None)
+        .await
+        .unwrap();
+    let key = VersionKey {
+        blueprint_id: id,
+        number: 1,
+    };
+    let archive = temp.path().join("first.agsdl");
+    storage
+        .export_version_archive(&pool, &key, &archive)
+        .await
+        .unwrap();
+    let bytes = fs::read(&archive).unwrap();
+    let staged = imports::inspect(data.clone(), &archive).unwrap();
+    fs::remove_file(&archive).unwrap();
+    let mut claim = imports::take(&data, staged.handle).unwrap();
+    let imported = storage
+        .import_project(
+            &pool,
+            "project",
+            "Imported archive",
+            claim.candidate.take().unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(imported.version.is_some());
+    assert_eq!(imported.draft.project.settings, Default::default());
+    let key = VersionKey {
+        blueprint_id: imported.draft.summary.id,
+        number: 1,
+    };
+    let copy = temp.path().join("copy.agsdl");
+    storage
+        .export_version_archive(&pool, &key, &copy)
+        .await
+        .unwrap();
+    assert_eq!(fs::read(copy).unwrap(), bytes);
+    let read = storage
+        .read_project_file(&pool, ProjectTarget::Version { key }, "skill/binary")
+        .await
+        .unwrap();
+    assert!(matches!(read.content, ProjectFile::Binary { .. }));
+}

@@ -52,6 +52,9 @@ impl From<DbError> for CommandError {
         let message = error.to_string();
         let backend = match error {
             DbError::Validation(_) => BackendError::Validation(message.clone()),
+            DbError::Architect(error) => BackendError::Architect {
+                diagnostic: Box::new(error.diagnostic()),
+            },
             DbError::AgsdlUpgrade(diagnostics) => BackendError::AgsdlUpgrade(diagnostics),
             _ => BackendError::Database {
                 message: message.clone(),

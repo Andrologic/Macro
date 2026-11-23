@@ -1,3 +1,4 @@
+import { MAX_AGSDL_PROJECTION_BYTES } from "./document";
 import { isFlowDocumentContract } from "./contract";
 import { Graph } from "../../vendor/agsdl/v0.4/graph.mjs";
 import type { Report030 } from "../../vendor/agsdl/v0.4/reader.mjs";
@@ -87,8 +88,8 @@ export function resolveStaticAgent030(ref: unknown, bindings: Readonly<Record<st
 }
 
 /** Source inspection only. A missing/stale worker report never triggers synchronous validation. */
-export function projectStaticSemantics030(source: string, report?: SourceBoundReport030): StaticSemantics030 {
-  const scanned = scanSource(source), doc = object(scanned.tree);
+export function projectStaticSemantics030(source: string, report?: SourceBoundReport030, project = false): StaticSemantics030 {
+  const scanned = scanSource(source, project ? MAX_AGSDL_PROJECTION_BYTES : undefined), doc = object(scanned.tree);
   if (!isFlowDocumentContract(doc.contract)) throw new Error("Expected an AgSDL 0.3 or 0.4 document.");
   const validated = report?.source === source ? report.report : null;
   const shaped = validated !== null && !validated.diagnostics.some(item => item.code === "SHAPE" || item.code === "PARSE");

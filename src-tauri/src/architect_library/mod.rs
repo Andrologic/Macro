@@ -2,9 +2,11 @@
 
 pub mod archive;
 pub(crate) mod editor_document;
+pub(crate) mod imports;
 pub(crate) mod migration;
 mod preview;
 pub mod project;
+pub(crate) mod project_editor;
 pub(crate) mod storage;
 
 pub use preview::*;
@@ -54,6 +56,10 @@ pub enum Error {
     },
     #[error("{0}")]
     Storage(String),
+    #[error("{0}")]
+    Editor(&'static str),
+    #[error("{}", .0.message)]
+    Diagnostic(Diagnostic),
     #[error("Invalid destination path")]
     InvalidDestination,
     #[error("Filesystem operation failed: {0}")]
@@ -174,3 +180,91 @@ mod tests;
 
 #[cfg(test)]
 mod storage_tests;
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Diagnostic {
+    pub code: String,
+    pub file: Option<String>,
+    pub pointer: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<DiagnosticSource>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticSource {
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+}
+
+impl Diagnostic {
+    fn migration(message: String) -> Self {
+        Self {
+            code: "MIGRATION".into(),
+            file: None,
+            pointer: String::new(),
+            message,
+            source: None,
+        }
+    }
+}
+
+impl Error {
+    pub(crate) fn diagnostic(self) -> Diagnostic {
+        fn make(code: &str, message: String) -> Diagnostic {
+            Diagnostic {
+                code: code.into(),
+                message,
+                file: None,
+                pointer: String::new(),
+                source: None,
+            }
+        }
+        let message = self.to_string();
+        match self {
+            Self::Diagnostic(diagnostic) => diagnostic,
+            Self::ProjectIo {
+                file,
+                pointer,
+                path,
+                ..
+            } => Diagnostic {
+                file: Some(file),
+                pointer,
+                source: Some(DiagnosticSource {
+                    kind: "io",
+                    path: Some(path),
+                }),
+                ..make("PROJECT", message)
+            },
+            Self::Agsdl {
+                code,
+                file,
+                pointer,
+                message,
+            } => Diagnostic {
+                file,
+                pointer,
+                source: (code == "PROJECT").then_some(DiagnosticSource {
+                    kind: "invalidContent",
+                    path: None,
+                }),
+                ..make(&code, message)
+            },
+            Self::Editor(code) => make(code, message),
+            Self::UnsupportedSource => make("UNSUPPORTED_SOURCE", message),
+            Self::SymbolicLink(_) => make("PROJECT_PATH", message),
+            Self::ArchiveLimit => make("ARCHIVE_LIMIT", message),
+            Self::InvalidArchive(_) | Self::UnexpectedHistory => make("ARCHIVE_LAYOUT", message),
+            Self::DigestMismatch => make("ARCHIVE_INTEGRITY", message),
+            Self::DestinationExists => make("DESTINATION_EXISTS", message),
+            Self::InvalidDestination => make("INVALID_DESTINATION", message),
+            Self::PublishedNotSynced { .. } => make("PUBLISHED_NOT_SYNCED", message),
+            Self::Json(_) => make("INVALID_JSON", message),
+            Self::Io(_) | Self::Storage(_) => make("PROJECT_STORAGE", message),
+        }
+    }
+}

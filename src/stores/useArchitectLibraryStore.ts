@@ -30,7 +30,10 @@ interface ArchitectLibraryState {
   selectVersion: (number: number | null) => Promise<void>;
   createProject: (name: string) => Promise<void>;
   createBlueprint: (projectId: string, name: string) => Promise<void>;
+  adaptRecoveryDraft: (blueprintId: string, expectedRevision: number, projectId: string, name: string) => Promise<void>;
   adaptVersion: (key: VersionKey, projectId: string, name: string) => Promise<void>;
+  commitImport: (handle: string, projectId: string, name: string) => Promise<void>;
+  deleteVersion: (key: VersionKey) => Promise<void>;
   saveVersion: (blueprintId: string, note: string | null) => Promise<void>;
 }
 
@@ -45,7 +48,7 @@ export function confirmedBlueprintDraft({ draft, draftStatus, versionNumber }: A
 
 export function selectedBlueprintForConversation(conversationId: string) {
   const draft = confirmedBlueprintDraft(useArchitectLibraryStore.getState());
-  return draft?.conversationId === conversationId && !draft.archived ? draft : null;
+  return draft?.conversationId === conversationId && !draft.archived && draft.storageState !== "recovery" ? draft : null;
 }
 
 export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get) => {
@@ -195,11 +198,29 @@ export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get)
       const draft = await architectLibrary.createBlueprint(projectId, name.trim(), createEmptyBlueprintDocument(name.trim()));
       await revealNewDraft(draft, requestedDraft, requestedVersion);
     },
+    async adaptRecoveryDraft(blueprintId, expectedRevision, projectId, name) {
+      const requestedDraft = draftRequest;
+      const requestedVersion = versionRequest;
+      const draft = await architectLibrary.adaptRecoveryDraft(blueprintId, expectedRevision, projectId, name.trim());
+      await revealNewDraft(draft, requestedDraft, requestedVersion);
+    },
     async adaptVersion(key, projectId, name) {
       const requestedDraft = draftRequest;
       const requestedVersion = versionRequest;
       const draft = await architectLibrary.adaptVersion(key, projectId, name.trim());
       await revealNewDraft(draft, requestedDraft, requestedVersion);
+    },
+    async commitImport(handle, projectId, name) {
+      const requestedDraft = draftRequest;
+      const requestedVersion = versionRequest;
+      const { draft } = await architectLibrary.commitImport(handle, projectId, name.trim());
+      await revealNewDraft(draft, requestedDraft, requestedVersion);
+    },
+    async deleteVersion(key) {
+      await architectLibrary.deleteVersion(key);
+      if (get().draft?.id !== key.blueprintId) return;
+      if (get().versionNumber === key.number) await get().selectVersion(null);
+      await get().refreshVersions();
     },
     async saveVersion(blueprintId, note) {
       const draft = confirmedBlueprintDraft(get());

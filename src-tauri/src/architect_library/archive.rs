@@ -29,6 +29,10 @@ impl VerifiedArchive {
         self.snapshot.path().join(VERSION_FILENAME)
     }
 
+    pub(super) fn size(&self) -> io::Result<u64> {
+        Ok(std::fs::metadata(self.path())?.len())
+    }
+
     fn copy_to(&self, path: &Path) -> Result<()> {
         let mut target = create_archive_file(path)?;
         io::copy(&mut File::open(self.path())?, &mut target)?;

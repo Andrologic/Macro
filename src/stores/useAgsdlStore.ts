@@ -19,8 +19,13 @@ updateArchitectPlan,
 import type { AgsdlChange,AgsdlReport } from "../types/agsdl";
 import {
   architectLibrary, type BlueprintDocument, type BlueprintDraft, type BlueprintVersion,
-  type BlueprintVersionSummary,
+  type BlueprintVersionSummary, type ProjectFile, type MacroSettingsChange, type ProjectView,
 } from "../services/ipc/architectLibrary";
+
+import {
+  appendProjectBatch, historyBuffers, initialProject, localProjectEdit, prepareProjectEdit, projectHistoryBudget,
+  type ProjectEditState, type ProjectOperation,
+} from "./agsdl/projectEdits";
 
 export interface AgsdlTarget {
   branchName: string;
@@ -42,6 +47,7 @@ interface Snapshot extends AgsdlEnvelopeMetadata {
 }
 export interface AgsdlSession extends Snapshot {
   libraryDocument?: BlueprintDocument;
+  project?: ProjectEditState;
   draftConflict?: { saved: BlueprintDraft | null };
   version: string;
   persistedRevision: number;
@@ -70,7 +76,9 @@ interface AgsdlState {
     target: AgsdlDocumentTarget,
     changes: AgsdlChange[],
     expectedVersion?: string,
-  ) => void;
+  ) => void | Promise<void>;
+  readProjectFile: (target: BlueprintDocumentTarget, path: string) => Promise<ProjectFile | null>;
+  applyProjectBatch: (target: BlueprintDocumentTarget, files: ProjectOperation[], settings?: MacroSettingsChange, expectedVersion?: string, isCurrent?: () => boolean) => Promise<void>;
   undo: (target: AgsdlDocumentTarget, redo?: boolean) => void;
   save: (target: AgsdlDocumentTarget) => Promise<void>;
   refreshDraftConflict: (target: BlueprintDocumentTarget) => Promise<void>;
@@ -166,10 +174,29 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
     set((state) => ({
       sessions: { ...state.sessions, [agsdlSessionKey(target)]: value },
     }));
-  const fromBlueprint = (record: BlueprintDraft | BlueprintVersion) => ({
-    ...newSession(record.document, record.revision, "number" in record || record.archived ? "archived" : "draft"),
-    libraryDocument: record.document,
-  });
+  const fromBlueprint = (record: BlueprintDraft | BlueprintVersion): AgsdlSession => {
+    const next = newSession(record.document, record.revision,
+      "number" in record || record.archived || record.storageState === "recovery" ? "archived" : "draft");
+    return record.project
+      ? { ...next, project: initialProject(record.project, next.version) }
+      : { ...next, libraryDocument: record.document };
+  };
+
+  const editConflict = () => new AgsdlUserError("agsdl.viewer.editConflict", "The document changed. Read it again before editing.");
+  const projectBatchRequired = () => new AgsdlUserError("agsdl.library.projectBatchRequired", "Edit the source files of this project.");
+  const projectSaved = (current: AgsdlSession, view: ProjectView, overwritten: boolean): AgsdlSession => {
+    const project = current.project!;
+    return {
+      ...current, source: view.projection?.source ?? current.source,
+      persistedRevision: view.revision, dirty: false, saving: false, draftConflict: undefined,
+      project: {
+        ...project, view, saved: view, pending: { files: [] }, buffers: new Map(),
+        graphRevision: view.projection ? view.revision : project.graphRevision,
+        graphVersion: view.projection ? current.version : project.graphVersion,
+        ...(overwritten ? { past: [], future: [] } : {}),
+      },
+    };
+  };
 
   // Keep the editor's base revision until the user explicitly resolves the conflict.
   async function readConflictingDraft(target: BlueprintDocumentTarget) {
@@ -195,6 +222,12 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
     assertEditableEdition(current.source);
     update(target, { ...current, saving: true, error: null });
     try {
+      if ("blueprintId" in target && current.project) {
+        const view = await architectLibrary.saveProjectDraft(
+          target.blueprintId, overwrite?.revision ?? current.persistedRevision, current.project.pending);
+        update(target, projectSaved(session(target), view, !!overwrite));
+        return;
+      }
       const document = snapshot(current);
       let revision: number;
       let status: ArchitectPlanStatus;
@@ -244,7 +277,8 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       const target = "number" in record
         ? { blueprintId: record.blueprintId, number: record.number }
         : { blueprintId: record.id };
-      const status = "number" in record || record.archived ? "archived" : "draft";
+      const nextSession = fromBlueprint(record);
+      const status = nextSession.status;
       const existing = get().sessions[agsdlSessionKey(target)];
       if (existing?.saving) return existing;
       if (existing && !("number" in record) && (existing.dirty || existing.draftConflict)) {
@@ -255,8 +289,12 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
         return next;
       }
       if (existing && (existing.persistedRevision > record.revision ||
-        (existing.persistedRevision === record.revision && existing.status === status))) return existing;
-      const next = fromBlueprint(record);
+        (existing.persistedRevision === record.revision && existing.status === status && !!existing.project === !!record.project))) return existing;
+      const next = nextSession;
+      if (next.project && existing?.project && !next.project.saved.projection && existing.source) {
+        next.source = existing.source;
+        next.project.graphRevision = existing.project.graphRevision;
+      }
       update(target, next);
       return next;
     },
@@ -269,7 +307,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       assertEditableEdition(current.source);
       // Validate and freeze a legacy edit in one native transaction so a
       // rejected conversion cannot persist the edit as a side effect.
-      const atomicEdit = current.dirty && draftContract(current.source) === "agsdl-0.3.0"
+      const atomicEdit = current.dirty && !current.project && draftContract(current.source) === "agsdl-0.3.0"
         ? { ...current.libraryDocument, ...snapshot(current) }
         : undefined;
       if (current.dirty && !atomicEdit) await get().save(target);
@@ -345,6 +383,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
     },
     replace(target, source, annexes, expectedVersion, metadata) {
       const current = session(target);
+      if (current.project) throw projectBatchRequired();
       assertDraft(current);
       if (expectedVersion !== undefined && expectedVersion !== current.version)
         throw new AgsdlUserError("agsdl.viewer.editConflict", "The document changed. Read it again before editing.");
@@ -380,6 +419,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
     },
     setDesign(target, design, expectedVersion) {
       const current = session(target);
+      if (current.project) throw projectBatchRequired();
       if (expectedVersion !== undefined && expectedVersion !== current.version) throw new AgsdlUserError("agsdl.viewer.editConflict", "The document changed. Read it again before editing.");
       assertEditableEdition(current.source);
       const previous = readDesign(current.source, current.design);
@@ -390,6 +430,10 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
     },
     edit(target, changes, expectedVersion) {
       const current = session(target);
+      if ("blueprintId" in target && current.project) {
+        if (current.project.graphVersion !== current.version || !current.project.saved.projection) throw editConflict();
+        return get().applyProjectBatch(target, changes.map(change => localProjectEdit(current.project!.saved, change)), undefined, expectedVersion);
+      }
       assertEditableEdition(current.source);
       get().replace(
         target,
@@ -398,10 +442,69 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
         expectedVersion ?? current.version,
       );
     },
+    async readProjectFile(target, path) {
+      const current = session(target);
+      const project = current.project;
+      if (!project) throw projectBatchRequired();
+      if (project.buffers.has(path)) return project.buffers.get(path)!;
+      if (!project.saved.files.some(file => file.path === path)) return null;
+      const file = await architectLibrary.readProjectFile(
+        target.number === undefined
+          ? { kind: "draft", blueprintId: target.blueprintId, revision: current.persistedRevision }
+          : { kind: "version", key: { blueprintId: target.blueprintId, number: target.number } }, path,
+      ).catch(async error => { throw await handleBlueprintWriteError(target, error); });
+      const latest = session(target);
+      if (latest.version !== current.version || latest.persistedRevision !== current.persistedRevision ||
+          file.revision !== current.persistedRevision) throw editConflict();
+      const latestProject = latest.project!;
+      update(target, { ...latest, project: {
+        ...latestProject, buffers: new Map(latestProject.buffers).set(path, file.content),
+      } });
+      return file.content;
+    },
+    async applyProjectBatch(target, files, settings, expectedVersion, isCurrent = () => true) {
+      const current = session(target);
+      assertDraft(current);
+      if (current.draftConflict) throw draftConflictError();
+      if (current.saving || (expectedVersion !== undefined && expectedVersion !== current.version)) throw editConflict();
+      if (!current.project) throw projectBatchRequired();
+      const { buffers, entry } = await prepareProjectEdit(
+        current.project, files, settings, path => get().readProjectFile(target, path));
+      if (!entry.forward.files.length && !entry.forward.settings) return;
+      const latest = session(target);
+      if (!isCurrent() || latest.version !== current.version || latest.saving || latest.draftConflict) throw editConflict();
+      const project = latest.project!;
+      update(target, {
+        ...latest, version: crypto.randomUUID(), dirty: true, error: null,
+        project: {
+          ...project, buffers: new Map([...project.buffers, ...buffers]),
+          pending: appendProjectBatch(project.pending, entry.forward),
+          past: projectHistoryBudget([...project.past, entry]), future: [],
+        },
+      });
+    },
     undo(target, redo = false) {
       const current = session(target);
       if (current.status !== "draft") return;
       if (current.saving) throw new AgsdlUserError("agsdl.userError.saving", "Wait for the current save to finish.");
+      if (current.project) {
+        if (current.draftConflict) throw draftConflictError();
+        const project = current.project;
+        const from = redo ? project.future : project.past;
+        const entry = from.at(-1);
+        if (!entry) return;
+        const batch = redo ? entry.forward : entry.backward;
+        update(target, {
+          ...current, version: crypto.randomUUID(), dirty: true, error: null,
+          project: {
+            ...project, buffers: historyBuffers(project, batch),
+            pending: appendProjectBatch(project.pending, batch),
+            past: redo ? projectHistoryBudget([...project.past, entry]) : from.slice(0, -1),
+            future: redo ? from.slice(0, -1) : projectHistoryBudget([...project.future, entry]),
+          },
+        });
+        return;
+      }
       const from = redo ? current.future : current.history;
       const next = from.at(-1);
       if (!next) return;
@@ -437,7 +540,14 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       const saved = current.draftConflict?.saved;
       if (current.saving || current.version !== version || saved?.revision !== revision)
         throw new AgsdlUserError("agsdl.viewer.editConflict", "The document changed. Review it before continuing.");
-      if (choice === "saved") update(target, fromBlueprint(saved));
+      if (choice === "saved") {
+        const next = fromBlueprint(saved);
+        if (next.project && current.project && !next.project.saved.projection && current.source) {
+          next.source = current.source;
+          next.project.graphRevision = current.project.graphRevision;
+        }
+        update(target, next);
+      }
       else {
         if (saved.archived) throw new AgsdlUserError("agsdl.readOnly", "This document is read-only.");
         await saveDocument(target, saved);
@@ -445,6 +555,20 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
     },
     async validate(target) {
       const current = session(target);
+      if ("blueprintId" in target && current.project) {
+        if (!current.dirty || current.saving || current.draftConflict) return;
+        try {
+          const view = await architectLibrary.validateDraft(target.blueprintId, current.persistedRevision, current.project.pending);
+          const latest = session(target);
+          if (latest.version === current.version && latest.dirty && !latest.saving && latest.persistedRevision === current.persistedRevision)
+            update(target, { ...latest, project: { ...latest.project!, view } });
+        } catch (error) {
+          const latest = session(target);
+          if (latest.version !== current.version || !latest.dirty || latest.saving) return;
+          if (isStaleRevision(error)) await handleBlueprintWriteError(target, error);
+        }
+        return;
+      }
       try {
         const reports = await validateDocument(current.source, current.annexes);
         const latest = get().sessions[agsdlSessionKey(target)];

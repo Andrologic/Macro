@@ -33,7 +33,7 @@ export function ComponentDetails030({ title, target, card, canEdit = true, child
       if (!applied) {
         const changes = propertyChanges(draft.properties.fields, authoringValues030(draft.properties.fields, draft.values, draft.lineInputs, true));
         if (!changes.length) { setDraft(undefined); return; }
-        store.edit(target, changes, draft.version);
+        await store.edit(target, changes, draft.version);
         setDraft({ ...draft, version: useAgsdlStore.getState().sessions[agsdlSessionKey(target)].version }); setApplied(true);
       }
       await store.save(target); setDraft(undefined); setApplied(false);

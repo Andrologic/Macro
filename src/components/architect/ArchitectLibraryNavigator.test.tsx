@@ -14,6 +14,7 @@ function libraryPort() {
   const projects = new Map<string, ArchitectProject>();
   const drafts = new Map<string, BlueprintDraft>();
   const versions = new Map<string, BlueprintVersion[]>();
+  const projectFileContents = new Map<string, string>();
   const delayedReads = new Map<string, Promise<BlueprintDraft>>();
   const writes: Array<{ blueprintId: string; expectedRevision: number }> = [];
   const versionFailures = new Map<string, unknown>();
@@ -43,7 +44,7 @@ function libraryPort() {
   const freeze = (draft: BlueprintDraft, note: string | null) => {
     const history = versions.get(draft.id) ?? [];
     const version: BlueprintVersion = { blueprintId: draft.id, number: history.length + 1, revision: draft.revision,
-      note, document: structuredClone(draft.document) };
+      note, document: structuredClone(draft.document), ...(draft.project ? { project: structuredClone(draft.project), storageState: "archive" as const } : {}) };
     versions.set(draft.id, [version, ...history]);
     return version;
   };
@@ -61,6 +62,14 @@ function libraryPort() {
         .map(({ document: _document, history: _history, ...summary }) => summary);
       case "architect_create_blueprint": return createDraft(projectId, name, args.document as BlueprintDocument);
       case "architect_get_draft": return structuredClone(await (delayedReads.get(blueprintId) ?? readDraft(blueprintId)));
+      case "architect_read_project_file": {
+        const target = args.target as import("../../services/ipc/architectLibrary").ProjectTarget;
+        const revision = target.kind === "draft" ? target.revision : readVersion(target.key).revision;
+        const path = String(args.path);
+        const text = projectFileContents.get(path);
+        if (text === undefined) throw new Error("Missing file");
+        return { revision, content: { kind: "text", file: { path, size: text.length, executable: false }, text } };
+      }
       case "architect_save_draft": {
         writes.push({ blueprintId, expectedRevision });
         const draft = readDraft(blueprintId);
@@ -91,7 +100,7 @@ function libraryPort() {
     }
   };
 
-  return { invoke, createProject, createDraft, freeze, projects, drafts, versions, delayedReads, writes, versionFailures };
+  return { invoke, createProject, createDraft, freeze, projects, drafts, versions, delayedReads, writes, versionFailures, projectFileContents };
 }
 
 let host: HTMLDivElement;
@@ -575,4 +584,37 @@ it("restores the exact blueprint and selected version into a fresh store", async
   await fresh.getState().restoreSelection();
   expect(fresh.getState()).toMatchObject({ projectId: project.id, blueprintId: chosen.id,
     draft: { conversationId: "feature-chat" }, versionNumber: 1, version: { status: "ready" } });
+});
+
+it("switches files in an archived project without exposing draft editor controls", async () => {
+  const port = libraryPort();
+  const project = port.createProject("Project");
+  const source = createExampleDocument("feature");
+  const draft = port.createDraft(project.id, "Native project", source, {
+    storageState: "draft",
+    project: {
+      revision: 1,
+      files: [
+        { path: "agsdl.json", size: 24, executable: false },
+        { path: "agents/build.json", size: 31, executable: false },
+      ],
+      settings: { schemaVersion: 1, hiddenAgentIds: [], workingFolderMode: "perExecution" },
+      projection: { source: source.source, origins: {} },
+      diagnostics: [],
+    },
+  });
+  port.projectFileContents.set("agsdl.json", '{"projectFormat":"agsdl-project-1"}');
+  port.projectFileContents.set("agents/build.json", '{"instructions":"Frozen instructions"}');
+  port.freeze(draft, "Native archive");
+  await mount(port);
+  await pick(projectPicker, project.id);
+  await click('nav button[title="Native project"]');
+  await buttonByText("nav li button span", "Version 1");
+  expect(panel().textContent).toContain("Version 1 · Read-only");
+  expect(panel().querySelector('[aria-label="Save version"]')).toBeNull();
+  await click('aside button[aria-label="Project files"]');
+  await pick('[role="dialog"] select', "agents/build.json");
+  expect(document.querySelector('[role="dialog"] pre')?.textContent).toContain("Frozen instructions");
+  expect(document.querySelector('[role="dialog"] textarea')).toBeNull();
+  expect(port.writes).toEqual([]);
 });

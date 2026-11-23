@@ -1,3 +1,4 @@
+import { MAX_AGSDL_PROJECTION_BYTES } from "./document";
 import { isFlowDocumentContract } from "./contract";
 import { list, object, pointerPart, scanSource, text } from "./document";
 import type { AgsdlEnvelopeMetadata } from "./design";
@@ -26,12 +27,12 @@ export interface ViewerRoute030 {
 }
 
 /** Static source inspection only. Runtime normalization and message resolution belong to 05. */
-export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadata, report?: SourceBoundReport030) {
-  const scanned = scanSource(source);
+export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadata, report?: SourceBoundReport030, project = false) {
+  const scanned = scanSource(source, project ? MAX_AGSDL_PROJECTION_BYTES : undefined);
   const doc = object(scanned.tree);
   const contract = doc.contract;
   if (!isFlowDocumentContract(contract)) throw new Error("Expected an AgSDL 0.3 or 0.4 document.");
-  const static030 = projectStaticSemantics030(source, report);
+  const static030 = projectStaticSemantics030(source, report, project);
   const occurrences = new Map(static030.occurrences.map(item => [item.occurrenceId, item]));
   const raw = (path: string) => {
     const span = scanned.spans.get(path);

@@ -11,6 +11,7 @@ export const AGSDL_020_CONTRACT = "agsdl-0.2.0";
 export const LEGACY_AGSDL_CONTRACT = "agsdl-0.1.0";
 export const isSupportedContract = (contract: unknown): boolean =>
   isFlowDocumentContract(contract) || contract === LEGACY_AGSDL_CONTRACT;
+export const MAX_AGSDL_PROJECTION_BYTES = 16 * 1024 * 1024;
 export const MAX_AGSDL_BYTES = 1024 * 1024;
 
 /** Identify a flow document marker without building an AST or spans on the UI thread. */
@@ -94,9 +95,9 @@ function encodeSource(source: string): Uint8Array {
   return encoder.encode(source);
 }
 
-export function scanSource(source: string) {
+export function scanSource(source: string, maxBytes = MAX_AGSDL_BYTES) {
   const bytes = encodeSource(source);
-  if (bytes.length > MAX_AGSDL_BYTES)
+  if (bytes.length > maxBytes)
     throw new Error("AgSDL document exceeds the 1 MiB editor limit.");
   const parsed = parse(bytes);
   if (parsed.error)
@@ -106,8 +107,8 @@ export function scanSource(source: string) {
   return parsed;
 }
 
-export function readDocument(source: string): Record<string, unknown> {
-  const parsed = scanSource(source);
+export function readDocument(source: string, maxBytes = MAX_AGSDL_BYTES): Record<string, unknown> {
+  const parsed = scanSource(source, maxBytes);
   const doc: unknown = isFlowDocumentContract(object(parsed.tree).contract) ? parsed.tree : JSON.parse(source);
   if (doc === null || typeof doc !== "object" || Array.isArray(doc))
     throw new Error("An AgSDL document must be a JSON object.");
@@ -127,8 +128,8 @@ export function validateDocumentBytes(bytes: Uint8Array, options?: ReaderOptions
   return read030(bytes, options);
 }
 
-export function sourceAt(source: string, path: string): string {
-  const parsed = scanSource(source);
+export function sourceAt(source: string, path: string, maxBytes = MAX_AGSDL_BYTES): string {
+  const parsed = scanSource(source, maxBytes);
   const span = parsed.spans.get(path);
   if (!span) throw new Error(`JSON pointer does not exist: ${path}`);
   return decoder.decode(parsed.bytes.subarray(span.start, span.end));
@@ -161,6 +162,15 @@ export function applyChanges(source: string, changes: AgsdlChange[]): string {
     throw new Error(
       "Structured editing requires a supported AgSDL edition. The original source can still be exported.",
     );
+  return applyJsonChanges(source, changes, contract, true);
+}
+
+/** A project component uses its own JSON pointer space and has no edition field. */
+export function applyProjectChanges(source: string, changes: AgsdlChange[]): string {
+  return applyJsonChanges(source, changes, AGSDL_CONTRACT, false);
+}
+
+function applyJsonChanges(source: string, changes: AgsdlChange[], contract: unknown, preserveContract: boolean): string {
   if (changes.length === 0 || changes.length > 100)
     throw new Error("Supply between 1 and 100 changes.");
   let candidate = source;
@@ -224,7 +234,7 @@ export function applyChanges(source: string, changes: AgsdlChange[]): string {
       stringify(parent) +
       decoder.decode(parsed.bytes.subarray(parentSpan.end));
   }
-  if (readDocument(candidate).contract !== contract)
+  if (preserveContract && readDocument(candidate).contract !== contract)
     throw new Error("An edition change requires an explicit complete document replacement.");
   return candidate;
 }

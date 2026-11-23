@@ -1,5 +1,13 @@
 use super::{get_pool, CommandResult, DbPool};
-use crate::architect_library::{migration, storage::Storage};
+use crate::architect_library::{
+    imports, migration,
+    project_editor::{EditBatch, FileRead, ProjectTarget, ProjectView},
+    storage::{
+        editor::{DraftProject, ImportedProject, VersionProject},
+        Storage,
+    },
+    Error,
+};
 use crate::db::architect_library::{self, *};
 use std::path::PathBuf;
 use tauri::Manager;
@@ -20,6 +28,40 @@ fn app_data(app: &tauri::AppHandle) -> CommandResult<PathBuf> {
     app.path()
         .app_data_dir()
         .map_err(|error| super::command_error(error.to_string()))
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum DraftResponse {
+    Project(DraftProject),
+    Legacy(Draft),
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum VersionResponse {
+    Project(VersionProject),
+    Legacy(Version),
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum SaveResponse {
+    Project(ProjectView),
+    Legacy(Draft),
+}
+
+async fn project_storage(
+    app: &tauri::AppHandle,
+    pool: &sqlx::SqlitePool,
+) -> CommandResult<Storage> {
+    current_storage(app, pool)
+        .await?
+        .ok_or_else(|| project_error(Error::Editor("LEGACY_LIBRARY")))
+}
+
+fn project_error(error: Error) -> crate::core::command_error::CommandError {
+    crate::db::DbError::from(error).into()
 }
 
 #[tauri::command]
@@ -51,13 +93,20 @@ pub(crate) async fn architect_create_blueprint(
     pool: State<'_, DbPool>,
     project_id: String,
     name: String,
-    document: Document,
-) -> CommandResult<Draft> {
+    document: Option<Document>,
+) -> CommandResult<DraftResponse> {
     let pool = get_pool(&pool).await?;
     if let Some(storage) = current_storage(&app, &pool).await? {
-        return Ok(storage.create(&pool, project_id, name, document).await?);
+        return Ok(DraftResponse::Project(
+            storage
+                .create_project_draft(&pool, &project_id, &name)
+                .await?,
+        ));
     }
-    Ok(architect_library::create_blueprint(&pool, project_id, name, document).await?)
+    let document = document.ok_or_else(|| project_error(Error::Editor("LEGACY_LIBRARY")))?;
+    Ok(DraftResponse::Legacy(
+        architect_library::create_blueprint(&pool, project_id, name, document).await?,
+    ))
 }
 
 #[tauri::command]
@@ -65,12 +114,30 @@ pub(crate) async fn architect_get_draft(
     app: tauri::AppHandle,
     pool: State<'_, DbPool>,
     blueprint_id: String,
-) -> CommandResult<Draft> {
+) -> CommandResult<DraftResponse> {
     let pool = get_pool(&pool).await?;
     if let Some(storage) = current_storage(&app, &pool).await? {
-        return Ok(storage.get_draft(&pool, blueprint_id).await?);
+        return Ok(DraftResponse::Project(
+            storage.open_draft_project(&pool, &blueprint_id).await?,
+        ));
     }
-    Ok(architect_library::get_draft(&pool, blueprint_id).await?)
+    Ok(DraftResponse::Legacy(
+        architect_library::get_draft(&pool, blueprint_id).await?,
+    ))
+}
+
+#[tauri::command]
+pub(crate) async fn architect_read_project_file(
+    app: tauri::AppHandle,
+    pool: State<'_, DbPool>,
+    target: ProjectTarget,
+    path: String,
+) -> CommandResult<FileRead> {
+    let pool = get_pool(&pool).await?;
+    Ok(project_storage(&app, &pool)
+        .await?
+        .read_project_file(&pool, target, &path)
+        .await?)
 }
 
 #[tauri::command]
@@ -79,16 +146,38 @@ pub(crate) async fn architect_save_draft(
     pool: State<'_, DbPool>,
     blueprint_id: String,
     expected_revision: i64,
-    document: Document,
-) -> CommandResult<Draft> {
+    batch: Option<EditBatch>,
+    document: Option<Document>,
+) -> CommandResult<SaveResponse> {
     let pool = get_pool(&pool).await?;
     if let Some(storage) = current_storage(&app, &pool).await? {
-        return Ok(storage
-            .save_draft(&pool, blueprint_id, expected_revision, document)
-            .await?);
+        let batch = batch.ok_or_else(|| project_error(Error::Editor("PROJECT_BATCH_REQUIRED")))?;
+        return Ok(SaveResponse::Project(
+            storage
+                .edit_project(&pool, &blueprint_id, expected_revision, batch, true)
+                .await?,
+        ));
     }
+    let document = document.ok_or_else(|| project_error(Error::Editor("LEGACY_LIBRARY")))?;
     architect_library::require_editable(&pool, &blueprint_id).await?;
-    Ok(architect_library::save_draft(&pool, blueprint_id, expected_revision, document).await?)
+    Ok(SaveResponse::Legacy(
+        architect_library::save_draft(&pool, blueprint_id, expected_revision, document).await?,
+    ))
+}
+
+#[tauri::command]
+pub(crate) async fn architect_validate_draft(
+    app: tauri::AppHandle,
+    pool: State<'_, DbPool>,
+    blueprint_id: String,
+    expected_revision: i64,
+    batch: EditBatch,
+) -> CommandResult<ProjectView> {
+    let pool = get_pool(&pool).await?;
+    Ok(project_storage(&app, &pool)
+        .await?
+        .edit_project(&pool, &blueprint_id, expected_revision, batch, false)
+        .await?)
 }
 
 #[tauri::command]
@@ -102,8 +191,11 @@ pub(crate) async fn architect_save_version(
 ) -> CommandResult<SavedVersion> {
     let pool = get_pool(&pool).await?;
     if let Some(storage) = current_storage(&app, &pool).await? {
+        if edited_draft.is_some() {
+            return Err(project_error(Error::Editor("PROJECT_BATCH_REQUIRED")));
+        }
         return Ok(storage
-            .freeze(&pool, blueprint_id, expected_revision, note, edited_draft)
+            .freeze(&pool, blueprint_id, expected_revision, note, None)
             .await?);
     }
     architect_library::require_editable(&pool, &blueprint_id).await?;
@@ -126,12 +218,16 @@ pub(crate) async fn architect_get_version(
     app: tauri::AppHandle,
     pool: State<'_, DbPool>,
     key: VersionKey,
-) -> CommandResult<Version> {
+) -> CommandResult<VersionResponse> {
     let pool = get_pool(&pool).await?;
     if let Some(storage) = current_storage(&app, &pool).await? {
-        return Ok(storage.get_version(&pool, key).await?);
+        return Ok(VersionResponse::Project(
+            storage.open_version_project(&pool, &key).await?,
+        ));
     }
-    Ok(architect_library::get_version(&pool, key).await?)
+    Ok(VersionResponse::Legacy(
+        architect_library::get_version(&pool, key).await?,
+    ))
 }
 
 #[tauri::command]
@@ -154,12 +250,17 @@ pub(crate) async fn architect_adapt_version(
     key: VersionKey,
     project_id: String,
     name: String,
-) -> CommandResult<Draft> {
+) -> CommandResult<DraftResponse> {
     let pool = get_pool(&pool).await?;
     if let Some(storage) = current_storage(&app, &pool).await? {
-        return Ok(storage.adapt_version(&pool, key, project_id, name).await?);
+        let draft = storage.adapt_version(&pool, key, project_id, name).await?;
+        return Ok(DraftResponse::Project(
+            storage.open_draft_project(&pool, &draft.summary.id).await?,
+        ));
     }
-    Ok(architect_library::adapt_version(&pool, key, project_id, name).await?)
+    Ok(DraftResponse::Legacy(
+        architect_library::adapt_version(&pool, key, project_id, name).await?,
+    ))
 }
 
 #[tauri::command]
@@ -219,6 +320,68 @@ pub(crate) async fn architect_attach_conversation(
 }
 
 #[tauri::command]
+pub(crate) async fn architect_inspect_import(
+    app: tauri::AppHandle,
+    path: PathBuf,
+) -> CommandResult<imports::InspectedImport> {
+    let data = app_data(&app)?;
+    tokio::task::spawn_blocking(move || imports::inspect(data, &path))
+        .await
+        .map_err(|error| super::command_error(error.to_string()))?
+        .map_err(project_error)
+}
+
+#[tauri::command]
+pub(crate) async fn architect_commit_import(
+    app: tauri::AppHandle,
+    pool: State<'_, DbPool>,
+    handle: uuid::Uuid,
+    project_id: String,
+    name: String,
+) -> CommandResult<ImportedProject> {
+    let pool = get_pool(&pool).await?;
+    let storage = project_storage(&app, &pool).await?;
+    let data = app_data(&app)?;
+    let mut claim = tokio::task::spawn_blocking(move || imports::take(&data, handle))
+        .await
+        .map_err(|error| super::command_error(error.to_string()))?
+        .map_err(project_error)?;
+    let candidate = claim.candidate.take().expect("import claimed once");
+    Ok(storage
+        .import_project(&pool, &project_id, &name, candidate)
+        .await?)
+}
+
+#[tauri::command]
+pub(crate) async fn architect_export_archive(
+    app: tauri::AppHandle,
+    pool: State<'_, DbPool>,
+    key: VersionKey,
+    destination: PathBuf,
+) -> CommandResult<PathBuf> {
+    let pool = get_pool(&pool).await?;
+    project_storage(&app, &pool)
+        .await?
+        .export_version_archive(&pool, &key, &destination)
+        .await?;
+    Ok(destination)
+}
+
+#[tauri::command]
+pub(crate) async fn architect_export_project(
+    app: tauri::AppHandle,
+    pool: State<'_, DbPool>,
+    target: ProjectTarget,
+    destination: PathBuf,
+) -> CommandResult<usize> {
+    let pool = get_pool(&pool).await?;
+    Ok(project_storage(&app, &pool)
+        .await?
+        .export_project(&pool, target, &destination)
+        .await?)
+}
+
+#[tauri::command]
 pub(crate) async fn architect_export_original_envelope(
     app: tauri::AppHandle,
     pool: State<'_, DbPool>,
@@ -264,4 +427,47 @@ pub(crate) async fn architect_migrate_legacy(
         migration::startup(&pool, &data).await?;
     }
     Ok(report)
+}
+
+#[tauri::command]
+pub(crate) async fn architect_discard_import(
+    app: tauri::AppHandle,
+    handle: uuid::Uuid,
+) -> CommandResult<()> {
+    let data = app_data(&app)?;
+    tokio::task::spawn_blocking(move || imports::discard(&data, handle))
+        .await
+        .map_err(|error| super::command_error(error.to_string()))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn architect_execution_hidden_agents(
+    app: tauri::AppHandle,
+    pool: State<'_, DbPool>,
+    execution_id: String,
+) -> CommandResult<Vec<String>> {
+    let pool = get_pool(&pool).await?;
+    let Some(storage) = current_storage(&app, &pool).await? else {
+        return Ok(Vec::new());
+    };
+    Ok(storage
+        .execution_hidden_agents(&pool, &execution_id)
+        .await?)
+}
+
+#[tauri::command]
+pub(crate) async fn architect_adapt_recovery_draft(
+    app: tauri::AppHandle,
+    pool: State<'_, DbPool>,
+    blueprint_id: String,
+    expected_revision: i64,
+    project_id: String,
+    name: String,
+) -> CommandResult<DraftProject> {
+    let pool = get_pool(&pool).await?;
+    Ok(project_storage(&app, &pool)
+        .await?
+        .adapt_recovery_draft(&pool, &blueprint_id, expected_revision, &project_id, &name)
+        .await?)
 }

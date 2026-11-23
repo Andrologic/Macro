@@ -1,5 +1,9 @@
-import { BookOpen, FolderPlus, Plus } from "lucide-react";
+import { BookOpen, FolderPlus, Plus, Upload } from "lucide-react";
 import { useEffect, useState } from "react";
+import { architectLibrary, type InspectedImport } from "../../services/ipc/architectLibrary";
+import { open } from "../../services/tauriDialog";
+import { agsdlErrorText } from "../agsdl/errorText";
+import { ArchitectImportDialog } from "./ArchitectImportDialog";
 import { useArchitectLibraryStore } from "../../stores/useArchitectLibraryStore";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { BlueprintNameDialog, architectLibraryLabel, LibraryReadFailure } from "./BlueprintVersionDialogs";
@@ -10,6 +14,21 @@ export default function ArchitectLibraryNavigator() {
   const library = useArchitectLibraryStore();
   const { projectId, projects, blueprintId, blueprints, draft, versionNumber, versions } = library;
   const [creation, setCreation] = useState<{ kind: "project" } | { kind: "blueprint"; projectId: string }>();
+  const [inspected, setInspected] = useState<InspectedImport>();
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState("");
+  const inspect = async (directory: boolean) => {
+    setImporting(true);
+    setImportError("");
+    try {
+      const path = await open({
+        directory,
+        filters: directory ? undefined : [{ name: "AgSDL", extensions: ["agsdl", "json"] }],
+      });
+      if (path) setInspected(await architectLibrary.inspectImport(path));
+    } catch (error) { setImportError(agsdlErrorText(error, t)); }
+    finally { setImporting(false); }
+  };
   useEffect(() => {
     const state = useArchitectLibraryStore.getState();
     void state.refreshProjects();
@@ -51,6 +70,13 @@ export default function ArchitectLibraryNavigator() {
       {projectId && <button type="button" className="agsdl-icon-button" title={t("agsdl.library.newBlueprint")} aria-label={t("agsdl.library.newBlueprint")}
         onClick={() => setCreation({ kind: "blueprint", projectId })}><Plus size={15} /></button>}
     </div>
+    {!!projectList.length && <div className="flex flex-wrap gap-2 px-2">
+      <button type="button" className="agsdl-link flex items-center gap-1" disabled={importing} onClick={() => void inspect(false)}>
+        <Upload size={12} /> {t("agsdl.library.importFile")}
+      </button>
+      <button type="button" className="agsdl-link" disabled={importing} onClick={() => void inspect(true)}>{t("agsdl.library.importFolder")}</button>
+    </div>}
+    {importError && <p className="px-2" role="alert">{importError}</p>}
     <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
       {projects.status === "error" && <LibraryReadFailure retry={library.refreshProjects} />}
       {blueprints.status === "error" && <LibraryReadFailure retry={library.refreshBlueprints} />}
@@ -64,13 +90,18 @@ export default function ArchitectLibraryNavigator() {
           ? <ul>{versions.value.map(version => <li key={version.number}>
             <button type="button" className="block w-full rounded px-2 py-1.5 text-left hover:bg-muted aria-[current=true]:bg-muted"
               aria-current={versionNumber === version.number ? "true" : undefined} onClick={() => void library.selectVersion(version.number)}>
-              <span className="block truncate">{t("agsdl.library.version", { number: version.number })}</span>
+              <span className="block truncate">{t("agsdl.library.version", { number: version.number })}{version.storageState === "recovery" && <> · {t("agsdl.library.needsRepair")}</>}</span>
               {version.note && <span className="block truncate text-muted-foreground" title={version.note}>{version.note}</span>}
             </button>
           </li>)}</ul>
           : <p className="px-2 py-1 text-muted-foreground">{t("agsdl.library.noVersions")}</p>)}
       </section>}
     </div>
+    {inspected && <ArchitectImportDialog inspected={inspected} projects={projectList}
+      projectId={projectId ?? projectList[0]?.id ?? ""} onClose={() => {
+        void architectLibrary.discardImport(inspected.handle).catch(() => {});
+        setInspected(undefined);
+      }} />}
     {creation?.kind === "project" && <BlueprintNameDialog title={t("agsdl.library.newProject")} onSave={library.createProject} onClose={() => setCreation(undefined)} />}
     {creation?.kind === "blueprint" && <BlueprintNameDialog title={t("agsdl.library.newBlueprint")} onSave={name => library.createBlueprint(creation.projectId, name)} onClose={() => setCreation(undefined)} />}
   </nav>;

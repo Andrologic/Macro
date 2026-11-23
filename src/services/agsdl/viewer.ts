@@ -1,3 +1,4 @@
+import { MAX_AGSDL_PROJECTION_BYTES } from "./document";
 import { isFlowDocumentContract } from "./contract";
 import type { AgsdlReport } from "../../types/agsdl";
 import type { AgsdlEnvelopeMetadata } from "./design";
@@ -87,8 +88,8 @@ const ports = (value: unknown): ViewerPort[] =>
   }));
 
 /** A reading model only. Unresolved and ambiguous references never become links. */
-export function projectViewer(source: string, metadata?: AgsdlEnvelopeMetadata, reports: readonly AgsdlReport[] = []) {
-  if (isFlowDocumentContract(object(scanSource(source).tree).contract)) return projectViewer030(source, metadata, staticReportForSource030(source, reports));
+export function projectViewer(source: string, metadata?: AgsdlEnvelopeMetadata, reports: readonly AgsdlReport[] = [], project = false) {
+  if (isFlowDocumentContract(object(scanSource(source, project ? MAX_AGSDL_PROJECTION_BYTES : undefined).tree).contract)) return projectViewer030(source, metadata, staticReportForSource030(source, reports), project);
   const doc = readDocument(source);
   if (doc.contract === "agsdl-0.2.0") throw new Error("agsdl.unsupportedEdition020");
   if (doc.contract !== "agsdl-0.1.0")

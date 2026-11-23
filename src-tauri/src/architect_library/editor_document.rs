@@ -17,9 +17,9 @@ use unicode_normalization::UnicodeNormalization;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct MacroSettings {
     schema_version: u32,
-    hidden_agent_ids: Vec<String>,
+    pub(super) hidden_agent_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    entry_message_hint: Option<String>,
+    pub(super) entry_message_hint: Option<String>,
     working_folder_mode: WorkingFolderMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     launch_fields: Option<Value>,
@@ -104,12 +104,21 @@ pub(super) struct Authoring {
 }
 
 impl Authoring {
+    pub(super) fn forget_file(&mut self, path: &str) {
+        self.annex_paths.retain(|_, annex_path| annex_path != path);
+        self.executable_paths.remove(path);
+    }
+
     pub(super) fn merge_diagnostics(&mut self, diagnostics: &[String]) {
         for entry in diagnostics {
             if !self.diagnostics.contains(entry) {
                 self.diagnostics.push(entry.clone());
             }
         }
+    }
+
+    pub(super) fn clear_fallback(&mut self) {
+        self.fallback_source = None;
     }
 
     pub(super) fn has_fallback(&self) -> bool {

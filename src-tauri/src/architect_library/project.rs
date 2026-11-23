@@ -57,6 +57,22 @@ impl ImportCandidate {
         })
     }
 
+    pub(super) fn is_archive(&self) -> bool {
+        self.archive.is_some()
+    }
+
+    pub(super) fn retained_bytes(&self) -> Result<u64> {
+        let members = members(&self.source)?
+            .map(|file| file.bytes.len() as u64)
+            .sum::<u64>();
+        let archive = self
+            .archive
+            .as_ref()
+            .map(archive::VerifiedArchive::size)
+            .transpose()?;
+        Ok(members + archive.unwrap_or(0) + self.source.authored_json().len() as u64)
+    }
+
     pub fn source(&self) -> &OpenedSource {
         &self.source
     }

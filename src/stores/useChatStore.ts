@@ -6358,7 +6358,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     standaloneTaskInstruction: buildStandaloneImplementSystemInstruction,
     taskArtifactContext: (task, allowWrites) => buildTaskArtifactContextBlock({ task, getPlan: getArchitectPlan, allowWrites }),
     architectPlanInstructions: async (plan) => {
-      if (!demoWorkflowJourney) return ["Design the blueprint attached to this conversation. Read agsdl_get, then its guide before editing. Use agsdl_update with the returned blueprint_id and revision. Authoring does not execute agents."];
+      if (!demoWorkflowJourney) return ["Design the blueprint attached to this conversation. Read agsdl_get and its guide, then read the project files you need. Submit an ordered file_operations batch with blueprint_id and revision. Write Macro settings through macro_settings. Review the file-local diagnostics after saving."];
       const { buildArchitectPlanInstructions } = await import("./chat/chatArchitectPlanPrompt");
       return buildArchitectPlanInstructions(plan);
     },

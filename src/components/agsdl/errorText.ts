@@ -1,9 +1,26 @@
 import type { TFunction } from "i18next";
+import { architectProjectDiagnostic } from "../../services/ipc/architectLibrary";
 import i18n from "../../i18n";
 import { AgsdlUserError } from "../../services/agsdl/userErrors";
 
 /** Localize actionable AgSDL errors and use a retry hint for transport failures. */
 export function agsdlErrorText(error: unknown, t: TFunction = i18n.getFixedT(null, "agsdl"), fallbackKey = "agsdl.actionFailed"): string {
+  const diagnostic = architectProjectDiagnostic(error);
+  if (diagnostic) {
+    switch (diagnostic.code) {
+      case "EDITOR_LIMIT": return t("agsdl.library.projectLimit");
+      case "OPAQUE_PROJECT_FILE": return t("agsdl.library.opaqueFile");
+      case "PROJECT_FILE_NOT_FOUND": return t("agsdl.library.fileMissing");
+      case "PROJECT_BATCH_REQUIRED": return t("agsdl.library.projectBatchRequired");
+      case "IMPORT_HANDLE_EXPIRED": return t("agsdl.library.importExpired");
+      case "DESTINATION_EXISTS": return t("agsdl.library.destinationExists");
+      case "ARCHIVE_LAYOUT":
+      case "ARCHIVE_INTEGRITY":
+      case "PROJECT":
+      case "UNSUPPORTED_SOURCE":
+      case "GRAPH_LIMIT": return t("agsdl.library.projectInvalid");
+    }
+  }
   if (error instanceof AgsdlUserError) return t(error.messageKey, { details: error.details });
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   if (message.startsWith("agsdl.") && i18n.exists(message, { ns: "agsdl" })) return t(message);

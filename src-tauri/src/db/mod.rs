@@ -53,6 +53,8 @@ pub enum DbError {
     Validation(String),
     #[error("{0}")]
     AgsdlUpgrade(String),
+    #[error(transparent)]
+    Architect(#[from] crate::architect_library::Error),
     #[error("Migration error: {0}")]
     Migration(String),
 }

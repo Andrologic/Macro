@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { architectLibrary } from '../services/ipc/architectLibrary';
 import type { RunHumanRequest030 } from '../types/agsdlRunUi030';
 import type { OperateInboxAction } from '../types/generated/ipc';
 import { retainedRunValue030 } from '../services/agsdl/runtimeProjection030';
@@ -100,14 +101,29 @@ export function subscribeOperateInbox(): () => void {
     useOperateInboxStore.setState({ nowMs });
     wakeTimer = setTimeout(tick, next - nowMs);
   };
+  const hiddenByExecution = new Map<string, ReadonlySet<string>>();
+  const pendingHidden = new Set<string>();
+  let active = true;
   const publish = () => {
     const { standaloneProjects, projectGroups } = useAppStore.getState();
     const projects = new Set([...standaloneProjects, ...projectGroups.flatMap(group => group.projects)].map(project => project.id));
     const tasks = useTaskStore.getState();
     const taskLabels = new Map(tasks.tasks.filter(task => task.workflow_execution).map(task => [task.id, task.plan_title]));
     const registrations = workflowRunAccessSnapshot030().filter(item => projects.has(item.scope.owner.projectId) || item.location?.kind === 'remote');
+    const runs = registrations.flatMap(item => readRunInputs(item, taskLabels));
+    for (const run of runs) {
+      if (run.location.kind !== 'local') continue;
+      const id = run.scope.systemStartId;
+      if (hiddenByExecution.has(id) || pendingHidden.has(id)) continue;
+      pendingHidden.add(id);
+      void architectLibrary.executionHiddenAgents(id).then(ids => {
+        if (!active) return;
+        hiddenByExecution.set(id, new Set(ids));
+        useOperateInboxStore.getState().setHiddenAgents(scope => hiddenByExecution.get(scope.systemStartId) ?? new Set());
+      }).catch(() => {}).finally(() => pendingHidden.delete(id));
+    }
     useOperateInboxStore.setState({
-      runs: registrations.flatMap(item => readRunInputs(item, taskLabels)),
+      runs,
       loading: tasks.isLoading || registrations.some(item => item.access.getSnapshot().history.kind === 'loading'),
       readFailed: !!tasks.lastError || registrations.some(item => {
         const snapshot = item.access.getSnapshot();
@@ -130,6 +146,8 @@ export function subscribeOperateInbox(): () => void {
   });
   follow();
   return () => {
+    active = false;
+    useOperateInboxStore.getState().setHiddenAgents();
     stopRegistry(); stopTasks(); stopProjects();
     subscriptions.forEach(stop => stop());
     clearTimeout(wakeTimer);

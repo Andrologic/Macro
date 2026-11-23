@@ -11,10 +11,11 @@ export function architectLibraryLabel(item: ArchitectProject, peers: ArchitectPr
     : item.name;
 }
 
-export function BlueprintNameDialog({ title, initialName = "", destinations, onSave, onClose }: {
+export function BlueprintNameDialog({ title, initialName = "", destinations, onSave, onClose, children }: {
   title: string;
   initialName?: string;
   destinations?: { projects: ArchitectProject[]; projectId: string };
+  children?: React.ReactNode;
   onSave: (name: string, projectId: string) => Promise<void>;
   onClose: () => void;
 }) {
@@ -23,6 +24,7 @@ export function BlueprintNameDialog({ title, initialName = "", destinations, onS
   const [projectId, setProjectId] = useState(destinations?.projectId ?? "");
   return <LibraryActionDialog title={title} onClose={onClose}
     disabled={!name.trim() || (!!destinations && !projectId)} onSave={() => onSave(name.trim(), projectId)}>
+    {children}
     {destinations && <label className="agsdl-edit-field">{t("agsdl.library.project")}
       <select value={projectId} onChange={event => setProjectId(event.target.value)} required>
         <option value="" disabled>{t("agsdl.library.chooseProject")}</option>
@@ -47,7 +49,7 @@ export function SaveBlueprintVersionDialog({ blueprintId, onClose }: { blueprint
   </LibraryActionDialog>;
 }
 
-function LibraryActionDialog({ title, disabled, children, onSave, onClose }: {
+export function LibraryActionDialog({ title, disabled, children, onSave, onClose }: {
   title: string;
   disabled?: boolean;
   children: React.ReactNode;

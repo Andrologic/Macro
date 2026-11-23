@@ -29,6 +29,7 @@ import { WorkflowEdgeSummary } from "./WorkflowEdge";
 import { WorkflowGraph } from "./WorkflowGraph";
 import "./agsdl.css";
 import { agsdlErrorText } from "./errorText";
+import { ProjectMacroSettings } from "./ProjectMacroSettings";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 
 // Chat and focused component edits share the same versioned document store.
@@ -85,6 +86,8 @@ export const AgsdlEditor: React.FC<{
       setError("");
     } catch (error) { setError(agsdlErrorText(error, t)); }
   };
+  const project = session?.project;
+  const projectTarget = "blueprintId" in target && project ? target : undefined;
   const source = session?.source;
   const displayMetadata = session?.display;
   const migrationMetadata = session?.migration;
@@ -92,18 +95,18 @@ export const AgsdlEditor: React.FC<{
   const review = useMemo(() => session?.history.length ? reviewDesignChanges(session.history.at(-1)!.source, session.source, session.history.at(-1), session) : undefined, [session]);
   const showChanges = !!review && (review.changes.length > 0 || review.design || review.configuration || review.other) && session?.version !== dismissedVersion;
   useEffect(() => {
-    if (!source) return;
+    if (!source && !projectTarget) return;
     const timer = setTimeout(() => void useAgsdlStore.getState().validate(target), 250);
     return () => clearTimeout(timer);
-  }, [source, target]);
+  }, [source, target, session?.version, projectTarget]);
   const parsed = useMemo(() => {
     if (!source) return {};
     try {
-      return { document: projectViewer(source, { display: displayMetadata, migration: migrationMetadata }, reports) };
+      return { document: projectViewer(source, { display: displayMetadata, migration: migrationMetadata }, reports, !!projectTarget) };
     } catch (error) {
       return { error: String(error) };
     }
-  }, [source, displayMetadata, migrationMetadata, reports]);
+  }, [source, displayMetadata, migrationMetadata, reports, projectTarget]);
   const document = parsed.document;
   const visibleGraphIndex = Math.max(0, Math.min(graphIndex, Math.max(0, (document?.graphs.length ?? 0) - 1)));
   const edition030 = isFlowDocumentContract(document?.contract);
@@ -255,6 +258,7 @@ export const AgsdlEditor: React.FC<{
       {!item.edition030 && ["Agent", "invoke", "agent"].includes(item.kind)
         ? <AgentDetails card={item} cards={[...(document?.graphs.flatMap(graph => graph.cards) ?? []), ...(document?.declarations ?? []), ...(document?.legacyCards ?? [])]} source={source!} onSelect={select} />
         : !item.edition030 && item.mission && <p className="agsdl-mission">{item.mission}</p>}
+      {projectTarget && typeof item.details?.agentName === "string" && <ProjectMacroSettings target={projectTarget} agentId={item.details.agentName} />}
       {item.composition && <p>{reference(item.composition)}</p>}
       {!item.edition030 && diagnosticAction(diagnostics.filter(issue => issue.targets.includes(item.path)), item.path, nodeTitle(item))}
       {item.unresolved && <p className="agsdl-unresolved">{t("agsdl.viewer.unresolvedAgent")}</p>}
@@ -338,9 +342,9 @@ export const AgsdlEditor: React.FC<{
     <div className="agsdl-viewer" data-agsdl-plan={legacyTarget?.planId} data-agsdl-blueprint={"blueprintId" in target ? target.blueprintId : undefined} aria-label={t("agsdl.editor")} onKeyDown={event => { if (event.key === "Escape" && !selectedCard && !selectedEdge) { setSelection(undefined); } }}>
       <header className="agsdl-viewer-header">
         <div className="agsdl-header-actions">
-          {source && <>
-            <button className="agsdl-icon-button" aria-label={t("agsdl.authoring030.undo")} title={t("agsdl.authoring030.undo")} disabled={session?.status !== "draft" || !!session?.saving || !session?.history.length || (!!planStatus && planStatus !== "draft")} onClick={() => void changeHistory()}><Undo2 size={14} /></button>
-            <button className="agsdl-icon-button" aria-label={t("agsdl.authoring030.redo")} title={t("agsdl.authoring030.redo")} disabled={session?.status !== "draft" || !!session?.saving || !session?.future.length || (!!planStatus && planStatus !== "draft")} onClick={() => void changeHistory(true)}><Redo2 size={14} /></button>
+          {(source || project) && (!project || session?.status === "draft") && <>
+            <button className="agsdl-icon-button" aria-label={t("agsdl.authoring030.undo")} title={t("agsdl.authoring030.undo")} disabled={session?.status !== "draft" || !!session?.saving || !(project?.past.length ?? session?.history.length) || (!!planStatus && planStatus !== "draft")} onClick={() => void changeHistory()}><Undo2 size={14} /></button>
+            <button className="agsdl-icon-button" aria-label={t("agsdl.authoring030.redo")} title={t("agsdl.authoring030.redo")} disabled={session?.status !== "draft" || !!session?.saving || !(project?.future.length ?? session?.future.length) || (!!planStatus && planStatus !== "draft")} onClick={() => void changeHistory(true)}><Redo2 size={14} /></button>
           </>}
           {source && legacyTarget && <button className="agsdl-icon-button" title={persistenceTitle} aria-label={persistenceTitle} onClick={() => setSaveOpen(true)}>{demoJourney ? <Download size={14} /> : <Save size={14} />}</button>}
           {onExpand && <button className="agsdl-icon-button" onClick={onExpand}
@@ -382,7 +386,7 @@ export const AgsdlEditor: React.FC<{
           </select>
         )}
 
-          {session && <form onSubmit={event => {
+          {session && (!project || session.status === "draft") && <form onSubmit={async event => {
             event.preventDefault();
             if (!nameDraft || session.saving || conflict) return;
             setNameError("");
@@ -390,10 +394,10 @@ export const AgsdlEditor: React.FC<{
               const store = useAgsdlStore.getState();
               if (edition030) {
                 const changes = [{ op: "set" as const, path: "/title", valueJson: JSON.stringify(nameDraft.value) }];
-                if (!legacyTarget && session.display?.title) {
+                if (!projectTarget && !legacyTarget && session.display?.title) {
                   store.replace(target, applyChanges(session.source, changes), undefined, nameDraft.version,
                     { design: session.design, display: { ...session.display, title: nameDraft.value }, migration: session.migration });
-                } else store.edit(target, changes, nameDraft.version);
+                } else await store.edit(target, changes, nameDraft.version);
               } else store.replace(target, session.source, undefined, nameDraft.version, { design: session.design, display: { ...session.display, title: nameDraft.value }, migration: session.migration });
               setNameDraft({ ...nameDraft, version: useAgsdlStore.getState().sessions[key].version });
               void store.save(target).then(() => {
@@ -404,6 +408,7 @@ export const AgsdlEditor: React.FC<{
           }}><label className="agsdl-edit-field">{t("agsdl.design.name")}<input value={nameDraft?.value ?? document?.title ?? ""} disabled={session.status !== "draft" || session.saving || !!conflict || (!!planStatus && planStatus !== "draft")} onChange={event => setNameDraft({ value: event.target.value, version: nameDraft?.version ?? session.version })} /></label>
             <button type="submit" className="agsdl-link" disabled={!nameDraft || session.saving || !!conflict}>{t("agsdl.save")}</button>
           </form>}
+          {projectTarget && <ProjectMacroSettings target={projectTarget} />}
           {conflictNotice}
           {!conflict && nameError && <p role="alert" className="agsdl-unresolved">{nameError}</p>}
         </div>
@@ -413,6 +418,15 @@ export const AgsdlEditor: React.FC<{
         <Diagnostics030 issues={diagnostics} onSelect={issue => { setIssuesOpen(false); openDiagnostic(issue); }} onAttach={canAttach ? attachDiagnostic : undefined} busy={attaching} error={diagnosticError} />
       </Dialog>}
       {!settingsOpen && conflictNotice}
+      {project && project.graphRevision !== null && !project.view.projection && <p className="agsdl-canvas-notice" role="status">
+        {t("agsdl.library.graphRevision", { revision: project.graphRevision })}
+      </p>}
+      {!!project?.view.diagnostics.length && <details className="agsdl-details px-2" open={!project.view.projection}>
+        <DisclosureSummary>{t("agsdl.authoring030.diagnostics.count", { count: project.view.diagnostics.length })}</DisclosureSummary>
+        {project.view.diagnostics.map((issue, index) => <p key={index} className="break-words">
+          {issue.file && <code>{issue.file}{issue.pointer && `#${issue.pointer}`} · </code>}{issue.message}
+        </p>)}
+      </details>}
       {!conflict && ((!settingsOpen && canvasError) || parsed.error) && (
         <div role="alert" className="agsdl-error">
           {(!settingsOpen && canvasError) || (
@@ -462,7 +476,7 @@ export const AgsdlEditor: React.FC<{
           {(selectedCard || selectedEdge) && <ComponentDetailsDialog
             key={selectedCard?.path ?? selectedEdge!.id}
             title={selectedCard ? nodeTitle(selectedCard) : selectedEdge ? t(selectedEdge.dependency ? "agsdl.viewer.dependencies" : "agsdl.viewer.connection") : document.title}
-            card={selectedCard ?? routeCard} canEdit={!attaching && (selectedCard === currentCard || !!routeCard || selectedCard?.kind === "Route") && (!planStatus || planStatus === "draft")} target={target}
+            card={selectedCard ?? routeCard} canEdit={(!project || !session.dirty && !!project.saved.projection) && !attaching && (selectedCard === currentCard || !!routeCard || selectedCard?.kind === "Route") && (!planStatus || planStatus === "draft")} target={target}
             onBack={previousSelection ? goBack : undefined}
             onAttach={canAttach && !attaching && ((selectedCard && selectedCard === currentCard) || selectedEdge) ? () => attachContext(selectedEdge
               ? { path: selectedEdge.route030?.path ?? selectedEdge.source, relatedPaths: [selectedEdge.source, selectedEdge.target], title: `${selectedEdge.label}: ${nodeTitle(cards.find(card => card.path === selectedEdge.source)!)} → ${nodeTitle(cards.find(card => card.path === selectedEdge.target)!)}` }

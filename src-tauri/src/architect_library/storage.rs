@@ -30,11 +30,8 @@ pub(crate) const SETTINGS: &str = "macro-settings.json";
 pub(crate) const AUTHORING: &str = "authoring.json";
 pub(crate) const ORIGINAL: &str = "original-envelope.json";
 
-impl From<Error> for DbError {
-    fn from(error: Error) -> Self {
-        Self::Validation(error.to_string())
-    }
-}
+#[path = "storage_editor.rs"]
+pub(crate) mod editor;
 
 pub(crate) struct Storage {
     root: PathBuf,
@@ -169,7 +166,17 @@ impl Storage {
             &self.staging()?,
             &version_authoring.executable_paths,
         )?;
-        sidecars(stage.directory(), settings, &version_authoring)?;
+        self.publish_staged_version(blueprint_id, stage, settings, &version_authoring)
+    }
+
+    fn publish_staged_version(
+        &self,
+        blueprint_id: &str,
+        stage: archive::StagedVersion,
+        settings: &MacroSettings,
+        authoring: &Authoring,
+    ) -> Result<Artifact> {
+        sidecars(stage.directory(), settings, authoring)?;
         let bucket = self.bucket(blueprint_id, StorageState::Archive);
         ensure_dir(&bucket)?;
         self.check(Failure::BeforePublish)?;
@@ -258,6 +265,7 @@ impl Storage {
         self.publish(prepared.stage, blueprint, StorageState::Draft)
     }
 
+    #[cfg(test)]
     fn publish_editor(
         &self,
         blueprint: &str,
@@ -293,6 +301,7 @@ impl Storage {
         Ok(authoring.executable_paths)
     }
 
+    #[cfg(test)]
     fn read_draft(&self, artifact: &Artifact) -> Result<(Document, Vec<String>)> {
         if artifact.state == StorageState::Recovery {
             return self.read_recovery(artifact);
@@ -340,17 +349,10 @@ impl Storage {
     pub(crate) fn validate_artifact(&self, artifact: &Artifact) -> Result<()> {
         match artifact.state {
             StorageState::Draft => {
-                let manifest = self
-                    .artifact_path(artifact)
-                    .join(PROJECT)
-                    .join(project::MANIFEST);
-                let value: serde_json::Value = read_json(&manifest)?;
-                if value["projectFormat"] != project::PROJECT_FORMAT {
-                    return Err(Error::Storage(
-                        "Invalid stored AgSDL project manifest".into(),
-                    ));
-                }
-                self.read_draft(artifact)?;
+                let path = self.artifact_path(artifact);
+                read_sidecars(&path)?;
+                // A working draft may have invalid JSON or missing references.
+                super::project_editor::validate_storage(&path.join(PROJECT))?;
             }
             StorageState::Archive => {
                 let path = self.artifact_path(artifact);
@@ -365,6 +367,7 @@ impl Storage {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) async fn create(
         &self,
         pool: &SqlitePool,
@@ -384,6 +387,7 @@ impl Storage {
         index::draft_view(&row, document, diagnostics)
     }
 
+    #[cfg(test)]
     pub(crate) async fn get_draft(&self, pool: &SqlitePool, id: String) -> DbResult<Draft> {
         let _lease = self.lease(false).await?;
         let row = index::draft_row(pool, &id).await?;
@@ -391,6 +395,7 @@ impl Storage {
         index::draft_view(&row, document, diagnostics)
     }
 
+    #[cfg(test)]
     pub(crate) async fn save_draft(
         &self,
         pool: &SqlitePool,
@@ -479,6 +484,7 @@ impl Storage {
         Ok(saved)
     }
 
+    #[cfg(test)]
     pub(crate) async fn get_version(
         &self,
         pool: &SqlitePool,
@@ -527,7 +533,12 @@ impl Storage {
                     original = Some(retained);
                     (draft, projected, diagnostics)
                 }
-                Err(_) => (retained, document, diagnostics),
+                Err(_) => {
+                    let (draft, projected) =
+                        self.publish_repair_starter(&id, &name, document.source, &diagnostics)?;
+                    original = Some(retained);
+                    (draft, projected, diagnostics)
+                }
             }
         } else {
             let version = self.open_archive(&artifact)?;
