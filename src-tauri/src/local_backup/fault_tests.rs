@@ -1119,6 +1119,58 @@ async fn generated_profile_recovers_from_io_faults_and_process_death() {
     eprintln!("{total} filesystem fault cases in {:?}", started.elapsed());
 }
 
+#[test]
+fn restore_space_check_counts_preservation_and_both_volumes() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let config = temp.path().join("config");
+    fs::create_dir(&data).unwrap();
+    let archive = |data_size, config_size| {
+        let mut files = BTreeMap::new();
+        add_file(&mut files, "data/state.json".into(), vec![0; data_size]).unwrap();
+        add_file(
+            &mut files,
+            "config/settings.json".into(),
+            vec![0; config_size],
+        )
+        .unwrap();
+        Archive {
+            format: String::new(),
+            version: 0,
+            app_version: String::new(),
+            files,
+            browser: BTreeMap::new(),
+            browser_sha256: String::new(),
+        }
+    };
+    let incoming = archive(4097, 1);
+    let original = archive(1, 4097);
+    let check = |data_bytes, config_bytes| {
+        check_restore_space(&incoming, &original, &data, &config, |path| {
+            if path == data {
+                Ok(data_bytes)
+            } else {
+                assert_eq!(path, temp.path());
+                Ok(config_bytes)
+            }
+        })
+    };
+
+    const DATA_REQUIRED: u64 = 7 * 4096;
+    const CONFIG_REQUIRED: u64 = 2 * 4096;
+    let error = "Insufficient free disk space to restore and recover the profile";
+    assert_eq!(
+        check(DATA_REQUIRED - 1, CONFIG_REQUIRED + 1).unwrap_err(),
+        error
+    );
+    assert_eq!(
+        check(DATA_REQUIRED + 1, CONFIG_REQUIRED - 1).unwrap_err(),
+        error
+    );
+    assert!(check(DATA_REQUIRED, CONFIG_REQUIRED).is_ok());
+    assert!(check(DATA_REQUIRED + 1, CONFIG_REQUIRED + 1).is_ok());
+}
+
 #[tokio::test]
 async fn profile_fault_assertions_detect_deliberate_mutations() {
     let mutations = [
@@ -1126,6 +1178,7 @@ async fn profile_fault_assertions_detect_deliberate_mutations() {
         ("ignore-recovery-error", "local_backup::qualification::unreadable_journal_blocks_profile_even_when_backup_lock_fails"),
         ("skip-member-checksum", "local_backup::qualification::damaged_preservation_blocks_recovery_and_retains_journal_for_retry"),
         ("classify-disk-full-as-permanent", "local_backup::fault_tests::disk_full_during_migration_keeps_rows_retryable"),
+        ("skip-restore-space-check", "local_backup::fault_tests::restore_space_check_counts_preservation_and_both_volumes"),
         #[cfg(unix)]
         ("reject-symlinked-profile-root", "local_backup::fault_tests::relocated_profile_opens_and_exports_through_symlinks"),
     ];

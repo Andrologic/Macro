@@ -1713,6 +1713,7 @@ fn check_restore_space(
     original: &Archive,
     data: &Path,
     config: &Path,
+    available_space: impl Fn(&Path) -> io::Result<u64>,
 ) -> Result<()> {
     let footprint = |archive: &Archive, prefix: &str| -> Result<u64> {
         archive
@@ -1732,16 +1733,18 @@ fn check_restore_space(
         .ancestors()
         .find(|path| path.is_dir())
         .ok_or("Missing configuration volume")?;
-    let free_data = profile::available_space(data).map_err(|error| error.to_string())?;
-    let free_config = profile::available_space(config_volume).map_err(|error| error.to_string())?;
+    let free_data = available_space(data).map_err(|error| error.to_string())?;
+    let free_config = available_space(config_volume).map_err(|error| error.to_string())?;
     let preservation =
         footprint(original, "data/")?.saturating_add(footprint(original, "config/")?);
-    if free_data
+    let insufficient_space = free_data
         < preservation
             .saturating_add(data_bytes)
             .saturating_add(config_bytes)
-        || free_config < config_bytes
-    {
+        || free_config < config_bytes;
+    #[cfg(test)]
+    let insufficient_space = insufficient_space && !profile::mutated("skip-restore-space-check");
+    if insufficient_space {
         return Err("Insufficient free disk space to restore and recover the profile".into());
     }
     Ok(())
@@ -2259,7 +2262,7 @@ async fn process_startup_locked(
             let original = capture_raw(data, config, request.browser)?;
             let mut marker = RestoreJournal { preserved: format!("preserved-{}.zip", uuid::Uuid::new_v4()), phase: RestorePhase::Rollback };
             let preservation = preserved_path(&dir, &marker)?;
-            check_restore_space(&archive, &original, data, config)?;
+            check_restore_space(&archive, &original, data, config, profile::available_space)?;
             preserve(&original, &preservation)?;
             drop(original);
             atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;

@@ -18,6 +18,23 @@ use std::{collections::BTreeMap, fs};
 const NUMBER: &str = "987654321098765432101234567890123456789";
 const BLUEPRINT: &str = "legacy-blueprint";
 
+#[test]
+fn opening_migration_plans_discards_unpublished_temporary_files() {
+    let root = tempfile::tempdir().unwrap();
+    let storage = Storage::new(root.path());
+    let dir = storage.migration_plans().unwrap();
+    let plan = dir.join("prepared.json");
+    fs::write(&plan, b"published plan").unwrap();
+    let (_, temporary) = tempfile::NamedTempFile::new_in(&dir)
+        .unwrap()
+        .keep()
+        .unwrap();
+
+    assert_eq!(storage.migration_plans().unwrap(), dir);
+    assert!(!temporary.exists());
+    assert_eq!(fs::read(plan).unwrap(), b"published plan");
+}
+
 fn editor(title: &str) -> Document {
     let source = r#"{
         "contract":"agsdl-0.3.0","id":"reviews","title":"TITLE",

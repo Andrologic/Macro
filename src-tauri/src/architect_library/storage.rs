@@ -147,9 +147,13 @@ impl Storage {
         }
     }
 
+    // Called under the exclusive migration lease.
     pub(super) fn migration_plans(&self) -> Result<PathBuf> {
         let dir = self.root.join("migration");
         ensure_dir(&self.root, &dir)?;
+        if let Err(error) = reclaim_migration_temps(&dir) {
+            tracing::warn!(%error, "Could not remove temporary Architect migration plans");
+        }
         Ok(dir)
     }
 
@@ -954,6 +958,17 @@ pub(super) fn sync_stage_directories(path: &Path) -> io::Result<()> {
         }
     }
     sync_directory(path)
+}
+
+fn reclaim_migration_temps(dir: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name().as_encoded_bytes().starts_with(b".tmp") && entry.file_type()?.is_file()
+        {
+            profile::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 fn remove_entry(path: &Path) -> Result<()> {
