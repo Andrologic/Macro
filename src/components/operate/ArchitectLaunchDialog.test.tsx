@@ -45,7 +45,7 @@ function install(invoke: (command: string, input: Record<string, unknown>) => un
 function preview(patch: Partial<LaunchPreview> = {}): LaunchPreview {
   return {
     version: archive, note: null, startMessageRequired: false, startMessageHint: null,
-    workingFolderMode: "perExecution", configuration: { workingFolder: null }, folderInUse: false,
+    workingFolderMode: "perExecution", configuration: { workingFolder: null }, folderReuseToken: null,
     blockers: [], secrets: [], availableModels: [], consentToken: null,
     permissions: {
       title: null, authoredId: "system", contract: "agsdl-0.4.0", packageFormat: "agsdl-archive-1",
@@ -103,24 +103,31 @@ it("rechecks when the folder becomes occupied and requires an explicit confirmat
   const requests: LaunchRequest[] = [];
   install((command, input) => {
     if (command === "architect_launch_prepare") return preview({
-      folderInUse: requests.length > 0, workingFolderMode: "atLaunch", configuration: { workingFolder: "/workspace" },
+      folderReuseToken: requests.length > 0 ? `folder-identity-${requests.length}` : null,
+      workingFolderMode: "atLaunch", configuration: { workingFolder: "/workspace" },
     });
     if (command === "architect_launch_start") {
       requests.push(input.request as LaunchRequest);
       if (requests.length === 1) throw { code: "WORKING_FOLDER_IN_USE" };
+      if (requests.length === 2) throw { code: "WORKING_FOLDER_CHANGED" };
       return receipt;
     }
     throw new Error(command);
   });
   await show(archive);
   await act(async () => submit().click());
-  expect(requests.map(request => request.confirmFolderReuse)).toEqual([false]);
+  expect(requests.map(request => request.folderReuseToken)).toEqual([null]);
   expect(submit().disabled).toBe(true);
   const checkbox = dialog().querySelector<HTMLInputElement>('input[type="checkbox"]')!;
   await act(async () => checkbox.click());
   expect(submit().disabled).toBe(false);
   await act(async () => submit().click());
-  expect(requests.map(request => request.confirmFolderReuse)).toEqual([false, true]);
+  expect(requests.map(request => request.folderReuseToken)).toEqual([null, "folder-identity-1"]);
+  expect(submit().disabled).toBe(true);
+  expect(checkbox.checked).toBe(false);
+  await act(async () => checkbox.click());
+  await act(async () => submit().click());
+  expect(requests.map(request => request.folderReuseToken)).toEqual([null, "folder-identity-1", "folder-identity-2"]);
 });
 
 it("applies the selected replacement model to this launch", async () => {

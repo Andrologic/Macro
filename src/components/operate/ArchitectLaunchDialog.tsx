@@ -93,7 +93,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
   const [number, setNumber] = useState(initialVersion?.number);
   const [preview, setPreview] = useState<LaunchPreview>();
   const [unavailableVersion, setUnavailableVersion] = useState<VersionKey>();
-  const [confirmedFolder, setConfirmedFolder] = useState<string | null>(null);
+  const [confirmedFolderToken, setConfirmedFolderToken] = useState<string | null>(null);
   const [modelOverrides, setModelOverrides] = useState<LaunchModelOverrides>({});
   const [configuration, setConfiguration] = useState<LaunchConfiguration>();
   const [message, setMessage] = useState("");
@@ -145,9 +145,9 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
   }, [blueprintId, versionNumber, configuration, modelOverrides, revision]);
 
   const current = preview?.version.blueprintId === blueprintId && preview.version.number === versionNumber ? preview : undefined;
-  const folderConfirmed = !!current?.configuration.workingFolder && current.configuration.workingFolder === confirmedFolder;
+  const folderConfirmed = !!current?.folderReuseToken && current.folderReuseToken === confirmedFolderToken;
   const ready = current && !checking && !busy && !current.blockers.length &&
-    !current.secrets.some(secret => !secret.stored) && (!current.folderInUse || folderConfirmed) &&
+    !current.secrets.some(secret => !secret.stored) && (!current.folderReuseToken || folderConfirmed) &&
     (!current.startMessageRequired || message.trim());
   const modelAgents = new Set([
     ...Object.keys(modelOverrides),
@@ -157,7 +157,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
     setPreview(undefined);
     setConfiguration(undefined);
     setModelOverrides({});
-    setConfirmedFolder(null);
+    setConfirmedFolderToken(null);
     setError("");
   };
   const chooseFolder = async () => {
@@ -165,7 +165,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
       const folder = await open({ directory: true });
       if (!folder) return;
       setChecking(true);
-      setConfirmedFolder(null);
+      setConfirmedFolderToken(null);
       setConfiguration({ workingFolder: folder });
     } catch {
       setError("failed");
@@ -192,7 +192,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
         startMessage: current.startMessageRequired ? message : null,
         name: name.trim() || null,
         consentToken: consent ? current.consentToken : null,
-        confirmFolderReuse: folderConfirmed,
+        folderReuseToken: folderConfirmed ? confirmedFolderToken : null,
         modelOverrides,
       }).then(({ identity, source }) => {
         close();
@@ -209,10 +209,12 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
       });
     } catch (failure) {
       const code = failure && typeof failure === "object" && "code" in failure ? failure.code : "";
-      if (code === "WORKING_FOLDER_IN_USE" || code === "CONSENT_REQUIRED" || code === "MODEL_UNAVAILABLE" ||
+      const folderChanged = code === "WORKING_FOLDER_IN_USE" || code === "WORKING_FOLDER_CHANGED" ||
+        code === "WORKING_FOLDER_UNAVAILABLE" || code === "workingFolderRequired";
+      if (folderChanged || code === "CONSENT_REQUIRED" || code === "MODEL_UNAVAILABLE" ||
           code === "MCP_SECRETS_UNAVAILABLE") {
         setConsent(false);
-        if (code === "WORKING_FOLDER_IN_USE") setConfirmedFolder(null);
+        if (folderChanged) setConfirmedFolderToken(null);
         checkAgain();
       } else if (code === "ARCHIVE_UNAVAILABLE") {
         setConsent(false);
@@ -309,10 +311,11 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
             <SecretField key={JSON.stringify([current.version, secret.server, secret.name])}
               version={current.version} secret={secret} onSaved={refresh} />)}</div>}
         </>}
-        {current?.folderInUse && <label className="agsdl-edit-field">
+        {current?.folderReuseToken && <label className="agsdl-edit-field">
           <span>{t("agsdl.launch.folderInUse")}</span>
+          <span>{current.configuration.workingFolder}</span>
           <span><input type="checkbox" checked={folderConfirmed} onChange={event =>
-            setConfirmedFolder(event.target.checked ? current.configuration.workingFolder : null)} /> {t("agsdl.launch.confirmFolderReuse")}</span>
+            setConfirmedFolderToken(event.target.checked ? current.folderReuseToken : null)} /> {t("agsdl.launch.confirmFolderReuse")}</span>
         </label>}
         {consent && current && <ul className="space-y-1">
           {Object.entries(current.permissions.agents).filter(([, agent]) => agent.usage === "reachable").map(([id, agent]) =>

@@ -20,8 +20,7 @@ pub(crate) struct LaunchRequest {
     pub start_message: Option<String>,
     pub name: Option<String>,
     pub consent_token: Option<String>,
-    #[serde(default)]
-    pub confirm_folder_reuse: bool,
+    pub folder_reuse_token: Option<String>,
     #[serde(default)]
     pub model_overrides: BTreeMap<String, ModelOverride>,
 }
@@ -265,7 +264,7 @@ pub(crate) async fn launch(
         root_scope,
         folder: &folder,
         owns_folder,
-        confirm_folder_reuse: request.confirm_folder_reuse,
+        folder_reuse_token: request.folder_reuse_token,
         snapshot,
         configuration,
         summary,
@@ -324,17 +323,6 @@ pub(crate) async fn launch(
         interrupted?;
     }
     result
-}
-
-async fn check_folder_reuse(
-    db: &mut SqliteConnection,
-    folder: &Path,
-    confirmed: bool,
-) -> Result<()> {
-    if !confirmed && folder_in_use(db, folder).await? {
-        return Err(launch_failure("WORKING_FOLDER_IN_USE", "workingFolder"));
-    }
-    Ok(())
 }
 
 async fn require_consent(
@@ -416,7 +404,7 @@ struct ArchiveStart<'a> {
     root_scope: Value,
     folder: &'a Path,
     owns_folder: bool,
-    confirm_folder_reuse: bool,
+    folder_reuse_token: Option<String>,
     snapshot: &'a str,
     configuration: LaunchConfiguration,
     summary: Permissions,
@@ -477,7 +465,7 @@ impl StartAuthority030 for ArchiveStart<'_> {
     async fn lock_source(&self, request: &EngineStartRequest) -> Result<Self::SourceGuard> {
         let admission = self.session.lock_admission().await;
         self.require_clear(request)?;
-        if scope_for(self.folder, &request.source.owner)? != self.root_scope {
+        if self.owns_folder && scope_for(self.folder, &request.source.owner)? != self.root_scope {
             return Err(launch_failure("CAPTURE_CHANGED", "workingFolder"));
         }
         Ok(admission)
@@ -501,7 +489,21 @@ impl StartAuthority030 for ArchiveStart<'_> {
         )
         .await?;
         if !self.owns_folder {
-            check_folder_reuse(db, self.folder, self.confirm_folder_reuse).await?;
+            let occupied = folder_in_use(db, self.folder).await?;
+            let changed = || launch_failure("WORKING_FOLDER_CHANGED", "workingFolder");
+            let scope = scope_for(self.folder, &request.source.owner).map_err(|_| changed())?;
+            if scope != self.root_scope
+                || self.folder.canonicalize().ok().as_deref() != Some(self.folder)
+            {
+                return Err(changed());
+            }
+            if let Some(confirmed) = &self.folder_reuse_token {
+                if *confirmed != folder_reuse_token(&scope)? {
+                    return Err(changed());
+                }
+            } else if occupied {
+                return Err(launch_failure("WORKING_FOLDER_IN_USE", "workingFolder"));
+            }
         }
         let key = &self.input.key;
         let id = &capture.identity.system_start_id;

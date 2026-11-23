@@ -23,7 +23,7 @@ export interface LaunchPreview {
   startMessageHint: string | null;
   workingFolderMode: "perExecution" | "atLaunch";
   configuration: LaunchConfiguration;
-  folderInUse: boolean;
+  folderReuseToken: string | null;
   blockers: Array<{ code: string; subject: string }>;
   availableModels: string[];
   permissions: ImportPreview;
@@ -37,7 +37,7 @@ export interface LaunchRequest {
   startMessage: string | null;
   name: string | null;
   consentToken: string | null;
-  confirmFolderReuse: boolean;
+  folderReuseToken: string | null;
   modelOverrides: LaunchModelOverrides;
 }
 

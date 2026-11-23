@@ -125,7 +125,7 @@ pub(crate) struct LaunchPreview {
     start_message_hint: Option<String>,
     working_folder_mode: WorkingFolderMode,
     configuration: LaunchConfiguration,
-    folder_in_use: bool,
+    folder_reuse_token: Option<String>,
     blockers: Vec<Blocker>,
     available_models: Vec<String>,
     permissions: ImportPreview,
@@ -580,6 +580,14 @@ fn chosen_folder(folder: &Path, app_data: &Path, host_root: &Path) -> Option<Pat
     folder.is_dir().then_some(folder)
 }
 
+fn folder_reuse_token(scope: &Value) -> Result<String> {
+    let folder = (&scope["root"], &scope["rootIdentity"]);
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&folder)?)
+    ))
+}
+
 async fn folder_in_use(db: &mut SqliteConnection, folder: &Path) -> Result<bool> {
     Ok(sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM architect_launch_runs launch
@@ -813,21 +821,24 @@ pub(crate) async fn prepare(
         &permissions,
         LOCAL_MCP_SUPPORTED,
     );
-    let folder_in_use = if input.settings.working_folder_mode == WorkingFolderMode::AtLaunch {
-        if let Some(folder) = configuration
+    let mut reuse_token = None;
+    if input.settings.working_folder_mode == WorkingFolderMode::AtLaunch {
+        let folder = configuration
             .working_folder
             .as_deref()
-            .and_then(|path| chosen_folder(path, app_data, manager.root()))
-        {
-            folder_in_use(&mut *pool.acquire().await?, &folder).await?
+            .and_then(|path| chosen_folder(path, app_data, manager.root()));
+        if let Some(folder) = folder {
+            let scope = start::scope_for(&folder, &owner(&input.key.blueprint_id))?;
+            if folder_in_use(&mut *pool.acquire().await?, &folder).await? {
+                reuse_token = Some(folder_reuse_token(&scope)?);
+            }
+            configuration.working_folder = Some(folder);
         } else {
             blockers.push(Blocker::new("workingFolderRequired", ""));
-            false
         }
     } else {
         configuration.working_folder = None;
-        false
-    };
+    }
     let mut available_models = Vec::new();
     if needs_codex(&permissions_preview) {
         // A preview observes the catalogue without starting an agent turn.
@@ -866,7 +877,7 @@ pub(crate) async fn prepare(
         start_message_hint: input.settings.entry_message_hint,
         working_folder_mode: input.settings.working_folder_mode,
         configuration,
-        folder_in_use,
+        folder_reuse_token: reuse_token,
         blockers,
         available_models,
         permissions: permissions_preview,

@@ -152,7 +152,7 @@ async fn archive_launch_admits_pinned_snapshot_and_rediscovers_named_run() {
                 start_message: Some("Start".into()),
                 name: Some("Morning run".into()),
                 consent_token: token,
-                confirm_folder_reuse: false,
+                folder_reuse_token: None,
                 model_overrides: BTreeMap::new(),
             },
         )
@@ -523,7 +523,7 @@ fn request(version: VersionKey, token: Option<String>) -> start::LaunchRequest {
         configuration: Default::default(),
         name: None,
         start_message: Some("Start".into()),
-        confirm_folder_reuse: false,
+        folder_reuse_token: None,
         model_overrides: BTreeMap::new(),
     }
 }
@@ -910,7 +910,7 @@ async fn admission_rechecks_folder_sharing_after_two_unoccupied_previews() {
         }),
     )
     .await;
-    assert!(!first.folder_in_use && !second.folder_in_use);
+    assert!(first.folder_reuse_token.is_none() && second.folder_reuse_token.is_none());
     assert!(!second.start_message_required);
     let host = HostState::new();
     let executor = Arc::new(ScriptedAgent {
@@ -920,22 +920,95 @@ async fn admission_rechecks_folder_sharing_after_two_unoccupied_previews() {
         ..Default::default()
     });
     executor.install(&host);
-    let launch = |plan: &LaunchPreview, confirmed| {
+    let launch = |plan: &LaunchPreview| {
         let mut request = request(version.clone(), plan.consent_token.clone());
         request.configuration = plan.configuration.clone();
-        request.confirm_folder_reuse = confirmed;
+        request.folder_reuse_token = plan.folder_reuse_token.clone();
         start::launch(runtime(&host, &manager, &pool, data.path()), request)
     };
-    let first_run = launch(&first, false).await.unwrap();
+    let first_run = launch(&first).await.unwrap();
     tokio::time::timeout(
         Duration::from_secs(10),
         executor.submitted.as_ref().unwrap().notified(),
     )
     .await
     .unwrap();
-    let error = launch(&second, false).await.err().unwrap();
+    let error = launch(&second).await.err().unwrap();
     assert_eq!(error.code, "WORKING_FOLDER_IN_USE");
-    let second_run = launch(&second, true).await.unwrap();
+    let confirmed = preview(
+        &manager,
+        &pool,
+        data.path(),
+        version.clone(),
+        Some(second.configuration),
+    )
+    .await;
+    assert!(confirmed.folder_reuse_token.is_some());
+
+    #[cfg(unix)]
+    let other_run = {
+        let path = chosen.path().canonicalize().unwrap();
+        let renamed = tempfile::tempdir().unwrap();
+        let backup = renamed.path().join("original");
+        fs::rename(&path, &backup).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert_eq!(
+            launch(&confirmed).await.err().unwrap().code,
+            "WORKING_FOLDER_CHANGED"
+        );
+        fs::remove_dir(&path).unwrap();
+        fs::rename(&backup, &path).unwrap();
+
+        let alias = renamed.path().join("alias");
+        std::os::unix::fs::symlink(&path, &alias).unwrap();
+        let mut alias_preview = preview(
+            &manager,
+            &pool,
+            data.path(),
+            version.clone(),
+            Some(LaunchConfiguration {
+                working_folder: Some(alias.clone()),
+            }),
+        )
+        .await;
+        assert_eq!(
+            alias_preview.configuration.working_folder.as_deref(),
+            Some(path.as_path())
+        );
+        assert_eq!(
+            alias_preview.folder_reuse_token,
+            confirmed.folder_reuse_token
+        );
+        let other_folder = renamed.path().join("other");
+        fs::create_dir(&other_folder).unwrap();
+        let other = preview(
+            &manager,
+            &pool,
+            data.path(),
+            version.clone(),
+            Some(LaunchConfiguration {
+                working_folder: Some(other_folder.clone()),
+            }),
+        )
+        .await;
+        let other_run = launch(&other).await.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            executor.submitted.as_ref().unwrap().notified(),
+        )
+        .await
+        .unwrap();
+        fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&other_folder, &alias).unwrap();
+        alias_preview.configuration.working_folder = Some(alias);
+        assert_eq!(
+            launch(&alias_preview).await.err().unwrap().code,
+            "WORKING_FOLDER_CHANGED"
+        );
+        other_run
+    };
+
+    let second_run = launch(&confirmed).await.unwrap();
     assert_ne!(
         first_run.capture.identity.system_start_id,
         second_run.capture.identity.system_start_id
@@ -953,6 +1026,11 @@ async fn admission_rechecks_folder_sharing_after_two_unoccupied_previews() {
         .unwrap();
     executor
         .wait(&host, &second_run.capture.identity.system_start_id)
+        .await
+        .unwrap();
+    #[cfg(unix)]
+    executor
+        .wait(&host, &other_run.capture.identity.system_start_id)
         .await
         .unwrap();
     remove_test_snapshot(&pool, &manager, &first_run.capture.identity.system_start_id).await;
