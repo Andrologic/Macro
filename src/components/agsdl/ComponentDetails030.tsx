@@ -4,7 +4,7 @@ import { Dialog } from "../ui/Dialog";
 import { DiscardChangesDialog } from "./DiscardChangesDialog";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { agsdlSessionKey, useAgsdlStore, type AgsdlDocumentTarget } from "../../stores/useAgsdlStore";
-import { agentPropertyLocks030, componentProperties, propertyChanges, type ComponentProperties } from "../../services/agsdl/componentProperties";
+import { agentPropertyLocks030, componentProperties, projectComponentProperties, propertyChanges, type ComponentProperties } from "../../services/agsdl/componentProperties";
 import { object, pointerPart, scanSource } from "../../services/agsdl/document";
 import { authoringFields030, authoringValues030, patchAuthoringValue030, updateAuthoringField030, type AuthoringField030 } from "../../services/agsdl/authoringFields030";
 import { DisclosureSummary } from "./DisclosureSummary";
@@ -44,14 +44,28 @@ export function ComponentDetails030({ title, target, card, canEdit = true, child
     if (draft && !locks?.locked(index)) setDraft({ ...draft, values: values.map((old, i) => i === index ? value : old),
       lineInputs: Object.fromEntries(Object.entries(draft.lineInputs).filter(([key]) => !key.startsWith(`${index}:`))) });
   };
+  const openEditor = async () => {
+    if (!card || !session) return;
+    setBusy(true); setError("");
+    try {
+      const store = useAgsdlStore.getState();
+      const project = session.project;
+      const properties = project && "blueprintId" in target
+        ? await projectComponentProperties(project.saved, card, path => store.readProjectFile(target, path))
+        : componentProperties(session.source, card);
+      if (useAgsdlStore.getState().sessions[agsdlSessionKey(target)]?.version !== session.version) throw new Error("conflict");
+      setDraft({ properties, values: properties.fields.map(field => field.value), lineInputs: {}, version: session.version });
+      setTab("properties");
+    } catch {
+      setError(t("agsdl.edition030.editFailed"));
+    } finally {
+      setBusy(false);
+    }
+  };
   return <Dialog title={title} onClose={close} closeOnBackdropClick panelClassName="agsdl-detail-modal" backdropClassName="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
     <header><strong>{title}</strong><div className="agsdl-header-actions">
       {!draft && onBack && <button className="agsdl-icon-button" onClick={onBack} title={t("agsdl.viewer.backToComponent")} aria-label={t("agsdl.viewer.backToComponent")}><ArrowLeft size={15} /><span className="sr-only">{t("agsdl.viewer.backToComponent")}</span></button>}
-      {!draft && canEdit && session?.status === "draft" && <button className="agsdl-icon-button" title={t("agsdl.viewer.editComponent")} aria-label={t("agsdl.viewer.editComponent")} disabled={busy || session.saving} onClick={() => {
-        if (!card) return;
-        const properties = componentProperties(session.source, card);
-        setDraft({ properties, values: properties.fields.map(field => field.value), lineInputs: {}, version: session.version }); setTab("properties"); setError("");
-      }}><Pencil size={15} /><span className="sr-only">{t("agsdl.viewer.editComponent")}</span></button>}
+      {!draft && canEdit && session?.status === "draft" && <button className="agsdl-icon-button" title={t("agsdl.viewer.editComponent")} aria-label={t("agsdl.viewer.editComponent")} disabled={busy || session.saving || (session.project && session.project.graphVersion !== session.version)} onClick={() => void openEditor()}><Pencil size={15} /><span className="sr-only">{t("agsdl.viewer.editComponent")}</span></button>}
       <button className="agsdl-icon-button" disabled={busy} onClick={close} title={t("agsdl.close")} aria-label={t("agsdl.close")}><X size={15} /><span className="sr-only">{t("agsdl.close")}</span></button></div></header>
     <div className="agsdl-inspector-body">
       {draft ? <form className="agsdl-exact-form" id="agsdl-exact-form" onSubmit={event => { event.preventDefault(); void save(); }}>
@@ -81,7 +95,7 @@ export function ComponentDetails030({ title, target, card, canEdit = true, child
           </label>)}
         </div>
       </form> : <>
-        {session && card && <BusinessFields030 fields={readProperties030(session.source, card)} />}
+        {session && card && <BusinessFields030 fields={readProperties030(session.source, card, !!session.project)} />}
         {children}
         {card?.edition030 && <details className="agsdl-details"><DisclosureSummary>{t("agsdl.authoring030.advanced")}</DisclosureSummary>
           <h4>{t("agsdl.authoring030.exactJson")}</h4>
@@ -163,6 +177,6 @@ function AddProperty030({ kind, disabled, value, onChange }: { kind: "resource" 
   </details>;
 }
 
-function readProperties030(source: string, card: ViewerCard): ComponentProperties["fields"] {
-  try { return componentProperties(source, card).fields; } catch { return []; }
+function readProperties030(source: string, card: ViewerCard, project: boolean): ComponentProperties["fields"] {
+  try { return componentProperties(source, card, project).fields; } catch { return []; }
 }

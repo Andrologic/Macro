@@ -11,6 +11,8 @@
     "needsRepair": "À réparer",
     "adaptRepair": "Adapter pour réparer",
     "downloadOriginal": "Télécharger l’original",
+    "discardMigrationFile": "Écarter le fichier manquant",
+    "discardMigrationFileConfirm": "Écarter {{path}} de ce brouillon ? Vous pourrez toujours le récupérer en téléchargeant l’enveloppe d’origine.",
     "importProject": "Importer un projet",
     "importFile": "Importer un fichier…",
     "importFolder": "Importer un dossier…",

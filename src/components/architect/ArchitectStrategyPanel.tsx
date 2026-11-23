@@ -90,6 +90,7 @@ function ArchitectViewer({ target, planStatus, canSaveVersion, adaptation, name,
   const [exportError, setExportError] = useState("");
   const versionKey = blueprintId && number !== undefined ? { blueprintId, number } : undefined;
   const project = session?.project;
+  const missingMigrationFiles = project?.saved.diagnostics.some(issue => issue.code === "MIGRATION_RESOURCE");
   const safeName = (name ?? "AgSDL").replace(/[<>:"/\\|?*]/g, "-").replace(/[. ]+$/, "") || "AgSDL";
   const exportedName = number === undefined ? safeName : `${safeName}-v${number}`;
   const exportSelected = async (kind: "archive" | "project" | "original") => {
@@ -114,6 +115,10 @@ function ArchitectViewer({ target, planStatus, canSaveVersion, adaptation, name,
     }
   };
   const actions = <>
+    {missingMigrationFiles && !recovery && <button type="button" className="agsdl-link" onClick={() => {
+      setExportError("");
+      void exportSelected("original").catch(error => setExportError(agsdlErrorText(error, t)));
+    }}>{t("agsdl.library.downloadOriginal")}</button>}
     {canSaveVersion && <button type="button" className="agsdl-icon-button" disabled={session?.saving || !!session?.draftConflict}
       title={t("agsdl.library.saveVersion")} aria-label={t("agsdl.library.saveVersion")} onClick={() => setVersionDialog(true)}><Save size={14} /></button>}
     {project && !recovery && <button type="button" className="agsdl-icon-button" title={t("agsdl.library.files")}
@@ -131,6 +136,7 @@ function ArchitectViewer({ target, planStatus, canSaveVersion, adaptation, name,
     onAttachContext={canSaveVersion ? selection => prepareAgsdlChatContext(target, selection) : undefined}
     onExpand={() => setExpanded(!inDialog)} canvasActions={actions} />;
   return <div className="relative min-h-0 flex-1">
+    {!recovery && exportError && <p role="alert">{exportError}</p>}
     {recovery ? <div className="agsdl-empty space-y-2">
       <p>{t("agsdl.library.needsRepair")}</p>
       {project?.view.diagnostics.map((issue, index) => <p key={index}>{issue.message}</p>)}

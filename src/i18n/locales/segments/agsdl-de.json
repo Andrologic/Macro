@@ -11,6 +11,8 @@
     "needsRepair": "Reparatur erforderlich",
     "adaptRepair": "Zur Reparatur anpassen",
     "downloadOriginal": "Original herunterladen",
+    "discardMigrationFile": "Fehlende Datei verwerfen",
+    "discardMigrationFileConfirm": "{{path}} aus diesem Entwurf verwerfen? Die Datei bleibt im Original zum Herunterladen verfügbar.",
     "importProject": "Projekt importieren",
     "importFile": "Datei importieren…",
     "importFolder": "Ordner importieren…",

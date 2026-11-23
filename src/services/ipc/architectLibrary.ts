@@ -86,10 +86,14 @@ export type ProjectFile =
   | { kind: "binary" | "oversized"; file: ProjectFileEntry };
 
 export type ProjectFileChange =
-  | { kind: "write"; path: string; text: string }
+  | { kind: "write"; path: string; text: string; executable?: boolean }
   | { kind: "remove"; path: string };
 
-export interface ProjectBatch { files: ProjectFileChange[]; settings?: MacroSettingsChange }
+export interface ProjectBatch {
+  files: ProjectFileChange[];
+  settings?: MacroSettingsChange;
+  discardMigrationFiles?: string[];
+}
 export interface ProjectLocation { file: string; pointer: string }
 export interface ProjectDiagnostic {
   code: string;

@@ -23,7 +23,7 @@ import {
 } from "../services/ipc/architectLibrary";
 
 import {
-  appendProjectBatch, historyBuffers, initialProject, localProjectEdit, prepareProjectEdit, projectHistoryBudget,
+  checkBatch, historyBuffers, initialProject, localProjectEdit, prepareProjectEdit, projectHistoryBudget, queueProjectEdit,
   type ProjectEditState, type ProjectOperation,
 } from "./agsdl/projectEdits";
 
@@ -78,7 +78,8 @@ interface AgsdlState {
     expectedVersion?: string,
   ) => void | Promise<void>;
   readProjectFile: (target: BlueprintDocumentTarget, path: string) => Promise<ProjectFile | null>;
-  applyProjectBatch: (target: BlueprintDocumentTarget, files: ProjectOperation[], settings?: MacroSettingsChange, expectedVersion?: string, isCurrent?: () => boolean) => Promise<void>;
+  applyProjectBatch: (target: BlueprintDocumentTarget, files: ProjectOperation[], settings?: MacroSettingsChange, expectedVersion?: string, isCurrent?: () => boolean, persist?: boolean) => Promise<void>;
+  discardProjectMigrationFile: (target: BlueprintDocumentTarget, path: string) => Promise<void>;
   undo: (target: AgsdlDocumentTarget, redo?: boolean) => void;
   save: (target: AgsdlDocumentTarget) => Promise<void>;
   refreshDraftConflict: (target: BlueprintDocumentTarget) => Promise<void>;
@@ -186,13 +187,14 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
   const projectBatchRequired = () => new AgsdlUserError("agsdl.library.projectBatchRequired", "Edit the source files of this project.");
   const projectSaved = (current: AgsdlSession, view: ProjectView, overwritten: boolean): AgsdlSession => {
     const project = current.project!;
+    const version = crypto.randomUUID();
     return {
-      ...current, source: view.projection?.source ?? current.source,
+      ...current, version, source: view.projection?.source ?? current.source,
       persistedRevision: view.revision, dirty: false, saving: false, draftConflict: undefined,
       project: {
-        ...project, view, saved: view, pending: { files: [] }, buffers: new Map(),
+        ...project, view, saved: view, pending: { files: [] }, queued: [], buffers: new Map(),
         graphRevision: view.projection ? view.revision : project.graphRevision,
-        graphVersion: view.projection ? current.version : project.graphVersion,
+        graphVersion: view.projection ? version : project.graphVersion,
         ...(overwritten ? { past: [], future: [] } : {}),
       },
     };
@@ -213,20 +215,28 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
     return draftConflictError();
   }
 
-  async function saveDocument(target: AgsdlDocumentTarget, overwrite?: BlueprintDraft) {
+  async function saveDocument(
+    target: AgsdlDocumentTarget, overwrite?: BlueprintDraft, proposed?: AgsdlSession,
+    discardMigrationFile?: string,
+  ) {
     const current = session(target);
     if (current.saving) throw new AgsdlUserError("agsdl.userError.saving", "A save is already in progress.");
     if (current.draftConflict && !overwrite) throw draftConflictError();
-    if (!current.dirty) return;
+    if (!current.dirty && !proposed && discardMigrationFile === undefined) return;
     assertDraft(current);
     assertEditableEdition(current.source);
     update(target, { ...current, saving: true, error: null });
     try {
-      if ("blueprintId" in target && current.project) {
+      const draft = proposed ?? current;
+      if ("blueprintId" in target && draft.project) {
+        const batch = discardMigrationFile === undefined ? draft.project.pending
+          : { ...draft.project.pending, discardMigrationFiles: [discardMigrationFile] };
+        checkBatch(batch);
         const view = await architectLibrary.saveProjectDraft(
-          target.blueprintId, overwrite?.revision ?? current.persistedRevision, current.project.pending);
-        update(target, projectSaved(session(target), view, !!overwrite));
-        return;
+          target.blueprintId, overwrite?.revision ?? current.persistedRevision, batch);
+        const saved = projectSaved(proposed ?? session(target), view, !!overwrite);
+        update(target, saved);
+        return saved;
       }
       const document = snapshot(current);
       let revision: number;
@@ -310,9 +320,9 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       const atomicEdit = current.dirty && !current.project && draftContract(current.source) === "agsdl-0.3.0"
         ? { ...current.libraryDocument, ...snapshot(current) }
         : undefined;
-      if (current.dirty && !atomicEdit) await get().save(target);
+      const flushed = current.dirty && !atomicEdit ? await saveDocument(target) : undefined;
       const saved = session(target);
-      if (!isCurrent() || saved.version !== current.version || saved.saving || (saved.dirty && !atomicEdit))
+      if (!isCurrent() || saved.version !== (flushed?.version ?? current.version) || saved.saving || (saved.dirty && !atomicEdit))
         throw new AgsdlUserError("agsdl.viewer.editConflict", "The document changed. Read it again before editing.");
       update(target, { ...saved, saving: true });
       try {
@@ -462,7 +472,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       } });
       return file.content;
     },
-    async applyProjectBatch(target, files, settings, expectedVersion, isCurrent = () => true) {
+    async applyProjectBatch(target, files, settings, expectedVersion, isCurrent = () => true, persist = false) {
       const current = session(target);
       assertDraft(current);
       if (current.draftConflict) throw draftConflictError();
@@ -474,14 +484,16 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       const latest = session(target);
       if (!isCurrent() || latest.version !== current.version || latest.saving || latest.draftConflict) throw editConflict();
       const project = latest.project!;
-      update(target, {
+      const next = {
         ...latest, version: crypto.randomUUID(), dirty: true, error: null,
         project: {
           ...project, buffers: new Map([...project.buffers, ...buffers]),
-          pending: appendProjectBatch(project.pending, entry.forward),
+          ...queueProjectEdit(project, entry, true),
           past: projectHistoryBudget([...project.past, entry]), future: [],
         },
-      });
+      };
+      if (persist) await saveDocument(target, undefined, next);
+      else update(target, next);
     },
     undo(target, redo = false) {
       const current = session(target);
@@ -494,11 +506,12 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
         const entry = from.at(-1);
         if (!entry) return;
         const batch = redo ? entry.forward : entry.backward;
+        const queue = queueProjectEdit(project, entry, redo);
         update(target, {
-          ...current, version: crypto.randomUUID(), dirty: true, error: null,
+          ...current, version: crypto.randomUUID(), dirty: queue.queued.length > 0, error: null,
           project: {
             ...project, buffers: historyBuffers(project, batch),
-            pending: appendProjectBatch(project.pending, batch),
+            ...queue,
             past: redo ? projectHistoryBudget([...project.past, entry]) : from.slice(0, -1),
             future: redo ? from.slice(0, -1) : projectHistoryBudget([...project.future, entry]),
           },
@@ -524,7 +537,11 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
           : historyBudget([...current.future, snapshot(current)]),
       });
     },
-    save: target => saveDocument(target),
+    async save(target) { await saveDocument(target); },
+    async discardProjectMigrationFile(target, path) {
+      if (!session(target).project) throw projectBatchRequired();
+      await saveDocument(target, undefined, undefined, path);
+    },
     async refreshDraftConflict(target) {
       const current = session(target);
       if (!current.draftConflict || current.saving) return;

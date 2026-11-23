@@ -11,6 +11,8 @@
     "needsRepair": "Needs repair",
     "adaptRepair": "Adapt for repair",
     "downloadOriginal": "Download original",
+    "discardMigrationFile": "Discard missing file",
+    "discardMigrationFileConfirm": "Discard {{path}} from this draft? You can still download it in the original envelope.",
     "importProject": "Import project",
     "importFile": "Import file…",
     "importFolder": "Import folder…",
