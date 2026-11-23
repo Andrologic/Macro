@@ -29,6 +29,7 @@
     "entryHint": "開始メッセージのヒント",
     "cutoverRequired": "Architect ライブラリの更新が保留中です。起動時の警告を確認し、更新を再試行してください。",
     "importExpired": "プレビューの有効期限が切れました。ソースを選び直してください。",
+    "destinationParentMissing": "フォルダー「{{path}}」が存在しません。エクスポート先に既存のフォルダーを選択してください。",
     "destinationExists": "この保存先はすでに存在します。別の名前を選んでください。",
     "projectInvalid": "AgSDL がこのプロジェクトを開けませんでした。",
     "title": "ブループリントライブラリ",

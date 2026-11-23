@@ -29,6 +29,7 @@
     "entryHint": "Indication du message de départ",
     "cutoverRequired": "La mise à niveau de la bibliothèque Architect est en attente. Consultez l’avertissement de démarrage, puis réessayez la mise à niveau.",
     "importExpired": "L’aperçu a expiré. Sélectionnez de nouveau la source.",
+    "destinationParentMissing": "Le dossier « {{path}} » n’existe pas. Choisissez un dossier existant pour l’export.",
     "destinationExists": "Cette destination existe déjà. Choisissez un autre nom.",
     "projectInvalid": "AgSDL n’a pas pu ouvrir ce projet.",
     "title": "Bibliothèque de blueprints",

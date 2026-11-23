@@ -349,6 +349,9 @@ pub(super) fn permanent_row_error(error: &Error) -> bool {
         | Error::Editor(_)
         | Error::Diagnostic(_)
         | Error::InvalidDestination => true,
-        Error::DestinationExists | Error::PublishedNotSynced { .. } | Error::Storage(_) => false,
+        Error::DestinationExists
+        | Error::DestinationParentMissing(_)
+        | Error::PublishedNotSynced { .. }
+        | Error::Storage(_) => false,
     }
 }

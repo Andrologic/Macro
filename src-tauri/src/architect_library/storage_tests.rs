@@ -780,6 +780,24 @@ async fn import_and_exports_share_staged_bytes_and_keep_opaque_files_native() {
         .await
         .unwrap()
         .revision;
+    let missing_parent = temp.path().join("missing-export-parent");
+    let missing = storage
+        .export_project(
+            &pool,
+            ProjectTarget::Draft {
+                blueprint_id: id.clone(),
+                revision,
+            },
+            &missing_parent.join("project"),
+        )
+        .await
+        .unwrap_err();
+    let error =
+        serde_json::to_value(crate::core::command_error::CommandError::from(missing)).unwrap();
+    assert_eq!(error["code"], "ARCHITECT_PROJECT_ERROR");
+    assert_eq!(error["details"]["code"], "DESTINATION_PARENT_MISSING");
+    assert_eq!(error["details"]["file"], missing_parent.to_str().unwrap());
+    assert!(!missing_parent.exists());
     assert_eq!(
         storage
             .export_project(

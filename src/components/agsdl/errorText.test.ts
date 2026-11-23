@@ -16,6 +16,10 @@ it("shows translated reasons the user can act on and a short retry hint for anyt
   expect(agsdlErrorText(new Error("agsdl.execution.promptRequired"))).toBe(i18n.t("agsdl.execution.promptRequired", { ns: "agsdl" }));
   expect(agsdlErrorText({ code: "ARCHITECT_PROJECT_ERROR", details: { code: "LEGACY_LIBRARY" } }))
     .toContain("Consultez l’avertissement de démarrage");
+  expect(agsdlErrorText({
+    code: "ARCHITECT_PROJECT_ERROR",
+    details: { code: "DESTINATION_PARENT_MISSING", file: "/synthetic/missing" },
+  })).toBe("Le dossier « /synthetic/missing » n’existe pas. Choisissez un dossier existant pour l’export.");
   for (const failure of [{ code: "UNEXPECTED_ERROR", message: "sqlite: disk I/O error" }, new Error("Runtime snapshot source differs"), "native failure", new TypeError("x is undefined")]) {
     expect(agsdlErrorText(failure)).toBe("L’action a échoué. Réessayez.");
   }

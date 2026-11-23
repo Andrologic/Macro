@@ -29,6 +29,7 @@
     "entryHint": "Hinweis zur Startnachricht",
     "cutoverRequired": "Architect aktualisiert die Bibliothek noch. Prüfen Sie den Starthinweis und versuchen Sie die Aktualisierung erneut.",
     "importExpired": "Die Importvorschau ist abgelaufen. Wähle die Quelle erneut aus.",
+    "destinationParentMissing": "Der Ordner „{{path}}“ existiert nicht. Wähle einen vorhandenen Ordner für den Export.",
     "destinationExists": "Dieses Ziel existiert bereits. Wähle einen anderen Namen.",
     "projectInvalid": "AgSDL konnte dieses Projekt nicht öffnen.",
     "title": "Blueprint-Bibliothek",

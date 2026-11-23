@@ -29,6 +29,7 @@
     "entryHint": "시작 메시지 힌트",
     "cutoverRequired": "Architect 라이브러리 업그레이드가 대기 중입니다. 시작 경고를 확인한 후 업그레이드를 다시 시도하세요.",
     "importExpired": "미리보기의 유효 기간이 지났습니다. 원본을 다시 선택하세요.",
+    "destinationParentMissing": "“{{path}}” 폴더가 없습니다. 내보낼 위치로 기존 폴더를 선택하세요.",
     "destinationExists": "이 대상이 이미 있습니다. 다른 이름을 선택하세요.",
     "projectInvalid": "AgSDL에서 이 프로젝트를 열 수 없습니다.",
     "title": "블루프린트 라이브러리",

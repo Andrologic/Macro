@@ -48,6 +48,8 @@ pub enum Error {
     UnexpectedHistory,
     #[error("Destination already exists")]
     DestinationExists,
+    #[error("The destination folder {0:?} does not exist")]
+    DestinationParentMissing(PathBuf),
     #[error("Published {destination:?}, but could not sync its directory: {source}")]
     PublishedNotSynced {
         destination: PathBuf,
@@ -118,10 +120,18 @@ fn destination_parent(destination: &Path) -> Result<&Path> {
     if destination.file_name().is_none() {
         return Err(Error::InvalidDestination);
     }
-    Ok(destination
+    let parent = destination
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new(".")))
+        .unwrap_or_else(|| Path::new("."));
+    match std::fs::metadata(parent) {
+        Ok(metadata) if metadata.is_dir() => Ok(parent),
+        Ok(_) => Err(Error::InvalidDestination),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Err(Error::DestinationParentMissing(parent.to_path_buf()))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn publish_error(error: io::Error) -> Error {
@@ -259,6 +269,10 @@ impl Error {
             Self::InvalidArchive(_) | Self::UnexpectedHistory => make("ARCHIVE_LAYOUT", message),
             Self::DigestMismatch => make("ARCHIVE_INTEGRITY", message),
             Self::DestinationExists => make("DESTINATION_EXISTS", message),
+            Self::DestinationParentMissing(path) => Diagnostic {
+                file: Some(path.to_string_lossy().into_owned()),
+                ..make("DESTINATION_PARENT_MISSING", message)
+            },
             Self::InvalidDestination => make("INVALID_DESTINATION", message),
             Self::PublishedNotSynced { .. } => make("PUBLISHED_NOT_SYNCED", message),
             Self::Json(_) => make("INVALID_JSON", message),
