@@ -4,11 +4,11 @@ import i18n from "../../i18n";
 import { AgsdlUserError } from "../../services/agsdl/userErrors";
 
 export function agsdlProjectIssueText(issue: ProjectDiagnostic, t: TFunction): string {
-  return issue.code === "MCP_SECRET_RESERVED" ? t("agsdl.library.reservedMcpSecret") : issue.message;
+  return issue.code === "MCP_SECRET_RESERVED" ? t("agsdl.library.reservedMcpSecret", { ns: "agsdl" }) : issue.message;
 }
 
 export function reservedMcpSecretText(t: TFunction, file?: string | null, pointer?: string): string {
-  const message = t("agsdl.library.reservedMcpSecret");
+  const message = t("agsdl.library.reservedMcpSecret", { ns: "agsdl" });
   return file ? `${message} ${file}${pointer ? `#${pointer}` : ""}` : message;
 }
 
