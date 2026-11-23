@@ -219,6 +219,47 @@ fn round_trip_uses_opened_bytes_and_publishes_without_replacing() {
 }
 
 #[test]
+fn exports_report_the_published_destination_when_sync_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("source");
+    fixture(&project);
+    let candidate = ImportCandidate::open(&project).unwrap();
+    let artifact = candidate
+        .stage_version(temp.path())
+        .unwrap()
+        .publish(temp.path())
+        .unwrap();
+    let version = open_version(&artifact.archive_path, &artifact.sha256).unwrap();
+
+    let project_destination = temp.path().join("export");
+    super::FAIL_PUBLICATION_SYNC.set(true);
+    assert!(matches!(
+        export_project(version.source(), &project_destination),
+        Err(Error::PublishedNotSynced { destination, .. }) if destination == project_destination
+    ));
+    assert!(project_destination.join(MANIFEST).is_file());
+    assert!(matches!(
+        export_project(version.source(), &project_destination),
+        Err(Error::DestinationExists)
+    ));
+
+    let archive_destination = temp.path().join("export.agsdl");
+    super::FAIL_PUBLICATION_SYNC.set(true);
+    assert!(matches!(
+        version.export_archive(&archive_destination),
+        Err(Error::PublishedNotSynced { destination, .. }) if destination == archive_destination
+    ));
+    assert_eq!(
+        fs::read(&archive_destination).unwrap(),
+        fs::read(&artifact.archive_path).unwrap()
+    );
+    assert!(matches!(
+        version.export_archive(&archive_destination),
+        Err(Error::DestinationExists)
+    ));
+}
+
+#[test]
 fn preview_reports_reachability_permissions_calls_and_external_references() {
     let temp = tempfile::tempdir().unwrap();
     fixture(temp.path());

@@ -1,12 +1,13 @@
 use super::{
-    destination_parent, private_directory, project, publish_error, sync_directory, Error, Result,
+    destination_parent, private_directory, project, publish_path, sync_directory, sync_publication,
+    Error, Result,
 };
 use argentic_runtime::source::{OpenedSource, SelectedFile};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use tempfile::{NamedTempFile, TempDir};
+use tempfile::TempDir;
 use uuid::Uuid;
 use zip::ZipArchive;
 
@@ -103,10 +104,9 @@ impl StagedVersion {
         sync_directory(self.directory.path())?;
         let artifact_id = Uuid::new_v4();
         let destination = versions_root.join(artifact_id.to_string());
-        crate::fs::operations::rename_without_replacement(self.directory.path(), &destination)
-            .map_err(publish_error)?;
+        publish_path(self.directory.path(), &destination)?;
         let _ = self.directory.keep();
-        sync_directory(versions_root)?;
+        sync_publication(versions_root, &destination)?;
         Ok(PublishedVersion {
             artifact_id,
             archive_path: destination.join(VERSION_FILENAME),
@@ -173,13 +173,14 @@ impl VersionArchive {
 
     pub fn export_archive(&self, destination: &Path) -> Result<()> {
         let parent = destination_parent(destination)?;
-        let mut staged = NamedTempFile::new_in(parent)?;
-        staged.write_all(&self.archive.bytes)?;
-        staged.as_file().sync_all()?;
-        staged
-            .persist_noclobber(destination)
-            .map_err(|err| publish_error(err.error))?;
-        sync_directory(parent)?;
+        let staged = private_directory(parent, ".agsdl-export-")?;
+        let path = staged.path().join(VERSION_FILENAME);
+        let mut file = File::create_new(&path)?;
+        file.write_all(&self.archive.bytes)?;
+        file.sync_all()?;
+        drop(file);
+        publish_path(&path, destination)?;
+        sync_publication(parent, destination)?;
         Ok(())
     }
 }

@@ -11,7 +11,7 @@ pub use preview::*;
 
 use argentic_runtime::persistence::dto::EngineFailure;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -37,6 +37,12 @@ pub enum Error {
     UnexpectedHistory,
     #[error("Destination already exists")]
     DestinationExists,
+    #[error("Published {destination:?}, but could not sync its directory: {source}")]
+    PublishedNotSynced {
+        destination: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("{0}")]
     Storage(String),
     #[error("Invalid destination path")]
@@ -73,6 +79,30 @@ fn publish_error(error: io::Error) -> Error {
     } else {
         Error::Io(error)
     }
+}
+
+fn publish_path(source: &Path, destination: &Path) -> Result<()> {
+    crate::fs::operations::rename_without_replacement(source, destination).map_err(publish_error)
+}
+
+fn sync_publication(parent: &Path, destination: &Path) -> Result<()> {
+    #[cfg(test)]
+    let result = if FAIL_PUBLICATION_SYNC.take() {
+        Err(io::Error::other("injected directory sync failure"))
+    } else {
+        sync_directory(parent)
+    };
+    #[cfg(not(test))]
+    let result = sync_directory(parent);
+    result.map_err(|source| Error::PublishedNotSynced {
+        destination: destination.to_path_buf(),
+        source,
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_PUBLICATION_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn private_directory(root: &Path, prefix: &str) -> io::Result<tempfile::TempDir> {

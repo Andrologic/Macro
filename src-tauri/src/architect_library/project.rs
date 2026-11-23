@@ -1,6 +1,6 @@
 use super::{
-    archive, destination_parent, private_directory, publish_error, sync_directory, Error,
-    ImportPreview, Result,
+    archive, destination_parent, private_directory, publish_path, sync_directory, sync_publication,
+    Error, ImportPreview, Result,
 };
 use argentic_runtime::source::OpenedSource;
 use serde_json::json;
@@ -181,10 +181,9 @@ pub fn export_project(source: &OpenedSource, destination: &Path) -> Result<usize
     let parent = destination_parent(destination)?;
     let count = members(source)?.len();
     let staged = materialize(source, parent)?;
-    crate::fs::operations::rename_without_replacement(staged.path(), destination)
-        .map_err(publish_error)?;
+    publish_path(staged.path(), destination)?;
     let _ = staged.keep();
-    sync_directory(parent)?;
+    sync_publication(parent, destination)?;
     Ok(count)
 }
 
