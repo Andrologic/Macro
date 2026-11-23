@@ -99,7 +99,7 @@ export async function refreshArchiveRunAccess(): Promise<void> {
   runAccesses030 = runAccesses030.filter(entry =>
     entry.scope.owner.projectId !== ARCHIVE_RUN_PROJECT || groups.has(entry.scope.owner.planId));
   runAccessListeners030.forEach(listener => listener());
-  await Promise.allSettled(bundles.map(bundle => bundle.access.refreshHistory()));
+  await Promise.allSettled(bundles.map(({ access }) => access.refreshCatalog?.() ?? access.refreshHistory()));
 }
 export type WorkflowRunTarget030 = Pick<RunHumanRequest030, 'scope'> & { requestId?: string; conversationId?: string; instanceId?: string };
 let runTarget030: WorkflowRunTarget030 | null = null;

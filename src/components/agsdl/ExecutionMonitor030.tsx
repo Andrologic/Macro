@@ -176,6 +176,8 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
         ].join(' ')}</p>
         <p>{tr('stopLabel')}: {state.stop.kind === 'available' ? tr(`stop.${state.stop.value.kind}`) : tr('unavailable')}</p>
         <p title={tr('physicalHelp')}>{tr('physicalPending')}: {state.physicalPending}</p>
+        {state.modelOverrides && Object.entries(state.modelOverrides).map(([agent, model]) =>
+          <p key={agent}>{t('agsdl.launch.replacementModel', { agent })} · {model.name}{model.effort && ' · ' + model.effort}</p>)}
         <p title={tr('ownerHelp')}>{tr('owner')}: {tr(`ownerState.${state.ownerStatus}`)}</p>
         <details><summary>{tr('termsHelp')}</summary><p>{tr('physicalHelp')}</p><p>{tr('ownerHelp')}</p><p>{tr('occurrenceHelp')}</p></details>
         {state.humans.kind === 'ready' ? state.humans.value.some(request => request.state.kind === 'open') && <p>{tr('waitingHuman')}</p> : <p>{tr('humanUnknown')}</p>}

@@ -82,6 +82,7 @@ export interface RunStateUi030 {
   readonly flowInvocationId: string;
   readonly revision: RunRevision030;
   readonly verdict: RunVerdict030;
+  readonly modelOverrides?: Readonly<Record<string, { name: string; effort?: string }>>;
   readonly ownerStatus: 'live' | 'revoked';
   readonly stopping: boolean;
   readonly physicalPending: string;

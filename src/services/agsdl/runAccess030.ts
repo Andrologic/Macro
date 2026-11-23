@@ -273,7 +273,7 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     const humans = history?.humans ?? await readHumanFacts030({ systemStartId: scope.systemStartId, source: scope.source }, transport.readExecutionHumans030);
     return { capture, inbox: summary.inbox, observation: history?.observation ?? observe(), state: { scope, flowInvocationId: runtime.flowInvocationId,
       revision: runtime.revision, verdict: verdict(runtime.verdict), ownerStatus: summary.ownerStatus as 'live' | 'revoked',
-      stopping: runtime.stopping, physicalPending: summary.physicalPending,
+      stopping: runtime.stopping, physicalPending: summary.physicalPending, modelOverrides: runtime.modelOverrides,
       stop: unavailable('stop-proof'), uncertainties: unavailable('uncertainty'), humans,
       occurrences: { kind: 'ready', revision: runtime.revision, value: sections.activations.map(activation => ({
         scope, activation, details: unavailable('occurrence-details'),
