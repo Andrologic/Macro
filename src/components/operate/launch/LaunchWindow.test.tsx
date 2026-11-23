@@ -230,14 +230,26 @@ it("explains tool problems in plain words, with the code on demand and no way to
   expect(primary().disabled).toBe(true);
 });
 
-it("sends a Codex connection problem to the connection settings", async () => {
-  const opened = spyOn(useAppStore.getState(), "openSettings").mockReturnValue(undefined);
-  install(() => preview({ blockers: [{ code: "codexUnavailable", subject: "CODEX_NOT_FOUND" }] }));
+it("explains the supported Codex version on macOS and links to installation instructions", async () => {
+  install(() => preview({
+    blockers: [{ code: "codexUnavailable", subject: "CODEX_VERSION_UNQUALIFIED", codexPlatform: "macosArm64" }],
+  }));
   await show();
-  expect(dialog().textContent).toContain("Codex is not connected on this computer.");
-  await click(byText("button", "Connect…", dialog()));
-  expect(opened).toHaveBeenCalledWith("providers");
-  opened.mockRestore();
+  expect(dialog().textContent).toContain("Install the complete official Codex 0.167.x package");
+  expect(dialog().textContent).not.toContain("0.171.0");
+  expect(dialog().textContent).not.toContain("Connect…");
+  const guide = byText("a", "Codex installation guide", dialog());
+  expect(guide?.getAttribute("href")).toEndWith("/docs/agsdl-codex-native.md");
+  expect(dialog().querySelector("details")?.textContent).toContain("CODEX_VERSION_UNQUALIFIED");
+  expect(primary().disabled).toBe(true);
+});
+
+it("sends a Codex login requirement to the private sign-in guide", async () => {
+  install(() => preview({ blockers: [{ code: "codexUnavailable", subject: "CODEX_LOGIN_REQUIRED" }] }));
+  await show();
+  expect(dialog().textContent).toContain("Sign in to Codex through Macro’s private profile");
+  const guide = byText("a", "Private sign-in guide", dialog());
+  expect(guide?.getAttribute("href")).toEndWith("#private-login");
 });
 
 const remoteEndpoint = "https://mcp.example.com/issues";

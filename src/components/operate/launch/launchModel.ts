@@ -2,7 +2,52 @@ import type { TFunction } from "i18next";
 import type { LaunchPreview } from "../../../services/ipc/architectLaunch";
 import { reservedMcpSecretText } from "../../agsdl/errorText";
 
-export const CODEX_SETUP_GUIDE = "https://github.com/Andrologic/Macro/blob/main/docs/agsdl-codex-native.md#private-login";
+const codexGuide = "https://github.com/Andrologic/Macro/blob/main/docs/agsdl-codex-native.md";
+
+export const codexGuides = {
+  install: { href: codexGuide, label: "codexInstallGuide" },
+  login: { href: codexGuide + "#private-login", label: "codexLoginGuide" },
+  auth: { href: codexGuide + "#explicit-existing-file-authentication", label: "codexFileAuthGuide" },
+} as const;
+
+type CodexBlocker = { textKey: string; guide?: keyof typeof codexGuides };
+
+const codexBlockers: Readonly<Record<string, CodexBlocker>> = {
+  CODEX_NOT_INSTALLED: { textKey: "codexNotInstalled", guide: "install" },
+  CODEX_NOT_FOUND: { textKey: "codexNotInstalled", guide: "install" },
+  CODEX_PACKAGE_INCOMPLETE: { textKey: "codexPackageIncomplete", guide: "install" },
+  CODEX_VERSION_UNQUALIFIED: { textKey: "codexVersionUnqualified", guide: "install" },
+  CODEX_PLATFORM_UNQUALIFIED: { textKey: "codexPlatformUnqualified" },
+  CODEX_CONTEXT_UNQUALIFIED: { textKey: "codexContextUnqualified", guide: "login" },
+  CODEX_PROFILE_UNQUALIFIED: { textKey: "codexProfileUnqualified", guide: "login" },
+  CODEX_WRITE_PROFILE_UNQUALIFIED: { textKey: "codexWriteProfileUnqualified", guide: "install" },
+  CODEX_SANDBOX_UNQUALIFIED: { textKey: "codexSandboxUnqualified", guide: "install" },
+  CODEX_LOGIN_REQUIRED: { textKey: "codexLoginRequired", guide: "login" },
+  CODEX_ACCOUNT_UNQUALIFIED: { textKey: "codexAccountUnqualified", guide: "login" },
+  CODEX_AUTH_VERSION_UNQUALIFIED: { textKey: "codexAuthVersionUnqualified", guide: "auth" },
+  CODEX_AUTH_PROFILE_CONFLICT: { textKey: "codexAuthProfileConflict", guide: "auth" },
+  CODEX_AUTH_SOURCE_UNAVAILABLE: { textKey: "codexAuthSourceUnavailable", guide: "auth" },
+  CODEX_AUTH_SOURCE_UNSUPPORTED: { textKey: "codexAuthSourceUnsupported", guide: "auth" },
+  CODEX_AUTH_EXPIRED: { textKey: "codexAuthExpired", guide: "auth" },
+  CODEX_AUTH_REFRESH_REQUIRED: { textKey: "codexAuthRefreshRequired", guide: "auth" },
+  CODEX_AUTH_ACCOUNT_CHANGED: { textKey: "codexAuthAccountChanged", guide: "auth" },
+  CODEX_AUTH_FAILED: { textKey: "codexAuthFailed", guide: "auth" },
+  CODEX_AUTH_TIMEOUT: { textKey: "codexAuthTimeout", guide: "auth" },
+  CODEX_MODEL_UNQUALIFIED: { textKey: "codexModelUnqualified", guide: "install" },
+  CODEX_REQUEST_FAILED: { textKey: "codexRequestFailed", guide: "install" },
+  CODEX_RPC_SERVER_REQUEST_UNQUALIFIED: { textKey: "codexRpcUnqualified", guide: "install" },
+  NATIVE_UNCERTAIN: { textKey: "codexProtocolFailed", guide: "install" },
+  STOP_PENDING: { textKey: "codexStopPending" },
+};
+
+function codexBlocker(code: string, platform?: Blocker["codexPlatform"]): CodexBlocker {
+  if (code === "CODEX_VERSION_UNQUALIFIED") {
+    if (platform === "macosArm64") return { textKey: "codexVersionMac", guide: "install" };
+    if (platform === "linuxArm64") return { textKey: "codexVersionLinux", guide: "install" };
+    if (platform === "unsupported") return codexBlockers.CODEX_PLATFORM_UNQUALIFIED;
+  }
+  return Object.hasOwn(codexBlockers, code) ? codexBlockers[code] : { textKey: "codexUnavailable" };
+}
 
 /** Variables that change how a program starts: a tool receiving one deserves a visible warning. */
 export const interpreterEnvironment: ReadonlySet<string> = new Set([
@@ -22,8 +67,7 @@ export type BlockerView =
   | { kind: "model"; agent: string }
   | { kind: "folder" }
   | { kind: "mcpRemote"; server: string; technical: string }
-  | { kind: "codexGuide"; textKey: "codexAuthVersionUnqualified" | "codexLoginRequired"; technical: string }
-  | { kind: "codexConnect"; technical: string }
+  | ({ kind: "codex"; technical: string } & CodexBlocker)
   | { kind: "author"; textKey: string; subject: string; technical: string };
 
 const authorCodes = new Set([
@@ -31,16 +75,12 @@ const authorCodes = new Set([
   "mcpAbsoluteInterpreterRequired", "mcpReservedSecret", "unsupportedHarness",
 ]);
 
-export function classifyBlocker({ code, subject }: Blocker): BlockerView {
+export function classifyBlocker({ code, subject, codexPlatform }: Blocker): BlockerView {
   const technical = [code, subject].filter(Boolean).join(" · ");
   if (code === "modelUnavailable") return { kind: "model", agent: subject };
   if (code === "workingFolderRequired") return { kind: "folder" };
   if (code === "mcpRemoteUnsupported") return { kind: "mcpRemote", server: subject, technical };
-  if (code === "codexUnavailable") {
-    if (subject === "CODEX_AUTH_VERSION_UNQUALIFIED") return { kind: "codexGuide", textKey: "codexAuthVersionUnqualified", technical };
-    if (subject === "CODEX_LOGIN_REQUIRED") return { kind: "codexGuide", textKey: "codexLoginRequired", technical };
-    return { kind: "codexConnect", technical };
-  }
+  if (code === "codexUnavailable") return { kind: "codex", ...codexBlocker(subject, codexPlatform), technical };
   return { kind: "author", textKey: authorCodes.has(code) ? code : "unknown", subject, technical };
 }
 
@@ -51,8 +91,8 @@ export function failureCode(failure: unknown): string {
 
 export function isRecheckFailure(code: string): boolean {
   return ["WORKING_FOLDER_IN_USE", "WORKING_FOLDER_CHANGED", "WORKING_FOLDER_UNAVAILABLE", "workingFolderRequired",
-    "CONSENT_REQUIRED", "MODEL_UNAVAILABLE", "MCP_SECRETS_UNAVAILABLE",
-    "CODEX_AUTH_VERSION_UNQUALIFIED", "CODEX_LOGIN_REQUIRED"].includes(code);
+    "CONSENT_REQUIRED", "MODEL_UNAVAILABLE", "MCP_SECRETS_UNAVAILABLE"].includes(code) ||
+    code.startsWith("CODEX_");
 }
 
 export function isFolderFailure(code: string): boolean {

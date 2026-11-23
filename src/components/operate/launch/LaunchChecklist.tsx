@@ -8,7 +8,7 @@ import { Icon } from "../../ui/Icon";
 import { Input } from "../../ui/Input";
 import { Select } from "../../ui/Select";
 import { SpinnerIcon } from "../../ui/SpinnerIcon";
-import { CODEX_SETUP_GUIDE, classifyBlocker, selectClass } from "./launchModel";
+import { classifyBlocker, codexGuides, selectClass } from "./launchModel";
 
 const compact = "!h-7 !px-3 !py-0 text-xs";
 
@@ -94,7 +94,7 @@ export function ModelRow({ agent, availableModels, overrides, disabled, onOverri
 }
 
 /** The zone of things to settle before launching. It exists only when something is missing, and every row fixes itself. */
-export function LaunchChecklist({ preview, overrides, folderConfirmed, disabled, checking, onOverride, onChooseFolder, onConfirmFolder, onSecretSaved, onOpenGuide, onConnect, onRecheck }: {
+export function LaunchChecklist({ preview, overrides, folderConfirmed, disabled, checking, onOverride, onChooseFolder, onConfirmFolder, onSecretSaved, onOpenGuide, onRecheck }: {
   preview: LaunchPreview;
   overrides: LaunchModelOverrides;
   folderConfirmed: boolean;
@@ -104,8 +104,7 @@ export function LaunchChecklist({ preview, overrides, folderConfirmed, disabled,
   onChooseFolder: () => void;
   onConfirmFolder: (confirmed: boolean) => void;
   onSecretSaved: (secret: LaunchSecret) => void;
-  onOpenGuide: () => void;
-  onConnect: () => void;
+  onOpenGuide: (url: string) => void;
   onRecheck: () => void;
 }) {
   const { t } = useAgsdlTranslation();
@@ -113,7 +112,7 @@ export function LaunchChecklist({ preview, overrides, folderConfirmed, disabled,
   const blockers = preview.blockers.map(blocker => ({ blocker, view: classifyBlocker(blocker) }));
   const rows = missing.length + blockers.length + (preview.folderReuseToken ? 1 : 0);
   if (!rows) return null;
-  const recheckable = blockers.some(({ view }) => view.kind === "author" || view.kind === "codexGuide" || view.kind === "codexConnect");
+  const recheckable = blockers.some(({ view }) => view.kind === "author" || view.kind === "codex");
   return <section aria-label={t("agsdl.launch.blockers")} className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2">
     <h3 className="!m-0 flex items-center gap-2 text-xs font-medium text-amber-500">
       <Icon name="triangle-alert" size={13} aria-hidden="true" />{t("agsdl.launch.blockers")}
@@ -127,21 +126,7 @@ export function LaunchChecklist({ preview, overrides, folderConfirmed, disabled,
             <span>{t("agsdl.launch.folderRequired")}</span></p>
           <div className="pl-5"><Button size="sm" variant="secondary" className={compact} disabled={disabled} onClick={onChooseFolder}>{t("agsdl.launch.chooseFolder")}</Button></div>
         </div>}
-        {view.kind === "codexGuide" && <div className="space-y-1">
-          <p className="!m-0 flex items-start gap-2"><Icon name="triangle-alert" size={13} className="mt-0.5 shrink-0 text-amber-500" aria-hidden="true" />
-            <span>{t(`agsdl.launch.blocker.${view.textKey}`)}</span></p>
-          <div className="pl-5">
-            <a href={CODEX_SETUP_GUIDE} className="agsdl-link"
-              onClick={event => { event.preventDefault(); onOpenGuide(); }}>{t("agsdl.launch.codexSetupGuide")}</a>
-          </div>
-          <Technical technical={view.technical} />
-        </div>}
-        {view.kind === "codexConnect" && <div className="space-y-1">
-          <p className="!m-0 flex items-start gap-2"><Icon name="triangle-alert" size={13} className="mt-0.5 shrink-0 text-amber-500" aria-hidden="true" />
-            <span>{t("agsdl.launch.blocker.codexUnavailable")}</span></p>
-          <div className="pl-5"><Button size="sm" variant="secondary" className={compact} disabled={disabled} onClick={onConnect}>{t("agsdl.launch.connect")}</Button></div>
-          <Technical technical={view.technical} />
-        </div>}
+        {view.kind === "codex" && <CodexBlockerRow view={view} onOpenGuide={onOpenGuide} />}
         {view.kind === "mcpRemote" && <RemoteMcpBlocker server={view.server} technical={view.technical}
           definition={preview.permissions.mcpServers[view.server]} />}
         {view.kind === "author" && <div className="space-y-1">
@@ -171,6 +156,25 @@ export function LaunchChecklist({ preview, overrides, folderConfirmed, disabled,
       </Button>
     </div>}
   </section>;
+}
+
+function CodexBlockerRow({ view, onOpenGuide }: {
+  view: Extract<ReturnType<typeof classifyBlocker>, { kind: "codex" }>;
+  onOpenGuide: (url: string) => void;
+}) {
+  const { t } = useAgsdlTranslation();
+  const guide = view.guide && codexGuides[view.guide];
+  return <div className="space-y-1">
+    <p className="!m-0 flex items-start gap-2">
+      <Icon name="triangle-alert" size={13} className="mt-0.5 shrink-0 text-amber-500" aria-hidden="true" />
+      <span>{t("agsdl.launch.blocker." + view.textKey)}</span>
+    </p>
+    {guide && <div className="pl-5">
+      <a href={guide.href} className="agsdl-link"
+        onClick={event => { event.preventDefault(); onOpenGuide(guide.href); }}>{t("agsdl.launch." + guide.label)}</a>
+    </div>}
+    <Technical technical={view.technical} />
+  </div>;
 }
 
 function RemoteMcpBlocker({ server, technical, definition }: {

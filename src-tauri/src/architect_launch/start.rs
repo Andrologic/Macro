@@ -149,7 +149,7 @@ pub(crate) async fn launch(
         };
         let observed = observe_codex(runtime.manager, scope).await?;
         if codex_write_unqualified(&preview, &call_permissions, &observed) {
-            return Err(launch_failure("CODEX_PROFILE_UNQUALIFIED", "codex"));
+            return Err(launch_failure("CODEX_WRITE_PROFILE_UNQUALIFIED", "codex"));
         }
         if let Some(blocker) = model_blockers(&preview, &observed, &request.model_overrides).first()
         {

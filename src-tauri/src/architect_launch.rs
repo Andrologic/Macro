@@ -162,6 +162,8 @@ pub(crate) struct LaunchPreview {
 struct Blocker {
     code: &'static str,
     subject: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    codex_platform: Option<&'static str>,
 }
 
 impl Blocker {
@@ -169,7 +171,20 @@ impl Blocker {
         Self {
             code,
             subject: subject.into(),
+            codex_platform: None,
         }
+    }
+
+    fn codex(code: impl Into<String>) -> Self {
+        let mut blocker = Self::new("codexUnavailable", code);
+        if blocker.subject == "CODEX_VERSION_UNQUALIFIED" {
+            blocker.codex_platform = Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+                ("macos", "aarch64") => "macosArm64",
+                ("linux", "aarch64") => "linuxArm64",
+                _ => "unsupported",
+            });
+        }
+        blocker
     }
 }
 
@@ -901,10 +916,7 @@ pub(crate) async fn prepare(
         match start::observe_codex(manager, &scope).await {
             Ok(observed) => {
                 if codex_write_unqualified(&permissions_preview, &permissions, &observed) {
-                    blockers.push(Blocker::new(
-                        "codexUnavailable",
-                        "CODEX_PROFILE_UNQUALIFIED",
-                    ));
+                    blockers.push(Blocker::codex("CODEX_WRITE_PROFILE_UNQUALIFIED"));
                 }
                 blockers.extend(model_blockers(
                     &permissions_preview,
@@ -917,7 +929,7 @@ pub(crate) async fn prepare(
                     .filter_map(|model| model["name"].as_str().map(str::to_owned))
                     .collect();
             }
-            Err(error) => blockers.push(Blocker::new("codexUnavailable", error.code)),
+            Err(error) => blockers.push(Blocker::codex(error.code)),
         }
     }
     let secrets = secret_requirements(&input, &servers)?;

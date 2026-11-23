@@ -133,9 +133,9 @@ it("rechecks when the folder becomes occupied and requires an explicit confirmat
 });
 
 it.each([
-  ["CODEX_AUTH_VERSION_UNQUALIFIED", "cannot use your existing Codex sign-in"],
-  ["CODEX_LOGIN_REQUIRED", "Codex is not signed in for Macro"],
-])("shows how to resolve %s when Codex auth changes at launch", async (code, guidance) => {
+  ["CODEX_AUTH_VERSION_UNQUALIFIED", "Use Codex 0.167.0 for file authentication", "#explicit-existing-file-authentication"],
+  ["CODEX_LOGIN_REQUIRED", "Sign in to Codex through Macro’s private profile", "#private-login"],
+])("shows how to resolve %s when Codex auth changes at launch", async (code, guidance, anchor) => {
   let blocked = false;
   install((command) => {
     if (command === "architect_launch_prepare") return preview({
@@ -150,7 +150,7 @@ it.each([
   await show(archive);
   await act(async () => submit().click());
   expect(dialog().textContent).toContain(guidance);
-  expect(dialog().querySelector("a")?.textContent).toBe("Codex setup guide");
+  expect(dialog().querySelector("a")?.hash).toBe(anchor);
   expect(dialog().querySelector("a")?.pathname).toBe("/Andrologic/Macro/blob/main/docs/agsdl-codex-native.md");
   expect(submit().disabled).toBe(true);
 });

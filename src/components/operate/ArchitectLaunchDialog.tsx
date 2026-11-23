@@ -18,7 +18,7 @@ import { notify } from "../ui/toastService";
 import { LaunchChecklist, ModelRow, SecretRow, pendingCount } from "./launch/LaunchChecklist";
 import { LaunchConsent } from "./launch/LaunchConsent";
 import { LaunchSummary } from "./launch/LaunchSummary";
-import { CODEX_SETUP_GUIDE, failureCode, failureText, isFolderFailure, isRecheckFailure, selectClass } from "./launch/launchModel";
+import { failureCode, failureText, isFolderFailure, isRecheckFailure, selectClass } from "./launch/launchModel";
 
 interface SystemChoice {
   id: string;
@@ -294,8 +294,8 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
         onOverride={override} onChooseFolder={() => void chooseFolder()}
         onConfirmFolder={confirmed => setConfirmedFolderToken(confirmed ? current.folderReuseToken : null)}
         onSecretSaved={secret => { setNotice(t("agsdl.launch.secretSaved", { name: secret.name })); setChecking(true); setRevision(value => value + 1); }}
-        onOpenGuide={() => void openExternalUrl(CODEX_SETUP_GUIDE).catch(() => setProblem({ message: t("agsdl.launch.failed"), technical: "", recheck: false }))}
-        onConnect={() => useAppStore.getState().openSettings("providers")} onRecheck={recheck} />}
+        onOpenGuide={url => void openExternalUrl(url).catch(() => setProblem({ message: t("agsdl.launch.failed"), technical: "", recheck: false }))}
+        onRecheck={recheck} />}
       {notice && <p role="status" className="!m-0 text-[11px] text-emerald-500">{notice}</p>}
     </>}
     {consent && current && <LaunchConsent preview={current} />}

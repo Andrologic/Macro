@@ -24,7 +24,7 @@ export interface LaunchPreview {
   workingFolderMode: "perExecution" | "atLaunch";
   configuration: LaunchConfiguration;
   folderReuseToken: string | null;
-  blockers: Array<{ code: string; subject: string }>;
+  blockers: Array<{ code: string; subject: string; codexPlatform?: "macosArm64" | "linuxArm64" | "unsupported" }>;
   availableModels: string[];
   permissions: ImportPreview;
   consentToken: string | null;
