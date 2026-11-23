@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
 import { act } from "react";
 import type { BlueprintDraft, ProjectView } from "../../services/ipc/architectLibrary";
 import { agsdlSessionKey, useAgsdlStore } from "../../stores/useAgsdlStore";
+import { useArchitectLaunchStore } from "../../stores/useArchitectLaunchStore";
 import { useArchitectLibraryStore } from "../../stores/useArchitectLibraryStore";
 import { notify } from "../ui/toastService";
 import {
@@ -154,6 +155,34 @@ it("saves with the note, announces the number Macro really assigned and closes",
   expect(calls.find(call => call.command === "architect_save_version")?.args).toMatchObject({ blueprintId: "bp", note: "Added the reviewer" });
   expect(success).toHaveBeenCalledWith("Version 3 saved", { description: "Added the reviewer" });
   expect(closed).toBe(1);
+});
+
+it("saves and opens the launch window on the version Macro really assigned", async () => {
+  open(modern, projectViewFixture(modern));
+  const launch = useArchitectLaunchStore.getState();
+  useArchitectLaunchStore.setState({ window: null, open: version => useArchitectLaunchStore.setState({ window: { version } }) });
+  let closed = 0;
+  await mount(undefined, () => { closed++; });
+  await click(byText("button", "Save and launch in Operate", document));
+  await flush();
+  expect(calls.find(call => call.command === "architect_save_version")).toBeDefined();
+  expect(useArchitectLaunchStore.getState().window).toEqual({ version: { blueprintId: "bp", number: 3 } });
+  expect(success).toHaveBeenCalled();
+  expect(closed).toBe(1);
+  useArchitectLaunchStore.setState(launch);
+});
+
+it("does not open the launch window when the save fails", async () => {
+  open(modern, projectViewFixture(modern));
+  freeze = () => { throw new Error("disk full"); };
+  const launch = useArchitectLaunchStore.getState();
+  useArchitectLaunchStore.setState({ window: null });
+  await mount();
+  await click(byText("button", "Save and launch in Operate", document));
+  await flush();
+  expect(useArchitectLaunchStore.getState().window).toBeNull();
+  expect(document.querySelector('[role="alert"]')?.textContent).toContain("The action failed");
+  useArchitectLaunchStore.setState(launch);
 });
 
 it("shows a plain failure when the write fails, and stays open", async () => {

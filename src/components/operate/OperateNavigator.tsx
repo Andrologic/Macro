@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import {
   operateSnoozeDeadlineWarning, selectOperateInbox,
   type OperateRunRow, type OperateThreadRow,
@@ -13,7 +13,12 @@ import { notify } from '../ui/toastService';
 import { useArchitectLaunchStore } from '../../stores/useArchitectLaunchStore';
 import { architectLaunch } from '../../services/ipc/architectLaunch';
 import { workflowRunAccessSnapshot030 } from '../../services/workflowAgentTasks';
-import ArchitectLaunchDialog, { ArchiveRunSecrets } from './ArchitectLaunchDialog';
+import { Button } from '../ui/Button';
+import { Icon } from '../ui/Icon';
+
+// The launch window is rarely opened: it loads when it is first needed.
+const ArchitectLaunchDialog = lazy(() => import('./ArchitectLaunchDialog'));
+const ArchiveRunSecrets = lazy(() => import('./ArchitectLaunchDialog').then(module => ({ default: module.ArchiveRunSecrets })));
 
 const systemRunLabel = (item: { systemLabel: string; runLabel: string }) => `${item.systemLabel} · ${item.runLabel}`;
 const elapsedLabel = (ms: number, locale: string | undefined) =>
@@ -72,7 +77,7 @@ function RunRow({ run }: { run: OperateRunRow }) {
       <button type="button" onClick={() => void architectLaunch.openFolder(run.scope.systemStartId)
         .catch(() => notify.error(t('agsdl.inbox.actionFailed')))}>{t('agsdl.launch.openFolder')}</button>
       <button type="button" onClick={() => setEditingSecrets(true)}>{t('agsdl.launch.secrets')}</button>
-      {editingSecrets && <ArchiveRunSecrets version={archiveRun.version} onClose={() => setEditingSecrets(false)} />}
+      {editingSecrets && <Suspense fallback={null}><ArchiveRunSecrets version={archiveRun.version} onClose={() => setEditingSecrets(false)} /></Suspense>}
     </div>}
     {run.canTerminate &&
       <button type="button" disabled={pending || run.status === 'stopping'} onClick={() => setConfirming(true)}>{t('agsdl.inbox.terminate')}</button>}
@@ -101,9 +106,10 @@ export default function OperateNavigator() {
     time => new Date(time).toLocaleString(i18n.resolvedLanguage)), [runs, filter, nowMs, hiddenAgents, i18n.resolvedLanguage]);
   return <nav className="flex h-full min-h-0 flex-col" aria-label={t('agsdl.shell030.executions')} data-tour-id="operate-executions">
     <header className="border-b border-border p-2 text-xs">
-      <button type="button" className="agsdl-link" onClick={() => openLaunch()}>{t('agsdl.launch.title')}</button>
-      {launchWindow && <ArchitectLaunchDialog
-        key={JSON.stringify(launchWindow.version ?? null)} initialVersion={launchWindow.version} />}
+      <Button size="sm" variant="secondary" className="mb-2 !h-7 w-full !px-3 !py-0 text-xs" leftIcon={<Icon name="play" size={12} />}
+        onClick={() => openLaunch()}>{t('agsdl.launch.title')}</Button>
+      {launchWindow && <Suspense fallback={null}><ArchitectLaunchDialog
+        key={JSON.stringify(launchWindow.version ?? null)} initialVersion={launchWindow.version} /></Suspense>}
       <h2 className="text-sm font-medium">{t('agsdl.shell030.executions')}</h2>
       <input type="search" aria-label={t('agsdl.inbox.search')} placeholder={t('agsdl.inbox.search')}
         value={filter.query ?? ''} onChange={event => setFilter({ ...filter, query: event.target.value })} />

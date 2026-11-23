@@ -1,43 +1,29 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { useCallback, useEffect, useState } from "react";
 import { openExternalUrl } from "../../services/externalUrlOpener";
-import { architectLaunch, type LaunchConfiguration, type LaunchModelOverrides, type LaunchPreview, type LaunchSecret } from "../../services/ipc/architectLaunch";
+import { architectLaunch, type LaunchConfiguration, type LaunchModelOverrides, type LaunchPreview } from "../../services/ipc/architectLaunch";
 import { architectLibrary, type BlueprintVersionSummary, type VersionKey } from "../../services/ipc/architectLibrary";
+import { open } from "../../services/tauriDialog";
 import { openWorkflowRun030, refreshArchiveRunAccess } from "../../services/workflowAgentTasks";
 import { useAppStore } from "../../stores/useAppStore";
 import { useArchitectLaunchStore } from "../../stores/useArchitectLaunchStore";
-import { reservedMcpSecretText } from "../agsdl/errorText";
+import { DisclosureSummary } from "../agsdl/DisclosureSummary";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
-import { Dialog } from "../ui/Dialog";
+import { ArchitectDialogShell } from "../architect/ArchitectDialogShell";
+import { Skeleton } from "../shared/Skeleton";
+import { Button } from "../ui/Button";
+import { Select } from "../ui/Select";
+import { SpinnerIcon } from "../ui/SpinnerIcon";
+import { Textarea } from "../ui/Textarea";
 import { notify } from "../ui/toastService";
-
-const codexSetupGuide = "https://github.com/Andrologic/Macro/blob/main/docs/agsdl-codex-native.md#private-login";
-
-const interpreterEnvironment = new Set([
-  "HOME", "TMPDIR", "TMP", "TEMP", "IFS", "CDPATH", "FPATH", "ZDOTDIR",
-  "NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP",
-  "RUBYOPT", "RUBYLIB", "PERL5OPT", "PERL5LIB", "PERLLIB", "LUA_PATH", "LUA_CPATH",
-  "CLASSPATH", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS",
-]);
-
-function archiveErrorText(failure: unknown, t: ReturnType<typeof useAgsdlTranslation>["t"]): string {
-  const diagnostic = failure as { code?: string; source?: { path: string; pointer: string } } | null;
-  if (diagnostic?.code === "MCP_SECRET_RESERVED") {
-    return reservedMcpSecretText(t, diagnostic.source?.path, diagnostic.source?.pointer);
-  }
-  const invalid = ["GRAPH_LIMIT", "INPUT_LIMIT", "ARCHIVE_LAYOUT", "ARCHIVE_LIMIT", "ARCHIVE_INTEGRITY"].some(code => diagnostic?.code === code);
-  return t(invalid ? "agsdl.launch.invalidArchive" : "agsdl.launch.failed");
-}
-
-function codexAuthBlocker(code: unknown) {
-  if (code === "CODEX_AUTH_VERSION_UNQUALIFIED") return "codexAuthVersionUnqualified";
-  if (code === "CODEX_LOGIN_REQUIRED") return "codexLoginRequired";
-  return null;
-}
+import { LaunchChecklist, ModelRow, SecretRow, pendingCount } from "./launch/LaunchChecklist";
+import { LaunchConsent } from "./launch/LaunchConsent";
+import { LaunchSummary } from "./launch/LaunchSummary";
+import { CODEX_SETUP_GUIDE, failureCode, failureText, isFolderFailure, isRecheckFailure, selectClass } from "./launch/launchModel";
 
 interface SystemChoice {
   id: string;
   name: string;
+  /** Launchable versions, newest first. */
   versions: BlueprintVersionSummary[];
 }
 
@@ -47,45 +33,12 @@ export async function loadLaunchSystems(): Promise<SystemChoice[]> {
   return Promise.all(groups.flat().map(async blueprint => ({
     id: blueprint.id,
     name: blueprint.name,
-    versions: (await architectLibrary.listVersions(blueprint.id)).filter(version => version.storageState === "archive"),
+    versions: (await architectLibrary.listVersions(blueprint.id))
+      .filter(version => version.storageState === "archive").sort((a, b) => b.number - a.number),
   })));
 }
 
-function SecretField({ version, secret, onSaved }: {
-  version: VersionKey;
-  secret: LaunchSecret;
-  onSaved: () => void;
-}) {
-  const { t } = useAgsdlTranslation();
-  const [value, setValue] = useState("");
-  const [pending, setPending] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const save = async () => {
-    setPending(true);
-    setFailed(false);
-    try {
-      await architectLaunch.setSecret(version, secret.server, secret.name, value);
-      setValue("");
-      onSaved();
-    } catch {
-      setFailed(true);
-    } finally {
-      setPending(false);
-    }
-  };
-  return <div className="flex flex-wrap gap-2">
-    <label>{secret.server} · {secret.name}
-      <input type="password" autoComplete="off" value={value}
-        placeholder={secret.stored ? t("agsdl.launch.secretStored") : undefined}
-        onChange={event => setValue(event.target.value)} />
-    </label>
-    <button type="button" disabled={pending || !value} onClick={() => void save()}>
-      {t("agsdl.launch.saveSecret")}
-    </button>
-    {failed && <p role="alert">{t("agsdl.launch.failed")}</p>}
-  </div>;
-}
-
+/** The secrets a version's tools ask for, with their stored state. The values never come back. */
 export function ArchiveRunSecrets({ version, onClose }: { version: VersionKey; onClose: () => void }) {
   const { t } = useAgsdlTranslation();
   const [revision, setRevision] = useState(0);
@@ -94,27 +47,33 @@ export function ArchiveRunSecrets({ version, onClose }: { version: VersionKey; o
   const { blueprintId, number } = version;
   useEffect(() => {
     let active = true;
+    setFailed(false);
     void architectLaunch.prepare({ blueprintId, number }).then(value => {
       if (active) setPreview(value);
     }, () => { if (active) setFailed(true); });
     return () => { active = false; };
   }, [blueprintId, number, revision]);
-  const title = t("agsdl.launch.secrets");
-  return <Dialog title={title} onClose={onClose} panelClassName="agsdl-detail-modal">
-    <header><strong>{title}</strong></header>
-    <div className="agsdl-inspector-body space-y-2">
-      {!preview && <p role={failed ? "alert" : "status"}>{t(failed ? "agsdl.launch.failed" : "agsdl.launch.checking")}</p>}
-      {preview && !preview.secrets.length && <p>{t("agsdl.launch.noSecrets")}</p>}
-      {preview?.secrets.map(secret => <SecretField key={JSON.stringify([secret.server, secret.name])}
-        version={version} secret={secret} onSaved={() => setRevision(current => current + 1)} />)}
-    </div>
-  </Dialog>;
+  return <ArchitectDialogShell title={t("agsdl.launch.secrets")} onClose={onClose}
+    footer={<button type="button" onClick={onClose}>{t("agsdl.close")}</button>}>
+    {!preview && !failed && <div role="status" className="space-y-2">
+      <p className="!m-0 flex items-center gap-2"><SpinnerIcon size={13} />{t("agsdl.launch.checking")}</p><Skeleton className="h-8" />
+    </div>}
+    {failed && <p role="alert" className="!m-0 text-red-500">{t("agsdl.launch.failed")}{" "}
+      <button type="button" className="agsdl-link" onClick={() => setRevision(current => current + 1)}>{t("agsdl.retry")}</button></p>}
+    {preview && !preview.secrets.length && <p className="!m-0 text-muted-foreground">{t("agsdl.launch.noSecrets")}</p>}
+    {preview?.secrets.map(secret => <SecretRow key={JSON.stringify([secret.server, secret.name])}
+      version={version} secret={secret} onSaved={() => setRevision(current => current + 1)} />)}
+  </ArchitectDialogShell>;
 }
+
+interface Problem { message: string; technical: string; recheck: boolean }
 
 export default function ArchitectLaunchDialog({ initialVersion }: { initialVersion?: VersionKey }) {
   const { t } = useAgsdlTranslation();
   const close = useArchitectLaunchStore(state => state.close);
   const [systems, setSystems] = useState<SystemChoice[]>();
+  const [systemsFailed, setSystemsFailed] = useState(false);
+  const [systemsRevision, setSystemsRevision] = useState(0);
   const [blueprintId, setBlueprintId] = useState(initialVersion?.blueprintId ?? "");
   const [number, setNumber] = useState(initialVersion?.number);
   const [preview, setPreview] = useState<LaunchPreview>();
@@ -128,25 +87,25 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
   const [busy, setBusy] = useState(false);
   const [consent, setConsent] = useState(false);
   const [revision, setRevision] = useState(0);
-  const [error, setError] = useState("");
+  const [problem, setProblem] = useState<Problem>();
+  const [notice, setNotice] = useState("");
   const selected = systems?.find(system => system.id === blueprintId);
-  const version = number === undefined ? selected?.versions[0] :
-    selected?.versions.find(version => version.number === number &&
-      !(unavailableVersion?.blueprintId === blueprintId && unavailableVersion.number === number));
+  const usable = selected?.versions.filter(option =>
+    !(unavailableVersion?.blueprintId === blueprintId && unavailableVersion.number === option.number)) ?? [];
+  const version = number === undefined ? usable[0] : usable.find(option => option.number === number);
   const versionMissing = !!systems && number !== undefined && !version;
   const versionNumber = version?.number;
-  const refresh = () => setRevision(current => current + 1);
-  const title = t(consent ? "agsdl.launch.permissions" : "agsdl.launch.title");
 
   useEffect(() => {
     let active = true;
+    setSystemsFailed(false);
     void loadLaunchSystems().then(value => {
       if (!active) return;
       setSystems(value);
       if (!initialVersion) setBlueprintId(value.find(system => system.versions.length > 0)?.id ?? "");
-    }, () => { if (active) setError(t("agsdl.launch.failed")); });
+    }, () => { if (active) setSystemsFailed(true); });
     return () => { active = false; };
-  }, [initialVersion, t]);
+  }, [initialVersion, systemsRevision]);
 
   useEffect(() => {
     if (versionNumber === undefined) return;
@@ -159,11 +118,11 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
       if (!active) return;
       setPreview(undefined);
       setChecking(false);
-      if (failure?.code === "ARCHIVE_UNAVAILABLE") {
+      if (failureCode(failure) === "ARCHIVE_UNAVAILABLE") {
         setNumber(versionNumber);
         setUnavailableVersion({ blueprintId, number: versionNumber });
       } else {
-        setError(archiveErrorText(failure, t));
+        setProblem({ ...failureText(failure, t), recheck: true });
       }
     });
     return () => { active = false; };
@@ -171,19 +130,27 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
 
   const current = preview?.version.blueprintId === blueprintId && preview.version.number === versionNumber ? preview : undefined;
   const folderConfirmed = !!current?.folderReuseToken && current.folderReuseToken === confirmedFolderToken;
-  const ready = current && !checking && !busy && !current.blockers.length &&
-    !current.secrets.some(secret => !secret.stored) && (!current.folderReuseToken || folderConfirmed) &&
-    (!current.startMessageRequired || message.trim());
-  const modelAgents = new Set([
-    ...Object.keys(modelOverrides),
-    ...current?.blockers.filter(blocker => blocker.code === "modelUnavailable").map(blocker => blocker.subject) ?? [],
-  ]);
+  const pending = current ? pendingCount(current, folderConfirmed) : 0;
+  const messageMissing = !!current?.startMessageRequired && !message.trim();
+  const settled = !!current && !checking && !pending;
+  const ready = settled && !busy && !messageMissing;
+  const reason = busy ? undefined : !current && problem ? t("agsdl.launch.recheckReason") : !current || checking ? t("agsdl.launch.checkingReason")
+    : pending ? t("agsdl.launch.remaining", { count: pending }) : messageMissing ? t("agsdl.launch.messageRequired") : undefined;
+  const replaced = Object.keys(modelOverrides).filter(agent => !current?.blockers.some(blocker => blocker.code === "modelUnavailable" && blocker.subject === agent));
+
+  const recheck = useCallback(() => {
+    setProblem(undefined);
+    setChecking(true);
+    setRevision(value => value + 1);
+  }, []);
   const reset = () => {
     setPreview(undefined);
     setConfiguration(undefined);
     setModelOverrides({});
     setConfirmedFolderToken(null);
-    setError("");
+    setProblem(undefined);
+    setNotice("");
+    setConsent(false);
   };
   const chooseFolder = async () => {
     try {
@@ -193,25 +160,25 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
       setConfirmedFolderToken(null);
       setConfiguration({ workingFolder: folder });
     } catch {
-      setError(t("agsdl.launch.failed"));
+      setProblem({ message: t("agsdl.launch.failed"), technical: "", recheck: false });
     }
   };
-  const checkAgain = () => {
-    setError("");
+  const override = (agent: string, model: string) => {
     setChecking(true);
-    refresh();
+    setModelOverrides(previous => {
+      if (model) return { ...previous, [agent]: { name: model } };
+      const next = { ...previous };
+      delete next[agent];
+      return next;
+    });
   };
-  const start = async (event: FormEvent) => {
-    event.preventDefault();
+
+  const start = async () => {
     if (!ready || !current) return;
-    if (!consent && current.consentToken) {
-      setConsent(true);
-      return;
-    }
     setBusy(true);
-    setError("");
+    setProblem(undefined);
     try {
-      await architectLaunch.start({
+      const { identity, source } = await architectLaunch.start({
         version: current.version,
         configuration: current.configuration,
         startMessage: current.startMessageRequired ? message : null,
@@ -219,176 +186,126 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
         consentToken: consent ? current.consentToken : null,
         folderReuseToken: folderConfirmed ? confirmedFolderToken : null,
         modelOverrides,
-      }).then(({ identity, source }) => {
-        close();
-        void refreshArchiveRunAccess().catch(() => {});
-        notify.actionRequired(t("agsdl.launch.launched"), {
-          tone: "info",
-          description: selected?.name,
-          actions: [{ label: t("agsdl.launch.viewRun"), onClick: () =>
-            openWorkflowRun030({
-              scope: { systemStartId: identity.systemStartId, source },
-              conversationId: source.owner.planId,
-            }) }],
-        });
+      });
+      close();
+      void refreshArchiveRunAccess().catch(() => {});
+      // Nothing opens by itself: the run is one click away. The start message stays out of the notice.
+      notify.actionRequired(t("agsdl.launch.launched"), {
+        tone: "info",
+        description: [selected?.name, t("agsdl.library.version", { number: current.version.number })].filter(Boolean).join(" · "),
+        actions: [{ label: t("agsdl.launch.viewRun"), onClick: () =>
+          openWorkflowRun030({ scope: { systemStartId: identity.systemStartId, source }, conversationId: source.owner.planId }) }],
       });
     } catch (failure) {
-      const code = failure && typeof failure === "object" && "code" in failure ? failure.code : "";
-      const folderChanged = code === "WORKING_FOLDER_IN_USE" || code === "WORKING_FOLDER_CHANGED" ||
-        code === "WORKING_FOLDER_UNAVAILABLE" || code === "workingFolderRequired";
-      if (folderChanged || code === "CONSENT_REQUIRED" || code === "MODEL_UNAVAILABLE" ||
-          code === "MCP_SECRETS_UNAVAILABLE" || codexAuthBlocker(code)) {
+      const code = failureCode(failure);
+      if (isRecheckFailure(code)) {
         setConsent(false);
-        if (folderChanged) setConfirmedFolderToken(null);
-        checkAgain();
+        if (isFolderFailure(code)) setConfirmedFolderToken(null);
+        recheck();
       } else if (code === "ARCHIVE_UNAVAILABLE") {
         setConsent(false);
         setNumber(current.version.number);
         setUnavailableVersion(current.version);
       } else {
-        setError(archiveErrorText(failure, t));
+        setProblem({ ...failureText(failure, t), recheck: false });
       }
     } finally {
       setBusy(false);
     }
   };
+  /** The first press moves to the permission step when one is needed; the second one launches. */
+  const proceed = () => {
+    if (!ready || !current) return;
+    if (!consent && current.consentToken) setConsent(true);
+    else void start();
+  };
 
-  return <Dialog title={title} onClose={() => { if (!busy) close(); }} panelClassName="agsdl-detail-modal">
-    <header><strong>{title}</strong></header>
-    <form className="agsdl-inspector-body space-y-3" onSubmit={event => void start(event)}>
-      <fieldset className="space-y-3" disabled={busy}>
-        {!consent && <>
-          {(!initialVersion || (systems && !selected)) && <label className="agsdl-edit-field">{t("agsdl.launch.system")}
-            <select value={blueprintId} onChange={event => {
-              setBlueprintId(event.target.value);
-              setNumber(undefined);
-              reset();
-            }}>
-              <option value="" disabled>{t("agsdl.launch.system")}</option>
-              {systems?.map(system => <option key={system.id} value={system.id}>{system.name}</option>)}
-            </select>
-          </label>}
-          {versionMissing && <p role="alert">{t("agsdl.launch.versionMissing", { number })}</p>}
-          {versionMissing && !!selected?.versions.some(option => option.number !== number) &&
-            <label className="agsdl-edit-field">{t("agsdl.library.versions")}
-              <select value="" onChange={event => { setNumber(Number(event.target.value)); reset(); }}>
-                <option value="" disabled>{t("agsdl.launch.chooseVersion")}</option>
-                {selected.versions.filter(option => option.number !== number).map(option =>
-                  <option key={option.number} value={option.number}>{t("agsdl.library.version", { number: option.number })}</option>)}
-              </select>
-            </label>}
-          {systems && !version && !selected?.versions.length && <p role="status">{t("agsdl.launch.noVersion")}{" "}
-            <button type="button" onClick={() => { close(); useAppStore.getState().setMode("Architect"); }}>
-              {t("agsdl.launch.openArchitect")}
-            </button>
-          </p>}
-          {current?.startMessageRequired && <label className="agsdl-edit-field">{t("agsdl.launch.message")}
-            {current.startMessageHint && <span>{current.startMessageHint}</span>}
-            <textarea rows={4} value={message} onChange={event => setMessage(event.target.value)} />
-          </label>}
-          {version && <details>
-            <summary>{t("agsdl.library.version", { number: version.number })} · {t("agsdl.inbox.local")} · {t("agsdl.launch.now")} · {t("agsdl.launch.edit")}</summary>
-            <label className="agsdl-edit-field">{t("agsdl.library.versions")}
-              <select value={version.number} onChange={event => { setNumber(Number(event.target.value)); reset(); }}>
-                {selected?.versions.filter(option =>
-                  !(unavailableVersion?.blueprintId === blueprintId && unavailableVersion.number === option.number)
-                ).map(option => <option key={option.number} value={option.number}>
-                  {t("agsdl.library.version", { number: option.number })}{option.note && ` · ${option.note}`}
-                </option>)}
-              </select>
-            </label>
-            {current?.note && <p>{current.note}</p>}
-            <label className="agsdl-edit-field">{t("agsdl.launch.runName")}
-              <input value={name} onChange={event => setName(event.target.value)} />
-            </label>
-            {current?.workingFolderMode === "atLaunch" && <p>
-              {current.configuration.workingFolder} <button type="button" onClick={() => void chooseFolder()}>{t("agsdl.launch.chooseFolder")}</button>
-            </p>}
-          </details>}
-          {(!systems || (!!version && (!current || checking))) && !error && <p role="status">{t("agsdl.launch.checking")}</p>}
-          {!!current?.blockers.length && <section aria-label={t("agsdl.launch.blockers")}>
-            <strong>{t("agsdl.launch.blockers")}</strong>
-            <ul>{current.blockers.map(({ code, subject }) => {
-              const auth = code === "codexUnavailable" ? codexAuthBlocker(subject) : null;
-              return <li key={JSON.stringify([code, subject])}>
-                {t(`agsdl.launch.blocker.${auth ?? code}`, { subject, defaultValue: subject })}
-                {code === "workingFolderRequired" && <button type="button" onClick={() => void chooseFolder()}>{t("agsdl.launch.chooseFolder")}</button>}
-                {auth && <> <a href={codexSetupGuide} onClick={event => {
-                  event.preventDefault();
-                  void openExternalUrl(codexSetupGuide).catch(() => setError(t("agsdl.launch.failed")));
-                }}>{t("agsdl.launch.codexSetupGuide")}</a></>}
-                {code === "codexUnavailable" && !auth && <button type="button" onClick={() => useAppStore.getState().openSettings("providers")}>{t("agsdl.launch.connect")}</button>}
-              </li>;
-            })}</ul>
-            <button type="button" onClick={checkAgain}>{t("agsdl.launch.recheck")}</button>
-          </section>}
-          {current && current.availableModels.length > 0 && [...modelAgents].map(agent =>
-            <label className="agsdl-edit-field" key={agent}>{t("agsdl.launch.replacementModel", { agent })}
-              <select value={Object.hasOwn(modelOverrides, agent) ? modelOverrides[agent].name : ""} onChange={event => {
-                const model = event.target.value;
-                setChecking(true);
-                setModelOverrides(previous => {
-                  if (model) return { ...previous, [agent]: { name: model } };
-                  const next = { ...previous };
-                  delete next[agent];
-                  return next;
-                });
-              }}>
-                <option value="">{t("agsdl.launch.chooseModel")}</option>
-                {current.availableModels.map(model => <option key={model} value={model}>{model}</option>)}
-              </select>
-            </label>)}
-          {current && <div>{current.secrets.filter(secret => !secret.stored).map(secret =>
-            <SecretField key={JSON.stringify([current.version, secret.server, secret.name])}
-              version={current.version} secret={secret} onSaved={refresh} />)}</div>}
-        </>}
-        {current?.folderReuseToken && <label className="agsdl-edit-field">
-          <span>{t("agsdl.launch.folderInUse")}</span>
-          <span>{current.configuration.workingFolder}</span>
-          <span><input type="checkbox" checked={folderConfirmed} onChange={event =>
-            setConfirmedFolderToken(event.target.checked ? current.folderReuseToken : null)} /> {t("agsdl.launch.confirmFolderReuse")}</span>
-        </label>}
-        {consent && current && <ul className="space-y-1">
-          {Object.entries(current.permissions.agents).filter(([, agent]) => agent.usage === "reachable").map(([id, agent]) =>
-            <li key={id}>{id} · {t(`agsdl.launch.preset.${agent.permissions.preset ?? "read-only"}`, {
-              defaultValue: agent.permissions.preset ?? "",
-            })}
-              {agent.completionCheck && <p>
-                {agent.completionCheckChoices?.length
-                  ? t("agsdl.launch.completionCheckChoices", { choices: agent.completionCheckChoices.join(", ") })
-                  : t("agsdl.launch.completionCheck")}{" "}
-                <code className="whitespace-pre-wrap">{agent.completionCheck}</code>{" "}
-                {agent.completionCheckMaxFailures && t("agsdl.launch.completionCheckMaxFailures", {
-                  limit: agent.completionCheckMaxFailures,
-                })}
-              </p>}
-              {(Object.keys(agent.permissions.directories).length > 0 || agent.permissions.rules.length > 0 || agent.permissions.outside) && <details>
-                <summary>{t("agsdl.launch.permissionDetails")}</summary>
-                <pre className="whitespace-pre-wrap">{JSON.stringify(agent.permissions, null, 2)}</pre>
-              </details>}
-            </li>)}
-          {current.permissions.directCalls.filter(call => call.usage === "reachable").map(({ location, target }) =>
-            <li key={JSON.stringify(location)}>{target.type === "shell" ? target.command : `${target.server} · ${target.tool}`}</li>)}
-          {Object.entries(current.permissions.mcpServers).some(([, server]) => server.usage !== "declaredOnly") && (
-            <li>{t("agsdl.launch.mcpConsentScope")}</li>
-          )}
-          {current.secrets.filter(secret => interpreterEnvironment.has(secret.name)).map(secret =>
-            <li key={JSON.stringify([secret.server, secret.name])}>
-              {t("agsdl.launch.mcpInterpreterSecret", { server: secret.server, name: secret.name })}
-            </li>)}
-          {current.permissions.externalReferences.filter(reference => reference.usage !== "declaredOnly").map(reference =>
-            <li key={JSON.stringify(reference.location)}>{reference.uri}</li>)}
-        </ul>}
-      </fieldset>
-      {error && <p role="alert">{error} <button type="button" onClick={checkAgain}>{t("agsdl.launch.recheck")}</button></p>}
-      <footer className="flex justify-end gap-3">
-        <button type="button" disabled={busy} onClick={consent ? () => setConsent(false) : close}>
-          {t(consent ? "agsdl.launch.back" : "agsdl.cancel")}
-        </button>
-        <button type="submit" disabled={!ready}>
-          {t(busy ? "agsdl.launch.starting" : consent ? "agsdl.launch.approve" : current?.consentToken ? "agsdl.launch.continue" : "agsdl.launch.start")}
-        </button>
-      </footer>
-    </form>
-  </Dialog>;
+  const versionLabel = version && t("agsdl.library.version", { number: version.number });
+  const title = consent ? t("agsdl.launch.permissions")
+    : initialVersion && selected ? t("agsdl.launch.titleNamed", { name: selected.name }) : t("agsdl.launch.title");
+  const subtitle = consent ? `${t("agsdl.launch.step2")} · ${[selected?.name, versionLabel, t("agsdl.inbox.local")].filter(Boolean).join(" · ")}` : undefined;
+  const nothingToLaunch = !!systems && !systems.some(system => system.versions.length > 0) && !initialVersion;
+  const showSystemPicker = !!systems && !nothingToLaunch && (!initialVersion || !selected);
+  const noVersion = !!systems && !!selected && !selected.versions.length;
+  const primary = busy ? t("agsdl.launch.starting")
+    : t(consent ? "agsdl.launch.approve" : current?.consentToken ? "agsdl.launch.continue" : "agsdl.launch.start");
+
+  const openArchitect = <Button size="sm" variant="secondary" className="!h-7 !px-3 !py-0 text-xs"
+    onClick={() => { close(); useAppStore.getState().setMode("Architect"); }}>{t("agsdl.launch.openArchitect")}</Button>;
+
+  return <ArchitectDialogShell title={title} subtitle={subtitle} locked={busy} onClose={close}
+    footer={<>
+      <span className="mr-auto self-center text-[11px] text-muted-foreground" role="status">{!consent && reason}</span>
+      <button type="button" disabled={busy} onClick={consent ? () => setConsent(false) : close}>
+        {t(consent ? "agsdl.launch.back" : "agsdl.cancel")}
+      </button>
+      <button type="button" className="agsdl-action-button is-primary" disabled={!ready} title={consent ? undefined : reason} onClick={proceed}>
+        {busy && <SpinnerIcon size={12} />}{primary}
+      </button>
+    </>}>
+    {systemsFailed && <p role="alert" className="!m-0 text-red-500">{t("agsdl.launch.systemsFailed")}{" "}
+      <button type="button" className="agsdl-link" onClick={() => setSystemsRevision(value => value + 1)}>{t("agsdl.retry")}</button></p>}
+    {!systems && !systemsFailed && <div role="status" className="space-y-2">
+      <p className="!m-0 flex items-center gap-2"><SpinnerIcon size={13} />{t("agsdl.launch.checking")}</p>
+      <Skeleton className="h-8" /><Skeleton className="h-16" />
+    </div>}
+    {nothingToLaunch && <div role="status" className="space-y-2">
+      <p className="!m-0">{t("agsdl.launch.noSystems")}</p>{openArchitect}
+    </div>}
+    {!consent && <>
+      {showSystemPicker && <div className="space-y-1">
+        <label htmlFor="launch-system" className="block font-medium">{t("agsdl.launch.system")}</label>
+        <Select id="launch-system" className={selectClass} value={blueprintId}
+          disabled={busy} onChange={event => { setBlueprintId(event.target.value); setNumber(undefined); reset(); }}>
+          <option value="" disabled>{t("agsdl.launch.chooseSystem")}</option>
+          {systems?.map(system => <option key={system.id} value={system.id} disabled={!system.versions.length}>
+            {system.name}{system.versions.length ? "" : ` · ${t("agsdl.launch.noVersionShort")}`}</option>)}
+        </Select>
+      </div>}
+      {noVersion && <div role="status" className="space-y-2"><p className="!m-0">{t("agsdl.launch.noVersion")}</p>{openArchitect}</div>}
+      {versionMissing && <div role="alert" className="space-y-1">
+        <p className="!m-0 text-red-500">{t("agsdl.launch.versionMissing", { number })}</p>
+        {usable.length > 0 && <Select className={selectClass} aria-label={t("agsdl.launch.versionLabel")} value=""
+          onChange={event => { setNumber(Number(event.target.value)); reset(); }}>
+          <option value="" disabled>{t("agsdl.launch.chooseVersion")}</option>
+          {usable.map(option => <option key={option.number} value={option.number}>{t("agsdl.library.version", { number: option.number })}</option>)}
+        </Select>}
+      </div>}
+      {current?.startMessageRequired && <div className="space-y-1">
+        <label htmlFor="launch-start-message" className="block font-medium">{t("agsdl.launch.message")}</label>
+        {current.startMessageHint && <p className="!m-0 whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
+          {t("agsdl.launch.authorHint", { hint: current.startMessageHint })}</p>}
+        <Textarea id="launch-start-message" rows={4} className="text-xs" value={message} disabled={busy} autoFocus
+          placeholder={current.startMessageHint ? undefined : t("agsdl.launch.messagePlaceholder")} onChange={event => setMessage(event.target.value)}
+          onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); proceed(); } }} />
+      </div>}
+      {version && selected && <LaunchSummary versions={usable} versionNumber={version.number} note={current?.note ?? version.note ?? null}
+        folderMode={current?.workingFolderMode ?? "perExecution"} folder={current?.configuration.workingFolder ?? null}
+        checking={(!current && !problem) || checking} disabled={busy} runName={name} onRunName={setName}
+        onVersion={value => { setNumber(value); reset(); }} onChooseFolder={() => void chooseFolder()}>
+        {replaced.length > 0 && current && <div className="space-y-2">
+          <p className="!m-0 text-muted-foreground">{t("agsdl.launch.replacedModels")}</p>
+          {replaced.map(agent => <ModelRow key={agent} agent={agent} resolved availableModels={current.availableModels}
+            overrides={modelOverrides} disabled={busy} onOverride={override} />)}
+        </div>}
+      </LaunchSummary>}
+      {version && !current && !problem && <div role="status" className="space-y-2"><Skeleton className="h-8" /></div>}
+      {current && <LaunchChecklist preview={current} overrides={modelOverrides} folderConfirmed={folderConfirmed} disabled={busy} checking={checking}
+        onOverride={override} onChooseFolder={() => void chooseFolder()}
+        onConfirmFolder={confirmed => setConfirmedFolderToken(confirmed ? current.folderReuseToken : null)}
+        onSecretSaved={secret => { setNotice(t("agsdl.launch.secretSaved", { name: secret.name })); setChecking(true); setRevision(value => value + 1); }}
+        onOpenGuide={() => void openExternalUrl(CODEX_SETUP_GUIDE).catch(() => setProblem({ message: t("agsdl.launch.failed"), technical: "", recheck: false }))}
+        onConnect={() => useAppStore.getState().openSettings("providers")} onRecheck={recheck} />}
+      {notice && <p role="status" className="!m-0 text-[11px] text-emerald-500">{notice}</p>}
+    </>}
+    {consent && current && <LaunchConsent preview={current} />}
+    {problem && <div role="alert" className="space-y-1 rounded-md border border-red-500/40 bg-red-500/5 px-3 py-2">
+      <p className="!m-0 whitespace-pre-line break-words text-red-500">{problem.message}</p>
+      {problem.technical && <details className="agsdl-details !mt-1 !border-0 !pt-0">
+        <DisclosureSummary>{t("agsdl.viewer.technicalDetails")}</DisclosureSummary>
+        <p className="!m-0 break-words font-mono text-[11px]">{problem.technical}</p>
+      </details>}
+      {problem.recheck && <Button size="sm" variant="ghost" className="!h-7 !px-3 !py-0 text-xs" onClick={recheck}>{t("agsdl.launch.recheck")}</Button>}
+    </div>}
+  </ArchitectDialogShell>;
 }

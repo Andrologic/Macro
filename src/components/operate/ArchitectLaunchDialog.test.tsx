@@ -30,7 +30,7 @@ async function show(version: VersionKey) {
 }
 
 const dialog = () => document.querySelector("[role=dialog]")!;
-const submit = () => dialog().querySelector<HTMLButtonElement>("button[type=submit]")!;
+const submit = () => dialog().querySelector<HTMLButtonElement>("button.is-primary")!;
 
 function install(invoke: (command: string, input: Record<string, unknown>) => unknown) {
   installTauriRuntimeMock(async (command, input) => {
@@ -96,6 +96,7 @@ it("shows the completion command and when it runs before sending consent", async
   expect(dialog().textContent).toContain("After the agent submits one of these choices: done, retry.");
   expect(dialog().querySelector("code")?.textContent).toBe("echo verify");
   expect(dialog().textContent).toContain("Failure limit 3.");
+  expect(dialog().textContent).toContain("Step 2 of 2");
   await act(async () => submit().click());
   expect(requests[0].consentToken).toBe(consentToken);
 });
@@ -132,8 +133,8 @@ it("rechecks when the folder becomes occupied and requires an explicit confirmat
 });
 
 it.each([
-  ["CODEX_AUTH_VERSION_UNQUALIFIED", "ARGENTIC_CODEX_AUTH_FILE"],
-  ["CODEX_LOGIN_REQUIRED", "sign in to Macro’s private Codex profile"],
+  ["CODEX_AUTH_VERSION_UNQUALIFIED", "cannot use your existing Codex sign-in"],
+  ["CODEX_LOGIN_REQUIRED", "Codex is not signed in for Macro"],
 ])("shows how to resolve %s when Codex auth changes at launch", async (code, guidance) => {
   let blocked = false;
   install((command) => {
@@ -214,9 +215,9 @@ it("explains the approval scope and flags interpreter environment secrets", asyn
   await show(archive);
   await act(async () => submit().click());
   const text = dialog().textContent;
-  expect(text).toContain("Approval covers the MCP server code and its declared files.");
-  expect(text).toContain("Review any files the server reads or runs in your working folder separately.");
-  expect(text).toContain("worker receives HOME as a secret.");
-  expect(text).toContain("worker receives NODE_OPTIONS as a secret.");
+  expect(text).toContain("Your approval covers the code of the tools shipped with this system and the files they declare.");
+  expect(text).toContain("It does not cover files in your working folder that a tool might read or run");
+  expect(text).toContain("The tool “worker” receives the secret HOME.");
+  expect(text).toContain("The tool “worker” receives the secret NODE_OPTIONS.");
   expect(text).not.toContain("API_TOKEN");
 });
