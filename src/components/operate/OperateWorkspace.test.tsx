@@ -6,6 +6,7 @@ import { resolveWorkspaceView } from '../../composition/workspaceViews';
 import { configureWorkflowRunAccess030, getWorkflowRunAccess030, loadWorkflowAgentTasks, openWorkflowRun030, projectWorkflowAgentTasks030, workflowAgentTaskId, workflowRunAccessSnapshot030, workflowRunTargetSnapshot030 } from '../../services/workflowAgentTasks';
 import { inspectionFixture030, monitorFixture030 } from '../../services/agsdl/runInspection030.testSupport';
 import { nativeAgentRunFixture030, nativeTransportFor030 } from '../../services/agsdl/runAccess030.testSupport';
+import { ARCHIVE_RUN_PROJECT } from '../../services/ipc/architectLaunch';
 import { createRunInspectionAccess030 } from '../../services/agsdl/runAccess030';
 import { subscribeRunAttention030 } from '../notifications/WorkflowAttentionNotifications';
 import { notify } from '../ui/toastService';
@@ -302,6 +303,44 @@ it('acknowledges a completed run when its graph is opened', async () => {
     </>));
     expect(calls).toEqual([{ systemStartId: finished.state.scope.systemStartId, snapshotId: finished.state.scope.snapshotId,
       action: { kind: 'markOpened' } }]);
+  } finally {
+    removeTauriRuntimeMock();
+  }
+});
+
+it('discovers a named archive run without a legacy project or opening it', async () => {
+  const fixture = inspectionFixture030('archive-run');
+  const owner = { projectId: ARCHIVE_RUN_PROJECT, planId: 'blueprint', branch: 'versions' };
+  const source = { ...fixture.capture.source, owner };
+  const run = {
+    ...fixture,
+    capture: { ...fixture.capture, source },
+    state: { ...fixture.state, verdict: null, scope: { ...fixture.state.scope, source } },
+  };
+  const access = monitorFixture030(run);
+  configureWorkflowRunAccess030(() => ({ access }));
+  useAppStore.setState({ standaloneProjects: [], projectGroups: [] });
+  installTauriRuntimeMock(async command => {
+    if (command === 'architect_launch_run_systems') return [{
+      owner, systemLabel: 'Archive system', systemStartId: run.state.scope.systemStartId,
+      version: { blueprintId: owner.planId, number: 1 }, runName: 'Morning run',
+    }];
+    if (command === 'architect_execution_hidden_agents') return [];
+    throw new Error(`Unexpected command ${command}`);
+  });
+  try {
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(<OperateNavigator />));
+    expect(host.textContent).toContain('Archive system · Morning run');
+    expect(workflowRunTargetSnapshot030()).toBeNull();
+    const row = [...host.querySelectorAll('button')].find(button => button.textContent === 'Archive system · Morning run')!;
+    await act(async () => row.click());
+    expect(workflowRunTargetSnapshot030()).toMatchObject({
+      scope: { systemStartId: 'archive-run', source: { owner } },
+      conversationId: owner.planId,
+    });
   } finally {
     removeTauriRuntimeMock();
   }

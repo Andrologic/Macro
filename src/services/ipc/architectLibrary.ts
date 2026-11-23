@@ -71,10 +71,11 @@ export interface MacroProjectSettings {
   hiddenAgentIds: string[];
   entryMessageHint?: string | null;
   workingFolderMode: "perExecution" | "atLaunch";
+  startMessageRequired?: boolean | null;
   launchFields?: unknown;
 }
 
-export type MacroSettingsChange = Partial<Pick<MacroProjectSettings, "hiddenAgentIds" | "entryMessageHint">>;
+export type MacroSettingsChange = Partial<Pick<MacroProjectSettings, "hiddenAgentIds" | "entryMessageHint" | "workingFolderMode" | "startMessageRequired">>;
 
 export type ProjectTarget =
   | { kind: "draft"; blueprintId: string; revision: number }

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { architectLibrary } from '../services/ipc/architectLibrary';
+import { ARCHIVE_RUN_PROJECT } from '../services/ipc/architectLaunch';
 import type { RunHumanRequest030 } from '../types/agsdlRunUi030';
 import type { OperateInboxAction } from '../types/generated/ipc';
 import { retainedRunValue030 } from '../services/agsdl/runtimeProjection030';
@@ -13,7 +14,7 @@ import {
 } from '../services/operateInboxModel';
 import { stopExecution030, updateOperateInbox } from '../services/tauriIpc';
 import {
-  openWorkflowRun030, subscribeWorkflowRunAccess030, workflowAgentTaskId,
+  openWorkflowRun030, refreshArchiveRunAccess, subscribeWorkflowRunAccess030, workflowAgentTaskId,
   workflowRunAccessSnapshot030, type WorkflowRunRegistration030,
 } from '../services/workflowAgentTasks';
 import { useAppStore } from './useAppStore';
@@ -70,7 +71,7 @@ function readRunInputs(
     return [{
       scope, conversationId: registration.scope.conversationId,
       location: registration.location ?? { kind: 'local' },
-      systemLabel, status: operateRunStatus(verdict, physicalPending, stopping ?? false, facts?.stoppedByUser ?? false),
+      systemLabel, runName: registration.archiveRuns?.get(id)?.runName ?? undefined, status: operateRunStatus(verdict, physicalPending, stopping ?? false, facts?.stoppedByUser ?? false),
       facts, stale: snapshot.history.kind === 'stale' || read?.kind === 'stale' || !!snapshot.runFailures[id],
       observedAtMs: observation?.atMs ?? Date.now(), unlinkedRequests,
       threads: (state?.instances ?? []).map(instance => ({
@@ -109,7 +110,8 @@ export function subscribeOperateInbox(): () => void {
     const projects = new Set([...standaloneProjects, ...projectGroups.flatMap(group => group.projects)].map(project => project.id));
     const tasks = useTaskStore.getState();
     const taskLabels = new Map(tasks.tasks.filter(task => task.workflow_execution).map(task => [task.id, task.plan_title]));
-    const registrations = workflowRunAccessSnapshot030().filter(item => projects.has(item.scope.owner.projectId) || item.location?.kind === 'remote');
+    const registrations = workflowRunAccessSnapshot030().filter(item => projects.has(item.scope.owner.projectId) ||
+      item.scope.owner.projectId === ARCHIVE_RUN_PROJECT || item.location?.kind === 'remote');
     const runs = registrations.flatMap(item => readRunInputs(item, taskLabels));
     for (const run of runs) {
       if (run.location.kind !== 'local') continue;
@@ -145,7 +147,11 @@ export function subscribeOperateInbox(): () => void {
     if (next.standaloneProjects !== previous.standaloneProjects || next.projectGroups !== previous.projectGroups) publish();
   });
   follow();
+  const refreshArchives = () => { void refreshArchiveRunAccess().catch(() => {}); };
+  refreshArchives();
+  const archivePoll = setInterval(refreshArchives, 5_000);
   return () => {
+    clearInterval(archivePoll);
     active = false;
     useOperateInboxStore.getState().setHiddenAgents();
     stopRegistry(); stopTasks(); stopProjects();

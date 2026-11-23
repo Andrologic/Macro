@@ -1,5 +1,6 @@
 import { useId, useState, type FormEvent } from "react";
 import type { ArchitectProject } from "../../services/ipc/architectLibrary";
+import { useArchitectLaunchStore } from "../../stores/useArchitectLaunchStore";
 import { useArchitectLibraryStore } from "../../stores/useArchitectLibraryStore";
 import { agsdlErrorText } from "../agsdl/errorText";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
@@ -42,31 +43,35 @@ export function SaveBlueprintVersionDialog({ blueprintId, onClose }: { blueprint
   const [note, setNote] = useState("");
   const title = t("agsdl.library.saveVersion");
   return <LibraryActionDialog title={title} onClose={onClose}
-    onSave={() => useArchitectLibraryStore.getState().saveVersion(blueprintId, note)}>
+    onSave={async () => { await useArchitectLibraryStore.getState().saveVersion(blueprintId, note); }}
+    alternate={{ label: t("agsdl.launch.saveAndLaunch"), onSave: async () => {
+      const version = await useArchitectLibraryStore.getState().saveVersion(blueprintId, note);
+      useArchitectLaunchStore.getState().open({ blueprintId: version.blueprintId, number: version.number });
+    } }}>
     <label className="agsdl-edit-field">{t("agsdl.library.versionNote")}
       <textarea value={note} onChange={event => setNote(event.target.value)} />
     </label>
   </LibraryActionDialog>;
 }
 
-export function LibraryActionDialog({ title, disabled, children, onSave, onClose }: {
+export function LibraryActionDialog({ title, disabled, children, onSave, onClose, alternate }: {
   title: string;
   disabled?: boolean;
   children: React.ReactNode;
   onSave: () => Promise<void>;
   onClose: () => void;
+  alternate?: { label: string; onSave: () => Promise<void> };
 }) {
   const { t } = useAgsdlTranslation();
   const formId = useId();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
+  const submit = async (save: () => Promise<void>) => {
     if (busy || disabled) return;
     setBusy(true);
     setError("");
     try {
-      await onSave();
+      await save();
       onClose();
     } catch (failure) {
       setError(agsdlErrorText(failure, t));
@@ -75,12 +80,13 @@ export function LibraryActionDialog({ title, disabled, children, onSave, onClose
   };
   return <Dialog title={title} onClose={() => { if (!busy) onClose(); }} closeOnBackdropClick panelClassName="agsdl-detail-modal">
     <header><strong>{title}</strong></header>
-    <form id={formId} className="agsdl-inspector-body space-y-3" onSubmit={event => void submit(event)}>
+    <form id={formId} className="agsdl-inspector-body space-y-3" onSubmit={(event: FormEvent) => { event.preventDefault(); void submit(onSave); }}>
       <fieldset className="space-y-3" disabled={busy}>{children}</fieldset>
       {error && <p role="alert" className="agsdl-unresolved whitespace-pre-line break-words">{error}</p>}
     </form>
     <footer>
       <button type="button" disabled={busy} onClick={onClose}>{t("agsdl.cancel")}</button>
+      {alternate && <button type="button" disabled={busy || disabled} onClick={() => void submit(alternate.onSave)}>{alternate.label}</button>}
       <button type="submit" form={formId} disabled={busy || disabled}>{busy ? t("agsdl.saving") : title}</button>
     </footer>
   </Dialog>;

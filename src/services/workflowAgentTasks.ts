@@ -17,6 +17,7 @@ import { toServiceError } from './contracts/errors';
 import type { CatalogedImplementTask } from './implementTaskCatalog';
 import { workflowHumanInstances030, type OperateLocation } from './operateInboxModel';
 import * as ipc from './ipc/agsdlExecution030';
+import { ARCHIVE_RUN_PROJECT, architectLaunch, type ArchiveRunRecord } from './ipc/architectLaunch';
 
 export function sameWorkflowSource030(a: { owner: WorkflowRunScope030['owner']; revision: string; sourceSha256: string }, b: { owner: WorkflowRunScope030['owner']; revision: string; sourceSha256: string }): boolean {
   return a.owner.projectId === b.owner.projectId && a.owner.planId === b.owner.planId && a.owner.branch === b.owner.branch && a.revision === b.revision && a.sourceSha256 === b.sourceSha256;
@@ -31,6 +32,7 @@ export interface WorkflowRunScope030 {
 export interface WorkflowRunAccess030 {
   access: RunInspectionAccess030;
   systemLabel?: string;
+  archiveRuns?: ReadonlyMap<string, ArchiveRunRecord>;
   location?: OperateLocation;
   humanClient?: HumanRequestClient030;
   catalogError?: { code: string; message: string };
@@ -77,6 +79,27 @@ export function getWorkflowRunAccess030(scope: WorkflowRunScope030): WorkflowRun
   runAccesses030 = [...runAccesses030, bundle];
   runAccessListeners030.forEach(listener => listener());
   return bundle;
+}
+export async function refreshArchiveRunAccess(): Promise<void> {
+  const groups = new Map<string, ArchiveRunRecord[]>();
+  for (const run of await architectLaunch.runRecords()) {
+    const runs = groups.get(run.owner.planId);
+    if (runs) runs.push(run);
+    else groups.set(run.owner.planId, [run]);
+  }
+  if (!groups.size && !runAccesses030.some(entry => entry.scope.owner.projectId === ARCHIVE_RUN_PROJECT)) return;
+  const bundles = [...groups.values()].flatMap(runs => {
+    const first = runs[0];
+    const existing = getWorkflowRunAccess030({ owner: first.owner, conversationId: first.owner.planId });
+    if (!existing) return [];
+    existing.systemLabel = first.systemLabel;
+    existing.archiveRuns = new Map(runs.map(run => [run.systemStartId, run]));
+    return [existing];
+  });
+  runAccesses030 = runAccesses030.filter(entry =>
+    entry.scope.owner.projectId !== ARCHIVE_RUN_PROJECT || groups.has(entry.scope.owner.planId));
+  runAccessListeners030.forEach(listener => listener());
+  await Promise.allSettled(bundles.map(bundle => bundle.access.refreshHistory()));
 }
 export type WorkflowRunTarget030 = Pick<RunHumanRequest030, 'scope'> & { requestId?: string; conversationId?: string; instanceId?: string };
 let runTarget030: WorkflowRunTarget030 | null = null;

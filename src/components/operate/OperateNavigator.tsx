@@ -10,6 +10,10 @@ import {
 import { useAgsdlTranslation } from '../agsdl/useAgsdlTranslation';
 import { Dialog } from '../ui/Dialog';
 import { notify } from '../ui/toastService';
+import { useArchitectLaunchStore } from '../../stores/useArchitectLaunchStore';
+import { architectLaunch } from '../../services/ipc/architectLaunch';
+import { workflowRunAccessSnapshot030 } from '../../services/workflowAgentTasks';
+import ArchitectLaunchDialog, { ArchiveRunSecrets } from './ArchitectLaunchDialog';
 
 const systemRunLabel = (item: { systemLabel: string; runLabel: string }) => `${item.systemLabel} · ${item.runLabel}`;
 const elapsedLabel = (ms: number, locale: string | undefined) =>
@@ -52,6 +56,9 @@ function RunRow({ run }: { run: OperateRunRow }) {
   const { t } = useAgsdlTranslation();
   const [pending, setPending] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [editingSecrets, setEditingSecrets] = useState(false);
+  const archiveRun = workflowRunAccessSnapshot030().find(entry => entry.scope.owner.planId === run.systemId)
+    ?.archiveRuns?.get(run.scope.systemStartId);
   const name = systemRunLabel(run);
   const terminate = () => {
     setConfirming(false);
@@ -61,6 +68,12 @@ function RunRow({ run }: { run: OperateRunRow }) {
   return <section className="mb-2">
     <button type="button" className="block text-left font-medium" onClick={() => openOperateRun(run)}>{name}</button>
     <p>{t(`agsdl.inbox.status.${run.status}`)} · {run.location.kind === 'local' ? t('agsdl.inbox.local') : run.location.label}</p>
+    {archiveRun && <div className="flex gap-2">
+      <button type="button" onClick={() => void architectLaunch.openFolder(run.scope.systemStartId)
+        .catch(() => notify.error(t('agsdl.inbox.actionFailed')))}>{t('agsdl.launch.openFolder')}</button>
+      <button type="button" onClick={() => setEditingSecrets(true)}>{t('agsdl.launch.secrets')}</button>
+      {editingSecrets && <ArchiveRunSecrets version={archiveRun.version} onClose={() => setEditingSecrets(false)} />}
+    </div>}
     {run.canTerminate &&
       <button type="button" disabled={pending || run.status === 'stopping'} onClick={() => setConfirming(true)}>{t('agsdl.inbox.terminate')}</button>}
     {confirming && <Dialog title={t('agsdl.inbox.terminate')} onClose={() => setConfirming(false)}
@@ -81,11 +94,15 @@ function RunRow({ run }: { run: OperateRunRow }) {
 export default function OperateNavigator() {
   const { t, i18n } = useAgsdlTranslation();
   const { runs, filter, hiddenAgents, loading, readFailed, setFilter, nowMs } = useOperateInboxStore();
+  const launchWindow = useArchitectLaunchStore(state => state.window);
+  const openLaunch = useArchitectLaunchStore(state => state.open);
   useEffect(subscribeOperateInbox, []);
   const sections = useMemo(() => selectOperateInbox(runs, filter, nowMs, hiddenAgents,
     time => new Date(time).toLocaleString(i18n.resolvedLanguage)), [runs, filter, nowMs, hiddenAgents, i18n.resolvedLanguage]);
   return <nav className="flex h-full min-h-0 flex-col" aria-label={t('agsdl.shell030.executions')} data-tour-id="operate-executions">
     <header className="border-b border-border p-2 text-xs">
+      <button type="button" className="agsdl-link" onClick={() => openLaunch()}>{t('agsdl.launch.title')}</button>
+      {launchWindow && <ArchitectLaunchDialog initialVersion={launchWindow.version} />}
       <h2 className="text-sm font-medium">{t('agsdl.shell030.executions')}</h2>
       <input type="search" aria-label={t('agsdl.inbox.search')} placeholder={t('agsdl.inbox.search')}
         value={filter.query ?? ''} onChange={event => setFilter({ ...filter, query: event.target.value })} />

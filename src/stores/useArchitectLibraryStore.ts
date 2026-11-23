@@ -34,7 +34,7 @@ interface ArchitectLibraryState {
   adaptVersion: (key: VersionKey, projectId: string, name: string) => Promise<void>;
   commitImport: (handle: string, projectId: string, name: string) => Promise<void>;
   deleteVersion: (key: VersionKey) => Promise<void>;
-  saveVersion: (blueprintId: string, note: string | null) => Promise<void>;
+  saveVersion: (blueprintId: string, note: string | null) => Promise<VersionKey>;
 }
 
 const selectionKey = "macro_architect_library_selection_v1";
@@ -226,9 +226,10 @@ export const useArchitectLibraryStore = create<ArchitectLibraryState>((set, get)
       const draft = confirmedBlueprintDraft(get());
       if (draft?.id !== blueprintId || draft.archived) throw new Error("No editable draft selected");
       const request = versionRequest;
-      await useAgsdlStore.getState().saveVersion(blueprintId, note?.trim() || null, () =>
+      const version = await useAgsdlStore.getState().saveVersion(blueprintId, note?.trim() || null, () =>
         request === versionRequest && get().draft?.id === blueprintId);
       if (get().draft?.id === blueprintId) await get().refreshVersions();
+      return version;
     },
   };
 });

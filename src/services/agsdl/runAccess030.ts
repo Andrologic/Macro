@@ -8,6 +8,7 @@ import { sourceDigest } from '../agsdlExecution/sourceDigest';
 import { readDocument } from './document';
 import { readHumanFacts030, sameHumanScope030 } from './humanReadAccess030';
 import { loadRuntimeProjection030, retainedRunValue030, runtimeSections030 } from './runtimeProjection030';
+import { ARCHIVE_RUN_PROJECT } from '../ipc/architectLaunch';
 import type { RunHistoryEntry030, RunInspection030, RunInspectionAccess030, RunMonitorSnapshot030, RunReadFailure030 } from './runtimeProjection030';
 export type { RunReadFailure030 } from './runtimeProjection030';
 
@@ -190,6 +191,7 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
       chronology: unavailable('chronology') };
   }
   async function admission(runs: readonly PublicRunSummary030[]): Promise<NativeFact030<string | null>> {
+    if (expected.owner.projectId === ARCHIVE_RUN_PROJECT) return { kind: 'available', value: null };
     const intents = await transport.readExecutionIntentsVersioned({ scope: structuredClone(expected) });
     requireFact(intents.length <= 1);
     const intent = intents[0];
