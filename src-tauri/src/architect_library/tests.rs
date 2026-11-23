@@ -180,6 +180,25 @@ fn round_trip_uses_opened_bytes_and_publishes_without_replacing() {
     let export = temp.path().join("copy.agsdl");
     version.export_archive(&export).unwrap();
     assert_eq!(fs::read(&export).unwrap(), first_bytes);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let ordinary_file = fs::File::create_new(temp.path().join("ordinary-file")).unwrap();
+        let ordinary_mode = ordinary_file.metadata().unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            fs::metadata(&export).unwrap().permissions().mode() & 0o777,
+            ordinary_mode
+        );
+        assert_eq!(
+            fs::metadata(&published.archive_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+    }
     assert!(matches!(
         version.export_archive(&export),
         Err(Error::DestinationExists)

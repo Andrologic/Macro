@@ -33,10 +33,8 @@ impl VerifiedArchive {
         Ok(std::fs::metadata(self.path())?.len())
     }
 
-    fn copy_to(&self, path: &Path) -> Result<()> {
-        let mut target = crate::fs::profile::create_private_file(path, false)?;
-        io::copy(&mut File::open(self.path())?, &mut target)?;
-        target.sync_all()?;
+    fn copy_to(&self, target: &mut impl Write) -> Result<()> {
+        io::copy(&mut File::open(self.path())?, target)?;
         Ok(())
     }
 }
@@ -245,7 +243,11 @@ fn write_archive_with_executables(
 
 pub(super) fn stage_exact(archive: &VerifiedArchive, staging_root: &Path) -> Result<StagedVersion> {
     let directory = private_directory(staging_root, ".agsdl-version-")?;
-    archive.copy_to(&directory.path().join(VERSION_FILENAME))?;
+    let mut output =
+        crate::fs::profile::create_private_file(&directory.path().join(VERSION_FILENAME), false)?;
+    archive.copy_to(&mut output)?;
+    output.sync_all()?;
+    drop(output);
     Ok(StagedVersion {
         directory,
         sha256: archive.sha256.clone(),
@@ -308,7 +310,11 @@ impl VersionArchive {
         let parent = destination_parent(destination)?;
         let staged = private_directory(parent, ".agsdl-export-")?;
         let path = staged.path().join(VERSION_FILENAME);
-        self.archive.copy_to(&path)?;
+        // Stage privately and let the destination filesystem apply the umask.
+        let mut output = File::create_new(&path)?;
+        self.archive.copy_to(&mut output)?;
+        output.sync_all()?;
+        drop(output);
         publish_path(&path, destination)?;
         sync_publication(parent, destination)?;
         Ok(())
