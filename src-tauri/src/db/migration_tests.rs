@@ -293,6 +293,10 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (46, "046_architect_library".into()),
             (47, "047_architect_legacy_import".into()),
             (48, "048_operate_inbox".into()),
+            (
+                operate_inbox::DELETE_SCHEMA_VERSION,
+                operate_inbox::DELETE_SCHEMA_NAME.into(),
+            ),
         ]
     );
 }
@@ -379,7 +383,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&i64::try_from(migration_history::NAMES.len()).unwrap())
+        Some(&crate::db::operate_inbox::DELETE_SCHEMA_VERSION)
     );
 }
 
@@ -436,7 +440,7 @@ async fn drop_architect_library(c: &mut SqliteConnection) {
         .await
         .unwrap();
     architect_library::remove_reference_schema(c).await.unwrap();
-    sqlx::query("DELETE FROM schema_migrations WHERE version IN (46,47,48)")
+    sqlx::query("DELETE FROM schema_migrations WHERE version IN (46,47,48,52)")
         .execute(c)
         .await
         .unwrap();
@@ -520,10 +524,12 @@ pub(crate) async fn drop_human_public(c: &mut SqliteConnection) {
     migration_history::remove_reference_schema(c, &[20, 21, 22, 23, 24, 25, 26, 27, 28])
         .await
         .unwrap();
-    sqlx::query("DELETE FROM schema_migrations WHERE version BETWEEN 29 AND 42 OR version=48")
-        .execute(c)
-        .await
-        .unwrap();
+    sqlx::query(
+        "DELETE FROM schema_migrations WHERE version BETWEEN 29 AND 42 OR version IN (48,52)",
+    )
+    .execute(c)
+    .await
+    .unwrap();
 }
 
 pub(crate) async fn drop_agsdl(c: &mut SqliteConnection) {
@@ -846,6 +852,10 @@ async fn desktop_open_upgrades_a_cut_over_c3_profile_for_archive_launch() {
                 (storage_index::VERSION, storage_index::NAME.to_owned()),
                 (SCHEMA_VERSION, SCHEMA_NAME.to_owned()),
                 (OWNER_SCHEMA_VERSION, OWNER_SCHEMA_NAME.to_owned()),
+                (
+                    super::operate_inbox::DELETE_SCHEMA_VERSION,
+                    super::operate_inbox::DELETE_SCHEMA_NAME.to_owned(),
+                ),
             ]
         );
         assert!(crate::architect_launch::run_systems(&pool)
@@ -1542,7 +1552,7 @@ async fn joins_both_published_v10_histories_without_replacing_stamps_or_data() {
                 .fetch_one(&upgraded)
                 .await
                 .unwrap(),
-            i64::try_from(migration_history::NAMES.len()).unwrap()
+            crate::db::operate_inbox::DELETE_SCHEMA_VERSION
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1731,7 +1741,7 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
         .unwrap(),
         0
     );
-    assert_eq!(sqlx::query_as::<_, (i64,String,String)>("SELECT version,name,applied_at FROM schema_migrations WHERE version NOT BETWEEN 27 AND 42 AND version<>48 ORDER BY version").fetch_all(&upgraded).await.unwrap(), stamps);
+    assert_eq!(sqlx::query_as::<_, (i64,String,String)>("SELECT version,name,applied_at FROM schema_migrations WHERE version NOT BETWEEN 27 AND 42 AND version NOT IN (48,52) ORDER BY version").fetch_all(&upgraded).await.unwrap(), stamps);
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM sqlite_schema WHERE name='engine_work_protocol030'"
@@ -1746,7 +1756,7 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        i64::try_from(migration_history::NAMES.len()).unwrap()
+        crate::db::operate_inbox::DELETE_SCHEMA_VERSION
     );
     assert_eq!(
         sqlx::query("PRAGMA foreign_key_check")
@@ -1824,7 +1834,7 @@ async fn admission018_upgrades_v17_and_rolls_back_failed_stamp() {
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        i64::try_from(migration_history::NAMES.len()).unwrap()
+        crate::db::operate_inbox::DELETE_SCHEMA_VERSION
     );
     assert!(sqlx::query("PRAGMA foreign_key_check")
         .fetch_all(&upgraded)
@@ -2118,10 +2128,12 @@ async fn upgrades_038_to_call_039_then_clock_040_and_reopens_without_replay() {
         migration_history::remove_reference_schema(&mut c, &versions)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM schema_migrations WHERE version BETWEEN 39 AND 42")
-            .execute(&mut *c)
-            .await
-            .unwrap();
+        sqlx::query(
+            "DELETE FROM schema_migrations WHERE version BETWEEN 39 AND 42 OR version IN (48,52)",
+        )
+        .execute(&mut *c)
+        .await
+        .unwrap();
     }
     pool.close().await;
     let pool = create_pool(&path).await.unwrap();

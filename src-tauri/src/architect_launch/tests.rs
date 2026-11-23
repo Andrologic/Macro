@@ -477,7 +477,8 @@ async fn retained_snapshot_cleanup_obeys_both_profiles() {
     )
     .await
     .unwrap();
-    let first_id = &first_run.capture.identity.system_start_id;
+    let first_scope = run_scope(&first_run.capture);
+    let first_id = &first_scope.system_start_id;
     executor.wait(&first_host, first_id).await.unwrap();
     let id: String = sqlx::query_scalar("SELECT retained_snapshot_id FROM architect_launch_runs")
         .fetch_one(&first_pool)
@@ -507,7 +508,8 @@ async fn retained_snapshot_cleanup_obeys_both_profiles() {
     )
     .await
     .unwrap();
-    let second_id = &second_run.capture.identity.system_start_id;
+    let second_scope = run_scope(&second_run.capture);
+    let second_id = &second_scope.system_start_id;
     second_executor.wait(&second_host, second_id).await.unwrap();
     let shared_id: String =
         sqlx::query_scalar("SELECT retained_snapshot_id FROM architect_launch_runs")
@@ -516,22 +518,48 @@ async fn retained_snapshot_cleanup_obeys_both_profiles() {
             .unwrap();
     assert_eq!(id, shared_id);
 
-    sqlx::query("DELETE FROM architect_launch_runs")
-        .execute(&first_pool)
-        .await
-        .unwrap();
-    resources::cleanup(&first_pool, first.path(), manager.root())
-        .await
-        .unwrap();
+    let first_folder = read_folder(&first_pool, first_id).await.unwrap();
+    let second_folder = read_folder(&second_pool, second_id).await.unwrap();
+    let mut wrong = first_scope.clone();
+    wrong.snapshot_id = second_scope.snapshot_id.clone() + "-other";
+    assert_eq!(
+        delete_run(&first_pool, first.path(), manager.root(), wrong)
+            .await
+            .unwrap_err()
+            .code,
+        "CORRELATION"
+    );
+    delete_run(
+        &first_pool,
+        first.path(),
+        manager.root(),
+        first_scope.clone(),
+    )
+    .await
+    .unwrap();
     assert!(snapshot.is_dir());
+    assert!(!Path::new(&first_folder).exists());
+    assert!(Path::new(&second_folder).is_dir());
+    assert_deleted(&first_pool, first_id).await;
 
-    sqlx::query("DELETE FROM architect_launch_runs")
-        .execute(&second_pool)
-        .await
-        .unwrap();
-    resources::cleanup(&second_pool, second.path(), manager.root())
-        .await
-        .unwrap();
+    delete_run(
+        &first_pool,
+        first.path(),
+        manager.root(),
+        first_scope.clone(),
+    )
+    .await
+    .unwrap();
+    delete_run(
+        &second_pool,
+        second.path(),
+        manager.root(),
+        second_scope.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(!Path::new(&second_folder).exists());
+    assert_deleted(&second_pool, second_id).await;
     assert!(!snapshot.exists());
     assert!(legacy.is_dir());
 }
@@ -1138,6 +1166,18 @@ async fn admission_rechecks_folder_sharing_after_two_unoccupied_previews() {
     .unwrap();
     let error = launch(&second).await.err().unwrap();
     assert_eq!(error.code, "WORKING_FOLDER_IN_USE");
+    assert_eq!(
+        delete_run(
+            &pool,
+            data.path(),
+            manager.root(),
+            run_scope(&first_run.capture),
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "RUN_NOT_FINISHED"
+    );
     let confirmed = preview(
         &manager,
         &pool,
@@ -1251,8 +1291,35 @@ async fn admission_rechecks_folder_sharing_after_two_unoccupied_previews() {
         .wait(&host, &other_run.capture.identity.system_start_id)
         .await
         .unwrap();
-    remove_test_snapshot(&pool, &manager, &first_run.capture.identity.system_start_id).await;
-    assert!(chosen.path().is_dir());
+    let first_scope = run_scope(&first_run.capture);
+    let chosen_path = read_folder(&pool, &first_scope.system_start_id)
+        .await
+        .unwrap();
+    let user_file = Path::new(&chosen_path).join("run-user-content");
+    fs::write(&user_file, "keep").unwrap();
+    delete_run(&pool, data.path(), manager.root(), first_scope.clone())
+        .await
+        .unwrap();
+    assert_deleted(&pool, &first_scope.system_start_id).await;
+    assert_eq!(fs::read_to_string(&user_file).unwrap(), "keep");
+    delete_run(
+        &pool,
+        data.path(),
+        manager.root(),
+        run_scope(&second_run.capture),
+    )
+    .await
+    .unwrap();
+    #[cfg(unix)]
+    delete_run(
+        &pool,
+        data.path(),
+        manager.root(),
+        run_scope(&other_run.capture),
+    )
+    .await
+    .unwrap();
+    assert_eq!(fs::read_to_string(user_file).unwrap(), "keep");
 }
 
 #[tokio::test]
@@ -1386,4 +1453,110 @@ async fn real_codex_read_only_launch_from_archive() {
         .iter()
         .any(|item| matches!(item, api::RuntimeProjectionItem030::Instance { .. })));
     eprintln!("Codex 0.171.0 archive launch succeeded; systemStartId={id}");
+}
+
+fn run_scope(
+    capture: &argentic_runtime::persistence::start030::StartCapture030,
+) -> api::RuntimeProjectionScope030 {
+    api::RuntimeProjectionScope030 {
+        system_start_id: capture.identity.system_start_id.clone(),
+        snapshot_id: capture.identity.snapshot_id.clone(),
+        source: capture.source.clone(),
+    }
+}
+
+async fn assert_deleted(pool: &SqlitePool, id: &str) {
+    for table in [
+        "engine_flow030_runs",
+        "engine_start030_requests",
+        "engine_flow030_events",
+        "engine_flow030_clock",
+        "operate_inbox_runs",
+        "operate_inbox_threads",
+        "architect_launch_runs",
+        "operate_run_deletions",
+        "operate_shutdown_holds",
+    ] {
+        let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT count(*) FROM {table} WHERE system_id=?"
+        )))
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 0, "{table}");
+    }
+    let uses: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM architect_version_uses WHERE kind='execution' AND owner_id=?",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(uses, 0);
+    assert!(sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(pool)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn archive_operator_replays_the_exact_receipt_after_retirement() {
+    let data = tempfile::tempdir().unwrap();
+    let (pool, version) = archive_fixture(data.path(), manifest()).await;
+    let manager = manager_for_test(data.path()).await;
+    observe_fixture(&manager);
+    let host = HostState::new();
+    let executor = Arc::new(ScriptedAgent::default());
+    executor.install(&host);
+    let preview = preview(&manager, &pool, data.path(), version.clone(), None).await;
+    let run = start::launch(
+        runtime(&host, &manager, &pool, data.path()),
+        request(version, preview.consent_token),
+    )
+    .await
+    .unwrap();
+    let scope = run_scope(&run.capture);
+    executor.wait(&host, &scope.system_start_id).await.unwrap();
+
+    // The scripted Codex tests cover live dispatch and loss of the native ack.
+    // Exercise the Macro fallback for the same durable format after restart.
+    let key = "pause-before-retirement";
+    let event_id = format!("operator:{:x}", Sha256::digest(key.as_bytes()));
+    let receipt = json!({"eventId":event_id,"revision":"1","effectIds":[]});
+    sqlx::query(
+        "INSERT INTO engine_flow030_events
+        (system_id,invocation_id,event_id,event_json,receipt_json) VALUES (?,?,?,?,?)",
+    )
+    .bind(&scope.system_start_id)
+    .bind(&run.capture.identity.flow_invocation_id)
+    .bind(&event_id)
+    .bind(json!({"kind":{"Operator":{"Pause":{"activation_ids":[]}}}}).to_string())
+    .bind(receipt.to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
+    api::interrupt_previous_runs(&pool).await.unwrap();
+    let restarted = HostState::new();
+    let request = api::OperatorRequest {
+        scope,
+        request_id: key.into(),
+        action: api::OperatorAction::PauseRun,
+    };
+    let replay = crate::agsdl_host_flow030::control_run(&restarted, &pool, request.clone())
+        .await
+        .unwrap();
+    assert_eq!(serde_json::to_value(replay).unwrap(), receipt);
+    let wrong = api::OperatorRequest {
+        action: api::OperatorAction::ResumeRun,
+        ..request
+    };
+    assert_eq!(
+        crate::agsdl_host_flow030::control_run(&restarted, &pool, wrong)
+            .await
+            .unwrap_err()
+            .code,
+        "CONFLICT"
+    );
 }

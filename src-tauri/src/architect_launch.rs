@@ -21,7 +21,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod delete_run;
 mod resources;
+pub(crate) use delete_run::delete_run;
 pub(crate) mod start;
 pub(crate) use resources::cleanup;
 

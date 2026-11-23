@@ -2861,7 +2861,7 @@ mod tests {
                 .fetch_one(&mut restored)
                 .await
                 .unwrap(),
-            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
+            crate::db::operate_inbox::DELETE_SCHEMA_VERSION
         );
         restored.close().await.unwrap();
 
@@ -2872,7 +2872,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
+            crate::db::operate_inbox::DELETE_SCHEMA_VERSION
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -2971,10 +2971,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(
-            version,
-            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
-        );
+        assert_eq!(version, crate::db::operate_inbox::DELETE_SCHEMA_VERSION);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -4593,7 +4590,7 @@ mod tests {
             .unwrap();
         sqlx::raw_sql(
             "UPDATE architect_blueprints SET conversation_id='old-orphan';
-             DROP TABLE architect_legacy_import; DELETE FROM schema_migrations WHERE version IN (47,48);",
+             DROP TABLE architect_legacy_import; DELETE FROM schema_migrations WHERE version IN (47,48,52);",
         )
         .execute(&pool)
         .await
@@ -5222,7 +5219,7 @@ mod content_backup_tests {
                 .fetch_one(&mut db)
                 .await
                 .unwrap(),
-            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
+            crate::db::operate_inbox::DELETE_SCHEMA_VERSION
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM conversation_content_versions")
@@ -5417,7 +5414,7 @@ mod content_legacy_backup_tests {
                     .fetch_one(&pool)
                     .await
                     .unwrap(),
-                i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
+                crate::db::operate_inbox::DELETE_SCHEMA_VERSION
             );
             assert_eq!(
                 sqlx::query_scalar::<_, String>(
@@ -5602,7 +5599,7 @@ mod catalog_backup_tests {
                 .fetch_one(&mut connection(&copy).await.unwrap())
                 .await
                 .unwrap(),
-            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
+            crate::db::operate_inbox::DELETE_SCHEMA_VERSION
         );
         assert_eq!(fs::read(&original).unwrap(), before);
     }
@@ -5729,7 +5726,7 @@ mod catalog_backup_tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
+            crate::db::operate_inbox::DELETE_SCHEMA_VERSION
         );
         sqlx::query("DROP TRIGGER connect_preparation_metadata")
             .execute(&pool)

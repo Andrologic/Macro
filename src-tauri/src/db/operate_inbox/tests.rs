@@ -87,6 +87,27 @@ async fn snooze_survives_restart_and_only_same_thread_activity_wakes_it() {
     .await
     .unwrap();
     assert_eq!(read(&pool).await.snooze_until_ms, None);
+    let mut held = initial;
+    held["operatorHolds"] = serde_json::json!({"a":{"id":"hold","ready":false}});
+    set_run(&pool, held.clone()).await;
+    let pending = read(&pool).await;
+    update(
+        &pool,
+        "run",
+        "snapshot",
+        OperateInboxAction::Snooze {
+            instance_id: "agent".into(),
+            activity: pending.activity,
+            until_ms,
+            for_request: false,
+        },
+    )
+    .await
+    .unwrap();
+    held["operatorHolds"]["a"]["ready"] = serde_json::json!(true);
+    set_run(&pool, held).await;
+    let woke = read(&pool).await;
+    assert_ne!(woke.snoozed_at_activity, Some(woke.activity));
 }
 
 #[tokio::test]
@@ -143,4 +164,53 @@ async fn finished_runs_become_read_only_when_opened_after_physical_end() {
         .await
         .unwrap();
     assert!(opened);
+}
+
+#[tokio::test]
+async fn shutdown_retains_holds_for_recovery_after_retirement_stop_only() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("operate.db");
+    let pool = create_pool(&path).await.unwrap();
+    for (system, event) in [("retired", "retire:close"), ("stopped", "stop:requested")] {
+        let before = serde_json::json!({"revision":"1","paused":true,"operatorHolds":{"work":{"id":"hold","ready":true}}});
+        sqlx::query(
+            "INSERT INTO engine_flow030_runs VALUES (?,'flow','snapshot','epoch','{}','{}',?)",
+        )
+        .bind(system)
+        .bind(before.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO engine_flow030_events
+            (system_id,invocation_id,event_id,event_json,receipt_json) VALUES (?,'flow',?,?,?)",
+        )
+        .bind(system)
+        .bind(event)
+        .bind(serde_json::json!({"kind":"Stop"}).to_string())
+        .bind(serde_json::json!({"revision":"2"}).to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE engine_flow030_runs SET state_json=? WHERE system_id=?")
+            .bind(serde_json::json!({"revision":"2","verdict":"cancelled"}).to_string())
+            .bind(system)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    pool.close().await;
+    let restarted = create_pool(&path).await.unwrap();
+    let rows: Vec<(String, bool, String)> =
+        sqlx::query_as("SELECT system_id,paused,holds_json FROM operate_shutdown_holds")
+            .fetch_all(&restarted)
+            .await
+            .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, "retired");
+    assert!(rows[0].1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&rows[0].2).unwrap()["work"]["id"],
+        "hold"
+    );
 }

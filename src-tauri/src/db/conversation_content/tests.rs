@@ -1096,6 +1096,7 @@ async fn native_runtime_diagnostic_is_current_schema_wal_normal_fk() {
         migrations,
         (1..=i64::try_from(crate::db::migration_history::NAMES.len()).unwrap())
             .filter(|version| *version != 2)
+            .chain([crate::db::operate_inbox::DELETE_SCHEMA_VERSION])
             .collect::<Vec<_>>()
     );
     let mut db = pool.acquire().await.unwrap();

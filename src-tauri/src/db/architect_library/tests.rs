@@ -561,7 +561,7 @@ async fn existing_private_restore_marker_preserves_subsequent_edits() {
             sqlx::raw_sql(
             "UPDATE architect_blueprints SET history=json_remove(history,'$.legacyConversationId');
              DROP TABLE architect_legacy_import;
-             DELETE FROM schema_migrations WHERE version IN (47,48);",
+             DELETE FROM schema_migrations WHERE version IN (47,48,52);",
         ).execute(&pool).await.unwrap();
             pool.close().await;
             let upgraded = create_pool(&dir.path().join("macro.db")).await.unwrap();

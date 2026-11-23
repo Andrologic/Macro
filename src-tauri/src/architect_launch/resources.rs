@@ -292,6 +292,15 @@ pub(crate) async fn cleanup(pool: &SqlitePool, data: &Path, host: &Path) -> Resu
         return Ok(());
     }
     let lease = launch_lease(host).await?;
+    cleanup_locked(pool, data, host, lease).await
+}
+
+pub(super) async fn cleanup_locked(
+    pool: &SqlitePool,
+    data: &Path,
+    host: &Path,
+    lease: File,
+) -> Result<()> {
     let database = database_owner(pool, host).await?;
     let rows: Vec<(String, Option<String>)> = sqlx::query_as(
         "SELECT retained_snapshot_id,
