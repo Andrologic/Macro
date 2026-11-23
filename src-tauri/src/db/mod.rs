@@ -120,7 +120,7 @@ const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
 pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
-    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
+    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
 ];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
@@ -148,6 +148,7 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
     let db_path = app_db_path(&app_dir);
 
     let pool = create_pool(&db_path).await?;
+    crate::architect_library::migration::startup(&pool, &app_dir).await?;
     // A restarted producer must install a fresh authority generation locally.
     sqlx::query("UPDATE pilot_file_authorities SET active = 0")
         .execute(&pool)
@@ -691,6 +692,7 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&16) && !applied.contains(&15))
         || (applied.contains(&17) && !applied.contains(&16))
         || (applied.contains(&18) && !applied.contains(&17))
+        || (applied.contains(&49) && !applied.contains(&48))
         || (applied.contains(&48) && !applied.contains(&47))
         || (applied.contains(&47) && !applied.contains(&46))
         || (applied.contains(&19) && !applied.contains(&18))

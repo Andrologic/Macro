@@ -965,6 +965,7 @@ pub fn run() {
             commands::db_toggle_pin_conversation,
             commands::db_list_messages,
             commands::architect_library::architect_migrate_legacy,
+            commands::architect_library::architect_export_original_envelope,
             commands::architect_library::architect_list_projects,
             commands::architect_library::architect_create_project,
             commands::architect_library::architect_list_blueprints,

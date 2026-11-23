@@ -1,6 +1,26 @@
 use super::{get_pool, CommandResult, DbPool};
+use crate::architect_library::{migration, storage::Storage};
 use crate::db::architect_library::{self, *};
+use std::path::PathBuf;
+use tauri::Manager;
 use tauri::State;
+
+async fn current_storage(
+    app: &tauri::AppHandle,
+    pool: &sqlx::SqlitePool,
+) -> CommandResult<Option<Storage>> {
+    let mut connection = pool.acquire().await.map_err(crate::db::DbError::from)?;
+    if !storage_index::is_current(&mut connection).await? {
+        return Ok(None);
+    }
+    Ok(Some(Storage::new(&app_data(app)?)))
+}
+
+fn app_data(app: &tauri::AppHandle) -> CommandResult<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .map_err(|error| super::command_error(error.to_string()))
+}
 
 #[tauri::command]
 pub(crate) async fn architect_list_projects(
@@ -27,39 +47,53 @@ pub(crate) async fn architect_list_blueprints(
 
 #[tauri::command]
 pub(crate) async fn architect_create_blueprint(
+    app: tauri::AppHandle,
     pool: State<'_, DbPool>,
     project_id: String,
     name: String,
     document: Document,
 ) -> CommandResult<Draft> {
-    Ok(
-        architect_library::create_blueprint(&get_pool(&pool).await?, project_id, name, document)
-            .await?,
-    )
+    let pool = get_pool(&pool).await?;
+    if let Some(storage) = current_storage(&app, &pool).await? {
+        return Ok(storage.create(&pool, project_id, name, document).await?);
+    }
+    Ok(architect_library::create_blueprint(&pool, project_id, name, document).await?)
 }
 
 #[tauri::command]
 pub(crate) async fn architect_get_draft(
+    app: tauri::AppHandle,
     pool: State<'_, DbPool>,
     blueprint_id: String,
 ) -> CommandResult<Draft> {
-    Ok(architect_library::get_draft(&get_pool(&pool).await?, blueprint_id).await?)
+    let pool = get_pool(&pool).await?;
+    if let Some(storage) = current_storage(&app, &pool).await? {
+        return Ok(storage.get_draft(&pool, blueprint_id).await?);
+    }
+    Ok(architect_library::get_draft(&pool, blueprint_id).await?)
 }
 
 #[tauri::command]
 pub(crate) async fn architect_save_draft(
+    app: tauri::AppHandle,
     pool: State<'_, DbPool>,
     blueprint_id: String,
     expected_revision: i64,
     document: Document,
 ) -> CommandResult<Draft> {
     let pool = get_pool(&pool).await?;
+    if let Some(storage) = current_storage(&app, &pool).await? {
+        return Ok(storage
+            .save_draft(&pool, blueprint_id, expected_revision, document)
+            .await?);
+    }
     architect_library::require_editable(&pool, &blueprint_id).await?;
     Ok(architect_library::save_draft(&pool, blueprint_id, expected_revision, document).await?)
 }
 
 #[tauri::command]
 pub(crate) async fn architect_save_version(
+    app: tauri::AppHandle,
     pool: State<'_, DbPool>,
     blueprint_id: String,
     expected_revision: i64,
@@ -67,6 +101,11 @@ pub(crate) async fn architect_save_version(
     edited_draft: Option<Document>,
 ) -> CommandResult<SavedVersion> {
     let pool = get_pool(&pool).await?;
+    if let Some(storage) = current_storage(&app, &pool).await? {
+        return Ok(storage
+            .freeze(&pool, blueprint_id, expected_revision, note, edited_draft)
+            .await?);
+    }
     architect_library::require_editable(&pool, &blueprint_id).await?;
     Ok(
         architect_library::save_version(&pool, blueprint_id, expected_revision, note, edited_draft)
@@ -84,28 +123,43 @@ pub(crate) async fn architect_list_versions(
 
 #[tauri::command]
 pub(crate) async fn architect_get_version(
+    app: tauri::AppHandle,
     pool: State<'_, DbPool>,
     key: VersionKey,
 ) -> CommandResult<Version> {
-    Ok(architect_library::get_version(&get_pool(&pool).await?, key).await?)
+    let pool = get_pool(&pool).await?;
+    if let Some(storage) = current_storage(&app, &pool).await? {
+        return Ok(storage.get_version(&pool, key).await?);
+    }
+    Ok(architect_library::get_version(&pool, key).await?)
 }
 
 #[tauri::command]
 pub(crate) async fn architect_delete_version(
+    app: tauri::AppHandle,
     pool: State<'_, DbPool>,
     key: VersionKey,
 ) -> CommandResult<()> {
-    Ok(architect_library::delete_version(&get_pool(&pool).await?, key).await?)
+    let pool = get_pool(&pool).await?;
+    if let Some(storage) = current_storage(&app, &pool).await? {
+        return Ok(storage.delete_version(&pool, key).await?);
+    }
+    Ok(architect_library::delete_version(&pool, key).await?)
 }
 
 #[tauri::command]
 pub(crate) async fn architect_adapt_version(
+    app: tauri::AppHandle,
     pool: State<'_, DbPool>,
     key: VersionKey,
     project_id: String,
     name: String,
 ) -> CommandResult<Draft> {
-    Ok(architect_library::adapt_version(&get_pool(&pool).await?, key, project_id, name).await?)
+    let pool = get_pool(&pool).await?;
+    if let Some(storage) = current_storage(&app, &pool).await? {
+        return Ok(storage.adapt_version(&pool, key, project_id, name).await?);
+    }
+    Ok(architect_library::adapt_version(&pool, key, project_id, name).await?)
 }
 
 #[tauri::command]
@@ -165,6 +219,24 @@ pub(crate) async fn architect_attach_conversation(
 }
 
 #[tauri::command]
+pub(crate) async fn architect_export_original_envelope(
+    app: tauri::AppHandle,
+    pool: State<'_, DbPool>,
+    blueprint_id: String,
+    revision: i64,
+    number: Option<i64>,
+    destination: PathBuf,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+    let storage = current_storage(&app, &pool)
+        .await?
+        .ok_or_else(|| super::command_error("Architect is still using legacy storage"))?;
+    Ok(storage
+        .export_original(&pool, blueprint_id, revision, number, &destination)
+        .await?)
+}
+
+#[tauri::command]
 pub(crate) async fn architect_migrate_legacy(
     app: tauri::AppHandle,
     pool: State<'_, DbPool>,
@@ -173,22 +245,23 @@ pub(crate) async fn architect_migrate_legacy(
     active: State<'_, crate::WorkspaceRoot>,
     local_storage: crate::legacy_agsdl_import::LegacyLocalStorage,
 ) -> CommandResult<crate::legacy_agsdl_import::LegacyImportReport> {
-    use tauri::Manager;
     let roots = vec![
         workspace.0.read().await.clone(),
         active.inner().read().await.clone(),
     ];
-    let data = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| super::command_error(e.to_string()))?;
-    Ok(crate::legacy_agsdl_import::migrate_profile(
-        &get_pool(&pool).await?,
+    let data = app_data(&app)?;
+    let pool = get_pool(&pool).await?;
+    let report = crate::legacy_agsdl_import::migrate_profile(
+        &pool,
         crate::legacy_agsdl_import::configured_roots(&config, roots).await,
         Some(crate::core::config::resolve_desktop_default_workspace_path(
             &data,
         )),
         local_storage,
     )
-    .await?)
+    .await?;
+    if report.status == crate::legacy_agsdl_import::LegacyImportStatus::Complete {
+        migration::startup(&pool, &data).await?;
+    }
+    Ok(report)
 }

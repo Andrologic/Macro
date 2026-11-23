@@ -1,8 +1,11 @@
 //! Native project and immutable archive operations for Architect.
 
 pub mod archive;
+pub(crate) mod editor_document;
+pub(crate) mod migration;
 mod preview;
 pub mod project;
+pub(crate) mod storage;
 
 pub use preview::*;
 
@@ -34,6 +37,8 @@ pub enum Error {
     UnexpectedHistory,
     #[error("Destination already exists")]
     DestinationExists,
+    #[error("{0}")]
+    Storage(String),
     #[error("Invalid destination path")]
     InvalidDestination,
     #[error("Filesystem operation failed: {0}")]
@@ -91,3 +96,6 @@ fn sync_directory(path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod storage_tests;

@@ -1,17 +1,19 @@
 use super::{DbError, DbResult};
+
+pub(crate) mod storage_index;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::{Row, SqliteConnection, SqlitePool};
+use sqlx::{Connection, Row, SqliteConnection, SqlitePool};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct Document {
-    source: String,
-    annexes: BTreeMap<String, String>,
+    pub(crate) source: String,
+    pub(crate) annexes: BTreeMap<String, String>,
     // Preserve the complete editor envelope, including unknown metadata fields.
     #[serde(flatten)]
-    metadata: BTreeMap<String, Value>,
+    pub(crate) metadata: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -23,8 +25,8 @@ pub(crate) struct Project {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct VersionKey {
-    blueprint_id: String,
-    number: i64,
+    pub(crate) blueprint_id: String,
+    pub(crate) number: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -45,6 +47,10 @@ pub(crate) struct Draft {
     summary: Summary,
     history: Option<serde_json::Map<String, Value>>,
     document: Document,
+    #[serde(rename = "storageState", skip_serializing_if = "Option::is_none")]
+    storage_state: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -69,6 +75,10 @@ pub(crate) struct VersionSummary {
     key: VersionKey,
     revision: i64,
     note: Option<String>,
+    #[serde(rename = "storageState", skip_serializing_if = "Option::is_none")]
+    storage_state: Option<String>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    created_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,6 +95,8 @@ pub(crate) struct Version {
     #[serde(flatten)]
     summary: VersionSummary,
     document: Document,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,15 +158,21 @@ fn summary(row: &sqlx::sqlite::SqliteRow) -> DbResult<Summary> {
     })
 }
 
-fn draft(row: &sqlx::sqlite::SqliteRow) -> DbResult<Draft> {
+fn history(row: &sqlx::sqlite::SqliteRow) -> DbResult<Option<serde_json::Map<String, Value>>> {
     let history: Option<&str> = row.try_get("history")?;
+    history
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| invalid(&e.to_string()))
+}
+
+fn draft(row: &sqlx::sqlite::SqliteRow) -> DbResult<Draft> {
     Ok(Draft {
         summary: summary(row)?,
         document: decode(row)?,
-        history: history
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(|e| invalid(&e.to_string()))?,
+        history: history(row)?,
+        storage_state: None,
+        diagnostics: Vec::new(),
     })
 }
 
@@ -166,6 +184,8 @@ fn version_summary(row: &sqlx::sqlite::SqliteRow) -> DbResult<VersionSummary> {
         },
         revision: row.try_get("revision")?,
         note: row.try_get("note")?,
+        storage_state: row.try_get("storage_state").ok(),
+        created_at: row.try_get("created_at").ok().flatten(),
     })
 }
 
@@ -304,10 +324,10 @@ struct ArchivedMessage {
     created_at: Option<String>,
 }
 
-fn archived_transcript(draft: &Draft) -> DbResult<Vec<ArchivedMessage>> {
-    let origins = draft
-        .history
-        .as_ref()
+fn archived_transcript(
+    history: Option<&serde_json::Map<String, Value>>,
+) -> DbResult<Vec<ArchivedMessage>> {
+    let origins = history
         .and_then(|h| h.get("origins"))
         .and_then(Value::as_array);
     let mut transcript = Vec::new();
@@ -347,13 +367,13 @@ pub(crate) async fn ensure_conversation(
         .bind(&blueprint_id)
         .fetch_one(&mut *tx)
         .await?;
-    let draft = draft(&row)?;
-    let legacy_id = draft
-        .history
+    let blueprint = summary(&row)?;
+    let history = history(&row)?;
+    let legacy_id = history
         .as_ref()
         .and_then(|h| h.get("legacyConversationId"))
         .and_then(Value::as_str);
-    let previous_id = draft.summary.conversation_id.as_deref().or(legacy_id);
+    let previous_id = blueprint.conversation_id.as_deref().or(legacy_id);
     let now = chrono::Utc::now().to_rfc3339();
     let recovery_key = format!("architect:composer-recovery:{blueprint_id}");
     let mut candidate = None;
@@ -371,7 +391,7 @@ pub(crate) async fn ensure_conversation(
             .is_some_and(|value| value.as_deref() == Some(blueprint_id.as_str()))
         {
             owned = true;
-            if available.is_some() && draft.summary.conversation_id.as_deref() == Some(id) {
+            if available.is_some() && blueprint.conversation_id.as_deref() == Some(id) {
                 let receipt: Option<String> =
                     sqlx::query_scalar("SELECT value_json FROM app_settings WHERE key=?")
                         .bind(&recovery_key)
@@ -382,7 +402,7 @@ pub(crate) async fn ensure_conversation(
                     .filter(|recovery| recovery.to_conversation_id == id);
                 tx.commit().await?;
                 return Ok(ConversationResolution {
-                    summary: draft.summary,
+                    summary: blueprint,
                     draft_recovery,
                 });
             }
@@ -406,7 +426,7 @@ pub(crate) async fn ensure_conversation(
             }
         }
     }
-    let transcript = archived_transcript(&draft)?;
+    let transcript = archived_transcript(history.as_ref())?;
     let mut already_restored = false;
     if let Some(id) = candidate.as_ref().filter(|_| !transcript.is_empty()) {
         // The binding above is exclusive. Migration 047 also copied private IDs
@@ -451,7 +471,7 @@ pub(crate) async fn ensure_conversation(
     } else {
         let id = Uuid::new_v4().to_string();
         sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES(?,?,'Architect',?,?)")
-            .bind(&id).bind(&draft.summary.name).bind(&now).bind(&now).execute(&mut *tx).await?;
+            .bind(&id).bind(&blueprint.name).bind(&now).bind(&now).execute(&mut *tx).await?;
         id
     };
     for (ordinal, message) in transcript.iter().enumerate().filter(|_| !already_restored) {
@@ -505,8 +525,8 @@ pub(crate) async fn ensure_conversation(
             .execute(&mut *tx)
             .await?;
     }
-    let linked = if draft.summary.conversation_id.as_ref() == Some(&id) {
-        draft.summary
+    let linked = if blueprint.conversation_id.as_ref() == Some(&id) {
+        blueprint
     } else {
         let row =
             sqlx::query("UPDATE architect_blueprints SET conversation_id=? WHERE id=? RETURNING *")
@@ -587,12 +607,14 @@ async fn freeze(
         },
         revision,
         note,
+        storage_state: None,
+        created_at: None,
     })
 }
 
 /// Upgrade only the edition marker and its known schema URI. Borrow the raw
 /// header values so the rest of the authored JSON stays byte-for-byte intact.
-fn upgrade_draft(mut document: Document) -> DbResult<Option<Document>> {
+pub(crate) fn upgrade_draft(mut document: Document) -> DbResult<Option<Document>> {
     use serde_json::value::RawValue;
 
     #[derive(Deserialize)]
@@ -712,7 +734,7 @@ pub(crate) async fn list_versions(
     blueprint_id: String,
 ) -> DbResult<Vec<VersionSummary>> {
     let rows = sqlx::query(
-        "SELECT blueprint_id,number,revision,note
+        "SELECT *
          FROM architect_versions
          WHERE blueprint_id=?
          ORDER BY number DESC",
@@ -732,27 +754,43 @@ pub(crate) async fn get_version(pool: &SqlitePool, key: VersionKey) -> DbResult<
     Ok(Version {
         summary: version_summary(&row)?,
         document: decode(&row)?,
+        diagnostics: Vec::new(),
     })
 }
 
 pub(crate) async fn delete_version(pool: &SqlitePool, key: VersionKey) -> DbResult<()> {
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut writer = storage_index::durable_writer(pool).await?;
+    let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
+    delete_version_in(&mut tx, &key).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn delete_version_in(db: &mut SqliteConnection, key: &VersionKey) -> DbResult<()> {
     let used: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM architect_version_uses WHERE blueprint_id=? AND number=?)",
     )
     .bind(&key.blueprint_id)
     .bind(key.number)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *db)
     .await?;
     if used {
         return Err(invalid("version_in_use"));
     }
-    sqlx::query("DELETE FROM architect_versions WHERE blueprint_id=? AND number=?")
-        .bind(key.blueprint_id)
+    if storage_index::is_current(db).await? {
+        sqlx::query(
+            "DELETE FROM architect_library_originals WHERE blueprint_id=? AND version_number=?",
+        )
+        .bind(&key.blueprint_id)
         .bind(key.number)
-        .execute(&mut *tx)
+        .execute(&mut *db)
         .await?;
-    tx.commit().await?;
+    }
+    sqlx::query("DELETE FROM architect_versions WHERE blueprint_id=? AND number=?")
+        .bind(&key.blueprint_id)
+        .bind(key.number)
+        .execute(&mut *db)
+        .await?;
     Ok(())
 }
 

@@ -26,12 +26,22 @@ export interface BlueprintHistory {
 export interface BlueprintDraft extends BlueprintSummary {
   document: BlueprintDocument;
   history: BlueprintHistory | null;
+  storageState?: "draft" | "recovery";
+  diagnostics?: string[];
 }
 export interface BlueprintConversationResolution extends BlueprintSummary {
   draftRecovery?: { fromConversationId: string; toConversationId: string; owned: boolean } | null;
 }
-export interface BlueprintVersionSummary extends VersionKey { revision: number; note: string | null }
-export interface BlueprintVersion extends BlueprintVersionSummary { document: BlueprintDocument }
+export interface BlueprintVersionSummary extends VersionKey {
+  revision: number;
+  note: string | null;
+  storageState?: "archive" | "recovery";
+  createdAt?: string;
+}
+export interface BlueprintVersion extends BlueprintVersionSummary {
+  document: BlueprintDocument;
+  diagnostics?: string[];
+}
 export interface BlueprintImport {
   history?: BlueprintHistory;
   conversationId?: string;
@@ -81,6 +91,8 @@ export const architectLibrary = {
       throw error;
     }
   },
+  exportOriginalEnvelope: (blueprintId: string, revision: number, number: number | null, destination: string) =>
+    invoke<void>("architect_export_original_envelope", { blueprintId, revision, number, destination }),
   listVersions: (blueprintId: string) => invoke<BlueprintVersionSummary[]>("architect_list_versions", { blueprintId }),
   getVersion: (key: VersionKey) => invoke<BlueprintVersion>("architect_get_version", { key }),
   deleteVersion: (key: VersionKey) => invoke<void>("architect_delete_version", { key }),
