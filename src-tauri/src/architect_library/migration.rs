@@ -7,112 +7,268 @@ use crate::db::{
     architect_library::{storage_index as index, Document},
     DbResult,
 };
-use crate::fs::profile::checkpoint;
+use crate::fs::profile::{self, ProfileFile};
+use futures::future::join_all;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::{Connection, SqlitePool};
-use std::path::Path;
+use std::{
+    io::{self, Write},
+    path::Path,
+};
 
-// The project editor can open the artifact layout. Keep cutover gated by
-// the legacy discovery marker inside migrate().
-const ENABLE_CUTOVER: bool = true;
+#[derive(Clone, Copy, Serialize)]
+pub(crate) struct Progress {
+    pub completed: usize,
+    pub total: usize,
+}
 
+#[cfg(test)]
 pub(crate) async fn startup(pool: &SqlitePool, app_data: &Path) -> DbResult<()> {
-    if ENABLE_CUTOVER || index::is_current(&mut *pool.acquire().await?).await? {
-        migrate(pool, &Storage::new(app_data)).await?;
-    }
+    migrate(pool, &Storage::new(app_data)).await?;
     Ok(())
 }
 
-/// The browser is the only source of the last legacy discovery input. A
-/// direct upgrade waits for that import's durable marker before switching.
+#[cfg(test)]
 pub(crate) async fn migrate(pool: &SqlitePool, storage: &Storage) -> DbResult<bool> {
+    migrate_with_progress(pool, storage, |_| {}).await
+}
+
+#[derive(Deserialize, Serialize)]
+struct PlannedRow {
+    number: i64,
+    revision: i64,
+    source_digest: String,
+    artifact: index::Artifact,
+    original: index::Artifact,
+}
+
+type RowKey = (String, i64, i64);
+
+async fn legacy_keys(db: &mut sqlx::SqliteConnection) -> DbResult<Vec<RowKey>> {
+    Ok(sqlx::query_as(
+        "SELECT id,0,revision FROM architect_blueprints
+         UNION ALL SELECT blueprint_id,number,revision FROM architect_versions
+         ORDER BY 1,2",
+    )
+    .fetch_all(db)
+    .await?)
+}
+
+fn read_plan(path: &Path) -> Vec<PlannedRow> {
+    let plan = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    plan.unwrap_or_default()
+}
+
+fn write_plan(path: &Path, rows: &[PlannedRow]) -> super::Result<()> {
+    let parent = path.parent().ok_or(Error::InvalidDestination)?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    let mut output = ProfileFile::new(file.as_file_mut(), path);
+    serde_json::to_writer(&mut output, rows)?;
+    output.flush()?;
+    profile::sync_file(file.as_file(), path)?;
+    profile::persist(file, path, true)?;
+    super::sync_directory(parent)?;
+    Ok(())
+}
+
+/// Keep the legacy index visible while publishing artifacts. Persist completed
+/// blueprints so a crash can resume. The final writer only switches the index.
+pub(crate) async fn migrate_with_progress(
+    pool: &SqlitePool,
+    storage: &Storage,
+    progress: impl Fn(Progress) + Send + Sync,
+) -> DbResult<bool> {
     let _lease = storage.lease(true).await?;
-    checkpoint("migration.locked").map_err(Error::from)?;
-    let mut writer = index::durable_writer(pool).await?;
-    let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
-    if index::is_current(&mut tx).await? {
-        tx.commit().await?;
-        drop(writer);
+    let mut reader = pool.acquire().await?;
+    if index::is_current(&mut reader).await? {
+        drop(reader);
+        if let Err(error) = storage.discard_migration_plans() {
+            tracing::warn!(%error, "Could not discard completed Architect migration plans");
+        }
         storage.reclaim_after_commit(pool).await;
         return Ok(true);
     }
     let imported: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM architect_legacy_import WHERE singleton=1)",
     )
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *reader)
     .await?;
     if !imported {
         return Ok(false);
     }
-    // Interrupted publications are unreachable while the old index is active.
-    // Free that space first so an earlier disk-full error can be retried.
-    storage.reclaim_on_connection(&mut tx).await?;
-    checkpoint("migration.reclaimed").map_err(Error::from)?;
+    let keys = legacy_keys(&mut reader).await?;
+    drop(reader);
+    let dir = storage.migration_plans()?;
+    let mut completed = 0;
+    let mut publications = Vec::new();
+    let mut keep = std::collections::BTreeSet::new();
+    for group in keys.chunk_by(|left, right| left.0 == right.0) {
+        let path = dir.join(format!("{:x}.json", Sha256::digest(group[0].0.as_bytes())));
+        let rows = read_plan(&path);
+        for row in &rows {
+            keep.insert(storage.artifact_path(&row.artifact));
+            keep.insert(storage.artifact_path(&row.original));
+        }
+        publications.push((group, path, rows));
+    }
+    storage.reclaim_except(keep)?;
+    progress(Progress {
+        completed,
+        total: keys.len(),
+    });
+
+    let mut planned = Vec::with_capacity(keys.len());
+    // Independent blueprints can publish concurrently. Drain the whole batch
+    // before returning an error so no publication outlives the storage lease.
+    for batch in publications.chunks(8) {
+        let results = join_all(batch.iter().map(|(group, path, previous)| {
+            prepare_blueprint(pool, storage, group, path, previous)
+        }))
+        .await;
+        for result in results {
+            let rows = result?;
+            completed += rows.len();
+            planned.extend(rows);
+            progress(Progress {
+                completed,
+                total: keys.len(),
+            });
+        }
+    }
+
+    let mut writer = index::durable_writer(pool).await?;
+    let mut tx = writer.begin_with("BEGIN IMMEDIATE").await?;
+    if legacy_keys(&mut tx).await? != keys {
+        return Err(Error::Storage(
+            "Architect library changed during cutover; retry migration".into(),
+        )
+        .into());
+    }
     index::begin_cutover(&mut tx).await?;
-    let keys: Vec<(String, i64, i64)> = sqlx::query_as(
-        "SELECT id,0,revision FROM architect_blueprints
-         UNION ALL SELECT blueprint_id,number,revision FROM architect_versions
-         ORDER BY 1,2",
-    )
-    .fetch_all(&mut *tx)
-    .await?;
-    for (blueprint, number, revision) in keys {
-        let original: Vec<u8> = if number == 0 {
-            sqlx::query_scalar("SELECT CAST(document AS BLOB) FROM architect_blueprints WHERE id=?")
-                .bind(&blueprint)
-                .fetch_one(&mut *tx)
-                .await?
-        } else {
-            sqlx::query_scalar(
-                "SELECT CAST(document AS BLOB) FROM architect_versions WHERE blueprint_id=? AND number=?",
-            )
-            .bind(&blueprint)
-            .bind(number)
-            .fetch_one(&mut *tx)
-            .await?
-        };
-        checkpoint("migration.row_read").map_err(Error::from)?;
-        let split = std::str::from_utf8(&original)
-            .map_err(|error| error.to_string())
-            .and_then(|text| {
-                serde_json::from_str::<Document>(text).map_err(|error| error.to_string())
-            })
-            .and_then(editor_document::split);
-        let (replacement, diagnostics) = match split {
-            Ok(split) => {
-                let mut diagnostics = split.authoring.diagnostics.clone();
-                let replacement =
-                    match convert_row(storage, &blueprint, number == 0, split, &mut diagnostics) {
-                        Ok(replacement) => replacement,
-                        Err(error) if permanent_row_error(&error) => {
-                            diagnostics.push(error.to_string());
-                            None
-                        }
-                        Err(error) => return Err(error.into()),
-                    };
-                (replacement, diagnostics)
-            }
-            Err(diagnostic) => (None, vec![diagnostic]),
-        };
-        let original =
-            storage.publish_recovery(&blueprint, &original, diagnostics, Default::default())?;
+    for row in planned {
         index::plan(
             &mut tx,
-            number,
-            revision,
-            replacement.as_ref().unwrap_or(&original),
-            &original,
+            row.number,
+            row.revision,
+            &row.artifact,
+            &row.original,
         )
         .await?;
     }
-    checkpoint("migration.rows_planned").map_err(Error::from)?;
     index::finish_cutover(&mut tx).await?;
-    checkpoint("migration.before_commit").map_err(Error::from)?;
     storage.check(Failure::BeforeCommit)?;
     tx.commit().await?;
-    checkpoint("migration.after_commit").map_err(Error::from)?;
     drop(writer);
+    if let Err(error) = storage.discard_migration_plans() {
+        tracing::warn!(%error, "Could not discard completed Architect migration plans");
+    }
     storage.reclaim_after_commit(pool).await;
     Ok(true)
+}
+
+async fn prepare_blueprint(
+    pool: &SqlitePool,
+    storage: &Storage,
+    group: &[RowKey],
+    path: &Path,
+    previous: &[PlannedRow],
+) -> DbResult<Vec<PlannedRow>> {
+    let mut rows = Vec::with_capacity(group.len());
+    let mut changed = previous.len() != group.len();
+    let mut published = Vec::new();
+    let publisher = storage.batch_publication();
+    for (blueprint, number, revision) in group {
+        let query = if *number == 0 {
+            sqlx::query_scalar(
+                "SELECT CAST(document AS BLOB) FROM architect_blueprints WHERE id=? AND revision=?",
+            )
+            .bind(blueprint)
+            .bind(revision)
+        } else {
+            sqlx::query_scalar("SELECT CAST(document AS BLOB) FROM architect_versions WHERE blueprint_id=? AND number=? AND revision=?")
+                    .bind(blueprint).bind(number).bind(revision)
+        };
+        let original: Vec<u8> = query.fetch_one(pool).await?;
+        let source_digest = format!("{:x}", Sha256::digest(&original));
+        if let Some(row) = previous.iter().find(|row| {
+            row.number == *number
+                && row.revision == *revision
+                && row.source_digest == source_digest
+                && row.original.blueprint_id == *blueprint
+                && row.artifact.blueprint_id == *blueprint
+                && storage.artifact_path(&row.original).is_dir()
+                && storage.artifact_path(&row.artifact).is_dir()
+        }) {
+            rows.push(PlannedRow {
+                number: *number,
+                revision: *revision,
+                source_digest,
+                artifact: row.artifact.clone(),
+                original: row.original.clone(),
+            });
+        } else {
+            let storage = publisher.clone();
+            let blueprint = blueprint.clone();
+            let is_draft = *number == 0;
+            let (artifact, original) = tokio::task::spawn_blocking(move || {
+                convert_original(&storage, &blueprint, is_draft, &original)
+            })
+            .await
+            .map_err(io::Error::other)
+            .map_err(Error::from)??;
+            published.push(rows.len());
+            rows.push(PlannedRow {
+                number: *number,
+                revision: *revision,
+                source_digest,
+                artifact,
+                original,
+            });
+            changed = true;
+        }
+    }
+    if changed {
+        storage.sync_artifact_buckets(published.into_iter().flat_map(|position| {
+            let row = &rows[position];
+            [&row.artifact, &row.original]
+        }))?;
+        write_plan(path, &rows)?;
+    }
+    Ok(rows)
+}
+
+fn convert_original(
+    storage: &Storage,
+    blueprint: &str,
+    is_draft: bool,
+    original: &[u8],
+) -> super::Result<(index::Artifact, index::Artifact)> {
+    let split = std::str::from_utf8(original)
+        .map_err(|error| error.to_string())
+        .and_then(|text| serde_json::from_str::<Document>(text).map_err(|error| error.to_string()))
+        .and_then(editor_document::split);
+    let (replacement, diagnostics) = match split {
+        Ok(split) => {
+            let mut diagnostics = split.authoring.diagnostics.clone();
+            let replacement =
+                match convert_row(storage, blueprint, is_draft, split, &mut diagnostics) {
+                    Ok(replacement) => replacement,
+                    Err(error) if permanent_row_error(&error) => {
+                        diagnostics.push(error.to_string());
+                        None
+                    }
+                    Err(error) => return Err(error),
+                };
+            (replacement, diagnostics)
+        }
+        Err(diagnostic) => (None, vec![diagnostic]),
+    };
+    let original =
+        storage.publish_recovery(blueprint, original, diagnostics, Default::default())?;
+    Ok((replacement.unwrap_or_else(|| original.clone()), original))
 }
 
 fn convert_row(
@@ -130,7 +286,7 @@ fn convert_row(
         return Ok(None);
     }
     // Frozen projects can later become drafts through version adaptation.
-    let mut draft = storage.stage_split(split, Some(blueprint))?;
+    let mut draft = storage.stage_split(split, is_draft.then_some(blueprint))?;
     *diagnostics = draft.authoring.diagnostics.clone();
     if is_draft {
         super::project_editor::validate_storage(&draft.root())?;

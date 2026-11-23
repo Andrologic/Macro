@@ -3367,6 +3367,12 @@
     "runtimeUnavailableTitle": "Moteur de bureau indisponible",
     "runtimeUnavailableHint": "Macro redémarre ou n’est pas lancé. Réessayez lorsque le moteur de bureau est prêt.",
     "startupTitle": "Récupération du profil nécessaire",
+    "nativeRecoveryHint": "Macro a suspendu l’ouverture du profil local, car la récupération a échoué. Réessayez pour redémarrer Macro et reprendre la récupération.",
+    "revealPreservedArchive": "Afficher l’archive conservée",
+    "revealRecoveryFolder": "Ouvrir le dossier de récupération",
+    "copyDiagnostics": "Copier le diagnostic",
+    "diagnosticsCopied": "Diagnostic copié.",
+    "recoveryActionFailed": "L’action a échoué. Consultez le diagnostic.",
     "startupRecovery": "La restauration des données du navigateur n’a pas pu se terminer. L’archive native de récupération est conservée. Consultez le diagnostic, libérez du stockage local si nécessaire, puis redémarrez Macro pour réessayer."
   }
 }

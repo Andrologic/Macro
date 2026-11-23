@@ -254,7 +254,7 @@ LocalBackupStatus
 
 export {
 localBackupAcknowledge,localBackupSchedule,
-localBackupStatus
+localBackupStatus,getProfileStartupRecovery,retryProfileRecovery,revealProfileRecovery
 } from "./ipc/backup";
 
 export type {

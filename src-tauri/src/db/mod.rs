@@ -186,13 +186,7 @@ pub(crate) async fn open_desktop_profile(app_dir: &Path) -> DbResult<SqlitePool>
     }
     #[cfg(unix)]
     harden_profile_database(app_dir)?;
-    let pool = create_pool(&path).await?;
-    // The Architect IPC import retries cutover and reports failures through
-    // the existing Architect warning. The SQLite index remains transactional.
-    if let Err(error) = crate::architect_library::migration::startup(&pool, app_dir).await {
-        tracing::warn!(%error, "Architect library cutover will retry");
-    }
-    Ok(pool)
+    create_pool(&path).await
 }
 
 #[cfg(unix)]

@@ -7,12 +7,22 @@ use std::{
     fs::{self, File},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use tempfile::TempDir;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 const MANIFEST: &str = "profile.json";
+
+#[derive(Clone)]
+pub(super) enum NativeEntry {
+    Staged(Arc<TempDir>),
+    Zip {
+        source: Arc<Mutex<ZipArchive<File>>>,
+        index: usize,
+        size: u64,
+    },
+}
 
 fn stream_hash(
     mut input: impl Read,
@@ -40,29 +50,41 @@ pub(super) fn staged_path(root: &Path, name: &str) -> PathBuf {
 
 impl Entry {
     pub(super) fn size(&self, name: &str) -> Result<u64> {
-        if let Some(root) = &self.native {
-            Ok(fs::metadata(staged_path(root.path(), name))
+        match &self.native {
+            Some(NativeEntry::Staged(root)) => Ok(fs::metadata(staged_path(root.path(), name))
                 .map_err(|error| error.to_string())?
-                .len())
-        } else {
-            Ok(STANDARD
+                .len()),
+            Some(NativeEntry::Zip { size, .. }) => Ok(*size),
+            None => Ok(STANDARD
                 .decode(&self.data)
                 .map_err(|error| error.to_string())?
-                .len() as u64)
+                .len() as u64),
         }
     }
 
     pub(super) fn copy_verified(&self, name: &str, output: impl Write) -> io::Result<()> {
-        let checksum = if let Some(root) = &self.native {
-            stream_hash(
+        let checksum = match &self.native {
+            Some(NativeEntry::Staged(root)) => stream_hash(
                 File::open(staged_path(root.path(), name))?,
                 output,
                 self.executable,
-            )?
-        } else {
-            let bytes = STANDARD.decode(&self.data).map_err(io::Error::other)?;
-            stream_hash(bytes.as_slice(), output, self.executable)?
+            )?,
+            Some(NativeEntry::Zip { source, index, .. }) => {
+                let mut zip = source
+                    .lock()
+                    .map_err(|_| io::Error::other("Profile archive reader unavailable"))?;
+                let member = zip.by_index(*index)?;
+                stream_hash(member, output, self.executable)?
+            }
+            None => {
+                let bytes = STANDARD.decode(&self.data).map_err(io::Error::other)?;
+                stream_hash(bytes.as_slice(), output, self.executable)?
+            }
         };
+        #[cfg(test)]
+        if crate::fs::profile::mutated("skip-member-checksum") {
+            return Ok(());
+        }
         if checksum != self.sha256 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -92,11 +114,11 @@ pub(super) fn stage(
         data: String::new(),
         sha256: stream_hash(input, output, executable).map_err(|e| e.to_string())?,
         executable,
-        native: Some(Arc::clone(root)),
+        native: Some(NativeEntry::Staged(Arc::clone(root))),
     })
 }
 
-pub(super) fn write(archive: &Archive, file: &mut File) -> io::Result<()> {
+pub(super) fn write(archive: &Archive, file: impl Write + Seek) -> io::Result<()> {
     let manifest = serde_json::to_vec(archive)?;
     if manifest.len() as u64 > LIMIT {
         return Err(io::Error::other(
@@ -108,8 +130,8 @@ pub(super) fn write(archive: &Archive, file: &mut File) -> io::Result<()> {
     zip.start_file(MANIFEST, options)?;
     zip.write_all(&manifest)?;
     for (name, entry) in &archive.files {
-        if let Some(root) = &entry.native {
-            let size = fs::metadata(staged_path(root.path(), name))?.len();
+        if entry.native.is_some() {
+            let size = entry.size(name).map_err(io::Error::other)?;
             zip.start_file(name, options.large_file(size >= u64::from(u32::MAX)))?;
             entry.copy_verified(name, &mut zip)?;
         }
@@ -118,7 +140,7 @@ pub(super) fn write(archive: &Archive, file: &mut File) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn load(path: &Path, data: &Path) -> Result<Archive> {
+pub(super) fn load(path: &Path) -> Result<Archive> {
     let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if !metadata.is_file() || crate::architect_library::storage::is_link_or_reparse_point(&metadata)
     {
@@ -149,31 +171,44 @@ pub(super) fn load(path: &Path, data: &Path) -> Result<Archive> {
         serde_json::from_slice(&bytes).map_err(|e| e.to_string())?
     };
     super::validate_architect_paths(&archive.files)?;
-    let root = Arc::new(super::private_staging(data)?);
-    let mut manifest_seen = false;
+    let mut members = Vec::new();
+    let mut names = std::collections::BTreeSet::new();
     for index in 0..zip.len() {
-        let mut member = zip.by_index(index).map_err(|e| e.to_string())?;
+        let member = zip.by_index(index).map_err(|e| e.to_string())?;
         let name = member.name().to_owned();
-        if name == MANIFEST && !manifest_seen {
-            manifest_seen = true;
+        if !names.insert(name.clone()) {
+            return Err("Duplicate file in profile backup bundle".into());
+        }
+        if name == MANIFEST {
             continue;
         }
-        let entry = archive
-            .files
-            .get_mut(&name)
-            .filter(|entry| streamed_name(&name) && entry.native.is_none() && entry.data.is_empty())
-            .ok_or("Unexpected file in profile backup bundle")?;
+        if !streamed_name(&name)
+            || !archive
+                .files
+                .get(&name)
+                .is_some_and(|entry| entry.data.is_empty())
+        {
+            return Err("Unexpected file in profile backup bundle".into());
+        }
         if !member.is_file()
             || member.compression() != CompressionMethod::Stored
             || member.compressed_size() != member.size()
         {
             return Err("Invalid file in profile backup bundle".into());
         }
-        let snapshot = stage(&root, &name, &mut member, entry.executable)?;
-        if snapshot.sha256 != entry.sha256 {
-            return Err(format!("File checksum mismatch for {name}"));
-        }
-        entry.native = snapshot.native;
+        members.push((name, index, member.size()));
+    }
+    let source = Arc::new(Mutex::new(zip));
+    for (name, index, size) in members {
+        archive
+            .files
+            .get_mut(&name)
+            .expect("validated member")
+            .native = Some(NativeEntry::Zip {
+            source: Arc::clone(&source),
+            index,
+            size,
+        });
     }
     Ok(archive)
 }

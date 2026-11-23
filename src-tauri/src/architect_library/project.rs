@@ -24,7 +24,7 @@ pub struct ImportCandidate {
 }
 
 impl ImportCandidate {
-    pub fn open(path: &Path) -> Result<Self> {
+    pub fn open(path: &Path, staging_root: &Path) -> Result<Self> {
         let path: std::path::PathBuf = std::path::absolute(path)?.components().collect();
         let metadata = fs::symlink_metadata(&path)?;
         if metadata.file_type().is_symlink() {
@@ -35,7 +35,7 @@ impl ImportCandidate {
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("agsdl"))
         {
-            let (source, archive) = archive::read(&path, None)?;
+            let (source, archive) = archive::read(&path, None, staging_root)?;
             return Ok(Self {
                 source,
                 archive: Some(archive),
@@ -129,7 +129,7 @@ pub fn materialize(source: &OpenedSource, staging_root: &Path) -> Result<TempDir
         super::storage::check_project_path(root, member.path)?;
         let path = root.join(member.path);
         let parent = path.parent().expect("selected member has a parent");
-        super::storage::ensure_dir(root, parent)?;
+        super::storage::ensure_staging_dir(root, parent)?;
         directories.extend(
             parent
                 .ancestors()

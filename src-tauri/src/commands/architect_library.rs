@@ -10,8 +10,8 @@ use crate::architect_library::{
 };
 use crate::db::architect_library::{self, *};
 use std::path::PathBuf;
-use tauri::Manager;
 use tauri::State;
+use tauri::{Emitter, Manager};
 
 async fn current_storage(
     app: &tauri::AppHandle,
@@ -426,7 +426,12 @@ pub(crate) async fn architect_migrate_legacy(
     )
     .await?;
     if report.status == crate::legacy_agsdl_import::LegacyImportStatus::Complete {
-        migration::startup(&pool, &data).await?;
+        let result = migration::migrate_with_progress(&pool, &Storage::new(&data), |progress| {
+            let _ = app.emit("architect:cutover-progress", Some(progress));
+        })
+        .await;
+        let _ = app.emit("architect:cutover-progress", None::<migration::Progress>);
+        result?;
     }
     Ok(report)
 }

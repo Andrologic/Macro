@@ -44,7 +44,8 @@ pub(crate) fn inspect(app_data: PathBuf, path: &Path) -> Result<InspectedImport>
     if imports.len() == MAX_PENDING {
         return Err(Error::Editor("IMPORT_CANDIDATE_LIMIT"));
     }
-    let candidate = ImportCandidate::open(path)?;
+    let staging = super::storage::Storage::new(&app_data).inspection_staging()?;
+    let candidate = ImportCandidate::open(path, &staging)?;
     let bytes = candidate.retained_bytes()?;
     if bytes + imports.values().map(|entry| entry.bytes).sum::<u64>() > MAX_BYTES {
         return Err(Error::Editor("IMPORT_CANDIDATE_LIMIT"));

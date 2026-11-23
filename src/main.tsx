@@ -1,3 +1,5 @@
+import { isTauri } from '@tauri-apps/api/core';
+import { showMainWindow } from './services/tauriWindow';
 import { startGitCacheComposition } from './composition/gitCacheComposition';
 import { getPageLifecycleSignal } from './utils/pageLifecycle';
 import { createApplicationStartup, type ApplicationStartup } from './services/applicationStartup';
@@ -146,6 +148,9 @@ const application = createApplicationStartup({
     const root = macroWindow.__MACRO_REACT_ROOT__ ?? ReactDOM.createRoot(rootElement);
     macroWindow.__MACRO_REACT_ROOT__ = root;
     root.render(<BackupStartupRecovery error={error} />);
+    if (isTauri()) {
+      void showMainWindow().catch((failure) => console.error('Could not show profile recovery:', failure));
+    }
   },
   reload: () => window.location.reload(),
   report: (error) => console.error('Failed to initialize Macro runtime:', error),

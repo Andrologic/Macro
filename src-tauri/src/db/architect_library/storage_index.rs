@@ -5,7 +5,7 @@ pub(crate) const VERSION: i64 = 49;
 pub(crate) const NAME: &str = "049_architect_library_artifacts";
 const MIGRATION: &str = include_str!("../migrations/049_architect_library_artifacts.sql");
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum StorageState {
     Draft,
     Archive,
@@ -31,7 +31,7 @@ impl StorageState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Artifact {
     pub blueprint_id: String,
     pub id: Uuid,

@@ -1,11 +1,15 @@
-//! Local profile archives. All profile mutations run before DB/config initialization.
+//! Macro starts with the local profile open or displays profile recovery.
+//! Restore and rollback finish before any normal profile service opens SQLite or config.
 use crate::architect_library::{
     editor_document::{portable_path, Paths},
     private_directory,
     storage::{self, Storage},
 };
 use crate::db::architect_library::storage_index;
-use crate::fs::profile::{admits_file, checkpoint, create_private_file, fits_existing_file};
+use crate::fs::profile::{
+    self, create_private_file, create_private_root, fits_existing_file, fits_export_destination,
+    ProfileFile,
+};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -59,7 +63,7 @@ struct Entry {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     executable: bool,
     #[serde(skip)]
-    native: Option<Arc<tempfile::TempDir>>,
+    native: Option<bundle::NativeEntry>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -113,7 +117,6 @@ fn private_staging(data: &Path) -> Result<tempfile::TempDir> {
     let dir = data.join("local-backup");
     storage::ensure_dir(data, &dir).map_err(|error| error.to_string())?;
     let stage = private_directory(&staging_root(&dir)?, "b-").map_err(|error| error.to_string())?;
-    backup_checkpoint("backup.stage_created")?;
     Ok(stage)
 }
 
@@ -131,8 +134,8 @@ fn backup_lock(dir: &Path) -> Result<fs::File> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
-    let file = options.open(lock).map_err(|error| error.to_string())?;
-    fs2::FileExt::lock_exclusive(&file).map_err(|error| error.to_string())?;
+    let file = options.open(&lock).map_err(|error| error.to_string())?;
+    profile::lock_exclusive(&file, &lock).map_err(|error| error.to_string())?;
     Ok(file)
 }
 
@@ -145,9 +148,9 @@ fn reclaim_backup_staging(dir: &Path) -> Result<()> {
             .map_err(|error| error.to_string())?
             .is_dir()
         {
-            fs::remove_dir_all(entry.path()).map_err(|error| error.to_string())?;
+            profile::remove_dir_all(entry.path()).map_err(|error| error.to_string())?;
         } else {
-            fs::remove_file(entry.path()).map_err(|error| error.to_string())?;
+            profile::remove_file(entry.path()).map_err(|error| error.to_string())?;
         }
     }
     sync_directory(&root)
@@ -184,7 +187,7 @@ fn reclaim_export_staging(dir: &Path) -> Result<()> {
     {
         return Err("Profile backup staging directory changed".into());
     }
-    match fs::remove_file(stage.path()) {
+    match profile::remove_file(stage.path()) {
         Ok(()) => sync_directory(&stage.directory)?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.to_string()),
@@ -211,21 +214,14 @@ fn publish_export(dir: &Path, path: &Path, archive: &Archive) -> Result<()> {
     })?;
     let result = (|| {
         let mut file = create_private_file(&temporary, false).map_err(|error| error.to_string())?;
-        backup_checkpoint("backup.export_created")?;
         bundle::write(archive, &mut file)
             .and_then(|_| file.sync_all())
             .map_err(|error| error.to_string())?;
         drop(file);
-        backup_checkpoint("backup.export_written")?;
-        crate::fs::operations::rename_without_replacement(&temporary, path)
-            .map_err(|error| error.to_string())?;
+        profile::rename_without_replacement(&temporary, path).map_err(|error| error.to_string())?;
         sync_directory(&stage.directory)
     })();
     result.and(reclaim_export_staging(dir))
-}
-
-fn backup_checkpoint(point: &str) -> Result<()> {
-    checkpoint(point).map_err(|error| error.to_string())
 }
 
 fn hash(bytes: &[u8]) -> String {
@@ -261,7 +257,8 @@ fn validate_browser(browser: &BTreeMap<String, String>) -> Result<()> {
 }
 fn read_bounded(path: &Path) -> Result<Vec<u8>> {
     let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-    if !metadata.is_file() || metadata.len() > LIMIT {
+    if !metadata.is_file() || storage::is_link_or_reparse_point(&metadata) || metadata.len() > LIMIT
+    {
         return Err("Backup entry is not a bounded regular file".into());
     }
     let mut bytes = Vec::new();
@@ -278,7 +275,10 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>> {
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     publish_new(path, |file| file.write_all(bytes))
 }
-fn publish_new(path: &Path, write: impl FnOnce(&mut fs::File) -> io::Result<()>) -> Result<()> {
+fn publish_new(
+    path: &Path,
+    write: impl FnOnce(&mut ProfileFile<&mut fs::File>) -> io::Result<()>,
+) -> Result<()> {
     write_atomically(path, path.parent().ok_or("Missing parent")?, false, write)
 }
 
@@ -286,18 +286,12 @@ fn write_atomically(
     path: &Path,
     staging: &Path,
     replace: bool,
-    write: impl FnOnce(&mut fs::File) -> io::Result<()>,
+    write: impl FnOnce(&mut ProfileFile<&mut fs::File>) -> io::Result<()>,
 ) -> Result<()> {
     let mut file = tempfile::NamedTempFile::new_in(staging).map_err(|e| e.to_string())?;
-    write(file.as_file_mut())
-        .and_then(|_| file.as_file().sync_all())
-        .map_err(|e| e.to_string())?;
-    if replace {
-        file.persist(path)
-    } else {
-        file.persist_noclobber(path)
-    }
-    .map_err(|e| e.to_string())?;
+    write(&mut ProfileFile::new(file.as_file_mut(), path)).map_err(|e| e.to_string())?;
+    profile::sync_file(file.as_file(), path).map_err(|e| e.to_string())?;
+    profile::persist(file, path, replace).map_err(|e| e.to_string())?;
     sync_parent(path)?;
     sync_directory(staging)
 }
@@ -315,58 +309,61 @@ fn sync_parent(path: &Path) -> Result<()> {
 }
 
 fn sync_directory(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    fs::File::open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| error.to_string())?;
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
+    profile::sync_directory(path).map_err(|error| error.to_string())
 }
 
-/// The restore journal is durable before any live file is modified. Replay
-/// can repair even a partly written file and needs no temporary sibling.
-fn write_journaled(path: &Path, name: &str, entry: &Entry, raw: bool) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.to_string()),
-    }
-    backup_checkpoint(if raw {
-        "rollback.removed_file"
-    } else {
-        "restore.removed_file"
-    })?;
-    let file = create_private_file(path, entry.executable).map_err(|error| error.to_string())?;
-    backup_checkpoint(if raw {
-        "rollback.created_file"
-    } else {
-        "restore.created_file"
-    })?;
+fn write_journaled(path: &Path, name: &str, entry: &Entry) -> Result<ProfileFile<fs::File>> {
+    let mut file =
+        create_private_file(path, entry.executable).map_err(|error| error.to_string())?;
     entry
-        .copy_verified(name, &file)
+        .copy_verified(name, &mut file)
         .map_err(|error| error.to_string())?;
-    file.sync_all().map_err(|error| error.to_string())?;
-    if name.starts_with(ARCHITECT_FILES) {
-        backup_checkpoint(if raw {
-            "rollback.architect_written"
-        } else {
-            "restore.architect_written"
-        })?;
-    }
-    sync_parent(path)
+    Ok(file)
+}
+
+const FILE_SYNC_BATCH: usize = 128;
+
+// Nothing can publish restore status until all data and directories are
+// durable. A bounded batch lets the filesystem group concurrent syncs.
+fn sync_written_files(files: &mut Vec<ProfileFile<fs::File>>) -> Result<()> {
+    let sync = |files: &[ProfileFile<fs::File>]| files.iter().try_for_each(ProfileFile::sync_all);
+    let result = if files.len() < 32 {
+        sync(files)
+    } else {
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = files
+                .chunks(files.len().div_ceil(8))
+                .map(|files| scope.spawn(move || sync(files)))
+                .collect();
+            for worker in workers {
+                worker
+                    .join()
+                    .map_err(|_| io::Error::other("Profile file sync worker failed"))??;
+            }
+            Ok(())
+        })
+    };
+    result.map_err(|error| error.to_string())?;
+    files.clear();
+    Ok(())
 }
 
 fn remove_durable(path: &Path) -> Result<()> {
-    fs::remove_file(path).map_err(|error| error.to_string())?;
-    #[cfg(unix)]
-    fs::File::open(path.parent().ok_or("Missing parent")?)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| error.to_string())?;
+    profile::remove_file(path).map_err(|error| error.to_string())?;
+    sync_parent(path)
+}
+fn remove_journal(path: &Path) -> Result<()> {
+    profile::remove_file(path).map_err(|error| error.to_string())?;
+    if let Err(error) = sync_parent(path) {
+        // A crash may replay InstallHold. The installed files and status are
+        // already durable and safe to open on this launch.
+        tracing::warn!(%error, "Could not sync removed profile recovery journal");
+    }
     Ok(())
 }
+
 fn remove_incoming(dir: &Path) -> io::Result<()> {
-    match fs::remove_file(dir.join("incoming.json")) {
+    match profile::remove_file(dir.join("incoming.json")) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         result => result,
     }
@@ -387,11 +384,7 @@ fn stage_incoming(dir: &Path, archive: &Archive) -> Result<()> {
     bundle::write(archive, &mut file)
         .and_then(|_| file.sync_all())
         .map_err(|error| error.to_string())?;
-    #[cfg(unix)]
-    fs::File::open(dir)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| error.to_string())?;
-    Ok(())
+    sync_directory(dir)
 }
 
 fn architect_artifact_prefix(name: &str) -> Option<&str> {
@@ -534,7 +527,7 @@ fn validate_export_path(path: &Path, data: &Path, config: &Path) -> Result<()> {
         }
     }
     let file = path.file_name().ok_or("Missing backup filename")?;
-    if !admits_file(&parent.join(file)) {
+    if !fits_export_destination(&parent.join(file)) {
         return Err("Backup destination exceeds the filesystem path limit".into());
     }
     if fs::symlink_metadata(path).is_ok() {
@@ -1025,7 +1018,6 @@ fn collect_artifacts(
         let source = fs::File::open(path).map_err(|error| error.to_string())?;
         let entry = bundle::stage(snapshot, &name, source, executable)?;
         files.insert(name, entry);
-        backup_checkpoint("backup.artifact_captured")?;
         Ok(())
     })
 }
@@ -1108,7 +1100,15 @@ fn make_config_files_portable(files: &mut BTreeMap<String, Entry>) -> Result<()>
 fn make_config_file_portable(files: &mut BTreeMap<String, Entry>, file: &str) -> Result<()> {
     let active = format!("config/{file}");
     let approved = format!("config/.runtime/approved/user/{file}");
-    files.remove(&format!("config/.runtime/pending/user/{file}"));
+    let pending = format!("config/.runtime/pending/user/{file}");
+    for name in [&active, &approved, &pending] {
+        if let Some(entry) = files.get(name) {
+            entry
+                .copy_verified(name, io::sink())
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    files.remove(&pending);
 
     let has_approved = files.contains_key(&approved);
     let source = if has_approved { &approved } else { &active };
@@ -1139,8 +1139,9 @@ fn make_state_file_portable(files: &mut BTreeMap<String, Entry>) -> Result<()> {
     let Some(entry) = files.get_mut("data/state.json") else {
         return Ok(());
     };
-    let bytes = STANDARD
-        .decode(&entry.data)
+    let mut bytes = Vec::new();
+    entry
+        .copy_verified("data/state.json", &mut bytes)
         .map_err(|error| error.to_string())?;
     crate::state_manager::validate_backup_state(&bytes)?;
     let mut snapshot: crate::state_manager::StateSnapshot =
@@ -1191,9 +1192,13 @@ async fn validate_architect_artifacts(
     let storage = Storage::new(data);
     let mut expected = BTreeSet::new();
     for artifact in architect_references(database).await? {
-        expected.insert(architect_prefix(data, &storage.artifact_path(&artifact))?);
+        let prefix = architect_prefix(data, &storage.artifact_path(&artifact))?;
+        let archive_digest = files
+            .get(&format!("{prefix}version.agsdl"))
+            .map(|entry| entry.sha256.as_str());
+        expected.insert(prefix);
         storage
-            .validate_artifact(&artifact)
+            .validate_artifact(&artifact, archive_digest)
             .map_err(|error| error.to_string())?;
     }
     let actual: BTreeSet<_> = files
@@ -1220,7 +1225,6 @@ async fn capture(
     let storage = Storage::new(data);
     let lease = storage.lease(false).await;
     snapshot_database(&data.join("macro.db"), &db_path, portable).await?;
-    backup_checkpoint("backup.database_captured")?;
     let references = architect_references(&db_path).await?;
     let _lease = match lease {
         Ok(lease) => Some(lease),
@@ -1234,9 +1238,6 @@ async fn capture(
         let path = storage.artifact_path(&artifact);
         safe_parent(&path, data)?;
         collect_artifacts(data, &path, &mut files, &artifacts)?;
-        storage
-            .validate_artifact(&artifact)
-            .map_err(|error| error.to_string())?;
     }
     if data.join("state.json").exists() {
         add_file(
@@ -1334,8 +1335,11 @@ async fn validate(archive: &Archive, data: &Path) -> Result<()> {
                     continue;
                 }
             }
-            storage::ensure_dir(temp.path(), path.parent().ok_or("Missing artifact parent")?)
-                .map_err(|error| error.to_string())?;
+            storage::ensure_staging_dir(
+                temp.path(),
+                path.parent().ok_or("Missing artifact parent")?,
+            )
+            .map_err(|error| error.to_string())?;
             let output = create_private_file(&path, false).map_err(|error| error.to_string())?;
             entry
                 .copy_verified(name, output)
@@ -1451,6 +1455,16 @@ fn capture_raw(data: &Path, config: &Path, browser: BTreeMap<String, String>) ->
     })
 }
 fn validate_raw(archive: &Archive) -> Result<()> {
+    check_raw_manifest(archive)?;
+    for (name, entry) in &archive.files {
+        entry
+            .copy_verified(name, io::sink())
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn check_raw_manifest(archive: &Archive) -> Result<()> {
     if archive.format != "macro-raw-profile"
         || archive.version != 1
         || archive
@@ -1479,25 +1493,24 @@ fn validate_raw(archive: &Archive) -> Result<()> {
         if total > LIMIT as usize {
             return Err("Preserved profile too large".into());
         }
-        entry
-            .copy_verified(name, io::sink())
-            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
 fn preserve_raw(archive: &Archive, path: &Path) -> Result<()> {
-    validate_raw(archive)?;
+    check_raw_manifest(archive)?;
+    for (name, entry) in &archive.files {
+        if entry.native.is_none() {
+            entry
+                .copy_verified(name, io::sink())
+                .map_err(|error| error.to_string())?;
+        }
+    }
     let directory = path.parent().ok_or("Missing preservation directory")?;
     write_atomically(path, &staging_root(directory)?, false, |file| {
         bundle::write(archive, file)
     })?;
     crate::secrets::harden_private_file(path).map_err(|error| error.to_string())?;
-    #[cfg(unix)]
-    fs::File::open(path.parent().ok_or("Missing preservation directory")?)
-        .and_then(|file| file.sync_all())
-        .map_err(|e| e.to_string())?;
-    let data = directory.parent().ok_or("Missing profile directory")?;
-    validate_raw(&load_archive(path, data)?)
+    sync_directory(directory)
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1601,7 +1614,8 @@ fn remove_empty_checkpoint_dirs(path: &Path) -> Result<()> {
         .next()
         .is_none()
     {
-        fs::remove_dir(path).map_err(|e| e.to_string())?;
+        profile::remove_dir(path).map_err(|e| e.to_string())?;
+        sync_parent(path)?;
     }
     Ok(())
 }
@@ -1631,7 +1645,8 @@ fn prune_rollback_artifacts(
             .next()
             .is_none()
         {
-            fs::remove_dir(path).map_err(|error| error.to_string())?;
+            profile::remove_dir(path).map_err(|error| error.to_string())?;
+            sync_parent(path)?;
         }
     } else if !metadata.is_file() {
         return Err("Invalid Architect rollback file".into());
@@ -1684,6 +1699,45 @@ fn check_restore_targets(archive: &Archive, data: &Path, config: &Path, raw: boo
     Ok(())
 }
 
+fn check_restore_space(
+    incoming: &Archive,
+    original: &Archive,
+    data: &Path,
+    config: &Path,
+) -> Result<()> {
+    let footprint = |archive: &Archive, prefix: &str| -> Result<u64> {
+        archive
+            .files
+            .iter()
+            .filter(|(name, _)| name.starts_with(prefix))
+            .try_fold(0u64, |total, (name, entry)| {
+                // Round up to allow for filesystem blocks; deletion can only
+                // increase the space available to redo a journaled write.
+                let size = entry.size(name)?;
+                Ok(total.saturating_add(size.saturating_add(4095) & !4095))
+            })
+    };
+    let data_bytes = footprint(incoming, "data/")?.max(footprint(original, "data/")?);
+    let config_bytes = footprint(incoming, "config/")?.max(footprint(original, "config/")?);
+    let config_volume = config
+        .ancestors()
+        .find(|path| path.is_dir())
+        .ok_or("Missing configuration volume")?;
+    let free_data = profile::available_space(data).map_err(|error| error.to_string())?;
+    let free_config = profile::available_space(config_volume).map_err(|error| error.to_string())?;
+    let preservation =
+        footprint(original, "data/")?.saturating_add(footprint(original, "config/")?);
+    if free_data
+        < preservation
+            .saturating_add(data_bytes)
+            .saturating_add(config_bytes)
+        || free_config < config_bytes
+    {
+        return Err("Insufficient free disk space to restore and recover the profile".into());
+    }
+    Ok(())
+}
+
 fn apply_files(archive: &Archive, data: &Path, config: &Path, raw: bool) -> Result<()> {
     check_restore_targets(archive, data, config, raw)?;
     let target = |name: &str| {
@@ -1693,18 +1747,19 @@ fn apply_files(archive: &Archive, data: &Path, config: &Path, raw: bool) -> Resu
             destination(name, data, config)
         }
     };
-    backup_checkpoint(if raw {
-        "rollback.before_prune"
-    } else {
-        "restore.before_prune"
-    })?;
     if raw {
         // Rollback can encounter both trees plus an interrupted temporary
         // write. Compare paths without reading unfinished files or imposing
         // the capture limit on the union of the two trees.
         let blueprints = data.join("architect-library/blueprints");
         safe_parent(&blueprints, data)?;
-        prune_rollback_artifacts(data, &blueprints, &archive.files)?;
+        #[cfg(test)]
+        let prune = !profile::mutated("skip-rollback-pruning");
+        #[cfg(not(test))]
+        let prune = true;
+        if prune {
+            prune_rollback_artifacts(data, &blueprints, &archive.files)?;
+        }
     } else {
         // An incoming portable backup only replaces the artifacts it contains.
         let prefixes: BTreeSet<_> = archive
@@ -1723,22 +1778,17 @@ fn apply_files(archive: &Archive, data: &Path, config: &Path, raw: bool) -> Resu
             remove_empty_checkpoint_dirs(&path)?;
         }
     }
-    backup_checkpoint(if raw {
-        "rollback.after_prune"
-    } else {
-        "restore.after_prune"
-    })?;
     for suffix in ["-wal", "-shm"] {
         let path = data.join(format!("macro.db{suffix}"));
         if path.exists() {
-            fs::remove_file(path).map_err(|e| e.to_string())?;
+            remove_durable(&path)?;
         }
     }
     let mut existing = BTreeMap::new();
     collect_tree(data, &data.join("direct-checkpoints"), &mut existing)?;
     for name in existing.keys() {
         if !archive.files.contains_key(name) {
-            fs::remove_file(target(name)?).map_err(|e| e.to_string())?;
+            remove_durable(&target(name)?)?;
         }
     }
     remove_empty_checkpoint_dirs(&data.join("direct-checkpoints"))?;
@@ -1751,37 +1801,64 @@ fn apply_files(archive: &Archive, data: &Path, config: &Path, raw: bool) -> Resu
             let name = format!("config/{relative}");
             let path = config.join(relative);
             if !archive.files.contains_key(&name) && path.exists() {
-                fs::remove_file(path).map_err(|e| e.to_string())?;
+                remove_durable(&path)?;
             }
         }
     }
     if !archive.files.contains_key("data/state.json") && data.join("state.json").exists() {
-        fs::remove_file(data.join("state.json")).map_err(|e| e.to_string())?;
+        remove_durable(&data.join("state.json"))?;
     }
     if raw && !archive.files.contains_key("data/macro.db") && data.join("macro.db").exists() {
-        fs::remove_file(data.join("macro.db")).map_err(|e| e.to_string())?;
+        remove_durable(&data.join("macro.db"))?;
     }
     for file in PROVIDER_SECRETS_RECOVERY_FILES {
         if !archive.files.contains_key(&format!("data/{file}")) && data.join(file).exists() {
-            fs::remove_file(data.join(file)).map_err(|e| e.to_string())?;
+            remove_durable(&data.join(file))?;
         }
     }
-    for (name, entry) in &archive.files {
-        let path = target(name)?;
+    // Remove every previous file before creating any replacement. If two
+    // archive members alias on this filesystem, create_new fails instead of
+    // deleting the preceding member and publishing a partial restore.
+    let targets = archive
+        .files
+        .keys()
+        .map(|name| target(name))
+        .collect::<Result<Vec<_>>>()?;
+    for path in &targets {
+        match profile::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    let mut directories = BTreeSet::new();
+    let mut written = Vec::with_capacity(FILE_SYNC_BATCH);
+    for ((name, entry), path) in archive.files.iter().zip(targets) {
         let root = if name.starts_with("data/") {
             data
         } else {
             config
         };
-        storage::ensure_dir(root, path.parent().ok_or("Missing profile file parent")?)
-            .map_err(|error| error.to_string())?;
-        write_journaled(&path, name, entry, raw)?;
+        let parent = path.parent().ok_or("Missing profile file parent")?;
+        if !directories.contains(parent) {
+            storage::ensure_dir(root, root).map_err(|error| error.to_string())?;
+            storage::ensure_staging_dir(root, parent).map_err(|error| error.to_string())?;
+            directories.extend(
+                parent
+                    .ancestors()
+                    .take_while(|dir| dir.starts_with(root))
+                    .map(Path::to_owned),
+            );
+        }
+        written.push(write_journaled(&path, name, entry)?);
+        if written.len() == FILE_SYNC_BATCH {
+            sync_written_files(&mut written)?;
+        }
     }
-    backup_checkpoint(if raw {
-        "rollback.files_written"
-    } else {
-        "restore.files_written"
-    })?;
+    sync_written_files(&mut written)?;
+    for directory in directories.into_iter().rev() {
+        sync_directory(&directory)?;
+    }
     Ok(())
 }
 fn copy_entry_to_file(entry: &Entry, name: &str, path: &Path) -> Result<()> {
@@ -1791,8 +1868,8 @@ fn copy_entry_to_file(entry: &Entry, name: &str, path: &Path) -> Result<()> {
         .map_err(|error| error.to_string())
 }
 
-fn load_archive(path: &Path, data: &Path) -> Result<Archive> {
-    bundle::load(path, data)
+fn load_archive(path: &Path, _data: &Path) -> Result<Archive> {
+    bundle::load(path)
 }
 
 async fn load_restore_archive(path: &Path, data: &Path) -> Result<Archive> {
@@ -1837,8 +1914,7 @@ async fn load_restore_archive(path: &Path, data: &Path) -> Result<Archive> {
         make_config_files_portable(&mut archive.files)?;
         archive.format = "macro-local-profile".into();
     } else {
-        // Verify original checksums before detaching identities in older portable archives.
-        validate(&archive, data).await?;
+        // Conversion checks the original checksum of each entry it changes.
         make_config_file_portable(&mut archive.files, "tools.json")?;
     }
     make_state_file_portable(&mut archive.files)?;
@@ -1865,15 +1941,145 @@ pub(crate) fn has_pending_startup_work(data: &Path) -> Result<bool> {
     Ok(false)
 }
 
-/// Called before any subsystem opens the profile. An interrupted mutation rolls back first.
-pub async fn process_startup(data: &Path, config: &Path) -> Result<()> {
-    process_startup_with_preserver(data, config, preserve_raw).await
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileRecovery {
+    diagnostics: String,
+    preserved_archive: Option<PathBuf>,
 }
+
+#[derive(Default)]
+pub(crate) struct StartupRecovery(pub(crate) Option<ProfileRecovery>);
+
+pub(crate) fn guard_profile_commands<R: tauri::Runtime>(
+    dispatch: impl Fn(tauri::ipc::Invoke<R>) -> bool,
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool {
+    move |invoke| {
+        let webview = invoke.message.webview();
+        if webview
+            .try_state::<StartupRecovery>()
+            .is_some_and(|state| state.0.is_some())
+            && !matches!(
+                invoke.message.command(),
+                "profile_startup_recovery"
+                    | "profile_recovery_retry"
+                    | "profile_recovery_reveal"
+                    | "show_main_window"
+            )
+        {
+            invoke.resolver.reject("Profile recovery is required");
+            return true;
+        }
+        dispatch(invoke)
+    }
+}
+
+/// A failed recovery blocks opening the profile, while the application shell
+/// remains available to report the failure and restart.
+pub async fn process_startup(
+    data: &Path,
+    config: &Path,
+) -> std::result::Result<(), ProfileRecovery> {
+    let startup = process_startup_with_preserver(data, config, preserve_raw).await;
+    #[cfg(test)]
+    if profile::mutated("ignore-recovery-error") {
+        return Ok(());
+    }
+    startup.map_err(|diagnostics| {
+        let dir = data.join("local-backup");
+        let journal = dir.join("restoring.json");
+        let preserved_archive = safe_parent(&journal, data)
+            .and_then(|()| read_bounded(&journal))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .and_then(|marker| preserved_path(&dir, &marker).ok());
+        tracing::error!(%diagnostics, "Profile recovery is required");
+        ProfileRecovery {
+            diagnostics,
+            preserved_archive,
+        }
+    })
+}
+
+#[tauri::command]
+pub(crate) fn profile_startup_recovery(
+    state: tauri::State<'_, StartupRecovery>,
+) -> Option<ProfileRecovery> {
+    state.0.clone()
+}
+
+#[tauri::command]
+pub(crate) fn profile_recovery_retry(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, StartupRecovery>,
+) -> Result<()> {
+    if state.0.is_none() {
+        return Err("Profile recovery is not active".into());
+    }
+    app.request_restart();
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn profile_recovery_reveal(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, StartupRecovery>,
+) -> Result<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let recovery = state.0.as_ref().ok_or("Profile recovery is not active")?;
+    if let Some(path) = &recovery.preserved_archive {
+        app.opener().reveal_item_in_dir(path)
+    } else {
+        // An unreadable journal cannot identify which archive belongs to it.
+        let dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("local-backup");
+        app.opener()
+            .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
+    }
+    .map_err(|error| error.to_string())
+}
+
+fn publish_status(dir: &Path, status: &BackupStatus) -> Result<()> {
+    atomic(
+        &dir.join("status.json"),
+        &serde_json::to_vec(status).map_err(|error| error.to_string())?,
+    )
+}
+
+fn finish_request_best_effort(dir: &Path, request: &Path, status: &BackupStatus) {
+    let published = match publish_status(dir, status) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(%error, "Could not publish profile backup status");
+            false
+        }
+    };
+    if request.exists() {
+        let retired = if published {
+            remove_durable(request)
+        } else {
+            let quarantined = dir.join(format!("unreported-request-{}.json", uuid::Uuid::new_v4()));
+            profile::rename(request, &quarantined)
+                .map_err(|error| error.to_string())
+                .and_then(|()| sync_directory(dir))
+        };
+        if let Err(error) = retired {
+            tracing::warn!(%error, "Could not retire profile backup request");
+            return;
+        }
+    }
+    cleanup_incoming(dir);
+}
+
 async fn process_startup_with_preserver(
     data: &Path,
     config: &Path,
     preserve: fn(&Archive, &Path) -> Result<()>,
 ) -> Result<()> {
+    create_private_root(data).map_err(|error| error.to_string())?;
     let data = data.to_owned();
     let config = config.to_owned();
     let runtime = tokio::runtime::Handle::current();
@@ -1898,20 +2104,39 @@ async fn process_startup_locked(
         -> std::result::Result<(), crate::secrets::SecretError>,
 ) -> Result<()> {
     let dir = data.join("local-backup");
-    safe_parent(&dir, data)?;
-    fs::create_dir_all(data).map_err(|error| error.to_string())?;
-    storage::ensure_dir(data, &dir).map_err(|error| error.to_string())?;
-    let _backup_lock = backup_lock(&dir)?;
+    let journal = dir.join("restoring.json");
+    let _backup_lock = match (|| {
+        safe_parent(&dir, data)?;
+        storage::ensure_dir(data, &dir).map_err(|error| error.to_string())?;
+        backup_lock(&dir)
+    })() {
+        Ok(lock) => lock,
+        Err(error)
+            if fs::symlink_metadata(&journal)
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound) =>
+        {
+            tracing::warn!(%error, "Profile backup startup work will retry");
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     if let Err(error) = reclaim_backup_staging(&dir) {
         tracing::warn!(%error, "Could not reclaim profile backup staging");
     }
     if let Err(error) = reclaim_export_staging(&dir) {
         tracing::warn!(%error, "Could not reclaim profile export staging");
     }
-    let journal = dir.join("restoring.json");
-    if journal.exists() {
-        let mut marker: RestoreJournal =
-            serde_json::from_slice(&read_bounded(&journal)?).map_err(|e| e.to_string())?;
+    if let Err(error) = Storage::new(data).reclaim_inspection_staging() {
+        tracing::warn!(%error, "Could not reclaim Architect inspection staging");
+    }
+    let recovery_pending = || match fs::symlink_metadata(&journal) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.to_string()),
+    };
+    if recovery_pending()? {
+        let mut marker: RestoreJournal = serde_json::from_slice(&read_bounded(&journal)?)
+            .map_err(|error| format!("Invalid restore journal {}: {error}", journal.display()))?;
         if marker.phase == RestorePhase::Rollback {
             let storage = Storage::new(data);
             let _lease = storage
@@ -1920,7 +2145,6 @@ async fn process_startup_locked(
                 .map_err(|error| error.to_string())?;
             let original = load_archive(&preserved_path(&dir, &marker)?, data)?;
             validate_raw(&original)?;
-            backup_checkpoint("rollback.archive_loaded")?;
             apply_files(&original, data, config, true)?;
             let status = BackupStatus {
                 message: String::new(),
@@ -1928,10 +2152,7 @@ async fn process_startup_locked(
                 path: None,
                 browser: Some(original.browser),
             };
-            atomic(
-                &dir.join("status.json"),
-                &serde_json::to_vec(&status).map_err(|e| e.to_string())?,
-            )?;
+            publish_status(&dir, &status)?;
             // Raw rollback is complete. A failed nonce rotation must not apply it again.
             marker.phase = RestorePhase::InstallHold;
             atomic(
@@ -1939,15 +2160,13 @@ async fn process_startup_locked(
                 &serde_json::to_vec(&marker).map_err(|e| e.to_string())?,
             )?;
         }
-        backup_checkpoint("rollback.before_install_hold")?;
         install_restore_hold(data).await?;
-        backup_checkpoint("rollback.before_remove_journal")?;
         // A recovered request must not replay the failed restore on this launch.
         if dir.join("request.json").exists() {
             remove_durable(&dir.join("request.json"))?;
         }
         rotate_before_journal_removal().map_err(|error| error.to_string())?;
-        remove_durable(&journal)?;
+        remove_journal(&journal)?;
     }
     let request_path = dir.join("request.json");
     if !request_path.exists() {
@@ -1960,18 +2179,21 @@ async fn process_startup_locked(
         Ok(request) => request,
         Err(error) => {
             let quarantined = dir.join(format!("invalid-request-{}.json", uuid::Uuid::new_v4()));
-            fs::rename(&request_path, &quarantined).map_err(|e| e.to_string())?;
-            let status = BackupStatus {
-                message: error,
-                code: Some(BackupStatusCode::InvalidRequest),
-                path: Some(quarantined.to_string_lossy().into()),
-                browser: None,
-            };
-            atomic(
-                &dir.join("status.json"),
-                &serde_json::to_vec(&status).map_err(|e| e.to_string())?,
-            )?;
-            cleanup_incoming(&dir);
+            match profile::rename(&request_path, &quarantined) {
+                Ok(()) => finish_request_best_effort(
+                    &dir,
+                    &request_path,
+                    &BackupStatus {
+                        message: error,
+                        code: Some(BackupStatusCode::InvalidRequest),
+                        path: Some(quarantined.to_string_lossy().into()),
+                        browser: None,
+                    },
+                ),
+                Err(rename) => {
+                    tracing::warn!(%error, %rename, "Could not quarantine invalid profile backup request")
+                }
+            }
             return Ok(());
         }
     };
@@ -1980,50 +2202,46 @@ async fn process_startup_locked(
             validate_export_path(Path::new(&request.path), data, config)?;
             let archive = capture(data, config, request.browser, true).await?;
             validate(&archive, data).await?;
-            backup_checkpoint("backup.before_export")?;
             publish_export(&dir, Path::new(&request.path), &archive)?;
-            backup_checkpoint("backup.after_export")?;
             Ok(BackupStatus { message: String::new(), code: Some(BackupStatusCode::Exported), path: Some(request.path), browser: None })
         } else if request.operation == "restore" {
             let storage = Storage::new(data);
             let _lease = storage.lease(true).await.map_err(|error| error.to_string())?;
             let archive = load_restore_archive(&dir.join("incoming.json"), data).await?;
             check_restore_targets(&archive, data, config, false)?;
-            backup_checkpoint("restore.incoming_validated")?;
             let original = capture_raw(data, config, request.browser)?;
             let mut marker = RestoreJournal { preserved: format!("preserved-{}.zip", uuid::Uuid::new_v4()), phase: RestorePhase::Rollback };
             let preservation = preserved_path(&dir, &marker)?;
+            check_restore_space(&archive, &original, data, config)?;
             preserve(&original, &preservation)?;
-            backup_checkpoint("restore.rollback_preserved")?;
+            drop(original);
             atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
-            backup_checkpoint("restore.journal_written")?;
             if let Err(error) = apply(&archive, data, config) {
+                let original = load_archive(&preservation, data)?;
+                validate_raw(&original)?;
                 apply_files(&original, data, config, true).map_err(|rollback| format!("Restore failed: {error}. Rollback failed: {rollback}. Original preserved in {}", dir.display()))?;
                 let status = BackupStatus { message: error.clone(), code: Some(BackupStatusCode::Failed), path: None, browser: None };
-                atomic(&dir.join("status.json"), &serde_json::to_vec(&status).map_err(|e| e.to_string())?)?;
+                publish_status(&dir, &status)?;
                 marker.phase = RestorePhase::InstallHold;
                 atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
                 install_restore_hold(data).await?;
                 remove_durable(&request_path)?;
                 rotate_before_journal_removal().map_err(|error| error.to_string())?;
-                remove_durable(&journal)?;
+                remove_journal(&journal)?;
                 return Err(error);
             }
-            backup_checkpoint("restore.before_publish_status")?;
             let status = BackupStatus { message: String::new(), code: Some(BackupStatusCode::Restored), path: Some(preservation.to_string_lossy().into()), browser: Some(archive.browser) };
-            atomic(&dir.join("status.json"), &serde_json::to_vec(&status).map_err(|e| e.to_string())?)?;
+            publish_status(&dir, &status)?;
             marker.phase = RestorePhase::InstallHold;
             atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
-            backup_checkpoint("restore.before_install_hold")?;
             install_restore_hold(data).await?;
             remove_durable(&request_path)?;
-            backup_checkpoint("restore.before_remove_journal")?;
             rotate_before_journal_removal().map_err(|error| error.to_string())?;
-            remove_durable(&journal)?;
+            remove_journal(&journal)?;
             Ok(status)
         } else { Err("Unknown backup operation".into()) }
     }.await;
-    if journal.exists() {
+    if recovery_pending()? {
         return Err(result
             .err()
             .unwrap_or_else(|| "Restore interrupted; recovery journal retained".into()));
@@ -2034,14 +2252,12 @@ async fn process_startup_locked(
         path: None,
         browser: None,
     });
-    atomic(
-        &dir.join("status.json"),
-        &serde_json::to_vec(&status).map_err(|e| e.to_string())?,
-    )?;
-    if request_path.exists() {
-        remove_durable(&request_path)?;
+    if status.code == Some(BackupStatusCode::Restored) {
+        // Already published durably before releasing the restore journal.
+        cleanup_incoming(&dir);
+    } else {
+        finish_request_best_effort(&dir, &request_path, &status);
     }
-    cleanup_incoming(&dir);
     Ok(())
 }
 
@@ -2097,15 +2313,21 @@ pub async fn local_backup_schedule(
 }
 #[tauri::command]
 pub fn local_backup_status(app: tauri::AppHandle) -> Result<BackupStatus> {
-    let path = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("local-backup/status.json");
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let path = data.join("local-backup/status.json");
     if !path.exists() {
         return Ok(BackupStatus::default());
     }
-    serde_json::from_slice(&read_bounded(&path)?).map_err(|e| e.to_string())
+    match safe_parent(&path, &data)
+        .and_then(|()| read_bounded(&path))
+        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
+    {
+        Ok(status) => Ok(status),
+        Err(error) => {
+            tracing::warn!(%error, "Could not read profile backup status");
+            Ok(BackupStatus::default())
+        }
+    }
 }
 #[tauri::command]
 pub fn local_backup_acknowledge(app: tauri::AppHandle) -> Result<()> {
@@ -3881,7 +4103,10 @@ mod tests {
                 continue;
             }
             count += 1;
-            let root = entry.native.as_ref().unwrap().path();
+            let Some(bundle::NativeEntry::Staged(stage)) = &entry.native else {
+                panic!("{name} is not staged");
+            };
+            let root = stage.path();
             #[cfg(windows)]
             assert!(root.starts_with(data));
             #[cfg(unix)]
@@ -4011,7 +4236,11 @@ mod tests {
         fs::write(&script, "changed").unwrap();
         queue_restore(&data, &archive);
         let extracted = load_archive(&data.join("local-backup/incoming.json"), &data).unwrap();
-        assert_private_artifact_staging(&extracted, &data);
+        assert!(extracted
+            .files
+            .iter()
+            .filter(|(name, _)| name.starts_with(ARCHITECT_FILES))
+            .all(|(_, entry)| matches!(entry.native, Some(bundle::NativeEntry::Zip { .. }))));
         drop(extracted);
         process_startup(&data, &config).await.unwrap();
         let status: BackupStatus =
@@ -4109,7 +4338,7 @@ mod tests {
         file.set_len(SIZE).unwrap();
         (&file).write_all(b"Original").unwrap();
         drop(file);
-        let candidate = ImportCandidate::open(&folder).unwrap();
+        let candidate = ImportCandidate::open(&folder, &data).unwrap();
         let imported = storage
             .import_project(&pool, "project", "Large import", &candidate)
             .await

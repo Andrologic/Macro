@@ -295,7 +295,10 @@ async fn native_publication_recovers_failures_and_serializes_save_freeze_and_del
         assert_eq!(retained, original);
     }
     let storage = Storage::new(data);
-    assert!(migration::migrate(&pool, &storage).await.unwrap());
+    // BeforeCommit retained a whole plan. A retry can finish even if every
+    // attempted artifact publication would fail.
+    let no_publication = Storage::new(data).with_failure(Failure::BeforePublish);
+    assert!(migration::migrate(&pool, &no_publication).await.unwrap());
     let initial = draft_artifact(&pool).await;
     for failure in [
         Failure::BeforePublish,
@@ -481,7 +484,7 @@ async fn executable_archive_members_survive_adaptation_and_freeze_without_unix_m
     let recovery = index::draft_row(&pool, adapted).await.unwrap();
     let recovery = Artifact::from_row(&recovery, "id").unwrap();
     assert_eq!(recovery.state, StorageState::Recovery);
-    storage.validate_artifact(&recovery).unwrap();
+    storage.validate_artifact(&recovery, None).unwrap();
 
     storage
         .save_draft(&pool, adapted.into(), 2, editor("Repaired"))
@@ -1077,6 +1080,39 @@ async fn startup_recovers_overlong_legacy_paths_and_migrates_other_rows() {
         StorageState::Archive
     );
     migration::startup(&pool, temp.path()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn architect_cutover_releases_the_writer_during_publication() {
+    let temp = tempfile::tempdir().unwrap();
+    let pool = create_pool(&temp.path().join("macro.db")).await.unwrap();
+    seed(&pool, &envelope(&editor("Draft"))).await;
+    let runtime = tokio::runtime::Handle::current();
+    let storage = Storage::new(temp.path());
+    assert!(
+        migration::migrate_with_progress(&pool, &storage, |progress| {
+            if progress.completed == 0 {
+                return;
+            }
+            tokio::task::block_in_place(|| {
+                runtime.block_on(async {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        sqlx::query(
+                            "INSERT INTO app_settings (key,value_json,updated_at)
+                         VALUES ('parallel-chat-write','true','2026-01-01')",
+                        )
+                        .execute(&pool),
+                    )
+                    .await
+                    .expect("cutover blocked a concurrent SQLite writer")
+                    .unwrap();
+                });
+            });
+        })
+        .await
+        .unwrap()
+    );
 }
 
 #[cfg(unix)]

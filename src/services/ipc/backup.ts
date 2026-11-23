@@ -9,3 +9,15 @@ export const localBackupSchedule = (operation: 'export' | 'restore', path: strin
 export const localBackupStatus = (): Promise<LocalBackupStatus> => invoke('local_backup_status');
 
 export const localBackupAcknowledge = (): Promise<void> => invoke('local_backup_acknowledge');
+
+export interface ProfileStartupRecovery {
+  diagnostics: string;
+  preservedArchive: string | null;
+}
+
+export const getProfileStartupRecovery = (): Promise<ProfileStartupRecovery | null> =>
+  invoke('profile_startup_recovery');
+
+export const retryProfileRecovery = (): Promise<void> => invoke('profile_recovery_retry');
+
+export const revealProfileRecovery = (): Promise<void> => invoke('profile_recovery_reveal');

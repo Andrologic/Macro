@@ -131,13 +131,17 @@ fn member_snapshot(source: &OpenedSource) -> Vec<(String, Vec<u8>, bool)> {
         .collect()
 }
 
+fn open_fixture(path: &std::path::Path) -> super::Result<ImportCandidate> {
+    ImportCandidate::open(path, path.parent().unwrap_or(path))
+}
+
 #[test]
 fn round_trip_uses_opened_bytes_and_publishes_without_replacing() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("input");
     fixture(&input);
-    let folder = ImportCandidate::open(&input).unwrap();
-    let manifest = ImportCandidate::open(&input.join(MANIFEST)).unwrap();
+    let folder = open_fixture(&input).unwrap();
+    let manifest = open_fixture(&input.join(MANIFEST)).unwrap();
     assert_eq!(
         folder.preview().unwrap().staged_sha256,
         manifest.preview().unwrap().staged_sha256
@@ -166,10 +170,10 @@ fn round_trip_uses_opened_bytes_and_publishes_without_replacing() {
         published.artifact_id.to_string()
     );
     assert!(matches!(
-        open_version(&published.archive_path, "bad"),
+        open_version(&published.archive_path, "bad", temp.path()),
         Err(Error::DigestMismatch)
     ));
-    let version = open_version(&published.archive_path, &published.sha256).unwrap();
+    let version = open_version(&published.archive_path, &published.sha256, temp.path()).unwrap();
     assert_eq!(member_snapshot(version.source()), original);
     assert_eq!(version.source().authored_json(), authored);
 
@@ -222,13 +226,13 @@ fn exports_report_the_published_destination_when_sync_fails() {
     let temp = tempfile::tempdir().unwrap();
     let project = temp.path().join("source");
     fixture(&project);
-    let candidate = ImportCandidate::open(&project).unwrap();
+    let candidate = open_fixture(&project).unwrap();
     let artifact = candidate
         .stage_version(temp.path())
         .unwrap()
         .publish(temp.path())
         .unwrap();
-    let version = open_version(&artifact.archive_path, &artifact.sha256).unwrap();
+    let version = open_version(&artifact.archive_path, &artifact.sha256, temp.path()).unwrap();
 
     let project_destination = temp.path().join("export");
     super::FAIL_PUBLICATION_SYNC.set(true);
@@ -263,15 +267,15 @@ fn stored_archive_can_export_from_its_private_snapshot_after_original_disappears
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("source");
     fixture(&root);
-    let artifact = ImportCandidate::open(&root)
+    let artifact = open_fixture(&root)
         .unwrap()
         .stage_version(temp.path())
         .unwrap()
         .publish(temp.path())
         .unwrap();
     let original = fs::read(&artifact.archive_path).unwrap();
-    let version = open_version(&artifact.archive_path, &artifact.sha256).unwrap();
-    let candidate = ImportCandidate::open(&artifact.archive_path).unwrap();
+    let version = open_version(&artifact.archive_path, &artifact.sha256, temp.path()).unwrap();
+    let candidate = open_fixture(&artifact.archive_path).unwrap();
     fs::remove_file(&artifact.archive_path).unwrap();
     let export = temp.path().join("export.agsdl");
     version.export_archive(&export).unwrap();
@@ -287,10 +291,7 @@ fn stored_archive_can_export_from_its_private_snapshot_after_original_disappears
         .unwrap()
         .set_len(512 * 1024 * 1024 + 1)
         .unwrap();
-    assert!(matches!(
-        ImportCandidate::open(&oversized),
-        Err(Error::ArchiveLimit)
-    ));
+    assert!(matches!(open_fixture(&oversized), Err(Error::ArchiveLimit)));
 }
 
 #[test]
@@ -299,7 +300,7 @@ fn declared_component_errors_keep_the_file_and_distinguish_invalid_json() {
     fixture(temp.path());
     write(temp.path(), "agents/lead.json", b"{ invalid");
     assert!(matches!(
-        ImportCandidate::open(temp.path()),
+        open_fixture(temp.path()),
         Err(Error::Agsdl { file: Some(file), code, .. })
             if file == "agents/lead.json" && code == "PROJECT"
     ));
@@ -307,7 +308,7 @@ fn declared_component_errors_keep_the_file_and_distinguish_invalid_json() {
     fixture(temp.path());
     fs::remove_file(temp.path().join("notes.md")).unwrap();
     assert!(matches!(
-        ImportCandidate::open(temp.path()),
+        open_fixture(temp.path()),
         Err(Error::ProjectIo { file, pointer, path, source })
             if file == MANIFEST && pointer == "/content/notes/uri" && path == "notes.md"
                 && source.kind() == std::io::ErrorKind::NotFound
@@ -323,7 +324,7 @@ fn temporarily_unreadable_component_retains_the_native_io_cause() {
     let path = temp.path().join("agents/lead.json");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
     let denial = fs::File::open(&path).err();
-    let actual = ImportCandidate::open(temp.path());
+    let actual = open_fixture(temp.path());
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     if let Some(denial) = denial {
         assert!(matches!(
@@ -347,7 +348,7 @@ fn temporarily_unreadable_component_retains_the_native_io_cause() {
 fn preview_reports_reachability_permissions_calls_and_external_references() {
     let temp = tempfile::tempdir().unwrap();
     fixture(temp.path());
-    let input = ImportCandidate::open(temp.path()).unwrap();
+    let input = open_fixture(temp.path()).unwrap();
     let preview = input.preview().unwrap();
     assert_eq!(preview.title.as_deref(), Some("Vérifier la livraison"));
     assert_eq!(preview.authored_id, "release-test");
@@ -420,7 +421,7 @@ fn preview_reports_reachability_permissions_calls_and_external_references() {
 fn starter_matches_the_empty_blueprint_and_rejects_plain_legacy_json() {
     let temp = tempfile::tempdir().unwrap();
     let starter = stage_starter(temp.path(), "Nouveau").unwrap();
-    let opened = ImportCandidate::open(starter.path()).unwrap();
+    let opened = open_fixture(starter.path()).unwrap();
     let preview = opened.preview().unwrap();
     assert_eq!(preview.title.as_deref(), Some("Nouveau"));
     assert!(preview.authored_id.starts_with("system-"));
@@ -434,7 +435,7 @@ fn starter_matches_the_empty_blueprint_and_rejects_plain_legacy_json() {
         json!({"contract":"agsdl-0.3.0","id":"legacy","agents":{}}),
     );
     assert!(matches!(
-        ImportCandidate::open(&temp.path().join(MANIFEST)),
+        open_fixture(&temp.path().join(MANIFEST)),
         Err(Error::UnsupportedSource)
     ));
 }
@@ -444,7 +445,7 @@ fn rejects_bad_archive_inventory_and_limits() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("input");
     fixture(&input);
-    let source = ImportCandidate::open(&input).unwrap();
+    let source = open_fixture(&input).unwrap();
     let mut bytes = Vec::new();
     source.source().write_archive(&mut bytes).unwrap();
     let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
@@ -463,31 +464,19 @@ fn rejects_bad_archive_inventory_and_limits() {
     let corrupted = corrupted.finish().unwrap().into_inner();
     let path = temp.path().join("invalid.agsdl");
     fs::write(&path, corrupted).unwrap();
-    assert!(matches!(
-        ImportCandidate::open(&path),
-        Err(Error::Agsdl { .. })
-    ));
+    assert!(matches!(open_fixture(&path), Err(Error::Agsdl { .. })));
     fs::write(&path, b"PK malformed").unwrap();
-    assert!(matches!(
-        ImportCandidate::open(&path),
-        Err(Error::Agsdl { .. })
-    ));
+    assert!(matches!(open_fixture(&path), Err(Error::Agsdl { .. })));
     fs::File::options()
         .write(true)
         .open(&path)
         .unwrap()
         .set_len(512 * 1024 * 1024 + 1)
         .unwrap();
-    assert!(matches!(
-        ImportCandidate::open(&path),
-        Err(Error::ArchiveLimit)
-    ));
+    assert!(matches!(open_fixture(&path), Err(Error::ArchiveLimit)));
 
     write(&input, "agents/lead.json", &vec![b' '; 1024 * 1024 + 1]);
-    assert!(matches!(
-        ImportCandidate::open(&input),
-        Err(Error::Agsdl { .. })
-    ));
+    assert!(matches!(open_fixture(&input), Err(Error::Agsdl { .. })));
 }
 
 #[test]
@@ -496,7 +485,7 @@ fn rejects_env_and_case_collisions_in_selected_paths() {
     fixture(temp.path());
     write(temp.path(), "skills/review/.env.local", b"placeholder");
     assert!(
-        matches!(ImportCandidate::open(temp.path()), Err(Error::Agsdl { message, .. }) if message.contains(".env.local"))
+        matches!(open_fixture(temp.path()), Err(Error::Agsdl { message, .. }) if message.contains(".env.local"))
     );
     fs::remove_file(temp.path().join("skills/review/.env.local")).unwrap();
 
@@ -507,7 +496,7 @@ fn rejects_env_and_case_collisions_in_selected_paths() {
     write(temp.path(), "Notes.md", b"uppercase");
     write_json(temp.path(), MANIFEST, doc);
     assert!(
-        matches!(ImportCandidate::open(temp.path()), Err(Error::Agsdl { message, .. }) if message.to_lowercase().contains("collision"))
+        matches!(open_fixture(temp.path()), Err(Error::Agsdl { message, .. }) if message.to_lowercase().contains("collision"))
     );
 }
 
@@ -522,18 +511,18 @@ fn refuses_to_read_selected_symlinks_and_absolute_file_uris() {
     let link = root.join("skills/review/link");
     std::os::unix::fs::symlink(&external, &link).unwrap();
     assert!(
-        matches!(ImportCandidate::open(&root), Err(Error::Agsdl { message, .. }) if message.contains("link"))
+        matches!(open_fixture(&root), Err(Error::Agsdl { message, .. }) if message.contains("link"))
     );
     fs::remove_file(link).unwrap();
     let project_link = temp.path().join("linked-project");
     std::os::unix::fs::symlink(&root, &project_link).unwrap();
     assert!(matches!(
-        ImportCandidate::open(&project_link),
+        open_fixture(&project_link),
         Err(Error::SymbolicLink(_))
     ));
 
     assert!(matches!(
-        ImportCandidate::open(&project_link.join(MANIFEST)),
+        open_fixture(&project_link.join(MANIFEST)),
         Err(Error::SymbolicLink(_))
     ));
 
@@ -542,7 +531,7 @@ fn refuses_to_read_selected_symlinks_and_absolute_file_uris() {
         json!(url::Url::from_file_path(&external).unwrap().to_string());
     write_json(&root, MANIFEST, doc);
     assert!(
-        matches!(ImportCandidate::open(&root), Err(Error::Agsdl { message, .. }) if message.contains("Absolute file URI"))
+        matches!(open_fixture(&root), Err(Error::Agsdl { message, .. }) if message.contains("Absolute file URI"))
     );
 }
 
@@ -577,7 +566,7 @@ fn archive_interoperates_with_agsdl_v050_reference_tool() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("source");
     fixture(&root);
-    let input = ImportCandidate::open(&root).unwrap();
+    let input = open_fixture(&root).unwrap();
     let original = member_snapshot(input.source());
     let published = input
         .stage_version(temp.path())
@@ -612,7 +601,7 @@ fn archive_interoperates_with_agsdl_v050_reference_tool() {
         "pack",
         &[&unpacked, &from_reference],
     );
-    let packed = ImportCandidate::open(&from_reference).unwrap();
+    let packed = open_fixture(&from_reference).unwrap();
     assert_eq!(member_snapshot(packed.source()), original);
     let stored = packed
         .stage_version(temp.path())
@@ -630,7 +619,7 @@ fn history_import_verifies_the_bundle_and_rewrites_the_snapshot() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("source");
     fixture(&root);
-    let input = ImportCandidate::open(&root).unwrap();
+    let input = open_fixture(&root).unwrap();
     let published = input
         .stage_version(temp.path())
         .unwrap()
@@ -670,17 +659,17 @@ fn history_import_verifies_the_bundle_and_rewrites_the_snapshot() {
         output.finish().unwrap();
         if !valid {
             assert!(matches!(
-                ImportCandidate::open(&with_history),
+                open_fixture(&with_history),
                 Err(Error::Agsdl { .. })
             ));
         }
     }
     let raw_digest = format!("{:x}", Sha256::digest(fs::read(&with_history).unwrap()));
     assert!(matches!(
-        open_version(&with_history, &raw_digest),
+        open_version(&with_history, &raw_digest, temp.path()),
         Err(Error::UnexpectedHistory)
     ));
-    let imported = ImportCandidate::open(&with_history).unwrap();
+    let imported = open_fixture(&with_history).unwrap();
     let preview = imported.preview().unwrap();
     assert!(preview.history_will_be_removed);
     assert_eq!(preview.staged_sha256, raw_digest);

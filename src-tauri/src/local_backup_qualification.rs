@@ -400,6 +400,47 @@ async fn invalid_incoming_and_real_write_failure_do_not_replace_profile() {
     );
 }
 
+#[tokio::test]
+async fn broken_export_status_or_invalid_request_does_not_block_opening() {
+    let (_temp, data, config) = profile().await;
+    let dir = data.join("local-backup");
+    fs::create_dir_all(dir.join("status.json")).unwrap();
+    let request = dir.join("request.json");
+    let invalid_export = Request {
+        operation: "export".into(),
+        path: "relative.zip".into(),
+        browser: BTreeMap::new(),
+    };
+    fs::write(&request, serde_json::to_vec(&invalid_export).unwrap()).unwrap();
+    process_startup(&data, &config).await.unwrap();
+    assert!(!request.exists());
+    fs::write(&request, b"invalid request").unwrap();
+    process_startup(&data, &config).await.unwrap();
+    assert!(!request.exists());
+    assert!(fs::read_dir(&dir).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("invalid-request-")
+    }));
+}
+
+#[tokio::test]
+async fn unreadable_journal_blocks_profile_even_when_backup_lock_fails() {
+    let (_temp, data, config) = profile().await;
+    let dir = data.join("local-backup");
+    fs::create_dir_all(dir.join(".lock")).unwrap();
+    process_startup(&data, &config).await.unwrap();
+    let journal = dir.join("restoring.json");
+    fs::write(&journal, b"broken journal").unwrap();
+    assert!(process_startup(&data, &config).await.is_err());
+    fs::remove_dir(dir.join(".lock")).unwrap();
+    let recovery = process_startup(&data, &config).await.unwrap_err();
+    assert!(recovery.diagnostics.contains("Invalid restore journal"));
+    assert_eq!(fs::read(journal).unwrap(), b"broken journal");
+}
+
 // The subprocess uses helpers only at boundaries unreachable without a production hook.
 // The final two phases execute process_startup until a real status-publication I/O error.
 #[tokio::test]
@@ -607,7 +648,7 @@ async fn damaged_preservation_blocks_recovery_and_retains_journal_for_retry() {
     .unwrap();
     fs::write(data.join("macro.db"), b"interrupted replacement").unwrap();
     let error = process_startup(&data, &config).await.unwrap_err();
-    assert!(error.contains("checksum"));
+    assert!(error.diagnostics.contains("checksum"));
     assert_eq!(
         fs::read(data.join("macro.db")).unwrap(),
         b"interrupted replacement"

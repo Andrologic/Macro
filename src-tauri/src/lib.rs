@@ -210,6 +210,7 @@ pub type WorkspaceRoot = Arc<RwLock<std::path::PathBuf>>;
 fn install_browser_runtime_event_relays(app: &tauri::AppHandle) {
     const EVENTS: &[&str] = &[
         "app-update://download-progress",
+        "architect:cutover-progress",
         "ai:auth-success",
         "ai:auth-cancelled",
         "ai:auth-error",
@@ -554,6 +555,12 @@ pub async fn run_agsdl_content_cases(selection: &str) -> Result<String, String> 
     agsdl_content::qa::run_cases(selection).await
 }
 
+macro_rules! profile_handler {
+    ($($commands:tt)*) => {
+        local_backup::guard_profile_commands(tauri::generate_handler![$($commands)*])
+    };
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_process_environment();
@@ -702,11 +709,17 @@ pub fn run() {
                     error.message
                 ))
             })?;
-            tauri::async_runtime::block_on(local_backup::process_startup(
+            let recovery = tauri::async_runtime::block_on(local_backup::process_startup(
                 &app_data_dir,
                 &config_root,
             ))
-            .map_err(std::io::Error::other)?;
+            .err();
+            let blocked = recovery.is_some();
+            app.manage(local_backup::StartupRecovery(recovery));
+            if blocked {
+                setup_pending_downgrade_activation.store(false, Ordering::Release);
+                return Ok(());
+            }
             // Prepared recovery must run before parsing potentially damaged runtime.json.
             let mut config =
                 load_config().map_err(|error| std::io::Error::other(error.to_string()))?;
@@ -836,7 +849,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(profile_handler![
             host_telemetry::host_telemetry_read,
             commands::pilot_device::pilot_device_name,
             commands::pilot_secrets::pilot_vault_activate,
@@ -860,6 +873,9 @@ pub fn run() {
             config::config_reject_pending_change,
             config::config_list_pending_changes,
             config::config_list_orphan_secrets,
+            local_backup::profile_startup_recovery,
+            local_backup::profile_recovery_retry,
+            local_backup::profile_recovery_reveal,
             local_backup::local_backup_schedule,
             local_backup::local_backup_status,
             local_backup::local_backup_acknowledge,

@@ -1,6 +1,6 @@
 use std::{
     fs::{File, OpenOptions},
-    io,
+    io::{self, Seek, SeekFrom, Write},
     path::Path,
 };
 
@@ -9,7 +9,7 @@ use std::{
 // writes their exact names under a durable journal.
 const TEMP_NAME_MARGIN: usize = ".backup-00000000-0000-0000-0000-000000000000".len();
 
-pub(crate) fn admits_file(path: &Path) -> bool {
+pub(crate) fn fits_export_destination(path: &Path) -> bool {
     fits_file(path, TEMP_NAME_MARGIN)
 }
 
@@ -88,7 +88,8 @@ pub(crate) fn set_private_mode(path: &Path, directory: bool) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn create_private_file(path: &Path, executable: bool) -> io::Result<File> {
+pub(crate) fn create_private_file(path: &Path, executable: bool) -> io::Result<ProfileFile<File>> {
+    check("create", path)?;
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -98,42 +99,268 @@ pub(crate) fn create_private_file(path: &Path, executable: bool) -> io::Result<F
     }
     #[cfg(not(unix))]
     let _ = executable;
-    options.open(path)
+    options.open(path).map(|file| ProfileFile::new(file, path))
 }
 
-pub(crate) fn checkpoint(step: &str) -> io::Result<()> {
+pub(crate) struct ProfileFile<T> {
+    inner: T,
     #[cfg(test)]
-    if std::env::var("MACRO_TEST_PROFILE_FAULT").is_ok_and(|fault| fault == step) {
-        let fault = std::env::var("MACRO_TEST_PROFILE_FAULT_ACTION").unwrap();
-        eprintln!("profile-fault: {step} {fault}");
-        if fault == "crash" {
-            #[cfg(unix)]
-            unsafe {
-                libc::raise(libc::SIGKILL);
-            }
-            std::process::exit(79);
+    path: std::path::PathBuf,
+}
+
+impl<T> ProfileFile<T> {
+    pub(crate) fn new(inner: T, path: &Path) -> Self {
+        let _ = path;
+        Self {
+            inner,
+            #[cfg(test)]
+            path: path.to_owned(),
         }
-        let code = match fault.as_str() {
-            #[cfg(unix)]
-            "EACCES" => libc::EACCES,
-            #[cfg(unix)]
-            "ENOSPC" => libc::ENOSPC,
-            #[cfg(unix)]
-            "EIO" => libc::EIO,
-            #[cfg(unix)]
-            "ENAMETOOLONG" => libc::ENAMETOOLONG,
-            #[cfg(windows)]
-            "EACCES" => 5, // ERROR_ACCESS_DENIED
-            #[cfg(windows)]
-            "ENOSPC" => 112, // ERROR_DISK_FULL
-            #[cfg(windows)]
-            "EIO" => 1117, // ERROR_IO_DEVICE
-            #[cfg(windows)]
-            "ENAMETOOLONG" => 206, // ERROR_FILENAME_EXCED_RANGE
-            _ => panic!("Unknown test filesystem fault: {fault}"),
-        };
-        return Err(io::Error::from_raw_os_error(code));
     }
-    let _ = step;
+}
+
+impl ProfileFile<File> {
+    pub(crate) fn sync_all(&self) -> io::Result<()> {
+        #[cfg(test)]
+        check("sync-file", &self.path)?;
+        self.inner.sync_all()
+    }
+}
+
+impl<T: Write> Write for ProfileFile<T> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        #[cfg(test)]
+        if let Some(fault) = fault::at("write", &self.path) {
+            // A failed write can leave a partially updated file behind.
+            if buffer.len() > 1 {
+                self.inner.write_all(&buffer[..buffer.len() / 2])?;
+            }
+            return fault.fail();
+        }
+        self.inner.write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl<T: Seek> Seek for ProfileFile<T> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(position)
+    }
+}
+
+pub(crate) fn mkdir(builder: &std::fs::DirBuilder, path: &Path) -> io::Result<()> {
+    check("mkdir", path)?;
+    builder.create(path)
+}
+
+pub(crate) fn lock_exclusive(file: &File, path: &Path) -> io::Result<()> {
+    check("lock", path)?;
+    fs2::FileExt::lock_exclusive(file)
+}
+
+pub(crate) fn rename(from: &Path, to: &Path) -> io::Result<()> {
+    check("rename", to)?;
+    std::fs::rename(from, to)
+}
+
+pub(crate) fn rename_without_replacement(from: &Path, to: &Path) -> io::Result<()> {
+    check("rename", to)?;
+    #[cfg(windows)]
+    {
+        fn extended(path: &Path) -> io::Result<std::path::PathBuf> {
+            let path = std::path::absolute(path)?;
+            let parent = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
+            let basename = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+            Ok(parent.canonicalize()?.join(basename))
+        }
+        return crate::fs::operations::rename_without_replacement(&extended(from)?, &extended(to)?);
+    }
+    #[cfg(not(windows))]
+    crate::fs::operations::rename_without_replacement(from, to)
+}
+
+pub(crate) fn persist(temp: tempfile::NamedTempFile, to: &Path, replace: bool) -> io::Result<()> {
+    check("rename", to)?;
+    if replace {
+        temp.persist(to)
+    } else {
+        temp.persist_noclobber(to)
+    }
+    .map(|_| ())
+    .map_err(|error| error.error)
+}
+
+pub(crate) fn available_space(path: &Path) -> io::Result<u64> {
+    check("space", path)?;
+    fs2::available_space(path)
+}
+
+pub(crate) fn sync_file(file: &File, target: &Path) -> io::Result<()> {
+    check("sync-file", target)?;
+    file.sync_all()
+}
+
+pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
+    check("sync-dir", path)?;
+    #[cfg(unix)]
+    File::open(path)?.sync_all()?;
     Ok(())
+}
+
+pub(crate) fn remove_file(path: impl AsRef<Path>) -> io::Result<()> {
+    let path = path.as_ref();
+    check("unlink", path)?;
+    std::fs::remove_file(path)
+}
+
+pub(crate) fn remove_dir(path: &Path) -> io::Result<()> {
+    check("rmdir", path)?;
+    std::fs::remove_dir(path)
+}
+
+pub(crate) fn remove_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
+    let path = path.as_ref();
+    check("remove-tree", path)?;
+    std::fs::remove_dir_all(path)
+}
+
+pub(crate) fn check(operation: &str, path: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if let Some(fault) = fault::at(operation, path) {
+        return fault.fail();
+    }
+    let _ = (operation, path);
+    Ok(())
+}
+
+#[cfg(test)]
+mod fault {
+    use std::{
+        io,
+        path::Path,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            LazyLock,
+        },
+    };
+
+    struct FaultSettings {
+        operation: String,
+        target: String,
+        action: String,
+        occurrence: usize,
+        persistent: bool,
+        hits: AtomicUsize,
+    }
+
+    static SETTINGS: LazyLock<Option<FaultSettings>> = LazyLock::new(|| {
+        let selector = std::env::var("MACRO_TEST_PROFILE_FAULT").ok()?;
+        let (operation, target) = selector.split_once(':').expect("operator:target");
+        let action = std::env::var("MACRO_TEST_PROFILE_FAULT_ACTION").unwrap();
+        let (persistent, action) = match action.strip_prefix("persistent-") {
+            Some(rest) => (true, rest.to_owned()),
+            None => (false, action),
+        };
+        Some(FaultSettings {
+            operation: operation.into(),
+            target: target.into(),
+            action,
+            occurrence: std::env::var("MACRO_TEST_PROFILE_FAULT_NTH")
+                .ok()
+                .map_or(1, |value| value.parse().unwrap()),
+            persistent,
+            hits: AtomicUsize::new(0),
+        })
+    });
+
+    pub(super) struct Fault<'a> {
+        operation: &'a str,
+        path: &'a Path,
+        action: &'a str,
+    }
+
+    pub(super) fn at<'a>(operation: &'a str, path: &'a Path) -> Option<Fault<'a>> {
+        let settings = SETTINGS.as_ref()?;
+        if operation != settings.operation || !matches_target(path, &settings.target) {
+            return None;
+        }
+        let hit = settings.hits.fetch_add(1, Ordering::Relaxed) + 1;
+        (hit == settings.occurrence || settings.persistent && hit >= settings.occurrence).then_some(
+            Fault {
+                operation,
+                path,
+                action: &settings.action,
+            },
+        )
+    }
+
+    fn matches_target(path: &Path, target: &str) -> bool {
+        if let Some(relative) = target.strip_prefix("data/") {
+            return std::env::var_os("MACRO_TEST_PROFILE_DATA")
+                .is_some_and(|root| path == Path::new(&root).join(relative));
+        }
+        if let Some(relative) = target.strip_prefix("config/") {
+            return std::env::var_os("MACRO_TEST_PROFILE_CONFIG")
+                .is_some_and(|root| path == Path::new(&root).join(relative));
+        }
+        if let Some(member) = target.strip_prefix("library/") {
+            return std::env::var_os("MACRO_TEST_PROFILE_DATA")
+                .and_then(|root| {
+                    path.strip_prefix(Path::new(&root).join("architect-library/blueprints"))
+                        .ok()
+                })
+                .is_some_and(|path| path.to_string_lossy().replace('\\', "/").contains(member));
+        }
+        path.to_string_lossy().replace('\\', "/").contains(target)
+    }
+
+    impl Fault<'_> {
+        pub(super) fn fail<T>(self) -> io::Result<T> {
+            eprintln!(
+                "profile-fault: {} {} {}",
+                self.operation,
+                self.action,
+                self.path.display()
+            );
+            if self.action == "crash" {
+                #[cfg(unix)]
+                unsafe {
+                    libc::raise(libc::SIGKILL);
+                }
+                std::process::exit(79);
+            }
+            let code = match self.action {
+                #[cfg(unix)]
+                "EACCES" => libc::EACCES,
+                #[cfg(unix)]
+                "ENOSPC" => libc::ENOSPC,
+                #[cfg(unix)]
+                "EIO" => libc::EIO,
+                #[cfg(unix)]
+                "ENAMETOOLONG" => libc::ENAMETOOLONG,
+                #[cfg(unix)]
+                "EEXIST" => libc::EEXIST,
+                #[cfg(windows)]
+                "EACCES" => 5,
+                #[cfg(windows)]
+                "ENOSPC" => 112,
+                #[cfg(windows)]
+                "EIO" => 1117,
+                #[cfg(windows)]
+                "ENAMETOOLONG" => 206,
+                #[cfg(windows)]
+                "EEXIST" => 183,
+                action => panic!("Unknown test filesystem fault: {action}"),
+            };
+            Err(io::Error::from_raw_os_error(code))
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn mutated(name: &str) -> bool {
+    std::env::var("MACRO_TEST_PROFILE_MUTATION").as_deref() == Ok(name)
 }
