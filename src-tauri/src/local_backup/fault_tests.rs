@@ -1905,10 +1905,28 @@ async fn assert_launch_rollback(
         .join(incoming.snapshot.file_name().unwrap());
     tests::queue_restore(&data, archive);
     run_fault(&data, &config, "restore", &point, action, 1).await;
+    // A failed restore can finish rollback inline or leave its durable journal
+    // for the next startup. In both cases the original profile must survive.
+    let pending_rollback = match fs::read(data.join("local-backup/restoring.json")) {
+        Ok(bytes) => {
+            serde_json::from_slice::<RestoreJournal>(&bytes)
+                .unwrap()
+                .phase
+                == RestorePhase::Rollback
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => panic!("{point}/{action}: cannot read rollback journal: {error}"),
+    };
+    if matches!(action, "crash" | "persistent-EIO") {
+        assert!(
+            pending_rollback,
+            "{point}/{action}: missing rollback journal"
+        );
+    }
     process_startup(&data, &config).await.unwrap();
     assert_eq!(
         status_code(&data.join("local-backup")),
-        Some(if matches!(action, "crash" | "persistent-EIO") {
+        Some(if pending_rollback {
             BackupStatusCode::RolledBack
         } else {
             BackupStatusCode::Failed
