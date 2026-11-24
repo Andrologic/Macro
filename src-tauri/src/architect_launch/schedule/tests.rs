@@ -226,11 +226,23 @@ async fn scheduled_fields_are_validated_and_recovered_at_dispatch() {
         list(&pool).await.unwrap()[0].launch_values.as_ref(),
         Some(&values)
     );
-    let (_, request) = claim(&pool, &id, NOW + HOUR, NOW).await.unwrap().unwrap();
+    sqlx::query(
+        "UPDATE architect_launch_schedules SET settings_json=json_set(
+        json_remove(settings_json,'$.confirmedFolderReuse'),
+        '$.reuseFolder',json('true'),'$.folderBinding','original-identity',
+        '$.policy.allowOverlap',json('true')) WHERE id=?",
+    )
+    .bind(&id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (occurrence, request) = claim(&pool, &id, NOW + HOUR, NOW).await.unwrap().unwrap();
     assert_eq!(request.launch_values, Some(values));
     assert_eq!(request.version.blueprint_id, key.blueprint_id);
     assert_eq!(request.version.number, key.number);
     assert!(request.start_message.is_none());
+    assert_eq!(occurrence.overlapping_schedule(), Some(id.as_str()));
+    assert!(request.folder_reuse_token.is_none());
 }
 
 #[tokio::test]

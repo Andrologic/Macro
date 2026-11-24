@@ -45,7 +45,15 @@ struct Settings {
     launch_values: Option<Value>,
     model_overrides: BTreeMap<String, ModelOverride>,
     folder_binding: Option<String>,
-    reuse_folder: bool,
+    // Older schedules set reuseFolder for overlap even without confirmation.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "reuseFolder"
+    )]
+    _legacy_reuse_folder: Option<bool>,
+    #[serde(default)]
+    confirmed_folder_reuse: bool,
     policy: SchedulePolicy,
 }
 
@@ -191,7 +199,8 @@ pub(crate) async fn save(
         start_message: launch.start_message,
         launch_values: launch.launch_values,
         model_overrides: launch.model_overrides,
-        reuse_folder: launch.folder_reuse_token.is_some(),
+        _legacy_reuse_folder: None,
+        confirmed_folder_reuse: launch.folder_reuse_token.is_some(),
         folder_binding,
         policy,
     };
@@ -467,7 +476,9 @@ async fn claim(
         launch_values: settings.launch_values,
         model_overrides: settings.model_overrides,
         consent_token: None,
-        folder_reuse_token: settings.folder_binding.filter(|_| settings.reuse_folder),
+        folder_reuse_token: settings
+            .folder_binding
+            .filter(|_| settings.confirmed_folder_reuse),
     };
     Ok(Some((occurrence, request)))
 }

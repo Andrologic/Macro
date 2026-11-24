@@ -148,12 +148,13 @@ export default function ArchitectLaunchDialog({ initialVersion, schedule, onClos
       if (failureCode(failure) === "ARCHIVE_UNAVAILABLE") {
         setNumber(versionNumber);
         setUnavailableVersion({ blueprintId, number: versionNumber });
+        if (alwaysLatest) setSystemsRevision(value => value + 1);
       } else {
         setProblem({ ...failureText(failure, t), recheck: true });
       }
     });
     return () => { active = false; };
-  }, [blueprintId, versionNumber, configuration, modelOverrides, revision, t]);
+  }, [blueprintId, versionNumber, configuration, modelOverrides, revision, t, alwaysLatest]);
 
   const current = preview?.version.blueprintId === blueprintId && preview.version.number === versionNumber ? preview : undefined;
   const folderConfirmed = !!current?.folderReuseToken && current.folderReuseToken === confirmedFolderToken;
@@ -262,6 +263,10 @@ export default function ArchitectLaunchDialog({ initialVersion, schedule, onClos
         if (isFolderFailure(code)) setConfirmedFolderToken(null);
         recheck();
       } else if (code === "ARCHIVE_UNAVAILABLE") {
+        if (alwaysLatest) {
+          reset();
+          setSystemsRevision(value => value + 1);
+        }
         setConsent(false);
         setNumber(current.version.number);
         setUnavailableVersion(current.version);

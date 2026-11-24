@@ -33,16 +33,18 @@ function preview(patch: Partial<LaunchPreview> = {}): LaunchPreview {
   };
 }
 
-function install(prepare: (input: Record<string, unknown>) => LaunchPreview | Promise<LaunchPreview>, extra: (command: string, args: Record<string, unknown>) => unknown = () => { throw new Error("unexpected"); }) {
+const versions = [
+  { blueprintId: "bp", number: 1, storageState: "archive", note: null },
+  { blueprintId: "bp", number: 2, storageState: "archive", note: "Added the reviewer" },
+];
+
+function install(prepare: (input: Record<string, unknown>) => LaunchPreview | Promise<LaunchPreview>, extra: (command: string, args: Record<string, unknown>) => unknown = () => { throw new Error("unexpected"); }, listVersions = () => versions) {
   installNative(async (command, args) => {
     calls.push({ command, args });
     switch (command) {
       case "architect_list_projects": return [{ id: "p", name: "Project" }];
       case "architect_list_blueprints": return [{ id: "bp", name: "Code review" }];
-      case "architect_list_versions": return [
-        { blueprintId: "bp", number: 1, storageState: "archive", note: null },
-        { blueprintId: "bp", number: 2, storageState: "archive", note: "Added the reviewer" },
-      ];
+      case "architect_list_versions": return listVersions();
       case "architect_launch_prepare": return prepare(args);
       case "architect_launch_run_systems": return [];
       case "architect_launch_start": return startHandler();
@@ -785,4 +787,30 @@ it("switches to the latest version's fields before saving a following schedule",
     launch: { version: archive, launchValues: { ticket: "Intake" } },
     policy: { alwaysLatest: true },
   });
+});
+
+it("refreshes the latest version when the prepared archive disappears before saving", async () => {
+  let remaining = versions;
+  const onSaved = spyOn({ saved: () => {} }, "saved");
+  install(args => preview({ version: args.version as typeof archive }), (command, args) => {
+    if (command !== "architect_schedule_save") throw new Error(command);
+    const version = (args.request as { launch: LaunchRequest }).launch.version;
+    if (version.number === 2) {
+      remaining = versions.filter(option => option.number !== 2);
+      throw { code: "ARCHIVE_UNAVAILABLE" };
+    }
+    return "schedule-1";
+  }, () => remaining);
+  view = createHost();
+  await view.render(<ArchitectLaunchDialog initialVersion={archive} schedule={{ onSaved }} />);
+  await flush();
+  await fillField(dialog().querySelector('input[type="datetime-local"]')!, "2098-01-02T09:30");
+  await click(byText("label", "Always use the latest version", dialog())!.querySelector("input"));
+  await flush();
+  await click(primary());
+  await flush();
+  expect(dialog().querySelector("button[aria-expanded]")?.textContent).toContain("Version 1");
+  expect(primary().disabled).toBe(false);
+  await click(primary());
+  expect(onSaved).toHaveBeenCalledTimes(1);
 });
