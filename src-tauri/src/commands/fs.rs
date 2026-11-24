@@ -1,4 +1,10 @@
-// Desktop adapters resolve managed state before calling shared FS operations.
+//! Generic file commands. Each one resolves a single allowed root (the
+//! caller's project or working folder, its `.macro` metadata worktree, or the
+//! current workspace) and the shared operations then confine every access to
+//! handles opened beneath that root (`crate::fs::confined`). The legacy
+//! `allow_outside_workspace` flag no longer widens native access. See
+//! "Commandes de fichiers génériques et racines autorisées" in
+//! `docs/technical-architecture.md` for the callers and roots of each command.
 use crate::core::error::BackendError;
 use crate::core::tool_policy::is_macro_scoped_path;
 use crate::fs::dto::*;

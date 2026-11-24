@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 
 use crate::core::error::{BackendError, Result};
 
+pub(crate) mod confined;
+#[cfg(test)]
+mod confined_tests;
 pub mod dto;
 pub(crate) mod plan_catalog;
 pub(crate) mod private_profile;
@@ -162,6 +165,31 @@ pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
     }
 }
 
+/// The entry an existing path names. Lexical normalization is only exact when
+/// the spelling has no `..`: in `link/../name` the `..` applies to the link's
+/// target, so the parent is resolved physically, as the operating system does,
+/// while a final symlink is kept as the entry itself.
+fn entry_path_for_write(abs_path: &Path, normalized: PathBuf) -> Result<PathBuf> {
+    if !abs_path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Ok(normalized);
+    }
+    let canonicalize = |path: &Path| {
+        path.canonicalize().map_err(|error| BackendError::Io {
+            message: format!("Failed to canonicalize path {:?}: {}", path, error),
+            source: error,
+        })
+    };
+    match (abs_path.parent(), abs_path.components().next_back()) {
+        (Some(parent), Some(std::path::Component::Normal(name))) => {
+            Ok(normalize_path(&canonicalize(parent)?.join(name)))
+        }
+        _ => canonicalize(abs_path),
+    }
+}
+
 /// Validate path for write operations
 /// Similar to `validate_path` but handles non-existent files
 /// Checks the closest existing ancestor directory and ensures it is within the
@@ -179,13 +207,14 @@ pub fn validate_path_for_write(path: &Path, workspace: &Path) -> Result<PathBuf>
 
     match abs_path.canonicalize() {
         Ok(canonical_path) => {
-            // Keep the lexical target for existing symlinks so callers that
-            // inspect symlink metadata retain their current behavior, but
-            // validate where the symlink resolves before allowing a write.
+            // Keep a final symlink itself so callers that inspect symlink
+            // metadata retain their behavior, but validate where it resolves.
             private_profile::check_normalized(&canonical_path)?;
             ensure_within_workspace(&canonical_path, &canonical_workspace, "Path")?;
-            ensure_within_workspace(&normalized, &canonical_workspace, "Path")?;
-            Ok(normalized)
+            let entry = entry_path_for_write(&abs_path, normalized)?;
+            private_profile::check_normalized(&entry)?;
+            ensure_within_workspace(&entry, &canonical_workspace, "Path")?;
+            Ok(entry)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let (existing_ancestor, canonical_ancestor) = nearest_existing_ancestor(&abs_path)?;
