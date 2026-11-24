@@ -14,7 +14,7 @@ export function CapturedRunGraph030({ bridge, currentSource, onInspect, hiddenAg
 }) {
   const { t } = useAgsdlTranslation();
   const document = useMemo(() => {
-    try { return projectViewer(bridge.capture.authoredSource); } catch { return null; }
+    try { return projectViewer(bridge.capture.authoredSource, undefined, [], true); } catch { return null; }
   }, [bridge.capture.authoredSource]);
   const graph = document?.graphs[0];
   const system = useMemo(() => projectSystemOverview(graph, document?.declarations ?? []), [graph, document]);

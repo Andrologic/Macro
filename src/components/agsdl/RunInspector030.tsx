@@ -31,7 +31,7 @@ export function RunInspector030({ inspection, selectedStepId, selectedOccurrence
   const diagnosticLabel = (code: string) => tr('diagnosticCode.' + (diagnosticCodes.has(code) ? code : 'other'));
   const { capture, state } = inspection;
   const semantics = useMemo(() => {
-    try { return projectStaticSemantics030(capture.authoredSource); } catch { return null; }
+    try { return projectStaticSemantics030(capture.authoredSource, undefined, true); } catch { return null; }
   }, [capture.authoredSource]);
   const stepLabels = useMemo(() => semantics ? runStepLabels030(capture.authoredSource, semantics) : new Map<string, string>(), [semantics, capture.authoredSource]);
   const raw = retainedRunValue030(state.occurrences);

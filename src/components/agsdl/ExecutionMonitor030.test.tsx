@@ -2,6 +2,8 @@ import { afterEach, expect, it } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { ExecutionMonitor030 } from './ExecutionMonitor030';
+import { CapturedRunGraph030 } from './CapturedRunGraph030';
+import { MAX_AGSDL_BYTES } from '../../services/agsdl/document';
 import { available, ready, historyFixture030, humanFixture030, inspectionFixture030, monitorFixture030 } from '../../services/agsdl/runInspection030.testSupport';
 import type { RunGraphBridge030 } from './RunInspector030';
 
@@ -16,6 +18,17 @@ async function click(text: string) {
   const button = [...host.querySelectorAll('button')].find(item => item.textContent?.includes(text));
   expect(button).toBeDefined(); await act(async () => button!.click());
 }
+it('renders the captured graph and inspection for a source larger than the editor limit', async () => {
+  const run = inspectionFixture030();
+  const authoredSource = JSON.stringify({
+    ...JSON.parse(run.capture.authoredSource),
+    description: 'x'.repeat(MAX_AGSDL_BYTES),
+  });
+  const access = monitorFixture030({ ...run, capture: { ...run.capture, authoredSource } });
+  await mount(access, { renderGraph: (bridge: RunGraphBridge030) => <CapturedRunGraph030 bridge={bridge} /> });
+  expect([...host.querySelectorAll('.agsdl-graph-node')].some(node => node.textContent?.includes('Review'))).toBe(true);
+  expect(host.textContent).toContain('No final verdict');
+});
 it('opens only read access and keeps occurrence selection on a revision conflict and run switches', async () => {
   const run = inspectionFixture030(); const old = inspectionFixture030('run-old');
   const access = monitorFixture030(run, old); let bridge: RunGraphBridge030 | undefined;

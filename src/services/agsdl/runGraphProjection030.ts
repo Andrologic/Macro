@@ -1,5 +1,5 @@
 import type { RunOccurrence030, RunScope030, RunRead030 } from '../../types/agsdlRunUi030';
-import { object, scanSource } from './document';
+import { MAX_AGSDL_PROJECTION_BYTES, object, scanSource } from './document';
 import type { StaticSemantics030 } from './staticSemantics030';
 
 /** Capture identity deliberately excludes runtime revision, so refresh keeps selection. */
@@ -81,7 +81,7 @@ export function callFailure030(occurrence: RunOccurrence030): { code: string; me
 
 /** Authored titles are presentation data, never runtime identities. */
 export function runStepLabels030(source: string, semantics: StaticSemantics030): ReadonlyMap<string, string> {
-  const scanned = scanSource(source), decoder = new TextDecoder();
+  const scanned = scanSource(source, MAX_AGSDL_PROJECTION_BYTES), decoder = new TextDecoder();
   return new Map(semantics.occurrences.map(step => {
     const span = scanned.spans.get(`${step.sourcePath}/title`);
     const title: unknown = span ? JSON.parse(decoder.decode(scanned.bytes.subarray(span.start, span.end))) : null;
