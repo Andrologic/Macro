@@ -93,7 +93,7 @@ dependencies = [
 [[package]]
 name = "argentic-core"
 version = "0.1.0"
-source = "git+https://github.com/Andrologic/argentic.git?rev=f1b3a101b47d63442cbd506cb135340edc494746#f1b3a101b47d63442cbd506cb135340edc494746"
+source = "git+https://github.com/Andrologic/argentic.git?rev=d533e00997c4597e58d5ccc424968443214573c8#d533e00997c4597e58d5ccc424968443214573c8"
 dependencies = [
  "regex",
  "serde",
@@ -105,7 +105,7 @@ dependencies = [
 [[package]]
 name = "argentic-runtime"
 version = "0.1.0"
-source = "git+https://github.com/Andrologic/argentic.git?rev=f1b3a101b47d63442cbd506cb135340edc494746#f1b3a101b47d63442cbd506cb135340edc494746"
+source = "git+https://github.com/Andrologic/argentic.git?rev=d533e00997c4597e58d5ccc424968443214573c8#d533e00997c4597e58d5ccc424968443214573c8"
 dependencies = [
  "argentic-core",
  "async-trait",
@@ -2445,7 +2445,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -6344,7 +6344,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
