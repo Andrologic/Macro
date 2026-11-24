@@ -165,7 +165,10 @@ pub(crate) fn flow_reach(source: &OpenedSource) -> Result<FlowReach> {
         .filter(|id| !reached.contains(id.as_str()))
         .cloned()
         .collect();
-    Ok(FlowReach { declared, unreached })
+    Ok(FlowReach {
+        declared,
+        unreached,
+    })
 }
 
 pub(crate) fn inspect(

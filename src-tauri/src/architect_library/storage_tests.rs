@@ -658,7 +658,12 @@ async fn file_batches_edit_migrated_projects_and_hold_versions_read_only() {
     assert_eq!(serde_json::to_value(frozen).unwrap()["number"], 8);
     let version = storage.open_version_project(&pool, &key(8)).await.unwrap();
     assert_eq!(
-        version.project.settings.agent_names.get("reviewer").map(String::as_str),
+        version
+            .project
+            .settings
+            .agent_names
+            .get("reviewer")
+            .map(String::as_str),
         Some("Relecteur")
     );
     assert_eq!(
@@ -1388,7 +1393,10 @@ fn the_dry_run_names_agents_no_step_of_the_flow_reaches() {
         let mut manifest = json!({
             "projectFormat": "agsdl-project-1", "contract": "agsdl-0.4.0", "id": "system", "title": "System",
         });
-        manifest.as_object_mut().unwrap().extend(document.as_object().unwrap().clone());
+        manifest
+            .as_object_mut()
+            .unwrap()
+            .extend(document.as_object().unwrap().clone());
         fs::write(temp.path().join("agsdl.json"), manifest.to_string()).unwrap();
         let source = OpenedSource::open_path(temp.path()).unwrap();
         let reach = super::preview::flow_reach(&source).unwrap();
@@ -1402,7 +1410,10 @@ fn the_dry_run_names_agents_no_step_of_the_flow_reaches() {
     // A system whose only agent is not in the flow passes validation: the dry run still says so.
     assert_eq!(
         reach(json!({ "agents": { "reviewer": agent, "writer": agent }, "flow": flow("writer") })),
-        [("AGENT_NOT_REACHED".to_owned(), "/agents/reviewer".to_owned())]
+        [(
+            "AGENT_NOT_REACHED".to_owned(),
+            "/agents/reviewer".to_owned()
+        )]
     );
     assert_eq!(
         reach(json!({
