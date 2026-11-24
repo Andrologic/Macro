@@ -544,6 +544,16 @@ it("says a declared server no agent lists is simply not used", async () => {
 
 const only = (patch: Partial<LaunchPreview["permissions"]["agents"][string]>) => ({ ...preview().permissions, agents: { writer: reviewerAgent({ mcpServers: [], model: { name: "gpt-5.2", effort: null }, ...patch }) } });
 
+it("lists Codex once in consent when only one of its agents names a model", async () => {
+  const permissions: LaunchPreview["permissions"] = only({});
+  permissions.agents.reviewer = reviewerAgent({ mcpServers: [] });
+  install(() => preview({ consentToken: "review", permissions }));
+  await show();
+  await click(primary());
+  const engines = dialog().querySelector('section[aria-label="Engines and models"]');
+  expect(engines?.querySelector("p")?.textContent).toBe("Codex (model gpt-5.2)");
+});
+
 it.each([
   ["declared but absent from the flow", "declaredOnly"],
   ["declared in a system that has no flow", "unknown"],
