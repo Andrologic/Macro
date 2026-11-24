@@ -5,7 +5,7 @@ import { listExecutionRuns030, readExecutionSnapshot030, readExecutionRuntimePro
   readExecutionHumans030, readExecutionIntentsVersioned, readExecutionRunCorrelation030 } from '../tauriIpc';
 import { MacroServiceError, toServiceError } from '../contracts/errors';
 import { sourceDigest } from '../agsdlExecution/sourceDigest';
-import { readDocument } from './document';
+import { MAX_AGSDL_PROJECTION_BYTES, readDocument } from './document';
 import { readHumanFacts030, sameHumanScope030 } from './humanReadAccess030';
 import { loadRuntimeProjection030, retainedRunValue030, runtimeSections030 } from './runtimeProjection030';
 import { ARCHIVE_RUN_PROJECT } from '../ipc/architectLaunch';
@@ -167,8 +167,9 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     const capture = await transport.readExecutionSnapshot030(run.systemStartId);
     requireFact(sameHumanScope030(capture, run) && sameVersions(capture.versions, run.versions) &&
       sameHumanScope030(capture, correlation.receipt) && sameVersions(capture.versions, correlation.receipt.versions));
+    const maxBytes = expected.owner.projectId === ARCHIVE_RUN_PROJECT ? MAX_AGSDL_PROJECTION_BYTES : undefined;
     requireFact(await sourceDigest(capture.authoredSource) === capture.source.sourceSha256 &&
-      readDocument(capture.authoredSource).contract === capture.versions.contract);
+      readDocument(capture.authoredSource, maxBytes).contract === capture.versions.contract);
     return structuredClone(capture);
   }
   function verifyRetained(run: PublicRunSummary030) {

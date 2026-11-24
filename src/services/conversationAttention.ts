@@ -11,6 +11,7 @@ export interface ConversationAttentionContext {
   appForeground: boolean;
   mode: AppMode;
   selectedConversationId: string | null;
+  architectLibraryConversationId?: string | null;
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   scopedProjectIds: string[];
@@ -245,6 +246,7 @@ const isArchitectConversationInScope = (
   context: ConversationAttentionContext,
   conversation: Conversation,
 ): boolean => {
+  if (context.architectLibraryConversationId === conversation.id) return true;
   if (context.selectedGroupId) {
     if (conversation.group_id) {
       return conversation.group_id === context.selectedGroupId;

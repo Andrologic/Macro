@@ -1,7 +1,9 @@
 import { expect, it } from 'bun:test';
 import type { ExecutionRunCorrelation030, PublicExecutionIntent, PublicRunSummary030 } from '../../types/generated/ipc';
 import { sourceDigest } from '../agsdlExecution/sourceDigest';
+import { ARCHIVE_RUN_PROJECT } from '../ipc/architectLaunch';
 import { AGSDL_CONTRACT } from './contract';
+import { MAX_AGSDL_BYTES } from './document';
 import { createRunInspectionAccess030 } from './runAccess030';
 import { initialRunSelection030, retainedRunValue030 } from './runtimeProjection030';
 import { fixture, intentFor, transportFor, type Fixture } from './runAccess030.testSupport';
@@ -40,6 +42,25 @@ it('reads an interrupted 0.4 projection and retains the native termination warni
     verdict: 'interrupted', stopping: false, terminationUncertain: true, physicalPending: '1',
   });
   expect(retainedRunValue030(access.getSnapshot().history)?.[0].verdict).toBe('interrupted');
+});
+
+it('keeps an archive run inspectable when its assembled source exceeds the editor limit', async () => {
+  const f = await fixture();
+  f.capture.source.owner.projectId = ARCHIVE_RUN_PROJECT;
+  f.capture.authoredSource = JSON.stringify({
+    ...JSON.parse(f.capture.authoredSource),
+    contract: AGSDL_CONTRACT,
+    description: 'x'.repeat(MAX_AGSDL_BYTES),
+  });
+  f.capture.source.sourceSha256 = await sourceDigest(f.capture.authoredSource);
+  f.capture.versions = { ...f.capture.versions, contract: AGSDL_CONTRACT };
+  f.summary.versions = f.capture.versions;
+  const { transport, scope } = transportFor(f);
+  const access = createRunInspectionAccess030(scope, transport);
+  await access.refreshHistory();
+  expect(retainedRunValue030(access.getSnapshot().history)?.map(item => item.scope.systemStartId)).toEqual(['run']);
+  await access.refreshRun('run');
+  expect(access.getSnapshot().runs.run.kind).toBe('ready');
 });
 
 it('reads all discovery pages before publishing history and never assumes no human waits', async () => {

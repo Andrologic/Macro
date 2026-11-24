@@ -274,6 +274,26 @@ describe('workflow attention events', () => {
     expect(detectNewChatAttentionEvents(previous, next, visibleContext)).toEqual([]);
   });
 
+  it('only suppresses attention for the visible library draft conversation', () => {
+    const conversation = makeConversation('library', { scope_mode: 'Architect' });
+    const previous = makeChatState([conversation]);
+    const next = makeChatState([conversation], {
+      messages: [makeQuestionnaireMessage(conversation.id)],
+      pendingToolApprovalByConversationId: { library: makeApproval(conversation.id) },
+    });
+    const context: WorkflowAttentionContext = {
+      ...backgroundContext,
+      mode: 'Architect',
+      selectedConversationId: conversation.id,
+      architectLibraryConversationId: conversation.id,
+    };
+    expect(detectNewChatAttentionEvents(previous, next, context)).toEqual([]);
+    for (const hidden of [{ appForeground: false }, { architectLibraryConversationId: null }]) {
+      expect(detectNewChatAttentionEvents(previous, next, { ...context, ...hidden }).map(event => event.kind))
+        .toEqual(['questionnaire', 'approval']);
+    }
+  });
+
   it('does notify when an Architect conversation id is stale for the active scope', () => {
     const conversation = makeConversation('architect', {
       scope_mode: 'Architect',

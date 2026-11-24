@@ -3,6 +3,7 @@ import { useEffect, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useAppStore } from '../../stores/useAppStore';
+import { confirmedBlueprintDraft, useArchitectLibraryStore } from '../../stores/useArchitectLibraryStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useNotificationCenterStore } from '../../stores/useNotificationCenterStore';
 import { resolveTaskReference } from '../../services/durableIdentity';
@@ -16,6 +17,7 @@ import {
   type WorkflowAttentionEvent,
 } from '../../services/workflowAttentionEvents';
 import { getScopedProjectIds } from '../../services/globalProjects';
+import { demoWorkflowJourney } from '../../services/operateWorkspace';
 import { initializeDesktopNotifications, isAppForeground } from '../../services/desktopNotifications';
 import { openWorkflowNotificationContext } from '../../services/openWorkflowNotificationContext';
 import type { WorkflowNotificationNavigation } from '../../services/workflowNotificationNavigation';
@@ -58,11 +60,15 @@ export function subscribeRunAttention030(registrations: readonly WorkflowRunRegi
 const getAttentionContext = () => {
   const appState = useAppStore.getState();
   const taskState = useTaskStore.getState();
+  const libraryDraft = appState.mode === 'Architect' && !demoWorkflowJourney
+    ? confirmedBlueprintDraft(useArchitectLibraryStore.getState())
+    : null;
   return {
     appForeground: isAppForeground(),
     mode: appState.mode,
     selectedTaskId: appState.selectedTaskId,
     selectedConversationId: useChatStore.getState().selectedConversationId,
+    architectLibraryConversationId: libraryDraft?.conversationId ?? null,
     selectedGroupId: appState.selectedGroupId,
     selectedProjectId: appState.selectedProjectId,
     scopedProjectIds: getScopedProjectIds(
