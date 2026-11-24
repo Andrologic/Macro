@@ -3,7 +3,6 @@ import type { HumanContinuation030 } from '../../types/generated/ipc/HumanContin
 import type { HumanPage030 } from '../../types/generated/ipc/HumanPage030';
 import type { PublicHumanRequest030 } from '../../types/generated/ipc/PublicHumanRequest030';
 import type { HumanAnswer030 } from '../../types/generated/ipc/HumanAnswer030';
-import { object, scanSource } from './document';
 
 export type ExecutionHumanRequestView =
   | { kind: 'approval'; title: string; description?: string; message: string; choices: readonly { value: string; label: string }[] }
@@ -37,26 +36,106 @@ function visibleControls(text: string): string {
 }
 
 const MCP_ARGUMENT_PREVIEW_LIMIT = 4096;
+const argumentEncoder = new TextEncoder();
+
+type JsonSpan = { start: number; end: number };
+
+/** Skip native JSON containers without materializing their contents or indexing their children. */
+function nativeJsonSpans(raw: string, start: number, keys: readonly string[]) {
+  const spans = new Map<string, JsonSpan>();
+  const whitespace = /[ \t\r\n]*/y;
+  const stringTokens = /["\\]/g;
+  const structure = /[[\]{}"]/g;
+  const primitive = /[^ \t\r\n,}\]]+/y;
+  const skipWhitespace = (at: number) => {
+    whitespace.lastIndex = at;
+    whitespace.test(raw);
+    return whitespace.lastIndex;
+  };
+  const stringEnd = (at: number) => {
+    stringTokens.lastIndex = at + 1;
+    for (let token = stringTokens.exec(raw); token; token = stringTokens.exec(raw)) {
+      if (token[0] === '"') return stringTokens.lastIndex;
+      stringTokens.lastIndex++;
+    }
+    throw new Error('Unterminated native JSON string');
+  };
+  const valueEnd = (at: number) => {
+    switch (raw[at]) {
+      case '"': return stringEnd(at);
+      case '{':
+      case '[': {
+        let depth = 1;
+        structure.lastIndex = at + 1;
+        for (let token = structure.exec(raw); token; token = structure.exec(raw)) {
+          if (token[0] === '"') structure.lastIndex = stringEnd(token.index);
+          else if (token[0] === '[' || token[0] === '{') depth++;
+          else if (--depth === 0) return structure.lastIndex;
+        }
+        break;
+      }
+      default:
+        primitive.lastIndex = at;
+        if (primitive.test(raw)) return primitive.lastIndex;
+    }
+    throw new Error('Incomplete native JSON value');
+  };
+
+  let at = skipWhitespace(start);
+  if (raw[at++] !== '{') throw new Error('Expected a native JSON object');
+  at = skipWhitespace(at);
+  if (raw[at] === '}') return spans;
+  while (raw[at] === '"') {
+    const keyEnd = stringEnd(at);
+    const key: string = JSON.parse(raw.slice(at, keyEnd));
+    const colon = skipWhitespace(keyEnd);
+    if (raw[colon] !== ':') break;
+    const valueStart = skipWhitespace(colon + 1);
+    const end = valueEnd(valueStart);
+    if (keys.includes(key)) {
+      if (spans.has(key)) throw new Error('Duplicate native JSON key');
+      spans.set(key, { start: valueStart, end });
+    }
+    at = skipWhitespace(end);
+    if (raw[at] === '}') return spans;
+    if (raw[at] !== ',') break;
+    at = skipWhitespace(at + 1);
+  }
+  throw new Error('Invalid native JSON object');
+}
 
 export function nativeMcpSummary030(raw: string) {
   try {
-    const { tree, bytes, spans } = scanSource(raw, Infinity);
-    const request = object(object(tree).nativeRequest);
-    if (request.method !== 'mcp/tool/requestApproval') return null;
-    const { server, tool } = object(request.params);
-    const span = spans.get('/nativeRequest/params/arguments');
-    if (typeof server !== 'string' || typeof tool !== 'string' || !span || bytes[span.start] !== 123) return null;
-    const previewEnd = Math.min(span.end, span.start + MCP_ARGUMENT_PREVIEW_LIMIT);
-    const preview = visibleControls(new TextDecoder().decode(bytes.subarray(span.start, previewEnd), {
-      stream: previewEnd < span.end,
+    // Rust supplies serialized JSON. Only decode the metadata strings and the preview.
+    const native = nativeJsonSpans(raw, 0, ['nativeRequest']).get('nativeRequest');
+    if (!native) return null;
+    const request = nativeJsonSpans(raw, native.start, ['method', 'params']);
+    const readString = (span: JsonSpan | undefined): string | undefined =>
+      span && raw[span.start] === '"' ? JSON.parse(raw.slice(span.start, span.end)) : undefined;
+    const params = request.get('params');
+    if (readString(request.get('method')) !== 'mcp/tool/requestApproval' || !params) return null;
+    const fields = nativeJsonSpans(raw, params.start, ['server', 'tool', 'arguments']);
+    const server = readString(fields.get('server'));
+    const tool = readString(fields.get('tool'));
+    const span = fields.get('arguments');
+    if (server === undefined || tool === undefined || !span || raw[span.start] !== '{') return null;
+
+    // A UTF-8 prefix cannot contain more UTF-16 code units than bytes.
+    const end = Math.min(span.end, span.start + MCP_ARGUMENT_PREVIEW_LIMIT + 1);
+    const bytes = argumentEncoder.encode(raw.slice(span.start, end));
+    const partial = end < span.end || bytes.length > MCP_ARGUMENT_PREVIEW_LIMIT;
+    const preview = visibleControls(new TextDecoder().decode(bytes.subarray(0, MCP_ARGUMENT_PREVIEW_LIMIT), {
+      stream: partial,
     }));
-    const truncated = previewEnd < span.end || preview.length > MCP_ARGUMENT_PREVIEW_LIMIT;
+    const truncated = partial || preview.length > MCP_ARGUMENT_PREVIEW_LIMIT;
+    // Avoid splitting an astral character when control escapes expand the preview.
+    const prefix = preview.slice(0, MCP_ARGUMENT_PREVIEW_LIMIT).replace(/[\uD800-\uDBFF]$/, '');
     return {
       server: visibleControls(server),
       tool: visibleControls(tool),
-      preview: preview.slice(0, MCP_ARGUMENT_PREVIEW_LIMIT) + (truncated ? '…' : ''),
+      preview: prefix + (truncated ? '…' : ''),
       truncated,
-      fullArguments: () => visibleControls(new TextDecoder().decode(bytes.subarray(span.start, span.end))),
+      fullArguments: () => visibleControls(raw.slice(span.start, span.end)),
     };
   } catch { return null; }
 }

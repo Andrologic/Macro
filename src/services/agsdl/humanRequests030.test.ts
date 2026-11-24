@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { loadHumanRequests030, humanAnswer030, exactQuestionAnswer030, humanRequestView030 } from './humanRequests030';
+import { loadHumanRequests030, humanAnswer030, exactQuestionAnswer030, humanRequestView030, nativeMcpSummary030 } from './humanRequests030';
 import type { HumanScope030 } from '../../types/generated/ipc/HumanScope030';
 import type { HumanPage030 } from '../../types/generated/ipc/HumanPage030';
 import type { PublicHumanRequest030 } from '../../types/generated/ipc/PublicHumanRequest030';
@@ -7,6 +7,17 @@ const scope: HumanScope030 = { systemStartId: 'run', source: { owner: { projectI
 const item = (id: string): PublicHumanRequest030 => ({ id, revision: '0', status: 'open', workIds: [], content: { kind: 'approval', title: 'T', description: 'D', message: 'M', choices: ['go'] } });
 const first: HumanPage030 = { scope, cursor: '', total: '65', requests: Array.from({length:64}, (_, i) => item(String(i))), nextPage: { scope, cursor: '', offset: 64 } };
 const last: HumanPage030 = { scope, cursor: '', total: '65', requests: [item('64')], nextPage: null };
+it('previews an MCP argument array without materializing its elements', () => {
+  const args = '{"nested":[{"text":"escaped \\" ] } \\\\ quote"},' +
+    '1,'.repeat(1024 * 1024) + '9007199254740993]}';
+  const raw = '{"nativeRequest":{"params":{"arguments":' + args +
+    ',"server":"issues","tool":"lookup"},"method":"mcp/tool/requestApproval"}}';
+  const summary = nativeMcpSummary030(raw);
+  expect(summary).toMatchObject({ server: 'issues', tool: 'lookup', truncated: true });
+  expect(summary?.preview).toBe(args.slice(0, 4096) + '…');
+  expect(summary?.fullArguments()).toBe(args);
+});
+
 it('assembles exact pages only after verifying continuation, scope, cursor and total', async () => {
   expect((await loadHumanRequests030(scope, async (_s, next) => next ? last : first, () => true))?.requests).toHaveLength(65);
   await expect(loadHumanRequests030(scope, async (_s, next) => next ? {...last, cursor: 'changed'} : first, () => true)).rejects.toThrow('Invalid');
