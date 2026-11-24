@@ -1321,6 +1321,66 @@ Le module `fs` porte :
 - le support du watcher de fichiers
 - la résolution spéciale du workspace metadata
 
+#### Commandes de fichiers génériques et racines autorisées
+
+Depuis le recentrage sur les systèmes agentiques, les commandes génériques
+`fs_copy`, `fs_move` et `fs_create_dir` n'ont plus d'appelant et sont retirées.
+Les pièces jointes (`pilot_files_*`), les exports et imports
+(`architect_export_*`, `architect_import_*`, `db_conversation_import_archives`)
+et l'ouverture d'un dossier depuis Operate (`architect_launch_open_folder`)
+passent par des commandes dédiées, pas par les commandes génériques.
+
+Chaque commande restante agit sous une seule racine, résolue par
+`resolve_workspace_for_path` : le `workspacePath` fourni par l'appelant, sinon
+le workspace courant (`WorkspaceRoot`), ou le worktree de métadonnées `.macro`
+de cette racine quand `workspaceScope` vaut `metadata`, `metadata_existing` ou
+`direct`. Le drapeau historique `allowOutsideWorkspace` n'élargit plus l'accès
+natif : une requête hors de la racine est refusée.
+
+| Commande | Appelants | Racine autorisée |
+| --- | --- | --- |
+| `fs_read_file` | outils de l'assistant Architect/Chat (`workspaceToolExecutor`), références de fichiers du chat, services de plans Architect, checkpoints de code, vue Git (`getFileContent`) | projet de la conversation ou de la tâche, worktree de métadonnées, ou workspace courant |
+| `fs_write_file` | outils de l'assistant, persistance et réplicas des plans Architect, métadonnées de fonctionnalités, restauration de checkpoints | idem |
+| `fs_delete` | outils de l'assistant, persistance des plans, métadonnées de fonctionnalités, checkpoints | idem |
+| `fs_list_dir` | outils `list`/`glob` de l'assistant, lecture des plans, résolution de portée de projet, sonde d'accès du dossier choisi dans le dialogue natif de création de projet (profondeur 0) | idem ; pour la sonde, le dossier choisi lui-même |
+| `fs_stat`, `fs_exists` | outils de l'assistant, artefacts et réplicas de plans, checkpoints | idem |
+| `fs_search_files` | recherche de fichiers pour les mentions (`workspaceFileSearch`) | chaque projet ouvert transmis comme racine |
+
+Les mêmes opérations servent en interne l'exécution des outils de workspace
+(`core::workspace_execution`), les écritures Architect et la lecture de
+l'auditeur d'objectifs, avec la racine du projet concerné.
+
+#### Accès confiné par handles
+
+`fs::confined` ouvre la racine une seule fois puis résout chaque composant du
+chemin relativement à ce handle, sans jamais en sortir ni suivre un lien hors
+de la racine : `openat2(RESOLVE_BENEATH)` sous Linux, parcours `openat` avec
+`O_NOFOLLOW` sous macOS et les anciens noyaux Linux, ouvertures relatives à un
+handle avec contrôle des points d'analyse (reparse points) sous Windows, via
+cap-std. Un lien relatif qui reste dans la racine est suivi ; un lien absolu qui
+revient dans la racine est réouvert sous la racine par son chemin physique. Le
+chemin demandé n'est jamais normalisé lexicalement avant la résolution : dans
+`lien/../nom`, le `..` s'applique à la cible du lien, comme pour le système.
+
+Chaque handle ouvert est ensuite admis avant usage : son chemin physique (lu
+sur le handle via `/proc/self/fd`, `F_GETPATH` ou `GetFinalPathNameByHandleW`)
+doit rester sous la racine et hors du profil privé, et un fichier régulier qui
+possède plusieurs liens physiques ne doit pas partager son identité (device et
+inode, ou volume et index de fichier) avec un fichier du profil privé. Ce
+second contrôle couvre un lien physique placé dans le workspace, qui conserve
+son chemin de workspace. Les identités privées sont relevées à la demande,
+une fois par opération et par volume ; au-delà de 200 000 entrées ou en cas
+d'erreur de parcours, l'objet est refusé.
+
+Les lectures, écritures et suppressions utilisent ensuite les handles admis :
+une écriture lit l'entrée existante sans suivre de lien final, crée son
+temporaire et le publie relativement au handle du dossier parent admis, et
+crée les parents manquants un par un dans des handles déjà admis. Une
+suppression récursive déplace d'abord l'entrée dans son parent admis et
+vérifie son identité avant de la supprimer. La copie générique n'existe plus :
+copier revient à lire la source puis écrire la destination, et chacune est
+contrôlée.
+
 ### 9.5 `git`
 
 Le module `git` porte :
@@ -1736,11 +1796,11 @@ Les patchs multi-fichiers vérifient toutes les préconditions avant la premièr
 
 L'historique durable des checkpoints conserve une frontière de compaction `oldestCompleteSequence`. Un replay qui élague des checkpoints sérialise toujours le document versionné complet et ne peut donc pas remettre cette frontière à `null`. Les fichiers sont indexés pendant la préparation du replay par l'identité composite projet, scope, workspace et chemin réel ; deux montages qui utilisent le même chemin relatif restent des cibles distinctes.
 
-Dans un processus Macro, chaque mutation acquiert un verrou associé à la cible canonique avant de valider la révision et le conserve jusqu'à la fin de l'écriture, de la suppression ou du rollback. Les lots multi-fichiers trient et dédupliquent leurs verrous avant acquisition afin d'éviter les interblocages. Les écritures et suppressions natives confinées ouvrent la racine du workspace comme une capacité : lecture de révision, création du temporaire et renommage restent relatifs au même handle, de sorte qu'un parent remplacé simultanément par un symlink ne peut pas rediriger l'effet hors du workspace. Les checkpoints refusent aussi les lots de plus de 64 fichiers ou dont les contenus avant/après dépassent 64 Mio. Lorsqu'un agent omet la révision pour `edit`, `delete` ou une mise à jour/suppression par patch, le fallback frontend réutilise automatiquement la révision observée pendant la préparation afin de conserver la protection optimiste. Le headless lie chaque mutation à un `execution_id` et à l'empreinte exacte de sa requête. Il synchronise un enregistrement `pending` avant de détacher l'effet du cycle HTTP, puis écrit et synchronise un enregistrement `completed` avant de publier le résultat. Le client persiste l'identifiant dans le stockage du webview sous l'identité de l'invocation logique avant l'envoi, borne chaque attente et consulte `/tools/executions/{execution_id}` après une perte de transport ; un second envoi de la même invocation réutilise exactement le même identifiant et le même corps, tandis que deux invocations distinctes au contenu identique restent séparées. Un `pending` retrouvé après redémarrage n'est jamais rejoué : le serveur renvoie un état indéterminé jusqu'à résolution explicite. Le journal réserve au plus quatre résultats simultanés de 80 Mio, reste sous 512 Mio et n'évince que des résultats terminés. Si la persistance du checkpoint côté client échoue, Macro restaure chaque cible en ordre inverse avec la révision après mutation comme garde. La relecture nécessaire aux checkpoints passe par la route authentifiée `/tools/checkpoint-snapshot`, mais la restauration de code lors du replay d'un ancien message reste désactivée hors Tauri tant que son marqueur de reprise n'est pas transportable.
+Dans un processus Macro, chaque mutation acquiert un verrou associé à la cible canonique avant de valider la révision et le conserve jusqu'à la fin de l'écriture, de la suppression ou du rollback. Les lots multi-fichiers trient et dédupliquent leurs verrous avant acquisition afin d'éviter les interblocages. Les écritures et suppressions natives confinées ouvrent la racine du workspace comme une capacité puis admettent le dossier parent : lecture de révision, création du temporaire et renommage restent relatifs à ce handle admis, de sorte qu'un parent remplacé simultanément par un symlink ne peut pas rediriger l'effet hors du dossier contrôlé. Les checkpoints refusent aussi les lots de plus de 64 fichiers ou dont les contenus avant/après dépassent 64 Mio. Lorsqu'un agent omet la révision pour `edit`, `delete` ou une mise à jour/suppression par patch, le fallback frontend réutilise automatiquement la révision observée pendant la préparation afin de conserver la protection optimiste. Le headless lie chaque mutation à un `execution_id` et à l'empreinte exacte de sa requête. Il synchronise un enregistrement `pending` avant de détacher l'effet du cycle HTTP, puis écrit et synchronise un enregistrement `completed` avant de publier le résultat. Le client persiste l'identifiant dans le stockage du webview sous l'identité de l'invocation logique avant l'envoi, borne chaque attente et consulte `/tools/executions/{execution_id}` après une perte de transport ; un second envoi de la même invocation réutilise exactement le même identifiant et le même corps, tandis que deux invocations distinctes au contenu identique restent séparées. Un `pending` retrouvé après redémarrage n'est jamais rejoué : le serveur renvoie un état indéterminé jusqu'à résolution explicite. Le journal réserve au plus quatre résultats simultanés de 80 Mio, reste sous 512 Mio et n'évince que des résultats terminés. Si la persistance du checkpoint côté client échoue, Macro restaure chaque cible en ordre inverse avec la révision après mutation comme garde. La relecture nécessaire aux checkpoints passe par la route authentifiée `/tools/checkpoint-snapshot`, mais la restauration de code lors du replay d'un ancien message reste désactivée hors Tauri tant que son marqueur de reprise n'est pas transportable.
 
 Les remplacements atomiques conservent les bits de permission Unix de la cible. Un nouveau fichier commençant par un shebang reçoit les bits exécutables, conformément au comportement de l'outil `write` d'Oh My Pi. Les checkpoints enregistrent également le mode Unix et le réappliquent lors d'un replay ou d'une compensation ; une restauration ne doit donc pas transformer silencieusement un script exécutable en fichier ordinaire. Sous WSL, cette garantie est appliquée au fichier temporaire avant la dernière validation de révision et le renommage.
 
-Les chemins d'une racine virtuelle multi-projets sont toujours relatifs à un montage : les chemins absolus, préfixes de lecteur et composants parents `..` sont rejetés avant la sélection du projet. L'accès natif revalide ensuite la cible canonique avec `allow_outside_workspace=false`. Sous WSL, une vérification `realpath` du workspace et de la cible empêche aussi un lien symbolique interne de rediriger une lecture ou une mutation hors du projet.
+Les chemins d'une racine virtuelle multi-projets sont toujours relatifs à un montage : les chemins absolus, préfixes de lecteur et composants parents `..` sont rejetés avant la sélection du projet. L'accès natif résout ensuite la cible sous le handle de la racine du projet (voir 9.4). Sous WSL, une vérification `realpath` du workspace et de la cible empêche aussi un lien symbolique interne de rediriger une lecture ou une mutation hors du projet.
 
 L'état d'une mutation headless est interrogeable par `execution_id` via
 `/tools/executions/{execution_id}` dans ce protocole. Cette capacité existe
