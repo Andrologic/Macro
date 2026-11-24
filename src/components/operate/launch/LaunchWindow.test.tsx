@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
 import { act } from "react";
-import { ARCHIVE_RUN_PROJECT, type LaunchPreview, type LaunchRequest } from "../../../services/ipc/architectLaunch";
+import { ARCHIVE_RUN_PROJECT, type LaunchConfiguration, type LaunchPreview, type LaunchRequest } from "../../../services/ipc/architectLaunch";
 import { workflowRunTargetSnapshot030 } from "../../../services/workflowAgentTasks";
 import { useAppStore } from "../../../stores/useAppStore";
 import { useArchitectLaunchStore } from "../../../stores/useArchitectLaunchStore";
@@ -23,7 +23,7 @@ function preview(patch: Partial<LaunchPreview> = {}): LaunchPreview {
     version: archive, note: "Added the reviewer", startMessageRequired: false, startMessageHint: null,
     workingFolderMode: "perExecution", configuration: { workingFolder: null }, folderReuseToken: null,
     blockers: [], secrets: [], availableModels: [], consentToken: null,
-    agentMcp: {}, remoteMcp: {},
+    agentMcp: {}, remoteMcp: {}, remoteMcpSetup: {},
     permissions: {
       title: null, authoredId: "system", contract: "agsdl-0.4.0", packageFormat: "agsdl-archive-1", projectFormat: "agsdl-project-1",
       stagedSha256: "digest", historyWillBeRemoved: false, entryPoint: "entry", agents: {}, directCalls: [], mcpServers: {},
@@ -306,6 +306,38 @@ it("shows the endpoint, credential delivery and tool decisions before consent", 
   expect(started()[0].consentToken).toBe("review");
 });
 
+it("requires explicit delivery choices and sends the selected header to launch", async () => {
+  const suggestions = { ISSUES_TOKEN: { type: "bearer" }, CLIENT_TOKEN: { type: "header", name: "X-Client-Token" } } as const;
+  install(args => {
+    const configuration = (args.configuration as LaunchConfiguration | null) ?? { workingFolder: null };
+    const delivery = configuration.remoteMcp?.issues[remoteEndpoint]?.delivery;
+    const complete = !!delivery?.ISSUES_TOKEN && !!delivery.CLIENT_TOKEN;
+    return preview({
+      configuration,
+      permissions: remotePermissions,
+      consentToken: complete ? "explicit-delivery" : null,
+      blockers: complete ? [] : [{ code: "mcpSecretDeliveryRequired", subject: "issues" }],
+      remoteMcpSetup: { issues: { url: remoteEndpoint, suggestions } },
+      remoteMcp: complete ? { issues: { url: remoteEndpoint, delivery: { ISSUES_TOKEN: "Authorization: Bearer", CLIENT_TOKEN: "x-team-key" } } } : {},
+    });
+  });
+  await show();
+  expect(primary().disabled).toBeTrue();
+  await act(async () => dialog().querySelectorAll("fieldset form")[0].dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  await flush();
+  expect(primary().disabled).toBeTrue();
+  await fillField(dialog().querySelector('input[aria-label="HTTP header for CLIENT_TOKEN"]')!, "X-Team-Key");
+  await act(async () => dialog().querySelectorAll("fieldset form")[1].dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  await flush();
+  expect(primary().disabled).toBeFalse();
+  await click(primary());
+  expect(dialog().textContent).toContain("Send CLIENT_TOKEN in x-team-key");
+  await click(primary());
+  expect(started()[0].configuration.remoteMcp?.issues[remoteEndpoint].delivery).toEqual({
+    ISSUES_TOKEN: { type: "bearer" }, CLIENT_TOKEN: { type: "header", name: "X-Team-Key" },
+  });
+});
+
 it("keeps the credential entry and consent separate for a new endpoint", async () => {
   let stored = false;
   install(args => {
@@ -319,7 +351,7 @@ it("keeps the credential entry and consent separate for a new endpoint", async (
     });
   }, (command, args) => {
     expect(command).toBe("architect_launch_set_secret");
-    expect(args).toEqual({ version: archive, server: "issues", name: "ISSUES_TOKEN", value: "synthetic-secret" });
+    expect(args).toEqual({ version: archive, server: "issues", name: "ISSUES_TOKEN", value: "synthetic-secret", configuration: { workingFolder: null } });
     stored = true;
   });
   await show();

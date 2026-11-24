@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { architectLaunch, type LaunchModelOverrides, type LaunchPreview, type LaunchSecret } from "../../../services/ipc/architectLaunch";
+import { architectLaunch, type LaunchConfiguration, type LaunchModelOverrides, type LaunchPreview, type LaunchSecret } from "../../../services/ipc/architectLaunch";
 import type { VersionKey } from "../../../services/ipc/architectLibrary";
 import { DisclosureSummary } from "../../agsdl/DisclosureSummary";
 import { useAgsdlTranslation } from "../../agsdl/useAgsdlTranslation";
@@ -22,9 +22,11 @@ export function pendingCount(preview: LaunchPreview, folderConfirmed: boolean): 
  * One secret, asked in place. The value never comes back to the screen: a stored secret
  * shows only that it exists, and can be replaced.
  */
-export function SecretRow({ version, secret, onSaved }: {
+export function SecretRow({ version, secret, configuration, disabled, onSaved }: {
   version: VersionKey;
   secret: LaunchSecret;
+  configuration: LaunchConfiguration;
+  disabled?: boolean;
   onSaved: (secret: LaunchSecret) => void;
 }) {
   const { t } = useAgsdlTranslation();
@@ -33,11 +35,11 @@ export function SecretRow({ version, secret, onSaved }: {
   const [failed, setFailed] = useState(false);
   const save = async (event?: FormEvent) => {
     event?.preventDefault();
-    if (pending || !value) return;
+    if (disabled || pending || !value) return;
     setPending(true);
     setFailed(false);
     try {
-      await architectLaunch.setSecret(version, secret.server, secret.name, value);
+      await architectLaunch.setSecret(version, secret.server, secret.name, value, configuration);
       setValue("");
       onSaved(secret);
     } catch {
@@ -53,9 +55,9 @@ export function SecretRow({ version, secret, onSaved }: {
     </p>
     <div className="flex items-center gap-2 pl-5">
       <Input type="password" autoComplete="off" spellCheck={false} className="!h-7 min-w-0 flex-1 text-xs" value={value}
-        aria-label={t("agsdl.launch.secretValue", { name: secret.name })}
+        disabled={disabled || pending} aria-label={t("agsdl.launch.secretValue", { name: secret.name })}
         placeholder={secret.stored ? t("agsdl.launch.secretStored") : undefined} onChange={event => setValue(event.target.value)} />
-      <Button type="submit" size="sm" variant="secondary" className={compact} disabled={pending || !value}>
+      <Button type="submit" size="sm" variant="secondary" className={compact} disabled={disabled || pending || !value}>
         {pending && <SpinnerIcon size={12} />}{t(secret.stored ? "agsdl.launch.replaceSecret" : "agsdl.launch.saveSecret")}
       </Button>
     </div>
@@ -146,9 +148,13 @@ export function LaunchChecklist({ preview, overrides, folderConfirmed, disabled,
           {t("agsdl.launch.confirmFolderReuse")}
         </label>
       </li>}
-      {missing.map(secret => <li key={JSON.stringify([preview.version, secret.server, secret.name])}>
-        <SecretRow version={preview.version} secret={secret} onSaved={onSecretSaved} />
-      </li>)}
+      {missing.map(secret => {
+        const remote = Object.hasOwn(preview.remoteMcp, secret.server) ? preview.remoteMcp[secret.server] : undefined;
+        return <li key={JSON.stringify([preview.version, secret.server, secret.name, remote])}>
+          <SecretRow version={preview.version} secret={secret} configuration={preview.configuration}
+            disabled={disabled || checking} onSaved={onSecretSaved} />
+        </li>;
+      })}
     </ul>
     {recheckable && <div className="flex items-center gap-2">
       <Button size="sm" variant="ghost" className={compact} disabled={disabled || checking} onClick={onRecheck}>

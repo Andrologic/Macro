@@ -46,6 +46,12 @@
     "mcp": {
       "title": "MCP 도구",
       "remoteHint": "이 서버는 자체 권한으로 동작하며 흐름이나 에이전트가 보낸 데이터를 받을 수 있습니다.",
+      "configureDelivery": "{{server}}의 자격 증명 전송 방식",
+      "bearer": "Bearer 토큰",
+      "header": "이름을 지정한 HTTP 헤더",
+      "headerName": "{{name}}의 HTTP 헤더",
+      "applyDelivery": "전송 방식 적용",
+      "configureInLaunch": "실행 창에서 자격 증명 전송 방식을 선택하세요.",
       "delivery": "{{name}}을(를) {{header}}에 담아 전송합니다",
       "files": "포함된 파일 · {{names}}",
       "environment": "환경 변수 · {{names}}",
@@ -62,7 +68,9 @@
       }
     },
     "blocker": {
-      "mcpSecretHeader": "“{{subject}}”에 선언된 비밀 값을 각각의 MCP HTTP 헤더로 보낼 수 없습니다.",
+      "mcpSecretDeliveryRequired": "“{{subject}}”의 각 자격 증명에 대한 전송 방식을 선택하세요.",
+      "mcpSecretHeader": "“{{subject}}”의 HTTP 헤더 이름이 유효하지 않거나 예약되어 있습니다.",
+      "mcpSecretHeaderConflict": "“{{subject}}”의 자격 증명마다 다른 HTTP 헤더를 선택하세요. Bearer는 Authorization을 사용합니다.",
       "mcpEndpointUnsupported": "“{{subject}}”의 주소는 HTTPS 또는 루프백 HTTP를 사용해야 하며 사용자 이름, 비밀번호, 프래그먼트를 포함할 수 없습니다.",
       "mcpRemoteUnsupported": "이 버전의 Macro는 AgSDL 실행에서 원격 도구 서버 “{{subject}}”를 사용할 수 없습니다.",
       "mcpRemoteDeclaredSecrets": "선언된 인증 정보는 {{names}}입니다.",

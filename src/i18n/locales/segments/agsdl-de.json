@@ -46,6 +46,12 @@
     "mcp": {
       "title": "MCP-Werkzeuge",
       "remoteHint": "Dieser Server nutzt seine eigenen Berechtigungen und kann Daten vom Ablauf oder von einem Agenten empfangen.",
+      "configureDelivery": "Übermittlung der Zugangsdaten für {{server}}",
+      "bearer": "Bearer-Token",
+      "header": "Benannter HTTP-Header",
+      "headerName": "HTTP-Header für {{name}}",
+      "applyDelivery": "Übermittlung übernehmen",
+      "configureInLaunch": "Wählen Sie im Startfenster, wie die Zugangsdaten gesendet werden.",
       "delivery": "{{name}} in {{header}} senden",
       "files": "Mitgelieferte Dateien · {{names}}",
       "environment": "Umgebungsvariablen · {{names}}",
@@ -62,7 +68,9 @@
       }
     },
     "blocker": {
-      "mcpSecretHeader": "Die für „{{subject}}“ deklarierten Geheimnisse können nicht in getrennten MCP-HTTP-Headern gesendet werden.",
+      "mcpSecretDeliveryRequired": "Wählen Sie, wie jeder Zugangsschlüssel für „{{subject}}“ gesendet wird.",
+      "mcpSecretHeader": "Ein HTTP-Header für „{{subject}}“ hat einen ungültigen oder reservierten Namen.",
+      "mcpSecretHeaderConflict": "Wählen Sie für jeden Zugangsschlüssel für „{{subject}}“ einen anderen HTTP-Header. Bearer verwendet Authorization.",
       "mcpEndpointUnsupported": "Der Endpunkt für „{{subject}}“ erfordert HTTPS oder Loopback-HTTP ohne Benutzername, Passwort oder Fragment.",
       "mcpRemoteUnsupported": "Diese Macro-Version kann den entfernten Werkzeugserver „{{subject}}“ in einer AgSDL-Ausführung nicht verwenden.",
       "mcpRemoteDeclaredSecrets": "Angegebene Zugangsdaten: {{names}}.",

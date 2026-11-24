@@ -6,6 +6,13 @@ export const ARCHIVE_RUN_PROJECT = "macro:architect-archive";
 
 export interface LaunchConfiguration {
   workingFolder: string | null;
+  remoteMcp?: Record<string, Record<string, RemoteMcpSettings>>;
+}
+
+export type McpSecretDelivery = { type: "bearer" } | { type: "header"; name: string };
+
+export interface RemoteMcpSettings {
+  delivery: Record<string, McpSecretDelivery>;
 }
 
 export type LaunchModelOverrides = Readonly<Record<string, { name: string; effort?: string }>>;
@@ -43,6 +50,7 @@ export interface LaunchPreview {
   secrets: LaunchSecret[];
   agentMcp: Record<string, Record<string, AgentMcpAccess>>;
   remoteMcp: Record<string, { url: string; delivery: Record<string, string> }>;
+  remoteMcpSetup: Record<string, { url: string; suggestions: Record<string, McpSecretDelivery> }>;
 }
 
 export interface LaunchRequest {
@@ -74,8 +82,8 @@ export const architectLaunch = {
       version, configuration: configuration ?? null, modelOverrides: modelOverrides ?? null,
     }),
   start: (request: LaunchRequest) => invoke<LaunchReceipt>("architect_launch_start", { request }),
-  setSecret: (version: VersionKey, server: string, name: string, value: string) =>
-    invoke<void>("architect_launch_set_secret", { version, server, name, value }),
+  setSecret: (version: VersionKey, server: string, name: string, value: string, configuration: LaunchConfiguration) =>
+    invoke<void>("architect_launch_set_secret", { version, server, name, value, configuration }),
   runRecords: () => invoke<ArchiveRunRecord[]>("architect_launch_run_systems"),
   openFolder: (systemStartId: string) => invoke<void>("architect_launch_open_folder", { systemStartId }),
 };

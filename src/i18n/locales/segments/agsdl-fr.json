@@ -46,6 +46,12 @@
     "mcp": {
       "title": "Outils MCP",
       "remoteHint": "Ce serveur utilise ses propres permissions et peut recevoir les données envoyées par le flux ou par un agent.",
+      "configureDelivery": "Envoi des secrets pour {{server}}",
+      "bearer": "Jeton Bearer",
+      "header": "En-tête HTTP nommé",
+      "headerName": "En-tête HTTP pour {{name}}",
+      "applyDelivery": "Appliquer le mode d’envoi",
+      "configureInLaunch": "Choisissez le mode d’envoi des secrets dans la fenêtre de lancement.",
       "delivery": "Envoyer {{name}} dans {{header}}",
       "files": "Fichiers livrés · {{names}}",
       "environment": "Variables d’environnement · {{names}}",
@@ -62,7 +68,9 @@
       }
     },
     "blocker": {
-      "mcpSecretHeader": "Les secrets déclarés pour « {{subject}} » ne peuvent pas être envoyés dans des en-têtes HTTP MCP distincts.",
+      "mcpSecretDeliveryRequired": "Choisissez comment envoyer chaque secret pour « {{subject}} ».",
+      "mcpSecretHeader": "Un en-tête HTTP pour « {{subject}} » porte un nom invalide ou réservé.",
+      "mcpSecretHeaderConflict": "Choisissez un en-tête HTTP différent pour chaque secret de « {{subject}} ». Bearer utilise Authorization.",
       "mcpEndpointUnsupported": "L’adresse de « {{subject}} » doit utiliser HTTPS ou HTTP sur l’interface de bouclage, sans identifiant, mot de passe ni fragment.",
       "mcpRemoteUnsupported": "Cette version de Macro ne peut pas utiliser le serveur d’outils distant « {{subject}} » dans une exécution AgSDL.",
       "mcpRemoteDeclaredSecrets": "Identifiants déclarés : {{names}}.",

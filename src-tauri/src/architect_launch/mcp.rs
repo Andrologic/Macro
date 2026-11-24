@@ -12,6 +12,7 @@ use url::{Host, Url};
 pub(super) struct LaunchMcp {
     pub secrets: ServerSecrets,
     pub remote: BTreeMap<String, RemoteGrant>,
+    pub remote_setup: BTreeMap<String, RemoteSetup>,
     pub agents: BTreeMap<String, BTreeMap<String, AgentAccess>>,
 }
 
@@ -198,10 +199,80 @@ pub(super) fn agent_access(
 }
 
 impl LaunchMcp {
+    pub(super) fn remote_configuration(&self) -> RemoteConfigurations {
+        self.remote
+            .iter()
+            .map(|(id, grant)| {
+                (
+                    id.clone(),
+                    BTreeMap::from([(
+                        grant.url.clone(),
+                        RemoteSettings {
+                            delivery: grant.delivery.clone(),
+                        },
+                    )]),
+                )
+            })
+            .collect()
+    }
+
     pub fn equips(&self, server: &str) -> bool {
         self.agents
             .values()
             .any(|servers| servers.get(server).is_some_and(|access| access.equipped))
+    }
+}
+
+pub(crate) type RemoteConfigurations = BTreeMap<String, BTreeMap<String, RemoteSettings>>;
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RemoteSettings {
+    #[serde(default)]
+    pub delivery: BTreeMap<String, SecretDelivery>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) enum SecretDelivery {
+    Bearer,
+    Header { name: String },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RemoteSetup {
+    url: String,
+    suggestions: BTreeMap<String, SecretDelivery>,
+}
+
+impl RemoteSetup {
+    pub(super) fn new(url: &Url, names: &[String]) -> Self {
+        let bearer = names
+            .iter()
+            .find(|name| *name == "TOKEN" || name.ends_with("_TOKEN"));
+        let suggestions = names
+            .iter()
+            .map(|name| {
+                let delivery = if Some(name) == bearer {
+                    SecretDelivery::Bearer
+                } else {
+                    let header = if allowed_header(name).is_some()
+                        && !name.eq_ignore_ascii_case("authorization")
+                    {
+                        name.clone()
+                    } else {
+                        format!("X-Secret-{}", name.replace('_', "-"))
+                    };
+                    SecretDelivery::Header { name: header }
+                };
+                (name.clone(), delivery)
+            })
+            .collect();
+        Self {
+            url: url.as_str().into(),
+            suggestions,
+        }
     }
 }
 
@@ -212,19 +283,19 @@ pub(super) struct RemoteGrant {
     #[serde(skip)]
     parsed_url: Url,
     #[serde(serialize_with = "serialize_delivery")]
-    delivery: BTreeMap<String, McpHttpSecret>,
+    delivery: BTreeMap<String, SecretDelivery>,
 }
 
 fn serialize_delivery<S: serde::Serializer>(
-    delivery: &BTreeMap<String, McpHttpSecret>,
+    delivery: &BTreeMap<String, SecretDelivery>,
     serializer: S,
 ) -> std::result::Result<S::Ok, S::Error> {
     let labels: BTreeMap<_, _> = delivery
         .iter()
         .map(|(name, destination)| {
             let header = match destination {
-                McpHttpSecret::Bearer => "Authorization: Bearer",
-                McpHttpSecret::Header(header) => header,
+                SecretDelivery::Bearer => "Authorization: Bearer",
+                SecretDelivery::Header { name } => name,
             };
             (name, header)
         })
@@ -232,46 +303,60 @@ fn serialize_delivery<S: serde::Serializer>(
     labels.serialize(serializer)
 }
 
+// Match Argentic's Streamable HTTP reserved request headers.
+fn allowed_header(name: &str) -> Option<HeaderName> {
+    let header = HeaderName::from_bytes(name.as_bytes()).ok()?;
+    (!header.as_str().starts_with("mcp-")
+        && !matches!(
+            header.as_str(),
+            "host"
+                | "content-length"
+                | "accept"
+                | "content-type"
+                | "last-event-id"
+                | "connection"
+                | "transfer-encoding"
+                | "upgrade"
+                | "proxy-authorization"
+                | "proxy-connection"
+                | "te"
+                | "trailer"
+                | "expect"
+                | "keep-alive"
+        ))
+    .then_some(header)
+}
+
 impl RemoteGrant {
-    pub(super) fn new(url: &str, names: &[String]) -> Option<Self> {
-        let parsed_url = Url::parse(url).ok()?;
+    pub(super) fn new(
+        parsed_url: Url,
+        names: &[String],
+        settings: &RemoteSettings,
+    ) -> std::result::Result<Self, &'static str> {
         let mut used = BTreeSet::new();
         let mut delivery = BTreeMap::new();
         for name in names {
-            // AgSDL declares names; delivery is a host convention.
-            let (header, destination) = if name == "TOKEN" || name.ends_with("_TOKEN") {
-                (AUTHORIZATION, McpHttpSecret::Bearer)
-            } else {
-                let header = HeaderName::from_bytes(name.as_bytes()).ok()?;
-                (header, McpHttpSecret::Header(name.clone()))
+            let selected = settings
+                .delivery
+                .get(name)
+                .ok_or("mcpSecretDeliveryRequired")?;
+            let header = match selected {
+                SecretDelivery::Bearer => AUTHORIZATION,
+                SecretDelivery::Header { name } => allowed_header(name).ok_or("mcpSecretHeader")?,
             };
-            // Match Argentic's Streamable HTTP reserved request headers.
-            if header.as_str().starts_with("mcp-")
-                || matches!(
-                    header.as_str(),
-                    "host"
-                        | "content-length"
-                        | "accept"
-                        | "content-type"
-                        | "last-event-id"
-                        | "connection"
-                        | "transfer-encoding"
-                        | "upgrade"
-                        | "proxy-authorization"
-                        | "proxy-connection"
-                        | "te"
-                        | "trailer"
-                        | "expect"
-                        | "keep-alive"
-                )
-                || !used.insert(header.as_str().to_owned())
-            {
-                return None;
+            if !used.insert(header.as_str().to_owned()) {
+                return Err("mcpSecretHeaderConflict");
             }
+            let destination = match selected {
+                SecretDelivery::Bearer => SecretDelivery::Bearer,
+                SecretDelivery::Header { .. } => SecretDelivery::Header {
+                    name: header.as_str().into(),
+                },
+            };
             delivery.insert(name.clone(), destination);
         }
-        Some(Self {
-            url: url.into(),
+        Ok(Self {
+            url: parsed_url.as_str().into(),
             parsed_url,
             delivery,
         })
@@ -279,8 +364,8 @@ impl RemoteGrant {
 
     pub(super) fn credential_binding(&self, name: &str) -> Option<(String, &'static str, String)> {
         let (mode, header) = match self.delivery.get(name)? {
-            McpHttpSecret::Bearer => ("bearer", AUTHORIZATION.as_str().to_owned()),
-            McpHttpSecret::Header(header) => ("header", header.to_ascii_lowercase()),
+            SecretDelivery::Bearer => ("bearer", AUTHORIZATION.as_str().to_owned()),
+            SecretDelivery::Header { name } => ("header", name.clone()),
         };
         Some((self.parsed_url.origin().ascii_serialization(), mode, header))
     }
@@ -319,9 +404,19 @@ pub(super) fn authorizer(
             return None;
         }
         let grant = grants.get(server)?;
-        grant
-            .covers(url, addresses, names)
-            .then(|| grant.delivery.clone())
+        grant.covers(url, addresses, names).then(|| {
+            grant
+                .delivery
+                .iter()
+                .map(|(name, delivery)| {
+                    let delivery = match delivery {
+                        SecretDelivery::Bearer => McpHttpSecret::Bearer,
+                        SecretDelivery::Header { name } => McpHttpSecret::Header(name.clone()),
+                    };
+                    (name.clone(), delivery)
+                })
+                .collect()
+        })
     })
 }
 

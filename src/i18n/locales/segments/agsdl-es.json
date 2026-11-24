@@ -46,6 +46,12 @@
     "mcp": {
       "title": "Herramientas MCP",
       "remoteHint": "Este servidor usa sus propios permisos y puede recibir datos del flujo o de un agente.",
+      "configureDelivery": "Envío de credenciales para {{server}}",
+      "bearer": "Token Bearer",
+      "header": "Encabezado HTTP con nombre",
+      "headerName": "Encabezado HTTP para {{name}}",
+      "applyDelivery": "Aplicar modo de envío",
+      "configureInLaunch": "Elige cómo enviar las credenciales en la ventana de inicio.",
       "delivery": "Enviar {{name}} en {{header}}",
       "files": "Archivos incluidos · {{names}}",
       "environment": "Variables de entorno · {{names}}",
@@ -62,7 +68,9 @@
       }
     },
     "blocker": {
-      "mcpSecretHeader": "Los secretos declarados para «{{subject}}» no se pueden enviar en cabeceras HTTP de MCP distintas.",
+      "mcpSecretDeliveryRequired": "Elige cómo enviar cada credencial para «{{subject}}».",
+      "mcpSecretHeader": "Un encabezado HTTP para «{{subject}}» tiene un nombre no válido o reservado.",
+      "mcpSecretHeaderConflict": "Elige un encabezado HTTP diferente para cada credencial de «{{subject}}». Bearer usa Authorization.",
       "mcpEndpointUnsupported": "La dirección de «{{subject}}» requiere HTTPS o HTTP de bucle local, sin usuario, contraseña ni fragmento.",
       "mcpRemoteUnsupported": "Esta versión de Macro no puede usar el servidor de herramientas remoto «{{subject}}» en una ejecución de AgSDL.",
       "mcpRemoteDeclaredSecrets": "Credenciales declaradas: {{names}}.",

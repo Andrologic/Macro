@@ -748,7 +748,8 @@ async fn mcp_requirements_use_reachable_calls_and_refuse_unqualified_launch() {
         version,
         "used",
         "TEST_TOKEN",
-        "value"
+        "value",
+        None,
     )
     .await
     .is_err());
@@ -983,6 +984,7 @@ async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
             &policy.agsdl_host_permissions,
             data.path(),
             true,
+            &LaunchConfiguration::default(),
         )
         .unwrap();
         assert_eq!(blockers[0].code, "mcpWorkspaceRequired");
@@ -997,6 +999,7 @@ async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
         &policy.agsdl_host_permissions,
         data.path(),
         true,
+        &LaunchConfiguration::default(),
     )
     .unwrap();
     assert!(blockers.is_empty());
@@ -1164,6 +1167,7 @@ async fn admission_rechecks_folder_sharing_after_two_unoccupied_previews() {
         version.clone(),
         Some(LaunchConfiguration {
             working_folder: folder.clone(),
+            ..Default::default()
         }),
     )
     .await;
@@ -1174,6 +1178,7 @@ async fn admission_rechecks_folder_sharing_after_two_unoccupied_previews() {
         version.clone(),
         Some(LaunchConfiguration {
             working_folder: folder,
+            ..Default::default()
         }),
     )
     .await;
@@ -1226,6 +1231,7 @@ async fn admission_rechecks_folder_sharing_after_two_unoccupied_previews() {
             version.clone(),
             Some(LaunchConfiguration {
                 working_folder: Some(backup.clone()),
+                ..Default::default()
             }),
         )
         .await;
@@ -1250,6 +1256,7 @@ async fn admission_rechecks_folder_sharing_after_two_unoccupied_previews() {
             version.clone(),
             Some(LaunchConfiguration {
                 working_folder: Some(alias.clone()),
+                ..Default::default()
             }),
         )
         .await;
@@ -1270,6 +1277,7 @@ async fn admission_rechecks_folder_sharing_after_two_unoccupied_previews() {
             version.clone(),
             Some(LaunchConfiguration {
                 working_folder: Some(other_folder.clone()),
+                ..Default::default()
             }),
         )
         .await;

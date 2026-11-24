@@ -97,6 +97,7 @@ pub(crate) async fn architect_launch_set_secret(
     server: String,
     name: String,
     value: String,
+    configuration: Option<launch::LaunchConfiguration>,
 ) -> repository::Result<()> {
     launch::set_secret(
         &manager,
@@ -106,6 +107,7 @@ pub(crate) async fn architect_launch_set_secret(
         &server,
         &name,
         &value,
+        configuration,
     )
     .await
 }

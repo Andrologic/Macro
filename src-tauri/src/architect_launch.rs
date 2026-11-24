@@ -141,6 +141,8 @@ fn library_error(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct LaunchConfiguration {
     pub working_folder: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub remote_mcp: mcp::RemoteConfigurations,
 }
 
 #[derive(Serialize)]
@@ -160,6 +162,7 @@ pub(crate) struct LaunchPreview {
     secrets: Vec<SecretRequirement>,
     agent_mcp: BTreeMap<String, BTreeMap<String, mcp::AgentAccess>>,
     remote_mcp: BTreeMap<String, mcp::RemoteGrant>,
+    remote_mcp_setup: BTreeMap<String, mcp::RemoteSetup>,
 }
 
 #[derive(Serialize)]
@@ -415,10 +418,12 @@ fn permissions(
         if !direct_mcp(preview, id) && !launch_mcp.equips(id) {
             continue;
         }
-        if let Some(remote) = launch_mcp.remote.get(id) {
-            let digest =
-                Sha256::digest(serde_json::to_vec(&("archive-mcp-http-consent/1", remote))?);
-            permissions.mcp.insert(id.clone(), format!("{digest:x}"));
+        if matches!(server.transport, McpTransport::Remote { .. }) {
+            if let Some(remote) = launch_mcp.remote.get(id) {
+                let digest =
+                    Sha256::digest(serde_json::to_vec(&("archive-mcp-http-consent/2", remote))?);
+                permissions.mcp.insert(id.clone(), format!("{digest:x}"));
+            }
             continue;
         }
         let assets: BTreeMap<_, _> = input
@@ -667,12 +672,15 @@ async fn consent_token(
     Ok(Some(format!("{digest:x}")))
 }
 
-async fn saved_configuration(pool: &SqlitePool, blueprint_id: &str) -> Result<LaunchConfiguration> {
+async fn saved_configuration(
+    db: &mut SqliteConnection,
+    blueprint_id: &str,
+) -> Result<LaunchConfiguration> {
     let json: Option<String> = sqlx::query_scalar(
         "SELECT configuration_json FROM architect_launch_configurations WHERE blueprint_id=?",
     )
     .bind(blueprint_id)
-    .fetch_optional(pool)
+    .fetch_optional(db)
     .await?;
     Ok(json
         .as_deref()
@@ -803,6 +811,7 @@ fn requirements(
     ceiling: &crate::agsdl_permissions::RequestedPermissions,
     root: &Path,
     local_mcp_supported: bool,
+    configuration: &LaunchConfiguration,
 ) -> Result<(Vec<Blocker>, mcp::LaunchMcp)> {
     let mut blockers = Vec::new();
     let mut launch_mcp = mcp::LaunchMcp {
@@ -859,11 +868,29 @@ fn requirements(
                     blockers.push(Blocker::new("mcpWorkspaceRequired", id));
                     continue;
                 }
-                let Some(grant) = mcp::RemoteGrant::new(url, &server.required_secrets) else {
-                    blockers.push(Blocker::new("mcpSecretHeader", id));
+                let Ok(parsed) = url::Url::parse(url) else {
+                    blockers.push(Blocker::new("mcpEndpointUnsupported", id));
                     continue;
                 };
-                launch_mcp.remote.insert(id.clone(), grant);
+                launch_mcp.remote_setup.insert(
+                    id.clone(),
+                    mcp::RemoteSetup::new(&parsed, &server.required_secrets),
+                );
+                let default = mcp::RemoteSettings::default();
+                let settings = configuration
+                    .remote_mcp
+                    .get(id)
+                    .and_then(|endpoints| endpoints.get(parsed.as_str()))
+                    .unwrap_or(&default);
+                match mcp::RemoteGrant::new(parsed, &server.required_secrets, settings) {
+                    Ok(grant) => {
+                        launch_mcp.remote.insert(id.clone(), grant);
+                    }
+                    Err(code) => {
+                        blockers.push(Blocker::new(code, id));
+                        continue;
+                    }
+                }
             }
             McpTransport::Local { .. } => {
                 if let Err(blocker) = qualify_mcp(input, id, server) {
@@ -983,6 +1010,10 @@ pub(crate) async fn prepare(
 ) -> Result<LaunchPreview> {
     let input = VersionInput::read(pool, &Storage::new(app_data), key).await?;
     let permissions_preview = input.preview()?;
+    let mut configuration = match configuration {
+        Some(configuration) => configuration,
+        None => saved_configuration(&mut *pool.acquire().await?, &input.key.blueprint_id).await?,
+    };
     let ceiling = manager
         .lock_agsdl_host_permissions()
         .await
@@ -999,16 +1030,13 @@ pub(crate) async fn prepare(
         ceiling.permissions(),
         app_data,
         LOCAL_MCP_SUPPORTED,
+        &configuration,
     )?;
     let mut summary = permissions(&input, &permissions_preview, &launch_mcp)?;
     record_host_permissions(&mut summary, &policy.agsdl_host_permissions)?;
     record_host_permissions(&mut summary, ceiling.permissions())?;
     drop(policy);
     drop(ceiling);
-    let mut configuration = match configuration {
-        Some(configuration) => configuration,
-        None => saved_configuration(pool, &input.key.blueprint_id).await?,
-    };
     let mut reuse_token = None;
     if input.settings.working_folder_mode == WorkingFolderMode::AtLaunch {
         let folder = configuration
@@ -1070,6 +1098,7 @@ pub(crate) async fn prepare(
         secrets,
         agent_mcp: launch_mcp.agents,
         remote_mcp: launch_mcp.remote,
+        remote_mcp_setup: launch_mcp.remote_setup,
     })
 }
 
@@ -1081,9 +1110,14 @@ pub(crate) async fn set_secret(
     server: &str,
     name: &str,
     value: &str,
+    configuration: Option<LaunchConfiguration>,
 ) -> Result<()> {
     let input = VersionInput::read(pool, &Storage::new(app_data), key).await?;
     let preview = input.preview()?;
+    let configuration = match configuration {
+        Some(configuration) => configuration,
+        None => saved_configuration(&mut *pool.acquire().await?, &input.key.blueprint_id).await?,
+    };
     let ceiling = manager
         .lock_agsdl_host_permissions()
         .await
@@ -1099,6 +1133,7 @@ pub(crate) async fn set_secret(
         ceiling.permissions(),
         app_data,
         LOCAL_MCP_SUPPORTED,
+        &configuration,
     )?;
     if !launch_mcp
         .secrets

@@ -123,16 +123,64 @@ fn loopback_review_project(data: &Path, endpoint: &str, direct: bool) -> tempfil
     project
 }
 
+fn remote_settings() -> mcp::RemoteSettings {
+    mcp::RemoteSettings {
+        delivery: BTreeMap::from([
+            ("ISSUES_TOKEN".into(), mcp::SecretDelivery::Bearer),
+            (
+                "CLIENT_KEY".into(),
+                mcp::SecretDelivery::Header {
+                    name: "Client_Key".into(),
+                },
+            ),
+        ]),
+    }
+}
+
+fn remote_configuration(url: &str) -> LaunchConfiguration {
+    LaunchConfiguration {
+        remote_mcp: BTreeMap::from([(
+            "issues".into(),
+            BTreeMap::from([(
+                url::Url::parse(url).unwrap().as_str().into(),
+                remote_settings(),
+            )]),
+        )]),
+        ..Default::default()
+    }
+}
+
+fn remote_request(
+    version: VersionKey,
+    consent: Option<String>,
+    configuration: LaunchConfiguration,
+) -> start::LaunchRequest {
+    start::LaunchRequest {
+        configuration,
+        ..request(version, consent)
+    }
+}
+
 async fn store_credentials(
     manager: &ConfigManager,
     pool: &SqlitePool,
     data: &Path,
     version: &VersionKey,
+    configuration: &LaunchConfiguration,
 ) {
     for (name, value) in [("ISSUES_TOKEN", TOKEN), ("CLIENT_KEY", CLIENT_KEY)] {
-        set_secret(manager, pool, data, version.clone(), "issues", name, value)
-            .await
-            .unwrap();
+        set_secret(
+            manager,
+            pool,
+            data,
+            version.clone(),
+            "issues",
+            name,
+            value,
+            Some(configuration.clone()),
+        )
+        .await
+        .unwrap();
     }
 }
 
@@ -149,7 +197,21 @@ async fn archive_review_project_remote_headers_consent_and_current_tool_policy()
     set_host_ceiling(&manager, json!("workspace")).await;
     observe_fixture(&manager);
 
-    let prepared = preview(&manager, &pool, data.path(), version.clone(), None).await;
+    let unconfigured = preview(&manager, &pool, data.path(), version.clone(), None).await;
+    assert!(unconfigured
+        .blockers
+        .iter()
+        .any(|b| b.code == "mcpSecretDeliveryRequired"));
+    assert!(unconfigured.secrets.is_empty());
+    let configuration = remote_configuration(&endpoint);
+    let prepared = preview(
+        &manager,
+        &pool,
+        data.path(),
+        version.clone(),
+        Some(configuration.clone()),
+    )
+    .await;
     assert!(
         prepared.blockers.is_empty(),
         "{}",
@@ -168,7 +230,7 @@ async fn archive_review_project_remote_headers_consent_and_current_tool_policy()
     assert_eq!(
         projection["remoteMcp"]["issues"]["delivery"],
         json!({
-            "ISSUES_TOKEN":"Authorization: Bearer", "CLIENT_KEY":"CLIENT_KEY",
+            "ISSUES_TOKEN":"Authorization: Bearer", "CLIENT_KEY":"client_key",
         })
     );
 
@@ -179,7 +241,7 @@ async fn archive_review_project_remote_headers_consent_and_current_tool_policy()
     let launch = |consent| {
         start::launch(
             runtime(&host, &manager, &pool, data.path()),
-            request(version.clone(), consent),
+            remote_request(version.clone(), consent, configuration.clone()),
         )
     };
     assert_eq!(launch(None).await.err().unwrap().code, "CONSENT_REQUIRED");
@@ -195,12 +257,20 @@ async fn archive_review_project_remote_headers_consent_and_current_tool_policy()
         version.clone(),
         "issues",
         "ISSUES_TOKEN",
-        "invalid\nvalue"
+        "invalid\nvalue",
+        Some(configuration.clone()),
     )
     .await
     .is_err());
-    store_credentials(&manager, &pool, data.path(), &version).await;
-    let prepared = preview(&manager, &pool, data.path(), version.clone(), None).await;
+    store_credentials(&manager, &pool, data.path(), &version, &configuration).await;
+    let prepared = preview(
+        &manager,
+        &pool,
+        data.path(),
+        version.clone(),
+        Some(configuration.clone()),
+    )
+    .await;
     assert!(prepared.secrets.iter().all(|secret| secret.stored));
     let receipt = launch(Some(token)).await.unwrap();
     let id = &receipt.capture.identity.system_start_id;
@@ -248,6 +318,38 @@ async fn archive_review_project_remote_headers_consent_and_current_tool_policy()
         .await
         .consent_token
         .is_none());
+
+    let mut different_delivery = configuration.clone();
+    different_delivery
+        .remote_mcp
+        .get_mut("issues")
+        .unwrap()
+        .get_mut(&endpoint)
+        .unwrap()
+        .delivery
+        .insert(
+            "CLIENT_KEY".into(),
+            mcp::SecretDelivery::Header {
+                name: "X-Client-Key".into(),
+            },
+        );
+    let delivery_changed = preview(
+        &manager,
+        &pool,
+        data.path(),
+        version.clone(),
+        Some(different_delivery),
+    )
+    .await;
+    assert!(delivery_changed.consent_token.is_some());
+    assert!(delivery_changed
+        .secrets
+        .iter()
+        .any(|secret| secret.name == "CLIENT_KEY" && !secret.stored));
+    assert!(delivery_changed
+        .secrets
+        .iter()
+        .any(|secret| secret.name == "ISSUES_TOKEN" && secret.stored));
 
     // The broker supplies the same native request after a person's decision.
     // Macro rechecks the actual folder and the current grant before handoff.
@@ -303,7 +405,7 @@ async fn archive_review_project_remote_headers_consent_and_current_tool_policy()
             number: 2,
             ..version
         },
-        None,
+        Some(remote_configuration(&changed_endpoint)),
     )
     .await;
     assert!(changed.consent_token.is_some());
@@ -338,7 +440,11 @@ async fn remote_credential_rotation_is_shared_only_by_origin_and_delivery() {
     let names = vec!["ISSUES_TOKEN".to_owned()];
     let launch = |url| mcp::LaunchMcp {
         secrets: BTreeMap::from([("issues".into(), names.clone())]),
-        remote: BTreeMap::from([("issues".into(), mcp::RemoteGrant::new(url, &names).unwrap())]),
+        remote: BTreeMap::from([(
+            "issues".into(),
+            mcp::RemoteGrant::new(url::Url::parse(url).unwrap(), &names, &remote_settings())
+                .unwrap(),
+        )]),
         ..Default::default()
     };
     let first = launch("https://example.invalid/mcp?tenant=one");
@@ -370,6 +476,53 @@ async fn remote_credential_rotation_is_shared_only_by_origin_and_delivery() {
     );
 }
 
+#[test]
+fn remote_delivery_rejects_missing_reserved_and_duplicate_headers() {
+    use mcp::SecretDelivery::{Bearer, Header};
+    let url = url::Url::parse("https://example.invalid/mcp").unwrap();
+    let names = vec!["FIRST_TOKEN".to_owned(), "SECOND_TOKEN".to_owned()];
+    let mut settings = mcp::RemoteSettings::default();
+    settings.delivery.insert(names[0].clone(), Bearer);
+    assert_eq!(
+        mcp::RemoteGrant::new(url.clone(), &names, &settings).err(),
+        Some("mcpSecretDeliveryRequired")
+    );
+    for (delivery, error) in [
+        (Bearer, "mcpSecretHeaderConflict"),
+        (
+            Header {
+                name: "AUTHORIZATION".into(),
+            },
+            "mcpSecretHeaderConflict",
+        ),
+        (
+            Header {
+                name: "Mcp-Session-Id".into(),
+            },
+            "mcpSecretHeader",
+        ),
+        (
+            Header {
+                name: "invalid header".into(),
+            },
+            "mcpSecretHeader",
+        ),
+    ] {
+        settings.delivery.insert(names[1].clone(), delivery);
+        assert_eq!(
+            mcp::RemoteGrant::new(url.clone(), &names, &settings).err(),
+            Some(error)
+        );
+    }
+    settings.delivery.insert(
+        names[1].clone(),
+        Header {
+            name: "X-Second-Token".into(),
+        },
+    );
+    assert!(mcp::RemoteGrant::new(url, &names, &settings).is_ok());
+}
+
 #[tokio::test]
 async fn endpoint_consent_matches_exact_revision_destination_and_secret_names() {
     let data = tempfile::tempdir().unwrap();
@@ -384,7 +537,7 @@ async fn endpoint_consent_matches_exact_revision_destination_and_secret_names() 
         source.clone(),
         BTreeMap::from([(
             "issues".to_owned(),
-            mcp::RemoteGrant::new(url.as_str(), &names).unwrap(),
+            mcp::RemoteGrant::new(url.clone(), &names, &remote_settings()).unwrap(),
         )]),
     );
     let public = ["1.1.1.1:443".parse().unwrap()];
@@ -425,6 +578,7 @@ async fn equipping_another_agent_requires_new_consent_for_the_same_endpoint() {
             ),
             data.path(),
             LOCAL_MCP_SUPPORTED,
+            &LaunchConfiguration::default(),
         )
         .unwrap();
         assert!(blockers.is_empty());
@@ -490,6 +644,7 @@ async fn invalid_endpoint_blocks_equipment_or_direct_calls_but_not_excluded_equi
             &ceiling,
             data.path(),
             LOCAL_MCP_SUPPORTED,
+            &LaunchConfiguration::default(),
         )
         .unwrap();
         assert_eq!(
@@ -518,9 +673,17 @@ async fn real_codex_asks_before_dispatching_archive_mcp_tool() {
     let (pool, version) = import_archive_fixture(data.path(), project.path()).await;
     let manager = manager_for_test(&root).await;
     set_host_ceiling(&manager, json!("workspace")).await;
-    store_credentials(&manager, &pool, data.path(), &version).await;
+    let configuration = remote_configuration(&peer.endpoint());
+    store_credentials(&manager, &pool, data.path(), &version, &configuration).await;
 
-    let prepared = preview(&manager, &pool, data.path(), version.clone(), None).await;
+    let prepared = preview(
+        &manager,
+        &pool,
+        data.path(),
+        version.clone(),
+        Some(configuration.clone()),
+    )
+    .await;
     assert!(
         prepared.blockers.is_empty(),
         "{}",
@@ -529,7 +692,7 @@ async fn real_codex_asks_before_dispatching_archive_mcp_tool() {
     let host = HostState::new();
     let receipt = start::launch(
         runtime(&host, &manager, &pool, data.path()),
-        request(version, prepared.consent_token),
+        remote_request(version, prepared.consent_token, configuration),
     )
     .await
     .unwrap();

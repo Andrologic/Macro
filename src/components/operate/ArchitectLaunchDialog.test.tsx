@@ -47,7 +47,7 @@ function preview(patch: Partial<LaunchPreview> = {}): LaunchPreview {
     version: archive, note: null, startMessageRequired: false, startMessageHint: null,
     workingFolderMode: "perExecution", configuration: { workingFolder: null }, folderReuseToken: null,
     blockers: [], secrets: [], availableModels: [], consentToken: null,
-    agentMcp: {}, remoteMcp: {},
+    agentMcp: {}, remoteMcp: {}, remoteMcpSetup: {},
     permissions: {
       title: null, authoredId: "system", contract: "agsdl-0.4.0", packageFormat: "agsdl-archive-1",
       projectFormat: "agsdl-project-1", stagedSha256: "digest", historyWillBeRemoved: false, entryPoint: "entry",

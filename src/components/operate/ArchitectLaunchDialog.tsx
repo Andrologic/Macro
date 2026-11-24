@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { openExternalUrl } from "../../services/externalUrlOpener";
-import { architectLaunch, type LaunchConfiguration, type LaunchModelOverrides, type LaunchPreview } from "../../services/ipc/architectLaunch";
+import { architectLaunch, type LaunchConfiguration, type LaunchModelOverrides, type LaunchPreview, type RemoteMcpSettings } from "../../services/ipc/architectLaunch";
 import { architectLibrary, type BlueprintVersionSummary, type VersionKey } from "../../services/ipc/architectLibrary";
 import { open } from "../../services/tauriDialog";
 import { openWorkflowRun030, refreshArchiveRunAccess } from "../../services/workflowAgentTasks";
@@ -17,7 +17,7 @@ import { Textarea } from "../ui/Textarea";
 import { notify } from "../ui/toastService";
 import { LaunchChecklist, ModelRow, SecretRow, pendingCount } from "./launch/LaunchChecklist";
 import { LaunchConsent } from "./launch/LaunchConsent";
-import { LaunchMcpDetails } from "./launch/LaunchMcpDetails";
+import { LaunchMcpDetails, LaunchMcpSettings } from "./launch/LaunchMcpDetails";
 import { LaunchSummary } from "./launch/LaunchSummary";
 import { failureCode, failureText, isFolderFailure, isRecheckFailure, selectClass } from "./launch/launchModel";
 
@@ -61,9 +61,12 @@ export function ArchiveRunSecrets({ version, onClose }: { version: VersionKey; o
     </div>}
     {failed && <p role="alert" className="!m-0 text-red-500">{t("agsdl.launch.failed")}{" "}
       <button type="button" className="agsdl-link" onClick={() => setRevision(current => current + 1)}>{t("agsdl.retry")}</button></p>}
-    {preview && !preview.secrets.length && <p className="!m-0 text-muted-foreground">{t("agsdl.launch.noSecrets")}</p>}
+    {preview && !preview.secrets.length && <p className="!m-0 text-muted-foreground">
+      {t(preview.blockers.some(blocker => blocker.code.startsWith("mcpSecret"))
+        ? "agsdl.launch.mcp.configureInLaunch" : "agsdl.launch.noSecrets")}
+    </p>}
     {preview?.secrets.map(secret => <SecretRow key={JSON.stringify([secret.server, secret.name])}
-      version={version} secret={secret} onSaved={() => setRevision(current => current + 1)} />)}
+      version={version} secret={secret} configuration={preview.configuration} onSaved={() => setRevision(current => current + 1)} />)}
   </ArchitectDialogShell>;
 }
 
@@ -159,10 +162,22 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
       if (!folder) return;
       setChecking(true);
       setConfirmedFolderToken(null);
-      setConfiguration({ workingFolder: folder });
+      setConfiguration(previous => ({ ...(previous ?? current?.configuration), workingFolder: folder }));
     } catch {
       setProblem({ message: t("agsdl.launch.failed"), technical: "", recheck: false });
     }
+  };
+  const setMcpSettings = (server: string, url: string, settings: RemoteMcpSettings) => {
+    if (!current) return;
+    setConsent(false);
+    setChecking(true);
+    setNotice("");
+    setConfiguration(previous => {
+      const base = previous ?? current.configuration;
+      const remoteMcp = base.remoteMcp ?? {};
+      const endpoints = Object.hasOwn(remoteMcp, server) ? remoteMcp[server] : {};
+      return { ...base, remoteMcp: { ...remoteMcp, [server]: { ...endpoints, [url]: settings } } };
+    });
   };
   const override = (agent: string, model: string) => {
     setChecking(true);
@@ -291,6 +306,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
         </div>}
       </LaunchSummary>}
       {version && !current && !problem && <div role="status" className="space-y-2"><Skeleton className="h-8" /></div>}
+      {current && <LaunchMcpSettings preview={current} disabled={busy || checking} onChange={setMcpSettings} />}
       {current && <LaunchChecklist preview={current} overrides={modelOverrides} folderConfirmed={folderConfirmed} disabled={busy} checking={checking}
         onOverride={override} onChooseFolder={() => void chooseFolder()}
         onConfirmFolder={confirmed => setConfirmedFolderToken(confirmed ? current.folderReuseToken : null)}

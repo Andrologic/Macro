@@ -46,6 +46,12 @@
     "mcp": {
       "title": "MCP ツール",
       "remoteHint": "このサーバーは独自の権限で動作し、フローやエージェントが送信するデータを受け取ります。",
+      "configureDelivery": "{{server}} への認証情報の送信方法",
+      "bearer": "Bearer トークン",
+      "header": "名前付き HTTP ヘッダー",
+      "headerName": "{{name}} 用の HTTP ヘッダー",
+      "applyDelivery": "送信方法を適用",
+      "configureInLaunch": "起動ウィンドウで認証情報の送信方法を選択してください。",
       "delivery": "{{name}} は {{header}} で送信します",
       "files": "同梱ファイル · {{names}}",
       "environment": "環境変数 · {{names}}",
@@ -62,7 +68,9 @@
       }
     },
     "blocker": {
-      "mcpSecretHeader": "「{{subject}}」が宣言したシークレットを個別の MCP HTTP ヘッダーで送信できません。",
+      "mcpSecretDeliveryRequired": "「{{subject}}」の認証情報ごとに送信方法を選択してください。",
+      "mcpSecretHeader": "「{{subject}}」の HTTP ヘッダー名が無効、または予約済みです。",
+      "mcpSecretHeaderConflict": "「{{subject}}」の認証情報ごとに異なる HTTP ヘッダーを指定してください。Bearer は Authorization を使用します。",
       "mcpEndpointUnsupported": "「{{subject}}」の接続先には HTTPS またはループバックの HTTP が必要です。ユーザー名、パスワード、フラグメントは使用できません。",
       "mcpRemoteUnsupported": "このバージョンの Macro は、AgSDL の実行でリモートツールサーバー「{{subject}}」を使用できません。",
       "mcpRemoteDeclaredSecrets": "宣言されている認証情報は {{names}} です。",

@@ -1,6 +1,65 @@
-import type { LaunchPreview, McpToolEffect } from "../../../services/ipc/architectLaunch";
+import { useId, useState } from "react";
+import type { LaunchPreview, McpSecretDelivery, McpToolEffect, RemoteMcpSettings } from "../../../services/ipc/architectLaunch";
 import { DisclosureSummary } from "../../agsdl/DisclosureSummary";
 import { useAgsdlTranslation } from "../../agsdl/useAgsdlTranslation";
+
+import { Button } from "../../ui/Button";
+import { Input } from "../../ui/Input";
+import { Select } from "../../ui/Select";
+import { selectClass } from "./launchModel";
+
+function DeliveryRow({ name, suggestion, selected, onApply }: {
+  name: string;
+  suggestion: McpSecretDelivery;
+  selected?: McpSecretDelivery;
+  onApply: (delivery: McpSecretDelivery) => void;
+}) {
+  const { t } = useAgsdlTranslation();
+  const id = useId();
+  const [type, setType] = useState((selected ?? suggestion).type);
+  const [header, setHeader] = useState(selected?.type === "header" ? selected.name : suggestion.type === "header" ? suggestion.name : "");
+  const changed = type !== selected?.type || (type === "header" && selected?.type === "header" && selected.name !== header);
+  return <form className="flex flex-wrap items-end gap-2" onSubmit={event => {
+    event.preventDefault();
+    if (changed) onApply(type === "bearer" ? { type } : { type, name: header });
+  }}>
+    <label className="space-y-1">
+      <span className="block break-words font-mono" id={id}>{name}</span>
+      <Select fullWidth={false} className={selectClass} aria-labelledby={id} value={type}
+        onChange={event => setType(event.target.value === "bearer" ? "bearer" : "header")}>
+        <option value="bearer">{t("agsdl.launch.mcp.bearer")}</option>
+        <option value="header">{t("agsdl.launch.mcp.header")}</option>
+      </Select>
+    </label>
+    {type === "header" && <Input className="!h-7 min-w-24 flex-1 font-mono text-xs" autoComplete="off" spellCheck={false}
+      aria-label={t("agsdl.launch.mcp.headerName", { name })} value={header} required onChange={event => setHeader(event.target.value)} />}
+    <Button type="submit" size="sm" variant="secondary" className="!h-7 !px-3 text-xs" disabled={!changed || (type === "header" && !header)}>
+      {t("agsdl.launch.mcp.applyDelivery")}
+    </Button>
+  </form>;
+}
+
+export function LaunchMcpSettings({ preview, disabled, onChange }: {
+  preview: LaunchPreview;
+  disabled: boolean;
+  onChange: (server: string, url: string, settings: RemoteMcpSettings) => void;
+}) {
+  const { t } = useAgsdlTranslation();
+  return Object.entries(preview.remoteMcpSetup).map(([server, setup]) => {
+    if (!Object.keys(setup.suggestions).length) return null;
+    const configuration = preview.configuration.remoteMcp;
+    const settings = configuration && Object.hasOwn(configuration, server) ? configuration[server][setup.url] : undefined;
+    return <fieldset key={JSON.stringify([server, setup.url])} disabled={disabled} className="space-y-2 rounded-md border border-border px-3 py-2">
+      <legend className="px-1 font-medium">{t("agsdl.launch.mcp.configureDelivery", { server })}</legend>
+      <p className="!m-0 break-all font-mono">{setup.url}</p>
+      {Object.entries(setup.suggestions).map(([name, suggestion]) => {
+        const selected = settings && Object.hasOwn(settings.delivery, name) ? settings.delivery[name] : undefined;
+        return <DeliveryRow key={JSON.stringify([name, selected])} name={name} suggestion={suggestion} selected={selected}
+          onApply={delivery => onChange(server, setup.url, { delivery: { ...settings?.delivery, [name]: delivery } })} />;
+      })}
+    </fieldset>;
+  });
+}
 
 export function LaunchMcpDetails({ preview, expanded = false }: { preview: LaunchPreview; expanded?: boolean }) {
   const { t } = useAgsdlTranslation();
