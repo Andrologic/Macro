@@ -357,6 +357,49 @@ async fn endpoint_consent_matches_exact_revision_destination_and_secret_names() 
 }
 
 #[tokio::test]
+async fn equipping_another_agent_requires_new_consent_for_the_same_endpoint() {
+    let data = tempfile::tempdir().unwrap();
+    let mut doc = manifest();
+    doc["agents"]["worker"]["permissions"] = json!("workspace");
+    doc["agents"]["worker"]["mcpServers"] = json!(["issues"]);
+    doc["agents"]["reviewer"] = json!({"harness":"codex","permissions":"workspace"});
+    doc["mcpServers"] = json!({"issues":{"url":"https://example.invalid/issues"}});
+    doc["flow"]["steps"]["run"]["next"] = json!("review");
+    doc["flow"]["steps"]["review"] = json!({"type":"agent","agent":"reviewer"});
+    let (pool, version) = archive_fixture(data.path(), doc).await;
+    let input = VersionInput::read(&pool, &Storage::new(data.path()), version)
+        .await
+        .unwrap();
+    let mut preview = input.preview().unwrap();
+    let summary = |preview: &ImportPreview| {
+        let (blockers, mcp) = requirements(
+            &input,
+            preview,
+            &json!({"agsdlHostPermissions":"workspace"}),
+            &crate::agsdl_permissions::RequestedPermissions::Preset(
+                crate::agsdl_permissions::Preset::Workspace,
+            ),
+            data.path(),
+            LOCAL_MCP_SUPPORTED,
+        )
+        .unwrap();
+        assert!(blockers.is_empty());
+        permissions(&input, preview, &mcp).unwrap()
+    };
+    let first = summary(&preview);
+    preview
+        .agents
+        .get_mut("reviewer")
+        .unwrap()
+        .mcp_servers
+        .push("issues".into());
+    let expanded = summary(&preview);
+    assert_eq!(first.mcp, expanded.mcp);
+    assert!(expanded.covers(&first));
+    assert!(!first.covers(&expanded));
+}
+
+#[tokio::test]
 async fn archive_equipment_denies_every_tool_before_discovery() {
     let data = tempfile::tempdir().unwrap();
     let project = loopback_review_project(data.path(), "https://example.invalid/issues", false);

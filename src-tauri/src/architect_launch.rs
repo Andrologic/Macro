@@ -362,6 +362,17 @@ fn permissions(
             permissions.capabilities.insert(format!("{id}:{action}"));
         }
     }
+    for (agent, servers) in &launch_mcp.agents {
+        for (server, access) in servers {
+            if access.equipped {
+                permissions.capabilities.insert(serde_json::to_string(&(
+                    "agent-mcp",
+                    agent,
+                    server,
+                ))?);
+            }
+        }
+    }
     for call in &preview.direct_calls {
         if call.usage == Usage::Reachable {
             match &call.target {
