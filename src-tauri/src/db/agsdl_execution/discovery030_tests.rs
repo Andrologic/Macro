@@ -8,7 +8,7 @@ use super::super::{
     SqlitePool,
 };
 use super::*;
-use crate::db::create_pool;
+use crate::db::{create_pool, operate_inbox};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
@@ -740,7 +740,7 @@ async fn operate_list_stays_available_when_a_paused_run_defers_delivery() {
         },
     );
     persist_state(&pool, "system-paused", &state).await;
-    let list = || crate::db::operate_inbox::list_runs(&pool, request(scope.clone(), None, 20));
+    let list = || operate_inbox::list_runs(&pool, request(scope.clone(), None, 20));
     let page = list().await.unwrap();
     assert_eq!(page.runs.len(), 2);
     let paused = &page
