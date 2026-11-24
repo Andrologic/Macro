@@ -921,6 +921,18 @@ fn unavailable_name(error: &io::Error, path: &Path) -> bool {
     invalid_name(error) && fs::symlink_metadata(path).is_err_and(|error| invalid_name(&error))
 }
 
+#[cfg(test)]
+#[test]
+fn already_exists_requires_an_existing_entry_to_be_an_alias() {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("result.sh");
+    let error = io::Error::from(io::ErrorKind::AlreadyExists);
+
+    assert!(!unavailable_name(&error, &path));
+    fs::write(&path, b"existing member").unwrap();
+    assert!(unavailable_name(&error, &path));
+}
+
 fn invalid_name(error: &io::Error) -> bool {
     #[cfg(unix)]
     return matches!(

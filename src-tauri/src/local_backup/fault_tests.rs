@@ -1183,7 +1183,7 @@ async fn profile_fault_assertions_detect_deliberate_mutations() {
         ("skip-member-checksum", "local_backup::qualification::damaged_preservation_blocks_recovery_and_retains_journal_for_retry"),
         ("classify-disk-full-as-permanent", "local_backup::fault_tests::disk_full_during_migration_keeps_rows_retryable"),
         ("skip-restore-space-check", "local_backup::fault_tests::restore_space_check_counts_preservation_and_both_volumes"),
-        ("treat-eexist-as-alias", "local_backup::fault_tests::false_working_name_collision_rolls_back"),
+        ("treat-eexist-as-alias", "local_backup::launch::already_exists_requires_an_existing_entry_to_be_an_alias"),
         #[cfg(unix)]
         ("reject-symlinked-profile-root", "local_backup::fault_tests::relocated_profile_opens_and_exports_through_symlinks"),
         #[cfg(unix)]
