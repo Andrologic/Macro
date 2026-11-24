@@ -3522,7 +3522,6 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
-    #[cfg(windows)]
     #[test]
     fn workspace_root_identity_rejects_a_replaced_directory() {
         let root = setup_empty_workspace();
@@ -3534,10 +3533,14 @@ mod tests {
         fs::rename(&workspace, &original).expect("move original workspace");
         fs::create_dir(&workspace).expect("replace workspace");
 
-        let error =
-            open_workspace_capability(&workspace, &workspace.join("target.txt"), Some(expected))
-                .err()
-                .expect("replaced workspace must be rejected");
+        let error = open_capability_target(
+            &workspace,
+            "target.txt",
+            workspace.join("target.txt"),
+            Some(expected),
+        )
+        .err()
+        .expect("replaced workspace must be rejected");
         assert!(error
             .to_string()
             .contains("changed after server validation"));
