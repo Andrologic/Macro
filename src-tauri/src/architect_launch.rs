@@ -165,6 +165,8 @@ pub(crate) struct LaunchPreview {
     agent_mcp: BTreeMap<String, BTreeMap<String, mcp::AgentAccess>>,
     remote_mcp: BTreeMap<String, mcp::RemoteGrant>,
     remote_mcp_setup: BTreeMap<String, mcp::RemoteSetup>,
+    mcp_direct_tools: BTreeMap<String, BTreeSet<String>>,
+    mcp_notes: Vec<mcp::UnusedServer>,
 }
 
 #[derive(Serialize)]
@@ -401,23 +403,25 @@ fn permissions(
         }
     }
     for call in &preview.direct_calls {
-        if call.usage == Usage::Reachable {
-            match &call.target {
-                CallTarget::Shell { command } => {
-                    permissions
-                        .capabilities
-                        .insert(serde_json::to_string(&("shell", command))?);
-                }
-                CallTarget::Mcp { server, tool } => {
-                    permissions
-                        .capabilities
-                        .insert(serde_json::to_string(&("mcp", server, tool))?);
-                }
-            }
+        if let (Usage::Reachable, CallTarget::Shell { command }) = (call.usage, &call.target) {
+            permissions
+                .capabilities
+                .insert(serde_json::to_string(&("shell", command))?);
+        }
+    }
+    for (server, tools) in &launch_mcp.direct_tools {
+        for tool in tools {
+            permissions
+                .capabilities
+                .insert(serde_json::to_string(&("mcp", server, tool))?);
         }
     }
     for (id, server) in &preview.mcp_servers {
-        if !direct_mcp(preview, id) && !launch_mcp.equips(id) {
+        if !launch_mcp
+            .qualification
+            .get(id)
+            .is_some_and(|entry| entry.is_used())
+        {
             continue;
         }
         if matches!(server.transport, McpTransport::Remote { .. }) {
@@ -582,13 +586,6 @@ struct SecretRequirement {
     name: String,
     stored: bool,
     legacy_reset_required: bool,
-}
-
-fn direct_mcp(preview: &ImportPreview, id: &str) -> bool {
-    preview.direct_calls.iter().any(|call| {
-        call.usage == Usage::Reachable
-            && matches!(&call.target, CallTarget::Mcp { server, .. } if server == id)
-    })
 }
 
 type ServerSecrets = BTreeMap<String, Vec<String>>;
@@ -795,32 +792,14 @@ fn requirements(
     local_mcp_supported: bool,
     configuration: &LaunchConfiguration,
 ) -> Result<(Vec<Blocker>, mcp::LaunchMcp)> {
+    let document = serde_json::from_str(input.archive.source().authored_json())?;
+    let report = argentic_runtime::api::qualify_product(&document, None, Some(ceiling))?;
     let mut blockers = Vec::new();
     let mut launch_mcp = mcp::LaunchMcp {
-        agents: mcp::agent_access(input, preview, ceiling, root)?,
+        agents: mcp::agent_access(&document, preview, ceiling, root, &report.mcp_servers)?,
+        qualification: report.mcp_servers,
         ..Default::default()
     };
-    // Argentic checks the whole document when dispatching a direct call.
-    let qualification = preview
-        .direct_calls
-        .iter()
-        .any(|call| call.usage == Usage::Reachable)
-        .then(|| argentic_runtime::api::product_slice(input.archive.source().authored_json(), None))
-        .flatten();
-    if let Some(endpoint) = qualification
-        .as_ref()
-        .filter(|issue| issue.code == "MCP_ENDPOINT_UNSUPPORTED")
-    {
-        if let Some(id) = preview.mcp_servers.keys().find(|id| {
-            endpoint.pointer
-                == format!(
-                    "/mcpServers/{}/url",
-                    id.replace('~', "~0").replace('/', "~1")
-                )
-        }) {
-            blockers.push(Blocker::new("mcpEndpointUnsupported", id));
-        }
-    }
     let workspace_calls = policy["agsdlHostPermissions"] == "workspace"
         && matches!(
             ceiling,
@@ -830,30 +809,40 @@ fn requirements(
         )
         && !crate::core::tool_policy::agsdl_native_read_only(policy);
     for (id, server) in &preview.mcp_servers {
-        let direct = direct_mcp(preview, id);
-        if !direct && !launch_mcp.equips(id) {
+        let qualified = launch_mcp.qualification.get(id).ok_or_else(storage_error)?;
+        if !qualified.is_used() {
+            launch_mcp.notes.push(mcp::UnusedServer {
+                server: id.clone(),
+                unsupported_endpoint: qualified.diagnostic.is_some(),
+            });
             continue;
+        }
+        if qualified.blocking_diagnostic().is_some() {
+            blockers.push(Blocker::new("mcpEndpointUnsupported", id));
+            continue;
+        }
+        let direct = !qualified.direct_call_steps.is_empty();
+        if direct {
+            let tools = qualified
+                .direct_call_steps
+                .iter()
+                .map(|step| {
+                    document
+                        .pointer(step)
+                        .and_then(|call| call["mcp"]["tool"].as_str())
+                        .map(str::to_owned)
+                        .ok_or_else(storage_error)
+                })
+                .collect::<Result<BTreeSet<_>>>()?;
+            launch_mcp.direct_tools.insert(id.clone(), tools);
         }
         match &server.transport {
             McpTransport::Remote { url } => {
-                if blockers.iter().any(|blocker| blocker.subject == *id) {
-                    continue;
-                }
-                // Agent equipment qualifies its own endpoint after exclusions.
-                let endpoint =
-                    json!({"contract": preview.contract, "mcpServers": {"server": {"url": url}}});
-                if argentic_runtime::api::product_slice(&endpoint.to_string(), None).is_some() {
-                    blockers.push(Blocker::new("mcpEndpointUnsupported", id));
-                    continue;
-                }
                 if direct && !workspace_calls {
                     blockers.push(Blocker::new("mcpWorkspaceRequired", id));
                     continue;
                 }
-                let Ok(parsed) = url::Url::parse(url) else {
-                    blockers.push(Blocker::new("mcpEndpointUnsupported", id));
-                    continue;
-                };
+                let parsed = url::Url::parse(url).map_err(|_| storage_error())?;
                 let default = mcp::RemoteSettings::default();
                 let settings = configuration
                     .remote_mcp
@@ -879,7 +868,7 @@ fn requirements(
                     blockers.push(blocker);
                     continue;
                 }
-                if !local_mcp_supported || (direct && qualification.is_some()) {
+                if !local_mcp_supported {
                     blockers.push(Blocker::new("mcpIsolationUnavailable", id));
                     continue;
                 }
@@ -1081,6 +1070,8 @@ pub(crate) async fn prepare(
         agent_mcp: launch_mcp.agents,
         remote_mcp: launch_mcp.remote,
         remote_mcp_setup: launch_mcp.remote_setup,
+        mcp_direct_tools: launch_mcp.direct_tools,
+        mcp_notes: launch_mcp.notes,
     })
 }
 

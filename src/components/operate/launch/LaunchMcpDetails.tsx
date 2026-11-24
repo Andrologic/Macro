@@ -71,16 +71,35 @@ export function LaunchMcpSettings({ preview, disabled, onChange }: {
   });
 }
 
+export function mcpServersInUse(preview: LaunchPreview): Set<string> {
+  return new Set([
+    ...Object.keys(preview.remoteMcp), ...Object.keys(preview.mcpDirectTools),
+    ...Object.values(preview.agentMcp).flatMap(equipment => Object.entries(equipment)
+      .filter(([, access]) => access.equipped).map(([server]) => server)),
+  ]);
+}
+
+export function LaunchMcpNotes({ notes }: { notes: LaunchPreview["mcpNotes"] }) {
+  const { t } = useAgsdlTranslation();
+  if (!notes.length) return null;
+  return <ul className="space-y-1 text-muted-foreground">
+    {notes.map(({ server, unsupportedEndpoint }) => <li key={server} className="break-words">
+      {t(unsupportedEndpoint ? "agsdl.launch.mcp.unusedEndpoint" : "agsdl.launch.mcp.unusedServer", { server })}
+    </li>)}
+  </ul>;
+}
+
 export function LaunchMcpDetails({ preview, expanded = false }: { preview: LaunchPreview; expanded?: boolean }) {
   const { t } = useAgsdlTranslation();
-  const agents = Object.entries(preview.agentMcp);
-  const calls = preview.permissions.directCalls.flatMap(call =>
-    call.usage === "reachable" && call.target.type === "mcp" ? [call.target] : []);
-  const servers = new Set([
-    ...Object.keys(preview.remoteMcp), ...calls.map(call => call.server),
-    ...agents.flatMap(([, equipment]) => Object.keys(equipment).filter(server => equipment[server].equipped)),
-  ]);
-  if (!servers.size && !agents.length) return null;
+  const servers = mcpServersInUse(preview);
+  if (!servers.size) return null;
+  const agents = Object.entries(preview.agentMcp)
+    .map(([name, equipment]) => ({
+      name,
+      equipment: Object.entries(equipment).filter(([server, access]) =>
+        access.equipped || (!expanded && servers.has(server))),
+    }))
+    .filter(agent => agent.equipment.length > 0);
 
   const title = t("agsdl.launch.mcp.title");
   const effectText = (effect: McpToolEffect) => t("agsdl.launch.mcp.effect." + effect);
@@ -90,7 +109,7 @@ export function LaunchMcpDetails({ preview, expanded = false }: { preview: Launc
     {Array.from(servers, id => {
       const remote = Object.hasOwn(preview.remoteMcp, id) ? preview.remoteMcp[id] : undefined;
       const server = Object.hasOwn(preview.permissions.mcpServers, id) ? preview.permissions.mcpServers[id] : undefined;
-      const direct = [...new Set(calls.filter(call => call.server === id).map(call => call.tool))];
+      const direct = Object.hasOwn(preview.mcpDirectTools, id) ? preview.mcpDirectTools[id] : [];
       return <section key={id} className="space-y-0.5">
         <p className="!m-0 font-medium">{id}</p>
         {remote && <>
@@ -108,9 +127,9 @@ export function LaunchMcpDetails({ preview, expanded = false }: { preview: Launc
         {direct.length > 0 && <p className="!m-0">{t("agsdl.launch.mcp.direct", { names: direct.join(", ") })}</p>}
       </section>;
     })}
-    {agents.map(([agent, equipment]) => <section key={agent} className="space-y-0.5">
-      <p className="!m-0 font-medium">{agent}</p>
-      {Object.entries(equipment).map(([server, access]) => {
+    {agents.map(({ name, equipment }) => <section key={name} className="space-y-0.5">
+      <p className="!m-0 font-medium">{name}</p>
+      {equipment.map(([server, access]) => {
         const hasPatterns = Object.keys(access.agentPatterns).length > 0 || Object.keys(access.hostPatterns).length > 0;
         return <div key={server} className="pl-2">
           <p className="!m-0">{server}{!access.equipped && <> · {t("agsdl.launch.mcp.skipped")}</>}

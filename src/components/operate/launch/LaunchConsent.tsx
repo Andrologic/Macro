@@ -5,7 +5,7 @@ import { useAgsdlTranslation } from "../../agsdl/useAgsdlTranslation";
 import { InfoBlock } from "../../architect/ArchitectDialogShell";
 import { PermissionSummary } from "../../architect/PermissionSummary";
 import { Icon } from "../../ui/Icon";
-import { LaunchMcpDetails } from "./LaunchMcpDetails";
+import { LaunchMcpDetails, mcpServersInUse } from "./LaunchMcpDetails";
 import { interpreterEnvironment } from "./launchModel";
 
 /**
@@ -18,11 +18,21 @@ export function LaunchConsent({ preview }: { preview: LaunchPreview }) {
   const { permissions } = preview;
   const reachable = Object.entries(permissions.agents).filter(([, agent]) => agent.usage === "reachable");
   const checks = reachable.filter(([, agent]) => agent.completionCheck);
-  const localToolsInUse = Object.entries(permissions.mcpServers).some(([id, server]) =>
-    server.transport.type === "local" && (Object.values(preview.agentMcp).some(equipment => equipment[id]?.equipped)
-      || permissions.directCalls.some(call => call.usage === "reachable" && call.target.type === "mcp" && call.target.server === id)));
-  const effective = { ...permissions, agents: Object.fromEntries(Object.entries(permissions.agents)
-    .map(([id, agent]) => [id, { ...agent, mcpServers: agent.mcpServers.filter(server => preview.agentMcp[id]?.[server]?.equipped) }])) };
+  const usedServers = mcpServersInUse(preview);
+  const localToolsInUse = [...usedServers].some(id => permissions.mcpServers[id]?.transport.type === "local");
+  const effective: typeof permissions = {
+    ...permissions,
+    agents: Object.fromEntries(Object.entries(permissions.agents)
+      .map(([id, agent]) => [id, { ...agent, mcpServers: agent.mcpServers.filter(server => preview.agentMcp[id]?.[server]?.equipped) }])),
+    mcpServers: Object.fromEntries(Object.entries(permissions.mcpServers).filter(([id]) => usedServers.has(id))),
+    directCalls: permissions.directCalls.flatMap(call => {
+      if (call.target.type === "shell") return [call];
+      const { server, tool } = call.target;
+      return Object.hasOwn(preview.mcpDirectTools, server) && preview.mcpDirectTools[server].includes(tool)
+        ? [{ ...call, usage: "reachable" }]
+        : [];
+    }),
+  };
   const interpreterSecrets = preview.secrets.filter(secret =>
     permissions.mcpServers[secret.server]?.transport.type === "local" && interpreterEnvironment.has(secret.name));
   const addresses = permissions.externalReferences.filter(reference => reference.kind !== "mcpEndpoint" && reference.usage !== "declaredOnly");

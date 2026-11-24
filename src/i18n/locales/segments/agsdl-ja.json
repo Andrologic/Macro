@@ -63,6 +63,8 @@
       "files": "同梱ファイル · {{names}}",
       "environment": "環境変数 · {{names}}",
       "direct": "フローからの直接呼び出し · {{names}}",
+      "unusedServer": "「{{server}}」には接続しません。",
+      "unusedEndpoint": "「{{server}}」の接続先はサポートされていないため、接続しません。",
       "skipped": "サーバーには接続しません",
       "otherTools": "その他のツール · {{effect}}",
       "patternHint": "該当するルールのうち最も厳しいものが適用されます。ポリシー内に該当するルールがなければ、その既定値が適用されます。",

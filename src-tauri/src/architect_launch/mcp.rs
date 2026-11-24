@@ -3,7 +3,10 @@ use crate::agsdl_permissions::{
     evaluate_requested, normalize_requested, Action, ActionRequest, Effect, NormalizedPolicy,
     PathContext, RequestedPermissions,
 };
-use argentic_runtime::host::{McpHttpAuthorizer, McpHttpSecret};
+use argentic_runtime::{
+    api::McpServerQualification,
+    host::{McpHttpAuthorizer, McpHttpSecret},
+};
 use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
 use std::{
     net::{IpAddr, SocketAddr},
@@ -17,6 +20,16 @@ pub(super) struct LaunchMcp {
     pub remote: BTreeMap<String, RemoteGrant>,
     pub remote_setup: BTreeMap<String, RemoteSetup>,
     pub agents: BTreeMap<String, BTreeMap<String, AgentAccess>>,
+    pub qualification: BTreeMap<String, McpServerQualification>,
+    pub direct_tools: BTreeMap<String, BTreeSet<String>>,
+    pub notes: Vec<UnusedServer>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct UnusedServer {
+    pub server: String,
+    pub unsupported_endpoint: bool,
 }
 
 #[derive(Serialize)]
@@ -34,12 +47,10 @@ pub(super) struct AgentAccess {
 struct ServerPolicy {
     default: Effect,
     patterns: BTreeMap<String, Effect>,
-    deny_all: bool,
 }
 
 impl ServerPolicy {
-    // Mirror Argentic's may_equip_mcp. Permission matching uses '*' as the
-    // only metacharacter. A server-wide denial suppresses discovery.
+    // Summarize tool rules for display. Argentic determines equipment eligibility.
     fn for_server(policy: &NormalizedPolicy, server: &str) -> Result<Self> {
         let request = ActionRequest::Mcp {
             server: server.into(),
@@ -48,7 +59,6 @@ impl ServerPolicy {
         let default = evaluate_requested(policy, &request).map_err(|_| invalid_policy())?;
         let mut patterns: BTreeMap<String, Effect> = BTreeMap::new();
         let mut explicit_default: Option<Effect> = None;
-        let mut tool_grant = false;
         for rule in policy
             .rules()
             .iter()
@@ -68,7 +78,6 @@ impl ServerPolicy {
             };
             match tool_pattern {
                 Some(pattern) if !pattern.contains('/') => {
-                    tool_grant |= rule.effect != Effect::Deny;
                     if pattern.is_empty() {
                         continue;
                     }
@@ -85,21 +94,12 @@ impl ServerPolicy {
                 _ => {}
             }
         }
-        let deny_all = explicit_default == Some(Effect::Deny)
-            || patterns.iter().any(|(pattern, effect)| {
-                *effect == Effect::Deny && !pattern.is_empty() && pattern.bytes().all(|b| b == b'*')
-            })
-            || (default == Effect::Deny && !tool_grant);
         if let Some(effect) = explicit_default {
             for pattern_effect in patterns.values_mut() {
                 *pattern_effect = (*pattern_effect).max(effect);
             }
         }
-        Ok(Self {
-            default,
-            patterns,
-            deny_all,
-        })
+        Ok(Self { default, patterns })
     }
 }
 
@@ -126,35 +126,36 @@ fn path_context(root: &Path) -> Result<PathContext> {
 }
 
 pub(super) fn agent_access(
-    input: &VersionInput,
+    document: &Value,
     preview: &ImportPreview,
     host: &RequestedPermissions,
     root: &Path,
+    qualification: &BTreeMap<String, McpServerQualification>,
 ) -> Result<BTreeMap<String, BTreeMap<String, AgentAccess>>> {
     let mut result = BTreeMap::new();
-    if !preview.agents.values().any(|agent| {
-        agent.usage == Usage::Reachable && agent.harness == "codex" && !agent.mcp_servers.is_empty()
-    }) {
+    if !preview
+        .agents
+        .values()
+        .any(|agent| agent.harness == "codex" && !agent.mcp_servers.is_empty())
+    {
         return Ok(result);
     }
-    let doc: Value = serde_json::from_str(input.archive.source().authored_json())?;
     let context = path_context(root)?;
     let host = normalize_requested(host.clone(), context.clone()).map_err(|_| invalid_policy())?;
     for (agent_id, agent) in &preview.agents {
-        if agent.usage != Usage::Reachable
-            || agent.harness != "codex"
-            || agent.mcp_servers.is_empty()
-        {
+        if agent.harness != "codex" || agent.mcp_servers.is_empty() {
             continue;
         }
-        let authored = serde_json::from_value(doc["agents"][agent_id]["permissions"].clone())?;
+        let authored = serde_json::from_value(document["agents"][agent_id]["permissions"].clone())?;
         let requested =
             normalize_requested(authored, context.clone()).map_err(|_| invalid_policy())?;
         let mut servers = BTreeMap::new();
         for server in &agent.mcp_servers {
             let a = ServerPolicy::for_server(&requested, server)?;
             let h = ServerPolicy::for_server(&host, server)?;
-            let equipped = !a.deny_all && !h.deny_all;
+            let equipped = qualification
+                .get(server)
+                .is_some_and(|entry| entry.agent_equipment.contains(agent_id));
             let mut tools = BTreeMap::new();
             let mut agent_patterns = BTreeMap::new();
             let mut host_patterns = BTreeMap::new();
@@ -218,12 +219,6 @@ impl LaunchMcp {
                 )
             })
             .collect()
-    }
-
-    pub fn equips(&self, server: &str) -> bool {
-        self.agents
-            .values()
-            .any(|servers| servers.get(server).is_some_and(|access| access.equipped))
     }
 }
 

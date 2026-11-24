@@ -757,7 +757,6 @@ async fn remote_mcp_scope_checks_every_pinned_address_and_changes_consent() {
 
 #[tokio::test]
 async fn equipping_another_agent_requires_new_consent_for_the_same_endpoint() {
-    let data = tempfile::tempdir().unwrap();
     let mut doc = manifest();
     doc["agents"]["worker"]["permissions"] = json!("workspace");
     doc["agents"]["worker"]["mcpServers"] = json!(["issues"]);
@@ -765,15 +764,18 @@ async fn equipping_another_agent_requires_new_consent_for_the_same_endpoint() {
     doc["mcpServers"] = json!({"issues":{"url":"https://example.invalid/issues"}});
     doc["flow"]["steps"]["run"]["next"] = json!("review");
     doc["flow"]["steps"]["review"] = json!({"type":"agent","agent":"reviewer"});
-    let (pool, version) = archive_fixture(data.path(), doc).await;
-    let input = VersionInput::read(&pool, &Storage::new(data.path()), version)
-        .await
-        .unwrap();
-    let mut preview = input.preview().unwrap();
-    let summary = |preview: &ImportPreview| {
+    let mut summaries = Vec::new();
+    for reviewer_servers in [json!([]), json!(["issues"])] {
+        let data = tempfile::tempdir().unwrap();
+        doc["agents"]["reviewer"]["mcpServers"] = reviewer_servers;
+        let (pool, version) = archive_fixture(data.path(), doc.clone()).await;
+        let input = VersionInput::read(&pool, &Storage::new(data.path()), version)
+            .await
+            .unwrap();
+        let preview = input.preview().unwrap();
         let (blockers, mcp) = requirements(
             &input,
-            preview,
+            &preview,
             &json!({"agsdlHostPermissions":"workspace"}),
             &crate::agsdl_permissions::RequestedPermissions::Preset(
                 crate::agsdl_permissions::Preset::Workspace,
@@ -784,16 +786,9 @@ async fn equipping_another_agent_requires_new_consent_for_the_same_endpoint() {
         )
         .unwrap();
         assert!(blockers.is_empty());
-        permissions(&input, preview, &mcp).unwrap()
-    };
-    let first = summary(&preview);
-    preview
-        .agents
-        .get_mut("reviewer")
-        .unwrap()
-        .mcp_servers
-        .push("issues".into());
-    let expanded = summary(&preview);
+        summaries.push(permissions(&input, &preview, &mcp).unwrap());
+    }
+    let [first, expanded]: [Permissions; 2] = summaries.try_into().ok().unwrap();
     assert_eq!(first.mcp, expanded.mcp);
     assert!(expanded.covers(&first));
     assert!(!first.covers(&expanded));
@@ -856,6 +851,126 @@ async fn invalid_endpoint_blocks_equipment_or_direct_calls_but_not_excluded_equi
         assert!(mcp.remote.is_empty());
         assert!(mcp.secrets.is_empty());
     }
+}
+
+#[tokio::test]
+async fn archive_launch_dispatches_valid_direct_call_with_an_excluded_invalid_endpoint() {
+    let _guard = crate::secrets::lock_test_store();
+    let data = tempfile::tempdir().unwrap();
+    crate::secrets::init(data.path()).unwrap();
+    let peer = Peer::start().await;
+    let endpoint = peer.endpoint();
+    let mut doc = manifest();
+    doc["agents"]["worker"]["mcpServers"] = json!(["issues"]);
+    doc["agents"]["worker"]["permissions"] = json!({
+        "preset":"read-only", "rules":[{"action":"mcp","match":"issues/*","effect":"deny"}],
+    });
+    doc["mcpServers"] = json!({
+        "issues":{"url":"http://example.invalid/issues"}, "alerts":{"url":endpoint},
+    });
+    doc["secrets"] = json!({"issues":["EXCLUDED_TOKEN"],"alerts":["ISSUES_TOKEN","CLIENT_KEY"]});
+    doc["flow"]["steps"]["run"]["next"] = json!("read");
+    doc["flow"]["steps"]["read"] = json!({
+        "type":"call","mcp":{"server":"alerts","tool":"read"},
+        "arguments":{"number":{"value":9007199254740993u64}},
+    });
+    let (pool, version) = archive_fixture(data.path(), doc).await;
+    let manager = manager_for_test(data.path()).await;
+    set_host_ceiling(&manager, json!("workspace")).await;
+    observe_fixture(&manager);
+
+    let mut configuration = remote_configuration(&endpoint);
+    let settings = configuration.remote_mcp.remove("issues").unwrap();
+    configuration.remote_mcp.insert("alerts".into(), settings);
+    let prepared = preview(
+        &manager,
+        &pool,
+        data.path(),
+        version.clone(),
+        Some(configuration.clone()),
+    )
+    .await;
+    assert!(prepared.blockers.is_empty());
+    assert_eq!(
+        serde_json::to_value(&prepared.mcp_notes).unwrap(),
+        json!([
+            {"server":"issues","unsupportedEndpoint":true}
+        ])
+    );
+    assert_eq!(
+        prepared.mcp_direct_tools["alerts"],
+        BTreeSet::from(["read".into()])
+    );
+    assert!(!prepared.agent_mcp["worker"]["issues"].equipped);
+    assert_eq!(
+        prepared.remote_mcp_setup.keys().collect::<Vec<_>>(),
+        ["alerts"]
+    );
+    assert_eq!(prepared.secrets.len(), 2);
+    assert!(prepared
+        .secrets
+        .iter()
+        .all(|secret| secret.server == "alerts"));
+
+    for (name, value) in [("ISSUES_TOKEN", TOKEN), ("CLIENT_KEY", CLIENT_KEY)] {
+        set_secret(
+            &manager,
+            &pool,
+            data.path(),
+            version.clone(),
+            "alerts",
+            name,
+            value,
+            Some(configuration.clone()),
+        )
+        .await
+        .unwrap();
+    }
+    let host = HostState::new();
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.install(&host);
+    let receipt = start::launch(
+        runtime(&host, &manager, &pool, data.path()),
+        remote_request(version, prepared.consent_token, configuration),
+    )
+    .await
+    .unwrap();
+    let id = &receipt.capture.identity.system_start_id;
+    tokio::time::timeout(Duration::from_secs(10), agent.wait(&host, id))
+        .await
+        .unwrap()
+        .unwrap();
+    let run = host
+        .runtime_projection(
+            &pool,
+            api::RuntimeProjectionQuery030 {
+                system_start_id: id.clone(),
+                source: receipt.capture.source.clone(),
+                snapshot_id: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.verdict.as_deref(), Some("succeeded"));
+    assert_eq!(
+        *peer.calls.lock().unwrap(),
+        [json!({"name":"read","arguments":{"number":9007199254740993u64}})]
+    );
+    let summary: String =
+        sqlx::query_scalar("SELECT permissions_json FROM architect_launch_consents")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Permissions>(&summary)
+            .unwrap()
+            .mcp
+            .keys()
+            .collect::<Vec<_>>(),
+        ["alerts"]
+    );
+    remove_test_snapshot(&pool, &manager, id).await;
 }
 
 #[cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux")))]

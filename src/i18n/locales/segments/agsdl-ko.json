@@ -63,6 +63,8 @@
       "files": "포함된 파일 · {{names}}",
       "environment": "환경 변수 · {{names}}",
       "direct": "흐름에서 직접 호출 · {{names}}",
+      "unusedServer": "‘{{server}}’에 연결하지 않습니다.",
+      "unusedEndpoint": "‘{{server}}’의 주소는 지원되지 않으므로 이 서버에 연결하지 않습니다.",
       "skipped": "서버에 연결하지 않음",
       "otherTools": "기타 도구 · {{effect}}",
       "patternHint": "일치하는 규칙 중 가장 엄격한 규칙이 적용됩니다. 정책에 일치하는 규칙이 없으면 해당 정책의 기본값이 적용됩니다.",

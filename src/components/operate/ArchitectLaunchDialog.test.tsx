@@ -47,7 +47,7 @@ function preview(patch: Partial<LaunchPreview> = {}): LaunchPreview {
     version: archive, note: null, startMessageRequired: false, startMessageHint: null,
     workingFolderMode: "perExecution", configuration: { workingFolder: null }, folderReuseToken: null,
     blockers: [], secrets: [], availableModels: [], consentToken: null,
-    agentMcp: {}, remoteMcp: {}, remoteMcpSetup: {},
+    agentMcp: {}, remoteMcp: {}, remoteMcpSetup: {}, mcpDirectTools: {}, mcpNotes: [],
     permissions: {
       title: null, authoredId: "system", contract: "agsdl-0.4.0", packageFormat: "agsdl-archive-1",
       projectFormat: "agsdl-project-1", stagedSha256: "digest", historyWillBeRemoved: false, entryPoint: "entry",
@@ -199,6 +199,7 @@ it("preserves the file and pointer when a reserved secret prevents archive previ
 it("explains the approval scope and flags interpreter environment secrets", async () => {
   const current = preview({
     consentToken: "permission-review",
+    mcpDirectTools: { worker: ["call"] },
     secrets: [
       { server: "worker", name: "HOME", stored: true },
       { server: "worker", name: "NODE_OPTIONS", stored: true },

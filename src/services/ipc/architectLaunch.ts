@@ -55,6 +55,8 @@ export interface LaunchPreview {
   agentMcp: Record<string, Record<string, AgentMcpAccess>>;
   remoteMcp: Record<string, { url: string; delivery: Record<string, string>; addressScope: McpAddressScope }>;
   remoteMcpSetup: Record<string, { url: string; suggestions: Record<string, McpSecretDelivery>; addressScope: McpAddressScope }>;
+  mcpDirectTools: Record<string, string[]>;
+  mcpNotes: { server: string; unsupportedEndpoint: boolean }[];
 }
 
 export interface LaunchRequest {

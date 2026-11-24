@@ -63,6 +63,8 @@
       "files": "Archivos incluidos · {{names}}",
       "environment": "Variables de entorno · {{names}}",
       "direct": "Llamada directa desde el flujo · {{names}}",
+      "unusedServer": "Macro no se conectará a «{{server}}».",
+      "unusedEndpoint": "La dirección de «{{server}}» no es compatible. Macro no se conectará a este servidor.",
       "skipped": "Servidor sin conexión",
       "otherTools": "Otras herramientas · {{effect}}",
       "patternHint": "Se aplica la regla coincidente más restrictiva. Si ninguna regla de una política coincide, se aplica su valor predeterminado.",

@@ -23,7 +23,7 @@ function preview(patch: Partial<LaunchPreview> = {}): LaunchPreview {
     version: archive, note: "Added the reviewer", startMessageRequired: false, startMessageHint: null,
     workingFolderMode: "perExecution", configuration: { workingFolder: null }, folderReuseToken: null,
     blockers: [], secrets: [], availableModels: [], consentToken: null,
-    agentMcp: {}, remoteMcp: {}, remoteMcpSetup: {},
+    agentMcp: {}, remoteMcp: {}, remoteMcpSetup: {}, mcpDirectTools: {}, mcpNotes: [],
     permissions: {
       title: null, authoredId: "system", contract: "agsdl-0.4.0", packageFormat: "agsdl-archive-1", projectFormat: "agsdl-project-1",
       stagedSha256: "digest", historyWillBeRemoved: false, entryPoint: "entry", agents: {}, directCalls: [], mcpServers: {},
@@ -308,6 +308,33 @@ it("shows the endpoint, credential delivery and tool decisions before consent", 
   expect(started()[0].consentToken).toBe("review");
 });
 
+it("shows unused MCP diagnostics before consent without blocking or listing unused servers in consent", async () => {
+  install(() => preview({
+    consentToken: "review",
+    mcpNotes: [{ server: "issues", unsupportedEndpoint: true }, { server: "spare", unsupportedEndpoint: false }],
+    mcpDirectTools: { alerts: ["lookup"] },
+    permissions: {
+      ...remotePermissions,
+      mcpServers: {
+        ...remotePermissions.mcpServers,
+        alerts: { transport: { type: "remote", url: "https://example.invalid/alerts" }, usage: "declaredOnly", requiredSecrets: [], packagedFiles: [] },
+      },
+      directCalls: [{ target: { type: "mcp", server: "alerts", tool: "lookup" }, location: { file: "flow.json", pointer: "/steps/check" }, usage: "declaredOnly" }],
+    },
+  }));
+  await show();
+  expect(dialog().textContent).toContain("“issues” has an unsupported endpoint and will not be connected.");
+  expect(dialog().textContent).toContain("“spare” will not be connected.");
+  expect(primary().disabled).toBe(false);
+  await click(primary());
+  expect(dialog().textContent).toContain("alerts");
+  expect(dialog().textContent).toContain("lookup");
+  expect(dialog().textContent).not.toContain("issues");
+  expect(dialog().textContent).not.toContain("spare");
+  await click(primary());
+  expect(started()).toHaveLength(1);
+});
+
 it("requires explicit delivery choices and sends the selected header to launch", async () => {
   const suggestions = { ISSUES_TOKEN: { type: "bearer" }, CLIENT_TOKEN: { type: "header", name: "X-Client-Token" } } as const;
   install(args => {
@@ -402,6 +429,7 @@ it("keeps the credential entry and consent separate for a new endpoint", async (
 it("omits the endpoint and credentials when the reviewer has no MCP tools", async () => {
   install(() => preview({
     consentToken: "review", permissions: remotePermissions,
+    mcpNotes: [{ server: "issues", unsupportedEndpoint: false }],
     agentMcp: { reviewer: { issues: {
       equipped: false, default: "deny", tools: {},
       agentDefault: "deny", agentPatterns: {}, hostDefault: "allow", hostPatterns: {},
@@ -409,8 +437,9 @@ it("omits the endpoint and credentials when the reviewer has no MCP tools", asyn
   }));
   await show();
   expect(dialog().querySelector('input[type="password"]')).toBeNull();
+  expect(dialog().textContent).toContain("“issues” will not be connected.");
   await click(primary());
-  expect(dialog().textContent).toContain("issues · Server not connected");
+  expect(dialog().textContent).not.toContain("issues");
   expect(dialog().textContent).not.toContain("ISSUES_TOKEN");
   expect(dialog().textContent).not.toContain(remoteEndpoint);
 });

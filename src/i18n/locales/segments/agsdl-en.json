@@ -63,6 +63,8 @@
       "files": "Packaged files · {{names}}",
       "environment": "Environment variables · {{names}}",
       "direct": "Called directly by the flow · {{names}}",
+      "unusedServer": "“{{server}}” will not be connected.",
+      "unusedEndpoint": "“{{server}}” has an unsupported endpoint and will not be connected.",
       "skipped": "Server not connected",
       "otherTools": "Other tools · {{effect}}",
       "patternHint": "The most restrictive matching rule wins. If no rule matches in a policy, its default applies.",

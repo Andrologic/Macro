@@ -17,7 +17,7 @@ import { Textarea } from "../ui/Textarea";
 import { notify } from "../ui/toastService";
 import { LaunchChecklist, ModelRow, SecretRow, pendingCount } from "./launch/LaunchChecklist";
 import { LaunchConsent } from "./launch/LaunchConsent";
-import { LaunchMcpDetails, LaunchMcpSettings } from "./launch/LaunchMcpDetails";
+import { LaunchMcpDetails, LaunchMcpNotes, LaunchMcpSettings } from "./launch/LaunchMcpDetails";
 import { LaunchSummary } from "./launch/LaunchSummary";
 import { failureCode, failureText, isFolderFailure, isRecheckFailure, selectClass } from "./launch/launchModel";
 
@@ -313,6 +313,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
         onSecretSaved={secret => { setNotice(t("agsdl.launch.secretSaved", { name: secret.name })); setChecking(true); setRevision(value => value + 1); }}
         onOpenGuide={url => void openExternalUrl(url).catch(() => setProblem({ message: t("agsdl.launch.failed"), technical: "", recheck: false }))}
         onRecheck={recheck} />}
+      {current && <LaunchMcpNotes notes={current.mcpNotes} />}
       {current && <LaunchMcpDetails preview={current} />}
       {notice && <p role="status" className="!m-0 text-[11px] text-emerald-500">{notice}</p>}
     </>}

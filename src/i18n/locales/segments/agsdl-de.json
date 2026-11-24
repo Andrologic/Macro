@@ -63,6 +63,8 @@
       "files": "Mitgelieferte Dateien · {{names}}",
       "environment": "Umgebungsvariablen · {{names}}",
       "direct": "Direkt vom Ablauf aufgerufen · {{names}}",
+      "unusedServer": "Macro verbindet sich nicht mit „{{server}}“.",
+      "unusedEndpoint": "Die Adresse von „{{server}}“ wird nicht unterstützt. Macro verbindet sich nicht mit diesem Server.",
       "skipped": "Server wird nicht verbunden",
       "otherTools": "Andere Werkzeuge · {{effect}}",
       "patternHint": "Die strengste passende Regel gilt. Trifft in einer Richtlinie keine Regel zu, gilt deren Standard.",
