@@ -37,7 +37,7 @@ export const byteSize = (text: string) => utf8.encode(text).byteLength;
 export function batchSize({ files, settings, discardMigrationFiles }: ProjectBatch) {
   return files.reduce((size, file) => size + byteSize(file.path) + 1 + (file.kind === "write" ? byteSize(file.text) : 0), 0)
     + (discardMigrationFiles?.reduce((size, path) => size + byteSize(path) + 1, 0) ?? 0)
-    + (settings ? byteSize(JSON.stringify(settings.hiddenAgentIds ?? null)) + byteSize(JSON.stringify(settings.agentNames ?? null)) + byteSize(settings.entryMessageHint ?? "") : 0);
+    + (settings ? byteSize(JSON.stringify(settings.hiddenAgentIds ?? null)) + byteSize(JSON.stringify(settings.agentNames ?? null)) + byteSize(JSON.stringify(settings.launchFields ?? null)) + byteSize(settings.entryMessageHint ?? "") : 0);
 }
 
 export function checkBatch(batch: ProjectBatch) {
@@ -122,6 +122,7 @@ export async function prepareProjectEdit(
   if (undoSettings && settings?.entryMessageHint !== undefined) undoSettings.entryMessageHint = currentSettings.entryMessageHint ?? null;
   if (undoSettings && settings?.workingFolderMode !== undefined) undoSettings.workingFolderMode = currentSettings.workingFolderMode;
   if (undoSettings && settings?.startMessageRequired !== undefined) undoSettings.startMessageRequired = currentSettings.startMessageRequired ?? null;
+  if (undoSettings && settings?.launchFields !== undefined) undoSettings.launchFields = currentSettings.launchFields ?? null;
   const entry = { forward: { files, settings }, backward: { files: inverse, settings: undoSettings } };
   checkBatch(entry.backward);
   return { buffers, entry };

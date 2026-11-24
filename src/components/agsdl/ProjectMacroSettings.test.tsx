@@ -114,3 +114,33 @@ it("reads the three settings without editing them once the draft is a saved vers
   expect(view.host.textContent).toContain("Require a start message");
   expect(view.host.textContent).toContain("Name the branch");
 });
+
+it("saves a validated launch schema and can remove it", async () => {
+  await mount();
+  const form = view.host.querySelector('form[aria-label="Launch fields"]')!;
+  const button = (label: string, within: ParentNode = form) =>
+    [...within.querySelectorAll("button")].find(item => item.textContent === label)!;
+  await click(button("Add a field"));
+  expect(button("Save").disabled).toBe(true);
+  const [label, key] = form.querySelectorAll("input");
+  await fillField(label, "Ticket");
+  await fillField(key, "issue-id");
+  expect(button("Save").disabled).toBe(true);
+  await fillField(key, "issue_id");
+  await click(button("Save"));
+  await flush();
+
+  expect(saves.map(batch => batch.settings)).toEqual([{
+    launchFields: {
+      version: "macro-launch-fields/1",
+      fields: [{ key: "issue_id", label: "Ticket", type: "text", required: true }],
+    },
+  }]);
+  const savedForm = view.host.querySelector('form[aria-label="Launch fields"]')!;
+  expect(button("Save", savedForm).disabled).toBe(true);
+  await click(button("Remove", savedForm));
+  await click(button("Save", savedForm));
+  await flush();
+  expect(saves.at(-1)?.settings).toEqual({ launchFields: null });
+  expect(required().checked).toBe(true);
+});

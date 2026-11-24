@@ -28,7 +28,7 @@ pub(crate) struct MacroSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) start_message_required: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    launch_fields: Option<Value>,
+    pub(super) launch_fields: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -55,11 +55,16 @@ impl Default for MacroSettings {
 
 impl MacroSettings {
     pub(crate) fn check_schema(&self) -> Result<()> {
-        if self.schema_version == 1 {
-            Ok(())
-        } else {
-            Err(Error::Storage("Unsupported Macro settings schema".into()))
+        if self.schema_version != 1 {
+            return Err(Error::Storage("Unsupported Macro settings schema".into()));
         }
+        self.launch_fields()?;
+        Ok(())
+    }
+
+    pub(crate) fn launch_fields(&self) -> Result<Option<super::launch_fields::LaunchFields>> {
+        super::launch_fields::LaunchFields::read(self.launch_fields.as_ref())
+            .map_err(|_| Error::Editor("INVALID_LAUNCH_FIELDS"))
     }
 
     fn from_authoring(metadata: &mut BTreeMap<String, Value>) -> Self {

@@ -2,6 +2,7 @@
 use crate::architect_library::{
     archive::{VersionArchive, ARCHIVE_FORMAT},
     editor_document::{MacroSettings, WorkingFolderMode},
+    launch_fields::LaunchFields,
     preview::{self, CallTarget, ImportPreview, McpServer, McpTransport, Usage},
     storage::Storage,
 };
@@ -23,6 +24,7 @@ use std::{
 };
 
 mod delete_run;
+pub(crate) mod entry;
 mod legacy_mcp;
 pub(crate) mod resources;
 pub(crate) use delete_run::delete_run;
@@ -127,6 +129,7 @@ fn library_error(
             | "ARCHIVE_LIMIT"
             | "ARCHIVE_INTEGRITY"
             | "MCP_SECRET_RESERVED"
+            | "INVALID_LAUNCH_FIELDS"
     ) {
         return storage_error();
     }
@@ -154,14 +157,16 @@ pub(crate) struct LaunchConfiguration {
 pub(crate) struct LaunchPreview {
     version: VersionKey,
     note: Option<String>,
-    start_message_required: bool,
+    pub(crate) start_message_required: bool,
     start_message_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) launch_fields: Option<LaunchFields>,
     working_folder_mode: WorkingFolderMode,
     configuration: LaunchConfiguration,
     folder_reuse_token: Option<String>,
     blockers: Vec<Blocker>,
     available_models: Vec<String>,
-    permissions: ImportPreview,
+    pub(crate) permissions: ImportPreview,
     consent_token: Option<String>,
     secrets: Vec<SecretRequirement>,
     agent_mcp: BTreeMap<String, BTreeMap<String, mcp::AgentAccess>>,
@@ -1039,8 +1044,15 @@ pub(crate) async fn prepare(
     let mut db = pool.acquire().await?;
     let machine = machine_id(manager.root())?;
     let consent_token = consent_token(&mut db, &input, &summary, &machine).await?;
+    let launch_fields = if permissions_preview.entry_point.is_some() {
+        input.settings.launch_fields().map_err(library_error)?
+    } else {
+        None
+    };
     Ok(LaunchPreview {
-        start_message_required: input.requires_start_message(&permissions_preview),
+        start_message_required: launch_fields.is_none()
+            && input.requires_start_message(&permissions_preview),
+        launch_fields,
         note: input.note,
         version: input.key,
         start_message_hint: input.settings.entry_message_hint,

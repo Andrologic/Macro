@@ -3,6 +3,7 @@
 pub mod archive;
 pub(crate) mod editor_document;
 pub(crate) mod imports;
+pub(crate) mod launch_fields;
 pub(crate) mod migration;
 pub(crate) mod preview;
 pub mod project;

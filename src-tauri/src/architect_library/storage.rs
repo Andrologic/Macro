@@ -1014,6 +1014,7 @@ fn remove_entry(path: &Path) -> Result<()> {
 }
 
 fn sidecars(path: &Path, settings: &MacroSettings, authoring: &Authoring) -> Result<()> {
+    settings.check_schema()?;
     write_json(&path.join(SETTINGS), settings)?;
     write_json(&path.join(AUTHORING), authoring)
 }

@@ -1,5 +1,26 @@
 {
   "launch": {
+    "fields": {
+      "title": "Champs de lancement",
+      "authorHelp": "Ajoutez les champs que l’opérateur doit remplir. Macro envoie leurs valeurs en JSON dans le message de départ.",
+      "newField": "Nouveau champ",
+      "label": "Libellé",
+      "key": "Clé JSON",
+      "type": "Type",
+      "required": "Obligatoire",
+      "add": "Ajouter un champ",
+      "definitionHelp": "Utilisez des clés uniques de 64 caractères au maximum. Elles doivent commencer par une lettre et ne contenir que des lettres de A à Z, des chiffres ou des tirets bas. Chaque champ doit avoir un libellé de 80 caractères au maximum.",
+      "invalidDefinition": "La définition des champs de lancement est invalide.",
+      "invalidValues": "Remplissez les champs obligatoires et vérifiez les valeurs saisies.",
+      "chooseBoolean": "Choisir une valeur",
+      "yes": "Oui",
+      "no": "Non",
+      "types": {
+        "text": "Texte",
+        "number": "Nombre",
+        "boolean": "Oui ou non"
+      }
+    },
     "openArchitect": "Ouvrir Architect",
     "title": "Lancer un système",
     "system": "Système",

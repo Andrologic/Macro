@@ -20,6 +20,7 @@ export function agsdlErrorText(error: unknown, t: TFunction = i18n.getFixedT(nul
       case "MCP_SECRET_RESERVED": return reservedMcpSecretText(t, diagnostic.file, diagnostic.pointer);
       case "INPUT_LIMIT":
       case "EDITOR_LIMIT": return t("agsdl.library.projectLimit");
+      case "INVALID_LAUNCH_FIELDS": return t("agsdl.launch.fields.invalidDefinition");
       case "OPAQUE_PROJECT_FILE": return t("agsdl.library.opaqueFile");
       case "PROJECT_FILE_NOT_FOUND": return t("agsdl.library.fileMissing");
       case "PROJECT_BATCH_REQUIRED": return t("agsdl.library.projectBatchRequired");

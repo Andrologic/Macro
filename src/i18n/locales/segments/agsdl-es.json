@@ -1,5 +1,26 @@
 {
   "launch": {
+    "fields": {
+      "title": "Campos de inicio",
+      "authorHelp": "Añade los campos que debe rellenar el operador. Macro envía sus valores como JSON en el mensaje de inicio.",
+      "newField": "Nuevo campo",
+      "label": "Etiqueta",
+      "key": "Clave JSON",
+      "type": "Tipo",
+      "required": "Obligatorio",
+      "add": "Añadir un campo",
+      "definitionHelp": "Usa claves únicas de hasta 64 caracteres que empiecen por una letra y solo contengan letras de A a Z, números o guiones bajos. Cada campo necesita una etiqueta de hasta 80 caracteres.",
+      "invalidDefinition": "Las definiciones de los campos de inicio no son válidas.",
+      "invalidValues": "Rellena los campos obligatorios y revisa los valores.",
+      "chooseBoolean": "Elegir un valor",
+      "yes": "Sí",
+      "no": "No",
+      "types": {
+        "text": "Texto",
+        "number": "Número",
+        "boolean": "Sí o no"
+      }
+    },
     "openArchitect": "Abrir Architect",
     "title": "Ejecutar un sistema",
     "system": "Sistema",

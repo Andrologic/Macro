@@ -1,3 +1,4 @@
+import type { LaunchFields, LaunchValues } from "../agsdl/launchFields";
 import { invoke } from "../tauriRuntimeBridge";
 import type { EngineSourceOwner, EngineSourceRevision } from "../../types/generated/ipc";
 import type { ImportPreview, VersionKey } from "./architectLibrary";
@@ -44,6 +45,7 @@ export interface LaunchPreview {
   note: string | null;
   startMessageRequired: boolean;
   startMessageHint: string | null;
+  launchFields?: LaunchFields;
   workingFolderMode: "perExecution" | "atLaunch";
   configuration: LaunchConfiguration;
   folderReuseToken: string | null;
@@ -63,6 +65,7 @@ export interface LaunchRequest {
   version: VersionKey;
   configuration: LaunchConfiguration;
   startMessage: string | null;
+  launchValues?: LaunchValues;
   name: string | null;
   consentToken: string | null;
   folderReuseToken: string | null;

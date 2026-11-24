@@ -18,6 +18,7 @@ pub(crate) struct LaunchRequest {
     pub version: VersionKey,
     pub configuration: LaunchConfiguration,
     pub start_message: Option<String>,
+    pub launch_values: Option<Value>,
     pub name: Option<String>,
     pub consent_token: Option<String>,
     pub folder_reuse_token: Option<String>,
@@ -76,22 +77,18 @@ pub(crate) async fn launch(
     };
 
     let source = input.source_revision();
-    let message = request.start_message.unwrap_or_default();
-    let entry = if preview.entry_point.is_some() {
-        if input.requires_start_message(&preview) && message.trim().is_empty() {
-            return Err(launch_failure("START_MESSAGE_REQUIRED", "startMessage"));
-        }
-        Some(EngineEntry {
-            delivery_id: Uuid::new_v4().to_string(),
-            message_json: if input.requires_start_message(&preview) {
-                json!({ "prompt": message }).to_string()
-            } else {
-                "{}".into()
-            },
-        })
-    } else {
-        None
-    };
+    let fields = input.settings.launch_fields().map_err(library_error)?;
+    let entry = entry::encode_message(
+        preview.entry_point.is_some(),
+        input.requires_start_message(&preview),
+        fields.as_ref(),
+        request.start_message.as_deref(),
+        request.launch_values.as_ref(),
+    )?
+    .map(|message_json| EngineEntry {
+        delivery_id: Uuid::new_v4().to_string(),
+        message_json,
+    });
     let engine_request = EngineStartRequest {
         source,
         profile: "macro-agsdl-030-v1".into(),

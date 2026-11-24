@@ -6,6 +6,7 @@ use super::{
 use crate::db::architect_library::VersionKey;
 use argentic_runtime::source::OpenedSource;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -66,6 +67,8 @@ pub(crate) struct SettingsChange {
     working_folder_mode: Option<super::editor_document::WorkingFolderMode>,
     #[serde(default, deserialize_with = "nullable")]
     start_message_required: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "nullable")]
+    launch_fields: Option<Option<Value>>,
 }
 
 /// A name is one line of text for people, at most 80 characters, for an agent identifier of at most 64.
@@ -117,6 +120,11 @@ impl EditBatch {
                     return Err(Error::Editor("INVALID_AGENT_NAME"));
                 }
                 size = size.saturating_add(serde_json::to_vec(names)?.len());
+            }
+            if let Some(Some(fields)) = &settings.launch_fields {
+                super::launch_fields::LaunchFields::read(Some(fields))
+                    .map_err(|_| Error::Editor("INVALID_LAUNCH_FIELDS"))?;
+                size = size.saturating_add(serde_json::to_vec(fields)?.len());
             }
             size = size.saturating_add(
                 settings
@@ -248,6 +256,10 @@ impl EditBatch {
                 inverse_size = inverse_size
                     .saturating_add(settings.entry_message_hint.as_ref().map_or(0, String::len));
             }
+            if patch.launch_fields.is_some() {
+                inverse_size =
+                    inverse_size.saturating_add(serde_json::to_vec(&settings.launch_fields)?.len());
+            }
             if inverse_size > TEXT_LIMIT {
                 return Err(Error::Editor("EDITOR_LIMIT"));
             }
@@ -269,6 +281,9 @@ impl EditBatch {
             }
             if let Some(required) = patch.start_message_required {
                 settings.start_message_required = required;
+            }
+            if let Some(fields) = patch.launch_fields {
+                settings.launch_fields = fields;
             }
         }
         for path in self.discard_migration_files {

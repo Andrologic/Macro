@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { ARCHIVE_RUN_PROJECT, type LaunchPreview, type LaunchRequest } from "../../services/ipc/architectLaunch";
 import type { VersionKey } from "../../services/ipc/architectLibrary";
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from "../../test-utils/tauriRuntime";
+import { fillField } from "../architect/architectLibrary.testSupport";
 import ArchitectLaunchDialog from "./ArchitectLaunchDialog";
 
 let root: Root | undefined;
@@ -227,4 +228,62 @@ it("explains the approval scope and flags interpreter environment secrets", asyn
   expect(text).toContain("The tool “worker” receives the secret NODE_OPTIONS.");
   expect(text).toContain("Environment variables · HOME, NODE_OPTIONS, API_TOKEN");
   expect(text).not.toContain("The tool “worker” receives the secret API_TOKEN.");
+});
+
+it("validates launch fields before sending a typed object for the chosen version", async () => {
+  const requests: LaunchRequest[] = [];
+  install((command, input) => {
+    if (command === "architect_launch_prepare") return preview({
+      startMessageHint: "Use the tracker ticket.",
+      launchFields: {
+        version: "macro-launch-fields/1",
+        fields: [
+          { key: "ticket", label: "Ticket", type: "text", required: true },
+          { key: "budget", label: "Budget", type: "number", required: true },
+          { key: "publish", label: "Publish", type: "boolean", required: true },
+          { key: "notes", label: "Notes", type: "text", required: false },
+        ],
+      },
+    });
+    if (command === "architect_launch_start") {
+      requests.push(input.request as LaunchRequest);
+      return receipt;
+    }
+    throw new Error(command);
+  });
+
+  await show(archive);
+  expect(dialog().querySelector("#launch-start-message")).toBeNull();
+  expect(dialog().textContent).toContain("Use the tracker ticket.");
+  const field = (key: string) => dialog().querySelector(`[id$="-${key}"]`)!;
+  await fillField(field("ticket"), "  ");
+  await fillField(field("budget"), "0");
+  await act(async () => {
+    const select = field("publish") as HTMLSelectElement;
+    select.value = "false";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  expect(submit().disabled).toBe(true);
+  await fillField(field("ticket"), "Révision");
+  expect(submit().disabled).toBe(false);
+  await act(async () => submit().click());
+  expect(requests[0]).toMatchObject({
+    version: archive, startMessage: null, launchValues: { ticket: "Révision", budget: 0, publish: false },
+  });
+  expect(requests[0].launchValues).not.toHaveProperty("notes");
+});
+
+it("preserves the text of the free-form message for versions without fields", async () => {
+  const requests: LaunchRequest[] = [];
+  install((command, input) => {
+    if (command === "architect_launch_prepare") return preview({ startMessageRequired: true });
+    if (command === "architect_launch_start") { requests.push(input.request as LaunchRequest); return receipt; }
+    throw new Error(command);
+  });
+  await show(archive);
+  const message = "  Review the ticket.\nInclude details.  ";
+  await fillField(dialog().querySelector("#launch-start-message")!, message);
+  await act(async () => submit().click());
+  expect(requests[0].startMessage).toBe(message);
+  expect(requests[0]).not.toHaveProperty("launchValues");
 });

@@ -291,10 +291,17 @@ La conception détaillée est dans [Le serveur Macro](macro-server.md).
 
 ### 3.11 Champs précis au lancement
 
-Un prototype permet à l'auteur de déclarer des champs de lancement. Le schéma
-fait d'abord partie des réglages Macro. Operate affiche un formulaire et envoie la
-valeur en JSON dans le message de départ. Le schéma passera dans le document si
-[AgSDL#23](https://github.com/Andrologic/AgSDL/issues/23) aboutit.
+Dans les réglages de lancement d’Architect, l’auteur peut déclarer jusqu’à 16
+champs de type texte, nombre ou oui/non. Chaque champ a un libellé, une clé JSON
+unique et peut être obligatoire. Operate affiche le formulaire pour la version
+choisie. Le message de départ contient l’objet JSON dans son champ `prompt`.
+Les champs facultatifs laissés vides sont omis. En l’absence de schéma, les
+réglages de message libre s’appliquent.
+
+Macro fige la définition avec la version et la copie lorsqu’on adapte la
+version. Les exports AgSDL suivent les règles de la section 3.3. Le schéma
+passera dans le document si [AgSDL#23](https://github.com/Andrologic/AgSDL/issues/23)
+aboutit.
 
 ## 4. Plan de réalisation
 

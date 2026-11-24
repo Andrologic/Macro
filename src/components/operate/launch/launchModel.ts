@@ -110,6 +110,8 @@ export function failureText(failure: unknown, t: TFunction): { message: string; 
   if (code === "MCP_SECRET_RESERVED") {
     return { message: reservedMcpSecretText(t, diagnostic?.source?.path, diagnostic?.source?.pointer), technical: code };
   }
+  if (code === "INVALID_LAUNCH_VALUES") return { message: t("agsdl.launch.fields.invalidValues", { ns: "agsdl" }), technical: code };
+  if (code === "INVALID_LAUNCH_FIELDS") return { message: t("agsdl.launch.fields.invalidDefinition", { ns: "agsdl" }), technical: code };
   const invalid = ["GRAPH_LIMIT", "INPUT_LIMIT", "ARCHIVE_LAYOUT", "ARCHIVE_LIMIT", "ARCHIVE_INTEGRITY"].includes(code);
   return { message: t(invalid ? "agsdl.launch.invalidArchive" : "agsdl.launch.failed"), technical: code };
 }

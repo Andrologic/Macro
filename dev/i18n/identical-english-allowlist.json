@@ -1,5 +1,6 @@
 {
   "fr": {
+    "agsdl.launch.fields.type": "Type",
     "agsdl.inbox.reason.question": "Question",
     "agsdl.library.blueprints": "Blueprints",
     "agsdl.library.archives": "Archives",
@@ -204,6 +205,7 @@
     "agsdl.architect.views.transport.local": "local"
   },
   "de": {
+    "agsdl.launch.fields.types.text": "Text",
     "agsdl.library.blueprints": "Blueprints",
     "agsdl.library.version": "Version {{number}}",
     "mcpForm.server": "Server",
@@ -357,6 +359,7 @@
     "agsdl.architect.views.transport.remote": "remote"
   },
   "es": {
+    "agsdl.launch.fields.no": "No",
     "agsdl.library.blueprints": "Blueprints",
     "mcpForm.no": "No",
     "header.architect": "Architect",

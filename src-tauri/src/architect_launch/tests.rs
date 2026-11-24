@@ -148,6 +148,7 @@ async fn archive_launch_admits_pinned_snapshot_and_rediscovers_named_run() {
                 version: version.clone(),
                 configuration: LaunchConfiguration::default(),
                 start_message: Some("Start".into()),
+                launch_values: None,
                 name: Some("Morning run".into()),
                 consent_token: token,
                 folder_reuse_token: None,
@@ -295,6 +296,118 @@ async fn archive_launch_admits_pinned_snapshot_and_rediscovers_named_run() {
             .unwrap();
     assert_eq!(&proof.receipt.system_start_id, id);
     resources::remove_snapshot(&retained).unwrap();
+    crate::agsdl_host_capture::test_codex_observations030()
+        .lock()
+        .unwrap()
+        .remove(manager.root());
+}
+
+#[tokio::test]
+async fn launch_fields_are_versioned_and_validated_at_archive_admission() {
+    let data = tempfile::tempdir().unwrap();
+    let (pool, previous) = archive_fixture(data.path(), manifest()).await;
+    let storage = Storage::new(data.path());
+    let draft = storage
+        .open_draft_project(&pool, &previous.blueprint_id)
+        .await
+        .unwrap();
+    let schema = json!({
+        "version": "macro-launch-fields/1",
+        "fields": [{"key":"ticket", "label":"Ticket", "type":"number", "required":true}]
+    });
+    let batch = serde_json::from_value(json!({
+        "files": [], "settings": {"launchFields": &schema}
+    }))
+    .unwrap();
+    let saved = storage
+        .edit_project(
+            &pool,
+            &previous.blueprint_id,
+            draft.project.revision,
+            batch,
+            true,
+        )
+        .await
+        .unwrap();
+    storage
+        .freeze(
+            &pool,
+            previous.blueprint_id.clone(),
+            saved.revision,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let version = VersionKey {
+        number: 2,
+        ..previous.clone()
+    };
+    let manager = manager_for_test(data.path()).await;
+    observe_fixture(&manager);
+    let old = preview(&manager, &pool, data.path(), previous, None).await;
+    assert!(old.start_message_required && old.launch_fields.is_none());
+    let plan = preview(&manager, &pool, data.path(), version.clone(), None).await;
+    assert!(!plan.start_message_required);
+    assert_eq!(serde_json::to_value(&plan.launch_fields).unwrap(), schema);
+    let adapted = storage
+        .adapt_version(&pool, version.clone(), "demo".into(), "Adapted".into())
+        .await
+        .unwrap();
+    let adapted = storage
+        .open_draft_project(&pool, &adapted.summary.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(adapted.project.settings).unwrap()["launchFields"],
+        schema
+    );
+
+    let archive = data.path().join("exported.agsdl");
+    storage
+        .export_version_archive(&pool, &version, &archive)
+        .await
+        .unwrap();
+    let staging = tempfile::tempdir_in(data.path()).unwrap();
+    let candidate = ImportCandidate::open(&archive, staging.path()).unwrap();
+    let imported = storage
+        .import_project(&pool, "demo", "Imported", &candidate)
+        .await
+        .unwrap();
+    assert!(imported
+        .draft
+        .project
+        .settings
+        .launch_fields()
+        .unwrap()
+        .is_none());
+
+    let host = HostState::new();
+    Arc::new(ScriptedAgent::default()).install(&host);
+    let runtime = || runtime(&host, &manager, &pool, data.path());
+    let make_request = |values| start::LaunchRequest {
+        start_message: None,
+        launch_values: Some(values),
+        ..request(version.clone(), plan.consent_token.clone())
+    };
+    let error = start::launch(runtime(), make_request(json!({"ticket":"12"})))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "INVALID_LAUNCH_VALUES");
+    assert_eq!(error.pointer, "/launchValues/ticket");
+
+    let run = start::launch(runtime(), make_request(json!({"ticket":12})))
+        .await
+        .unwrap();
+    let entry: String = sqlx::query_scalar(
+        "SELECT json_extract(request_json,'$.entry.messageJson') FROM engine_start030_requests WHERE system_id=?",
+    )
+    .bind(&run.receipt.identity.system_start_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let message: Value = serde_json::from_str(&entry).unwrap();
+    assert_eq!(message["prompt"], r#"{"ticket":12}"#);
     crate::agsdl_host_capture::test_codex_observations030()
         .lock()
         .unwrap()
@@ -687,6 +800,7 @@ fn request(version: VersionKey, token: Option<String>) -> start::LaunchRequest {
         configuration: Default::default(),
         name: None,
         start_message: Some("Start".into()),
+        launch_values: None,
         folder_reuse_token: None,
         model_overrides: BTreeMap::new(),
     }

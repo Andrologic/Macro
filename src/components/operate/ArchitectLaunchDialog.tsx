@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { parseLaunchValues } from "../../services/agsdl/launchFields";
 import { openExternalUrl } from "../../services/externalUrlOpener";
 import { architectLaunch, type LaunchConfiguration, type LaunchModelOverrides, type LaunchPreview, type RemoteMcpSettings } from "../../services/ipc/architectLaunch";
 import { architectLibrary, type BlueprintVersionSummary, type VersionKey } from "../../services/ipc/architectLibrary";
@@ -18,6 +19,7 @@ import { Textarea } from "../ui/Textarea";
 import { notify } from "../ui/toastService";
 import { LaunchChecklist, ModelRow, SecretRow, pendingCount } from "./launch/LaunchChecklist";
 import { LaunchConsent } from "./launch/LaunchConsent";
+import { LaunchFieldsForm } from "./launch/LaunchFieldsForm";
 import { LaunchMcpDetails, LaunchMcpNotes, LaunchMcpSettings } from "./launch/LaunchMcpDetails";
 import { LaunchReach } from "./launch/LaunchReach";
 import { LaunchSummary } from "./launch/LaunchSummary";
@@ -90,6 +92,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
   const [modelOverrides, setModelOverrides] = useState<LaunchModelOverrides>({});
   const [configuration, setConfiguration] = useState<LaunchConfiguration>();
   const [message, setMessage] = useState("");
+  const [fieldInputs, setFieldInputs] = useState(() => new Map<string, string>());
   const [name, setName] = useState("");
   const [checking, setChecking] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -139,12 +142,15 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
   const current = preview?.version.blueprintId === blueprintId && preview.version.number === versionNumber ? preview : undefined;
   const folderConfirmed = !!current?.folderReuseToken && current.folderReuseToken === confirmedFolderToken;
   const pending = current ? pendingCount(current, folderConfirmed) : 0;
-  const messageMissing = !!current?.startMessageRequired && !message.trim();
+  const fields = current?.launchFields;
+  const launchValues = fields ? parseLaunchValues(fields, fieldInputs) : undefined;
+  const messageMissing = !fields && !!current?.startMessageRequired && !message.trim();
   const settled = !!current && !checking && !pending;
-  const ready = settled && !busy && !messageMissing;
+  const ready = settled && !busy && !messageMissing && launchValues !== null;
   const choosing = !!systems && !blueprintId;
   const reason = busy ? undefined : choosing ? t("agsdl.launch.chooseSystemReason") : !current && problem ? t("agsdl.launch.recheckReason") : !current || checking ? t("agsdl.launch.checkingReason")
-    : pending ? t("agsdl.launch.remaining", { count: pending }) : messageMissing ? t("agsdl.launch.messageRequired") : undefined;
+    : pending ? t("agsdl.launch.remaining", { count: pending }) : launchValues === null ? t("agsdl.launch.fields.invalidValues")
+      : messageMissing ? t("agsdl.launch.messageRequired") : undefined;
   const replaced = Object.keys(modelOverrides).filter(agent => !current?.blockers.some(blocker => blocker.code === "modelUnavailable" && blocker.subject === agent));
 
   const recheck = useCallback(() => {
@@ -153,6 +159,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
     setRevision(value => value + 1);
   }, []);
   const reset = () => {
+    setFieldInputs(new Map());
     setPreview(undefined);
     setConfiguration(undefined);
     setModelOverrides({});
@@ -202,7 +209,8 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
       const { identity, source } = await architectLaunch.start({
         version: current.version,
         configuration: current.configuration,
-        startMessage: current.startMessageRequired ? message : null,
+        startMessage: !fields && current.startMessageRequired ? message : null,
+        ...(launchValues ? { launchValues } : {}),
         name: name.trim() || null,
         consentToken: consent ? current.consentToken : null,
         folderReuseToken: folderConfirmed ? confirmedFolderToken : null,
@@ -293,7 +301,9 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
           {usable.map(option => <option key={option.number} value={option.number}>{t("agsdl.library.version", { number: option.number })}</option>)}
         </Select>}
       </div>}
-      {current?.startMessageRequired && <div className="space-y-1">
+      {fields && current && <LaunchFieldsForm schema={fields} hint={current.startMessageHint} values={fieldInputs} disabled={busy}
+        onChange={(key, value) => setFieldInputs(previous => new Map(previous).set(key, value))} />}
+      {!fields && current?.startMessageRequired && <div className="space-y-1">
         <label htmlFor="launch-start-message" className="block font-medium">{t("agsdl.launch.message")}</label>
         {current.startMessageHint && <p className="!m-0 whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
           {t("agsdl.launch.authorHint", { hint: current.startMessageHint })}</p>}

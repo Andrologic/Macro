@@ -1,5 +1,26 @@
 {
   "launch": {
+    "fields": {
+      "title": "起動時の入力項目",
+      "authorHelp": "実行する人が入力する項目を追加します。Macro は入力値を JSON として開始メッセージに含めます。",
+      "newField": "新しい項目",
+      "label": "ラベル",
+      "key": "JSON キー",
+      "type": "種類",
+      "required": "必須",
+      "add": "項目を追加",
+      "definitionHelp": "キーは重複させず、64 文字以内にしてください。半角英字で始め、半角英数字とアンダースコアのみを使えます。各項目に 80 文字以内のラベルが必要です。",
+      "invalidDefinition": "起動時の入力項目の定義が正しくありません。",
+      "invalidValues": "必須項目を入力し、値を確認してください。",
+      "chooseBoolean": "値を選択",
+      "yes": "はい",
+      "no": "いいえ",
+      "types": {
+        "text": "テキスト",
+        "number": "数値",
+        "boolean": "はい／いいえ"
+      }
+    },
     "openArchitect": "Architect を開く",
     "title": "システムを起動",
     "system": "システム",

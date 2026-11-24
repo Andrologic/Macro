@@ -1,5 +1,26 @@
 {
   "launch": {
+    "fields": {
+      "title": "Startfelder",
+      "authorHelp": "Füge die Felder hinzu, die beim Start ausgefüllt werden sollen. Macro sendet ihre Werte als JSON in der Startnachricht.",
+      "newField": "Neues Feld",
+      "label": "Bezeichnung",
+      "key": "JSON-Schlüssel",
+      "type": "Art",
+      "required": "Pflichtfeld",
+      "add": "Feld hinzufügen",
+      "definitionHelp": "Verwende eindeutige Schlüssel mit höchstens 64 Zeichen. Sie müssen mit einem Buchstaben beginnen und dürfen nur Buchstaben von A bis Z, Ziffern oder Unterstriche enthalten. Jedes Feld braucht eine Bezeichnung mit höchstens 80 Zeichen.",
+      "invalidDefinition": "Die Startfelddefinitionen sind ungültig.",
+      "invalidValues": "Fülle die Pflichtfelder aus und überprüfe die eingegebenen Werte.",
+      "chooseBoolean": "Wert auswählen",
+      "yes": "Ja",
+      "no": "Nein",
+      "types": {
+        "text": "Text",
+        "number": "Zahl",
+        "boolean": "Ja oder nein"
+      }
+    },
     "openArchitect": "Architect öffnen",
     "title": "System starten",
     "system": "Agentensystem",
