@@ -115,6 +115,8 @@ soumises à leurs validations Rust ; les extensions ci-dessous restent fermées
 jusqu'à leur intégration et leur qualification. Start et Stop sont raccordés
 pour la tranche Codex 0.167.x qualifiée sur macOS ARM64 et Linux ARM64 :
 agents, ressources inline, résultats et corrections, choix et limites de visites.
+Sur les deux plateformes, Codex 0.171.0 est aussi qualifié pour le profil en
+lecture seule avec une connexion au profil privé.
 Les étapes `call` sont aussi raccordées sur macOS ARM64 avec le confinement
 natif. Les commandes et serveurs MCP locaux sur stdio tournent dans le dossier
 du projet, sans réseau ni environnement hérité, sous le plafond `workspace`

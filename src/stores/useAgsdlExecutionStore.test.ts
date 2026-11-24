@@ -517,19 +517,23 @@ function prepare030() {
 }
 it('reports native 0.3 preflight and Codex failures without staging a run', async () => {
   prepare030();
-  for (const [code, key] of [['UNSUPPORTED_030_FEATURE','unsupported030'], ['CODEX_LOGIN_REQUIRED','codexLoginRequired'], ['CODEX_NOT_INSTALLED','codexNotInstalled'], ['CODEX_VERSION_UNQUALIFIED','codexUnsupported'], ['CODEX_PLATFORM_UNQUALIFIED','codexUnsupported'], ['CALL_PLATFORM_UNQUALIFIED','callPlatform030'], ['CALL_PERMISSIONS_UNSUPPORTED','callPermissions030'], ['OTHER','error']]) {
+  for (const [code, key] of [['UNSUPPORTED_030_FEATURE','unsupported030'], ['CODEX_LOGIN_REQUIRED','codexLoginRequired'], ['CODEX_NOT_INSTALLED','codexNotInstalled'], ['CODEX_PACKAGE_INCOMPLETE','codexPackageIncomplete'], ['CODEX_VERSION_UNQUALIFIED','codexUnsupported'], ['CODEX_PLATFORM_UNQUALIFIED','codexUnsupported'], ['CALL_PLATFORM_UNQUALIFIED','callPlatform030'], ['CALL_PERMISSIONS_UNSUPPORTED','callPermissions030'], ['OTHER','error']]) {
     preflightFailure = code;
     await store.getState().start030('write');
     expect(store.getState().error).toBe(`agsdl.execution.${key}`);
     expect(native.calls).not.toContain('stage030');
   }
 });
-it('distinguishes unsupported Codex status before staging an intent', async () => {
+it('reports blocking Codex statuses before staging an intent', async () => {
   prepare030();
-  for (const code of ['CODEX_VERSION_UNQUALIFIED', 'CODEX_PLATFORM_UNQUALIFIED']) {
+  for (const [code, key] of [
+    ['CODEX_VERSION_UNQUALIFIED', 'codexUnsupported'],
+    ['CODEX_PLATFORM_UNQUALIFIED', 'codexUnsupported'],
+    ['CODEX_PACKAGE_INCOMPLETE', 'codexPackageIncomplete'],
+  ]) {
     codexCode = code;
     await store.getState().start030('write');
-    expect(store.getState().error).toBe('agsdl.execution.codexUnsupported');
+    expect(store.getState().error).toBe(`agsdl.execution.${key}`);
     expect(native.calls).not.toContain('stage030');
   }
 });

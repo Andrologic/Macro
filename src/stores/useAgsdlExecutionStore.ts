@@ -101,6 +101,7 @@ let generation = 0;
 /** Changes only when the view leaves its project/plan/branch/conversation scope. */
 let scopeGeneration = 0;
 const executionErrorKeys = new Set(["agsdl.execution.error", "agsdl.execution.stale", "agsdl.execution.unavailable", "agsdl.execution.intentOpen", "agsdl.execution.retryable", "agsdl.execution.saveBeforeStart", "agsdl.execution.ownerChanged", "agsdl.execution.promptRequired", "agsdl.execution.capturedAgentRequired", "agsdl.execution.taskUnavailable", "agsdl.execution.unsupported030", "agsdl.execution.codexNotInstalled", "agsdl.execution.codexLoginRequired", "agsdl.execution.codexUnsupported",
+  "agsdl.execution.codexPackageIncomplete",
   "agsdl.execution.refused.SCOPE_INVALID", "agsdl.execution.refused.SOURCE_CHANGED", "agsdl.execution.refused.TARGET_INVALID", "agsdl.execution.refused.TARGET_CLOSED", "agsdl.execution.refused.INPUT_CONSTRAINT"]);
 const intentFailure = (error: unknown): ExecutionIntentError | undefined => {
   const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
@@ -115,6 +116,7 @@ const executionError = (error: unknown) => {
   if (native.code === 'CALL_PERMISSIONS_UNSUPPORTED') return { error: 'agsdl.execution.callPermissions030', stale: false };
   if (native.code === 'UNSUPPORTED_030_FEATURE') return { error: 'agsdl.execution.unsupported030', stale: false, launchDiagnostics030: [{ code: native.code, pointer: 'pointer' in native && typeof native.pointer === 'string' ? native.pointer : '', message: native.message }] };
   if (native.code === 'CODEX_NOT_INSTALLED') return { error: 'agsdl.execution.codexNotInstalled', stale: false };
+  if (native.code === 'CODEX_PACKAGE_INCOMPLETE') return { error: 'agsdl.execution.codexPackageIncomplete', stale: false };
   if (native.code === 'CODEX_LOGIN_REQUIRED') return { error: 'agsdl.execution.codexLoginRequired', stale: false };
   if (['CODEX_VERSION_UNQUALIFIED', 'CODEX_PLATFORM_UNQUALIFIED'].includes(native.code ?? '')) return { error: 'agsdl.execution.codexUnsupported', stale: false };
   const message = native.message;
@@ -326,6 +328,7 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
       if (needsCodex) {
         const status = await executionCodexStatus();
         if (status.code === 'CODEX_NOT_INSTALLED') throw new Error('agsdl.execution.codexNotInstalled');
+        if (status.code === 'CODEX_PACKAGE_INCOMPLETE') throw new Error('agsdl.execution.codexPackageIncomplete');
         if (status.code === 'CODEX_LOGIN_REQUIRED') throw new Error('agsdl.execution.codexLoginRequired');
         if (['CODEX_VERSION_UNQUALIFIED', 'CODEX_PLATFORM_UNQUALIFIED'].includes(status.code)) throw new Error('agsdl.execution.codexUnsupported');
         if (!status.available) throw new Error('agsdl.execution.unavailable');

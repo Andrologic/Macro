@@ -364,7 +364,9 @@ qualification n’est pas faite.
 
 Le [contrat UI/runtime 0.3](agsdl-030.md#contrat-produit-des-runs-03) définit les
 actions raccordées et les DTO natifs encore manquants. Start et Stop sont
-ouverts pour la tranche Codex 0.167.x qualifiée sur macOS ARM64 et Linux ARM64.
+ouverts pour Codex 0.167.x sur macOS ARM64 et Linux ARM64. Sur ces deux
+plateformes, Codex 0.171.0 est aussi qualifié pour le profil en lecture seule
+avec une connexion au profil privé.
 Les appels locaux, demandes humaines, messages en file et steer, délais,
 routes parallèles, fan-outs et joins sont raccordés au superviseur natif.
 Les compositions imbriquées, les erreurs locales ou du flow et les limites de

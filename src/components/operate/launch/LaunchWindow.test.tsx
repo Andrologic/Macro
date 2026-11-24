@@ -238,13 +238,16 @@ it("explains tool problems in plain words, with the code on demand and no way to
   expect(primary().disabled).toBe(true);
 });
 
-it("explains the supported Codex version on macOS and links to installation instructions", async () => {
+it.each([
+  ["macosArm64", "macOS ARM64"],
+  ["linuxArm64", "Linux ARM64"],
+] as const)("explains the supported Codex versions on %s and links to installation instructions", async (codexPlatform, platformName) => {
   install(() => preview({
-    blockers: [{ code: "codexUnavailable", subject: "CODEX_VERSION_UNQUALIFIED", codexPlatform: "macosArm64" }],
+    blockers: [{ code: "codexUnavailable", subject: "CODEX_VERSION_UNQUALIFIED", codexPlatform }],
   }));
   await show();
-  expect(dialog().textContent).toContain("Install the complete official Codex 0.167.x package");
-  expect(dialog().textContent).not.toContain("0.171.0");
+  expect(dialog().textContent).toContain(`Install the complete official Codex 0.167.x package for ${platformName}`);
+  expect(dialog().textContent).toContain("0.171.0 for read-only runs with a private sign-in");
   expect(dialog().textContent).not.toContain("Connect…");
   const guide = byText("a", "Codex installation guide", dialog());
   expect(guide?.getAttribute("href")).toEndWith("/docs/agsdl-codex-native.md");
