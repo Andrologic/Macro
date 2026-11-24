@@ -320,7 +320,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
         onSecretSaved={secret => { setNotice(t("agsdl.launch.secretSaved", { name: secret.name })); setChecking(true); setRevision(value => value + 1); }}
         onOpenGuide={url => void openExternalUrl(url).catch(() => setProblem({ message: t("agsdl.launch.failed"), technical: "", recheck: false }))}
         onRecheck={recheck} />}
-      {current && <LaunchMcpNotes notes={current.mcpNotes} />}
+      {current && <LaunchMcpNotes preview={current} />}
       {current && <LaunchMcpDetails preview={current} />}
       {notice && <p role="status" className="!m-0 text-[11px] text-emerald-500">{notice}</p>}
     </>}

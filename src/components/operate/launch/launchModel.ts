@@ -117,12 +117,41 @@ export function failureText(failure: unknown, t: TFunction): { message: string; 
 export const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 
 /** The dense select used across the launch window. */
-export const selectClass = "!rounded-md !px-2 !py-1 !text-xs";
+/** Room on the right keeps the arrow of a narrow select visible. */
+export const selectClass = "!rounded-md !py-1 !pl-2 !pr-7 !text-xs";
 
 /** The searchable picker in the same dense size as the selects. */
 export const comboboxClass = "!rounded-md !py-1 !pl-2 !text-xs";
 
 type PreviewAgents = LaunchPreview["permissions"]["agents"];
+
+/** Why the tools of a declared server are not connected, told per agent that lists it. */
+export interface UnusedServerReason {
+  /** `nobody`: no agent lists the server. `notAllowed`: agents list it, none is given its tools. */
+  kind: "nobody" | "notAllowed";
+  agents: Array<{ id: string; why: "readOnly" | "denied" | "policy" | "engine" | "notInFlow"; engine: string }>;
+}
+
+const engineLabels: Readonly<Record<string, string>> = { codex: "Codex", "claude-code": "Claude Code" };
+export const engineLabel = (harness: string) => Object.hasOwn(engineLabels, harness) ? engineLabels[harness] : harness;
+
+/**
+ * Read from what the check already knows: which agents list the server, their engine and access,
+ * and whether the flow reaches them. Only Codex agents can be given tools by this version of Macro.
+ */
+export function unusedServerReason(preview: LaunchPreview, server: string): UnusedServerReason {
+  const agents = Object.entries(preview.permissions.agents)
+    .filter(([, agent]) => agent.mcpServers.includes(server))
+    .map(([id, agent]) => ({
+      id, engine: engineLabel(agent.harness),
+      why: agent.usage !== "reachable" ? "notInFlow" as const
+        : agent.harness !== "codex" ? "engine" as const
+          // The agent would be allowed, but the policy of this computer says no: that is not the author's to change.
+          : preview.agentMcp[id]?.[server] && preview.agentMcp[id][server].agentDefault !== "deny" && preview.agentMcp[id][server].hostDefault === "deny" ? "policy" as const
+            : (agent.permissions.preset ?? "read-only") === "read-only" ? "readOnly" as const : "denied" as const,
+    }));
+  return { kind: agents.length ? "notAllowed" : "nobody", agents };
+}
 
 /** Agents the flow hands work to, and those it never reaches. A system without a flow reaches none. */
 export function flowReach(agents: PreviewAgents): { declared: string[]; unreached: string[] } {

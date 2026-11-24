@@ -300,7 +300,7 @@ it("shows the endpoint, credential delivery and tool decisions before consent", 
   expect(dialog().textContent).toContain("Step 2 of 2 · Code review · Version 2 · This machine");
   expect(dialog().textContent).toContain("You have not approved what this version can do yet");
   expect(dialog().textContent).toContain(remoteEndpoint);
-  expect(dialog().textContent).toContain("Send ISSUES_TOKEN in Authorization: Bearer");
+  expect(dialog().textContent).toContain("ISSUES_TOKEN is sent as a Bearer token.");
   expect(dialog().textContent).toContain("Allowed addresses · Public internet");
   expect(dialog().textContent).toContain("reviewer");
   expect(dialog().textContent).toContain("read · Allowed");
@@ -330,7 +330,7 @@ it("shows unused MCP diagnostics before consent without blocking or listing unus
   }));
   await show();
   expect(dialog().textContent).toContain("“issues” has an unsupported endpoint and will not be connected.");
-  expect(dialog().textContent).toContain("“spare” will not be connected.");
+  expect(dialog().textContent).toContain("No agent uses the tools of “spare”, so it will not be connected.");
   expect(primary().disabled).toBe(false);
   await click(primary());
   expect(dialog().textContent).toContain("alerts");
@@ -366,11 +366,55 @@ it("requires explicit delivery choices and sends the selected header to launch",
   await flush();
   expect(primary().disabled).toBeFalse();
   await click(primary());
-  expect(dialog().textContent).toContain("Send CLIENT_TOKEN in x-team-key");
+  expect(dialog().textContent).toContain("CLIENT_TOKEN is sent in the “x-team-key” header.");
   await click(primary());
   expect(started()[0].configuration.remoteMcp?.issues[remoteEndpoint].delivery).toEqual({
     ISSUES_TOKEN: { type: "bearer" }, CLIENT_TOKEN: { type: "header", name: "X-Team-Key" },
   });
+});
+
+it("explains the connection form in plain words, and does not repeat the address in the blocker beside it", async () => {
+  install(() => preview({
+    permissions: remotePermissions,
+    blockers: [{ code: "mcpPrivateNetworkRequired", subject: "issues" }],
+    remoteMcpSetup: { issues: { url: remoteEndpoint, addressScope: "public", suggestions: { ISSUES_TOKEN: { type: "bearer" } } } },
+  }));
+  await show();
+  const form = dialog().querySelector("fieldset")!;
+  expect(form.textContent).toContain("Connection to issues");
+  expect(form.textContent).toContain("Allowed addresses");
+  expect(form.textContent).toContain("Macro only connects to addresses of this kind: the internet, your local network, or this computer.");
+  expect([...form.querySelectorAll("select")[0].options].map(option => option.textContent)).toEqual(["Public internet", "Local network", "This computer"]);
+  expect(form.textContent).toContain("How to send ISSUES_TOKEN");
+  // The sentence names the control to change; the address and the secret names are in the form, once.
+  expect(dialog().textContent).toContain("is on a local network. Set “Allowed addresses” above to “Local network”");
+  expect(dialog().textContent!.split(remoteEndpoint)).toHaveLength(2);
+  expect(dialog().textContent).not.toContain("Declared credentials");
+  // A named header asks for its name, with a hint of what to type.
+  const delivery = form.querySelectorAll("select")[1];
+  await act(async () => { delivery.value = "header"; delivery.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(form.querySelector<HTMLInputElement>('input[aria-label="HTTP header for ISSUES_TOKEN"]')?.placeholder).toBe("Header name");
+});
+
+it("shows each tool rule of an agent with its effect, and what applies to every other tool", async () => {
+  install(() => preview({
+    consentToken: "review", permissions: remotePermissions,
+    remoteMcp: { issues: { url: remoteEndpoint, addressScope: "public", delivery: { ISSUES_TOKEN: "Authorization: Bearer" } } },
+    agentMcp: { reviewer: { issues: {
+      equipped: true, default: "deny", tools: { read: "allow", lookup: "ask", remove: "deny" },
+      agentDefault: "deny", agentPatterns: {}, hostDefault: "allow", hostPatterns: {},
+    } } },
+  }));
+  await show();
+  await click(primary());
+  const rows = [...dialog().querySelectorAll("li")].map(item => item.textContent);
+  expect(rows).toContain("read · Allowed");
+  expect(rows).toContain("lookup · Approval required");
+  expect(rows).toContain("remove · Denied");
+  expect(rows).toContain("Every other tool · Denied");
+  // The effect is an icon as well as a word, never colour alone.
+  expect(dialog().querySelectorAll("li svg").length).toBeGreaterThanOrEqual(4);
+  expect(dialog().textContent).toContain("ISSUES_TOKEN is sent as a Bearer token.");
 });
 
 it("asks for consent to the selected network scope even for a server with no credentials", async () => {
@@ -393,7 +437,7 @@ it("asks for consent to the selected network scope even for a server with no cre
   });
   await flush();
   await click(primary());
-  expect(dialog().textContent).toContain("Allowed addresses · Private network");
+  expect(dialog().textContent).toContain("Allowed addresses · Local network");
   expect(started()).toEqual([]);
   await click(primary());
   expect(started()[0].consentToken).toBe("private-addresses");
@@ -432,22 +476,96 @@ it("keeps the credential entry and consent separate for a new endpoint", async (
   expect(JSON.stringify(started())).not.toContain("synthetic-secret");
 });
 
-it("omits the endpoint and credentials when the reviewer has no MCP tools", async () => {
+/** The official AgSDL review project: a read-only reviewer lists the `issues` server and is never given its tools. */
+const reviewerAgent = (patch: Partial<LaunchPreview["permissions"]["agents"][string]> = {}): LaunchPreview["permissions"]["agents"][string] => ({
+  usage: "reachable", harness: "codex", harnessVersion: null, model: null, mcpServers: ["issues"], completionCheck: null,
+  permissions: { preset: "read-only", directories: {}, outside: null, reviewer: null, rules: [] }, ...patch,
+});
+const unequipped = { reviewer: { issues: {
+  equipped: false, default: "deny", tools: {},
+  agentDefault: "deny", agentPatterns: {}, hostDefault: "allow", hostPatterns: {},
+} } } as const;
+
+it("omits the endpoint and credentials when the reviewer has no MCP tools, and says why in plain words", async () => {
   install(() => preview({
-    consentToken: "review", permissions: remotePermissions,
+    consentToken: "review", permissions: { ...remotePermissions, agents: { reviewer: reviewerAgent() } },
     mcpNotes: [{ server: "issues", unsupportedEndpoint: false }],
-    agentMcp: { reviewer: { issues: {
-      equipped: false, default: "deny", tools: {},
-      agentDefault: "deny", agentPatterns: {}, hostDefault: "allow", hostPatterns: {},
-    } } },
+    agentMcp: unequipped,
   }));
   await show();
   expect(dialog().querySelector('input[type="password"]')).toBeNull();
-  expect(dialog().textContent).toContain("“issues” will not be connected.");
+  expect(dialog().textContent).toContain("No agent is allowed to use the tools of “issues” in this run, so it will not be connected.");
+  // The reason per agent is one click away, not on the surface.
+  const why = byText("summary", "Why?", dialog())!;
+  expect(why.parentElement!.hasAttribute("open")).toBe(false);
+  await click(why);
+  expect(dialog().textContent).toContain("reviewer: it can only read, so it is given no tools.");
+  expect(dialog().textContent).toContain("allow them in the agent’s permissions in Architect");
   await click(primary());
   expect(dialog().textContent).not.toContain("issues");
   expect(dialog().textContent).not.toContain("ISSUES_TOKEN");
   expect(dialog().textContent).not.toContain(remoteEndpoint);
+});
+
+it.each([
+  ["a Claude Code agent", reviewerAgent({ harness: "claude-code" }), "reviewer: its engine (Claude Code) does not offer tools here."],
+  ["an agent that may write", reviewerAgent({ permissions: { preset: "workspace", directories: {}, outside: null, reviewer: null, rules: [{ action: "mcp", match: "issues", effect: "deny" }] } }), "reviewer: its permissions do not allow tools."],
+  ["an agent the flow never reaches", reviewerAgent({ usage: "declaredOnly" }), "reviewer: the flow never hands work to it."],
+])("tells why the tools of an unused server are off for %s", async (_name, agent, line) => {
+  install(() => preview({
+    permissions: { ...remotePermissions, agents: { reviewer: agent } },
+    mcpNotes: [{ server: "issues", unsupportedEndpoint: false }], agentMcp: unequipped,
+  }));
+  await show();
+  await click(byText("summary", "Why?", dialog()));
+  expect(dialog().textContent).toContain(line);
+});
+
+it("tells the policy of this computer apart from what the author wrote", async () => {
+  install(() => preview({
+    permissions: { ...remotePermissions, agents: { reviewer: reviewerAgent({ permissions: { preset: "workspace", directories: {}, outside: null, reviewer: null, rules: [] } }) } },
+    mcpNotes: [{ server: "issues", unsupportedEndpoint: false }],
+    agentMcp: { reviewer: { issues: { ...unequipped.reviewer.issues, agentDefault: "ask", hostDefault: "deny" } } },
+  }));
+  await show();
+  await click(byText("summary", "Why?", dialog()));
+  expect(dialog().textContent).toContain("reviewer: the launch policy of this computer does not allow tools.");
+});
+
+it("says a declared server no agent lists is simply not used", async () => {
+  install(() => preview({ permissions: { ...remotePermissions, agents: {} }, mcpNotes: [{ server: "issues", unsupportedEndpoint: false }] }));
+  await show();
+  expect(dialog().textContent).toContain("No agent uses the tools of “issues”, so it will not be connected.");
+  expect(!!byText("summary", "Why?", dialog())).toBe(false);
+});
+
+const only = (patch: Partial<LaunchPreview["permissions"]["agents"][string]>) => ({ ...preview().permissions, agents: { writer: reviewerAgent({ mcpServers: [], model: { name: "gpt-5.2", effort: null }, ...patch }) } });
+
+it.each([
+  ["declared but absent from the flow", "declaredOnly"],
+  ["declared in a system that has no flow", "unknown"],
+] as const)("warns before launching, and again in consent, when the only agent is %s", async (_name, usage) => {
+  install(() => preview({ consentToken: "review", permissions: only({ usage }) }));
+  await show();
+  const warning = dialog().querySelector('section[aria-label="No agent will run"]')!;
+  expect(warning.textContent).toContain("never hands work to them: launching it would not run any agent");
+  expect(primary().disabled).toBe(false);
+  await click(primary());
+  // Consent keeps the warning, and lists no engine or model for an agent that will not run.
+  expect(dialog().querySelector('section[aria-label="No agent will run"]')).not.toBeNull();
+  expect(dialog().textContent).not.toContain("Codex");
+  expect(dialog().textContent).not.toContain("gpt-5.2");
+});
+
+it("names the agents a flow does not reach when others do take part, and stays silent when all are reached", async () => {
+  const permissions = { ...preview().permissions, agents: { writer: reviewerAgent({ mcpServers: [] }), spare: reviewerAgent({ mcpServers: [], usage: "declaredOnly" }) } };
+  install(() => preview({ permissions }));
+  await show();
+  expect(dialog().querySelector('section[aria-label="1 agent will not run"]')?.textContent).toContain("never hands work to: spare");
+  view.unmount();
+  install(() => preview({ permissions: { ...permissions, agents: { writer: permissions.agents.writer } } }));
+  await show();
+  expect(dialog().textContent).not.toContain("will not run");
 });
 
 it("announces the launch with an action, and opens nothing by itself", async () => {
@@ -563,39 +681,4 @@ it("keeps the version it was opened for: no picker, the check starts at once", a
   expect(!!dialog().querySelector('input[aria-label="System"]')).toBe(false);
   expect(calls.filter(call => call.command === "architect_launch_prepare")).toHaveLength(1);
   expect(primary().disabled).toBe(false);
-});
-
-/** An agent as the launch check describes it. */
-const reviewerAgent = (patch: Partial<LaunchPreview["permissions"]["agents"][string]> = {}): LaunchPreview["permissions"]["agents"][string] => ({
-  usage: "reachable", harness: "codex", harnessVersion: null, model: null, mcpServers: ["issues"], completionCheck: null,
-  permissions: { preset: "read-only", directories: {}, outside: null, reviewer: null, rules: [] }, ...patch,
-});
-
-const only = (patch: Partial<LaunchPreview["permissions"]["agents"][string]>) => ({ ...preview().permissions, agents: { writer: reviewerAgent({ mcpServers: [], model: { name: "gpt-5.2", effort: null }, ...patch }) } });
-
-it.each([
-  ["declared but absent from the flow", "declaredOnly"],
-  ["declared in a system that has no flow", "unknown"],
-] as const)("warns before launching, and again in consent, when the only agent is %s", async (_name, usage) => {
-  install(() => preview({ consentToken: "review", permissions: only({ usage }) }));
-  await show();
-  const warning = dialog().querySelector('section[aria-label="No agent will run"]')!;
-  expect(warning.textContent).toContain("never hands work to them: launching it would not run any agent");
-  expect(primary().disabled).toBe(false);
-  await click(primary());
-  // Consent keeps the warning, and lists no engine or model for an agent that will not run.
-  expect(dialog().querySelector('section[aria-label="No agent will run"]')).not.toBeNull();
-  expect(dialog().textContent).not.toContain("Codex");
-  expect(dialog().textContent).not.toContain("gpt-5.2");
-});
-
-it("names the agents a flow does not reach when others do take part, and stays silent when all are reached", async () => {
-  const permissions = { ...preview().permissions, agents: { writer: reviewerAgent({ mcpServers: [] }), spare: reviewerAgent({ mcpServers: [], usage: "declaredOnly" }) } };
-  install(() => preview({ permissions }));
-  await show();
-  expect(dialog().querySelector('section[aria-label="1 agent will not run"]')?.textContent).toContain("never hands work to: spare");
-  view.unmount();
-  install(() => preview({ permissions: { ...permissions, agents: { writer: permissions.agents.writer } } }));
-  await show();
-  expect(dialog().textContent).not.toContain("will not run");
 });

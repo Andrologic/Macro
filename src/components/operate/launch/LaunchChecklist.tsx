@@ -134,7 +134,7 @@ export function LaunchChecklist({ preview, overrides, folderConfirmed, disabled,
         </div>}
         {view.kind === "codex" && <CodexBlockerRow view={view} onOpenGuide={onOpenGuide} />}
         {view.kind === "mcpRemote" && <RemoteMcpBlocker server={view.server} technical={view.technical} textKey={view.textKey}
-          definition={preview.permissions.mcpServers[view.server]} />}
+          definition={preview.permissions.mcpServers[view.server]} configurable={Object.hasOwn(preview.remoteMcpSetup, view.server)} />}
         {view.kind === "author" && <div className="space-y-1">
           <p className="!m-0 flex items-start gap-2"><Icon name="circle-x" size={13} className="mt-0.5 shrink-0 text-red-500" aria-hidden="true" />
             <span className="min-w-0 break-words">{t(`agsdl.launch.blocker.${view.textKey}`, { subject: view.subject })}</span></p>
@@ -188,15 +188,17 @@ function CodexBlockerRow({ view, onOpenGuide }: {
   </div>;
 }
 
-function RemoteMcpBlocker({ server, technical, definition, textKey }: {
+function RemoteMcpBlocker({ server, technical, definition, textKey, configurable }: {
   textKey: string;
+  /** The connection form is on screen: it already shows the address and the secrets, so this does not repeat them. */
+  configurable: boolean;
   server: string;
   technical: string;
   definition?: LaunchPreview["permissions"]["mcpServers"][string];
 }) {
   const { t } = useAgsdlTranslation();
-  const endpoint = definition?.transport.type === "remote" ? definition.transport.url : null;
-  const names = definition?.requiredSecrets ?? [];
+  const endpoint = !configurable && definition?.transport.type === "remote" ? definition.transport.url : null;
+  const names = configurable ? [] : definition?.requiredSecrets ?? [];
   return <div className="space-y-1">
     <p className="!m-0 flex items-start gap-2">
       <Icon name="circle-x" size={13} className="mt-0.5 shrink-0 text-red-500" aria-hidden="true" />
