@@ -23,6 +23,7 @@ function preview(patch: Partial<LaunchPreview> = {}): LaunchPreview {
     version: archive, note: "Added the reviewer", startMessageRequired: false, startMessageHint: null,
     workingFolderMode: "perExecution", configuration: { workingFolder: null }, folderReuseToken: null,
     blockers: [], secrets: [], availableModels: [], consentToken: null,
+    agentMcp: {}, remoteMcp: {},
     permissions: {
       title: null, authoredId: "system", contract: "agsdl-0.4.0", packageFormat: "agsdl-archive-1", projectFormat: "agsdl-project-1",
       stagedSha256: "digest", historyWillBeRemoved: false, entryPoint: "entry", agents: {}, directCalls: [], mcpServers: {},
@@ -274,8 +275,16 @@ it("shows the remote MCP endpoint and declared credentials when the runtime cann
   expect(primary().disabled).toBe(true);
 });
 
-it("shows the remote endpoint in the launch consent step", async () => {
-  install(() => preview({ consentToken: "review", permissions: remotePermissions }));
+it("shows the endpoint, credential delivery and tool decisions before consent", async () => {
+  install(() => preview({
+    consentToken: "review",
+    permissions: remotePermissions,
+    remoteMcp: { issues: { url: remoteEndpoint, delivery: { ISSUES_TOKEN: "Authorization: Bearer" } } },
+    agentMcp: { reviewer: { issues: {
+      equipped: true, default: "deny", tools: { read: "allow", lookup: "ask", remove: "deny" },
+      agentDefault: "deny", agentPatterns: {}, hostDefault: "allow", hostPatterns: {},
+    } } },
+  }));
   await show();
   expect(primary().textContent).toBe("Continue");
   await click(primary());
@@ -284,12 +293,65 @@ it("shows the remote endpoint in the launch consent step", async () => {
   expect(dialog().textContent).toContain("Step 2 of 2 · Code review · Version 2 · This machine");
   expect(dialog().textContent).toContain("You have not approved what this version can do yet");
   expect(dialog().textContent).toContain(remoteEndpoint);
+  expect(dialog().textContent).toContain("Send ISSUES_TOKEN in Authorization: Bearer");
+  expect(dialog().textContent).toContain("reviewer");
+  expect(dialog().textContent).toContain("read · Allowed");
+  expect(dialog().textContent).toContain("lookup · Approval required");
+  expect(dialog().textContent).toContain("remove · Denied");
   expect(primary().textContent).toBe("Allow and launch");
   await click(byText("button", "Back", dialog()));
   expect(dialog().querySelector("header strong")?.textContent).toBe("Launch “Code review”");
   await click(primary());
   await click(primary());
   expect(started()[0].consentToken).toBe("review");
+});
+
+it("keeps the credential entry and consent separate for a new endpoint", async () => {
+  let stored = false;
+  install(args => {
+    const version = args.version as typeof archive;
+    const url = version.number === 2 ? remoteEndpoint + "?tenant=new" : remoteEndpoint;
+    return preview({
+      version, permissions: remotePermissions,
+      consentToken: version.number === 2 ? "new-endpoint-consent" : null,
+      remoteMcp: { issues: { url, delivery: { ISSUES_TOKEN: "Authorization: Bearer" } } },
+      secrets: [{ server: "issues", name: "ISSUES_TOKEN", stored }],
+    });
+  }, (command, args) => {
+    expect(command).toBe("architect_launch_set_secret");
+    expect(args).toEqual({ version: archive, server: "issues", name: "ISSUES_TOKEN", value: "synthetic-secret" });
+    stored = true;
+  });
+  await show();
+  const input = dialog().querySelector('input[type="password"]')!;
+  expect(primary().disabled).toBe(true);
+  await fillField(input, "synthetic-secret");
+  await click(byText("button", "Save secret", dialog()));
+  await flush();
+  expect(dialog().querySelector('input[type="password"]')).toBeNull();
+  expect(started()).toEqual([]);
+  await click(primary());
+  expect(dialog().textContent).toContain("?tenant=new");
+  expect(dialog().textContent).not.toContain("synthetic-secret");
+  await click(primary());
+  expect(started()[0].consentToken).toBe("new-endpoint-consent");
+  expect(JSON.stringify(started())).not.toContain("synthetic-secret");
+});
+
+it("omits the endpoint and credentials when the reviewer has no MCP tools", async () => {
+  install(() => preview({
+    consentToken: "review", permissions: remotePermissions,
+    agentMcp: { reviewer: { issues: {
+      equipped: false, default: "deny", tools: {},
+      agentDefault: "deny", agentPatterns: {}, hostDefault: "allow", hostPatterns: {},
+    } } },
+  }));
+  await show();
+  expect(dialog().querySelector('input[type="password"]')).toBeNull();
+  await click(primary());
+  expect(dialog().textContent).toContain("issues · Server not connected");
+  expect(dialog().textContent).not.toContain("ISSUES_TOKEN");
+  expect(dialog().textContent).not.toContain(remoteEndpoint);
 });
 
 it("announces the launch with an action, and opens nothing by itself", async () => {

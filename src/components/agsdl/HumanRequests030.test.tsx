@@ -129,6 +129,18 @@ it('shows the exact native command and file scope before an action decision', as
   await act(async () => host.querySelectorAll<HTMLButtonElement>('form button')[1].click());
   expect(transport.submissions[0].answer).toEqual({ kind: 'decision', decision: 'no', comment: '' });
 });
+it('shows exact MCP tool arguments and submits a decision through the native request', async () => {
+  const actionJson = '{"nativeRequest":{"method":"mcp/tool/requestApproval","params":{"server":"issues","tool":"lookup","arguments":{"number":9007199254740993,"filter":{"state":"open"}}}}}';
+  const request = humanFixture030({ content: { kind: 'actionApproval', title: 'Allow lookup?', actionJson } });
+  transport.setCurrent(request); await render(ready(request));
+  const summary = host.querySelector('[data-native-mcp-summary]')!;
+  expect(Array.from(summary.querySelectorAll('dd'), value => value.textContent)).toEqual([
+    'issues', 'lookup', '{\n  "number": 9007199254740993,\n  "filter": {"state":"open"}\n}',
+  ]);
+  expect(summary.closest('details')).toBeNull();
+  await act(async () => host.querySelectorAll<HTMLButtonElement>('form button')[0].click());
+  expect(transport.submissions[0].answer).toEqual({ kind: 'decision', decision: 'yes', comment: '' });
+});
 it('restores every native terminal reason and response after remount without inventing an answer', async () => {
   const resolution = resolutionFixture030();
   const states: RunHumanState030[] = [

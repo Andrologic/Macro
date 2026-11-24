@@ -43,7 +43,27 @@
     "noSecrets": "Cette version ne demande aucun secret MCP.",
     "secretStored": "Enregistré dans le coffre local",
     "saveSecret": "Enregistrer le secret",
+    "mcp": {
+      "title": "Outils MCP",
+      "remoteHint": "Ce serveur utilise ses propres permissions et peut recevoir les données envoyées par le flux ou par un agent.",
+      "delivery": "Envoyer {{name}} dans {{header}}",
+      "files": "Fichiers livrés · {{names}}",
+      "environment": "Variables d’environnement · {{names}}",
+      "direct": "Appel direct par le flux · {{names}}",
+      "skipped": "Serveur non connecté",
+      "otherTools": "Autres outils · {{effect}}",
+      "patternHint": "La règle applicable la plus restrictive l’emporte. Pour chaque politique, la règle par défaut s’applique si aucune règle ne correspond.",
+      "agentRules": "Règles de l’agent · Par défaut : {{effect}}",
+      "hostRules": "Règles de la machine · Par défaut : {{effect}}",
+      "effect": {
+        "allow": "Autorisé",
+        "ask": "Approbation requise",
+        "deny": "Refusé"
+      }
+    },
     "blocker": {
+      "mcpSecretHeader": "Les secrets déclarés pour « {{subject}} » ne peuvent pas être envoyés dans des en-têtes HTTP MCP distincts.",
+      "mcpEndpointUnsupported": "L’adresse de « {{subject}} » doit utiliser HTTPS ou HTTP sur l’interface de bouclage, sans identifiant, mot de passe ni fragment.",
       "mcpRemoteUnsupported": "Cette version de Macro ne peut pas utiliser le serveur d’outils distant « {{subject}} » dans une exécution AgSDL.",
       "mcpRemoteDeclaredSecrets": "Identifiants déclarés : {{names}}.",
       "mcpIsolationUnavailable": "Macro ne peut pas faire tourner l’outil « {{subject}} » dans un espace protégé sur cet ordinateur ; il ne le démarrera donc pas.",
@@ -1084,6 +1104,9 @@
     }
   },
   "human030": {
+    "mcpServer": "Serveur MCP",
+    "mcpTool": "Outil",
+    "mcpArguments": "Arguments de l’appel",
     "planDetails": "Lire le plan complet",
     "questionDetails": "Lire la question complète",
     "messageDetails": "Lire le message reçu exact",

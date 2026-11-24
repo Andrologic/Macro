@@ -66,7 +66,7 @@ type Blocker = LaunchPreview["blockers"][number];
 export type BlockerView =
   | { kind: "model"; agent: string }
   | { kind: "folder" }
-  | { kind: "mcpRemote"; server: string; technical: string }
+  | { kind: "mcpRemote"; server: string; technical: string; textKey: string }
   | ({ kind: "codex"; technical: string } & CodexBlocker)
   | { kind: "author"; textKey: string; subject: string; technical: string };
 
@@ -79,7 +79,8 @@ export function classifyBlocker({ code, subject, codexPlatform }: Blocker): Bloc
   const technical = [code, subject].filter(Boolean).join(" · ");
   if (code === "modelUnavailable") return { kind: "model", agent: subject };
   if (code === "workingFolderRequired") return { kind: "folder" };
-  if (code === "mcpRemoteUnsupported") return { kind: "mcpRemote", server: subject, technical };
+  if (["mcpRemoteUnsupported", "mcpEndpointUnsupported", "mcpSecretHeader"].includes(code))
+    return { kind: "mcpRemote", server: subject, technical, textKey: code };
   if (code === "codexUnavailable") return { kind: "codex", ...codexBlocker(subject, codexPlatform), technical };
   return { kind: "author", textKey: authorCodes.has(code) ? code : "unknown", subject, technical };
 }

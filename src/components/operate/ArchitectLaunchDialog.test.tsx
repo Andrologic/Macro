@@ -47,6 +47,7 @@ function preview(patch: Partial<LaunchPreview> = {}): LaunchPreview {
     version: archive, note: null, startMessageRequired: false, startMessageHint: null,
     workingFolderMode: "perExecution", configuration: { workingFolder: null }, folderReuseToken: null,
     blockers: [], secrets: [], availableModels: [], consentToken: null,
+    agentMcp: {}, remoteMcp: {},
     permissions: {
       title: null, authoredId: "system", contract: "agsdl-0.4.0", packageFormat: "agsdl-archive-1",
       projectFormat: "agsdl-project-1", stagedSha256: "digest", historyWillBeRemoved: false, entryPoint: "entry",
@@ -204,6 +205,10 @@ it("explains the approval scope and flags interpreter environment secrets", asyn
       { server: "worker", name: "API_TOKEN", stored: true },
     ],
   });
+  current.permissions.directCalls.push({
+    usage: "reachable", location: { file: "agsdl.json", pointer: "/flow/steps/call" },
+    target: { type: "mcp", server: "worker", tool: "call" },
+  });
   current.permissions.mcpServers.worker = {
     usage: "reachable", transport: { type: "local", command: ["serve"] },
     packagedFiles: ["serve"], requiredSecrets: ["HOME", "NODE_OPTIONS", "API_TOKEN"],
@@ -219,5 +224,6 @@ it("explains the approval scope and flags interpreter environment secrets", asyn
   expect(text).toContain("It does not cover files in your working folder that a tool might read or run");
   expect(text).toContain("The tool “worker” receives the secret HOME.");
   expect(text).toContain("The tool “worker” receives the secret NODE_OPTIONS.");
-  expect(text).not.toContain("API_TOKEN");
+  expect(text).toContain("Environment variables · HOME, NODE_OPTIONS, API_TOKEN");
+  expect(text).not.toContain("The tool “worker” receives the secret API_TOKEN.");
 });

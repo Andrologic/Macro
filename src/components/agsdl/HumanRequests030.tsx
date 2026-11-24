@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import type { RunAttestedHumanAnswer030, RunHumanOccurrence030, RunHumanRequest030, RunRead030 } from '../../types/agsdlRunUi030';
 import {
-  humanDuration030, humanRemainingMs030, humanRequestKey030, nativeCommandSummary030, runHumanView030,
+  humanDuration030, humanRemainingMs030, humanRequestKey030, nativeCommandSummary030, nativeMcpSummary030, runHumanView030,
   type HumanFormDraft030, type HumanRequestClient030, type HumanSendOutcome030, type ReadHuman030,
 } from '../../services/agsdl/humanRequests030';
 import { claimHumanAttention030 } from '../../services/agsdl/humanAttention030';
@@ -65,6 +65,7 @@ function HumanRequestCard030({ request, client, captureKey, fresh, onOpenRequest
   try { blocked = client.blocked(request); revisionStale = client.stale(request); } catch { storageUnavailable = true; }
   const content = request.content;
   const command = content.kind === 'actionApproval' ? nativeCommandSummary030(content.actionJson) : null;
+  const mcp = content.kind === 'actionApproval' ? nativeMcpSummary030(content.actionJson) : null;
   const qualified = content.kind !== 'unclassified' && (content.kind !== 'question' || content.answerContract.kind === 'available');
   const open = request.state.kind === 'open' && fresh && !readFailed && !revisionStale && !blocked && !storageFailed && !storageUnavailable && qualified && !busy;
   const view = runHumanView030(request, { plan: t('agsdl.human030.plan'), question: t('agsdl.human030.question'), unknown: t('agsdl.human030.unknown') });
@@ -124,6 +125,12 @@ function HumanRequestCard030({ request, client, captureKey, fresh, onOpenRequest
         <dt className="text-muted-foreground">{t('agsdl.human030.cwd')}</dt><dd className="whitespace-pre-wrap">{command.cwd}</dd>
       </dl>
     </div>}
+    {mcp && <dl className="space-y-1 [overflow-wrap:anywhere]" data-native-mcp-summary>
+      <dt className="text-muted-foreground">{t('agsdl.human030.mcpServer')}</dt><dd>{mcp.server}</dd>
+      <dt className="text-muted-foreground">{t('agsdl.human030.mcpTool')}</dt><dd>{mcp.tool}</dd>
+      <dt className="text-muted-foreground">{t('agsdl.human030.mcpArguments')}</dt>
+      <dd><pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-muted/60 p-2" tabIndex={0}>{mcp.args}</pre></dd>
+    </dl>}
     {state.kind !== "open" && <details><summary>{t("agsdl.human030.draftHint")}</summary>
       <ExecutionHumanRequest request={view} labels={{ choice: t("agsdl.human030.choice"), comment: t("agsdl.human030.comment"), answer: t("agsdl.human030.answer"), submit: t("agsdl.human030.submit"), approve: t("agsdl.human030.approve"), reject: t("agsdl.human030.reject"), failed: t("agsdl.human030.sendUncertain") }} open={false} onAnswer={send} draft={draft} />
     </details>}

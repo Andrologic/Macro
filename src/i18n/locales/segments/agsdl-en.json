@@ -43,7 +43,27 @@
     "noSecrets": "This version requires no MCP secrets.",
     "secretStored": "Saved in the local vault",
     "saveSecret": "Save secret",
+    "mcp": {
+      "title": "MCP tools",
+      "remoteHint": "This server can use its own permissions and receive data sent by the flow or an agent.",
+      "delivery": "Send {{name}} in {{header}}",
+      "files": "Packaged files · {{names}}",
+      "environment": "Environment variables · {{names}}",
+      "direct": "Called directly by the flow · {{names}}",
+      "skipped": "Server not connected",
+      "otherTools": "Other tools · {{effect}}",
+      "patternHint": "The most restrictive matching rule wins. If no rule matches in a policy, its default applies.",
+      "agentRules": "Agent rules · Default: {{effect}}",
+      "hostRules": "Machine rules · Default: {{effect}}",
+      "effect": {
+        "allow": "Allowed",
+        "ask": "Approval required",
+        "deny": "Denied"
+      }
+    },
     "blocker": {
+      "mcpSecretHeader": "The declared secrets for “{{subject}}” cannot be sent as distinct MCP HTTP headers.",
+      "mcpEndpointUnsupported": "The endpoint for “{{subject}}” must use HTTPS or loopback HTTP, with no username, password or fragment.",
       "mcpRemoteUnsupported": "This version of Macro cannot use the remote tool server “{{subject}}” in an AgSDL run.",
       "mcpRemoteDeclaredSecrets": "Declared credentials: {{names}}.",
       "mcpIsolationUnavailable": "Macro cannot run the tool “{{subject}}” in a protected space on this computer, so it will not start it.",
@@ -1084,6 +1104,9 @@
     }
   },
   "human030": {
+    "mcpServer": "MCP server",
+    "mcpTool": "Tool",
+    "mcpArguments": "Arguments",
     "planDetails": "Read the full plan",
     "questionDetails": "Read the full question",
     "messageDetails": "Read the exact received message",

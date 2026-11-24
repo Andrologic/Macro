@@ -127,7 +127,7 @@ export function LaunchChecklist({ preview, overrides, folderConfirmed, disabled,
           <div className="pl-5"><Button size="sm" variant="secondary" className={compact} disabled={disabled} onClick={onChooseFolder}>{t("agsdl.launch.chooseFolder")}</Button></div>
         </div>}
         {view.kind === "codex" && <CodexBlockerRow view={view} onOpenGuide={onOpenGuide} />}
-        {view.kind === "mcpRemote" && <RemoteMcpBlocker server={view.server} technical={view.technical}
+        {view.kind === "mcpRemote" && <RemoteMcpBlocker server={view.server} technical={view.technical} textKey={view.textKey}
           definition={preview.permissions.mcpServers[view.server]} />}
         {view.kind === "author" && <div className="space-y-1">
           <p className="!m-0 flex items-start gap-2"><Icon name="circle-x" size={13} className="mt-0.5 shrink-0 text-red-500" aria-hidden="true" />
@@ -177,7 +177,8 @@ function CodexBlockerRow({ view, onOpenGuide }: {
   </div>;
 }
 
-function RemoteMcpBlocker({ server, technical, definition }: {
+function RemoteMcpBlocker({ server, technical, definition, textKey }: {
+  textKey: string;
   server: string;
   technical: string;
   definition?: LaunchPreview["permissions"]["mcpServers"][string];
@@ -188,7 +189,7 @@ function RemoteMcpBlocker({ server, technical, definition }: {
   return <div className="space-y-1">
     <p className="!m-0 flex items-start gap-2">
       <Icon name="circle-x" size={13} className="mt-0.5 shrink-0 text-red-500" aria-hidden="true" />
-      <span>{t("agsdl.launch.blocker.mcpRemoteUnsupported", { subject: server })}</span>
+      <span>{t("agsdl.launch.blocker." + textKey, { subject: server })}</span>
     </p>
     {endpoint && <p className="!m-0 break-all pl-5 font-mono text-[11px]">{endpoint}</p>}
     {names.length > 0 && <p className="!m-0 break-words pl-5 text-[11px] text-muted-foreground">

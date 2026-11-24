@@ -43,7 +43,27 @@
     "noSecrets": "이 버전에 필요한 MCP 비밀 정보가 없습니다.",
     "secretStored": "로컬 보관소에 저장됨",
     "saveSecret": "비밀 정보 저장",
+    "mcp": {
+      "title": "MCP 도구",
+      "remoteHint": "이 서버는 자체 권한으로 동작하며 흐름이나 에이전트가 보낸 데이터를 받을 수 있습니다.",
+      "delivery": "{{name}}을(를) {{header}}에 담아 전송합니다",
+      "files": "포함된 파일 · {{names}}",
+      "environment": "환경 변수 · {{names}}",
+      "direct": "흐름에서 직접 호출 · {{names}}",
+      "skipped": "서버에 연결하지 않음",
+      "otherTools": "기타 도구 · {{effect}}",
+      "patternHint": "일치하는 규칙 중 가장 엄격한 규칙이 적용됩니다. 정책에 일치하는 규칙이 없으면 해당 정책의 기본값이 적용됩니다.",
+      "agentRules": "에이전트 규칙 · 기본값: {{effect}}",
+      "hostRules": "기기 규칙 · 기본값: {{effect}}",
+      "effect": {
+        "allow": "허용",
+        "ask": "승인 필요",
+        "deny": "거부"
+      }
+    },
     "blocker": {
+      "mcpSecretHeader": "“{{subject}}”에 선언된 비밀 값을 각각의 MCP HTTP 헤더로 보낼 수 없습니다.",
+      "mcpEndpointUnsupported": "“{{subject}}”의 주소는 HTTPS 또는 루프백 HTTP를 사용해야 하며 사용자 이름, 비밀번호, 프래그먼트를 포함할 수 없습니다.",
       "mcpRemoteUnsupported": "이 버전의 Macro는 AgSDL 실행에서 원격 도구 서버 “{{subject}}”를 사용할 수 없습니다.",
       "mcpRemoteDeclaredSecrets": "선언된 인증 정보는 {{names}}입니다.",
       "mcpIsolationUnavailable": "이 컴퓨터에서는 도구 “{{subject}}”를 보호된 공간에서 실행할 수 없어 Macro가 시작하지 않습니다.",
@@ -1084,6 +1104,9 @@
     }
   },
   "human030": {
+    "mcpServer": "MCP 서버",
+    "mcpTool": "도구",
+    "mcpArguments": "인수",
     "planDetails": "전체 계획 읽기",
     "questionDetails": "전체 질문 읽기",
     "messageDetails": "수신한 메시지 원문 읽기",

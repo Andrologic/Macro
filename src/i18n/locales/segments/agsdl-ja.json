@@ -43,7 +43,27 @@
     "noSecrets": "このバージョンに必要な MCP シークレットはありません。",
     "secretStored": "ローカル保管庫に保存済み",
     "saveSecret": "シークレットを保存",
+    "mcp": {
+      "title": "MCP ツール",
+      "remoteHint": "このサーバーは独自の権限で動作し、フローやエージェントが送信するデータを受け取ります。",
+      "delivery": "{{name}} は {{header}} で送信します",
+      "files": "同梱ファイル · {{names}}",
+      "environment": "環境変数 · {{names}}",
+      "direct": "フローからの直接呼び出し · {{names}}",
+      "skipped": "サーバーには接続しません",
+      "otherTools": "その他のツール · {{effect}}",
+      "patternHint": "該当するルールのうち最も厳しいものが適用されます。ポリシー内に該当するルールがなければ、その既定値が適用されます。",
+      "agentRules": "エージェントのルール · 既定値: {{effect}}",
+      "hostRules": "端末のルール · 既定値: {{effect}}",
+      "effect": {
+        "allow": "許可",
+        "ask": "承認が必要",
+        "deny": "拒否"
+      }
+    },
     "blocker": {
+      "mcpSecretHeader": "「{{subject}}」が宣言したシークレットを個別の MCP HTTP ヘッダーで送信できません。",
+      "mcpEndpointUnsupported": "「{{subject}}」の接続先には HTTPS またはループバックの HTTP が必要です。ユーザー名、パスワード、フラグメントは使用できません。",
       "mcpRemoteUnsupported": "このバージョンの Macro は、AgSDL の実行でリモートツールサーバー「{{subject}}」を使用できません。",
       "mcpRemoteDeclaredSecrets": "宣言されている認証情報は {{names}} です。",
       "mcpIsolationUnavailable": "この端末ではツール「{{subject}}」を保護された環境で実行できないため、Macro は起動しません。",
@@ -1084,6 +1104,9 @@
     }
   },
   "human030": {
+    "mcpServer": "MCP サーバー",
+    "mcpTool": "ツール",
+    "mcpArguments": "引数",
     "planDetails": "計画の全文を読む",
     "questionDetails": "質問の全文を読む",
     "messageDetails": "受信したメッセージの原文を読む",

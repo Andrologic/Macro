@@ -16,6 +16,18 @@ export interface LaunchSecret {
   stored: boolean;
 }
 
+export type McpToolEffect = "allow" | "ask" | "deny";
+
+export interface AgentMcpAccess {
+  equipped: boolean;
+  default: McpToolEffect;
+  tools: Record<string, McpToolEffect>;
+  agentDefault: McpToolEffect;
+  agentPatterns: Record<string, McpToolEffect>;
+  hostDefault: McpToolEffect;
+  hostPatterns: Record<string, McpToolEffect>;
+}
+
 export interface LaunchPreview {
   version: VersionKey;
   note: string | null;
@@ -29,6 +41,8 @@ export interface LaunchPreview {
   permissions: ImportPreview;
   consentToken: string | null;
   secrets: LaunchSecret[];
+  agentMcp: Record<string, Record<string, AgentMcpAccess>>;
+  remoteMcp: Record<string, { url: string; delivery: Record<string, string> }>;
 }
 
 export interface LaunchRequest {

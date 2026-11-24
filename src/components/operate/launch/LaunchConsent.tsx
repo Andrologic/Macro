@@ -5,6 +5,7 @@ import { useAgsdlTranslation } from "../../agsdl/useAgsdlTranslation";
 import { InfoBlock } from "../../architect/ArchitectDialogShell";
 import { PermissionSummary } from "../../architect/PermissionSummary";
 import { Icon } from "../../ui/Icon";
+import { LaunchMcpDetails } from "./LaunchMcpDetails";
 import { interpreterEnvironment } from "./launchModel";
 
 /**
@@ -17,14 +18,18 @@ export function LaunchConsent({ preview }: { preview: LaunchPreview }) {
   const { permissions } = preview;
   const reachable = Object.entries(permissions.agents).filter(([, agent]) => agent.usage === "reachable");
   const checks = reachable.filter(([, agent]) => agent.completionCheck);
-  const localToolsInUse = Object.values(permissions.mcpServers)
-    .some(server => server.usage !== "declaredOnly" && server.transport.type === "local");
+  const localToolsInUse = Object.entries(permissions.mcpServers).some(([id, server]) =>
+    server.transport.type === "local" && (Object.values(preview.agentMcp).some(equipment => equipment[id]?.equipped)
+      || permissions.directCalls.some(call => call.usage === "reachable" && call.target.type === "mcp" && call.target.server === id)));
+  const effective = { ...permissions, agents: Object.fromEntries(Object.entries(permissions.agents)
+    .map(([id, agent]) => [id, { ...agent, mcpServers: agent.mcpServers.filter(server => preview.agentMcp[id]?.[server]?.equipped) }])) };
   const interpreterSecrets = preview.secrets.filter(secret =>
     permissions.mcpServers[secret.server]?.transport.type === "local" && interpreterEnvironment.has(secret.name));
-  const addresses = permissions.externalReferences.filter(reference => reference.usage !== "declaredOnly");
+  const addresses = permissions.externalReferences.filter(reference => reference.kind !== "mcpEndpoint" && reference.usage !== "declaredOnly");
   return <div className="space-y-3">
     <InfoBlock icon={<Info size={13} />}><p className="!m-0">{t("agsdl.launch.consentIntro")}</p></InfoBlock>
-    <PermissionSummary source={permissions} sections={["permissions", "engines"]} />
+    <PermissionSummary source={effective} sections={["permissions", "engines"]} />
+    <LaunchMcpDetails preview={preview} expanded />
     {checks.length > 0 && <section aria-label={t("agsdl.launch.checksTitle")}>
       <h4 className="mb-1 text-[11px] font-medium text-muted-foreground">{t("agsdl.launch.checksTitle")}</h4>
       <ul className="space-y-2">{checks.map(([id, agent]) => <li key={id} className="space-y-0.5">

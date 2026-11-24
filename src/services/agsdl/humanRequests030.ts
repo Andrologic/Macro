@@ -3,6 +3,8 @@ import type { HumanContinuation030 } from '../../types/generated/ipc/HumanContin
 import type { HumanPage030 } from '../../types/generated/ipc/HumanPage030';
 import type { PublicHumanRequest030 } from '../../types/generated/ipc/PublicHumanRequest030';
 import type { HumanAnswer030 } from '../../types/generated/ipc/HumanAnswer030';
+import { object, pointerPart, scanSource } from './document';
+
 export type ExecutionHumanRequestView =
   | { kind: 'approval'; title: string; description?: string; message: string; choices: readonly { value: string; label: string }[] }
   | { kind: 'plan'; title: string; description?: string; message: string }
@@ -24,6 +26,24 @@ export function nativeCommandSummary030(raw: string): { command: string; file: s
         typeof params.command !== 'string' || typeof params.cwd !== 'string' ||
         !Array.isArray(files) || files.length !== 1 || typeof files[0] !== 'string') return null;
     return { command: params.command, file: files[0], cwd: params.cwd };
+  } catch { return null; }
+}
+
+export function nativeMcpSummary030(raw: string): { server: string; tool: string; args: string } | null {
+  try {
+    const { tree, bytes, spans } = scanSource(raw, Infinity);
+    const request = object(object(tree).nativeRequest);
+    if (request.method !== 'mcp/tool/requestApproval') return null;
+    const { server, tool, arguments: args } = object(request.params);
+    const path = '/nativeRequest/params/arguments';
+    const span = spans.get(path);
+    if (typeof server !== 'string' || typeof tool !== 'string' || !span || bytes[span.start] !== '{'.charCodeAt(0)) return null;
+    const decoder = new TextDecoder();
+    const entries = Object.keys(object(args)).map(key => {
+      const value = spans.get(path + '/' + pointerPart(key))!;
+      return '  ' + JSON.stringify(key) + ': ' + decoder.decode(bytes.subarray(value.start, value.end));
+    });
+    return { server, tool, args: entries.length ? '{\n' + entries.join(',\n') + '\n}' : '{}' };
   } catch { return null; }
 }
 
