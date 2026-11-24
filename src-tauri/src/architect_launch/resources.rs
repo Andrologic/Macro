@@ -358,6 +358,54 @@ pub(crate) fn remove_snapshot(path: &Path) -> io::Result<()> {
     fs::remove_dir_all(path)
 }
 
+pub(crate) fn remove_working_tree(path: &Path) -> io::Result<()> {
+    crate::fs::profile::check("remove-tree", path)?;
+    // Unix unlinks entries through their parent directory. Windows also
+    // requires clearing the read-only attribute on files themselves.
+    let mut pending = vec![path.to_owned()];
+    while let Some(entry) = pending.pop() {
+        let metadata = match fs::symlink_metadata(&entry) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && entry != path => continue,
+            Err(error) => return Err(error),
+        };
+        if crate::architect_library::storage::is_link_or_reparse_point(&metadata) {
+            continue;
+        }
+        #[cfg(unix)]
+        if metadata.is_dir() {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let mode = metadata.permissions().mode();
+            if mode & 0o300 != 0o300 {
+                fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+                    .open(&entry)?
+                    .set_permissions(fs::Permissions::from_mode(mode | 0o300))?;
+            }
+        }
+        #[cfg(windows)]
+        {
+            let mut permissions = metadata.permissions();
+            if permissions.readonly() {
+                permissions.set_readonly(false);
+                fs::set_permissions(&entry, permissions)?;
+            }
+        }
+        if metadata.is_dir() {
+            for child in fs::read_dir(&entry)? {
+                let child = child?;
+                #[cfg(unix)]
+                if !child.file_type()?.is_dir() {
+                    continue;
+                }
+                pending.push(child.path());
+            }
+        }
+    }
+    fs::remove_dir_all(path)
+}
+
 pub(crate) async fn cleanup(pool: &SqlitePool, data: &Path, host: &Path) -> Result<()> {
     if !schema_ready(pool).await? {
         return Ok(());
@@ -442,7 +490,7 @@ pub(super) async fn cleanup_locked(
                                 && path.parent().and_then(Path::file_name) == Some(key.as_ref())
                         })
                     {
-                        fs::remove_dir_all(item.path())?;
+                        remove_working_tree(&item.path())?;
                     }
                 }
             }

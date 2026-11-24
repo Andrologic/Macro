@@ -1090,7 +1090,7 @@ fn create_working_link(target: &Path, path: &Path, directory: bool) -> io::Resul
 
 fn remove_working_tree(data: &Path, path: &Path) -> Result<()> {
     safe_parent(path, data)?;
-    match profile::remove_dir_all(path) {
+    match resources::remove_working_tree(path) {
         Ok(()) => sync_parent(path),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.to_string()),

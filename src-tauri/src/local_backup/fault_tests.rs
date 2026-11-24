@@ -1610,12 +1610,32 @@ async fn launch_profile(label: &str) -> (tempfile::TempDir, PathBuf, PathBuf, La
     (temp, data, config, fixture)
 }
 
+fn seed_read_only_cache(folder: &Path, content: &str) {
+    let directory = folder.join("read-only/cache");
+    fs::create_dir_all(&directory).unwrap();
+    let file = directory.join("module");
+    fs::write(&file, content).unwrap();
+    for path in [
+        file.as_path(),
+        &directory,
+        directory.parent().unwrap(),
+        folder,
+    ] {
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+}
+
 #[tokio::test]
 async fn backup_restores_a_deleted_runs_owned_resources() {
+    use crate::architect_launch::resources;
+
     let (temp, data, config, fixture) = launch_profile("original").await;
     let external = temp.path().join("chosen");
     create_private_root(&external).unwrap();
     private_write(&external.join("outside.txt"), b"user data", false);
+    seed_read_only_cache(&external, "user module");
     let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
     sqlx::query("INSERT INTO engine_flow030_runs VALUES ('external', 'external', 'external', 'epoch', '{}', '{}', '{\"verdict\":\"succeeded\"}')")
         .execute(&pool).await.unwrap();
@@ -1633,6 +1653,13 @@ async fn backup_restores_a_deleted_runs_owned_resources() {
     .unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(&external, fixture.folder.join("outside-link")).unwrap();
+    seed_read_only_cache(&fixture.folder, "archived module");
+
+    let orphan = fixture.folder.with_file_name("run-orphan");
+    seed_read_only_cache(&orphan, "orphaned module");
+    resources::cleanup(&pool, &data, &config).await.unwrap();
+    assert!(!orphan.exists());
+    assert!(fixture.folder.join("read-only/cache/module").is_file());
 
     let backup = temp.path().join("export.zip");
     queue_export(&data, &backup);
@@ -1654,8 +1681,13 @@ async fn backup_restores_a_deleted_runs_owned_resources() {
         .await
         .unwrap();
     assert!(!fixture.folder.exists() && !fixture.snapshot.exists());
+    assert!(fs::metadata(external.join("read-only/cache"))
+        .unwrap()
+        .permissions()
+        .readonly());
     pool.close().await;
 
+    seed_read_only_cache(&fixture.folder, "stale module");
     tests::queue_restore(&data, &archive);
     process_startup(&data, &config).await.unwrap();
     assert_eq!(
@@ -1665,6 +1697,10 @@ async fn backup_restores_a_deleted_runs_owned_resources() {
     assert_eq!(
         fs::read(fixture.folder.join("result.sh")).unwrap(),
         b"original"
+    );
+    assert_eq!(
+        fs::read(fixture.folder.join("read-only/cache/module")).unwrap(),
+        b"archived module"
     );
     assert!(fixture.folder.join("empty").is_dir());
     assert_working_names(&fixture.folder, "original");
@@ -1745,6 +1781,11 @@ async fn backup_restores_a_deleted_runs_owned_resources() {
     .await
     .unwrap();
     assert!(!relocated.exists() && !other_snapshot.exists());
+    assert_eq!(
+        fs::read(external.join("read-only/cache/module")).unwrap(),
+        b"user module"
+    );
+    resources::remove_working_tree(&external).unwrap();
 }
 
 #[tokio::test]
@@ -1815,6 +1856,7 @@ async fn assert_launch_rollback(
     action: &str,
 ) {
     let (_temp, data, config, original) = launch_profile("original").await;
+    seed_read_only_cache(&original.folder, "original module");
     let incoming_snapshot = config
         .join(crate::architect_launch::resources::SNAPSHOTS)
         .join(incoming.snapshot.file_name().unwrap());
@@ -1823,7 +1865,7 @@ async fn assert_launch_rollback(
     process_startup(&data, &config).await.unwrap();
     assert_eq!(
         status_code(&data.join("local-backup")),
-        Some(if action == "crash" {
+        Some(if matches!(action, "crash" | "persistent-EIO") {
             BackupStatusCode::RolledBack
         } else {
             BackupStatusCode::Failed
@@ -1845,6 +1887,11 @@ async fn assert_launch_rollback(
         "{point}/{action}"
     );
     assert!(original.folder.join("empty").is_dir(), "{point}/{action}");
+    assert_eq!(
+        fs::read(original.folder.join("read-only/cache/module")).unwrap(),
+        b"original module",
+        "{point}/{action}"
+    );
     assert_working_names(&original.folder, "original");
     #[cfg(unix)]
     {
