@@ -244,8 +244,8 @@ fn collect_working(
                 use std::os::windows::fs::FileTypeExt;
                 metadata.file_type().is_symlink_dir()
             };
-            #[cfg(not(windows))]
-            let directory = false;
+            #[cfg(unix)]
+            let directory = fs::metadata(path).is_ok_and(|target| target.is_dir());
             let target = fs::read_link(path).map_err(|error| error.to_string())?;
             let (managed, suffix) = match managed_link(data, &target) {
                 Some((name, suffix)) => (Some(name), suffix),

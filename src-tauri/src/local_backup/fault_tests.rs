@@ -1925,6 +1925,7 @@ async fn assert_launch_rollback(
 #[cfg(unix)]
 #[tokio::test]
 async fn restore_rebases_absolute_links_without_normalizing_the_suffix() {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use std::os::unix::fs::symlink;
 
     let (source, source_data, source_config, fixture) = launch_profile("relocate").await;
@@ -1952,11 +1953,29 @@ async fn restore_rebases_absolute_links_without_normalizing_the_suffix() {
     for (name, root, suffix) in links {
         symlink(append(root, suffix), fixture.folder.join(name)).unwrap();
     }
+    symlink("sub", fixture.folder.join("relative-directory")).unwrap();
+    symlink("missing", fixture.folder.join("dangling")).unwrap();
 
     let backup = source.path().join("export.zip");
     queue_export(&source_data, &backup);
     process_startup(&alias, &source_config).await.unwrap();
     let archive = bundle::load(&backup).unwrap();
+    let manifest = serde_json::to_value(archive.launch.as_ref().unwrap()).unwrap();
+    let recorded_links = manifest["links"].as_object().unwrap();
+    for (name, directory) in [
+        ("traversal", false),
+        ("alias", true),
+        ("root", true),
+        ("relative-directory", true),
+        ("dangling", false),
+    ] {
+        let key = URL_SAFE_NO_PAD.encode(name);
+        let (_, link) = recorded_links
+            .iter()
+            .find(|(name, _)| name.rsplit('/').next() == Some(key.as_str()))
+            .unwrap();
+        assert_eq!(link["directory"], directory, "{name}");
+    }
     let (_target, data, config) = tests::profile().await;
     tests::queue_restore(&data, &archive);
     process_startup(&data, &config).await.unwrap();
