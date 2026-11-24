@@ -275,7 +275,8 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
       <p className="!m-0">{t("agsdl.launch.noSystems")}</p>{openArchitect}
     </div>}
     {!consent && <>
-      {showSystemPicker && <div className="space-y-1">
+      {/* Until a system is chosen the list opens below the field, with room to read it. */}
+      {showSystemPicker && <div className={`space-y-1 ${blueprintId ? "" : "min-h-52"}`}>
         <span className="block font-medium">{t("agsdl.launch.system")}</span>
         <GroupCombobox projectGroups={launchable} selectedGroupId={blueprintId || null} placeholder={t("agsdl.launch.chooseSystem")}
           ariaLabel={t("agsdl.launch.system")} inputClassName={comboboxClass}

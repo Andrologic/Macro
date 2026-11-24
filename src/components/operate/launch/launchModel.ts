@@ -120,4 +120,4 @@ export const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).at
 export const selectClass = "!rounded-md !px-2 !py-1 !text-xs";
 
 /** The searchable picker in the same dense size as the selects. */
-export const comboboxClass = "!rounded-md !px-2 !py-1 !text-xs";
+export const comboboxClass = "!rounded-md !py-1 !pl-2 !text-xs";
