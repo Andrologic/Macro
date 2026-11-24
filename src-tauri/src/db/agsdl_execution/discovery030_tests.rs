@@ -2,8 +2,8 @@ use super::super::{
     dto::{EngineAssociations, EngineEntry},
     flow030::{
         reduce, DeliveryOccurrence030, FlowEffectKind030, FlowEvent030, FlowEventKind030,
-        FlowIdentity030, FlowTransition030, Instance030, PhysicalEvidence030, PreparedBatch030,
-        PreparedItem030, PreparedResult030, WorkRef030, WorkResult030,
+        FlowIdentity030, FlowTransition030, Instance030, OperatorEvent030, PhysicalEvidence030,
+        PreparedBatch030, PreparedItem030, PreparedResult030, WorkRef030, WorkResult030,
     },
     SqlitePool,
 };
@@ -86,20 +86,29 @@ async fn seed_plan(
         profile: versions.profile.clone(),
         associations: EngineAssociations::default(),
         request_id: format!("request-{key}"),
-        entry: Some(EngineEntry {
+        entry: plan.entry.as_ref().map(|_| EngineEntry {
             delivery_id: format!("delivery-{key}"),
             message_json: "{\"secret\":\"PRIVATE_MESSAGE\"}".into(),
         }),
     };
-    let event = FlowEvent030 {
-        identity: identity.clone(),
-        event_id: "start:enter".into(),
-        expected_revision: "0".into(),
-        kind: FlowEventKind030::Enter {
-            message_json: start.entry.as_ref().unwrap().message_json.clone(),
-        },
-    };
-    let transition = reduce(&plan, &FlowState030::new(identity.clone()), &event).unwrap();
+    let mut state = FlowState030::new(identity.clone());
+    let enter = start.entry.as_ref().map(|entry| {
+        let transition = reduce(
+            &plan,
+            &state,
+            &FlowEvent030 {
+                identity: identity.clone(),
+                event_id: "start:enter".into(),
+                expected_revision: "0".into(),
+                kind: FlowEventKind030::Enter {
+                    message_json: entry.message_json.clone(),
+                },
+            },
+        )
+        .unwrap();
+        state = transition.state;
+        transition.receipt
+    });
     let plan_json = serde_json::to_string(&plan).unwrap();
     let capture = StartCapture030 {
         identity: identity.clone(),
@@ -112,7 +121,7 @@ async fn seed_plan(
     };
     let receipt = StartReceipt030 {
         identity: identity.clone(),
-        enter: Some(transition.receipt),
+        enter,
     };
     let hash = if bad_hash {
         "0".repeat(64)
@@ -125,14 +134,14 @@ async fn seed_plan(
     let mut tx = pool.begin().await.unwrap();
     sqlx::query("INSERT INTO engine_flow030_runs(system_id,invocation_id,snapshot_id,epoch,source_json,plan_json,state_json) VALUES(?,?,?,?,?,?,?)")
         .bind(&identity.system_start_id).bind(&identity.flow_invocation_id).bind(&identity.snapshot_id).bind(&identity.epoch)
-        .bind(serde_json::to_string(&source).unwrap()).bind(plan_json).bind(serde_json::to_string(&transition.state).unwrap()).execute(&mut *tx).await.unwrap();
+        .bind(serde_json::to_string(&source).unwrap()).bind(plan_json).bind(serde_json::to_string(&state).unwrap()).execute(&mut *tx).await.unwrap();
     sqlx::query("INSERT INTO engine_start030_requests(request_id,request_json,system_id,invocation_id,snapshot_id,capture_epoch,capture_json,receipt_json) VALUES(?,?,?,?,?,?,?,?)")
         .bind(&start.request_id).bind(serde_json::to_string(&start).unwrap()).bind(&identity.system_start_id).bind(&identity.flow_invocation_id)
         .bind(&identity.snapshot_id).bind(&identity.epoch).bind(serde_json::to_string(&capture).unwrap()).bind(serde_json::to_string(&receipt).unwrap()).execute(&mut *tx).await.unwrap();
     sqlx::query("INSERT INTO engine_flow030_owners(system_id,invocation_id,snapshot_id,capture_epoch,owner_epoch,generation,status,capture_sha256) VALUES(?,?,?,?,'1','native-generation',?,?)")
         .bind(&identity.system_start_id).bind(&identity.flow_invocation_id).bind(&identity.snapshot_id).bind(&identity.epoch).bind(status).bind(hash).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
-    (plan, transition.state)
+    (plan, state)
 }
 
 async fn persist_state(pool: &SqlitePool, system_id: &str, state: &FlowState030) {
@@ -686,4 +695,94 @@ async fn interrupted_run_survives_process_kill_and_database_reopen() {
         .await
         .unwrap();
     assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn operate_list_stays_available_when_a_paused_run_defers_delivery() {
+    let (_temp, pool) = database().await;
+    let scope = owner("project", "develop");
+    let mut graphless = fork_plan();
+    graphless.versions.contract = argentic_core::AGSDL_040.into();
+    graphless.entry = None;
+    let (plan, mut state) =
+        seed_plan(&pool, "paused", scope.clone(), "live", false, graphless).await;
+    seed(&pool, "other", scope.clone(), "live", false).await;
+    let event = |state: &FlowState030, id: &str, kind| {
+        reduce(
+            &plan,
+            state,
+            &FlowEvent030 {
+                identity: state.identity.clone(),
+                event_id: id.into(),
+                expected_revision: state.revision.clone(),
+                kind,
+            },
+        )
+        .unwrap()
+        .state
+    };
+    state = event(
+        &state,
+        "pause",
+        FlowEventKind030::Operator(OperatorEvent030::Pause {
+            activation_ids: Vec::new(),
+        }),
+    );
+    state = event(
+        &state,
+        "deliver",
+        FlowEventKind030::Deliver {
+            agent: "worker".into(),
+            instance: Instance030::Shared,
+            delivery: "queue".into(),
+            message_json: "{}".into(),
+            sender: "user".into(),
+        },
+    );
+    persist_state(&pool, "system-paused", &state).await;
+    let list = || crate::db::operate_inbox::list_runs(&pool, request(scope.clone(), None, 20));
+    let page = list().await.unwrap();
+    assert_eq!(page.runs.len(), 2);
+    let paused = &page
+        .runs
+        .iter()
+        .find(|row| row.summary.system_start_id == "system-paused")
+        .unwrap()
+        .summary;
+    assert_eq!(paused.paused, Some(true));
+    assert_eq!(
+        paused.phase_counts,
+        vec![PhaseCount030 {
+            phase: "deferred".into(),
+            count: "1".into()
+        }]
+    );
+
+    state = event(
+        &state,
+        "resume",
+        FlowEventKind030::Operator(OperatorEvent030::ResumeRun),
+    );
+    persist_state(&pool, "system-paused", &state).await;
+    let page = list().await.unwrap();
+    let resumed = &page
+        .runs
+        .iter()
+        .find(|row| row.summary.system_start_id == "system-paused")
+        .unwrap()
+        .summary;
+    assert_eq!(resumed.paused, None);
+    assert_eq!(
+        resumed.phase_counts,
+        vec![PhaseCount030 {
+            phase: "running".into(),
+            count: "1".into()
+        }]
+    );
+
+    // A future phase is an ordinary count, even when this Macro build
+    // has no presentation or operator action specific to it.
+    state.activations[0].phase = "futureNativePhase".into();
+    persist_state(&pool, "system-paused", &state).await;
+    assert_eq!(list().await.unwrap().runs.len(), 2);
 }

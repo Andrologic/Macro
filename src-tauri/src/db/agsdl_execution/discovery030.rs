@@ -170,23 +170,9 @@ fn validated_summary(
     let mut counts = BTreeMap::<String, usize>::new();
     let mut physical_pending = 0usize;
     for activation in &state.activations {
-        require(
-            matches!(
-                activation.phase.as_str(),
-                "ready"
-                    | "queued"
-                    | "running"
-                    | "body"
-                    | "group"
-                    | "done"
-                    | "preparing"
-                    | "steering"
-                    | "withdrawingSteer"
-                    | "barrier"
-                    | "stopping"
-            ),
-            "Flow discovery activation phase is inconsistent",
-        )?;
+        // Argentic persists phases as strings. Discovery counts them without
+        // interpreting them, so a new native phase cannot hide a run.
+        opaque(&activation.phase)?;
         *counts.entry(activation.phase.clone()).or_default() += 1;
         if activation.physical {
             physical_pending += 1;
