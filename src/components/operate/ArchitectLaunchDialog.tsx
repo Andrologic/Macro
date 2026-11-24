@@ -11,6 +11,7 @@ import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { ArchitectDialogShell } from "../architect/ArchitectDialogShell";
 import { Skeleton } from "../shared/Skeleton";
 import { Button } from "../ui/Button";
+import { GroupCombobox } from "../ui/GroupCombobox";
 import { Select } from "../ui/Select";
 import { SpinnerIcon } from "../ui/SpinnerIcon";
 import { Textarea } from "../ui/Textarea";
@@ -19,7 +20,7 @@ import { LaunchChecklist, ModelRow, SecretRow, pendingCount } from "./launch/Lau
 import { LaunchConsent } from "./launch/LaunchConsent";
 import { LaunchMcpDetails, LaunchMcpNotes, LaunchMcpSettings } from "./launch/LaunchMcpDetails";
 import { LaunchSummary } from "./launch/LaunchSummary";
-import { failureCode, failureText, isFolderFailure, isRecheckFailure, selectClass } from "./launch/launchModel";
+import { comboboxClass, failureCode, failureText, isFolderFailure, isRecheckFailure, selectClass } from "./launch/launchModel";
 
 interface SystemChoice {
   id: string;
@@ -107,8 +108,8 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
     setSystemsFailed(false);
     void loadLaunchSystems().then(value => {
       if (!active) return;
+      // Nothing is preselected unless the window was opened for a version: starting the wrong system is worse than one more click.
       setSystems(value);
-      if (!initialVersion) setBlueprintId(value.find(system => system.versions.length > 0)?.id ?? "");
     }, () => { if (active) setSystemsFailed(true); });
     return () => { active = false; };
   }, [initialVersion, systemsRevision]);
@@ -140,7 +141,8 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
   const messageMissing = !!current?.startMessageRequired && !message.trim();
   const settled = !!current && !checking && !pending;
   const ready = settled && !busy && !messageMissing;
-  const reason = busy ? undefined : !current && problem ? t("agsdl.launch.recheckReason") : !current || checking ? t("agsdl.launch.checkingReason")
+  const choosing = !!systems && !blueprintId;
+  const reason = busy ? undefined : choosing ? t("agsdl.launch.chooseSystemReason") : !current && problem ? t("agsdl.launch.recheckReason") : !current || checking ? t("agsdl.launch.checkingReason")
     : pending ? t("agsdl.launch.remaining", { count: pending }) : messageMissing ? t("agsdl.launch.messageRequired") : undefined;
   const replaced = Object.keys(modelOverrides).filter(agent => !current?.blockers.some(blocker => blocker.code === "modelUnavailable" && blocker.subject === agent));
 
@@ -245,6 +247,8 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
   const nothingToLaunch = !!systems && !systems.some(system => system.versions.length > 0) && !initialVersion;
   const showSystemPicker = !!systems && !nothingToLaunch && (!initialVersion || !selected);
   const noVersion = !!systems && !!selected && !selected.versions.length;
+  /** Only systems with a saved version can be started: the others would be dead ends in the list. */
+  const launchable = (systems ?? []).filter(system => system.versions.length > 0).map(({ id, name }) => ({ id, name }));
   const primary = busy ? t("agsdl.launch.starting")
     : t(consent ? "agsdl.launch.approve" : current?.consentToken ? "agsdl.launch.continue" : "agsdl.launch.start");
 
@@ -272,13 +276,11 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
     </div>}
     {!consent && <>
       {showSystemPicker && <div className="space-y-1">
-        <label htmlFor="launch-system" className="block font-medium">{t("agsdl.launch.system")}</label>
-        <Select id="launch-system" className={selectClass} value={blueprintId}
-          disabled={busy} onChange={event => { setBlueprintId(event.target.value); setNumber(undefined); reset(); }}>
-          <option value="" disabled>{t("agsdl.launch.chooseSystem")}</option>
-          {systems?.map(system => <option key={system.id} value={system.id} disabled={!system.versions.length}>
-            {system.name}{system.versions.length ? "" : ` · ${t("agsdl.launch.noVersionShort")}`}</option>)}
-        </Select>
+        <span className="block font-medium">{t("agsdl.launch.system")}</span>
+        <GroupCombobox projectGroups={launchable} selectedGroupId={blueprintId || null} placeholder={t("agsdl.launch.chooseSystem")}
+          ariaLabel={t("agsdl.launch.system")} inputClassName={comboboxClass}
+          noneLabel={null} emptyLabel={t("agsdl.launch.noSystemMatch")} optionIcon="layout-template"
+          onSelect={id => { if (busy) return; setBlueprintId(id ?? ""); setNumber(undefined); reset(); }} />
       </div>}
       {noVersion && <div role="status" className="space-y-2"><p className="!m-0">{t("agsdl.launch.noVersion")}</p>{openArchitect}</div>}
       {versionMissing && <div role="alert" className="space-y-1">

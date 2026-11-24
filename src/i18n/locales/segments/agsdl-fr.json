@@ -165,7 +165,9 @@
     "noSystems": "Aucun système n’est prêt à être lancé. Enregistrez d’abord une version dans Architect.",
     "noVersionShort": "aucune version",
     "chooseSystem": "Choisir un système",
-    "recheckReason": "Revérifiez pour continuer."
+    "recheckReason": "Revérifiez pour continuer.",
+    "chooseSystemReason": "Choisissez un système à lancer.",
+    "noSystemMatch": "Aucun système ne correspond à votre recherche."
   },
   "library": {
     "reservedMcpSecret": "Ce projet déclare un nom de secret MCP réservé. Renommez-le dans le fichier des secrets requis.",

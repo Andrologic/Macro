@@ -165,7 +165,9 @@
     "noSystems": "起動できるシステムがありません。まず Architect でバージョンを保存してください。",
     "noVersionShort": "バージョンなし",
     "chooseSystem": "システムを選択",
-    "recheckReason": "続行するには再確認してください。"
+    "recheckReason": "続行するには再確認してください。",
+    "chooseSystemReason": "起動するシステムを選択してください。",
+    "noSystemMatch": "検索に一致するシステムはありません。"
   },
   "library": {
     "reservedMcpSecret": "このプロジェクトは予約済みの MCP シークレット名を宣言しています。シークレット要件ファイルで名前を変更してください。",

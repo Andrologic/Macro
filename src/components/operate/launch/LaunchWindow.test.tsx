@@ -534,3 +534,33 @@ it("shows a recoverable error when the check itself fails", async () => {
   expect(!!dialog().querySelector("[role=alert]")).toBe(false);
   expect(primary().disabled).toBe(false);
 });
+
+it("opens with no system chosen when it was not opened for a version, and starts nothing until one is picked", async () => {
+  install(() => preview());
+  await show(null);
+  const field = dialog().querySelector<HTMLInputElement>('input[aria-label="System"]')!;
+  expect(field.value).toBe("");
+  expect(field.placeholder).toBe("Choose a system");
+  expect(calls.some(call => call.command === "architect_launch_prepare")).toBe(false);
+  expect(primary().disabled).toBe(true);
+  expect(dialog().querySelector("footer")?.textContent).toContain("Choose a system to start.");
+  // The list is searchable and has no “none” row: a choice is required.
+  await act(async () => { field.focus(); });
+  await fillField(field, "zzz");
+  expect(document.body.textContent).toContain("No system matches your search.");
+  await fillField(field, "review");
+  const option = byText("button", "Code review", document.body.querySelector("[data-macro-dialog-portal]")!)!;
+  expect(document.body.querySelector("[data-macro-dialog-portal]")?.textContent).not.toContain("No Group");
+  await click(option);
+  await flush();
+  expect(calls.filter(call => call.command === "architect_launch_prepare")).toHaveLength(1);
+  expect(primary().disabled).toBe(false);
+});
+
+it("keeps the version it was opened for: no picker, the check starts at once", async () => {
+  install(() => preview());
+  await show();
+  expect(!!dialog().querySelector('input[aria-label="System"]')).toBe(false);
+  expect(calls.filter(call => call.command === "architect_launch_prepare")).toHaveLength(1);
+  expect(primary().disabled).toBe(false);
+});

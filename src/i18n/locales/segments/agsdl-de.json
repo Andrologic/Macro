@@ -165,7 +165,9 @@
     "noSystems": "Kein System ist startbereit. Speichern Sie zuerst eine Version in Architect.",
     "noVersionShort": "keine Version",
     "chooseSystem": "System auswählen",
-    "recheckReason": "Prüfen Sie erneut, um fortzufahren."
+    "recheckReason": "Prüfen Sie erneut, um fortzufahren.",
+    "chooseSystemReason": "Wählen Sie ein System zum Starten.",
+    "noSystemMatch": "Kein System passt zu Ihrer Suche."
   },
   "library": {
     "reservedMcpSecret": "Dieses Projekt deklariert einen reservierten MCP-Geheimnisnamen. Benenne ihn in der Datei für erforderliche Geheimnisse um.",

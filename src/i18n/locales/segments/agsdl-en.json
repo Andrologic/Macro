@@ -165,7 +165,9 @@
     "noSystems": "No system is ready to launch. Save a version in Architect first.",
     "noVersionShort": "no version",
     "chooseSystem": "Choose a system",
-    "recheckReason": "Check again to continue."
+    "recheckReason": "Check again to continue.",
+    "chooseSystemReason": "Choose a system to start.",
+    "noSystemMatch": "No system matches your search."
   },
   "library": {
     "reservedMcpSecret": "This project declares a reserved MCP secret name. Rename it in the secrets requirements.",

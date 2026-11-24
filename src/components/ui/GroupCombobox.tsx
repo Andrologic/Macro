@@ -11,7 +11,17 @@ interface GroupComboboxProps {
   onSelect: (groupId: string | null) => void;
   onCreateGroup?: (name: string) => void;
   className?: string;
+  /** Classes for the text field, for dense places such as dialogs. */
+  inputClassName?: string;
   placeholder?: string;
+  /** Names the field for assistive technology when the list is not about groups. */
+  ariaLabel?: string;
+  /** Text of the row that clears the choice. `null` removes the row, for lists where a choice is required. */
+  noneLabel?: string | null;
+  /** Text shown when the search matches nothing. */
+  emptyLabel?: string;
+  /** Icon in front of each option. */
+  optionIcon?: React.ComponentProps<typeof Icon>['name'];
 }
 
 interface DropdownPosition {
@@ -29,7 +39,12 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
   onSelect,
   onCreateGroup,
   className,
+  inputClassName,
   placeholder = i18n.t('project.selectGroupPlaceholder', 'Select a group...'),
+  ariaLabel = i18n.t('project.selectGroupPlaceholder', 'Select a group...'),
+  noneLabel = i18n.t('project.noGroup', 'No Group'),
+  emptyLabel = i18n.t('project.noGroupsFound', 'No groups found'),
+  optionIcon = 'layers',
 }) => {
   const dropdownId = useId();
   const [isOpen, setIsOpen] = useState(false);
@@ -232,7 +247,7 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
           )}
         >
           {/* "No Group" option */}
-          <button
+          {noneLabel !== null && <button
             onClick={() => handleSelect(null)}
             className={cn(
               'w-full px-3 py-2 text-left text-sm',
@@ -243,8 +258,8 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
             )}
           >
             <Icon name="x" size={14} />
-            <span>{i18n.t('project.noGroup', 'No Group')}</span>
-          </button>
+            <span>{noneLabel}</span>
+          </button>}
 
           {/* Existing groups */}
           {filteredGroups.map((group) => (
@@ -259,7 +274,7 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
                   : 'text-muted-foreground hover:bg-accent'
               )}
             >
-              <Icon name="layers" size={14} />
+              <Icon name={optionIcon} size={14} />
               <span>{group.name}</span>
             </button>
           ))}
@@ -284,7 +299,7 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
 
           {filteredGroups.length === 0 && !showCreateOption && (
             <div className="px-3 py-2 text-sm text-muted-foreground">
-              {i18n.t('project.noGroupsFound', 'No groups found')}
+              {emptyLabel}
             </div>
           )}
         </div>,
@@ -311,16 +326,18 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
           }}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
+          aria-label={ariaLabel}
           className={cn(
             'w-full bg-muted border border-border rounded-lg px-3 py-2',
             'text-sm text-foreground placeholder:text-muted-foreground',
             'focus:outline-none focus:border-primary',
-            'pr-8'
+            'pr-8',
+            inputClassName
           )}
         />
         <button
           type="button"
-          aria-label={i18n.t('project.selectGroupPlaceholder', 'Select a group...')}
+          aria-label={ariaLabel}
           aria-expanded={isOpen}
           aria-controls={isOpen ? dropdownId : undefined}
           onClick={() => setIsOpen(!isOpen)}
