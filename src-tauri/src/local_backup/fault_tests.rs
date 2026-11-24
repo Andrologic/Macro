@@ -1826,6 +1826,65 @@ async fn launch_resources_roll_back_with_the_profile_after_io_failure_or_process
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn restore_rebases_absolute_links_without_normalizing_the_suffix() {
+    use std::os::unix::fs::symlink;
+
+    let (source, source_data, source_config, fixture) = launch_profile("relocate").await;
+    let alias = source.path().join("alias");
+    symlink(&source_data, &alias).unwrap();
+    let alias_folder = alias.join(
+        fixture
+            .folder
+            .strip_prefix(source_data.canonicalize().unwrap())
+            .unwrap(),
+    );
+    let sub = fixture.folder.join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::write(sub.join("NUL"), "raw suffix").unwrap();
+    let links = [
+        ("traversal", &fixture.folder, "/sub/../sub//NUL"),
+        ("alias", &alias_folder, "/sub/./../sub///"),
+        ("root", &fixture.folder, "///./"),
+    ];
+    let append = |root: &Path, suffix: &str| {
+        let mut path = root.as_os_str().to_owned();
+        path.push(suffix);
+        PathBuf::from(path)
+    };
+    for (name, root, suffix) in links {
+        symlink(append(root, suffix), fixture.folder.join(name)).unwrap();
+    }
+
+    let backup = source.path().join("export.zip");
+    queue_export(&source_data, &backup);
+    process_startup(&alias, &source_config).await.unwrap();
+    let archive = bundle::load(&backup).unwrap();
+    let (_target, data, config) = tests::profile().await;
+    tests::queue_restore(&data, &archive);
+    process_startup(&data, &config).await.unwrap();
+    assert_eq!(
+        status_code(&data.join("local-backup")),
+        Some(BackupStatusCode::Restored)
+    );
+    let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
+    let relocated = PathBuf::from(
+        crate::architect_launch::read_folder(&pool, &fixture.scope.system_start_id)
+            .await
+            .unwrap(),
+    );
+    for (name, _, suffix) in links {
+        let actual = fs::read_link(relocated.join(name)).unwrap();
+        assert_eq!(actual.as_os_str(), append(&relocated, suffix).as_os_str());
+    }
+    assert_eq!(
+        fs::read(relocated.join("traversal")).unwrap(),
+        b"raw suffix"
+    );
+    pool.close().await;
+}
+
 // Exercise a foreign archive on Linux using an unpaired Windows surrogate.
 // The source filesystem can store that name but it has no UTF-8 equivalent.
 #[cfg(unix)]
@@ -1942,8 +2001,8 @@ async fn restore_reads_legacy_working_paths_and_rebases_their_links() {
     let entry = bundle::stage(&staging, &legacy_path, &b"legacy content"[..], false).unwrap();
     archive.files.insert(legacy_path, entry);
     archive.launch = Some(serde_json::from_value(serde_json::json!({
-        "directories": [root],
-        "links": {(format!("{root}/old-link")): {"target": source.folder.join("legacy.txt"), "directory": false}},
+        "directories": [root, format!("{root}/sub")],
+        "links": {(format!("{root}/old-link")): {"target": source.folder.join("sub/.././legacy.txt"), "directory": false}},
         "missing": []
     })).unwrap());
 
@@ -1961,8 +2020,8 @@ async fn restore_reads_legacy_working_paths_and_rebases_their_links() {
             .unwrap(),
     );
     assert_eq!(
-        fs::read_link(working.join("old-link")).unwrap(),
-        working.join("legacy.txt")
+        fs::read_link(working.join("old-link")).unwrap().as_os_str(),
+        working.join("sub/.././legacy.txt").as_os_str()
     );
     assert_eq!(
         fs::read(working.join("old-link")).unwrap(),

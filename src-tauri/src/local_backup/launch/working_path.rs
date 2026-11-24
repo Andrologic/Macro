@@ -81,10 +81,18 @@ impl Encoding {
     }
 
     pub(super) fn link(self, encoded: &str) -> Result<Option<PathBuf>> {
+        self.link_path(encoded, false)
+    }
+
+    pub(super) fn link_suffix(self, encoded: &str) -> Result<Option<PathBuf>> {
+        self.link_path(encoded, true)
+    }
+
+    fn link_path(self, encoded: &str, suffix: bool) -> Result<Option<PathBuf>> {
         let bytes = self.bytes(encoded)?;
         let text = match self {
             Self::UnixBytes => {
-                if bytes.is_empty() || bytes.contains(&0) {
+                if bytes.is_empty() || bytes.contains(&0) || suffix && !bytes.starts_with(b"/") {
                     return Err("Invalid native launch link target".into());
                 }
                 #[cfg(unix)]
@@ -93,16 +101,26 @@ impl Encoding {
                     return Ok(Some(OsString::from_vec(bytes).into()));
                 }
                 #[cfg(windows)]
-                String::from_utf8(bytes).ok().filter(|path| {
-                    !path.starts_with('/')
-                        && path
-                            .split('/')
-                            .all(|name| matches!(name, "" | "." | "..") || windows_name(name))
-                })
+                String::from_utf8(bytes)
+                    .ok()
+                    .filter(|path| {
+                        path.starts_with('/') == suffix
+                            && path
+                                .split('/')
+                                .all(|name| matches!(name, "" | "." | "..") || windows_name(name))
+                    })
+                    .map(|path| {
+                        if suffix {
+                            path.replace('/', "\\")
+                        } else {
+                            path
+                        }
+                    })
             }
             Self::WindowsUtf16Le => {
                 let units = wide(&bytes);
-                if units.is_empty() || units.contains(&0) {
+                if units.is_empty() || units.contains(&0) || suffix && !matches!(units[0], 47 | 92)
+                {
                     return Err("Invalid native launch link target".into());
                 }
                 #[cfg(windows)]
@@ -113,7 +131,7 @@ impl Encoding {
                 #[cfg(unix)]
                 String::from_utf16(&units).ok().and_then(|path| {
                     let path = path.replace('\\', "/");
-                    (!path.starts_with('/') && !path.contains(':')).then_some(path)
+                    (path.starts_with('/') == suffix && !path.contains(':')).then_some(path)
                 })
             }
         };
@@ -131,6 +149,22 @@ impl Encoding {
             None => format!("{bytes:02x?}"),
         }
     }
+}
+
+// Components help locate the run root. Slicing the original target preserves
+// separators, dot components and trailing slashes after that root.
+pub(super) fn raw_suffix<'a>(target: &'a Path, root: &Path) -> &'a OsStr {
+    let root = root.components().as_path().as_os_str();
+    let suffix = &target.as_os_str().as_encoded_bytes()[root.len()..];
+    // SAFETY: root is an ancestor slice of target, ending either at the
+    // end of target or immediately before an ASCII path separator.
+    unsafe { OsStr::from_encoded_bytes_unchecked(suffix) }
+}
+
+pub(super) fn with_suffix(root: &Path, suffix: &OsStr) -> PathBuf {
+    let mut path = root.as_os_str().to_owned();
+    path.push(suffix);
+    path.into()
 }
 
 pub(super) fn strip_root<'a>(path: &'a Path, root: &Path) -> Option<&'a Path> {

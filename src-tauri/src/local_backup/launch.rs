@@ -34,6 +34,8 @@ enum LinkTarget {
         path: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         managed: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        suffix: Option<String>,
     },
 }
 
@@ -72,6 +74,42 @@ fn working_name(data: &Path, path: &Path) -> Result<String> {
         name.push_str(&Encoding::encode(part));
     }
     Ok(name)
+}
+
+fn managed_link(data: &Path, target: &Path) -> Option<(String, Option<String>)> {
+    if !target.is_absolute() {
+        return None;
+    }
+    let (root, source_data, root_name) = target
+        .ancestors()
+        .filter_map(|root| {
+            let owner = root.parent()?;
+            let working = owner.parent()?;
+            if working.file_name()? != resources::WORKING_FOLDERS {
+                return None;
+            }
+            let name = format!(
+                "{WORKING}{}/{}",
+                owner.file_name()?.to_str()?,
+                root.file_name()?.to_str()?
+            );
+            if working_prefix(&name) != Some(&name) {
+                return None;
+            }
+            let source_data = working.parent()?;
+            if source_data != data && source_data.canonicalize().ok().as_deref() != Some(data) {
+                return None;
+            }
+            Some((root, source_data, name))
+        })
+        .last()?;
+    let suffix = working_path::raw_suffix(target, root);
+    let managed = working_name(source_data, target)
+        .ok()
+        .filter(|name| validate_working_name(name, Some(Encoding::NATIVE)).is_ok())
+        .unwrap_or(root_name);
+    let suffix = (!suffix.is_empty()).then(|| Encoding::encode(suffix));
+    Some((managed, suffix))
 }
 
 pub(super) fn encoded_working_file(archive: &Archive, name: &str) -> bool {
@@ -209,10 +247,14 @@ fn collect_working(
             #[cfg(not(windows))]
             let directory = false;
             let target = fs::read_link(path).map_err(|error| error.to_string())?;
-            let managed = working_name(data, &target).ok();
+            let (managed, suffix) = match managed_link(data, &target) {
+                Some((name, suffix)) => (Some(name), suffix),
+                None => (None, None),
+            };
             let target = LinkTarget::Native {
                 path: Encoding::encode(target.as_os_str()),
                 managed,
+                suffix,
             };
             manifest.links.insert(name, Link { target, directory });
         } else if metadata.is_dir() && !storage::is_link_or_reparse_point(&metadata) {
@@ -394,10 +436,23 @@ pub(super) fn validate_paths(archive: &Archive) -> Result<()> {
     }
     for link in manifest.links.values() {
         match (&link.target, manifest.working_paths) {
-            (LinkTarget::Native { path, managed }, Some(encoding)) => {
+            (
+                LinkTarget::Native {
+                    path,
+                    managed,
+                    suffix,
+                },
+                Some(encoding),
+            ) => {
                 encoding.link(path)?;
                 if let Some(managed) = managed {
                     validate_working_name(managed, Some(encoding))?;
+                }
+                if let Some(suffix) = suffix {
+                    if managed.is_none() {
+                        return Err("Managed launch link suffix has no working folder".into());
+                    }
+                    encoding.link_suffix(suffix)?;
                 }
             }
             (LinkTarget::Legacy(target), None)
@@ -722,16 +777,17 @@ pub(super) async fn relocate_working(
     }
     for link in manifest.links.values_mut() {
         if let LinkTarget::Legacy(target) = &mut link.target {
+            if !target.is_absolute() {
+                continue;
+            }
             for (old, new) in &legacy_relocations {
-                if let Some(suffix) = working_path::strip_root(target, old) {
-                    if target.is_absolute()
-                        && suffix
-                            .components()
-                            .all(|part| matches!(part, Component::Normal(_)))
-                    {
-                        *target = new.join(suffix);
-                        break;
-                    }
+                if let Some(root) = target.ancestors().find(|root| {
+                    working_path::strip_root(root, old)
+                        .is_some_and(|suffix| suffix.as_os_str().is_empty())
+                }) {
+                    *target =
+                        working_path::with_suffix(new, working_path::raw_suffix(target, root));
+                    break;
                 }
             }
         }
@@ -947,13 +1003,29 @@ pub(super) fn apply_working(
         let mut directory = link.directory;
         let target = match &link.target {
             LinkTarget::Legacy(target) => Some(target.clone()),
-            LinkTarget::Native { path, managed } => {
-                if let Some(managed) = managed.as_ref().filter(|name| {
-                    !raw && working_prefix(name).is_some_and(|prefix| paths.contains_key(prefix))
-                }) {
-                    directory |= manifest.directories.contains(managed);
+            LinkTarget::Native {
+                path,
+                managed,
+                suffix,
+            } => {
+                let relocated = managed.as_deref().and_then(|name| {
+                    let prefix = working_prefix(name)?;
+                    let root = paths.get(prefix)?;
+                    (!raw).then_some((name, prefix, root))
+                });
+                if let Some((managed, prefix, root)) = relocated {
+                    if suffix.is_none() || managed != prefix {
+                        directory |= manifest.directories.contains(managed);
+                    }
                     if restore.omitted(managed) {
                         None
+                    } else if let Some(suffix) = suffix {
+                        restore
+                            .encoding
+                            .expect("validated link encoding")
+                            .link_suffix(suffix)?
+                            .map(|suffix| working_path::with_suffix(root, suffix.as_os_str()))
+                            .filter(|target| fits_existing_file(target))
                     } else {
                         restore.path(managed)?
                     }
