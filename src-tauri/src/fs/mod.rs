@@ -7,6 +7,7 @@ use crate::core::error::{BackendError, Result};
 
 pub mod dto;
 pub(crate) mod plan_catalog;
+pub(crate) mod private_profile;
 pub mod watcher;
 
 // Core Path Validation and Normalization Functions
@@ -95,16 +96,7 @@ pub fn path_is_same_or_descendant(path: &Path, root: &Path) -> bool {
 
     #[cfg(not(windows))]
     {
-        let path_components = path.components().collect::<Vec<_>>();
-        let root_components = root.components().collect::<Vec<_>>();
-        if root_components.len() > path_components.len() {
-            return false;
-        }
-
-        root_components
-            .iter()
-            .zip(path_components.iter())
-            .all(|(root_component, path_component)| root_component == path_component)
+        path.starts_with(root)
     }
 }
 
@@ -123,6 +115,7 @@ fn reconstruct_missing_path(
         }
     })?;
     let candidate = normalize_path(&canonical_ancestor.join(missing_suffix));
+    private_profile::check_normalized(&candidate)?;
     ensure_within_workspace(&candidate, canonical_workspace, "Path")?;
     Ok(candidate)
 }
@@ -137,8 +130,10 @@ fn reconstruct_missing_path(
 /// * `Result<PathBuf>` - The resolved absolute path or an error
 pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
     let (abs_path, canonical_workspace) = resolve_absolute(path, workspace)?;
+    private_profile::check_normalized(&normalize_path(&abs_path))?;
     match abs_path.canonicalize() {
         Ok(canonical_path) => {
+            private_profile::check_normalized(&canonical_path)?;
             if path_is_same_or_descendant(&canonical_path, &canonical_workspace) {
                 Ok(normalize_path(&canonical_path))
             } else {
@@ -179,14 +174,16 @@ pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
 /// * `Result<PathBuf>` - The validated path or an error
 pub fn validate_path_for_write(path: &Path, workspace: &Path) -> Result<PathBuf> {
     let (abs_path, canonical_workspace) = resolve_absolute(path, workspace)?;
+    let normalized = normalize_path(&abs_path);
+    private_profile::check_normalized(&normalized)?;
 
     match abs_path.canonicalize() {
         Ok(canonical_path) => {
             // Keep the lexical target for existing symlinks so callers that
             // inspect symlink metadata retain their current behavior, but
             // validate where the symlink resolves before allowing a write.
+            private_profile::check_normalized(&canonical_path)?;
             ensure_within_workspace(&canonical_path, &canonical_workspace, "Path")?;
-            let normalized = normalize_path(&abs_path);
             ensure_within_workspace(&normalized, &canonical_workspace, "Path")?;
             Ok(normalized)
         }

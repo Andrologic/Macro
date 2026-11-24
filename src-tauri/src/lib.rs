@@ -640,6 +640,22 @@ fn initialize_desktop_profile(app: &tauri::App) -> Result<(), local_backup::Prof
         "Failed to resolve Macro configuration directory",
         config::resolve_config_root(&app_config_dir).map_err(|error| error.message),
     )?;
+    let external_codex_auth =
+        std::env::var_os("ARGENTIC_CODEX_AUTH_FILE").map(std::path::PathBuf::from);
+    let local_data = app_handle.path().app_local_data_dir().ok();
+    let cache = app_handle.path().app_cache_dir().ok();
+    let logs = core::platform_log_dir();
+    let legacy_settings = core::config::legacy_settings_paths();
+    let mut private_locations = vec![app_config_dir.as_path(), config_root.as_path()];
+    private_locations.extend(local_data.as_deref());
+    private_locations.extend(cache.as_deref());
+    private_locations.extend(logs.as_deref());
+    private_locations.extend(external_codex_auth.as_deref());
+    private_locations.extend(legacy_settings.iter().map(|path| path.as_path()));
+    ProfileRecovery::startup_step(
+        "Failed to protect the Macro profile from generic filesystem access",
+        fs::private_profile::install(&app_data_dir, &private_locations),
+    )?;
     tauri::async_runtime::block_on(local_backup::process_startup(&app_data_dir, &config_root))?;
 
     // Prepared recovery must run before parsing potentially damaged runtime.json.

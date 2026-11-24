@@ -1,7 +1,7 @@
 // File System Watcher
 // Provides real-time file system event monitoring for the workspace
 
-use crate::fs::dto::FsEventDto;
+use crate::fs::{dto::FsEventDto, private_profile};
 use notify::{
     event::{EventKind, ModifyKind, RenameMode},
     Config, Event, RecommendedWatcher, RecursiveMode, Watcher,
@@ -92,6 +92,7 @@ fn safe_watch_directory_identity(path: &Path, workspace: &Path) -> Option<WatchD
     let identity_before = watch_directory_identity(path)?;
     let canonical_workspace = fs::canonicalize(workspace).ok()?;
     let canonical_path = fs::canonicalize(path).ok()?;
+    private_profile::check_normalized(&canonical_path).ok()?;
     if !canonical_path.starts_with(&canonical_workspace) {
         return None;
     }
@@ -139,6 +140,7 @@ impl FsWatcher {
         workspace: PathBuf,
         app_handle: AppHandle,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        private_profile::check(&workspace)?;
         Self::new_with_sink(workspace, Duration::from_millis(300), move |events| {
             if let Err(error) = app_handle.emit("fs:change", events) {
                 error!("Failed to emit fs:change event: {}", error);
@@ -529,6 +531,9 @@ async fn debounce_task(
 
 /// Check if a path should be ignored based on default patterns
 fn should_ignore_path(path: &Path, workspace: &Path) -> bool {
+    if private_profile::check(path).is_err() {
+        return true;
+    }
     // Get the relative path from workspace
     let relative = match path.strip_prefix(workspace) {
         Ok(r) => r,
@@ -703,6 +708,161 @@ pub fn shutdown_watcher(app_handle: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn profile_access_refused<T>(result: crate::core::Result<T>) {
+        assert!(matches!(
+            result,
+            Err(crate::core::error::BackendError::FilesystemPermissionDenied { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn generic_operations_skip_private_profile_and_keep_the_default_workspace() {
+        use crate::fs::{dto::WorkspaceFileSearchRootDto, operations::*};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().canonicalize().unwrap();
+        let data = root.join("parents/data");
+        let workspace = data.join("workspace");
+        let config = root.join("config");
+        let auth = root.join("private-auth.json");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("provider-secrets.json"), "project file").unwrap();
+        std::fs::write(&auth, "fixture").unwrap();
+        let protected = [
+            data.join("provider-secrets.json"),
+            data.join("provider-secrets.json.v1.bak"),
+            data.join("provider-secrets.json.corrupt-1"),
+            data.join(".provider-secrets.json.tmp-synthetic"),
+            data.join("provider-secrets.migration-pending.json"),
+            data.join("local-backup/staging/fixture"),
+            data.join("macro.db-wal"),
+            config.join("providers.json"),
+            config.join(".runtime/approved/user/providers.json"),
+            config.join("agsdl-snapshots/digest/private.json"),
+            auth,
+        ];
+        for path in &protected {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "fixture").unwrap();
+        }
+        private_profile::install(&data, &[&config, protected.last().unwrap()]).unwrap();
+        for path in &protected {
+            let path = path.to_string_lossy().into_owned();
+            profile_access_refused(read_file_internal(&root, path.clone(), Some(true)).await);
+            profile_access_refused(read_file_internal(&root, path.clone(), None).await);
+            profile_access_refused(stat_internal(&root, path.clone()).await);
+            profile_access_refused(copy_path_internal(&root, path, "copy.txt".into()).await);
+        }
+        profile_access_refused(exists_internal(&root, "parents/data/future".into()).await);
+        profile_access_refused(
+            write_file_internal(
+                &root,
+                "config/future/new".into(),
+                "fixture".into(),
+                Some(true),
+                Some(true),
+            )
+            .await,
+        );
+        profile_access_refused(
+            create_dir_internal(&root, "config/future".into(), Some(true)).await,
+        );
+        profile_access_refused(
+            move_path_internal(&root, "parents".into(), "elsewhere".into()).await,
+        );
+        profile_access_refused(
+            delete_path_internal_with_revision(&root, "parents".into(), Some(true), None).await,
+        );
+        profile_access_refused(
+            list_dir_internal(
+                &root,
+                "config".into(),
+                Some(true),
+                Some(true),
+                None,
+                Some(true),
+            )
+            .await,
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            symlink(&config, root.join("alias")).unwrap();
+            profile_access_refused(
+                read_file_internal(&root, "alias/providers.json".into(), Some(true)).await,
+            );
+            profile_access_refused(
+                create_dir_internal(&root, "alias/missing/child".into(), Some(true)).await,
+            );
+        }
+
+        let watch = build_watch_plan(&root);
+        assert!(watch
+            .watch_paths
+            .iter()
+            .all(|path| !path.starts_with(&data) && !path.starts_with(&config)));
+        let event = Event::new(EventKind::Create(notify::event::CreateKind::File))
+            .add_path(protected[0].clone());
+        assert!(convert_event_to_dtos(&event, &root).is_empty());
+        assert!(build_watch_plan(&data).watch_paths.is_empty());
+
+        let listed = list_dir_internal(&root, ".".into(), Some(true), Some(true), None, None)
+            .await
+            .unwrap();
+        assert!(listed.iter().all(|entry| !matches!(
+            entry.name.as_str(),
+            "data" | "config" | "alias" | "private-auth.json"
+        )));
+        let search_root = |workspace: &Path| WorkspaceFileSearchRootDto {
+            workspace_path: workspace.to_string_lossy().into_owned(),
+            project_id: None,
+            project_name: None,
+            mount_name: None,
+            is_focused: false,
+        };
+        profile_access_refused(
+            search_files(
+                vec![search_root(&config)],
+                "provider".into(),
+                None,
+                Some(true),
+                None,
+            )
+            .await,
+        );
+        assert!(search_files(
+            vec![search_root(&root)],
+            "provider".into(),
+            None,
+            Some(true),
+            None
+        )
+        .await
+        .unwrap()
+        .is_empty());
+        let project = read_file_internal(&workspace, "provider-secrets.json".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(project.content, "project file");
+        assert_eq!(
+            search_files(
+                vec![search_root(&workspace)],
+                "provider".into(),
+                None,
+                Some(true),
+                None
+            )
+            .await
+            .unwrap()
+            .len(),
+            1
+        );
+        assert!(protected
+            .iter()
+            .all(|path| std::fs::read(path).unwrap() == b"fixture"));
+    }
 
     async fn wait_for_directory(watcher: &FsWatcher, path: &Path) {
         tokio::time::timeout(Duration::from_secs(5), async {

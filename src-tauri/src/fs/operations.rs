@@ -7,7 +7,9 @@ use crate::fs::dto::{
     DirEntryDto, FileContentDto, FileStatsDto, WorkspaceFileSearchResultDto,
     WorkspaceFileSearchRootDto, WriteResultDto,
 };
-use crate::fs::{get_file_language, normalize_path, validate_path, validate_path_for_write};
+use crate::fs::{
+    get_file_language, normalize_path, private_profile, validate_path, validate_path_for_write,
+};
 use crate::git::GitState;
 use crate::project_path::{
     join_wsl_path, normalize_linux_path, parse_wsl_unc_path, run_wsl_shell,
@@ -230,7 +232,7 @@ if [ -n "$expected_revision" ]; then
   fi
 fi
 if [ -d "$p" ] && [ ! -L "$p" ]; then
-  if [ "$recursive" = "1" ]; then rm -rf -- "$p"; else rmdir -- "$p"; fi
+  if [ "$recursive" = "1" ]; then rm -rf --one-file-system -- "$p"; else rmdir -- "$p"; fi
 else
   rm -f -- "$p"
 fi
@@ -641,6 +643,9 @@ pub(crate) async fn resolve_workspace_for_path(
     workspace_scope: Option<&str>,
 ) -> Result<PathBuf, BackendError> {
     let base_workspace = workspace_path.unwrap_or(workspace);
+    if parse_wsl_unc_path(&base_workspace.to_string_lossy()).is_none() {
+        private_profile::check(&base_workspace)?;
+    }
     if matches!(workspace_scope.map(str::trim), Some("metadata_existing")) {
         // Observation must never initialize, repair, or migrate a metadata worktree.
         return crate::git::find_existing_macro_metadata_worktree_root(&base_workspace)
@@ -788,21 +793,44 @@ pub(crate) async fn canonical_wsl_path_within_workspace(
     resolved: &WslProjectPath,
     allow_outside_workspace: Option<bool>,
 ) -> Result<WslProjectPath, BackendError> {
-    if allow_outside_workspace.unwrap_or(false) {
+    check_wsl_target(workspace, resolved, allow_outside_workspace, false).await
+}
+
+async fn check_wsl_target(
+    workspace: &WslProjectPath,
+    resolved: &WslProjectPath,
+    allow_outside_workspace: Option<bool>,
+    includes_children: bool,
+) -> Result<WslProjectPath, BackendError> {
+    let allow_outside = allow_outside_workspace.unwrap_or(false);
+    let check_profile = cfg!(windows) && private_profile::installed();
+    if allow_outside && !check_profile {
         return Ok(resolved.clone());
     }
     let script = r#"
-root=$(realpath -e -- "$1") || exit 4
 target=$(realpath -m -- "$2") || exit 4
-case "$target" in
-  "$root"|"$root"/*) printf 'inside\n%s' "$target" ;;
-  *) printf 'outside' ;;
-esac
+if [ "$3" = 0 ]; then
+  root=$(realpath -e -- "$1") || exit 4
+  case "$target" in
+    "$root"|"$root"/*) ;;
+    *) printf 'outside'; exit ;;
+  esac
+fi
+printf 'inside\n%s' "$target"
+if [ "$4" = 1 ]; then
+  printf '\n'
+  wslpath -w "$target" || exit 4
+fi
 "#;
     let output = run_wsl_shell(
-        workspace,
+        resolved,
         script,
-        &[workspace.linux_path.clone(), resolved.linux_path.clone()],
+        &[
+            workspace.linux_path.clone(),
+            resolved.linux_path.clone(),
+            u8::from(allow_outside).to_string(),
+            u8::from(check_profile).to_string(),
+        ],
         WSL_FS_TIMEOUT,
     )
     .await?;
@@ -811,9 +839,21 @@ esac
     if lines.next() != Some("inside") {
         return Err(wsl_path_outside_workspace(&resolved.original_path));
     }
-    let canonical_linux_path = lines.next().ok_or_else(|| BackendError::Filesystem {
-        message: "Failed to resolve the canonical WSL target path".to_string(),
-    })?;
+    let invalid = || BackendError::FilesystemInvalidPath {
+        message: "Failed to resolve the canonical WSL target path".into(),
+    };
+    let canonical_linux_path = lines.next().ok_or_else(invalid)?;
+    if check_profile {
+        let windows_path = Path::new(lines.next().ok_or_else(invalid)?);
+        if !windows_path.is_absolute() || lines.next().is_some() {
+            return Err(invalid());
+        }
+        if includes_children {
+            private_profile::check_tree(windows_path)?;
+        } else {
+            private_profile::check(windows_path)?;
+        }
+    }
     Ok(WslProjectPath {
         distro: resolved.distro.clone(),
         unc_path: wsl_unc_path(&resolved.distro, canonical_linux_path),
@@ -1014,7 +1054,8 @@ async fn read_wsl_file_internal(
     allow_outside_workspace: Option<bool>,
 ) -> Result<FileContentDto, BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, allow_outside_workspace)?;
-    ensure_wsl_path_within_workspace(workspace, &resolved, allow_outside_workspace).await?;
+    let resolved =
+        canonical_wsl_path_within_workspace(workspace, &resolved, allow_outside_workspace).await?;
     let (kind, size, _, permissions, _) = wsl_stat_raw(&resolved).await?;
     let unix_mode = u32::from_str_radix(permissions.trim(), 8).ok();
     if kind != "file" && kind != "symlink" {
@@ -1208,7 +1249,7 @@ include_hidden=$3
 limit=$4
 hidden_pattern='.*'
 if [ "$include_hidden" = "1" ]; then hidden_pattern=''; fi
-find "$root" -mindepth 1 -maxdepth "$depth" \
+find "$root" -xdev -mindepth 1 -maxdepth "$depth" \
   \( -name .git -o -name node_modules -o -name target -o -name .next -o -name .nuxt \
      -o -name dist -o -name build -o -name __pycache__ -o -name .cache \
      -o -name .DS_Store -o -name Thumbs.db -o -name .idea -o -name "$hidden_pattern" \) -prune -o \
@@ -1278,7 +1319,9 @@ async fn list_wsl_dir_internal(
     allow_outside_workspace: Option<bool>,
 ) -> Result<Vec<DirEntryDto>, BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, allow_outside_workspace)?;
-    ensure_wsl_path_within_workspace(workspace, &resolved, allow_outside_workspace).await?;
+    // WSL can traverse mounted Windows volumes. Reject roots that encompass
+    // private profile paths before handing traversal to the guest filesystem.
+    let resolved = check_wsl_target(workspace, &resolved, allow_outside_workspace, true).await?;
     let (kind, _, _, _, _) = wsl_stat_raw(&resolved).await?;
     if kind != "directory" {
         return Err(BackendError::FilesystemIsFile {
@@ -1394,7 +1437,8 @@ async fn delete_wsl_path_internal_with_revision(
     acquire_lock: bool,
 ) -> Result<(), BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, None)?;
-    let canonical_target = canonical_wsl_path_within_workspace(workspace, &resolved, None).await?;
+    let canonical_target =
+        check_wsl_target(workspace, &resolved, None, recursive.unwrap_or(false)).await?;
     if canonical_target.linux_path.trim_end_matches('/')
         == workspace.linux_path.trim_end_matches('/')
     {
@@ -1490,7 +1534,7 @@ pub(crate) async fn copy_wsl_path_internal(
     let src_resolved = resolve_wsl_path(workspace, &src, None)?;
     let dest_resolved = resolve_wsl_path(workspace, &dest, None)?;
     ensure_wsl_path_within_workspace(workspace, &src_resolved, None).await?;
-    ensure_wsl_path_within_workspace(workspace, &dest_resolved, None).await?;
+    check_wsl_target(workspace, &dest_resolved, None, true).await?;
     let script = r#"
 src=$1
 dest=$2
@@ -1519,8 +1563,8 @@ pub(crate) async fn move_wsl_path_internal(
 ) -> Result<(), BackendError> {
     let src_resolved = resolve_wsl_path(workspace, &src, None)?;
     let dest_resolved = resolve_wsl_path(workspace, &dest, None)?;
-    ensure_wsl_path_within_workspace(workspace, &src_resolved, None).await?;
-    ensure_wsl_path_within_workspace(workspace, &dest_resolved, None).await?;
+    check_wsl_target(workspace, &src_resolved, None, true).await?;
+    check_wsl_target(workspace, &dest_resolved, None, true).await?;
     let script = r#"
 src=$1
 dest=$2
@@ -1588,11 +1632,12 @@ pub async fn read_file_internal(
     let path_buf = PathBuf::from(&path); // Parse path string to PathBuf
     let allow_outside = allow_outside_workspace.unwrap_or(false);
     let validated_path = if allow_outside {
-        if path_buf.is_absolute() {
+        let absolute = if path_buf.is_absolute() {
             normalize_path(&path_buf)
         } else {
             normalize_path(&workspace.join(&path_buf))
-        }
+        };
+        private_profile::public_read_path(absolute)?
     } else {
         validate_path(&path_buf, workspace)?
     };
@@ -2142,11 +2187,13 @@ async fn write_file_internal_with_revision_impl(
     // Validate path for write (handles non-existent files)
     let allow_outside = allow_outside_workspace.unwrap_or(false);
     let validated_path = if allow_outside {
-        if path_buf.is_absolute() {
+        let absolute = if path_buf.is_absolute() {
             normalize_path(&path_buf)
         } else {
             normalize_path(&workspace.join(&path_buf))
-        }
+        };
+        private_profile::check(&absolute)?;
+        absolute
     } else {
         validate_path_for_write(&path_buf, workspace)?
     };
@@ -2328,11 +2375,12 @@ pub async fn list_dir_internal(
     let path_buf = PathBuf::from(&path);
     let allow_outside = allow_outside_workspace.unwrap_or(false);
     let validated_path = if allow_outside {
-        if path_buf.is_absolute() {
+        let absolute = if path_buf.is_absolute() {
             normalize_path(&path_buf)
         } else {
             normalize_path(&workspace.join(&path_buf))
-        }
+        };
+        private_profile::public_read_path(absolute)?
     } else {
         validate_path(&path_buf, workspace)?
     };
@@ -2380,7 +2428,10 @@ pub async fn list_dir_internal(
             }
 
             // Check if path should be ignored
-            if should_ignore_path(entry_path, should_include_hidden) {
+            if should_ignore_path(entry_path, should_include_hidden)
+                || private_profile::check_normalized(entry_path).is_err()
+                || (entry.file_type().is_symlink() && private_profile::check(entry_path).is_err())
+            {
                 if entry.file_type().is_dir() {
                     walkdir.skip_current_dir();
                 }
@@ -2400,7 +2451,11 @@ pub async fn list_dir_internal(
         while let Some(entry) = dir.next_entry().await? {
             let entry_path = entry.path();
 
-            if should_ignore_path(&entry_path, should_include_hidden) {
+            if should_ignore_path(&entry_path, should_include_hidden)
+                || private_profile::check_normalized(&entry_path).is_err()
+                || (entry.file_type().await?.is_symlink()
+                    && private_profile::check(&entry_path).is_err())
+            {
                 continue;
             }
 
@@ -2507,6 +2562,7 @@ fn search_workspace_files_blocking(
             continue;
         }
 
+        let canonical_workspace = workspace.canonicalize()?;
         let mut scanned_entries = 0usize;
         let mut walkdir = walkdir::WalkDir::new(&workspace)
             .sort_by_file_name()
@@ -2522,7 +2578,12 @@ fn search_workspace_files_blocking(
             };
 
             if !relative_path_buf.as_os_str().is_empty()
-                && should_ignore_path(relative_path_buf, should_include_hidden)
+                && (should_ignore_path(relative_path_buf, should_include_hidden)
+                    || private_profile::check_normalized(entry_path).is_err()
+                    || private_profile::check_normalized(
+                        &canonical_workspace.join(relative_path_buf),
+                    )
+                    .is_err())
             {
                 if entry.file_type().is_dir() {
                     walkdir.skip_current_dir();
@@ -2676,6 +2737,12 @@ pub async fn search_files(
     include_hidden: Option<bool>,
     virtual_root_enabled: Option<bool>,
 ) -> Result<Vec<WorkspaceFileSearchResultDto>, BackendError> {
+    for root in &roots {
+        let path = Path::new(root.workspace_path.trim());
+        if !path.as_os_str().is_empty() && parse_wsl_unc_path(&path.to_string_lossy()).is_none() {
+            private_profile::check(path)?;
+        }
+    }
     let result_limit = limit
         .map(|value| value as usize)
         .unwrap_or(30)
@@ -2929,6 +2996,9 @@ pub(crate) async fn delete_path_internal_unlocked(
     // Validate the symlink destination, but keep the lexical path so deletion
     // removes the link itself instead of the file or directory it points to.
     let validated_path = validate_path_for_write(&path_buf, workspace)?;
+    if recursive.unwrap_or(false) {
+        private_profile::check_tree(&validated_path)?;
+    }
 
     let workspace_path = workspace.to_path_buf();
     let capability_target = validated_path.clone();
@@ -3326,6 +3396,8 @@ pub(crate) async fn move_native_path_internal(
         .map_err(|error| io_error_to_backend_error(error, &validated_src))?
         .is_symlink();
     let validated_dest = validate_path_for_write(&dest_path, &workspace)?;
+    private_profile::check_tree(&validated_src)?;
+    private_profile::check_tree(&validated_dest)?;
 
     // Try atomic rename first
     match tokio::fs::rename(&validated_src, &validated_dest).await {

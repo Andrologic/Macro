@@ -254,6 +254,30 @@ pub(crate) fn test_load_config_from_runtime_file(
     load_config_from_sources(Some(runtime_file), None)
 }
 
+/// Include files that the optional legacy config loader can resolve by extension.
+pub(crate) fn legacy_settings_paths() -> Vec<PathBuf> {
+    let Some(path) = std::env::var_os("MACRO_CONFIG")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+    else {
+        return Vec::new();
+    };
+    if path.is_file() {
+        return vec![path];
+    }
+    let mut name = path.into_os_string();
+    name.push(".");
+    ["toml", "json", "yaml", "yml", "ini", "ron", "json5", "corn"]
+        .into_iter()
+        .map(|extension| {
+            let mut candidate = name.clone();
+            candidate.push(extension);
+            PathBuf::from(candidate)
+        })
+        .filter(|path| path.is_file())
+        .collect()
+}
+
 pub fn load_config() -> crate::core::Result<AppConfig> {
     let runtime_file = config_dir_runtime_file()?;
     let legacy_settings_file = std::env::var("MACRO_CONFIG").ok();
