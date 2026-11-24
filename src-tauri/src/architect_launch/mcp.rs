@@ -17,12 +17,34 @@ use url::{Host, Url};
 #[derive(Default)]
 pub(super) struct LaunchMcp {
     pub secrets: ServerSecrets,
+    pub stdio: BTreeMap<String, [u8; 32]>,
     pub remote: BTreeMap<String, RemoteGrant>,
     pub remote_setup: BTreeMap<String, RemoteSetup>,
     pub agents: BTreeMap<String, BTreeMap<String, AgentAccess>>,
     pub qualification: BTreeMap<String, McpServerQualification>,
     pub direct_tools: BTreeMap<String, BTreeSet<String>>,
     pub notes: Vec<UnusedServer>,
+}
+
+pub(super) fn stdio_fingerprint(
+    archive: &VersionArchive,
+    command: &[String],
+    files: &[String],
+) -> Option<[u8; 32]> {
+    let paths: BTreeSet<_> = files.iter().map(String::as_str).collect();
+    let assets: BTreeMap<_, _> = archive
+        .members()
+        .filter(|member| paths.contains(member.path))
+        .map(|member| {
+            let digest: [u8; 32] = Sha256::digest(member.bytes).into();
+            (member.path, (digest, member.executable))
+        })
+        .collect();
+    if assets.len() != paths.len() {
+        return None;
+    }
+    let bytes = serde_json::to_vec(&(command, assets)).ok()?;
+    Some(Sha256::digest(bytes).into())
 }
 
 #[derive(Serialize)]

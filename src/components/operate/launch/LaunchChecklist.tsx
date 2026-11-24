@@ -22,10 +22,11 @@ export function pendingCount(preview: LaunchPreview, folderConfirmed: boolean): 
  * One secret, asked in place. The value never comes back to the screen: a stored secret
  * shows only that it exists, and can be replaced.
  */
-export function SecretRow({ version, secret, configuration, disabled, onSaved }: {
+export function SecretRow({ version, secret, configuration, stdio, disabled, onSaved }: {
   version: VersionKey;
   secret: LaunchSecret;
   configuration: LaunchConfiguration;
+  stdio: boolean;
   disabled?: boolean;
   onSaved: (secret: LaunchSecret) => void;
 }) {
@@ -64,7 +65,7 @@ export function SecretRow({ version, secret, configuration, disabled, onSaved }:
         {pending && <SpinnerIcon size={12} />}{t(secret.stored ? "agsdl.launch.replaceSecret" : "agsdl.launch.saveSecret")}
       </Button>
     </div>
-    <p className="!m-0 pl-5 text-[11px] text-muted-foreground">{t("agsdl.launch.secretHelp")}</p>
+    <p className="!m-0 pl-5 text-[11px] text-muted-foreground">{t(stdio ? "agsdl.launch.stdioSecretHelp" : "agsdl.launch.secretHelp")}</p>
     {failed && <p role="alert" className="!m-0 pl-5 text-red-500">{t("agsdl.launch.secretFailed")}</p>}
   </form>;
 }
@@ -155,6 +156,7 @@ export function LaunchChecklist({ preview, overrides, folderConfirmed, disabled,
         const remote = Object.hasOwn(preview.remoteMcp, secret.server) ? preview.remoteMcp[secret.server] : undefined;
         return <li key={JSON.stringify([preview.version, secret.server, secret.name, remote])}>
           <SecretRow version={preview.version} secret={secret} configuration={preview.configuration}
+            stdio={preview.permissions.mcpServers[secret.server]?.transport.type === "local"}
             disabled={disabled || checking} onSaved={onSecretSaved} />
         </li>;
       })}

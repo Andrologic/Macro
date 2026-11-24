@@ -451,11 +451,7 @@ async fn remote_credential_rotation_is_shared_only_by_origin_and_delivery() {
     let first = launch("https://example.invalid/mcp?tenant=one");
     let same_origin = launch("https://EXAMPLE.invalid:443/other-path");
     let moved = launch("https://example.invalid:8443/mcp");
-    let key = |launch: &mcp::LaunchMcp| {
-        input
-            .secret_id("issues", &names[0], launch.remote.get("issues"))
-            .unwrap()
-    };
+    let key = |launch: &mcp::LaunchMcp| input.secret_id("issues", &names[0], launch).unwrap();
     let source = input.source_revision();
     let first_provider = secret_provider(&input, &first).unwrap();
 
@@ -703,7 +699,7 @@ async fn remote_mcp_scope_checks_every_pinned_address_and_changes_consent() {
         )
         .unwrap();
         assert!(blockers.is_empty());
-        let consent = permissions(&input, &preview, &launch_mcp).unwrap();
+        let consent = permissions(&preview, &launch_mcp).unwrap();
         (consent, mcp::authorizer(source.clone(), launch_mcp.remote))
     };
     let (public_consent, public) = prepare(&configuration);
@@ -786,7 +782,7 @@ async fn equipping_another_agent_requires_new_consent_for_the_same_endpoint() {
         )
         .unwrap();
         assert!(blockers.is_empty());
-        summaries.push(permissions(&input, &preview, &mcp).unwrap());
+        summaries.push(permissions(&preview, &mcp).unwrap());
     }
     let [first, expanded]: [Permissions; 2] = summaries.try_into().ok().unwrap();
     assert_eq!(first.mcp, expanded.mcp);

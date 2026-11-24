@@ -129,7 +129,12 @@ it("hides the start message when the system needs none, and sends none", async (
 
 it("asks for a missing secret in place, never shows its value, and releases the launch once it is stored", async () => {
   let stored = false;
-  install(() => preview({ secrets: [{ server: "github", name: "GITHUB_TOKEN", stored, legacyResetRequired: !stored }] }), (command, args) => {
+  const permissions = preview().permissions;
+  permissions.mcpServers.github = {
+    usage: "reachable", transport: { type: "local", command: ["sh", "serve.sh"] },
+    packagedFiles: ["serve.sh"], requiredSecrets: ["GITHUB_TOKEN"],
+  };
+  install(() => preview({ permissions, secrets: [{ server: "github", name: "GITHUB_TOKEN", stored, legacyResetRequired: !stored }] }), (command, args) => {
     if (command !== "architect_launch_set_secret") throw new Error(command);
     stored = true;
     expect(args).toMatchObject({ server: "github", name: "GITHUB_TOKEN", value: "ghp_secret" });
@@ -139,6 +144,7 @@ it("asks for a missing secret in place, never shows its value, and releases the 
   expect(dialog().textContent).toContain("Before you launch");
   expect(dialog().textContent).toContain("The tool “github” needs “GITHUB_TOKEN”.");
   expect(dialog().textContent).toContain("Macro could not verify where the old secret was used.");
+  expect(dialog().textContent).toContain("If its command, arguments, or packaged files change, enter the secret again and approve the new version.");
   expect(primary().disabled).toBe(true);
   expect(primary().title).toBe("1 thing left to settle.");
   const field = dialog().querySelector<HTMLInputElement>('input[type="password"]')!;

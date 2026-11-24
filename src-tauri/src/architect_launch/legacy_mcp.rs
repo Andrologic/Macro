@@ -29,15 +29,7 @@ impl Destination {
     fn historical(archive: &VersionArchive, server: &McpServer, name: &str) -> Option<Self> {
         match &server.transport {
             McpTransport::Local { command } => {
-                let mut digest = Sha256::new_with_prefix(
-                    serde_json::to_vec(&(command, &server.packaged_files)).ok()?,
-                );
-                for path in &server.packaged_files {
-                    let file = archive.members().find(|member| member.path == path)?;
-                    digest.update(Sha256::digest(file.bytes));
-                    digest.update([u8::from(file.executable)]);
-                }
-                Some(Self::Stdio(digest.finalize().into()))
+                mcp::stdio_fingerprint(archive, command, &server.packaged_files).map(Self::Stdio)
             }
             McpTransport::Remote { url } => {
                 let url = url::Url::parse(url).ok()?;
@@ -56,15 +48,16 @@ impl Destination {
         }
     }
 
-    fn matches_launch(&self, grant: Option<&mcp::RemoteGrant>, name: &str) -> bool {
-        match (self, grant) {
-            (Self::Stdio(_), None) => true,
-            (Self::Http(origin, mode, header), Some(grant)) => grant
-                .credential_binding(name)
+    fn matches_launch(&self, launch: &mcp::LaunchMcp, server: &str, name: &str) -> bool {
+        match self {
+            Self::Stdio(fingerprint) => launch.stdio.get(server) == Some(fingerprint),
+            Self::Http(origin, mode, header) => launch
+                .remote
+                .get(server)
+                .and_then(|grant| grant.credential_binding(name))
                 .is_some_and(|(current_origin, current_mode, current_header)| {
                     current_origin == *origin && current_mode == *mode && current_header == *header
                 }),
-            _ => false,
         }
     }
 }
@@ -142,7 +135,7 @@ pub(super) async fn secret_requirements(
     for (server, names) in &launch_mcp.secrets {
         let remote = launch_mcp.remote.get(server);
         for name in names {
-            let key = input.secret_id(server, name, remote)?;
+            let key = input.secret_id(server, name, launch_mcp)?;
             let stored = archive_mcp::get(&key)
                 .map_err(|_| vault_error())?
                 .is_some_and(|value| mcp::valid_secret(&value, remote.is_some()));
@@ -174,10 +167,7 @@ pub(super) async fn secret_requirements(
             let server = preview.mcp_servers.get(&requirement.server)?;
             let destination = Destination::historical(&input.archive, server, &requirement.name)?;
             destination
-                .matches_launch(
-                    launch_mcp.remote.get(&requirement.server),
-                    &requirement.name,
-                )
+                .matches_launch(launch_mcp, &requirement.server, &requirement.name)
                 .then_some(Candidate {
                     row,
                     old,

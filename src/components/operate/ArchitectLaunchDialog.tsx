@@ -66,7 +66,9 @@ export function ArchiveRunSecrets({ version, onClose }: { version: VersionKey; o
         ? "agsdl.launch.mcp.configureInLaunch" : "agsdl.launch.noSecrets")}
     </p>}
     {preview?.secrets.map(secret => <SecretRow key={JSON.stringify([secret.server, secret.name])}
-      version={version} secret={secret} configuration={preview.configuration} onSaved={() => setRevision(current => current + 1)} />)}
+      version={version} secret={secret} configuration={preview.configuration}
+      stdio={preview.permissions.mcpServers[secret.server]?.transport.type === "local"}
+      onSaved={() => setRevision(current => current + 1)} />)}
   </ArchitectDialogShell>;
 }
 

@@ -123,7 +123,7 @@ pub(crate) async fn launch(
     if let Some(blocker) = blockers.first() {
         return Err(launch_failure(blocker.code, &blocker.subject));
     }
-    let mut summary = permissions(&input, &preview, &launch_mcp)?;
+    let mut summary = permissions(&preview, &launch_mcp)?;
     record_host_permissions(&mut summary, &policy.agsdl_host_permissions)?;
     record_host_permissions(&mut summary, ceiling.permissions())?;
     let mcp_ceiling = (!launch_mcp.agents.is_empty())

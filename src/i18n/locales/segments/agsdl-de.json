@@ -147,6 +147,7 @@
     "secretValue": "Wert von {{name}}",
     "legacySecretReset": "Macro konnte das Ziel des früheren Geheimnisses nicht überprüfen. Geben Sie es für dieses Ziel erneut ein.",
     "secretHelp": "Wird im Tresor dieses Computers gespeichert, für dieses System und nicht für eine einzelne Version.",
+    "stdioSecretHelp": "Wird im Tresor dieses Computers für dieses stdio-Ziel gespeichert. Ändern sich Befehl, Argumente oder mitgelieferte Dateien, gib das Geheimnis erneut ein und genehmige die neue Version.",
     "secretSaved": "„{{name}}“ gespeichert.",
     "secretFailed": "Macro konnte dieses Geheimnis nicht speichern.",
     "replaceSecret": "Ersetzen",

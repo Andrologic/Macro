@@ -147,6 +147,7 @@
     "secretValue": "Value of {{name}}",
     "legacySecretReset": "Macro could not verify where the old secret was used. Enter it again for this destination.",
     "secretHelp": "Kept in this computer’s vault, for this system and not for a single version.",
+    "stdioSecretHelp": "Stored in this computer’s vault for this stdio destination. If its command, arguments, or packaged files change, enter the secret again and approve the new version.",
     "secretSaved": "“{{name}}” saved.",
     "secretFailed": "Macro could not save this secret.",
     "replaceSecret": "Replace",

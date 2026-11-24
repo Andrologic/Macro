@@ -122,7 +122,7 @@ async fn archive_launch_admits_pinned_snapshot_and_rediscovers_named_run() {
         .await
         .unwrap();
     let preview = input.preview().unwrap();
-    let mut review = permissions(&input, &preview, &mcp::LaunchMcp::default()).unwrap();
+    let mut review = permissions(&preview, &mcp::LaunchMcp::default()).unwrap();
     {
         let policy = manager.lock_execution_tools(PROJECT_ID).await.unwrap();
         record_host_permissions(&mut review, &policy.agsdl_host_permissions).unwrap();
@@ -318,7 +318,7 @@ async fn a_completion_check_that_runs_on_more_answers_needs_new_consent() {
         .unwrap();
     let mut projected = input.preview().unwrap();
     let summary =
-        |preview: &ImportPreview| permissions(&input, preview, &mcp::LaunchMcp::default()).unwrap();
+        |preview: &ImportPreview| permissions(preview, &mcp::LaunchMcp::default()).unwrap();
     let restricted = summary(&projected);
     assert_eq!(
         projected.agents["worker"]
@@ -967,7 +967,7 @@ fn legacy_secret_id(input: &VersionInput, namespace: &str, server: &str, name: &
 }
 
 #[tokio::test]
-async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
+async fn stdio_credentials_follow_the_verified_destination_across_versions() {
     let _guard = crate::secrets::lock_test_store();
     let data = tempfile::tempdir().unwrap();
     let mut doc = manifest();
@@ -975,10 +975,11 @@ async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
     doc["mcpFiles"] = json!({"used":["serve.sh"]});
     doc["secrets"] = json!({"used":["TOKEN","SECOND"],"spare":["UNUSED"]});
     doc["flow"] = json!({"entry":"tool","steps":{"tool":{"type":"call","mcp":{"server":"used","tool":"hello"}}}});
-    let (pool, version) = archive_fixture_with_mcp(data.path(), doc, &[("serve.sh", false)]).await;
-    let input = VersionInput::read(&pool, &Storage::new(data.path()), version)
-        .await
-        .unwrap();
+    let (pool, version) =
+        archive_fixture_with_mcp(data.path(), doc.clone(), &[("serve.sh", false)]).await;
+    let storage = Storage::new(data.path());
+    let blueprint = version.blueprint_id.clone();
+    let input = VersionInput::read(&pool, &storage, version).await.unwrap();
     let old_id = legacy_secret_id(&input, "architect-launch", "used", "TOKEN");
     fs::write(
         data.path().join("provider-secrets.json"),
@@ -1007,47 +1008,76 @@ async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
     }
     set_host_ceiling(&manager, json!("workspace")).await;
     let policy = manager.lock_execution_tools(PROJECT_ID).await.unwrap();
-    let (blockers, servers) = requirements(
-        &input,
-        &projected,
-        &call_permissions(&policy).unwrap(),
-        &policy.agsdl_host_permissions,
-        data.path(),
-        true,
-        &LaunchConfiguration::default(),
-    )
-    .unwrap();
-    assert!(blockers.is_empty());
+    let qualify = |input: &VersionInput, preview: &ImportPreview| {
+        let (blockers, launch) = requirements(
+            input,
+            preview,
+            &call_permissions(&policy).unwrap(),
+            &policy.agsdl_host_permissions,
+            data.path(),
+            true,
+            &LaunchConfiguration::default(),
+        )
+        .unwrap();
+        assert!(blockers.is_empty());
+        launch
+    };
+    let servers = qualify(&input, &projected);
     assert_eq!(servers.secrets.len(), 1);
     let names = servers.secrets["used"].clone();
     let provider = secret_provider(&input, &servers).unwrap();
     let source = input.source_revision();
+    // An earlier build could store a value without a stdio destination.
+    let unbound = |name: &str| {
+        let material = serde_json::to_vec(&(
+            "archive-mcp-credential/1",
+            &blueprint,
+            &input.origin,
+            "used",
+            name,
+            Value::Null,
+        ))
+        .unwrap();
+        ArchiveMcpKey::from_digest(Sha256::digest(material).into())
+    };
+    for name in &names {
+        archive_mcp::set(&unbound(name), "unbound").unwrap();
+    }
     assert!(provider(&source, "used", &names).is_none());
-    archive_mcp::set(&input.secret_id("used", "SECOND", None).unwrap(), "SECOND").unwrap();
-    let requirements = secret_requirements(&pool, &Storage::new(data.path()), &input, &servers)
+    archive_mcp::set(
+        &input.secret_id("used", "SECOND", &servers).unwrap(),
+        "SECOND",
+    )
+    .unwrap();
+    let migrated = secret_requirements(&pool, &storage, &input, &servers)
         .await
         .unwrap();
-    assert!(requirements
+    assert!(migrated
         .iter()
         .all(|secret| secret.stored && !secret.legacy_reset_required));
     assert!(!archive_mcp::has_legacy(&input.legacy_secret_key("used", "TOKEN").unwrap()).unwrap());
+    assert_eq!(provider(&source, "used", &names).unwrap()["TOKEN"], "TOKEN");
     assert!(provider(&source, "spare", &names).is_none());
     assert!(provider(&source, "used", &names[..1]).is_none());
     let mut foreign = source.clone();
     foreign.owner.plan_id = "another-blueprint".into();
     assert!(provider(&foreign, "used", &names).is_none());
     assert_ne!(
-        input.secret_id("used", "TOKEN", None).unwrap(),
+        input.secret_id("used", "TOKEN", &servers).unwrap(),
         secret_id(
             &input.key.blueprint_id,
             r#"["origin",1]"#,
             "used",
             "TOKEN",
-            None
+            &servers
         )
         .unwrap()
     );
-    archive_mcp::set(&input.secret_id("used", "TOKEN", None).unwrap(), "changed").unwrap();
+    archive_mcp::set(
+        &input.secret_id("used", "TOKEN", &servers).unwrap(),
+        "changed",
+    )
+    .unwrap();
     let values = provider(&source, "used", &names).unwrap();
     assert_eq!(
         values,
@@ -1055,6 +1085,77 @@ async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
             ("TOKEN".into(), "changed".into()),
             ("SECOND".into(), "SECOND".into())
         ])
+    );
+
+    let consent = permissions(&projected, &servers).unwrap();
+    drop(input);
+    doc["secrets"] = json!({"file":"secrets.json"});
+    doc["agents"]["worker"]["model"] = json!({"name":"fixture"});
+    for (number, args, script, same) in [
+        (2, json!(["sh", "./serve.sh"]), None, true),
+        (
+            3,
+            json!(["sh", "./serve.sh", "--new-argument"]),
+            None,
+            false,
+        ),
+        (
+            4,
+            json!(["sh", "./serve.sh"]),
+            Some("#!/bin/sh\nexit 1\n"),
+            false,
+        ),
+    ] {
+        doc["mcpServers"]["used"]["command"] = args;
+        let mut files = vec![json!({"kind":"write","path":"agsdl.json","text":doc.to_string()})];
+        if let Some(script) = script {
+            files.push(json!({"kind":"write","path":"serve.sh","text":script}));
+        }
+        let draft = storage.open_draft_project(&pool, &blueprint).await.unwrap();
+        let saved = storage
+            .edit_project(
+                &pool,
+                &blueprint,
+                draft.project.revision,
+                serde_json::from_value(json!({"files":files})).unwrap(),
+                true,
+            )
+            .await
+            .unwrap();
+        storage
+            .freeze(&pool, blueprint.clone(), saved.revision, None, None)
+            .await
+            .unwrap();
+        let current = VersionInput::read(
+            &pool,
+            &storage,
+            VersionKey {
+                blueprint_id: blueprint.clone(),
+                number,
+            },
+        )
+        .await
+        .unwrap();
+        let preview = current.preview().unwrap();
+        let launch = qualify(&current, &preview);
+        let requirements = secret_requirements(&pool, &storage, &current, &launch)
+            .await
+            .unwrap();
+        assert!(requirements.iter().all(|secret| secret.stored == same));
+        let resolved =
+            secret_provider(&current, &launch).unwrap()(&current.source_revision(), "used", &names);
+        assert_eq!(
+            resolved.as_ref().map(|values| values["TOKEN"].as_str()),
+            same.then_some("changed")
+        );
+        assert_eq!(
+            consent.covers(&permissions(&preview, &launch).unwrap()),
+            same
+        );
+    }
+    assert_eq!(
+        provider(&source, "used", &names).unwrap()["TOKEN"],
+        "changed"
     );
 }
 

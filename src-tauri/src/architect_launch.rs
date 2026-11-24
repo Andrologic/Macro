@@ -316,9 +316,9 @@ impl VersionInput {
         &self,
         server: &str,
         name: &str,
-        remote: Option<&mcp::RemoteGrant>,
+        launch: &mcp::LaunchMcp,
     ) -> Result<ArchiveMcpKey> {
-        secret_id(&self.key.blueprint_id, &self.origin, server, name, remote)
+        secret_id(&self.key.blueprint_id, &self.origin, server, name, launch)
     }
 }
 
@@ -327,20 +327,30 @@ fn secret_id(
     origin: &str,
     server: &str,
     name: &str,
-    remote: Option<&mcp::RemoteGrant>,
+    launch: &mcp::LaunchMcp,
 ) -> Result<ArchiveMcpKey> {
-    let destination = remote
-        .map(|grant| grant.credential_binding(name).ok_or_else(vault_error))
-        .transpose()?;
-    let digest = Sha256::digest(serde_json::to_vec(&(
-        "archive-mcp-credential/1",
-        blueprint,
-        origin,
-        server,
-        name,
-        destination,
-    ))?);
-    Ok(ArchiveMcpKey::from_digest(digest.into()))
+    let material = if let Some(remote) = launch.remote.get(server) {
+        let destination = remote.credential_binding(name).ok_or_else(vault_error)?;
+        serde_json::to_vec(&(
+            "archive-mcp-credential/1",
+            blueprint,
+            origin,
+            server,
+            name,
+            destination,
+        ))?
+    } else {
+        let fingerprint = launch.stdio.get(server).ok_or_else(vault_error)?;
+        serde_json::to_vec(&(
+            "archive-mcp-stdio-credential/1",
+            blueprint,
+            origin,
+            server,
+            name,
+            fingerprint,
+        ))?
+    };
+    Ok(ArchiveMcpKey::from_digest(Sha256::digest(material).into()))
 }
 
 fn vault_error() -> crate::db::agsdl_execution::dto::EngineFailure {
@@ -351,11 +361,7 @@ fn vault_error() -> crate::db::agsdl_execution::dto::EngineFailure {
     )
 }
 
-fn permissions(
-    input: &VersionInput,
-    preview: &ImportPreview,
-    launch_mcp: &mcp::LaunchMcp,
-) -> Result<Permissions> {
+fn permissions(preview: &ImportPreview, launch_mcp: &mcp::LaunchMcp) -> Result<Permissions> {
     let mut permissions = Permissions::default();
     for (id, agent) in &preview.agents {
         if agent.usage != Usage::Reachable {
@@ -416,41 +422,15 @@ fn permissions(
                 .insert(serde_json::to_string(&("mcp", server, tool))?);
         }
     }
-    for (id, server) in &preview.mcp_servers {
-        if !launch_mcp
-            .qualification
-            .get(id)
-            .is_some_and(|entry| entry.is_used())
-        {
-            continue;
-        }
-        if matches!(server.transport, McpTransport::Remote { .. }) {
-            if let Some(remote) = launch_mcp.remote.get(id) {
-                let digest =
-                    Sha256::digest(serde_json::to_vec(&("archive-mcp-http-consent/2", remote))?);
-                permissions.mcp.insert(id.clone(), format!("{digest:x}"));
-            }
-            continue;
-        }
-        let assets: BTreeMap<_, _> = input
-            .archive
-            .members()
-            .filter(|member| server.packaged_files.iter().any(|path| path == member.path))
-            .map(|member| {
-                (
-                    member.path,
-                    (
-                        format!("{:x}", Sha256::digest(member.bytes)),
-                        member.executable,
-                    ),
-                )
-            })
-            .collect();
+    for (id, remote) in &launch_mcp.remote {
+        let digest = Sha256::digest(serde_json::to_vec(&("archive-mcp-http-consent/2", remote))?);
+        permissions.mcp.insert(id.clone(), format!("{digest:x}"));
+    }
+    for (id, fingerprint) in &launch_mcp.stdio {
         let digest = Sha256::digest(serde_json::to_vec(&(
-            "archive-mcp-consent/2",
-            &server.transport,
-            &server.required_secrets,
-            assets,
+            "archive-mcp-stdio-consent/1",
+            fingerprint,
+            &preview.mcp_servers[id].required_secrets,
         ))?);
         permissions.mcp.insert(id.clone(), format!("{digest:x}"));
     }
@@ -597,10 +577,9 @@ fn secret_provider(
     let source = input.source_revision();
     let mut servers = BTreeMap::new();
     for (server, names) in &launch_mcp.secrets {
-        let remote = launch_mcp.remote.get(server);
         let keys = names
             .iter()
-            .map(|name| Ok((name.clone(), input.secret_id(server, name, remote)?)))
+            .map(|name| Ok((name.clone(), input.secret_id(server, name, launch_mcp)?)))
             .collect::<Result<Vec<_>>>()?;
         servers.insert(server.clone(), keys);
     }
@@ -863,7 +842,7 @@ fn requirements(
                     }
                 }
             }
-            McpTransport::Local { .. } => {
+            McpTransport::Local { command } => {
                 if let Err(blocker) = qualify_mcp(input, id, server) {
                     blockers.push(blocker);
                     continue;
@@ -876,6 +855,10 @@ fn requirements(
                     blockers.push(Blocker::new("mcpWorkspaceRequired", id));
                     continue;
                 }
+                let fingerprint =
+                    mcp::stdio_fingerprint(&input.archive, command, &server.packaged_files)
+                        .ok_or_else(storage_error)?;
+                launch_mcp.stdio.insert(id.clone(), fingerprint);
             }
         }
         launch_mcp
@@ -1003,7 +986,7 @@ pub(crate) async fn prepare(
         LOCAL_MCP_SUPPORTED,
         &configuration,
     )?;
-    let mut summary = permissions(&input, &permissions_preview, &launch_mcp)?;
+    let mut summary = permissions(&permissions_preview, &launch_mcp)?;
     record_host_permissions(&mut summary, &policy.agsdl_host_permissions)?;
     record_host_permissions(&mut summary, ceiling.permissions())?;
     drop(policy);
@@ -1120,11 +1103,7 @@ pub(crate) async fn set_secret(
             "The secret is not required by this version or has no value",
         ));
     }
-    archive_mcp::set(
-        &input.secret_id(server, name, launch_mcp.remote.get(server))?,
-        value,
-    )
-    .map_err(|_| vault_error())
+    archive_mcp::set(&input.secret_id(server, name, &launch_mcp)?, value).map_err(|_| vault_error())
 }
 
 #[cfg(test)]

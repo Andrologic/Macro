@@ -147,6 +147,7 @@
     "secretValue": "Valor de {{name}}",
     "legacySecretReset": "Macro no pudo verificar el destino del secreto anterior. Vuelve a introducirlo para este destino.",
     "secretHelp": "Se guarda en la caja fuerte de este equipo, para este sistema y no para una versión.",
+    "stdioSecretHelp": "Se guarda en la caja fuerte de este equipo para este destino stdio. Si cambian su comando, sus argumentos o los archivos incluidos, vuelve a introducir el secreto y aprueba la nueva versión.",
     "secretSaved": "«{{name}}» guardado.",
     "secretFailed": "Macro no pudo guardar este secreto.",
     "replaceSecret": "Reemplazar",

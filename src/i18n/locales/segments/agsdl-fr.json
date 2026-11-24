@@ -147,6 +147,7 @@
     "secretValue": "Valeur de {{name}}",
     "legacySecretReset": "Macro n’a pas pu vérifier la destination de l’ancien secret. Saisissez-le à nouveau pour cette destination.",
     "secretHelp": "Rangé dans le coffre de cet ordinateur, pour ce système et non pour une version.",
+    "stdioSecretHelp": "Enregistré dans le coffre de cet ordinateur pour cette destination stdio. Si sa commande, ses arguments ou les fichiers inclus dans l’archive changent, saisissez à nouveau le secret et approuvez la nouvelle version.",
     "secretSaved": "« {{name}} » enregistré.",
     "secretFailed": "Macro n’a pas pu enregistrer ce secret.",
     "replaceSecret": "Remplacer",
