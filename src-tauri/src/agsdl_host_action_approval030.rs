@@ -135,6 +135,30 @@ impl ArchiveActionPolicy030 {
                 "Archive workspace identity changed",
             ));
         }
+        if let Some((server, tool)) = mcp_request(payload)? {
+            if scope["sourceOwner"] != serde_json::to_value(owner)?
+                || scope["projectId"] != PROJECT_ID
+            {
+                return Err(failure(
+                    "CAPTURE_CHANGED",
+                    "approval",
+                    "Archive MCP owner differs from capture",
+                ));
+            }
+            let document: Value = serde_json::from_str(&capture.authored_source)?;
+            let declared = document["mcpServers"]
+                .get(server)
+                .is_some_and(Value::is_object);
+            let allowed = declared
+                && crate::architect_launch::mcp::current_tool_allowed(
+                    &folder,
+                    ceiling.permissions(),
+                    &project.agsdl_host_permissions,
+                    server,
+                    tool,
+                )?;
+            return Ok((allowed, (ceiling, project)));
+        }
         let current = crate::agsdl_host_tools::permissions("Implement", false, &project.tools)?;
         let path = write_target(payload)?;
         let in_scope = path != folder
@@ -197,4 +221,19 @@ fn policy_allows(
             },
         )
         .is_ok_and(|effect| effect == Effect::Allow))
+}
+
+fn mcp_request(payload: &Value) -> Result<Option<(&str, &str)>> {
+    let request = &payload["nativeRequest"];
+    if request["method"] != "mcp/tool/requestApproval" {
+        return Ok(None);
+    }
+    let params = &request["params"];
+    let invalid = || failure("CORRELATION", "approval", "Native MCP tool scope is absent");
+    let server = params["server"].as_str().ok_or_else(invalid)?;
+    let tool = params["tool"].as_str().ok_or_else(invalid)?;
+    if !params["arguments"].is_object() {
+        return Err(invalid());
+    }
+    Ok(Some((server, tool)))
 }

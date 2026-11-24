@@ -13,6 +13,9 @@ use std::{
     time::Duration,
 };
 
+#[path = "mcp_tests.rs"]
+mod remote_mcp;
+
 async fn archive_fixture(data: &Path, manifest: Value) -> (SqlitePool, VersionKey) {
     archive_fixture_with_mcp(data, manifest, &[]).await
 }
@@ -119,18 +122,7 @@ async fn archive_launch_admits_pinned_snapshot_and_rediscovers_named_run() {
         .await
         .unwrap();
     let preview = input.preview().unwrap();
-    {
-        let policy = manager.lock_execution_tools(PROJECT_ID).await.unwrap();
-        let (blockers, servers) = requirements(
-            &input,
-            &preview,
-            &call_permissions(&policy).unwrap(),
-            LOCAL_MCP_SUPPORTED,
-        );
-        assert!(secret_requirements(&input, &servers).unwrap().is_empty());
-        assert!(blockers.is_empty());
-    }
-    let mut review = permissions(&input, &preview).unwrap();
+    let mut review = permissions(&input, &preview, &mcp::LaunchMcp::default()).unwrap();
     {
         let policy = manager.lock_execution_tools(PROJECT_ID).await.unwrap();
         record_host_permissions(&mut review, &policy.agsdl_host_permissions).unwrap();
@@ -325,7 +317,8 @@ async fn a_completion_check_that_runs_on_more_answers_needs_new_consent() {
         .await
         .unwrap();
     let mut projected = input.preview().unwrap();
-    let summary = |preview: &ImportPreview| permissions(&input, preview).unwrap();
+    let summary =
+        |preview: &ImportPreview| permissions(&input, preview, &mcp::LaunchMcp::default()).unwrap();
     let restricted = summary(&projected);
     assert_eq!(
         projected.agents["worker"]
@@ -762,50 +755,108 @@ async fn mcp_requirements_use_reachable_calls_and_refuse_unqualified_launch() {
 }
 
 #[tokio::test]
-async fn archive_remote_mcp_reports_missing_runtime_support() {
+async fn archive_review_project_skips_mcp_denied_by_the_reviewer() {
     let data = tempfile::tempdir().unwrap();
-    let (pool, version) = if let Some(path) = std::env::var_os("MACRO_TEST_REVIEW_PROJECT") {
-        import_archive_fixture(data.path(), Path::new(&path)).await
-    } else {
-        let mut doc = manifest();
-        doc["mcpServers"] = json!({"issues":{"url":"https://mcp.example.com/issues"}});
-        doc["agents"]["worker"]["mcpServers"] = json!(["issues"]);
-        doc["agents"]["worker"]["permissions"] =
-            json!({"preset":"read-only","rules":[{"action":"mcp","effect":"allow"}]});
-        doc["secrets"] = json!({"issues":["ISSUES_TOKEN"]});
-        archive_fixture(data.path(), doc).await
-    };
+    let project = review_project(data.path());
+    let (pool, version) = import_archive_fixture(data.path(), project.path()).await;
     let manager = manager_for_test(data.path()).await;
     observe_fixture(&manager);
-    let input = VersionInput::read(&pool, &Storage::new(data.path()), version.clone())
-        .await
-        .unwrap();
-    let authored = input.archive.source().authored_json();
-    let slice = api::product_slice(authored, None).unwrap();
-    assert_eq!(slice.pointer, "/mcpServers/issues/url");
-    let codex = api::validate_codex_document(&serde_json::from_str(authored).unwrap()).unwrap_err();
-    assert_eq!(codex.code, "HARNESS_CAPABILITY");
-    drop(input);
 
     let prepared = preview(&manager, &pool, data.path(), version.clone(), None).await;
-    assert_eq!(prepared.blockers[0].code, "mcpRemoteUnsupported");
-    assert_eq!(prepared.blockers[0].subject, "issues");
-    let server = &prepared.permissions.mcp_servers["issues"];
     assert!(
-        matches!(&server.transport, McpTransport::Remote { url } if url == "https://mcp.example.com/issues")
+        prepared.blockers.is_empty(),
+        "{}",
+        serde_json::to_string(&prepared.blockers).unwrap()
     );
-    assert_eq!(server.required_secrets, ["ISSUES_TOKEN"]);
+    assert!(!prepared.agent_mcp["reviewer"]["issues"].equipped);
+    assert!(prepared.remote_mcp.is_empty());
     assert!(prepared.secrets.is_empty());
-
     let host = HostState::new();
-    let refused = start::launch(
-        runtime(&host, &manager, &pool, data.path()),
-        request(version, prepared.consent_token),
+    let cleanup = Arc::new(tokio::sync::Notify::new());
+    let agent = Arc::new(ScriptedAgent {
+        cleanup: Some(cleanup.clone()),
+        ..Default::default()
+    });
+    agent.install(&host);
+    let runtime = runtime(&host, &manager, &pool, data.path());
+    let tasks = runtime.tasks.clone();
+    let receipt = start::launch(runtime, request(version, prepared.consent_token))
+        .await
+        .unwrap();
+    let id = &receipt.capture.identity.system_start_id;
+    tokio::time::timeout(Duration::from_secs(5), agent.started.notified())
+        .await
+        .unwrap();
+    assert_eq!(agent.starts.load(Ordering::SeqCst), 1);
+    host.request_stop(
+        &pool,
+        &tasks,
+        &crate::db::agsdl_execution::dto::EngineStopRequest {
+            system_start_id: id.clone(),
+            request_id: uuid::Uuid::new_v4().to_string(),
+            activation_id: None,
+        },
     )
     .await
-    .err()
     .unwrap();
-    assert_eq!(refused.code, "mcpRemoteUnsupported");
+    tokio::time::timeout(Duration::from_secs(5), agent.cancelled.notified())
+        .await
+        .unwrap();
+    cleanup.notify_one();
+    agent.wait(&host, id).await.unwrap();
+    let consent: String =
+        sqlx::query_scalar("SELECT permissions_json FROM architect_launch_consents")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(!consent.contains("issues"));
+    remove_test_snapshot(&pool, &manager, id).await;
+}
+
+fn review_project(data: &Path) -> tempfile::TempDir {
+    // This uses the exact v0.5.0 layout. The checked-out tag can also be
+    // supplied explicitly to test against upstream bytes.
+    let project = tempfile::tempdir_in(data).unwrap();
+    let upstream = std::env::var_os("MACRO_TEST_REVIEW_PROJECT").map(PathBuf::from);
+    for (path, contents) in [
+        (
+            "agsdl.json",
+            r#"{"projectFormat":"agsdl-project-1","contract":"agsdl-0.4.0","id":"review-project","agents":{"reviewer":{"file":"agents/reviewer/agent.json"}},"flow":{"file":"flows/review.json"},"mcpServers":{"issues":{"file":"mcp/issues.json"}},"settingsFiles":{"reviewer":"harnesses/codex/reviewer.json"},"secrets":{"file":"secrets/requirements.json"}}"#,
+        ),
+        (
+            "agents/reviewer/agent.json",
+            r#"{"harness":"codex","permissions":"read-only","instructions":[{"uri":"instructions.md"}],"mcpServers":["issues"]}"#,
+        ),
+        (
+            "agents/reviewer/instructions.md",
+            "Review the proposed change and report defects with file locations.\n",
+        ),
+        (
+            "flows/review.json",
+            r#"{"entry":"review","steps":{"review":{"type":"agent","agent":"reviewer"}}}"#,
+        ),
+        (
+            "harnesses/codex/reviewer.json",
+            r#"{"webSearch":"disabled"}"#,
+        ),
+        (
+            "mcp/issues.json",
+            r#"{"url":"https://mcp.example.com/issues"}"#,
+        ),
+        (
+            "secrets/requirements.json",
+            r#"{"issues":["ISSUES_TOKEN"]}"#,
+        ),
+    ] {
+        let target = project.path().join(path);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        if let Some(upstream) = &upstream {
+            fs::copy(upstream.join(path), target).unwrap();
+        } else {
+            fs::write(target, contents).unwrap();
+        }
+    }
+    project
 }
 
 #[test]
@@ -929,10 +980,13 @@ async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
             &input,
             &projected,
             &call_permissions(&policy).unwrap(),
+            &policy.agsdl_host_permissions,
+            data.path(),
             true,
-        );
+        )
+        .unwrap();
         assert_eq!(blockers[0].code, "mcpWorkspaceRequired");
-        assert!(servers.is_empty());
+        assert!(servers.secrets.is_empty());
     }
     set_host_ceiling(&manager, json!("workspace")).await;
     let policy = manager.lock_execution_tools(PROJECT_ID).await.unwrap();
@@ -940,12 +994,15 @@ async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
         &input,
         &projected,
         &call_permissions(&policy).unwrap(),
+        &policy.agsdl_host_permissions,
+        data.path(),
         true,
-    );
+    )
+    .unwrap();
     assert!(blockers.is_empty());
-    assert_eq!(servers.len(), 1);
-    let names = servers["used"].clone();
-    let provider = secret_provider(&input, servers.clone());
+    assert_eq!(servers.secrets.len(), 1);
+    let names = servers.secrets["used"].clone();
+    let provider = secret_provider(&input, servers.secrets.clone());
     let source = input.source_revision();
     assert!(provider(&source, "used", &names).is_none());
     for name in &names {

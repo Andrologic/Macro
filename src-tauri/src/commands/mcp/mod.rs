@@ -11,6 +11,7 @@ mod runtime_connector;
 mod service_shutdown;
 mod stdio;
 mod streamable_http;
+pub(crate) use streamable_http::ip_is_public;
 mod types;
 
 use self::ids::{

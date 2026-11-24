@@ -100,19 +100,35 @@ pub(crate) async fn launch(
         entry,
     };
 
+    let ceiling = runtime
+        .manager
+        .lock_agsdl_host_permissions()
+        .await
+        .map_err(|_| launch_failure("PERMISSION", "policy"))?;
     let policy = runtime
         .manager
         .lock_execution_tools(PROJECT_ID)
         .await
         .map_err(|_| launch_failure("PERMISSION", "policy"))?;
     let call_permissions = call_permissions(&policy)?;
-    let (blockers, servers) =
-        requirements(&input, &preview, &call_permissions, LOCAL_MCP_SUPPORTED);
+    let (blockers, launch_mcp) = requirements(
+        &input,
+        &preview,
+        &call_permissions,
+        ceiling.permissions(),
+        runtime.app_data,
+        LOCAL_MCP_SUPPORTED,
+    )?;
     if let Some(blocker) = blockers.first() {
         return Err(launch_failure(blocker.code, &blocker.subject));
     }
-    let mut summary = permissions(&input, &preview)?;
+    let mut summary = permissions(&input, &preview, &launch_mcp)?;
     record_host_permissions(&mut summary, &policy.agsdl_host_permissions)?;
+    record_host_permissions(&mut summary, ceiling.permissions())?;
+    let mcp_ceiling = (!launch_mcp.agents.is_empty())
+        .then(|| serde_json::to_value(ceiling.permissions()))
+        .transpose()?;
+    drop(ceiling);
     let machine = machine_id(runtime.manager.root())?;
     {
         let mut db = runtime.pool.acquire().await?;
@@ -125,7 +141,7 @@ pub(crate) async fn launch(
         )
         .await?;
     }
-    if let Some(secret) = secret_requirements(&input, &servers)?
+    if let Some(secret) = secret_requirements(&input, &launch_mcp)?
         .iter()
         .find(|secret| !secret.stored)
     {
@@ -306,7 +322,11 @@ pub(crate) async fn launch(
         Ok(started) => session
             .attach_committed_start(
                 runtime.pool,
-                context.with_mcp_secrets(secret_provider(&input, servers)),
+                runtime
+                    .manager
+                    .engine_context_with_mcp_ceiling(mcp_ceiling)
+                    .with_mcp_secrets(secret_provider(&input, launch_mcp.secrets))
+                    .with_mcp_http(mcp::authorizer(input.source_revision(), launch_mcp.remote)),
                 runtime.tasks.clone(),
                 identity,
                 &authority.capture,
@@ -396,13 +416,26 @@ fn registry(
     } else {
         (Vec::new(), Vec::new())
     };
+    let mut capabilities = Vec::new();
+    if LOCAL_MCP_SUPPORTED {
+        capabilities.push(json!({"name":"approval","support":"native","evidenceJson":"{\"runtime\":\"flow-human-clock\"}"}));
+        capabilities.push(json!({"name":"call.command","support":"native","evidenceJson":"{\"transport\":\"confined-local\"}"}));
+    }
+    let has_remote = document["mcpServers"]
+        .as_object()
+        .is_some_and(|servers| servers.values().any(|server| server["url"].is_string()));
+    if LOCAL_MCP_SUPPORTED || has_remote {
+        capabilities.push(
+            json!({"name":"call.mcp","support":"native","evidenceJson":json!({
+            "streamableHttp":has_remote, "confinedStdio":LOCAL_MCP_SUPPORTED,
+        }).to_string()}),
+        );
+    }
     let mut registry = json!({
         "format":"macro-agsdl-registry/030",
         "modules":[{"harness":"codex", "moduleJson":argentic_runtime::api::codex_module()}],
         "harnesses":harnesses, "agents":agents,
-        "hostCapabilities": if cfg!(all(target_os="macos", target_arch="aarch64")) {
-            json!([{"name":"approval","support":"native","evidenceJson":"{\"runtime\":\"flow-human-clock\"}"},{"name":"call.command","support":"native","evidenceJson":"{\"transport\":\"confined-local\"}"},{"name":"call.mcp","support":"native","evidenceJson":"{\"transport\":\"confined-stdio\"}"}])
-        } else { json!([]) }
+        "hostCapabilities":capabilities,
     });
     argentic_runtime::capture::apply_model_overrides(&mut registry, model_overrides)?;
     let digest = Sha256::digest(serde_json::to_vec(&(&registry, &scope, call_permissions))?);

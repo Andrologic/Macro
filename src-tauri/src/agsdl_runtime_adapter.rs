@@ -6,17 +6,24 @@ use argentic_runtime::{
 };
 use std::sync::Arc;
 
-struct MacroPolicy(ConfigManager);
+struct MacroPolicy {
+    manager: ConfigManager,
+    mcp_ceiling: Option<serde_json::Value>,
+}
 impl PolicySource for MacroPolicy {
     fn lock_project<'a>(&'a self, project: &'a str) -> PolicyFuture<'a, ProjectPolicyLease> {
         Box::pin(async move {
-            let lease = self.0.lock_execution_tools(project).await.map_err(|_| {
-                failure(
-                    "PERMISSION",
-                    "project",
-                    "Approved project configuration is unavailable",
-                )
-            })?;
+            let lease = self
+                .manager
+                .lock_execution_tools(project)
+                .await
+                .map_err(|_| {
+                    failure(
+                        "PERMISSION",
+                        "project",
+                        "Approved project configuration is unavailable",
+                    )
+                })?;
             Ok(ProjectPolicyLease::new(
                 lease.tools.clone(),
                 lease.agsdl_host_permissions.clone(),
@@ -26,13 +33,28 @@ impl PolicySource for MacroPolicy {
     }
     fn lock_ceiling(&self) -> PolicyFuture<'_, HostPolicyLease> {
         Box::pin(async move {
-            let lease = self.0.lock_agsdl_host_permissions().await.map_err(|_| {
-                failure(
-                    "PERMISSION",
-                    "policy",
-                    "Approved host permissions are unavailable",
-                )
-            })?;
+            let lease = self
+                .manager
+                .lock_agsdl_host_permissions()
+                .await
+                .map_err(|_| {
+                    failure(
+                        "PERMISSION",
+                        "policy",
+                        "Approved host permissions are unavailable",
+                    )
+                })?;
+            // The engine calculates tool grants from the live host ceiling.
+            // Keep later agent work within the ceiling shown at archive consent.
+            if let Some(expected) = &self.mcp_ceiling {
+                if &serde_json::to_value(lease.permissions())? != expected {
+                    return Err(failure(
+                        "CAPTURE_CHANGED",
+                        "policy",
+                        "The approved MCP ceiling changed since launch",
+                    ));
+                }
+            }
             Ok(HostPolicyLease::new(
                 lease.permissions().clone(),
                 lease.fingerprint().to_owned(),
@@ -43,8 +65,21 @@ impl PolicySource for MacroPolicy {
 }
 impl ConfigManager {
     pub(crate) fn engine_context(&self) -> HostContext {
-        let context = HostContext::new(self.root().to_owned(), Arc::new(MacroPolicy(self.clone())))
-            .with_network(Arc::new(MacroContentNetwork));
+        self.engine_context_with_mcp_ceiling(None)
+    }
+
+    pub(crate) fn engine_context_with_mcp_ceiling(
+        &self,
+        mcp_ceiling: Option<serde_json::Value>,
+    ) -> HostContext {
+        let context = HostContext::new(
+            self.root().to_owned(),
+            Arc::new(MacroPolicy {
+                manager: self.clone(),
+                mcp_ceiling,
+            }),
+        )
+        .with_network(Arc::new(MacroContentNetwork));
         match std::env::var_os("ARGENTIC_CODEX_AUTH_FILE") {
             Some(path) => context.with_codex_auth_file(path.into()),
             None => context,

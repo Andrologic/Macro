@@ -48,8 +48,8 @@ tauri-build = { version = "=2.7.4", features = [] }
 serde_json = "1"
 
 [dependencies]
-argentic-core = { git = "https://github.com/Andrologic/argentic.git", rev = "e595a6dc25e51498f16dd05c94eb279c2e1d53f3" }
-argentic-runtime = { git = "https://github.com/Andrologic/argentic.git", rev = "e595a6dc25e51498f16dd05c94eb279c2e1d53f3" }
+argentic-core = { git = "https://github.com/Andrologic/argentic.git", rev = "e58636a71260a2b8841f6a38b949466ae696030c" }
+argentic-runtime = { git = "https://github.com/Andrologic/argentic.git", rev = "e58636a71260a2b8841f6a38b949466ae696030c" }
 # Same locked SQLite library as SQLx, for bounded native BLOB reads.
 libsqlite3-sys = "=0.30.1"
 keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
@@ -141,7 +141,7 @@ tauri-remote-ui = { path = "vendor/tauri-remote-ui", optional = true }
 
 # Utils
 [dev-dependencies]
-argentic-runtime = { git = "https://github.com/Andrologic/argentic.git", rev = "e595a6dc25e51498f16dd05c94eb279c2e1d53f3", features = ["dev-support"] }
+argentic-runtime = { git = "https://github.com/Andrologic/argentic.git", rev = "e58636a71260a2b8841f6a38b949466ae696030c", features = ["dev-support"] }
 rmcp = { version = "=3.1.3", default-features = false, features = ["client", "server", "transport-async-rw"] }
 
 tauri = { version = "=2.12.5", features = ["test"] }

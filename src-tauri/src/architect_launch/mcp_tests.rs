@@ -1,0 +1,487 @@
+use super::*;
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::post,
+    Json, Router,
+};
+use std::{net::SocketAddr, sync::Mutex};
+
+const TOKEN: &str = "fixture-archive-issues-credential";
+const CLIENT_KEY: &str = "fixture-archive-client-credential";
+
+struct Peer {
+    address: SocketAddr,
+    calls: Arc<Mutex<Vec<Value>>>,
+    task: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+
+impl Peer {
+    async fn start() -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new()
+            .route("/issues", post(reply))
+            .with_state(calls.clone());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await });
+        Self {
+            address,
+            calls,
+            task,
+        }
+    }
+
+    fn endpoint(&self) -> String {
+        format!("http://{}/issues?version=1", self.address)
+    }
+}
+
+impl Drop for Peer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn reply(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    headers: HeaderMap,
+    Json(request): Json<Value>,
+) -> Response {
+    let raw = request.to_string();
+    assert!(!raw.contains(TOKEN) && !raw.contains(CLIENT_KEY));
+    if !headers
+        .get("authorization")
+        .is_some_and(|v| v == &format!("Bearer {TOKEN}"))
+        || !headers.get("client_key").is_some_and(|v| v == CLIENT_KEY)
+    {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let result = match request["method"].as_str() {
+        Some("initialize") => json!({
+            "protocolVersion":"2025-03-26", "capabilities":{"tools":{}},
+            "serverInfo":{"name":"fixture","version":"1"},
+        }),
+        Some("notifications/initialized") => return StatusCode::ACCEPTED.into_response(),
+        Some("tools/list") => {
+            let tools = ["lookup", "read", "remove"].map(|name| json!({
+                "name":name, "description":"Synthetic fixture tool", "inputSchema":{"type":"object"},
+            }));
+            json!({"tools":tools})
+        }
+        Some("tools/call") => {
+            calls.lock().unwrap().push(request["params"].clone());
+            json!({"content":[],"structuredContent":{"issue":"fixture"}})
+        }
+        _ => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    Json(json!({"jsonrpc":"2.0","id":request["id"],"result":result})).into_response()
+}
+
+fn write_json(root: &Path, path: &str, value: Value) {
+    fs::write(root.join(path), value.to_string()).unwrap();
+}
+
+fn loopback_review_project(data: &Path, endpoint: &str, direct: bool) -> tempfile::TempDir {
+    let project = review_project(data);
+    let root = project.path();
+    let mut agent: Value =
+        serde_json::from_slice(&fs::read(root.join("agents/reviewer/agent.json")).unwrap())
+            .unwrap();
+    agent["permissions"] = json!({
+        "preset":"read-only",
+        "rules":[
+            {"action":"mcp","match":"issues/read","effect":"allow"},
+            {"action":"mcp","match":"issues/lookup","effect":"ask"},
+            {"action":"mcp","match":"issues/remove","effect":"deny"},
+        ],
+    });
+    write_json(root, "agents/reviewer/agent.json", agent);
+    write_json(root, "mcp/issues.json", json!({"url":endpoint}));
+    write_json(
+        root,
+        "secrets/requirements.json",
+        json!({"issues":["ISSUES_TOKEN","CLIENT_KEY"]}),
+    );
+    if direct {
+        write_json(
+            root,
+            "flows/review.json",
+            json!({
+                "entry":"review","steps":{
+                    "review":{"type":"agent","agent":"reviewer","next":{"approve":"read"}},
+                    "read":{"type":"call","mcp":{"server":"issues","tool":"read"},
+                        "arguments":{"number":{"value":9007199254740993u64}}},
+                },
+            }),
+        );
+    } else {
+        fs::write(root.join("agents/reviewer/instructions.md"),
+            "Call the issues lookup tool with an object containing number 7, then finish the review.").unwrap();
+    }
+    project
+}
+
+async fn store_credentials(
+    manager: &ConfigManager,
+    pool: &SqlitePool,
+    data: &Path,
+    version: &VersionKey,
+) {
+    for (name, value) in [("ISSUES_TOKEN", TOKEN), ("CLIENT_KEY", CLIENT_KEY)] {
+        set_secret(manager, pool, data, version.clone(), "issues", name, value)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn archive_review_project_remote_headers_consent_and_current_tool_policy() {
+    let _guard = crate::secrets::lock_test_store();
+    let data = tempfile::tempdir().unwrap();
+    crate::secrets::init(data.path()).unwrap();
+    let peer = Peer::start().await;
+    let endpoint = peer.endpoint();
+    let project = loopback_review_project(data.path(), &endpoint, true);
+    let (pool, version) = import_archive_fixture(data.path(), project.path()).await;
+    let manager = manager_for_test(data.path()).await;
+    set_host_ceiling(&manager, json!("workspace")).await;
+    observe_fixture(&manager);
+
+    let prepared = preview(&manager, &pool, data.path(), version.clone(), None).await;
+    assert!(
+        prepared.blockers.is_empty(),
+        "{}",
+        serde_json::to_string(&prepared.blockers).unwrap()
+    );
+    assert_eq!(prepared.secrets.len(), 2);
+    assert!(prepared.secrets.iter().all(|secret| !secret.stored));
+    let projection = serde_json::to_value(&prepared).unwrap();
+    assert_eq!(
+        projection["agentMcp"]["reviewer"]["issues"]["tools"],
+        json!({
+            "lookup":"ask", "read":"allow", "remove":"deny",
+        })
+    );
+    assert_eq!(projection["remoteMcp"]["issues"]["url"], endpoint);
+    assert_eq!(
+        projection["remoteMcp"]["issues"]["delivery"],
+        json!({
+            "ISSUES_TOKEN":"Authorization: Bearer", "CLIENT_KEY":"CLIENT_KEY",
+        })
+    );
+
+    let host = HostState::new();
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.install(&host);
+    let token = prepared.consent_token.unwrap();
+    let launch = |consent| {
+        start::launch(
+            runtime(&host, &manager, &pool, data.path()),
+            request(version.clone(), consent),
+        )
+    };
+    assert_eq!(launch(None).await.err().unwrap().code, "CONSENT_REQUIRED");
+    assert_eq!(
+        launch(Some(token.clone())).await.err().unwrap().code,
+        "MCP_SECRETS_UNAVAILABLE"
+    );
+    assert!(peer.calls.lock().unwrap().is_empty());
+    assert!(set_secret(
+        &manager,
+        &pool,
+        data.path(),
+        version.clone(),
+        "issues",
+        "ISSUES_TOKEN",
+        "invalid\nvalue"
+    )
+    .await
+    .is_err());
+    store_credentials(&manager, &pool, data.path(), &version).await;
+    let prepared = preview(&manager, &pool, data.path(), version.clone(), None).await;
+    assert!(prepared.secrets.iter().all(|secret| secret.stored));
+    let receipt = launch(Some(token)).await.unwrap();
+    let id = &receipt.capture.identity.system_start_id;
+    tokio::time::timeout(Duration::from_secs(10), agent.wait(&host, id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(agent.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *peer.calls.lock().unwrap(),
+        [json!({"name":"read","arguments":{"number":9007199254740993u64}})]
+    );
+    let run = host
+        .runtime_projection(
+            &pool,
+            api::RuntimeProjectionQuery030 {
+                system_start_id: id.clone(),
+                source: receipt.capture.source.clone(),
+                snapshot_id: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.verdict.as_deref(), Some("succeeded"));
+    let consent: String =
+        sqlx::query_scalar("SELECT permissions_json FROM architect_launch_consents")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(serde_json::from_str::<Permissions>(&consent)
+        .unwrap()
+        .mcp
+        .contains_key("issues"));
+    for filename in ["launch.db", "launch.db-wal"] {
+        if let Ok(bytes) = fs::read(data.path().join(filename)) {
+            for secret in [TOKEN, CLIENT_KEY] {
+                assert!(!bytes
+                    .windows(secret.len())
+                    .any(|window| window == secret.as_bytes()));
+            }
+        }
+    }
+    assert!(preview(&manager, &pool, data.path(), version.clone(), None)
+        .await
+        .consent_token
+        .is_none());
+
+    // The broker supplies the same native request after a person's decision.
+    // Macro rechecks the actual folder and the current grant before handoff.
+    let action = json!({"nativeRequest":{"method":"mcp/tool/requestApproval","params":{
+        "server":"issues","tool":"lookup","arguments":{"number":7},
+    }}});
+    let policy = crate::agsdl_host_action_approval030::ArchiveActionPolicy030 {
+        pool: pool.clone(),
+        config: manager.clone(),
+    };
+    assert!(
+        policy
+            .lock_decision(&receipt.capture, &action)
+            .await
+            .unwrap()
+            .0
+    );
+
+    let storage = Storage::new(data.path());
+    let draft = storage
+        .open_draft_project(&pool, &version.blueprint_id)
+        .await
+        .unwrap();
+    let changed_endpoint = endpoint.replace("version=1", "version=2");
+    let patch = serde_json::from_value(json!({"files":[{"kind":"write","path":"mcp/issues.json",
+        "text":json!({"url":changed_endpoint}).to_string()}]}))
+    .unwrap();
+    let edited = storage
+        .edit_project(
+            &pool,
+            &version.blueprint_id,
+            draft.project.revision,
+            patch,
+            true,
+        )
+        .await
+        .unwrap();
+    storage
+        .freeze(
+            &pool,
+            version.blueprint_id.clone(),
+            edited.revision,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let changed = preview(
+        &manager,
+        &pool,
+        data.path(),
+        VersionKey {
+            number: 2,
+            ..version
+        },
+        None,
+    )
+    .await;
+    assert!(changed.consent_token.is_some());
+    assert!(changed.secrets.iter().all(|secret| secret.stored));
+
+    set_host_ceiling(
+        &manager,
+        json!({
+            "preset":"workspace","rules":[{"action":"mcp","match":"iss*/lookup","effect":"deny"}],
+        }),
+    )
+    .await;
+    assert!(
+        !policy
+            .lock_decision(&receipt.capture, &action)
+            .await
+            .unwrap()
+            .0
+    );
+    remove_test_snapshot(&pool, &manager, id).await;
+}
+
+#[tokio::test]
+async fn endpoint_consent_matches_exact_revision_destination_and_secret_names() {
+    let data = tempfile::tempdir().unwrap();
+    let (pool, version) = archive_fixture(data.path(), manifest()).await;
+    let input = VersionInput::read(&pool, &Storage::new(data.path()), version)
+        .await
+        .unwrap();
+    let source = input.source_revision();
+    let names = vec!["ISSUES_TOKEN".to_owned()];
+    let url = url::Url::parse("https://example.invalid/mcp?tenant=one").unwrap();
+    let authorize = mcp::authorizer(
+        source.clone(),
+        BTreeMap::from([(
+            "issues".to_owned(),
+            mcp::RemoteGrant::new(url.as_str(), &names).unwrap(),
+        )]),
+    );
+    let public = ["1.1.1.1:443".parse().unwrap()];
+    assert!(authorize(&source, "issues", &url, &public, &names).is_some());
+    let changed = url.join("/mcp?tenant=two").unwrap();
+    assert!(authorize(&source, "issues", &changed, &public, &names).is_none());
+    assert!(authorize(&source, "other", &url, &public, &names).is_none());
+    assert!(authorize(&source, "issues", &url, &public, &[]).is_none());
+    let mut other = source.clone();
+    other.revision = "2".into();
+    assert!(authorize(&other, "issues", &url, &public, &names).is_none());
+    let mixed = [public[0], "127.0.0.1:443".parse().unwrap()];
+    assert!(authorize(&source, "issues", &url, &mixed, &names).is_none());
+}
+
+#[tokio::test]
+async fn archive_equipment_denies_every_tool_before_discovery() {
+    let data = tempfile::tempdir().unwrap();
+    let project = loopback_review_project(data.path(), "https://example.invalid/issues", false);
+    let (pool, version) = import_archive_fixture(data.path(), project.path()).await;
+    let manager = manager_for_test(data.path()).await;
+    observe_fixture(&manager);
+    set_host_ceiling(
+        &manager,
+        json!({
+            "preset":"workspace","rules":[{"action":"mcp","match":"iss*/**","effect":"deny"}],
+        }),
+    )
+    .await;
+    let prepared = preview(&manager, &pool, data.path(), version, None).await;
+    assert!(prepared.blockers.is_empty());
+    assert!(!prepared.agent_mcp["reviewer"]["issues"].equipped);
+    assert!(prepared.remote_mcp.is_empty());
+    assert!(prepared.secrets.is_empty());
+}
+
+#[cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux")))]
+#[tokio::test]
+#[ignore = "requires a disposable Macro data directory with a qualified, logged-in Codex profile"]
+async fn real_codex_asks_before_dispatching_archive_mcp_tool() {
+    use argentic_runtime::persistence::public030::HumanScope030;
+
+    let _guard = crate::secrets::lock_test_store();
+    let root = PathBuf::from(
+        std::env::var_os("MACRO_ARCHIVE_SMOKE_DATA").expect("set disposable Macro data directory"),
+    );
+    let data = tempfile::tempdir_in(&root).unwrap();
+    crate::secrets::init(data.path()).unwrap();
+    let peer = Peer::start().await;
+    let project = loopback_review_project(data.path(), &peer.endpoint(), false);
+    let (pool, version) = import_archive_fixture(data.path(), project.path()).await;
+    let manager = manager_for_test(&root).await;
+    set_host_ceiling(&manager, json!("workspace")).await;
+    store_credentials(&manager, &pool, data.path(), &version).await;
+
+    let prepared = preview(&manager, &pool, data.path(), version.clone(), None).await;
+    assert!(
+        prepared.blockers.is_empty(),
+        "{}",
+        serde_json::to_string(&prepared.blockers).unwrap()
+    );
+    let host = HostState::new();
+    let receipt = start::launch(
+        runtime(&host, &manager, &pool, data.path()),
+        request(version, prepared.consent_token),
+    )
+    .await
+    .unwrap();
+    let scope = HumanScope030 {
+        system_start_id: receipt.capture.identity.system_start_id.clone(),
+        source: receipt.capture.source.clone(),
+    };
+    let pending = tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            let page = host.human_page(&pool, scope.clone(), None).await.unwrap();
+            if let Some(request) = page
+                .requests
+                .into_iter()
+                .find(|request| request.status == "open")
+            {
+                break request;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Codex did not request the MCP tool");
+    let facts: Value = serde_json::from_str(pending.flow_json.as_deref().unwrap()).unwrap();
+    let action: Value =
+        serde_json::from_str(facts["content"]["actionJson"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        action["nativeRequest"]["method"],
+        "mcp/tool/requestApproval"
+    );
+    assert_eq!(action["nativeRequest"]["params"]["server"], "issues");
+    assert_eq!(action["nativeRequest"]["params"]["tool"], "lookup");
+    assert_eq!(
+        action["nativeRequest"]["params"]["arguments"],
+        json!({"number":7})
+    );
+    assert!(peer.calls.lock().unwrap().is_empty());
+    host.submit_person(
+        &pool,
+        api::HumanSubmission {
+            scope: scope.clone(),
+            request_id: pending.id,
+            expected_revision: pending.revision,
+            answer: api::HumanAnswer030::Decision {
+                decision: "yes".into(),
+                comment: String::new(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let verdict = tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            let page = host
+                .runtime_projection(
+                    &pool,
+                    api::RuntimeProjectionQuery030 {
+                        system_start_id: scope.system_start_id.clone(),
+                        source: scope.source.clone(),
+                        snapshot_id: None,
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            if let Some(verdict) = page.verdict {
+                break verdict;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("Codex did not complete the run");
+    assert_eq!(verdict, "succeeded");
+    assert_eq!(
+        *peer.calls.lock().unwrap(),
+        [json!({"name":"lookup","arguments":{"number":7}})]
+    );
+    remove_test_snapshot(&pool, &manager, &scope.system_start_id).await;
+}

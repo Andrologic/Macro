@@ -25,6 +25,8 @@ mod resources;
 pub(crate) mod start;
 pub(crate) use resources::cleanup;
 
+pub(crate) mod mcp;
+
 pub(crate) const PROJECT_ID: &str = "macro:architect-archive";
 pub(crate) const BRANCH: &str = "versions";
 pub(crate) const SCHEMA_VERSION: i64 = 50;
@@ -155,6 +157,8 @@ pub(crate) struct LaunchPreview {
     permissions: ImportPreview,
     consent_token: Option<String>,
     secrets: Vec<SecretRequirement>,
+    agent_mcp: BTreeMap<String, BTreeMap<String, mcp::AgentAccess>>,
+    remote_mcp: BTreeMap<String, mcp::RemoteGrant>,
 }
 
 #[derive(Serialize)]
@@ -318,7 +322,11 @@ fn vault_error() -> crate::db::agsdl_execution::dto::EngineFailure {
     )
 }
 
-fn permissions(input: &VersionInput, preview: &ImportPreview) -> Result<Permissions> {
+fn permissions(
+    input: &VersionInput,
+    preview: &ImportPreview,
+    launch_mcp: &mcp::LaunchMcp,
+) -> Result<Permissions> {
     let mut permissions = Permissions::default();
     for (id, agent) in &preview.agents {
         if agent.usage != Usage::Reachable {
@@ -371,7 +379,13 @@ fn permissions(input: &VersionInput, preview: &ImportPreview) -> Result<Permissi
         }
     }
     for (id, server) in &preview.mcp_servers {
-        if server.usage == Usage::DeclaredOnly {
+        if !direct_mcp(preview, id) && !launch_mcp.equips(id) {
+            continue;
+        }
+        if let Some(remote) = launch_mcp.remote.get(id) {
+            let digest =
+                Sha256::digest(serde_json::to_vec(&("archive-mcp-http-consent/1", remote))?);
+            permissions.mcp.insert(id.clone(), format!("{digest:x}"));
             continue;
         }
         let assets: BTreeMap<_, _> = input
@@ -397,7 +411,9 @@ fn permissions(input: &VersionInput, preview: &ImportPreview) -> Result<Permissi
         permissions.mcp.insert(id.clone(), format!("{digest:x}"));
     }
     for reference in &preview.external_references {
-        if reference.usage != Usage::DeclaredOnly {
+        if reference.usage != Usage::DeclaredOnly
+            && reference.kind != preview::ReferenceKind::McpEndpoint
+        {
             permissions
                 .capabilities
                 .insert(serde_json::to_string(&(&reference.kind, &reference.uri))?);
@@ -538,14 +554,15 @@ type ServerSecrets = BTreeMap<String, Vec<String>>;
 
 fn secret_requirements(
     input: &VersionInput,
-    servers: &ServerSecrets,
+    launch_mcp: &mcp::LaunchMcp,
 ) -> Result<Vec<SecretRequirement>> {
     let mut requirements = Vec::new();
-    for (server, names) in servers {
+    for (server, names) in &launch_mcp.secrets {
+        let remote = launch_mcp.remote.contains_key(server);
         for name in names {
             let stored = crate::secrets::get_api_key(&input.secret_id(server, name)?)
                 .map_err(|_| vault_error())?
-                .is_some_and(|value| !value.is_empty() && !value.contains('\0'));
+                .is_some_and(|value| mcp::valid_secret(&value, remote));
             requirements.push(SecretRequirement {
                 server: server.clone(),
                 name: name.clone(),
@@ -691,8 +708,7 @@ fn qualify_mcp(
     server: &McpServer,
 ) -> std::result::Result<(), Blocker> {
     let McpTransport::Local { command } = &server.transport else {
-        // The pinned Argentic runtime supports only local stdio call steps.
-        return Err(Blocker::new("mcpRemoteUnsupported", id));
+        return Ok(());
     };
     let files = &server.packaged_files;
     let program_required = || Blocker::new("mcpRetainedProgramRequired", id);
@@ -741,44 +757,84 @@ fn requirements(
     input: &VersionInput,
     preview: &ImportPreview,
     policy: &Value,
+    ceiling: &crate::agsdl_permissions::RequestedPermissions,
+    root: &Path,
     local_mcp_supported: bool,
-) -> (Vec<Blocker>, ServerSecrets) {
+) -> Result<(Vec<Blocker>, mcp::LaunchMcp)> {
     let mut blockers = Vec::new();
-    let mut servers = BTreeMap::new();
-    let has_calls = preview
-        .direct_calls
-        .iter()
-        .any(|call| call.usage == Usage::Reachable);
-    let calls_refused = has_calls
-        && argentic_runtime::api::product_slice(input.archive.source().authored_json(), None)
-            .is_some();
+    let mut launch_mcp = mcp::LaunchMcp {
+        agents: mcp::agent_access(input, preview, ceiling, root)?,
+        ..Default::default()
+    };
+    let qualification =
+        argentic_runtime::api::product_slice(input.archive.source().authored_json(), None);
+    if let Some(endpoint) = qualification
+        .as_ref()
+        .filter(|issue| issue.code == "MCP_ENDPOINT_UNSUPPORTED")
+    {
+        if let Some(id) = preview.mcp_servers.keys().find(|id| {
+            endpoint.pointer
+                == format!(
+                    "/mcpServers/{}/url",
+                    id.replace('~', "~0").replace('/', "~1")
+                )
+        }) {
+            blockers.push(Blocker::new("mcpEndpointUnsupported", id));
+        }
+    }
+    let workspace_calls = policy["agsdlHostPermissions"] == "workspace"
+        && matches!(
+            ceiling,
+            crate::agsdl_permissions::RequestedPermissions::Preset(
+                crate::agsdl_permissions::Preset::Workspace
+            )
+        )
+        && !crate::core::tool_policy::agsdl_native_read_only(policy);
     for (id, server) in &preview.mcp_servers {
-        let reachable = direct_mcp(preview, id);
-        let equipment = preview
-            .agents
-            .values()
-            .any(|agent| agent.usage == Usage::Reachable && agent.mcp_servers.contains(id));
-        if !reachable && !equipment {
+        let direct = direct_mcp(preview, id);
+        if !direct && !launch_mcp.equips(id) {
             continue;
         }
-        if let Err(blocker) = qualify_mcp(input, id, server) {
-            blockers.push(blocker);
-        } else if equipment || !local_mcp_supported || calls_refused {
-            blockers.push(Blocker::new("mcpIsolationUnavailable", id));
-        } else if policy["agsdlHostPermissions"] != "workspace"
-            || crate::core::tool_policy::agsdl_native_read_only(policy)
-        {
-            blockers.push(Blocker::new("mcpWorkspaceRequired", id));
-        } else {
-            servers.insert(id.clone(), server.required_secrets.clone());
+        match &server.transport {
+            McpTransport::Remote { url } => {
+                if blockers.iter().any(|blocker| blocker.subject == *id) {
+                    continue;
+                }
+                if direct && !workspace_calls {
+                    blockers.push(Blocker::new("mcpWorkspaceRequired", id));
+                    continue;
+                }
+                let Some(grant) = mcp::RemoteGrant::new(url, &server.required_secrets) else {
+                    blockers.push(Blocker::new("mcpSecretHeader", id));
+                    continue;
+                };
+                launch_mcp.remote.insert(id.clone(), grant);
+            }
+            McpTransport::Local { .. } => {
+                if let Err(blocker) = qualify_mcp(input, id, server) {
+                    blockers.push(blocker);
+                    continue;
+                }
+                if !local_mcp_supported || (direct && qualification.is_some()) {
+                    blockers.push(Blocker::new("mcpIsolationUnavailable", id));
+                    continue;
+                }
+                if direct && !workspace_calls {
+                    blockers.push(Blocker::new("mcpWorkspaceRequired", id));
+                    continue;
+                }
+            }
         }
+        launch_mcp
+            .secrets
+            .insert(id.clone(), server.required_secrets.clone());
     }
     for (id, agent) in &preview.agents {
         if agent.usage == Usage::Reachable && agent.harness != "codex" {
             blockers.push(Blocker::new("unsupportedHarness", id));
         }
     }
-    (blockers, servers)
+    Ok((blockers, launch_mcp))
 }
 
 const LOCAL_MCP_SUPPORTED: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
@@ -872,24 +928,32 @@ pub(crate) async fn prepare(
 ) -> Result<LaunchPreview> {
     let input = VersionInput::read(pool, &Storage::new(app_data), key).await?;
     let permissions_preview = input.preview()?;
-    let mut summary = permissions(&input, &permissions_preview)?;
+    let ceiling = manager
+        .lock_agsdl_host_permissions()
+        .await
+        .map_err(|_| failure("PERMISSION", "policy", "The launch policy is unavailable"))?;
     let policy = manager
         .lock_execution_tools(PROJECT_ID)
         .await
         .map_err(|_| failure("PERMISSION", "policy", "The launch policy is unavailable"))?;
+    let call_policy = call_permissions(&policy)?;
+    let (mut blockers, launch_mcp) = requirements(
+        &input,
+        &permissions_preview,
+        &call_policy,
+        ceiling.permissions(),
+        app_data,
+        LOCAL_MCP_SUPPORTED,
+    )?;
+    let mut summary = permissions(&input, &permissions_preview, &launch_mcp)?;
     record_host_permissions(&mut summary, &policy.agsdl_host_permissions)?;
-    let permissions = call_permissions(&policy)?;
+    record_host_permissions(&mut summary, ceiling.permissions())?;
     drop(policy);
+    drop(ceiling);
     let mut configuration = match configuration {
         Some(configuration) => configuration,
         None => saved_configuration(pool, &input.key.blueprint_id).await?,
     };
-    let (mut blockers, servers) = requirements(
-        &input,
-        &permissions_preview,
-        &permissions,
-        LOCAL_MCP_SUPPORTED,
-    );
     let mut reuse_token = None;
     if input.settings.working_folder_mode == WorkingFolderMode::AtLaunch {
         let folder = configuration
@@ -915,7 +979,7 @@ pub(crate) async fn prepare(
         let scope = start::scope_for(probe.path(), &owner(&input.key.blueprint_id))?;
         match start::observe_codex(manager, &scope).await {
             Ok(observed) => {
-                if codex_write_unqualified(&permissions_preview, &permissions, &observed) {
+                if codex_write_unqualified(&permissions_preview, &call_policy, &observed) {
                     blockers.push(Blocker::codex("CODEX_WRITE_PROFILE_UNQUALIFIED"));
                 }
                 blockers.extend(model_blockers(
@@ -932,7 +996,7 @@ pub(crate) async fn prepare(
             Err(error) => blockers.push(Blocker::codex(error.code)),
         }
     }
-    let secrets = secret_requirements(&input, &servers)?;
+    let secrets = secret_requirements(&input, &launch_mcp)?;
     let mut db = pool.acquire().await?;
     let machine = machine_id(manager.root())?;
     let consent_token = consent_token(&mut db, &input, &summary, &machine).await?;
@@ -949,6 +1013,8 @@ pub(crate) async fn prepare(
         permissions: permissions_preview,
         consent_token,
         secrets,
+        agent_mcp: launch_mcp.agents,
+        remote_mcp: launch_mcp.remote,
     })
 }
 
@@ -963,21 +1029,27 @@ pub(crate) async fn set_secret(
 ) -> Result<()> {
     let input = VersionInput::read(pool, &Storage::new(app_data), key).await?;
     let preview = input.preview()?;
+    let ceiling = manager
+        .lock_agsdl_host_permissions()
+        .await
+        .map_err(|_| failure("PERMISSION", "policy", "The launch policy is unavailable"))?;
     let policy = manager
         .lock_execution_tools(PROJECT_ID)
         .await
         .map_err(|_| failure("PERMISSION", "policy", "The launch policy is unavailable"))?;
-    let (_, servers) = requirements(
+    let (_, launch_mcp) = requirements(
         &input,
         &preview,
         &call_permissions(&policy)?,
+        ceiling.permissions(),
+        app_data,
         LOCAL_MCP_SUPPORTED,
-    );
-    if !servers
+    )?;
+    if !launch_mcp
+        .secrets
         .get(server)
         .is_some_and(|names| names.iter().any(|secret| secret == name))
-        || value.is_empty()
-        || value.contains('\0')
+        || !mcp::valid_secret(value, launch_mcp.remote.contains_key(server))
     {
         return Err(failure(
             "INVALID_LAUNCH_SECRET",
