@@ -52,10 +52,12 @@ computer with the same provider IDs. The archive excludes the provider secret
 store, its version-zero/version-one migration backups and pending migration
 journal, legacy SQLite API keys, MCP environment variables and headers, and
 credential fields in configuration. This covers provider and speech keys, web
-search keys, MCP OAuth client secrets and tokens, Macro AI installation identity,
-and ChatGPT sessions. Restoration removes the receiving profile's active secret
-store and migration recovery files and resets stored authentication flags.
-Reconnect the services you need after restoration.
+search keys, MCP OAuth client secrets and tokens, Architect archive MCP
+credentials, Macro AI installation identity, and ChatGPT sessions. Restoration
+removes the receiving profile's active secret store and migration recovery files
+and resets stored authentication flags. Reconnect the services you need after
+restoration. The SQLite backup includes Architect launch consent records, which
+remain tied to the installation that granted them.
 
 Pilot retains its relay address and optional pending instance label, but receives
 a new configuration context. Its saved account, session, instance and unfinished

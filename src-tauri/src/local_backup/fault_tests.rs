@@ -609,6 +609,7 @@ async fn fault_child() {
         return;
     };
     let config = PathBuf::from(std::env::var_os("MACRO_TEST_PROFILE_CONFIG").unwrap());
+    crate::fs::private_profile::install(&data, &[&config]).unwrap();
     let mode = std::env::var("MACRO_TEST_PROFILE_MODE").unwrap();
     if mode == "migration" {
         let pool = open_and_migrate(&data).await.unwrap();
@@ -1651,6 +1652,22 @@ async fn backup_restores_a_deleted_runs_owned_resources() {
     .execute(&pool)
     .await
     .unwrap();
+    let consent = r#"{"capabilities":["workspace"],"mcp":{"worker:example":"synthetic-binding"}}"#;
+    let read_consent = "SELECT permissions_json FROM architect_launch_consents";
+    sqlx::query("INSERT INTO architect_launch_consents VALUES (?,1,'synthetic-machine',?)")
+        .bind(BLUEPRINT)
+        .bind(consent)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let vault = serde_json::json!({
+        "version": 2,
+        "namespaces": {"archiveMcp": {
+            (format!("archive-mcp:{}", "5a".repeat(32))): "synthetic-archive-key"
+        }}
+    });
+    let vault_path = data.join(PROVIDER_SECRETS_FILE);
+    fs::write(&vault_path, serde_json::to_vec(&vault).unwrap()).unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(&external, fixture.folder.join("outside-link")).unwrap();
     seed_read_only_cache(&fixture.folder, "archived module");
@@ -1665,6 +1682,13 @@ async fn backup_restores_a_deleted_runs_owned_resources() {
     queue_export(&data, &backup);
     process_startup(&data, &config).await.unwrap();
     let archive = bundle::load(&backup).unwrap();
+    assert!(!archive.files.contains_key("data/provider-secrets.json"));
+    let vault_after_export = fs::read(&vault_path).unwrap();
+    let canonical_vault: serde_json::Value = serde_json::from_slice(&vault_after_export).unwrap();
+    assert_eq!(
+        canonical_vault["namespaces"]["archiveMcp"],
+        vault["namespaces"]["archiveMcp"]
+    );
     assert!(archive
         .files
         .keys()
@@ -1685,6 +1709,18 @@ async fn backup_restores_a_deleted_runs_owned_resources() {
         .unwrap()
         .permissions()
         .readonly());
+    assert_eq!(fs::read(&vault_path).unwrap(), vault_after_export);
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(read_consent)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        consent
+    );
+    sqlx::query("DELETE FROM architect_launch_consents")
+        .execute(&pool)
+        .await
+        .unwrap();
     pool.close().await;
 
     seed_read_only_cache(&fixture.folder, "stale module");
@@ -1715,6 +1751,13 @@ async fn backup_restores_a_deleted_runs_owned_resources() {
         b"user data"
     );
     let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(read_consent)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        consent
+    );
     let chosen = crate::architect_launch::read_folder(&pool, "external")
         .await
         .unwrap();

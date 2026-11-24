@@ -4118,7 +4118,20 @@ mod tests {
 
     #[tokio::test]
     async fn portable_restore_detaches_provider_secrets_and_keeps_them_in_rollback() {
+        use crate::secrets::archive_mcp::{self, ArchiveMcpKey};
+
         let (_temp, data, config) = profile().await;
+        let archive_key = ArchiveMcpKey::from_digest([0x5a; 32]);
+        let secret_bytes = serde_json::to_vec(&serde_json::json!({
+            "version": 2,
+            "namespaces": {
+                "providers": {"synthetic-provider": "synthetic-secret"},
+                "archiveMcp": {(format!("archive-mcp:{}", "5a".repeat(32))): "synthetic-archive-key"}
+            },
+            "chatgpt_sessions": {}
+        }))
+        .unwrap();
+        fs::write(data.join(PROVIDER_SECRETS_FILE), &secret_bytes).unwrap();
         let legacy_tools = br#"{
   "$schema": "./schemas/v1/tools.schema.json",
   "schemaVersion": 1,
@@ -4160,14 +4173,6 @@ mod tests {
             serde_json::to_vec(&provider_document("https://current.invalid/v1")).unwrap(),
         )
         .unwrap();
-        let secret_bytes = br#"{
-  "version": 2,
-  "namespaces": {
-    "providers": { "synthetic-provider": "synthetic-secret" }
-  },
-  "chatgpt_sessions": {}
-}"#;
-        fs::write(data.join(PROVIDER_SECRETS_FILE), secret_bytes).unwrap();
         let migration_backup = br#"{
   "version": 1,
   "api_keys": { "synthetic-provider": "synthetic-secret" }
@@ -4176,7 +4181,7 @@ mod tests {
         let migration_journal = serde_json::json!({
             "from_version": 1,
             "source_sha256": hash(migration_backup),
-            "target_sha256": hash(secret_bytes),
+            "target_sha256": hash(&secret_bytes),
             "backup_file": "provider-secrets.json.v1.bak"
         });
         let migration_journal_bytes = serde_json::to_vec_pretty(&migration_journal).unwrap();
@@ -4208,6 +4213,7 @@ mod tests {
         assert!(crate::secrets::get_api_key("synthetic-provider")
             .expect("read detached provider key")
             .is_none());
+        assert!(archive_mcp::get(&archive_key).unwrap().is_none());
         let restored: serde_json::Value =
             serde_json::from_slice(&fs::read(config.join("providers.json")).unwrap()).unwrap();
         assert_eq!(
@@ -4277,6 +4283,10 @@ mod tests {
                 .expect("read recovered provider key")
                 .as_deref(),
             Some("synthetic-secret")
+        );
+        assert_eq!(
+            archive_mcp::get(&archive_key).unwrap().as_deref(),
+            Some("synthetic-archive-key")
         );
         let recovered: serde_json::Value =
             serde_json::from_slice(&fs::read(config.join("providers.json")).unwrap()).unwrap();
