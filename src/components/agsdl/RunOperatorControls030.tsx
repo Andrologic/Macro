@@ -1,8 +1,7 @@
 import { useRef, useState } from 'react';
 import type { RuntimeInstance030 } from '../../types/generated/ipc';
 import type { RunInspection030 } from '../../services/agsdl/runtimeProjection030';
-import type { RunOperatorAction030 } from '../../services/ipc/agsdlExecution030';
-import { instanceOperatorState030, operatorErrorKey030, runOperatorAction030, threadOperatorAction030 } from '../../services/agsdl/operator030';
+import { instanceOperatorState030, operatorErrorKey030, runOperatorAction030, threadOperatorAction030, type ObservedOperatorAction030 } from '../../services/agsdl/operator030';
 import { retainedRunValue030 } from '../../services/agsdl/runtimeProjection030';
 import { runCaptureKey030 } from '../../services/agsdl/runGraphProjection030';
 import { controlOperateRun, terminateOperateRun } from '../../stores/useOperateInboxStore';
@@ -30,7 +29,7 @@ export function RunOperatorControls030({ run, stale, local, conversationId, inst
   const canAct = local && !stale && !state.stopping && state.verdict === null && state.ownerStatus === 'live';
   const action = canAct ? instance ? threadOperatorAction030(run, instance) : runOperatorAction030(run) : undefined;
   const target = { scope: state.scope, conversationId };
-  const apply = async (action: RunOperatorAction030) => {
+  const apply = async (action: ObservedOperatorAction030) => {
     setBusy(true);
     setMenu(null);
     try { await controlOperateRun(target, action); }

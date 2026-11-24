@@ -2,7 +2,7 @@ import type { RunHumanRequest030, RunScope030, RunVerdict030 } from '../types/ag
 import type { OperateRunFacts, OperateThreadFacts } from '../types/generated/ipc';
 import { sameHumanScope030, humanRemainingMs030 } from './agsdl/humanRequests030';
 import { runCaptureKey030 } from './agsdl/runGraphProjection030';
-import type { RunOperatorAction030 } from './ipc/agsdlExecution030';
+import type { ObservedOperatorAction030 } from './agsdl/operator030';
 import type { RunInspection030 } from './agsdl/runtimeProjection030';
 
 export type OperateReason = 'question' | 'approval' | 'error' | 'interrupted'
@@ -20,7 +20,7 @@ export interface OperateRunInput extends OperateRunTarget {
   runName?: string;
   status: OperateRunStatus;
   facts?: OperateRunFacts;
-  operatorAction?: RunOperatorAction030;
+  operatorAction?: ObservedOperatorAction030;
   physicalPending?: string;
   stale: boolean;
   threads: readonly {
@@ -29,7 +29,7 @@ export interface OperateRunInput extends OperateRunTarget {
     agentLabel: string;
     requests: readonly RunHumanRequest030[];
     reason?: 'error' | 'interrupted';
-    operatorAction?: RunOperatorAction030;
+    operatorAction?: ObservedOperatorAction030;
   }[];
   unlinkedRequests: readonly RunHumanRequest030[];
   observedAtMs: number;
@@ -47,7 +47,7 @@ export interface OperateRunRow extends OperateRunTarget {
   unopened: boolean;
   canTerminate: boolean;
   canDelete: boolean;
-  operatorAction?: RunOperatorAction030;
+  operatorAction?: ObservedOperatorAction030;
   startedAtMs: number | null;
   finishedAtMs: number | null;
   threads: readonly OperateThreadRow[];
@@ -67,7 +67,7 @@ export interface OperateThreadRow extends OperateRunTarget {
   hidden: boolean;
   stale: boolean;
   canSnooze: boolean;
-  operatorAction?: RunOperatorAction030;
+  operatorAction?: ObservedOperatorAction030;
   elapsedMs: number | null;
   activityAtMs: number | null;
   responseDeadlineMs: number | null;

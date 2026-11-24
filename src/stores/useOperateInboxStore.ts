@@ -17,7 +17,7 @@ import {
   openWorkflowRun030, refreshArchiveRunAccess, subscribeWorkflowRunAccess030, workflowAgentTaskId,
   workflowRunAccessSnapshot030, workflowRunTargetSnapshot030, type WorkflowRunRegistration030,
 } from '../services/workflowAgentTasks';
-import { instanceOperatorState030, runOperatorAction030, threadOperatorAction030 } from '../services/agsdl/operator030';
+import { instanceOperatorState030, runOperatorAction030, threadOperatorAction030, type ObservedOperatorAction030 } from '../services/agsdl/operator030';
 import type { RunOperatorAction030 } from '../services/ipc/agsdlExecution030';
 import { useAppStore } from './useAppStore';
 import { useTaskStore } from './useTaskStore';
@@ -243,41 +243,35 @@ const controls = new Map<string, Promise<void>>();
 const pendingRequests = new Map<string, string>();
 const controlKey = (scope: OperateRunTarget['scope'], action: RunOperatorAction030) =>
   'macro.operate.control:' + JSON.stringify([runCaptureKey030(scope), action.kind, 'activationId' in action ? action.activationId : null]);
-const forgetRequest = (key: string) => {
-  pendingRequests.delete(key);
-  try { localStorage.removeItem(key); } catch { /* storage can be unavailable */ }
-};
 
-export function controlOperateRun(target: OperateRunTarget, action: RunOperatorAction030): Promise<void> {
+export function controlOperateRun(target: OperateRunTarget, observed: ObservedOperatorAction030): Promise<void> {
+  const { revision, ...action } = observed;
   const key = controlKey(target.scope, action);
-  const existing = controls.get(key);
+  const observation = JSON.stringify([key, revision]);
+  const existing = controls.get(observation);
   if (existing) return existing;
-  let requestId = pendingRequests.get(key);
-  if (!requestId) {
-    try { requestId = localStorage.getItem(key) ?? undefined; } catch { /* storage can be unavailable */ }
-  }
-  requestId ??= crypto.randomUUID();
-  pendingRequests.set(key, requestId);
-  try { localStorage.setItem(key, requestId); } catch { /* keep the in-memory copy */ }
-  const operation = controlExecution030({ scope: target.scope, requestId, action }).then(() => {
-    forgetRequest(key);
-    switch (action.kind) {
-      case 'interruptWork': forgetRequest(controlKey(target.scope, { ...action, kind: 'resumeWork' })); break;
-      case 'resumeWork': forgetRequest(controlKey(target.scope, { ...action, kind: 'interruptWork' })); break;
-      case 'pauseRun': forgetRequest(controlKey(target.scope, { kind: 'resumeRun' })); break;
-      case 'resumeRun': forgetRequest(controlKey(target.scope, { kind: 'pauseRun' })); break;
-    }
-  }, error => {
+  let pending = pendingRequests.get(key);
+  try { pending = localStorage.getItem(key) ?? pending; } catch { /* storage can be unavailable */ }
+  const prefix = revision + ':';
+  const requestId = pending?.startsWith(prefix) ? pending.slice(prefix.length) : crypto.randomUUID();
+  const value = prefix + requestId;
+  pendingRequests.set(key, value);
+  try { localStorage.setItem(key, value); } catch { /* keep the in-memory copy */ }
+  const forget = () => {
+    if (pendingRequests.get(key) === value) pendingRequests.delete(key);
+    try {
+      if (localStorage.getItem(key) === value) localStorage.removeItem(key);
+    } catch { /* storage can be unavailable */ }
+  };
+  const operation = controlExecution030({ scope: target.scope, requestId, action }).then(forget, error => {
     const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
-    if (['OPERATOR_TRANSITION', 'CONFLICT', 'CORRELATION', 'HOST_CAPABILITY', 'INPUT_CONSTRAINT'].includes(String(code))) {
-      forgetRequest(key);
-    }
+    if (['OPERATOR_TRANSITION', 'CONFLICT', 'CORRELATION', 'HOST_CAPABILITY', 'INPUT_CONSTRAINT'].includes(String(code))) forget();
     throw error;
   }).finally(async () => {
-    controls.delete(key);
+    controls.delete(observation);
     await accessFor(target)?.refreshRun(target.scope.systemStartId).catch(() => {});
   });
-  controls.set(key, operation);
+  controls.set(observation, operation);
   return operation;
 }
 

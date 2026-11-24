@@ -8,6 +8,7 @@ import { openWorkflowRun030, workflowRunTargetSnapshot030 } from '../../services
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../../test-utils/tauriRuntime';
 import type { OperateRunFacts } from '../../types/generated/ipc';
 import { humanFixture030 } from '../agsdl/HumanRequests030.test-fixtures';
+import { controlOperateRun } from '../../stores/useOperateInboxStore';
 import { notify } from '../ui/toastService';
 import { OperateColumn } from './OperateNavigator';
 import { OPERATE_EXPANSION_STORAGE_KEY } from './useOperateExpansion';
@@ -335,7 +336,7 @@ it('retries an unacknowledged resume with the same request id and keeps Stop ava
     return { eventId: 'resume', revision: '4', effectIds: [] };
   });
   const operator = (key: string) => i18n.t(`agsdl.operator.${key}`, { ns: 'agsdl' }) as string;
-  await mount({ runs: [run('paused', { status: 'paused', operatorAction: { kind: 'resumeRun' } })] });
+  await mount({ runs: [run('paused', { status: 'paused', operatorAction: { kind: 'resumeRun', revision: '3' } })] });
   const row = host.querySelector('[data-operate-run]')!;
   expect(row.textContent).toContain(text('status.paused'));
   const openMenu = () => click(row.querySelector('button[aria-haspopup="menu"]'));
@@ -366,3 +367,23 @@ it('requires confirmation before deleting a finished run', async () => {
   await click(buttonByText(document.querySelector('[role="dialog"]')!, text('deleteDialog.confirm')));
   expect(deletes).toEqual([{ scope: finished.scope }]);
 });
+
+for (const action of [{ kind: 'pauseRun' }, { kind: 'interruptWork', activationId: 'work' }] as const) {
+  it(`replaces an unacknowledged ${action.kind} request after the run advances`, async () => {
+    const ids: string[] = [];
+    installTauriRuntimeMock(async (command, input) => {
+      expect(command).toBe('execution_control030');
+      const { request } = input as { request: { requestId: string; action: unknown } };
+      ids.push(request.requestId);
+      expect(request.action).toEqual(action);
+      if (ids.length === 1) throw { code: 'UNCERTAIN' };
+      return { eventId: 'operator:new', revision: '12', effectIds: [] };
+    });
+    const target = run(action.kind);
+    await expect(controlOperateRun(target, { ...action, revision: '8' })).rejects.toEqual({ code: 'UNCERTAIN' });
+    // A different client or an incoming message resumed the run/work.
+    await controlOperateRun(target, { ...action, revision: '11' });
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+}
