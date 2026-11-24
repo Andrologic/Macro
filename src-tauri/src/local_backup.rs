@@ -687,7 +687,9 @@ async fn check_database(path: &Path) -> Result<()> {
             .await
             .map_err(|e| e.to_string())?;
         if versions.contains(&crate::architect_launch::SCHEMA_VERSION) {
-            let through = if versions.contains(&crate::architect_launch::OWNER_SCHEMA_VERSION) {
+            let through = if versions.contains(&crate::architect_launch::schedule::SCHEMA_VERSION) {
+                crate::architect_launch::schedule::SCHEMA_VERSION
+            } else if versions.contains(&crate::architect_launch::OWNER_SCHEMA_VERSION) {
                 crate::architect_launch::OWNER_SCHEMA_VERSION
             } else {
                 crate::architect_launch::SCHEMA_VERSION

@@ -53,6 +53,14 @@ pub(crate) async fn launch(
     runtime: Runtime<'_>,
     request: LaunchRequest,
 ) -> Result<RetainedStart030> {
+    launch_occurrence(runtime, request, None).await
+}
+
+pub(crate) async fn launch_occurrence(
+    runtime: Runtime<'_>,
+    request: LaunchRequest,
+    occurrence: Option<schedule::Occurrence>,
+) -> Result<RetainedStart030> {
     let input = VersionInput::read(
         runtime.pool,
         &Storage::new(runtime.app_data),
@@ -307,6 +315,7 @@ pub(crate) async fn launch(
         summary,
         machine,
         token: request.consent_token,
+        occurrence,
         name: request
             .name
             .as_deref()
@@ -468,6 +477,7 @@ struct ArchiveStart<'a> {
     summary: Permissions,
     machine: String,
     token: Option<String>,
+    occurrence: Option<schedule::Occurrence>,
     name: Option<&'a str>,
 }
 
@@ -554,6 +564,9 @@ impl StartAuthority030 for ArchiveStart<'_> {
             {
                 return Err(changed());
             }
+            if let Some(occurrence) = &self.occurrence {
+                occurrence.check_folder(&scope)?;
+            }
             if let Some(confirmed) = &self.folder_reuse_token {
                 if *confirmed != folder_reuse_token(&scope)? {
                     return Err(changed());
@@ -576,25 +589,26 @@ impl StartAuthority030 for ArchiveStart<'_> {
             .bind(folder).bind(self.owns_folder).bind(&configuration).execute(&mut *db).await?;
         sqlx::query("INSERT INTO architect_version_uses(kind,owner_id,blueprint_id,number) VALUES ('execution',?,?,?)")
             .bind(id).bind(&key.blueprint_id).bind(key.number).execute(&mut *db).await?;
-        let mut saved = saved_configuration(db, &key.blueprint_id).await?;
-        saved
-            .working_folder
-            .clone_from(&self.configuration.working_folder);
-        for (server, endpoints) in &self.configuration.remote_mcp {
-            let saved = saved.remote_mcp.entry(server.clone()).or_default();
-            for (url, settings) in endpoints {
-                let saved = saved.entry(url.clone()).or_default();
-                saved.delivery.extend(settings.delivery.clone());
-                saved.address_scope = settings.address_scope;
+        if let Some(occurrence) = &self.occurrence {
+            occurrence.link(db, id, key).await?;
+        } else {
+            let mut saved = saved_configuration(db, &key.blueprint_id).await?;
+            saved
+                .working_folder
+                .clone_from(&self.configuration.working_folder);
+            for (server, endpoints) in &self.configuration.remote_mcp {
+                let saved = saved.remote_mcp.entry(server.clone()).or_default();
+                for (url, settings) in endpoints {
+                    let saved = saved.entry(url.clone()).or_default();
+                    saved.delivery.extend(settings.delivery.clone());
+                    saved.address_scope = settings.address_scope;
+                }
             }
-        }
-        sqlx::query("INSERT INTO architect_launch_configurations(blueprint_id,configuration_json) VALUES (?,?)
+            sqlx::query("INSERT INTO architect_launch_configurations(blueprint_id,configuration_json) VALUES (?,?)
               ON CONFLICT(blueprint_id) DO UPDATE SET configuration_json=excluded.configuration_json")
             .bind(&key.blueprint_id).bind(serde_json::to_string(&saved)?).execute(&mut *db).await?;
-        sqlx::query("INSERT INTO architect_launch_consents(blueprint_id,number,machine_id,permissions_json) VALUES (?,?,?,?)
-              ON CONFLICT(blueprint_id,number,machine_id) DO UPDATE SET permissions_json=excluded.permissions_json")
-            .bind(&key.blueprint_id).bind(key.number).bind(&self.machine)
-            .bind(serde_json::to_string(&self.summary)?).execute(&mut *db).await?;
+        }
+        record_consent(db, key, &self.machine, &self.summary, true).await?;
         self.session.bind_capture_tx(db, capture).await
     }
 }

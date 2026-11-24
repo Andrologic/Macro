@@ -29,6 +29,7 @@ mod legacy_mcp;
 pub(crate) mod resources;
 pub(crate) use delete_run::delete_run;
 use legacy_mcp::secret_requirements;
+pub(crate) mod schedule;
 pub(crate) mod start;
 pub(crate) use resources::cleanup;
 
@@ -66,7 +67,7 @@ fn machine_id(host_root: &Path) -> Result<String> {
 }
 
 pub(crate) async fn migrate(db: &mut SqliteConnection) -> crate::db::DbResult<()> {
-    migrate_through(db, OWNER_SCHEMA_VERSION).await
+    migrate_through(db, schedule::SCHEMA_VERSION).await
 }
 
 pub(crate) async fn migrate_through(
@@ -83,6 +84,11 @@ pub(crate) async fn migrate_through(
             OWNER_SCHEMA_VERSION,
             OWNER_SCHEMA_NAME,
             include_str!("db/migrations/051_architect_launch_ownership.sql"),
+        ),
+        (
+            schedule::SCHEMA_VERSION,
+            schedule::SCHEMA_NAME,
+            include_str!("db/migrations/053_architect_launch_schedules.sql"),
         ),
     ] {
         if version > through {
@@ -637,6 +643,20 @@ async fn consent_token(
     Ok(Some(format!("{digest:x}")))
 }
 
+async fn record_consent(
+    db: &mut SqliteConnection,
+    key: &VersionKey,
+    machine: &str,
+    summary: &Permissions,
+    replace: bool,
+) -> Result<()> {
+    sqlx::query("INSERT INTO architect_launch_consents(blueprint_id,number,machine_id,permissions_json) VALUES (?,?,?,?)
+          ON CONFLICT(blueprint_id,number,machine_id) DO UPDATE SET permissions_json=excluded.permissions_json WHERE ?")
+        .bind(&key.blueprint_id).bind(key.number).bind(machine)
+        .bind(serde_json::to_string(summary)?).bind(replace).execute(db).await?;
+    Ok(())
+}
+
 async fn saved_configuration(
     db: &mut SqliteConnection,
     blueprint_id: &str,
@@ -969,6 +989,21 @@ pub(crate) async fn prepare(
     configuration: Option<LaunchConfiguration>,
     model_overrides: BTreeMap<String, ModelOverride>,
 ) -> Result<LaunchPreview> {
+    Ok(
+        prepare_with_consent(manager, pool, app_data, key, configuration, model_overrides)
+            .await?
+            .0,
+    )
+}
+
+async fn prepare_with_consent(
+    manager: &ConfigManager,
+    pool: &SqlitePool,
+    app_data: &Path,
+    key: VersionKey,
+    configuration: Option<LaunchConfiguration>,
+    model_overrides: BTreeMap<String, ModelOverride>,
+) -> Result<(LaunchPreview, Permissions, String)> {
     let input = VersionInput::read(pool, &Storage::new(app_data), key).await?;
     let permissions_preview = input.preview()?;
     let mut configuration = match configuration {
@@ -1049,27 +1084,31 @@ pub(crate) async fn prepare(
     } else {
         None
     };
-    Ok(LaunchPreview {
-        start_message_required: launch_fields.is_none()
-            && input.requires_start_message(&permissions_preview),
-        launch_fields,
-        note: input.note,
-        version: input.key,
-        start_message_hint: input.settings.entry_message_hint,
-        working_folder_mode: input.settings.working_folder_mode,
-        configuration,
-        folder_reuse_token: reuse_token,
-        blockers,
-        available_models,
-        permissions: permissions_preview,
-        consent_token,
-        secrets,
-        agent_mcp: launch_mcp.agents,
-        remote_mcp: launch_mcp.remote,
-        remote_mcp_setup: launch_mcp.remote_setup,
-        mcp_direct_tools: launch_mcp.direct_tools,
-        mcp_notes: launch_mcp.notes,
-    })
+    Ok((
+        LaunchPreview {
+            start_message_required: launch_fields.is_none()
+                && input.requires_start_message(&permissions_preview),
+            launch_fields,
+            note: input.note,
+            version: input.key,
+            start_message_hint: input.settings.entry_message_hint,
+            working_folder_mode: input.settings.working_folder_mode,
+            configuration,
+            folder_reuse_token: reuse_token,
+            blockers,
+            available_models,
+            permissions: permissions_preview,
+            consent_token,
+            secrets,
+            agent_mcp: launch_mcp.agents,
+            remote_mcp: launch_mcp.remote,
+            remote_mcp_setup: launch_mcp.remote_setup,
+            mcp_direct_tools: launch_mcp.direct_tools,
+            mcp_notes: launch_mcp.notes,
+        },
+        summary,
+        machine,
+    ))
 }
 
 pub(crate) async fn set_secret(

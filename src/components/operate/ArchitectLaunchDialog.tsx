@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { parseLaunchValues } from "../../services/agsdl/launchFields";
 import { openExternalUrl } from "../../services/externalUrlOpener";
 import { architectLaunch, type LaunchConfiguration, type LaunchModelOverrides, type LaunchPreview, type RemoteMcpSettings } from "../../services/ipc/architectLaunch";
+import { architectSchedule, type ScheduledLaunch } from "../../services/ipc/architectSchedule";
 import { architectLibrary, type BlueprintVersionSummary, type VersionKey } from "../../services/ipc/architectLibrary";
 import { open } from "../../services/tauriDialog";
 import { openWorkflowRun030, refreshArchiveRunAccess } from "../../services/workflowAgentTasks";
@@ -22,6 +23,7 @@ import { LaunchConsent } from "./launch/LaunchConsent";
 import { LaunchFieldsForm } from "./launch/LaunchFieldsForm";
 import { LaunchMcpDetails, LaunchMcpNotes, LaunchMcpSettings } from "./launch/LaunchMcpDetails";
 import { LaunchReach } from "./launch/LaunchReach";
+import { initialScheduleFields, LaunchScheduleFields, toScheduleTiming } from "./launch/LaunchScheduleFields";
 import { LaunchSummary } from "./launch/LaunchSummary";
 import { comboboxClass, failureCode, failureText, isFolderFailure, isRecheckFailure, selectClass } from "./launch/launchModel";
 
@@ -78,9 +80,18 @@ export function ArchiveRunSecrets({ version, onClose }: { version: VersionKey; o
 
 interface Problem { message: string; technical: string; recheck: boolean }
 
-export default function ArchitectLaunchDialog({ initialVersion }: { initialVersion?: VersionKey }) {
+export default function ArchitectLaunchDialog({ initialVersion, schedule, onClose }: {
+  initialVersion?: VersionKey;
+  schedule?: { existing?: ScheduledLaunch; onSaved: () => void };
+  onClose?: () => void;
+}) {
   const { t } = useAgsdlTranslation();
-  const close = useArchitectLaunchStore(state => state.close);
+  const closeLaunch = useArchitectLaunchStore(state => state.close);
+  const close = onClose ?? closeLaunch;
+  const existing = schedule?.existing;
+  const [scheduleFields, setScheduleFields] = useState(() => ({
+    ...initialScheduleFields, policy: existing?.policy ?? initialScheduleFields.policy,
+  }));
   const [systems, setSystems] = useState<SystemChoice[]>();
   const [systemsFailed, setSystemsFailed] = useState(false);
   const [systemsRevision, setSystemsRevision] = useState(0);
@@ -89,10 +100,12 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
   const [preview, setPreview] = useState<LaunchPreview>();
   const [unavailableVersion, setUnavailableVersion] = useState<VersionKey>();
   const [confirmedFolderToken, setConfirmedFolderToken] = useState<string | null>(null);
-  const [modelOverrides, setModelOverrides] = useState<LaunchModelOverrides>({});
-  const [configuration, setConfiguration] = useState<LaunchConfiguration>();
-  const [message, setMessage] = useState("");
-  const [fieldInputs, setFieldInputs] = useState(() => new Map<string, string>());
+  const [modelOverrides, setModelOverrides] = useState<LaunchModelOverrides>(existing?.modelOverrides ?? {});
+  const [configuration, setConfiguration] = useState<LaunchConfiguration | undefined>(existing?.configuration);
+  const [message, setMessage] = useState(existing?.startMessage ?? "");
+  const [fieldInputs, setFieldInputs] = useState(() => new Map(
+    Object.entries(existing?.launchValues ?? {}).map(([key, value]) => [key, String(value)]),
+  ));
   const [name, setName] = useState("");
   const [checking, setChecking] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -146,11 +159,13 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
   const launchValues = fields ? parseLaunchValues(fields, fieldInputs) : undefined;
   const messageMissing = !fields && !!current?.startMessageRequired && !message.trim();
   const settled = !!current && !checking && !pending;
-  const ready = settled && !busy && !messageMissing && launchValues !== null;
+  const timing = schedule && !existing ? toScheduleTiming(scheduleFields, Date.now()) : null;
+  const timingMissing = !!schedule && !existing && !timing;
+  const ready = settled && !busy && !messageMissing && launchValues !== null && !timingMissing;
   const choosing = !!systems && !blueprintId;
   const reason = busy ? undefined : choosing ? t("agsdl.launch.chooseSystemReason") : !current && problem ? t("agsdl.launch.recheckReason") : !current || checking ? t("agsdl.launch.checkingReason")
-    : pending ? t("agsdl.launch.remaining", { count: pending }) : launchValues === null ? t("agsdl.launch.fields.invalidValues")
-      : messageMissing ? t("agsdl.launch.messageRequired") : undefined;
+    : pending ? t("agsdl.launch.remaining", { count: pending }) : launchValues === null ? t("agsdl.launch.fields.invalidValues") : messageMissing ? t("agsdl.launch.messageRequired")
+    : timingMissing ? t("agsdl.schedule.invalidTiming") : undefined;
   const replaced = Object.keys(modelOverrides).filter(agent => !current?.blockers.some(blocker => blocker.code === "modelUnavailable" && blocker.subject === agent));
 
   const recheck = useCallback(() => {
@@ -206,7 +221,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
     setBusy(true);
     setProblem(undefined);
     try {
-      const { identity, source } = await architectLaunch.start({
+      const launch = {
         version: current.version,
         configuration: current.configuration,
         startMessage: !fields && current.startMessageRequired ? message : null,
@@ -215,7 +230,14 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
         consentToken: consent ? current.consentToken : null,
         folderReuseToken: folderConfirmed ? confirmedFolderToken : null,
         modelOverrides,
-      });
+      };
+      if (schedule) {
+        await architectSchedule.save({ id: existing?.id ?? null, launch, timing, policy: scheduleFields.policy });
+        schedule.onSaved();
+        close();
+        return;
+      }
+      const { identity, source } = await architectLaunch.start(launch);
       close();
       void refreshArchiveRunAccess().catch(() => {});
       // Nothing opens by itself: the run is one click away. The start message stays out of the notice.
@@ -236,7 +258,10 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
         setNumber(current.version.number);
         setUnavailableVersion(current.version);
       } else {
-        setProblem({ ...failureText(failure, t), recheck: false });
+        const text = failureText(failure, t);
+        if (code.startsWith("INVALID_SCHEDULE_")) text.message = t("agsdl.schedule.invalidTiming");
+        if (code === "SCHEDULE_CHANGED") text.message = t("agsdl.schedule.changed");
+        setProblem({ ...text, recheck: false });
       }
     } finally {
       setBusy(false);
@@ -251,6 +276,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
 
   const versionLabel = version && t("agsdl.library.version", { number: version.number });
   const title = consent ? t("agsdl.launch.permissions")
+    : schedule ? t(existing ? "agsdl.schedule.configure" : "agsdl.schedule.create")
     : initialVersion && selected ? t("agsdl.launch.titleNamed", { name: selected.name }) : t("agsdl.launch.title");
   const subtitle = consent ? `${t("agsdl.launch.step2")} · ${[selected?.name, versionLabel, t("agsdl.inbox.local")].filter(Boolean).join(" · ")}` : undefined;
   const nothingToLaunch = !!systems && !systems.some(system => system.versions.length > 0) && !initialVersion;
@@ -258,8 +284,9 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
   const noVersion = !!systems && !!selected && !selected.versions.length;
   /** Only systems with a saved version can be started: the others would be dead ends in the list. */
   const launchable = (systems ?? []).filter(system => system.versions.length > 0).map(({ id, name }) => ({ id, name }));
-  const primary = busy ? t("agsdl.launch.starting")
-    : t(consent ? "agsdl.launch.approve" : current?.consentToken ? "agsdl.launch.continue" : "agsdl.launch.start");
+  const primary = t(busy ? schedule ? "agsdl.schedule.saving" : "agsdl.launch.starting"
+    : !consent && current?.consentToken ? "agsdl.launch.continue"
+    : schedule ? "agsdl.schedule.save" : consent ? "agsdl.launch.approve" : "agsdl.launch.start");
 
   const openArchitect = <Button size="sm" variant="secondary" className="!h-7 !px-3 !py-0 text-xs"
     onClick={() => { close(); useAppStore.getState().setMode("Architect"); }}>{t("agsdl.launch.openArchitect")}</Button>;
@@ -311,7 +338,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
           placeholder={current.startMessageHint ? undefined : t("agsdl.launch.messagePlaceholder")} onChange={event => setMessage(event.target.value)}
           onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); proceed(); } }} />
       </div>}
-      {version && selected && <LaunchSummary versions={usable} versionNumber={version.number} note={current?.note ?? version.note ?? null}
+      {version && selected && <LaunchSummary scheduled={!!schedule} versions={usable} versionNumber={version.number} note={current?.note ?? version.note ?? null}
         folderMode={current?.workingFolderMode ?? "perExecution"} folder={current?.configuration.workingFolder ?? null}
         checking={(!current && !problem) || checking} disabled={busy} runName={name} onRunName={setName}
         onVersion={value => { setNumber(value); reset(); }} onChooseFolder={() => void chooseFolder()}>
@@ -321,6 +348,8 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
             overrides={modelOverrides} disabled={busy} onOverride={override} />)}
         </div>}
       </LaunchSummary>}
+      {schedule && current && <LaunchScheduleFields value={scheduleFields} onChange={setScheduleFields}
+        editing={!!existing} sharedFolder={current.workingFolderMode === "atLaunch"} disabled={busy} />}
       {version && !current && !problem && <div role="status" className="space-y-2"><Skeleton className="h-8" /></div>}
       {current && <LaunchReach preview={current} />}
       {current && <LaunchMcpSettings preview={current} disabled={busy || checking} onChange={setMcpSettings} />}

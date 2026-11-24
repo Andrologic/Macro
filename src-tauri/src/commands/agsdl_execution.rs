@@ -57,26 +57,8 @@ pub(crate) async fn architect_launch_start(
 ) -> repository::Result<ArchiveLaunchReceipt> {
     tokio::spawn(async move {
         let state = app.state::<DbPool>();
-        let host = app.state::<crate::agsdl_host::HostState>();
-        let manager = app.state::<crate::config::ConfigManager>();
-        let ai = app.state::<crate::ai::AiState>();
         let pool = pool(&state).await?;
-        let app_data = launch_data(&app)?;
-        let result = archive_start::launch(
-            archive_start::Runtime {
-                host: &host,
-                manager: &manager,
-                pool: &pool,
-                app_data: &app_data,
-                tasks: ai.stream_tasks.clone(),
-            },
-            request,
-        )
-        .await?;
-        Ok(ArchiveLaunchReceipt {
-            identity: result.receipt.identity,
-            source: result.capture.source,
-        })
+        start_archive(&app, &pool, request, None).await
     })
     .await
     .map_err(|_| {
@@ -86,6 +68,76 @@ pub(crate) async fn architect_launch_start(
             "Native Start task did not acknowledge",
         )
     })?
+}
+
+pub(crate) async fn start_archive(
+    app: &tauri::AppHandle,
+    pool: &sqlx::SqlitePool,
+    request: archive_start::LaunchRequest,
+    occurrence: Option<launch::schedule::Occurrence>,
+) -> repository::Result<ArchiveLaunchReceipt> {
+    let host = app.state::<crate::agsdl_host::HostState>();
+    let manager = app.state::<crate::config::ConfigManager>();
+    let ai = app.state::<crate::ai::AiState>();
+    let app_data = launch_data(app)?;
+    let runtime = archive_start::Runtime {
+        host: &host,
+        manager: &manager,
+        pool,
+        app_data: &app_data,
+        tasks: ai.stream_tasks.clone(),
+    };
+    let result = match occurrence {
+        Some(occurrence) => {
+            archive_start::launch_occurrence(runtime, request, Some(occurrence)).await?
+        }
+        None => archive_start::launch(runtime, request).await?,
+    };
+    Ok(ArchiveLaunchReceipt {
+        identity: result.receipt.identity,
+        source: result.capture.source,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn architect_schedule_list(
+    state: State<'_, DbPool>,
+) -> repository::Result<Vec<launch::schedule::Schedule>> {
+    launch::schedule::list(&pool(&state).await?).await
+}
+
+#[tauri::command]
+pub(crate) async fn architect_schedule_save(
+    app: tauri::AppHandle,
+    state: State<'_, DbPool>,
+    manager: State<'_, crate::config::ConfigManager>,
+    request: launch::schedule::SaveSchedule,
+) -> repository::Result<String> {
+    let guard = state
+        .source_ready(None)
+        .await
+        .map_err(|_| repository::failure("STORAGE", "", "Execution database unavailable"))?;
+    launch::schedule::save(
+        &manager,
+        &guard.ready.pool,
+        &launch_data(&app)?,
+        request,
+        launch::schedule::now,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn architect_schedule_action(
+    state: State<'_, DbPool>,
+    id: String,
+    action: launch::schedule::ScheduleAction,
+) -> repository::Result<()> {
+    let guard = state
+        .source_ready(None)
+        .await
+        .map_err(|_| repository::failure("STORAGE", "", "Execution database unavailable"))?;
+    launch::schedule::act(&guard.ready.pool, &id, action, launch::schedule::now()).await
 }
 
 #[tauri::command]

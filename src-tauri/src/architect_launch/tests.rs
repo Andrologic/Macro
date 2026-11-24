@@ -16,7 +16,7 @@ use std::{
 #[path = "mcp_tests.rs"]
 mod remote_mcp;
 
-async fn archive_fixture(data: &Path, manifest: Value) -> (SqlitePool, VersionKey) {
+pub(super) async fn archive_fixture(data: &Path, manifest: Value) -> (SqlitePool, VersionKey) {
     archive_fixture_with_mcp(data, manifest, &[]).await
 }
 
@@ -87,7 +87,7 @@ async fn import_archive_fixture(data: &Path, project: &Path) -> (SqlitePool, Ver
     )
 }
 
-fn manifest() -> Value {
+pub(super) fn manifest() -> Value {
     json!({
         "projectFormat":"agsdl-project-1", "contract":"agsdl-0.4.0", "id":"sample",
         "agents":{"worker":{"harness":"codex","permissions":"read-only"}},

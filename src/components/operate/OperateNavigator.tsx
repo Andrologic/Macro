@@ -1,10 +1,12 @@
-import { Suspense, lazy, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from 'react';
 import {
   selectOperateInbox, type HiddenOperateAgents, type OperateInboxFilter, type OperateRunInput,
 } from '../../services/operateInboxModel';
 import { subscribeOperateInbox, useOperateInboxStore } from '../../stores/useOperateInboxStore';
 import { useArchitectLaunchStore } from '../../stores/useArchitectLaunchStore';
-import { cn } from '../../utils/cn';
+import { architectSchedule, type ScheduledLaunch } from '../../services/ipc/architectSchedule';
+import type { VersionKey } from '../../services/ipc/architectLibrary';
+import { OperateScheduleRow } from './OperateScheduleRow';
 import { useAgsdlTranslation } from '../agsdl/useAgsdlTranslation';
 import { PanelEmptyState } from '../shared/PanelEmptyState';
 import { Skeleton } from '../shared/Skeleton';
@@ -69,16 +71,20 @@ export interface OperateColumnProps {
   readFailed: boolean;
   setFilter: (filter: OperateInboxFilter) => void;
   onLaunch?: () => void;
+  schedules?: readonly ScheduledLaunch[];
+  onSchedule?: () => void;
+  onEditSchedule?: (schedule: ScheduledLaunch, number: number) => void;
+  onRefreshSchedules?: () => void;
 }
 
 /** The column itself: classification comes from `selectOperateInbox`, never from here. */
-export function OperateColumn({ runs, filter, hiddenAgents, loading, readFailed, setFilter, nowMs, onLaunch }: OperateColumnProps) {
+export function OperateColumn({ runs, filter, hiddenAgents, loading, readFailed, setFilter, nowMs, onLaunch, schedules, onSchedule, onEditSchedule, onRefreshSchedules }: OperateColumnProps) {
   const { t, i18n } = useAgsdlTranslation();
   const [searchOpen, setSearchOpen] = useState(() => !!filter.query?.trim());
   const [filterMenu, setFilterMenu] = useState<SidebarMenuPosition | null>(null);
   const [showAllFinished, setShowAllFinished] = useState(false);
   const sections = useMemo(() => selectOperateInbox(runs, filter, nowMs, hiddenAgents,
-    time => new Date(time).toLocaleString(i18n.resolvedLanguage)), [runs, filter, nowMs, hiddenAgents, i18n.resolvedLanguage]);
+    time => new Date(time).toLocaleString(i18n.resolvedLanguage), schedules), [runs, filter, nowMs, hiddenAgents, i18n.resolvedLanguage, schedules]);
   const runKeys = useMemo(() => new Set([...sections.active, ...sections.finished].map(run => run.key)), [sections]);
   const { isExpanded, toggle } = useOperateExpansion(runKeys);
 
@@ -87,13 +93,22 @@ export function OperateColumn({ runs, filter, hiddenAgents, loading, readFailed,
   const filtering = !!filter.systemId || !!filter.showHidden;
   const open = (section: OperateSectionId) => searching || isExpanded(operateSectionExpansionId(section));
   const runOpen = (key: string) => searching || isExpanded(operateRunExpansionId(key));
-  const noMatches = !sections.attention.length && !sections.active.length && !sections.snoozed.length && !sections.finished.length;
+  const noMatches = !sections.attention.length && !sections.active.length && !sections.snoozed.length && !sections.finished.length && !sections.scheduled.length;
   const systemName = sections.systems.find(system => system.id === filter.systemId)?.label ?? filter.systemId;
   const finished = visibleFinishedRuns(sections.finished, showAllFinished, searching);
   const closeSearch = () => { setFilter({ ...filter, query: undefined }); setSearchOpen(false); };
 
   const renderRun = (run: (typeof sections.active)[number]) => <OperateRunRowView key={run.key} run={run} nowMs={nowMs}
     expanded={runOpen(run.key)} onToggle={() => toggle(operateRunExpansionId(run.key))} />;
+
+  const renderSchedule = (schedule: ScheduledLaunch, attention = false) => onEditSchedule && onRefreshSchedules &&
+    <OperateScheduleRow key={schedule.id} schedule={schedule} attention={attention} open={onEditSchedule} refresh={onRefreshSchedules} />;
+
+  const scheduleSection = <Section id="scheduled" label={t('agsdl.inbox.scheduled')} count={sections.scheduled.length}
+    expanded={open('scheduled')} onToggle={() => toggle(operateSectionExpansionId('scheduled'))}>
+    {sections.scheduled.map(schedule => renderSchedule(schedule))}
+    {sections.scheduled.length === 0 && <p className={mutedLine}>{t('agsdl.inbox.scheduledEmpty')}</p>}
+  </Section>;
 
   return <nav className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background"
     aria-label={t('agsdl.shell030.executions')} data-tour-id="operate-executions">
@@ -118,9 +133,10 @@ export function OperateColumn({ runs, filter, hiddenAgents, loading, readFailed,
           }} />}
       </div>
     </div>
-    {onLaunch && <div className="shrink-0 border-b border-border px-3 py-2">
-      <Button type="button" size="sm" variant="secondary" className="h-7 w-full rounded-md px-2 py-0 text-xs"
-        leftIcon={<Icon name="play" size={12} />} onClick={onLaunch}>{t('agsdl.launch.title')}</Button>
+    {(onLaunch || onSchedule) && <div className="flex shrink-0 gap-1 border-b border-border px-3 py-2">
+      {onLaunch && <Button type="button" size="sm" variant="secondary" className="h-7 min-w-0 flex-1 rounded-md px-2 py-0 text-xs"
+        leftIcon={<Icon name="play" size={12} />} onClick={onLaunch}>{t('agsdl.launch.title')}</Button>}
+      {onSchedule && <PanelHeaderIconButton icon="clock" label={t('agsdl.schedule.create')} onClick={onSchedule} />}
     </div>}
     {filterMenu && <SidebarMenu position={filterMenu} onClose={() => setFilterMenu(null)} aria-label={t('agsdl.inbox.systemFilter')} className="w-52">
       <p className="px-2 py-1 text-[10px] font-medium text-muted-foreground">{t('agsdl.inbox.filterSystem')}</p>
@@ -152,11 +168,14 @@ export function OperateColumn({ runs, filter, hiddenAgents, loading, readFailed,
 
     <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4 pt-2.5">
       {readFailed && <div role="alert" className="mx-1 mb-2 rounded-md bg-red-500/10 px-2 py-1.5 text-[11px] text-red-400">{t('agsdl.run030.readFailed')}</div>}
-      {loading && !runs.length
+      {loading && !runs.length && !sections.scheduled.length
         ? <div role="status" aria-label={t('agsdl.run030.loading')} className="space-y-1.5 px-1">
           {[0, 1, 2, 3].map(index => <Skeleton key={index} className="h-10" />)}</div>
-        : !runs.length
-          ? <PanelEmptyState compact icon="workflow" title={t('agsdl.inbox.emptyTitle')} description={t('agsdl.inbox.emptyHint')} />
+        : !runs.length && !sections.scheduled.length && !(onSchedule && (searching || filtering))
+          ? <>
+            <PanelEmptyState compact icon="workflow" title={t('agsdl.inbox.emptyTitle')} description={t('agsdl.inbox.emptyHint')} />
+            {onSchedule && scheduleSection}
+          </>
           : noMatches && (searching || filtering)
             ? <div role="status" className="mx-2 mt-8 text-center">
               <Icon name="search" size={20} className="mx-auto mb-2 text-muted-foreground/45" />
@@ -175,6 +194,7 @@ export function OperateColumn({ runs, filter, hiddenAgents, loading, readFailed,
                   {sections.attention.length === 0 && <p className={mutedLine}>{t('agsdl.inbox.nothingWaiting')}</p>}
                   {sections.attention.map(item => item.kind === 'thread'
                     ? <OperateThreadRowView key={item.key} thread={item} variant="attention" />
+                    : item.kind === 'scheduleAttention' ? renderSchedule(item.schedule, true)
                     : <OperateRunAttentionRowView key={item.key} item={item} />)}
                 </div>
               </section>}
@@ -193,11 +213,7 @@ export function OperateColumn({ runs, filter, hiddenAgents, loading, readFailed,
                   className="w-full rounded-md px-2 py-1 text-left text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/70">
                   {t('agsdl.inbox.showOlder', { count: finished.older })}</button>}
               </Section>}
-              {!searching && <Section id="scheduled" label={t('agsdl.inbox.scheduled')} count={sections.scheduled.length}
-                expanded={open('scheduled')} onToggle={() => toggle(operateSectionExpansionId('scheduled'))}>
-                {/* Programmations (lot F): rows arrive with the scheduler; until then the section explains itself. */}
-                {sections.scheduled.length === 0 && <p className={cn(mutedLine)}>{t('agsdl.inbox.scheduledEmpty')}</p>}
-              </Section>}
+              {(!searching || sections.scheduled.length > 0) && scheduleSection}
             </div>}
     </div>
   </nav>;
@@ -207,11 +223,43 @@ export default function OperateNavigator() {
   const state = useOperateInboxStore();
   const launchWindow = useArchitectLaunchStore(state => state.window);
   const openLaunch = useArchitectLaunchStore(state => state.open);
+  const [schedules, setSchedules] = useState<ScheduledLaunch[]>([]);
+  const [scheduleReadFailed, setScheduleReadFailed] = useState(false);
+  const [scheduleWindow, setScheduleWindow] = useState<{ existing?: ScheduledLaunch; version?: VersionKey }>();
+  const [revision, setRevision] = useState(0);
+  const refresh = useCallback(() => setRevision(value => value + 1), []);
   useEffect(subscribeOperateInbox, []);
+  useEffect(() => {
+    let active = true;
+    let loading = false;
+    const read = async () => {
+      if (loading) return;
+      loading = true;
+      try {
+        const schedules = await architectSchedule.list();
+        if (active) { setSchedules(schedules); setScheduleReadFailed(false); }
+      } catch {
+        if (active) setScheduleReadFailed(true);
+      } finally {
+        loading = false;
+      }
+    };
+    void read();
+    const timer = setInterval(() => void read(), 5_000);
+    return () => { active = false; clearInterval(timer); };
+  }, [revision]);
   return <>
     <OperateColumn runs={state.runs} filter={state.filter} hiddenAgents={state.hiddenAgents} nowMs={state.nowMs}
-      loading={state.loading} readFailed={state.readFailed} setFilter={state.setFilter} onLaunch={() => openLaunch()} />
-    {launchWindow && <Suspense fallback={null}><ArchitectLaunchDialog
-      key={JSON.stringify(launchWindow.version ?? null)} initialVersion={launchWindow.version} /></Suspense>}
+      loading={state.loading} readFailed={state.readFailed || scheduleReadFailed} setFilter={state.setFilter}
+      onLaunch={() => openLaunch()} schedules={schedules} onSchedule={() => setScheduleWindow({})}
+      onRefreshSchedules={refresh} onEditSchedule={(existing, number) =>
+        setScheduleWindow({ existing, version: { blueprintId: existing.version.blueprintId, number } })} />
+    {scheduleWindow
+      ? <Suspense fallback={null}><ArchitectLaunchDialog
+        key={JSON.stringify([scheduleWindow.existing?.id, scheduleWindow.version])}
+        initialVersion={scheduleWindow.version} schedule={{ existing: scheduleWindow.existing, onSaved: refresh }}
+        onClose={() => setScheduleWindow(undefined)} /></Suspense>
+      : launchWindow && <Suspense fallback={null}><ArchitectLaunchDialog
+        key={JSON.stringify(launchWindow.version ?? null)} initialVersion={launchWindow.version} /></Suspense>}
   </>;
 }

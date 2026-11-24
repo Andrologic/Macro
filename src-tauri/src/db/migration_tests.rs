@@ -856,6 +856,10 @@ async fn desktop_open_upgrades_a_cut_over_c3_profile_for_archive_launch() {
                     super::operate_inbox::DELETE_SCHEMA_VERSION,
                     super::operate_inbox::DELETE_SCHEMA_NAME.to_owned(),
                 ),
+                (
+                    crate::architect_launch::schedule::SCHEMA_VERSION,
+                    crate::architect_launch::schedule::SCHEMA_NAME.to_owned(),
+                ),
             ]
         );
         assert!(crate::architect_launch::run_systems(&pool)

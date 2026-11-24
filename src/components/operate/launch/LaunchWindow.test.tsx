@@ -695,3 +695,63 @@ it("keeps the version it was opened for: no picker, the check starts at once", a
   expect(calls.filter(call => call.command === "architect_launch_prepare")).toHaveLength(1);
   expect(primary().disabled).toBe(false);
 });
+
+it("uses the launch checks and consent to save a schedule without starting a run", async () => {
+  const onSaved = spyOn({ saved: () => {} }, "saved");
+  install(() => preview({ startMessageRequired: true, consentToken: "reviewed-permissions" }),
+    command => { if (command === "architect_schedule_save") return "schedule-1"; throw new Error(command); });
+  view = createHost();
+  await view.render(<ArchitectLaunchDialog initialVersion={archive} schedule={{ onSaved }} />);
+  await flush();
+
+  expect(primary().disabled).toBe(true);
+  await fillField(dialog().querySelector('input[type="datetime-local"]')!, "2098-01-02T09:30");
+  expect(primary().disabled).toBe(true);
+  await fillField(dialog().querySelector("textarea")!, "Summarize scheduled work");
+  expect(primary().disabled).toBe(false);
+  await click(primary());
+  expect(calls.some(call => call.command === "architect_schedule_save")).toBe(false);
+  await click(primary());
+  await flush();
+  const saved = calls.find(call => call.command === "architect_schedule_save")?.args.request;
+  expect(saved).toEqual({
+    id: null,
+    launch: { version: archive, configuration: { workingFolder: null }, startMessage: "Summarize scheduled work",
+      name: null, consentToken: "reviewed-permissions", folderReuseToken: null, modelOverrides: {} },
+    timing: { firstAtMs: new Date("2098-01-02T09:30").getTime(), repeat: { kind: "once" } },
+    policy: { catchUp: true, allowOverlap: false, alwaysLatest: false },
+  });
+  expect(started()).toEqual([]);
+  expect(onSaved).toHaveBeenCalledTimes(1);
+});
+
+it("recovers typed inputs when editing a saved schedule", async () => {
+  const onSaved = spyOn({ saved: () => {} }, "saved");
+  const launchFields = {
+    version: "macro-launch-fields/1" as const,
+    fields: [
+      { key: "ticket", label: "Ticket", type: "number" as const, required: true },
+      { key: "send", label: "Send", type: "boolean" as const, required: true },
+    ],
+  };
+  const policy = { catchUp: true, allowOverlap: false, alwaysLatest: false };
+  install(() => preview({ launchFields }),
+    command => { if (command === "architect_schedule_save") return "schedule-1"; throw new Error(command); });
+  view = createHost();
+  await view.render(<ArchitectLaunchDialog initialVersion={archive} schedule={{ onSaved, existing: {
+    id: "schedule-1", version: archive, systemLabel: "QA", latestNumber: archive.number,
+    nextAtMs: new Date("2098-01-02T09:30").getTime(), suspended: false, starting: false,
+    issueCode: null, issueAtMs: null, configuration: { workingFolder: null }, startMessage: null,
+    modelOverrides: {}, policy, launchValues: { ticket: 12.25, send: false },
+  } }} />);
+  await flush();
+  expect(primary().disabled).toBe(false);
+  await click(primary());
+  await flush();
+  expect(calls.find(call => call.command === "architect_schedule_save")?.args.request).toMatchObject({
+    id: "schedule-1",
+    launch: { version: archive, launchValues: { ticket: 12.25, send: false } },
+    timing: null,
+  });
+  expect(onSaved).toHaveBeenCalledTimes(1);
+});

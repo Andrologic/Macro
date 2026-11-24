@@ -81,6 +81,9 @@ fn canonical_name(version: i64) -> Option<&'static str> {
     if version == crate::architect_launch::OWNER_SCHEMA_VERSION {
         return Some(crate::architect_launch::OWNER_SCHEMA_NAME);
     }
+    if version == crate::architect_launch::schedule::SCHEMA_VERSION {
+        return Some(crate::architect_launch::schedule::SCHEMA_NAME);
+    }
     if version == operate_inbox::DELETE_SCHEMA_VERSION {
         return Some(operate_inbox::DELETE_SCHEMA_NAME);
     }

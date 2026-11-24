@@ -387,3 +387,28 @@ for (const action of [{ kind: 'pauseRun' }, { kind: 'interruptWork', activationI
     expect(ids[0]).not.toBe(ids[1]);
   });
 }
+
+it('shows schedule failures without runs and offers version updates and suspension', async () => {
+  const invoke = spyOn({ call: async (_command: string, _args: unknown) => undefined }, 'call');
+  installTauriRuntimeMock(invoke);
+  const open = spyOn({ schedule: (_item: unknown, _number: number) => {} }, 'schedule');
+  const refresh = spyOn({ schedules: () => {} }, 'schedules');
+  const schedule = { id: 'scheduled-1', version: { blueprintId: 'archive', number: 1 }, systemLabel: 'Synthèse',
+    latestNumber: 2, nextAtMs: now + HOUR, suspended: false, starting: false, issueCode: 'CONSENT_REQUIRED', issueAtMs: now,
+    configuration: { workingFolder: null }, startMessage: 'Summarize', modelOverrides: {},
+    policy: { catchUp: true, allowOverlap: false, alwaysLatest: false } };
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(<OperateColumn runs={[]} filter={{}} nowMs={now} loading={false} readFailed={false}
+    setFilter={() => {}} schedules={[schedule]} onEditSchedule={open} onRefreshSchedules={refresh} />));
+  expect(rowTitles(section('attention')!)).toEqual(['Synthèse']);
+  await click(header('scheduled'));
+  expect(rowTitles(section('scheduled')!)).toEqual(['Synthèse']);
+  const label = (key: string) => i18n.t(`agsdl.schedule.${key}`, { ns: 'agsdl' });
+  const update = [...section('scheduled')!.querySelectorAll('button')].find(button => button.title === label('update'));
+  await click(update);
+  expect(open).toHaveBeenCalledWith(schedule, 2);
+  await rightClick(section('scheduled')!.querySelector('[data-operate-row]')!);
+  await click(menuItem(label('suspend')));
+  expect(invoke).toHaveBeenCalledWith('architect_schedule_action', { id: schedule.id, action: { kind: 'suspend' } }, undefined);
+  expect(refresh).toHaveBeenCalledTimes(1);
+});

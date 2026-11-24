@@ -1,3 +1,4 @@
+import type { ScheduledLaunch } from "./ipc/architectSchedule";
 import type { RunHumanRequest030, RunScope030, RunVerdict030 } from '../types/agsdlRunUi030';
 import type { OperateRunFacts, OperateThreadFacts } from '../types/generated/ipc';
 import { sameHumanScope030, humanRemainingMs030 } from './agsdl/humanRequests030';
@@ -74,6 +75,11 @@ export interface OperateThreadRow extends OperateRunTarget {
   facts?: OperateThreadFacts;
 }
 export type OperateAttentionRow = OperateThreadRow | {
+  kind: 'scheduleAttention';
+  key: string;
+  schedule: ScheduledLaunch;
+  reason: 'scheduleIssue';
+} | {
   kind: 'runAttention';
   key: string;
   run: OperateRunRow;
@@ -91,7 +97,7 @@ export interface OperateInboxSections {
   active: readonly OperateRunRow[];
   snoozed: readonly OperateThreadRow[];
   finished: readonly OperateRunRow[];
-  scheduled: readonly never[];
+  scheduled: readonly ScheduledLaunch[];
   systems: readonly { id: string; label: string }[];
 }
 
@@ -158,6 +164,7 @@ export function selectOperateInbox(
   runs: readonly OperateRunInput[], filter: OperateInboxFilter, now: number,
   hiddenAgents: HiddenOperateAgents = noHiddenAgents,
   formatStart: (time: number) => string = time => new Date(time).toLocaleString(),
+  schedules: readonly ScheduledLaunch[] = [],
 ): OperateInboxSections {
   const attention: { row: OperateAttentionRow; at: number | null }[] = [];
   const active: OperateRunRow[] = [], snoozed: OperateThreadRow[] = [], finished: OperateRunRow[] = [];
@@ -214,9 +221,18 @@ export function selectOperateInbox(
         reason: requestReason(request), requestId: request.id, elapsedMs: elapsed(startedAtMs, now) }, at: startedAtMs });
     }
   }
+  const scheduled = schedules.filter(schedule => {
+    const systemId = schedule.version.blueprintId;
+    systems.set(systemId, schedule.systemLabel);
+    return (!filter.systemId || systemId === filter.systemId) && (!query || searchKey(schedule.systemLabel).includes(query));
+  });
+  for (const schedule of scheduled) {
+    if (schedule.issueCode) attention.push({ row: { kind: 'scheduleAttention', key: schedule.id, schedule,
+      reason: 'scheduleIssue' }, at: schedule.issueAtMs });
+  }
   return { attention: attention.sort((a, b) => newestFirst(a.at, b.at)).map(item => item.row),
     active: active.sort((a, b) => newestFirst(a.startedAtMs, b.startedAtMs)),
     snoozed: snoozed.sort((a, b) => newestFirst(a.activityAtMs, b.activityAtMs)),
     finished: finished.sort((a, b) => newestFirst(a.finishedAtMs, b.finishedAtMs)),
-    scheduled: [], systems: [...systems].map(([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label)) };
+    scheduled, systems: [...systems].map(([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label)) };
 }

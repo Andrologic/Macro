@@ -721,6 +721,8 @@ fn initialize_desktop_profile(app: &tauri::App) -> Result<(), local_backup::Prof
     // No frontend consumer subscribes to fs:change. Keep the watcher
     // dormant until a consumer and workspace-root retargeting exist.
 
+    architect_launch::schedule::start_worker(app_handle.clone());
+
     // Initialize database asynchronously
     tauri::async_runtime::spawn(async move {
         match db::init_db(&app_handle).await {
@@ -1018,6 +1020,9 @@ pub fn run() {
             commands::db_list_messages,
             commands::agsdl_execution::architect_launch_prepare,
             commands::agsdl_execution::architect_launch_start,
+            commands::agsdl_execution::architect_schedule_list,
+            commands::agsdl_execution::architect_schedule_save,
+            commands::agsdl_execution::architect_schedule_action,
             commands::agsdl_execution::architect_launch_set_secret,
             commands::agsdl_execution::architect_launch_run_systems,
             commands::agsdl_execution::architect_launch_open_folder,

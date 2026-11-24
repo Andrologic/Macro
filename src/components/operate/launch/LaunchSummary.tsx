@@ -10,9 +10,9 @@ import { baseName, selectClass } from "./launchModel";
 
 /**
  * "Version · place · moment" on one line, with the details one click away.
- * This machine and "now" are the only places and moments for now: they are shown, never offered as choices.
  */
-export function LaunchSummary({ versions, versionNumber, note, folder, folderMode, checking, disabled, runName, onRunName, onVersion, onChooseFolder, children }: {
+export function LaunchSummary({ versions, versionNumber, note, folder, folderMode, checking, disabled, runName, onRunName, onVersion, onChooseFolder, children, scheduled = false }: {
+  scheduled?: boolean;
   versions: readonly BlueprintVersionSummary[];
   versionNumber: number;
   note: string | null;
@@ -35,7 +35,7 @@ export function LaunchSummary({ versions, versionNumber, note, folder, folderMod
   const segments: Array<{ text: string; warn?: boolean }> = [
     { text: versionNumber === latest ? label : t("agsdl.launch.olderVersion", { version: label }), warn: versionNumber !== latest },
     { text: t("agsdl.inbox.local") },
-    { text: t("agsdl.launch.now") },
+    { text: t(scheduled ? "agsdl.inbox.scheduled" : "agsdl.launch.now") },
   ];
   if (folderMode === "atLaunch") segments.push(folder ? { text: baseName(folder) } : { text: t("agsdl.launch.folderNone"), warn: true });
   const placeholder = t("agsdl.launch.runNamePlaceholder", {
@@ -67,13 +67,13 @@ export function LaunchSummary({ versions, versionNumber, note, folder, folderMod
       </div>
       <dl className="!m-0 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
         <dt className="text-muted-foreground">{t("agsdl.launch.where")}</dt><dd className="!m-0">{t("agsdl.inbox.local")}</dd>
-        <dt className="text-muted-foreground">{t("agsdl.launch.when")}</dt><dd className="!m-0">{t("agsdl.launch.now")}</dd>
+        <dt className="text-muted-foreground">{t("agsdl.launch.when")}</dt><dd className="!m-0">{t(scheduled ? "agsdl.inbox.scheduled" : "agsdl.launch.now")}</dd>
       </dl>
-      <label className="block space-y-1">
+      {!scheduled && <label className="block space-y-1">
         <span className="text-muted-foreground">{t("agsdl.launch.runName")}</span>
         <Input className="!h-7 text-xs" maxLength={120} value={runName} placeholder={placeholder} disabled={disabled}
           onChange={event => onRunName(event.target.value)} />
-      </label>
+      </label>}
       {folderMode === "atLaunch" && <div className="space-y-1">
         <p className="!m-0 text-muted-foreground">{t("agsdl.launch.folder")}</p>
         <div className="flex items-center gap-2">
