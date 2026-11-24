@@ -1267,9 +1267,6 @@ pub fn run() {
             commands::fs::fs_stat,
             commands::fs::fs_exists,
             commands::fs::fs_delete,
-            commands::fs::fs_create_dir,
-            commands::fs::fs_copy,
-            commands::fs::fs_move,
             // Git commands
             commands::git::git_status,
             commands::git::git_fetch,

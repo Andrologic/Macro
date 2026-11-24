@@ -1,4 +1,10 @@
-// Desktop adapters resolve managed state before calling shared FS operations.
+//! Generic file commands. Each one resolves a single allowed root (the
+//! caller's project or working folder, its `.macro` metadata worktree, or the
+//! current workspace) and the shared operations then confine every access to
+//! handles opened beneath that root (`crate::fs::confined`). The legacy
+//! `allow_outside_workspace` flag no longer widens native access. See
+//! "Commandes de fichiers génériques et racines autorisées" in
+//! `docs/technical-architecture.md` for the callers and roots of each command.
 use crate::core::error::BackendError;
 use crate::core::tool_policy::is_macro_scoped_path;
 use crate::fs::dto::*;
@@ -308,99 +314,4 @@ pub async fn fs_delete<R: tauri::Runtime>(
         return received.await.map_err(BackendError::Validation)?;
     }
     execution.await
-}
-
-#[tauri::command]
-pub async fn fs_create_dir(
-    workspace_root: tauri::State<'_, WorkspaceRoot>,
-    git_state: tauri::State<'_, GitState>,
-    path: String,
-    recursive: Option<bool>,
-    workspace_scope: Option<String>,
-    workspace_path: Option<String>,
-) -> Result<(), BackendError> {
-    let effective_path = if is_macro_scoped_path(&path) {
-        map_macro_virtual_path(&path)
-    } else {
-        path.clone()
-    };
-    let workspace = workspace_root.inner().read().await.clone();
-    let workspace = resolve_workspace_for_path(
-        workspace,
-        git_state.inner().clone(),
-        workspace_path.map(PathBuf::from),
-        &path,
-        None,
-        workspace_scope.as_deref(),
-    )
-    .await?;
-    create_dir_internal(&workspace, effective_path, recursive).await
-}
-
-#[tauri::command]
-pub async fn fs_copy(
-    workspace_root: tauri::State<'_, WorkspaceRoot>,
-    git_state: tauri::State<'_, GitState>,
-    src: String,
-    dest: String,
-) -> Result<u64, BackendError> {
-    let workspace = workspace_root.inner().read().await.clone();
-    let src_macro = is_macro_scoped_path(&src);
-    let dest_macro = is_macro_scoped_path(&dest);
-    if src_macro != dest_macro {
-        return Err(BackendError::Validation(
-            "Copy across workspace and metadata roots is not supported".to_string(),
-        ));
-    }
-    let workspace = if src_macro {
-        resolve_workspace_for_path(workspace, git_state.inner().clone(), None, &src, None, None)
-            .await?
-    } else {
-        workspace
-    };
-    let src_effective = if src_macro {
-        map_macro_virtual_path(&src)
-    } else {
-        src.clone()
-    };
-    let dest_effective = if dest_macro {
-        map_macro_virtual_path(&dest)
-    } else {
-        dest.clone()
-    };
-    copy_path_internal(&workspace, src_effective, dest_effective).await
-}
-
-#[tauri::command]
-pub async fn fs_move(
-    workspace_root: tauri::State<'_, WorkspaceRoot>,
-    git_state: tauri::State<'_, GitState>,
-    src: String,
-    dest: String,
-) -> Result<(), BackendError> {
-    let workspace = workspace_root.inner().read().await.clone();
-    let src_macro = is_macro_scoped_path(&src);
-    let dest_macro = is_macro_scoped_path(&dest);
-    if src_macro != dest_macro {
-        return Err(BackendError::Validation(
-            "Move across workspace and metadata roots is not supported".to_string(),
-        ));
-    }
-    let workspace = if src_macro {
-        resolve_workspace_for_path(workspace, git_state.inner().clone(), None, &src, None, None)
-            .await?
-    } else {
-        workspace
-    };
-    let src_effective = if src_macro {
-        map_macro_virtual_path(&src)
-    } else {
-        src.clone()
-    };
-    let dest_effective = if dest_macro {
-        map_macro_virtual_path(&dest)
-    } else {
-        dest.clone()
-    };
-    move_path_internal(&workspace, src_effective, dest_effective).await
 }

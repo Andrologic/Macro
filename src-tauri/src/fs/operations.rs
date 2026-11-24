@@ -1,6 +1,7 @@
 // File System Commands
 // This module contains the desktop FS command surface.
 
+use super::confined::{self, ConfinedDir, ConfinedRoot, Located};
 use crate::core::error::{io_error_to_backend_error, BackendError};
 use crate::core::tool_policy::is_macro_scoped_path;
 use crate::fs::dto::{
@@ -16,11 +17,14 @@ use crate::project_path::{
     run_wsl_shell_with_stdin, wsl_unc_path, WslProjectPath,
 };
 
+#[cfg(all(windows, test))]
 use cap_std::ambient_authority;
-use cap_std::fs::{Dir as CapabilityDir, OpenOptions as CapabilityOpenOptions};
+#[cfg(all(windows, test))]
+use cap_std::fs::Dir as CapabilityDir;
 use fs2::FileExt;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::future::Future;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -50,24 +54,7 @@ use tokio::sync::Barrier;
 use std::os::windows::fs::MetadataExt;
 
 pub use argentic_runtime::content_io::admitted::WorkspaceRootIdentity;
-#[cfg(unix)]
-use argentic_runtime::content_io::admitted::{
-    workspace_root_identity_from_cap, workspace_root_identity_from_std,
-};
-#[cfg(windows)]
-fn workspace_root_identity_from_std(path: &Path) -> Result<WorkspaceRootIdentity, BackendError> {
-    argentic_runtime::content_io::admitted::workspace_root_identity_from_std(path)
-        .map_err(Into::into)
-}
-#[cfg(windows)]
-fn workspace_root_identity_from_handle(
-    handle: std::os::windows::io::RawHandle,
-    path: &Path,
-) -> Result<WorkspaceRootIdentity, BackendError> {
-    argentic_runtime::content_io::admitted::workspace_root_identity_from_handle(handle, path)
-        .map_err(Into::into)
-}
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn workspace_root_identity_from_cap(
     directory: &CapabilityDir,
     path: &Path,
@@ -420,43 +407,58 @@ fn capability_task_error(error: tokio::task::JoinError) -> BackendError {
     }
 }
 
-fn open_workspace_capability(
-    workspace: &Path,
-    validated_path: &Path,
-    identity: Option<WorkspaceRootIdentity>,
-) -> Result<(Arc<CapabilityDir>, PathBuf), BackendError> {
-    argentic_runtime::content_io::admitted::open_workspace_capability(
-        workspace,
-        validated_path,
-        identity,
-    )
-    .map_err(Into::into)
+/// Open the allowed root of a native operation, bound to the identity the
+/// server validated when one is in scope.
+fn open_confined_root(workspace: &Path) -> Result<ConfinedRoot, BackendError> {
+    ConfinedRoot::open(workspace, expected_workspace_root_identity(workspace))
 }
+
+/// A mutation target: the opened root and the request relative to it. Every
+/// access resolves the request beneath the root handle and admits the handles
+/// it opens; `validated_path` only names the target in messages and locks.
 #[derive(Clone)]
 pub(crate) struct WorkspaceCapabilityTarget {
-    directory: Arc<CapabilityDir>,
+    root: ConfinedRoot,
     relative_path: PathBuf,
     validated_path: PathBuf,
 }
 
+/// Removes an unpublished temporary file from the admitted parent directory.
 struct CapabilityTempFileGuard {
-    directory: Arc<CapabilityDir>,
-    relative_path: PathBuf,
-}
-
-impl CapabilityTempFileGuard {
-    fn new(directory: Arc<CapabilityDir>, relative_path: PathBuf) -> Self {
-        Self {
-            directory,
-            relative_path,
-        }
-    }
+    parent: Arc<ConfinedDir>,
+    name: OsString,
 }
 
 impl Drop for CapabilityTempFileGuard {
     fn drop(&mut self) {
-        let _ = self.directory.remove_file(&self.relative_path);
+        let _ = self.parent.dir().remove_file(&self.name);
     }
+}
+
+fn open_capability_target(
+    workspace: &Path,
+    path: &str,
+    validated_path: PathBuf,
+    expected_identity: Option<WorkspaceRootIdentity>,
+) -> Result<WorkspaceCapabilityTarget, BackendError> {
+    let root = ConfinedRoot::open(workspace, expected_identity)?;
+    let relative_path = root.relative(Path::new(path))?;
+    if !matches!(
+        relative_path.components().next_back(),
+        Some(std::path::Component::Normal(_))
+    ) {
+        return Err(BackendError::FilesystemInvalidPath {
+            message: format!(
+                "Path '{}' is not a writable file target inside the workspace",
+                validated_path.display()
+            ),
+        });
+    }
+    Ok(WorkspaceCapabilityTarget {
+        root,
+        relative_path,
+        validated_path,
+    })
 }
 
 pub(crate) async fn open_workspace_capability_target_internal(
@@ -467,53 +469,111 @@ pub(crate) async fn open_workspace_capability_target_internal(
     let workspace = workspace.to_path_buf();
     let expected_identity = expected_workspace_root_identity(&workspace);
     tokio::task::spawn_blocking(move || {
-        let (directory, relative_path) =
-            open_workspace_capability(&workspace, &validated_path, expected_identity)?;
-        Ok(WorkspaceCapabilityTarget {
-            directory,
-            relative_path,
-            validated_path,
-        })
+        open_capability_target(&workspace, &path, validated_path, expected_identity)
     })
     .await
     .map_err(capability_task_error)?
 }
 
-fn read_capability_file(
-    directory: &CapabilityDir,
-    relative_path: &Path,
-) -> std::io::Result<Option<(Vec<u8>, Option<u32>)>> {
-    let file = match directory.open(relative_path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let mut file = file.into_std();
-    let metadata = file.metadata()?;
-    if metadata.len() > MAX_WRITE_SIZE_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "file exceeds maximum recoverable mutation size of {} bytes",
-                MAX_WRITE_SIZE_BYTES
-            ),
-        ));
+fn mutation_too_large() -> BackendError {
+    BackendError::FilesystemFileTooLarge {
+        message: format!(
+            "file exceeds maximum recoverable mutation size of {} bytes",
+            MAX_WRITE_SIZE_BYTES
+        ),
     }
-    let mode = metadata_unix_mode(&metadata);
+}
+
+/// Read a regular file through the handle that was admitted, never by name.
+fn read_admitted(
+    file: &mut std::fs::File,
+    display: &Path,
+    limit: u64,
+    too_large: &dyn Fn() -> BackendError,
+) -> Result<(Vec<u8>, Option<u32>), BackendError> {
+    let metadata = file
+        .metadata()
+        .map_err(|error| io_error_to_backend_error(error, display))?;
+    if !metadata.is_file() {
+        return Err(BackendError::FilesystemIsDirectory {
+            message: format!("The path '{}' is not a regular file.", display.display()),
+        });
+    }
+    if metadata.len() > limit {
+        return Err(too_large());
+    }
     let mut bytes = Vec::new();
-    std::io::Read::by_ref(&mut file)
-        .take(MAX_WRITE_SIZE_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_WRITE_SIZE_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "file exceeds maximum recoverable mutation size of {} bytes",
-                MAX_WRITE_SIZE_BYTES
-            ),
-        ));
+    Read::by_ref(file)
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_error_to_backend_error(error, display))?;
+    if bytes.len() as u64 > limit {
+        return Err(too_large());
     }
-    Ok(Some((bytes, mode)))
+    Ok((bytes, metadata_unix_mode(&metadata)))
+}
+
+/// Read the current content of a target, following links that stay inside
+/// the root as reads do. A missing target is `None`.
+fn read_confined_optional(
+    root: &ConfinedRoot,
+    relative: &Path,
+    display: &Path,
+) -> Result<Option<(Vec<u8>, Option<u32>)>, BackendError> {
+    match root.open_object(relative) {
+        Ok(mut opened) => read_admitted(
+            &mut opened.file,
+            display,
+            MAX_WRITE_SIZE_BYTES,
+            &mutation_too_large,
+        )
+        .map(Some),
+        Err(BackendError::FilesystemNotFound { .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// The current entry a write replaces, opened without following a final link
+/// and admitted; the handle is kept so later steps use the object that was read.
+struct ExistingEntry {
+    file: std::fs::File,
+    bytes: Vec<u8>,
+    mode: Option<u32>,
+}
+
+fn read_existing_entry(
+    parent: &ConfinedDir,
+    name: &OsStr,
+    display: &Path,
+) -> Result<Option<ExistingEntry>, BackendError> {
+    let facts = match parent.entry_facts(name) {
+        Ok(facts) => facts,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(confined::map_io(error, display)),
+    };
+    if facts.is_link {
+        return Err(BackendError::FilesystemInvalidPath {
+            message: "Writing a symbolic link is not supported; edit its target explicitly."
+                .to_string(),
+        });
+    }
+    if facts.is_dir {
+        return Err(BackendError::FilesystemIsDirectory {
+            message: format!("The path '{}' is a directory.", display.display()),
+        });
+    }
+    let mut opened = parent.open_entry(name, &confined::nofollow_read_options(false), false)?;
+    let (bytes, mode) = read_admitted(
+        &mut opened.file,
+        display,
+        MAX_WRITE_SIZE_BYTES,
+        &mutation_too_large,
+    )?;
+    Ok(Some(ExistingEntry {
+        file: opened.file,
+        bytes,
+        mode,
+    }))
 }
 
 #[cfg(unix)]
@@ -554,43 +614,6 @@ fn metadata_unix_mode(metadata: &std::fs::Metadata) -> Option<u32> {
 #[cfg(not(unix))]
 fn metadata_unix_mode(_metadata: &std::fs::Metadata) -> Option<u32> {
     None
-}
-
-#[cfg(unix)]
-async fn apply_unix_mode(
-    path: &Path,
-    requested_mode: Option<u32>,
-    inherited_mode: Option<u32>,
-    content: &[u8],
-) -> Result<Option<u32>, BackendError> {
-    let current_mode = tokio::fs::metadata(path)
-        .await
-        .map_err(|error| io_error_to_backend_error(error, path))?
-        .permissions()
-        .mode()
-        & 0o7777;
-    let desired_mode = requested_mode.or(inherited_mode).unwrap_or(current_mode);
-    let desired_mode = if requested_mode.is_none() && content.starts_with(b"#!") {
-        desired_mode | 0o111
-    } else {
-        desired_mode
-    };
-    if desired_mode != current_mode {
-        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(desired_mode))
-            .await
-            .map_err(|error| io_error_to_backend_error(error, path))?;
-    }
-    Ok(Some(desired_mode))
-}
-
-#[cfg(not(unix))]
-async fn apply_unix_mode(
-    _path: &Path,
-    _requested_mode: Option<u32>,
-    _inherited_mode: Option<u32>,
-    _content: &[u8],
-) -> Result<Option<u32>, BackendError> {
-    Ok(None)
 }
 
 fn ensure_directory_list_within_limit(count: usize, recursive: bool) -> Result<(), BackendError> {
@@ -950,9 +973,21 @@ pub(crate) async fn file_content_revision_internal(
     }
 
     let validated_path = validate_path(&PathBuf::from(&path), workspace)?;
-    let bytes = tokio::fs::read(&validated_path)
-        .await
-        .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+    let workspace = workspace.to_path_buf();
+    let bytes = tokio::task::spawn_blocking(move || {
+        let root = open_confined_root(&workspace)?;
+        let relative = root.relative(Path::new(&path))?;
+        let mut opened = root.open_object(&relative)?;
+        read_admitted(
+            &mut opened.file,
+            &validated_path,
+            u64::MAX / 2,
+            &mutation_too_large,
+        )
+        .map(|(bytes, _)| bytes)
+    })
+    .await
+    .map_err(capability_task_error)??;
     Ok(content_revision(&bytes))
 }
 
@@ -1499,126 +1534,24 @@ async fn delete_wsl_path_internal_with_revision(
     Ok(())
 }
 
-pub(crate) async fn create_wsl_dir_internal(
-    workspace: &WslProjectPath,
-    path: String,
-    recursive: Option<bool>,
-) -> Result<(), BackendError> {
-    let resolved = resolve_wsl_path(workspace, &path, None)?;
-    ensure_wsl_path_within_workspace(workspace, &resolved, None).await?;
-    let recursive_flag = if recursive.unwrap_or(true) { "1" } else { "0" }.to_string();
-    let script = r#"
-p=$1
-recursive=$2
-if [ "$recursive" = "1" ]; then
-  mkdir -p -- "$p"
-else
-  mkdir -- "$p"
-fi
-"#;
-    run_wsl_shell(
-        &resolved,
-        script,
-        &[resolved.linux_path.clone(), recursive_flag],
-        WSL_FS_WRITE_TIMEOUT,
-    )
-    .await?;
-    Ok(())
-}
-
-pub(crate) async fn copy_wsl_path_internal(
-    workspace: &WslProjectPath,
-    src: String,
-    dest: String,
-) -> Result<u64, BackendError> {
-    let src_resolved = resolve_wsl_path(workspace, &src, None)?;
-    let dest_resolved = resolve_wsl_path(workspace, &dest, None)?;
-    ensure_wsl_path_within_workspace(workspace, &src_resolved, None).await?;
-    check_wsl_target(workspace, &dest_resolved, None, true).await?;
-    let script = r#"
-src=$1
-dest=$2
-parent=$(dirname -- "$dest")
-mkdir -p -- "$parent"
-cp -f -- "$src" "$dest"
-stat -c '%s' -- "$dest" 2>/dev/null || printf '0'
-"#;
-    let output = run_wsl_shell(
-        &src_resolved,
-        script,
-        &[
-            src_resolved.linux_path.clone(),
-            dest_resolved.linux_path.clone(),
-        ],
-        WSL_FS_WRITE_TIMEOUT,
-    )
-    .await?;
-    Ok(output.stdout_text().parse::<u64>().unwrap_or(0))
-}
-
-pub(crate) async fn move_wsl_path_internal(
-    workspace: &WslProjectPath,
-    src: String,
-    dest: String,
-) -> Result<(), BackendError> {
-    let src_resolved = resolve_wsl_path(workspace, &src, None)?;
-    let dest_resolved = resolve_wsl_path(workspace, &dest, None)?;
-    check_wsl_target(workspace, &src_resolved, None, true).await?;
-    check_wsl_target(workspace, &dest_resolved, None, true).await?;
-    let script = r#"
-src=$1
-dest=$2
-parent=$(dirname -- "$dest")
-mkdir -p -- "$parent"
-mv -f -- "$src" "$dest"
-"#;
-    run_wsl_shell(
-        &src_resolved,
-        script,
-        &[
-            src_resolved.linux_path.clone(),
-            dest_resolved.linux_path.clone(),
-        ],
-        WSL_FS_WRITE_TIMEOUT,
-    )
-    .await?;
-    Ok(())
-}
-
 /// Internal function that reads file content. This is separated for testability.
 fn read_open_file(
     mut file: std::fs::File,
     path: &Path,
 ) -> Result<(Vec<u8>, Option<u32>), BackendError> {
-    let metadata = file
-        .metadata()
-        .map_err(|error| io_error_to_backend_error(error, path))?;
-    if !metadata.is_file() {
-        return Err(BackendError::FilesystemIsDirectory {
-            message: format!("The path '{}' is not a regular file.", path.display()),
-        });
-    }
-    let too_large = || BackendError::FilesystemFileTooLarge {
-        message: format!(
-            "The file '{}' exceeds the maximum allowed size of {} bytes.",
-            path.display(),
-            MAX_FILE_SIZE_BYTES
-        ),
-    };
-    if metadata.len() > MAX_FILE_SIZE_BYTES {
-        return Err(too_large());
-    }
-    let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(MAX_FILE_SIZE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| io_error_to_backend_error(error, path))?;
-    if bytes.len() as u64 > MAX_FILE_SIZE_BYTES {
-        return Err(too_large());
-    }
-    Ok((bytes, metadata_unix_mode(&metadata)))
+    read_admitted(&mut file, path, MAX_FILE_SIZE_BYTES, &|| {
+        BackendError::FilesystemFileTooLarge {
+            message: format!(
+                "The file '{}' exceeds the maximum allowed size of {} bytes.",
+                path.display(),
+                MAX_FILE_SIZE_BYTES
+            ),
+        }
+    })
 }
 
+/// Read a file below its allowed root. `allow_outside_workspace` no longer
+/// widens access: every native read is confined to the root it names.
 pub async fn read_file_internal(
     workspace: &Path,
     path: String,
@@ -1629,80 +1562,26 @@ pub async fn read_file_internal(
         return read_wsl_file_internal(&wsl_workspace, path, allow_outside_workspace).await;
     }
 
-    let path_buf = PathBuf::from(&path); // Parse path string to PathBuf
-    let allow_outside = allow_outside_workspace.unwrap_or(false);
-    let validated_path = if allow_outside {
-        let absolute = if path_buf.is_absolute() {
-            normalize_path(&path_buf)
-        } else {
-            normalize_path(&workspace.join(&path_buf))
-        };
-        private_profile::public_read_path(absolute)?
-    } else {
-        validate_path(&path_buf, workspace)?
-    };
+    let validated_path = validate_path(Path::new(&path), workspace)?;
     let workspace = workspace.to_path_buf();
-    let expected_identity = if allow_outside {
-        None
-    } else {
-        Some(match expected_workspace_root_identity(&workspace) {
-            Some(identity) => identity,
-            None => workspace_root_identity(&workspace)?,
-        })
-    };
+    let expected_identity = expected_workspace_root_identity(&workspace);
     let identity_workspace = workspace.clone();
     let read_path = validated_path.clone();
-    let (bytes, unix_mode) = tokio::task::spawn_blocking(move || {
-        let file = if allow_outside {
-            let mut options = std::fs::OpenOptions::new();
-            options.read(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.custom_flags(libc::O_NONBLOCK);
-            }
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::OpenOptionsExt;
-                // Open directories so read_open_file can report their type.
-                options.custom_flags(
-                    windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
-                );
-            }
-            options
-                .open(&read_path)
-                .map_err(|error| io_error_to_backend_error(error, &read_path))?
-        } else {
-            let (directory, relative_path) =
-                open_workspace_capability(&workspace, &read_path, expected_identity)?;
-            let mut options = CapabilityOpenOptions::new();
-            options.read(true);
-            #[cfg(unix)]
-            {
-                use cap_std::fs::OpenOptionsExt;
-                options.custom_flags(libc::O_NONBLOCK);
-            }
-            #[cfg(windows)]
-            {
-                use cap_std::fs::OpenOptionsExt;
-                options.custom_flags(
-                    windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
-                );
-            }
-            directory
-                .open_with(relative_path, &options)
-                .map_err(|error| io_error_to_backend_error(error, &read_path))?
-                .into_std()
-        };
-        read_open_file(file, &read_path)
+    let (bytes, unix_mode, root_identity) = tokio::task::spawn_blocking(move || {
+        let root = ConfinedRoot::open(&workspace, expected_identity)?;
+        let relative = root.relative(Path::new(&path))?;
+        let opened = root.open_object(&relative)?;
+        let (bytes, mode) = read_open_file(opened.file, &read_path)?;
+        Ok::<_, BackendError>((bytes, mode, root.identity()))
     })
     .await
     .map_err(capability_task_error)??;
-    // The capability opened above checked this identity before reading. Only
-    // attest it if the named root still identifies that same directory afterward.
-    let workspace_identity = expected_identity
-        .filter(|expected| workspace_root_identity(&identity_workspace).ok() == Some(*expected))
-        .and_then(WorkspaceRootIdentity::observation_key);
+    // The root handle carried this identity while reading. Only attest it if
+    // the named root still identifies that same directory afterward.
+    let workspace_identity = (workspace_root_identity(&identity_workspace).ok()
+        == Some(root_identity))
+    .then_some(root_identity)
+    .and_then(WorkspaceRootIdentity::observation_key);
     let is_binary = bytes_look_binary(&bytes);
     let actual_size = bytes.len() as u64;
     let revision = content_revision(&bytes);
@@ -1746,32 +1625,25 @@ pub async fn read_file_internal(
 #[allow(clippy::too_many_arguments)]
 async fn write_file_with_workspace_capability(
     workspace: &Path,
+    path: &str,
     validated_path: &Path,
-    display_path: &str,
     content_bytes: &[u8],
     create_dirs: Option<bool>,
     expected_revision: Option<&str>,
     unix_mode: Option<u32>,
 ) -> Result<WriteResultDto, BackendError> {
     let workspace = workspace.to_path_buf();
-    let validated_path = validated_path.to_path_buf();
     let expected_identity = expected_workspace_root_identity(&workspace);
-    let (directory, relative_path) = tokio::task::spawn_blocking({
-        let workspace = workspace.clone();
-        let validated_path = validated_path.clone();
-        move || open_workspace_capability(&workspace, &validated_path, expected_identity)
+    let target = tokio::task::spawn_blocking({
+        let path = path.to_string();
+        let validated_path = validated_path.to_path_buf();
+        move || open_capability_target(&workspace, &path, validated_path, expected_identity)
     })
     .await
     .map_err(capability_task_error)??;
-
-    let target = WorkspaceCapabilityTarget {
-        directory,
-        relative_path,
-        validated_path,
-    };
     write_file_with_capability_target(
         &target,
-        display_path,
+        path,
         content_bytes,
         create_dirs,
         expected_revision,
@@ -1789,11 +1661,10 @@ async fn write_file_with_capability_target(
     expected_revision: Option<&str>,
     unix_mode: Option<u32>,
 ) -> Result<WriteResultDto, BackendError> {
-    let directory = target.directory.clone();
-    let relative_path = target.relative_path.clone();
     let validated_path = target.validated_path.clone();
     let display_path = display_path.to_string();
     let content = content_bytes.to_vec();
+    let should_create_dirs = create_dirs.unwrap_or(true);
 
     // Lock a stable file derived from the target path before reading the target. Locking the
     // target inode alone is insufficient because the atomic replacement changes that inode.
@@ -1811,33 +1682,33 @@ async fn write_file_with_capability_target(
         None
     };
 
-    let existing = tokio::task::spawn_blocking({
-        let directory = directory.clone();
-        let relative_path = relative_path.clone();
-        move || read_capability_file(&directory, &relative_path)
+    // Admit the parent directory, then read the current entry through the
+    // handle opened beneath it without following a final link.
+    let (parent, name, existing) = tokio::task::spawn_blocking({
+        let target = target.clone();
+        move || -> Result<_, BackendError> {
+            match target.root.locate_entry(&target.relative_path, false)? {
+                Some((parent, name)) => {
+                    let existing = read_existing_entry(&parent, &name, &target.validated_path)?;
+                    Ok((Some(Arc::new(parent)), Some(name), existing))
+                }
+                None => Ok((None, None, None)),
+            }
+        }
     })
     .await
-    .map_err(capability_task_error)?
-    .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
-    let existing_mode = existing.as_ref().and_then(|(_, mode)| *mode);
+    .map_err(capability_task_error)??;
+    let existing_mode = existing.as_ref().and_then(|existing| existing.mode);
     let actual_revision = existing
         .as_ref()
-        .map(|(bytes, _)| content_revision(bytes.as_slice()));
+        .map(|existing| content_revision(existing.bytes.as_slice()));
     validate_expected_revision(&display_path, expected_revision, actual_revision.as_deref())?;
 
     let created = existing.is_none();
-    if existing
-        .as_ref()
-        .is_some_and(|(bytes, _)| bytes.as_slice() == content.as_slice())
-    {
+    if let Some(existing) = existing.filter(|existing| existing.bytes == content) {
         let resulting_mode = tokio::task::spawn_blocking({
-            let directory = directory.clone();
-            let relative_path = relative_path.clone();
             let content = content.clone();
-            move || -> std::io::Result<Option<u32>> {
-                let file = directory.open(&relative_path)?.into_std();
-                apply_unix_mode_to_open_file(&file, unix_mode, existing_mode, &content)
-            }
+            move || apply_unix_mode_to_open_file(&existing.file, unix_mode, existing_mode, &content)
         })
         .await
         .map_err(capability_task_error)?
@@ -1852,57 +1723,52 @@ async fn write_file_with_capability_target(
         });
     }
 
-    let parent = relative_path
-        .parent()
-        .ok_or_else(|| BackendError::FilesystemInvalidPath {
-            message: format!("Path '{}' has no parent directory", display_path),
-        })?
-        .to_path_buf();
-    let should_create_dirs = create_dirs.unwrap_or(true);
-    tokio::task::spawn_blocking({
-        let directory = directory.clone();
-        let parent = parent.clone();
-        move || -> std::io::Result<()> {
-            if should_create_dirs {
-                if !parent.as_os_str().is_empty() {
-                    directory.create_dir_all(&parent)?;
-                }
-            } else if !parent.as_os_str().is_empty() && !directory.is_dir(&parent) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "parent directory does not exist",
-                ));
-            }
-            Ok(())
-        }
-    })
-    .await
-    .map_err(capability_task_error)?
-    .map_err(|error| {
-        if !should_create_dirs && error.kind() == std::io::ErrorKind::NotFound {
-            BackendError::FilesystemDirectoryNotFound {
+    // Missing parents are created one at a time inside admitted handles.
+    let (parent, name) = match (parent, name) {
+        (Some(parent), Some(name)) => (parent, name),
+        _ if !should_create_dirs => {
+            return Err(BackendError::FilesystemDirectoryNotFound {
                 message: format!(
                     "Parent directory does not exist for {}: {}",
                     display_path,
-                    parent.display()
+                    validated_path
+                        .parent()
+                        .unwrap_or(validated_path.as_path())
+                        .display()
                 ),
-            }
-        } else {
-            io_error_to_backend_error(error, &validated_path)
+            });
         }
-    })?;
+        _ => {
+            let target = target.clone();
+            let located = tokio::task::spawn_blocking(move || {
+                target.root.locate_entry(&target.relative_path, true)
+            })
+            .await
+            .map_err(capability_task_error)??;
+            let (parent, name) =
+                located.ok_or_else(|| BackendError::FilesystemDirectoryNotFound {
+                    message: format!("Parent directory does not exist for {}", display_path),
+                })?;
+            (Arc::new(parent), name)
+        }
+    };
 
-    let temp_suffix = format!("tmp.{}", uuid::Uuid::new_v4());
-    let temp_path = relative_path.with_extension(temp_suffix);
-    let _temp_guard = CapabilityTempFileGuard::new(directory.clone(), temp_path.clone());
+    let temp_name = Path::new(&name)
+        .with_extension(format!("tmp.{}", uuid::Uuid::new_v4()))
+        .into_os_string();
+    let _temp_guard = CapabilityTempFileGuard {
+        parent: parent.clone(),
+        name: temp_name.clone(),
+    };
     let resulting_mode = tokio::task::spawn_blocking({
-        let directory = directory.clone();
-        let temp_path = temp_path.clone();
+        let parent = parent.clone();
+        let temp_name = temp_name.clone();
         let content = content.clone();
         move || -> std::io::Result<Option<u32>> {
-            let mut options = CapabilityOpenOptions::new();
-            options.write(true).create_new(true);
-            let mut file = directory.open_with(&temp_path, &options)?.into_std();
+            let mut file = parent
+                .dir()
+                .open_with(&temp_name, &confined::create_new_options())?
+                .into_std();
             file.write_all(&content)?;
             file.flush()?;
             let mode = apply_unix_mode_to_open_file(&file, unix_mode, existing_mode, &content)?;
@@ -1915,64 +1781,66 @@ async fn write_file_with_capability_target(
     .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
 
     pause_before_write_revalidation(&validated_path).await;
-    let (revision_lock, locked_revision) =
-        if expected_revision.is_some() && expected_revision != Some(EXPECTED_REVISION_ABSENT) {
-            let (file, revision) = tokio::task::spawn_blocking({
-                let validated_path = validated_path.clone();
-                move || -> std::io::Result<(std::fs::File, String)> {
-                    let mut file = std::fs::OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .open(&validated_path)?;
-                    file.lock_exclusive()?;
-                    let mut bytes = Vec::new();
-                    file.read_to_end(&mut bytes)?;
-                    Ok((file, content_revision(&bytes)))
-                }
-            })
-            .await
-            .map_err(capability_task_error)?
-            .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
-            (Some(file), Some(revision))
-        } else {
-            (None, None)
-        };
+    let (revision_lock, locked_revision) = if expected_revision.is_some()
+        && expected_revision != Some(EXPECTED_REVISION_ABSENT)
+    {
+        let (file, revision) = tokio::task::spawn_blocking({
+            let parent = parent.clone();
+            let name = name.clone();
+            let validated_path = validated_path.clone();
+            move || -> Result<(std::fs::File, String), BackendError> {
+                let mut opened =
+                    parent.open_entry(&name, &confined::nofollow_read_write_options(), false)?;
+                opened
+                    .file
+                    .lock_exclusive()
+                    .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+                let (bytes, _) = read_admitted(
+                    &mut opened.file,
+                    &validated_path,
+                    MAX_WRITE_SIZE_BYTES,
+                    &mutation_too_large,
+                )?;
+                Ok((opened.file, content_revision(&bytes)))
+            }
+        })
+        .await
+        .map_err(capability_task_error)??;
+        (Some(file), Some(revision))
+    } else {
+        (None, None)
+    };
     if expected_revision.is_some() {
         let latest_revision = if let Some(revision) = locked_revision {
             Some(revision)
         } else {
             tokio::task::spawn_blocking({
-                let directory = directory.clone();
-                let relative_path = relative_path.clone();
+                let parent = parent.clone();
+                let name = name.clone();
+                let validated_path = validated_path.clone();
                 move || {
-                    read_capability_file(&directory, &relative_path)
-                        .map(|current| current.map(|(bytes, _)| content_revision(&bytes)))
+                    read_existing_entry(&parent, &name, &validated_path)
+                        .map(|current| current.map(|current| content_revision(&current.bytes)))
                 }
             })
             .await
-            .map_err(capability_task_error)?
-            .map_err(|error| io_error_to_backend_error(error, &validated_path))?
+            .map_err(capability_task_error)??
         };
-        if let Err(error) =
-            validate_expected_revision(&display_path, expected_revision, latest_revision.as_deref())
-        {
-            return Err(error);
-        }
+        validate_expected_revision(&display_path, expected_revision, latest_revision.as_deref())?;
     }
 
     pause_after_write_revalidation(&validated_path).await;
 
     tokio::task::spawn_blocking({
-        let directory = directory.clone();
-        let temp_path = temp_path.clone();
-        let relative_path = relative_path.clone();
+        let parent = parent.clone();
+        let temp_name = temp_name.clone();
+        let name = name.clone();
         let create_only = expected_revision == Some(EXPECTED_REVISION_ABSENT);
         move || {
             if create_only {
-                directory.hard_link(&temp_path, &directory, &relative_path)?;
-                Ok(())
+                parent.dir().hard_link(&temp_name, parent.dir(), &name)
             } else {
-                directory.rename(&temp_path, &directory, &relative_path)
+                parent.dir().rename(&temp_name, parent.dir(), &name)
             }
         }
     })
@@ -2001,12 +1869,9 @@ async fn write_file_with_capability_target(
 pub(crate) async fn read_file_bytes_with_mode_from_capability_target(
     target: &WorkspaceCapabilityTarget,
 ) -> Result<Option<(Vec<u8>, Option<u32>)>, BackendError> {
-    let directory = target.directory.clone();
-    let relative_path = target.relative_path.clone();
-    let validated_path = target.validated_path.clone();
+    let target = target.clone();
     tokio::task::spawn_blocking(move || {
-        read_capability_file(&directory, &relative_path)
-            .map_err(|error| io_error_to_backend_error(error, &validated_path))
+        read_confined_optional(&target.root, &target.relative_path, &target.validated_path)
     })
     .await
     .map_err(capability_task_error)?
@@ -2053,13 +1918,26 @@ pub(crate) async fn delete_file_with_capability_target_unlocked(
         .as_ref()
         .map(|(bytes, _)| content_revision(bytes.as_slice()));
     validate_expected_revision(display_path, expected_revision, actual_revision.as_deref())?;
-    let directory = target.directory.clone();
-    let relative_path = target.relative_path.clone();
-    let validated_path = target.validated_path.clone();
-    tokio::task::spawn_blocking(move || directory.remove_file(&relative_path))
-        .await
-        .map_err(capability_task_error)?
-        .map_err(|error| io_error_to_backend_error(error, &validated_path))
+    let target = target.clone();
+    tokio::task::spawn_blocking(move || {
+        let validated_path = &target.validated_path;
+        let (parent, name) = target
+            .root
+            .locate_entry(&target.relative_path, false)?
+            .ok_or_else(|| BackendError::FilesystemNotFound {
+                message: format!("Path not found: {}", validated_path.display()),
+            })?;
+        let facts = parent
+            .entry_facts(&name)
+            .map_err(|error| confined::map_io(error, validated_path))?;
+        parent.admit_entry(&name, &facts)?;
+        parent
+            .dir()
+            .remove_file(&name)
+            .map_err(|error| io_error_to_backend_error(error, validated_path))
+    })
+    .await
+    .map_err(capability_task_error)?
 }
 
 /// Internal function for writing files with atomic write support
@@ -2184,19 +2062,9 @@ async fn write_file_internal_with_revision_impl(
         });
     }
 
-    // Validate path for write (handles non-existent files)
-    let allow_outside = allow_outside_workspace.unwrap_or(false);
-    let validated_path = if allow_outside {
-        let absolute = if path_buf.is_absolute() {
-            normalize_path(&path_buf)
-        } else {
-            normalize_path(&workspace.join(&path_buf))
-        };
-        private_profile::check(&absolute)?;
-        absolute
-    } else {
-        validate_path_for_write(&path_buf, workspace)?
-    };
+    // Every native write is confined to its root; the flag no longer widens it.
+    let _ = allow_outside_workspace;
+    let validated_path = validate_path_for_write(&path_buf, workspace)?;
     let _mutation_guard = if acquire_lock {
         Some(
             crate::fs::mutation_locks::content_mutation_lock(
@@ -2208,146 +2076,16 @@ async fn write_file_internal_with_revision_impl(
     } else {
         None
     };
-    match tokio::fs::symlink_metadata(&validated_path).await {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            return Err(BackendError::FilesystemInvalidPath {
-                message: "Writing a symbolic link is not supported; edit its target explicitly."
-                    .to_string(),
-            });
-        }
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-            return Err(io_error_to_backend_error(error, &validated_path));
-        }
-        _ => {}
-    }
-    if !allow_outside {
-        return write_file_with_workspace_capability(
-            workspace,
-            &validated_path,
-            &path,
-            content_bytes,
-            create_dirs,
-            expected_revision,
-            unix_mode,
-        )
-        .await;
-    }
-
-    let existing_mode = match tokio::fs::metadata(&validated_path).await {
-        Ok(metadata) => metadata_unix_mode(&metadata),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(io_error_to_backend_error(error, &validated_path)),
-    };
-    let existing_bytes = match tokio::fs::read(&validated_path).await {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(io_error_to_backend_error(error, &validated_path)),
-    };
-    let actual_revision = existing_bytes.as_deref().map(content_revision);
-    validate_expected_revision(&path, expected_revision, actual_revision.as_deref())?;
-
-    // Check if file already exists
-    let created = existing_bytes.is_none();
-    if let Some(existing_bytes) = existing_bytes.as_deref() {
-        if existing_bytes == content_bytes {
-            let resulting_mode =
-                apply_unix_mode(&validated_path, unix_mode, existing_mode, content_bytes).await?;
-            return Ok(WriteResultDto {
-                path: validated_path.to_string_lossy().to_string(),
-                bytes_written: 0,
-                created: false,
-                skipped: true,
-                revision: content_revision(content_bytes),
-                unix_mode: resulting_mode,
-            });
-        }
-    }
-
-    // Get parent directory
-    let parent = validated_path
-        .parent()
-        .ok_or_else(|| BackendError::FilesystemInvalidPath {
-            message: format!("Path '{}' has no parent directory", path),
-        })?;
-
-    // Create parent directories if requested (default: true)
-    let should_create_dirs = create_dirs.unwrap_or(true);
-    if should_create_dirs && !parent.exists() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| io_error_to_backend_error(e, parent))?;
-    } else if !should_create_dirs && !parent.exists() {
-        return Err(BackendError::FilesystemDirectoryNotFound {
-            message: format!(
-                "Parent directory does not exist for {}: {}",
-                validated_path.display(),
-                parent.display()
-            ),
-        });
-    }
-
-    // Atomic write implementation using temp file + rename
-    let temp_suffix = format!(".tmp.{}", uuid::Uuid::new_v4());
-    let temp_path = validated_path.with_extension(temp_suffix);
-
-    // Write to temp file
-    tokio::fs::write(&temp_path, content_bytes)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, &temp_path))?;
-    let resulting_mode =
-        match apply_unix_mode(&temp_path, unix_mode, existing_mode, content_bytes).await {
-            Ok(mode) => mode,
-            Err(error) => {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                return Err(error);
-            }
-        };
-
-    pause_before_write_revalidation(&validated_path).await;
-    if expected_revision.is_some() {
-        let latest_revision = match tokio::fs::read(&validated_path).await {
-            Ok(bytes) => Some(content_revision(&bytes)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                return Err(io_error_to_backend_error(error, &validated_path));
-            }
-        };
-        if let Err(error) =
-            validate_expected_revision(&path, expected_revision, latest_revision.as_deref())
-        {
-            let _ = tokio::fs::remove_file(&temp_path).await;
-            return Err(error);
-        }
-    }
-
-    // Rename temp file to final path (atomic operation)
-    match tokio::fs::rename(&temp_path, &validated_path).await {
-        Ok(_) => {}
-        Err(e) => {
-            // Clean up temp file on rename failure
-            let _ = tokio::fs::remove_file(&temp_path).await;
-            return Err(io_error_to_backend_error(e, &validated_path));
-        }
-    }
-
-    // Audit logging
-    tracing::info!(
-        operation = "fs_write_file",
-        path = %validated_path.display(),
-        bytes_written = content_bytes.len(),
-        created = created,
-        "File written successfully"
-    );
-
-    Ok(WriteResultDto {
-        path: validated_path.to_string_lossy().to_string(),
-        bytes_written: content_bytes.len() as u64,
-        created,
-        skipped: false,
-        revision: content_revision(content_bytes),
-        unix_mode: resulting_mode,
-    })
+    write_file_with_workspace_capability(
+        workspace,
+        &path,
+        &validated_path,
+        content_bytes,
+        create_dirs,
+        expected_revision,
+        unix_mode,
+    )
+    .await
 }
 
 /// Internal function for listing directory contents
@@ -2372,111 +2110,182 @@ pub async fn list_dir_internal(
         .await;
     }
 
+    // Every native listing is confined to its root; the flag no longer widens it.
+    let _ = allow_outside_workspace;
     let path_buf = PathBuf::from(&path);
-    let allow_outside = allow_outside_workspace.unwrap_or(false);
-    let validated_path = if allow_outside {
-        let absolute = if path_buf.is_absolute() {
-            normalize_path(&path_buf)
-        } else {
-            normalize_path(&workspace.join(&path_buf))
-        };
-        private_profile::public_read_path(absolute)?
-    } else {
-        validate_path(&path_buf, workspace)?
-    };
-
-    // Verify path is a directory
-    let metadata = tokio::fs::metadata(&validated_path)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
-    if !metadata.is_dir() {
-        return Err(BackendError::FilesystemIsFile {
-            message: format!("Path '{}' is a file, not a directory", path),
-        });
-    }
-
+    let validated_path = validate_path(&path_buf, workspace)?;
     let should_include_hidden = include_hidden.unwrap_or(false);
     let should_recurse = recursive.unwrap_or(false);
     let depth_limit = max_depth.unwrap_or(u32::MAX);
+    let workspace = workspace.to_path_buf();
 
-    if should_recurse && depth_limit == 0 {
-        // Probe root access without traversing the directory or returning children.
-        let _directory = tokio::fs::read_dir(&validated_path)
-            .await
-            .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
-        return Ok(Vec::new());
-    }
+    tokio::task::spawn_blocking(move || {
+        let root = open_confined_root(&workspace)?;
+        let relative = root.relative(&path_buf)?;
+        let opened = root.open_object(&relative)?;
+        if !opened.facts.is_dir {
+            return Err(BackendError::FilesystemIsFile {
+                message: format!("Path '{}' is a file, not a directory", path),
+            });
+        }
+        let base = ConfinedDir::from_opened(&root, opened);
+        // Probe access even when no children are requested.
+        base.dir()
+            .entries()
+            .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+        let mut entries = Vec::new();
+        if should_recurse && depth_limit == 0 {
+            return Ok(entries);
+        }
+        let listing = ConfinedListing {
+            base: &validated_path,
+            include_hidden: should_include_hidden,
+            recursive: should_recurse,
+            max_depth: if should_recurse { depth_limit } else { 1 },
+        };
+        listing.collect(&base, Path::new(""), 1, &mut entries)?;
 
-    let mut entries = Vec::new();
+        // Sort entries: directories first, then files, alphabetically
+        entries.sort_by(|a, b| {
+            let a_is_dir = a.kind == "directory";
+            let b_is_dir = b.kind == "directory";
+            match (a_is_dir, b_is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            }
+        });
+        Ok(entries)
+    })
+    .await
+    .map_err(capability_task_error)?
+}
 
-    if should_recurse {
-        // Use walkdir for recursive listing
-        let mut walkdir = walkdir::WalkDir::new(&validated_path)
-            .max_depth(depth_limit as usize)
-            .into_iter();
+/// Lists an admitted directory through its handle. Children are described
+/// without following links, and subdirectories are opened beneath their
+/// admitted parent without following a final link.
+struct ConfinedListing<'a> {
+    base: &'a Path,
+    include_hidden: bool,
+    recursive: bool,
+    max_depth: u32,
+}
 
-        while let Some(entry_result) = walkdir.next() {
-            let entry = entry_result.map_err(|e| BackendError::Filesystem {
-                message: format!("Failed to read directory entry: {}", e),
-            })?;
-
-            let entry_path = entry.path();
-
-            // Skip the root directory itself
-            if entry_path == validated_path {
+impl ConfinedListing<'_> {
+    fn collect(
+        &self,
+        dir: &ConfinedDir,
+        relative_dir: &Path,
+        depth: u32,
+        entries: &mut Vec<DirEntryDto>,
+    ) -> Result<(), BackendError> {
+        for name in sorted_entry_names(dir, self.base)? {
+            let relative = relative_dir.join(&name);
+            if should_ignore_path(&relative, self.include_hidden) {
                 continue;
             }
-
-            // Check if path should be ignored
-            if should_ignore_path(entry_path, should_include_hidden)
-                || private_profile::check_normalized(entry_path).is_err()
-                || (entry.file_type().is_symlink() && private_profile::check(entry_path).is_err())
-            {
-                if entry.file_type().is_dir() {
-                    walkdir.skip_current_dir();
+            let Some(facts) = admitted_entry_facts(dir, &name)? else {
+                continue;
+            };
+            let metadata = match dir.dir().symlink_metadata(&name) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(BackendError::Filesystem {
+                        message: format!("Failed to read directory entry: {}", error),
+                    })
                 }
-                continue;
+            };
+            entries.push(dir_entry_dto(
+                &self.base.join(&relative),
+                &relative,
+                &metadata,
+            ));
+            ensure_directory_list_within_limit(entries.len(), self.recursive)?;
+            if self.recursive && facts.is_dir && depth < self.max_depth {
+                let child = dir.open_child_dir(&name)?;
+                self.collect(&child, &relative, depth + 1, entries)?;
             }
-
-            let dto = create_dir_entry_dto(entry_path, workspace, &validated_path).await?;
-            entries.push(dto);
-            ensure_directory_list_within_limit(entries.len(), true)?;
         }
-    } else {
-        // Non-recursive listing using read_dir
-        let mut dir = tokio::fs::read_dir(&validated_path)
-            .await
-            .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
-
-        while let Some(entry) = dir.next_entry().await? {
-            let entry_path = entry.path();
-
-            if should_ignore_path(&entry_path, should_include_hidden)
-                || private_profile::check_normalized(&entry_path).is_err()
-                || (entry.file_type().await?.is_symlink()
-                    && private_profile::check(&entry_path).is_err())
-            {
-                continue;
-            }
-
-            let dto = create_dir_entry_dto(&entry_path, workspace, &validated_path).await?;
-            entries.push(dto);
-            ensure_directory_list_within_limit(entries.len(), false)?;
-        }
+        Ok(())
     }
+}
 
-    // Sort entries: directories first, then files, alphabetically
-    entries.sort_by(|a, b| {
-        let a_is_dir = a.kind == "directory";
-        let b_is_dir = b.kind == "directory";
-        match (a_is_dir, b_is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+fn sorted_entry_names(dir: &ConfinedDir, display: &Path) -> Result<Vec<OsString>, BackendError> {
+    let mut names = dir
+        .dir()
+        .entries()
+        .map_err(|error| io_error_to_backend_error(error, display))?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(|error| BackendError::Filesystem {
+            message: format!("Failed to read directory entry: {}", error),
+        })?;
+    names.sort();
+    Ok(names)
+}
+
+/// Describe an entry without following it and admit it. Private entries, by
+/// location or by hard-link identity, and links into private data are hidden.
+fn admitted_entry_facts(
+    dir: &ConfinedDir,
+    name: &OsStr,
+) -> Result<Option<confined::HandleFacts>, BackendError> {
+    let facts = match dir.entry_facts(name) {
+        Ok(facts) => facts,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(BackendError::Filesystem {
+                message: format!("Failed to read directory entry: {}", error),
+            })
         }
-    });
+    };
+    if dir.admit_entry(name, &facts).is_err()
+        || (facts.is_link && private_profile::check(&dir.real().join(name)).is_err())
+    {
+        return Ok(None);
+    }
+    Ok(Some(facts))
+}
 
-    Ok(entries)
+fn cap_time(time: std::io::Result<cap_std::time::SystemTime>) -> Option<String> {
+    time.ok()
+        .map(|time| chrono::DateTime::<chrono::Utc>::from(time.into_std()).to_rfc3339())
+}
+
+fn dir_entry_dto(
+    entry_path: &Path,
+    relative_path: &Path,
+    metadata: &cap_std::fs::Metadata,
+) -> DirEntryDto {
+    let name = entry_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+    let kind = if metadata.is_symlink() {
+        "symlink"
+    } else if metadata.is_dir() {
+        "directory"
+    } else {
+        "file"
+    };
+    DirEntryDto {
+        path: entry_path.to_string_lossy().to_string(),
+        relative_path: relative_path.to_string_lossy().to_string(),
+        is_hidden: name.starts_with('.'),
+        name,
+        kind: kind.to_string(),
+        size: metadata.is_file().then(|| metadata.len()),
+        modified: cap_time(metadata.modified()),
+        created: cap_time(metadata.created()),
+        language: if metadata.is_file() {
+            get_file_language(entry_path)
+        } else {
+            None
+        },
+        is_readonly: metadata.permissions().readonly(),
+    }
 }
 
 /// Check if a path should be ignored based on default patterns
@@ -2562,63 +2371,76 @@ fn search_workspace_files_blocking(
             continue;
         }
 
-        let canonical_workspace = workspace.canonicalize()?;
-        let mut scanned_entries = 0usize;
-        let mut walkdir = walkdir::WalkDir::new(&workspace)
-            .sort_by_file_name()
-            .into_iter();
-        while let Some(entry_result) = walkdir.next() {
-            let entry = entry_result.map_err(|error| BackendError::Filesystem {
-                message: format!("Failed to read directory entry: {}", error),
-            })?;
-            let entry_path = entry.path();
-            let relative_path_buf = match entry_path.strip_prefix(&workspace) {
-                Ok(path) => path,
-                Err(_) => continue,
+        let confined = ConfinedRoot::open(&workspace, None)?;
+        let base = confined.open_dir(Path::new(""))?;
+        let mut search = ConfinedSearch {
+            root: &root,
+            query: &normalized_query,
+            include_hidden: should_include_hidden,
+            use_virtual_root,
+            result_limit,
+            scanned_entries: 0,
+            candidates: &mut candidates,
+        };
+        search.walk(&base, Path::new(""))?;
+
+        sort_workspace_file_candidates(&mut candidates);
+        candidates.truncate(MAX_FILE_SEARCH_CANDIDATES);
+    }
+
+    sort_workspace_file_candidates(&mut candidates);
+    candidates.truncate(result_limit);
+    Ok(candidates.into_iter().map(|(_, result)| result).collect())
+}
+
+/// Walks one search root through admitted directory handles, in file-name
+/// order, without following links.
+struct ConfinedSearch<'a> {
+    root: &'a WorkspaceFileSearchRootDto,
+    query: &'a str,
+    include_hidden: bool,
+    use_virtual_root: bool,
+    result_limit: usize,
+    scanned_entries: usize,
+    candidates: &'a mut Vec<(i32, WorkspaceFileSearchResultDto)>,
+}
+
+impl ConfinedSearch<'_> {
+    fn walk(&mut self, dir: &ConfinedDir, relative_dir: &Path) -> Result<(), BackendError> {
+        for name in sorted_entry_names(dir, dir.real())? {
+            let relative_path_buf = relative_dir.join(&name);
+            if should_ignore_path(&relative_path_buf, self.include_hidden) {
+                continue;
+            }
+            let Some(facts) = admitted_entry_facts(dir, &name)? else {
+                continue;
             };
-
-            if !relative_path_buf.as_os_str().is_empty()
-                && (should_ignore_path(relative_path_buf, should_include_hidden)
-                    || private_profile::check_normalized(entry_path).is_err()
-                    || private_profile::check_normalized(
-                        &canonical_workspace.join(relative_path_buf),
-                    )
-                    .is_err())
-            {
-                if entry.file_type().is_dir() {
-                    walkdir.skip_current_dir();
-                }
+            self.scanned_entries += 1;
+            ensure_directory_list_within_limit(self.scanned_entries, true)?;
+            if facts.is_dir {
+                let child = dir.open_child_dir(&name)?;
+                self.walk(&child, &relative_path_buf)?;
+                continue;
+            }
+            if !facts.is_file {
                 continue;
             }
 
-            if !relative_path_buf.as_os_str().is_empty() {
-                scanned_entries += 1;
-                ensure_directory_list_within_limit(scanned_entries, true)?;
-            }
-
-            if !entry.file_type().is_file() {
-                continue;
-            }
-
-            let relative_path = to_slash_path(relative_path_buf);
-            let name = entry_path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("")
-                .to_string();
-            let score = workspace_file_match_score(&normalized_query, &relative_path, &name);
+            let relative_path = to_slash_path(&relative_path_buf);
+            let name = name.to_string_lossy().to_string();
+            let score = workspace_file_match_score(self.query, &relative_path, &name);
             if score <= 0 {
                 continue;
             }
 
-            let metadata = entry.metadata().map_err(|error| BackendError::Filesystem {
-                message: format!("Failed to read file metadata: {}", error),
-            })?;
-            let modified = metadata
-                .modified()
-                .ok()
-                .map(|time| chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339());
-            let virtual_path = if use_virtual_root {
+            let metadata =
+                dir.dir()
+                    .symlink_metadata(&name)
+                    .map_err(|error| BackendError::Filesystem {
+                        message: format!("Failed to read file metadata: {}", error),
+                    })?;
+            let root = self.root;
+            let virtual_path = if self.use_virtual_root {
                 root.mount_name
                     .as_deref()
                     .filter(|value| !value.trim().is_empty())
@@ -2633,7 +2455,7 @@ fn search_workspace_files_blocking(
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or("workspace");
 
-            candidates.push((
+            self.candidates.push((
                 score,
                 WorkspaceFileSearchResultDto {
                     id: format!("file:{}:{}", id_project, virtual_path),
@@ -2641,26 +2463,20 @@ fn search_workspace_files_blocking(
                     relative_path,
                     project_id: root.project_id.clone(),
                     project_name: root.project_name.clone(),
-                    language: get_file_language(entry_path),
+                    language: get_file_language(Path::new(&name)),
                     size_bytes: Some(metadata.len()),
-                    modified,
+                    modified: cap_time(metadata.modified()),
                     is_focused: root.is_focused,
                 },
             ));
 
-            if candidates.len() > MAX_FILE_SEARCH_CANDIDATES {
-                sort_workspace_file_candidates(&mut candidates);
-                candidates.truncate(result_limit);
+            if self.candidates.len() > MAX_FILE_SEARCH_CANDIDATES {
+                sort_workspace_file_candidates(self.candidates);
+                self.candidates.truncate(self.result_limit);
             }
         }
-
-        sort_workspace_file_candidates(&mut candidates);
-        candidates.truncate(MAX_FILE_SEARCH_CANDIDATES);
+        Ok(())
     }
-
-    sort_workspace_file_candidates(&mut candidates);
-    candidates.truncate(result_limit);
-    Ok(candidates.into_iter().map(|(_, result)| result).collect())
 }
 
 async fn search_wsl_workspace_files(
@@ -2797,77 +2613,6 @@ pub async fn search_files(
     Ok(results)
 }
 
-/// Create a DirEntryDto from a file system entry
-async fn create_dir_entry_dto(
-    entry_path: &Path,
-    workspace: &Path,
-    base_path: &Path,
-) -> Result<DirEntryDto, BackendError> {
-    // Describe the directory entry itself, including dangling aliases.
-    let metadata = tokio::fs::symlink_metadata(entry_path)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, entry_path))?;
-
-    let name = entry_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_string();
-
-    let relative_path = entry_path
-        .strip_prefix(base_path)
-        .or_else(|_| entry_path.strip_prefix(workspace))
-        .unwrap_or(entry_path)
-        .to_string_lossy()
-        .to_string();
-
-    let kind = if metadata.is_symlink() {
-        "symlink".to_string()
-    } else if metadata.is_dir() {
-        "directory".to_string()
-    } else {
-        "file".to_string()
-    };
-
-    let size = if metadata.is_file() {
-        Some(metadata.len())
-    } else {
-        None
-    };
-
-    let modified = metadata
-        .modified()
-        .ok()
-        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
-
-    let created = metadata
-        .created()
-        .ok()
-        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
-
-    let language = if metadata.is_file() {
-        get_file_language(entry_path)
-    } else {
-        None
-    };
-
-    let is_hidden = name.starts_with('.');
-    let is_readonly = metadata.permissions().readonly();
-
-    Ok(DirEntryDto {
-        path: entry_path.to_string_lossy().to_string(),
-        relative_path,
-        name,
-        kind,
-        size,
-        modified,
-        created,
-        language,
-        is_hidden,
-        is_readonly,
-    })
-}
-
 /// Internal function for getting file stats
 pub async fn stat_internal(workspace: &Path, path: String) -> Result<FileStatsDto, BackendError> {
     let workspace_string = workspace.to_string_lossy();
@@ -2877,83 +2622,96 @@ pub async fn stat_internal(workspace: &Path, path: String) -> Result<FileStatsDt
 
     let path_buf = PathBuf::from(&path);
     let validated_path = validate_path_for_write(&path_buf, workspace)?;
+    let workspace = workspace.to_path_buf();
 
-    if !validated_path.exists() {
-        return Err(BackendError::FilesystemNotFound {
+    tokio::task::spawn_blocking(move || {
+        let not_found = || BackendError::FilesystemNotFound {
             message: format!("Path not found: {}", validated_path.display()),
-        });
-    }
+        };
+        let root = open_confined_root(&workspace)?;
+        let relative = root.relative(&path_buf)?;
+        let follow = |relative: &Path| -> Result<cap_std::fs::Metadata, BackendError> {
+            let opened = match root.open_object(relative) {
+                Err(BackendError::FilesystemNotFound { .. }) => return Err(not_found()),
+                result => result?,
+            };
+            cap_std::fs::Metadata::from_file(&opened.file)
+                .map_err(|error| io_error_to_backend_error(error, &validated_path))
+        };
+        let (metadata, symlink_target) = match root.locate(&relative, false)? {
+            Located::Missing => return Err(not_found()),
+            Located::Object => (follow(&relative)?, None),
+            Located::Entry(parent, name) => {
+                let facts = match parent.entry_facts(&name) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Err(not_found())
+                    }
+                    result => result.map_err(|error| confined::map_io(error, &validated_path))?,
+                };
+                parent.admit_entry(&name, &facts)?;
+                if facts.is_link {
+                    let target = parent
+                        .dir()
+                        .read_link_contents(&name)
+                        .ok()
+                        .map(|target| target.to_string_lossy().to_string());
+                    (follow(&relative)?, target)
+                } else {
+                    let metadata = parent
+                        .dir()
+                        .symlink_metadata(&name)
+                        .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+                    (metadata, None)
+                }
+            }
+        };
+        let is_symlink = symlink_target.is_some();
 
-    let metadata = tokio::fs::metadata(&validated_path)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
-    let symlink_metadata = tokio::fs::symlink_metadata(&validated_path)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
+        let name = validated_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
 
-    let name = validated_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
+        let kind = if is_symlink {
+            "symlink"
+        } else if metadata.is_dir() {
+            "directory"
+        } else {
+            "file"
+        }
         .to_string();
 
-    let kind = if symlink_metadata.is_symlink() {
-        "symlink"
-    } else if metadata.is_dir() {
-        "directory"
-    } else {
-        "file"
-    }
-    .to_string();
+        let modified = cap_time(metadata.modified()).ok_or_else(|| BackendError::Filesystem {
+            message: format!(
+                "Modification time unavailable for {}",
+                validated_path.display()
+            ),
+        })?;
+        let language = if metadata.is_file() {
+            get_file_language(&validated_path)
+        } else {
+            None
+        };
 
-    let modified = chrono::DateTime::<chrono::Utc>::from(metadata.modified()?).to_rfc3339();
-
-    let created = metadata
-        .created()
-        .ok()
-        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
-
-    let accessed = metadata
-        .accessed()
-        .ok()
-        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
-
-    let permissions = format_permissions(&metadata);
-
-    let language = if metadata.is_file() {
-        get_file_language(&validated_path)
-    } else {
-        None
-    };
-
-    let is_hidden = name.starts_with('.');
-    let is_readonly = metadata.permissions().readonly();
-    let is_symlink = symlink_metadata.is_symlink();
-
-    let symlink_target = if is_symlink {
-        tokio::fs::read_link(&validated_path)
-            .await
-            .ok()
-            .map(|p| p.to_string_lossy().to_string())
-    } else {
-        None
-    };
-
-    Ok(FileStatsDto {
-        path: validated_path.to_string_lossy().to_string(),
-        name,
-        kind,
-        size: metadata.len(),
-        created,
-        modified,
-        accessed,
-        permissions,
-        language,
-        is_readonly,
-        is_hidden,
-        is_symlink,
-        symlink_target,
+        Ok(FileStatsDto {
+            path: validated_path.to_string_lossy().to_string(),
+            is_hidden: name.starts_with('.'),
+            name,
+            kind,
+            size: metadata.len(),
+            created: cap_time(metadata.created()),
+            modified,
+            accessed: cap_time(metadata.accessed()),
+            permissions: format_permissions(&metadata),
+            language,
+            is_readonly: metadata.permissions().readonly(),
+            is_symlink,
+            symlink_target,
+        })
     })
+    .await
+    .map_err(capability_task_error)?
 }
 
 pub async fn exists_internal(workspace: &Path, path: String) -> Result<bool, BackendError> {
@@ -2964,12 +2722,32 @@ pub async fn exists_internal(workspace: &Path, path: String) -> Result<bool, Bac
 
     let path_buf = PathBuf::from(&path);
     match validate_path(&path_buf, workspace) {
-        Ok(validated_path) => tokio::fs::try_exists(&validated_path)
-            .await
-            .map_err(BackendError::from),
-        Err(BackendError::FilesystemNotFound { .. }) => Ok(false),
-        Err(error) => Err(error),
+        Ok(_) => {}
+        Err(BackendError::FilesystemNotFound { .. }) => return Ok(false),
+        Err(error) => return Err(error),
     }
+    let workspace = workspace.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let root = open_confined_root(&workspace)?;
+        let relative = root.relative(&path_buf)?;
+        let follow = || match root.open_object(&relative) {
+            Ok(_) => Ok(true),
+            Err(BackendError::FilesystemNotFound { .. }) => Ok(false),
+            Err(error) => Err(error),
+        };
+        match root.locate(&relative, false)? {
+            Located::Missing => Ok(false),
+            Located::Object => follow(),
+            Located::Entry(parent, name) => match parent.entry_facts(&name) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(confined::map_io(error, &root.display(&relative))),
+                Ok(facts) if facts.is_link => follow(),
+                Ok(facts) => parent.admit_entry(&name, &facts).map(|()| true),
+            },
+        }
+    })
+    .await
+    .map_err(capability_task_error)?
 }
 
 pub(crate) async fn delete_path_internal_unlocked(
@@ -3000,32 +2778,40 @@ pub(crate) async fn delete_path_internal_unlocked(
         private_profile::check_tree(&validated_path)?;
     }
 
-    let workspace_path = workspace.to_path_buf();
-    let capability_target = validated_path.clone();
-    let expected_identity = expected_workspace_root_identity(&workspace_path);
+    let workspace = workspace.to_path_buf();
+    let removal_path = validated_path.clone();
     let is_directory = tokio::task::spawn_blocking(move || -> Result<bool, BackendError> {
-        let (directory, relative_path) =
-            open_workspace_capability(&workspace_path, &capability_target, expected_identity)?;
-        let metadata = directory
-            .symlink_metadata(&relative_path)
-            .map_err(|error| io_error_to_backend_error(error, &capability_target))?;
-        let is_directory = metadata.is_dir();
-        if metadata.file_type().is_symlink() || metadata.is_file() {
-            directory
-                .remove_file(&relative_path)
-                .map_err(|error| io_error_to_backend_error(error, &capability_target))?;
-        } else if is_directory {
-            if recursive.unwrap_or(false) {
-                directory
-                    .remove_dir_all(&relative_path)
-                    .map_err(|error| io_error_to_backend_error(error, &capability_target))?;
-            } else {
-                directory
-                    .remove_dir(&relative_path)
-                    .map_err(|error| io_error_to_backend_error(error, &capability_target))?;
+        let validated_path = removal_path;
+        let root = open_confined_root(&workspace)?;
+        let relative = root.relative(&path_buf)?;
+        let (parent, name) = root.locate_entry(&relative, false)?.ok_or_else(|| {
+            BackendError::FilesystemNotFound {
+                message: format!("Path not found: {}", validated_path.display()),
             }
+        })?;
+        let facts = parent
+            .entry_facts(&name)
+            .map_err(|error| confined::map_io(error, &validated_path))?;
+        if facts.is_dir {
+            if recursive.unwrap_or(false) {
+                remove_admitted_tree(&parent, &name, &validated_path)?;
+            } else {
+                parent.admit_entry(&name, &facts)?;
+                parent
+                    .dir()
+                    .remove_dir(&name)
+                    .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+            }
+        } else {
+            // A link or file only loses this name; a hard link to private data
+            // is still refused so its revision never leaks through a delete.
+            parent.admit_entry(&name, &facts)?;
+            parent
+                .dir()
+                .remove_file(&name)
+                .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
         }
-        Ok(is_directory)
+        Ok(facts.is_dir)
     })
     .await
     .map_err(capability_task_error)??;
@@ -3038,6 +2824,53 @@ pub(crate) async fn delete_path_internal_unlocked(
         "File or directory deleted through a workspace capability"
     );
     Ok(())
+}
+
+/// Remove a directory tree that was admitted as a whole. The entry is first
+/// moved aside inside its admitted parent and compared with the directory that
+/// was checked, so a replacement made after the check is never removed.
+fn remove_admitted_tree(
+    parent: &ConfinedDir,
+    name: &OsStr,
+    display: &Path,
+) -> Result<(), BackendError> {
+    let checked = parent.open_entry(name, &confined::nofollow_read_options(true), true)?;
+    if !checked.facts.is_dir {
+        return Err(BackendError::FilesystemIsFile {
+            message: format!("Path '{}' is not a directory", display.display()),
+        });
+    }
+    let isolated = OsString::from(format!(".macro-delete-{}", uuid::Uuid::new_v4()));
+    confined::hooks::run(confined::hooks::Point::BeforeRemove, display);
+    parent
+        .dir()
+        .rename(name, parent.dir(), &isolated)
+        .map_err(|error| io_error_to_backend_error(error, display))?;
+    let moved = parent
+        .entry_facts(&isolated)
+        .map_err(|error| io_error_to_backend_error(error, display))?;
+    if moved.is_link || moved.identity != checked.facts.identity {
+        let restored = parent.entry_facts(name).is_err()
+            && parent.dir().rename(&isolated, parent.dir(), name).is_ok();
+        return Err(BackendError::Filesystem {
+            message: if restored {
+                format!(
+                    "'{}' changed before deletion; nothing was removed.",
+                    display.display()
+                )
+            } else {
+                format!(
+                    "'{}' changed before deletion; the replacement was kept at '{}'.",
+                    display.display(),
+                    parent.real().join(&isolated).display()
+                )
+            },
+        });
+    }
+    parent
+        .dir()
+        .remove_dir_all(&isolated)
+        .map_err(|error| io_error_to_backend_error(error, display))
 }
 
 pub async fn delete_path_internal_with_revision(
@@ -3116,13 +2949,14 @@ async fn delete_path_internal_with_revision_impl(
 
 /// Format file permissions based on platform
 #[cfg(unix)]
-fn format_permissions(metadata: &std::fs::Metadata) -> String {
-    use std::os::unix::fs::PermissionsExt;
-    format!("{:04o}", metadata.permissions().mode() & 0o7777)
+fn format_permissions(metadata: &cap_std::fs::Metadata) -> String {
+    use cap_std::fs::MetadataExt;
+    format!("{:04o}", metadata.mode() & 0o7777)
 }
 
 #[cfg(windows)]
-fn format_permissions(metadata: &std::fs::Metadata) -> String {
+fn format_permissions(metadata: &cap_std::fs::Metadata) -> String {
+    use cap_std::fs::MetadataExt;
     let attrs = metadata.file_attributes();
     let mut parts = Vec::new();
     if attrs & 0x1 != 0 {
@@ -3139,45 +2973,6 @@ fn format_permissions(metadata: &std::fs::Metadata) -> String {
     } else {
         parts.join(",")
     }
-}
-
-fn symlink_identity(path: &Path) -> Result<WorkspaceRootIdentity, BackendError> {
-    #[cfg(unix)]
-    {
-        let metadata = std::fs::symlink_metadata(path)
-            .map_err(|error| io_error_to_backend_error(error, path))?;
-        Ok(workspace_root_identity_from_std(&metadata))
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-            FILE_SHARE_READ, FILE_SHARE_WRITE,
-        };
-        let file = std::fs::OpenOptions::new()
-            .access_mode(0)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)
-            .map_err(|error| io_error_to_backend_error(error, path))?;
-        workspace_root_identity_from_handle(file.as_raw_handle(), path)
-    }
-}
-
-fn remove_symlink(path: &Path) -> std::io::Result<()> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::FileTypeExt;
-        if std::fs::symlink_metadata(path)?
-            .file_type()
-            .is_symlink_dir()
-        {
-            return std::fs::remove_dir(path);
-        }
-    }
-    std::fs::remove_file(path)
 }
 
 pub(crate) fn rename_without_replacement(source: &Path, destination: &Path) -> std::io::Result<()> {
@@ -3228,239 +3023,6 @@ pub(crate) fn rename_without_replacement(source: &Path, destination: &Path) -> s
             return Err(std::io::Error::last_os_error());
         }
         Ok(())
-    }
-}
-
-fn rollback_published_symlink(
-    dest: &Path,
-    identity: WorkspaceRootIdentity,
-) -> Result<(), BackendError> {
-    let parent = dest
-        .parent()
-        .ok_or_else(|| BackendError::FilesystemInvalidPath {
-            message: "Move destination has no parent".to_string(),
-        })?;
-    let quarantine = tempfile::Builder::new()
-        .prefix(".macro-move-rollback-")
-        .tempdir_in(parent)
-        .map_err(|error| io_error_to_backend_error(error, parent))?;
-    let isolated = quarantine.path().join("entry");
-    // Take ownership of one directory entry atomically before inspecting it.
-    std::fs::rename(dest, &isolated).map_err(|error| io_error_to_backend_error(error, dest))?;
-    if symlink_identity(&isolated).ok() == Some(identity) {
-        return remove_symlink(&isolated)
-            .map_err(|error| io_error_to_backend_error(error, &isolated));
-    }
-    if let Err(error) = rename_without_replacement(&isolated, dest) {
-        let recovery = quarantine.keep();
-        return Err(BackendError::Filesystem {
-            message: format!("Destination changed during rollback; preserved displaced entry at '{}' because restoration failed: {error}", recovery.join("entry").display()),
-        });
-    }
-    Err(BackendError::Filesystem {
-        message: "Destination changed; rollback restored it without deleting its contents."
-            .to_string(),
-    })
-}
-
-fn move_symlink_across_devices(
-    src: &Path,
-    dest: &Path,
-    remove_source: impl FnOnce(&Path) -> std::io::Result<()>,
-) -> Result<(), BackendError> {
-    let identity = symlink_identity(src)?;
-    let parent = src
-        .parent()
-        .ok_or_else(|| BackendError::FilesystemInvalidPath {
-            message: "Move source has no parent".to_string(),
-        })?;
-    let quarantine = tempfile::Builder::new()
-        .prefix(".macro-move-source-")
-        .tempdir_in(parent)
-        .map_err(|error| io_error_to_backend_error(error, parent))?;
-    let isolated = quarantine.path().join("entry");
-    std::fs::rename(src, &isolated).map_err(|error| io_error_to_backend_error(error, src))?;
-    let outcome = if symlink_identity(&isolated).ok() == Some(identity) {
-        move_isolated_symlink_across_devices(&isolated, dest, remove_source)
-    } else {
-        Err(BackendError::Filesystem {
-            message: "Move source changed before isolation.".to_string(),
-        })
-    };
-    if let Err(error) = outcome {
-        if let Err(restore) = rename_without_replacement(&isolated, src) {
-            let recovery = quarantine.keep();
-            return Err(BackendError::Filesystem {
-                message: format!(
-                    "{error} Source preserved at '{}' because restoration failed: {restore}",
-                    recovery.join("entry").display()
-                ),
-            });
-        }
-        return Err(error);
-    }
-    Ok(())
-}
-
-fn move_isolated_symlink_across_devices(
-    src: &Path,
-    dest: &Path,
-    remove_source: impl FnOnce(&Path) -> std::io::Result<()>,
-) -> Result<(), BackendError> {
-    let target = std::fs::read_link(src).map_err(|error| io_error_to_backend_error(error, src))?;
-    let parent = dest
-        .parent()
-        .ok_or_else(|| BackendError::FilesystemInvalidPath {
-            message: "Move destination has no parent".to_string(),
-        })?;
-    let staging = tempfile::Builder::new()
-        .prefix(".macro-move-")
-        .tempdir_in(parent)
-        .map_err(|error| io_error_to_backend_error(error, parent))?;
-    let staged = staging.path().join("link");
-    // Creation is exclusive: never overwrite a destination we could not restore.
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&target, &staged)
-        .map_err(|error| io_error_to_backend_error(error, dest))?;
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::FileTypeExt;
-        let is_directory_link = std::fs::symlink_metadata(src)
-            .map_err(|error| io_error_to_backend_error(error, src))?
-            .file_type()
-            .is_symlink_dir();
-        let result = if is_directory_link {
-            std::os::windows::fs::symlink_dir(&target, &staged)
-        } else {
-            std::os::windows::fs::symlink_file(&target, &staged)
-        };
-        result.map_err(|error| io_error_to_backend_error(error, dest))?;
-    }
-    let published_identity = symlink_identity(&staged)?;
-    rename_without_replacement(&staged, dest)
-        .map_err(|error| io_error_to_backend_error(error, dest))?;
-    if let Err(error) = remove_source(src) {
-        rollback_published_symlink(dest, published_identity).map_err(|rollback| {
-            BackendError::Filesystem {
-                message: format!("Move source removal failed: {error}. {rollback}"),
-            }
-        })?;
-        return Err(io_error_to_backend_error(error, src));
-    }
-    Ok(())
-}
-
-async fn move_symlink_after_rename_error(
-    src: &Path,
-    dest: &Path,
-    rename_error: std::io::Error,
-) -> Result<(), BackendError> {
-    if rename_error.kind() != std::io::ErrorKind::CrossesDevices {
-        return Err(io_error_to_backend_error(rename_error, src));
-    }
-    let src = src.to_path_buf();
-    let dest = dest.to_path_buf();
-    tokio::task::spawn_blocking(move || move_symlink_across_devices(&src, &dest, remove_symlink))
-        .await
-        .map_err(capability_task_error)?
-}
-
-pub(crate) async fn move_native_path_internal(
-    workspace: &Path,
-    src: &str,
-    dest: &str,
-) -> Result<(), BackendError> {
-    let src_path = PathBuf::from(src);
-    let dest_path = PathBuf::from(dest);
-
-    validate_path(&src_path, workspace)?;
-    let lexical_src = if src_path.is_absolute() {
-        src_path
-    } else {
-        workspace.join(src_path)
-    };
-    let parent = lexical_src
-        .parent()
-        .ok_or_else(|| BackendError::FilesystemInvalidPath {
-            message: "Move source has no parent".to_string(),
-        })?;
-    let validated_parent = validate_path(parent, workspace)?;
-    let name = lexical_src
-        .file_name()
-        .ok_or_else(|| BackendError::FilesystemInvalidPath {
-            message: "Move source has no filename".to_string(),
-        })?;
-    let validated_src = validated_parent.join(name);
-    let source_is_symlink = tokio::fs::symlink_metadata(&validated_src)
-        .await
-        .map_err(|error| io_error_to_backend_error(error, &validated_src))?
-        .is_symlink();
-    let validated_dest = validate_path_for_write(&dest_path, &workspace)?;
-    private_profile::check_tree(&validated_src)?;
-    private_profile::check_tree(&validated_dest)?;
-
-    // Try atomic rename first
-    match tokio::fs::rename(&validated_src, &validated_dest).await {
-        Ok(_) => {
-            tracing::info!(
-                operation = "fs_move",
-                src = %validated_src.display(),
-                dest = %validated_dest.display(),
-                method = "rename",
-                "File moved successfully (atomic rename)"
-            );
-            Ok(())
-        }
-        Err(rename_err) => {
-            if source_is_symlink {
-                return move_symlink_after_rename_error(
-                    &validated_src,
-                    &validated_dest,
-                    rename_err,
-                )
-                .await;
-            }
-            // Rename failed (likely cross-filesystem), fallback to copy + delete
-            tracing::debug!("Rename failed, falling back to copy+delete: {}", rename_err);
-
-            // Ensure parent of destination exists
-            if let Some(parent) = validated_dest.parent() {
-                if !parent.exists() {
-                    tokio::fs::create_dir_all(parent)
-                        .await
-                        .map_err(|e| io_error_to_backend_error(e, parent))?;
-                }
-            }
-
-            // Copy file
-            tokio::fs::copy(&validated_src, &validated_dest)
-                .await
-                .map_err(|e| io_error_to_backend_error(e, &validated_src))?;
-
-            // Delete source
-            let src_metadata = tokio::fs::metadata(&validated_src)
-                .await
-                .map_err(|e| io_error_to_backend_error(e, &validated_src))?;
-            if src_metadata.is_dir() {
-                tokio::fs::remove_dir_all(&validated_src)
-                    .await
-                    .map_err(|e| io_error_to_backend_error(e, &validated_src))?;
-            } else {
-                tokio::fs::remove_file(&validated_src)
-                    .await
-                    .map_err(|e| io_error_to_backend_error(e, &validated_src))?;
-            }
-
-            tracing::info!(
-                operation = "fs_move",
-                src = %validated_src.display(),
-                dest = %validated_dest.display(),
-                method = "copy_delete",
-                "File moved successfully (copy+delete fallback)"
-            );
-
-            Ok(())
-        }
     }
 }
 
@@ -3545,129 +3107,6 @@ mod tests {
                 "file"
             );
         }
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn local_files_move_preserves_alias_targets() {
-        let workspace = setup_empty_workspace();
-        fs::write(workspace.path().join("target.txt"), "retained").unwrap();
-        fs::create_dir(workspace.path().join("folder")).unwrap();
-        for target in ["target.txt", "folder"] {
-            let alias = format!("{target}-alias");
-            let moved = format!("{target}-moved");
-            std::os::unix::fs::symlink(target, workspace.path().join(&alias)).unwrap();
-            move_native_path_internal(workspace.path(), &alias, &moved)
-                .await
-                .unwrap();
-            assert!(workspace.path().join(target).exists());
-            assert_eq!(
-                fs::read_link(workspace.path().join(moved)).unwrap(),
-                PathBuf::from(target)
-            );
-            assert!(fs::symlink_metadata(workspace.path().join(alias)).is_err());
-        }
-        move_native_path_internal(workspace.path(), "target.txt", "regular.txt")
-            .await
-            .unwrap();
-        assert_eq!(
-            fs::read_to_string(workspace.path().join("regular.txt")).unwrap(),
-            "retained"
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn local_files_cross_device_move_recreates_aliases_and_keeps_source_on_failure() {
-        let workspace = setup_empty_workspace();
-        fs::write(workspace.path().join("target.txt"), "retained").unwrap();
-        fs::create_dir(workspace.path().join("folder")).unwrap();
-        for target in ["target.txt", "folder"] {
-            let src = workspace.path().join(format!("{target}-alias"));
-            let dest = workspace.path().join(format!("{target}-moved"));
-            std::os::unix::fs::symlink(target, &src).unwrap();
-            move_symlink_after_rename_error(&src, &dest, std::io::ErrorKind::CrossesDevices.into())
-                .await
-                .unwrap();
-            assert_eq!(fs::read_link(&dest).unwrap(), PathBuf::from(target));
-            assert!(fs::symlink_metadata(&src).is_err());
-            assert!(workspace.path().join(target).exists());
-        }
-        assert_eq!(
-            fs::read_to_string(workspace.path().join("target.txt")).unwrap(),
-            "retained"
-        );
-
-        let src = workspace.path().join("retained-alias");
-        std::os::unix::fs::symlink("target.txt", &src).unwrap();
-        let dest = workspace.path().join("occupied");
-        fs::create_dir(&dest).unwrap();
-        fs::write(dest.join("untouched.txt"), "retained").unwrap();
-        assert!(move_symlink_after_rename_error(
-            &src,
-            &dest,
-            std::io::ErrorKind::CrossesDevices.into()
-        )
-        .await
-        .is_err());
-        assert_eq!(fs::read_link(&src).unwrap(), PathBuf::from("target.txt"));
-        assert_eq!(
-            fs::read_to_string(dest.join("untouched.txt")).unwrap(),
-            "retained"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn local_files_cross_device_move_rolls_back_failed_source_removal() {
-        let workspace = setup_empty_workspace();
-        fs::write(workspace.path().join("target.txt"), "retained").unwrap();
-        let src = workspace.path().join("alias");
-        let dest = workspace.path().join("destination");
-        std::os::unix::fs::symlink("target.txt", &src).unwrap();
-        let result = move_symlink_across_devices(&src, &dest, |_| {
-            Err(std::io::ErrorKind::PermissionDenied.into())
-        });
-        assert!(result.is_err());
-        assert!(fs::symlink_metadata(&dest).is_err());
-        assert_eq!(fs::read_link(&src).unwrap(), PathBuf::from("target.txt"));
-        assert_eq!(
-            fs::read_to_string(workspace.path().join("target.txt")).unwrap(),
-            "retained"
-        );
-
-        let result = move_symlink_across_devices(&src, &dest, |_| {
-            fs::rename(&dest, workspace.path().join("old-alias"))?;
-            fs::write(&dest, "concurrent content")?;
-            Err(std::io::ErrorKind::PermissionDenied.into())
-        });
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Destination changed"));
-        assert_eq!(fs::read_to_string(&dest).unwrap(), "concurrent content");
-        assert_eq!(fs::read_link(&src).unwrap(), PathBuf::from("target.txt"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn local_files_cross_device_move_preserves_new_entry_at_original_source_path() {
-        let workspace = setup_empty_workspace();
-        fs::write(workspace.path().join("target.txt"), "retained").unwrap();
-        let src = workspace.path().join("alias");
-        let dest = workspace.path().join("destination");
-        std::os::unix::fs::symlink("target.txt", &src).unwrap();
-        move_symlink_across_devices(&src, &dest, |isolated| {
-            fs::write(&src, "new source entry")?;
-            remove_symlink(isolated)
-        })
-        .unwrap();
-        assert_eq!(fs::read_to_string(&src).unwrap(), "new source entry");
-        assert_eq!(fs::read_link(&dest).unwrap(), PathBuf::from("target.txt"));
-        assert_eq!(
-            fs::read_to_string(workspace.path().join("target.txt")).unwrap(),
-            "retained"
-        );
     }
 
     #[test]
@@ -4062,10 +3501,12 @@ mod tests {
         assert!(replaced.workspace_identity.is_some());
         assert_ne!(original.workspace_identity, replaced.workspace_identity);
         assert_eq!(original.revision, replaced.revision);
-        let unconfined = read_file_internal(&workspace, path, Some(true))
+        // The legacy outside-workspace flag no longer widens access: the read
+        // stays confined to its root and still attests that root.
+        let flagged = read_file_internal(&workspace, path, Some(true))
             .await
             .unwrap();
-        assert_eq!(unconfined.workspace_identity, None);
+        assert_eq!(flagged.workspace_identity, replaced.workspace_identity);
     }
 
     #[cfg(windows)]
@@ -4830,8 +4271,8 @@ mod tests {
         let mut write = tokio::spawn(async move {
             write_file_with_workspace_capability(
                 &write_workspace,
-                &write_path,
                 "guarded.txt",
+                &write_path,
                 b"updated",
                 Some(true),
                 Some(&revision),
@@ -4869,8 +4310,8 @@ mod tests {
         let mut write = tokio::spawn(async move {
             write_file_with_workspace_capability(
                 &write_workspace,
-                &write_path,
                 "new.txt",
+                &write_path,
                 b"created",
                 Some(true),
                 Some(EXPECTED_REVISION_ABSENT),
@@ -4952,8 +4393,8 @@ mod tests {
         let mut first = tokio::spawn(async move {
             write_file_with_workspace_capability(
                 &first_workspace,
-                &first_path,
                 "guarded.txt",
+                &first_path,
                 b"first",
                 Some(true),
                 Some(&first_revision),
@@ -4974,8 +4415,8 @@ mod tests {
         let mut second = tokio::spawn(async move {
             write_file_with_workspace_capability(
                 &second_workspace,
-                &second_path,
                 "guarded.txt",
+                &second_path,
                 b"second",
                 Some(true),
                 Some(&second_revision),
@@ -5181,7 +4622,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn test_write_rejects_parent_replaced_by_external_symlink_after_validation() {
+    async fn test_write_uses_the_checked_parent_when_it_is_replaced_by_an_external_symlink() {
         use std::os::unix::fs::symlink;
 
         let workspace = setup_empty_workspace();
@@ -5221,8 +4662,17 @@ mod tests {
         symlink(outside.path(), &parent).expect("replace parent with external symlink");
         release.wait().await;
 
-        assert!(write.await.expect("write task").is_err());
+        // The write publishes through the parent handle that was checked, so
+        // it lands in the moved original directory and never follows the link.
+        write
+            .await
+            .expect("write task")
+            .expect("write through checked parent");
         assert!(!outside.path().join("guarded.txt").exists());
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("parent-original/guarded.txt")).unwrap(),
+            "must stay confined"
+        );
     }
 
     #[cfg(unix)]
@@ -5293,7 +4743,7 @@ mod tests {
         );
 
         let result = list_dir_internal(
-            workspace.path(),
+            selected.path(),
             selected.path().to_string_lossy().into_owned(),
             Some(true),
             None,
@@ -5320,7 +4770,7 @@ mod tests {
                 }
             }
             let entries = list_dir_internal(
-                workspace.path(),
+                selected.path(),
                 selected.path().to_string_lossy().into_owned(),
                 Some(true),
                 Some(true),
@@ -5599,80 +5049,4 @@ mod tests {
             Err(BackendError::FilesystemNotFound { .. })
         ));
     }
-}
-
-pub async fn create_dir_internal(
-    workspace: &Path,
-    effective_path: String,
-    recursive: Option<bool>,
-) -> Result<(), BackendError> {
-    let workspace_string = workspace.to_string_lossy();
-    if let Some(wsl_workspace) = parse_wsl_unc_path(&workspace_string) {
-        return create_wsl_dir_internal(&wsl_workspace, effective_path, recursive).await;
-    }
-    let path_buf = PathBuf::from(&effective_path);
-    let validated_path = validate_path_for_write(&path_buf, &workspace)?;
-
-    let should_recurse = recursive.unwrap_or(true);
-    if should_recurse {
-        tokio::fs::create_dir_all(&validated_path)
-            .await
-            .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
-    } else {
-        tokio::fs::create_dir(&validated_path)
-            .await
-            .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
-    }
-
-    Ok(())
-}
-pub async fn copy_path_internal(
-    workspace: &Path,
-    src_effective: String,
-    dest_effective: String,
-) -> Result<u64, BackendError> {
-    let workspace_string = workspace.to_string_lossy();
-    if let Some(wsl_workspace) = parse_wsl_unc_path(&workspace_string) {
-        return copy_wsl_path_internal(&wsl_workspace, src_effective, dest_effective).await;
-    }
-    let src_path = PathBuf::from(&src_effective);
-    let dest_path = PathBuf::from(&dest_effective);
-
-    let validated_src = validate_path(&src_path, &workspace)?;
-    let validated_dest = validate_path_for_write(&dest_path, &workspace)?;
-
-    // Ensure parent of destination exists
-    if let Some(parent) = validated_dest.parent() {
-        if !parent.exists() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| io_error_to_backend_error(e, parent))?;
-        }
-    }
-
-    let bytes_copied = tokio::fs::copy(&validated_src, &validated_dest)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, &validated_src))?;
-
-    // Audit logging
-    tracing::info!(
-        operation = "fs_copy",
-        src = %validated_src.display(),
-        dest = %validated_dest.display(),
-        bytes_copied = bytes_copied,
-        "File copied successfully"
-    );
-
-    Ok(bytes_copied)
-}
-pub async fn move_path_internal(
-    workspace: &Path,
-    src_effective: String,
-    dest_effective: String,
-) -> Result<(), BackendError> {
-    let workspace_string = workspace.to_string_lossy();
-    if let Some(wsl_workspace) = parse_wsl_unc_path(&workspace_string) {
-        return move_wsl_path_internal(&wsl_workspace, src_effective, dest_effective).await;
-    }
-    move_native_path_internal(&workspace, &src_effective, &dest_effective).await
 }

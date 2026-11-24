@@ -500,7 +500,6 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
             files.delete(k);
         return;
       }
-      case 'fs_create_dir': return;
       case 'fs_exists': return files.has(fileKey(args)) || listFiles(string(args.path)).length > 0;
       case 'fs_list_dir': return listFiles(string(args.path));
       case 'fs_stat': return { path: args.path, is_file: files.has(fileKey(args)), is_dir: !files.has(fileKey(args)), size: files.get(fileKey(args))?.length ?? 0, modified: DEMO_DATE };

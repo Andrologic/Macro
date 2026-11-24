@@ -2103,7 +2103,8 @@ async fn agsdl_policy_checks_the_actual_target_after_symlink_parent_normalizatio
         fs::write(root.join(path), "original\n").unwrap();
     }
     let raw = "alias/link/../file.txt";
-    // Demonstrate the validator/executor discrepancy that the policy must cover.
+    // The OS resolves `..` after the link physically; the write validator and
+    // the confined executor now name that same target instead of the lexical one.
     assert_eq!(
         root.join(raw).canonicalize().unwrap(),
         root.join("other/file.txt")
@@ -2111,7 +2112,7 @@ async fn agsdl_policy_checks_the_actual_target_after_symlink_parent_normalizatio
     let validated = crate::fs::validate_path_for_write(std::path::Path::new(raw), &root).unwrap();
     assert_eq!(
         validated.canonicalize().unwrap(),
-        root.join("secret/file.txt")
+        root.join("other/file.txt")
     );
     let invoke = |tool: &str, args: serde_json::Value, permissions: serde_json::Value| {
         let roots = Arc::new(std::collections::BTreeMap::from([(
@@ -2138,11 +2139,17 @@ async fn agsdl_policy_checks_the_actual_target_after_symlink_parent_normalizatio
     .await
     .unwrap();
     assert_eq!(
-        fs::read_to_string(root.join("secret/file.txt")).unwrap(),
+        fs::read_to_string(root.join("other/file.txt")).unwrap(),
         "positive control\n"
     );
-    fs::write(root.join("secret/file.txt"), "original\n").unwrap();
-    let rules = json!({"writeRules":[{"action":"write","effect":"deny","match":"secret/**"}]});
+    assert_eq!(
+        fs::read_to_string(root.join("secret/file.txt")).unwrap(),
+        "original\n"
+    );
+    fs::write(root.join("other/file.txt"), "original\n").unwrap();
+    // The rule names the physical target the executor writes; the policy must
+    // match it even though the raw spelling goes through `alias/` (`secret/`).
+    let rules = json!({"writeRules":[{"action":"write","effect":"deny","match":"other/**"}]});
     for (tool, args) in [
         ("write", json!({"path":raw,"content":"changed"})),
         (
