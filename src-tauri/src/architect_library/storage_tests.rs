@@ -1375,3 +1375,48 @@ async fn managed_reads_and_publication_refuse_existing_buckets_below_symlinked_a
     fs::rename(outside, temp.path().join("architect-library/blueprints")).unwrap();
     assert!(storage.open_archive(&version).is_ok());
 }
+
+#[test]
+fn the_dry_run_names_agents_no_step_of_the_flow_reaches() {
+    use super::storage::editor::reach_diagnostics;
+    use argentic_runtime::source::OpenedSource;
+
+    let agent = json!({ "harness": "codex", "permissions": "read-only" });
+    let step = |agent: &str| json!({ "type": "agent", "agent": agent });
+    let reach = |document: Value| {
+        let temp = tempfile::tempdir().unwrap();
+        let mut manifest = json!({
+            "projectFormat": "agsdl-project-1", "contract": "agsdl-0.4.0", "id": "system", "title": "System",
+        });
+        manifest.as_object_mut().unwrap().extend(document.as_object().unwrap().clone());
+        fs::write(temp.path().join("agsdl.json"), manifest.to_string()).unwrap();
+        let source = OpenedSource::open_path(temp.path()).unwrap();
+        let reach = super::preview::flow_reach(&source).unwrap();
+        reach_diagnostics(&reach)
+            .into_iter()
+            .map(|diagnostic| (diagnostic.code, diagnostic.pointer))
+            .collect::<Vec<_>>()
+    };
+    let flow = |name: &str| json!({ "entry": "run", "steps": { "run": step(name) } });
+
+    // A system whose only agent is not in the flow passes validation: the dry run still says so.
+    assert_eq!(
+        reach(json!({ "agents": { "reviewer": agent, "writer": agent }, "flow": flow("writer") })),
+        [("AGENT_NOT_REACHED".to_owned(), "/agents/reviewer".to_owned())]
+    );
+    assert_eq!(
+        reach(json!({
+            "agents": { "reviewer": agent },
+            "flow": { "entry": "run", "steps": { "run": { "type": "call", "command": "true" } } },
+        })),
+        [("NO_AGENT_REACHED".to_owned(), "/flow".to_owned())]
+    );
+    // No flow at all: nothing is reached either.
+    assert_eq!(
+        reach(json!({ "agents": { "reviewer": agent } })),
+        [("NO_AGENT_REACHED".to_owned(), "/flow".to_owned())]
+    );
+    // Silent when every agent is reached, and when no agent is declared.
+    assert!(reach(json!({ "agents": { "writer": agent }, "flow": flow("writer") })).is_empty());
+    assert!(reach(json!({ "agents": {} })).is_empty());
+}

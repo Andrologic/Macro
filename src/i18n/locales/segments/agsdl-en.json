@@ -167,7 +167,14 @@
     "chooseSystem": "Choose a system",
     "recheckReason": "Check again to continue.",
     "chooseSystemReason": "Choose a system to start.",
-    "noSystemMatch": "No system matches your search."
+    "noSystemMatch": "No system matches your search.",
+    "reach": {
+      "noneTitle": "No agent will run",
+      "none": "This version declares agents, but its flow never hands work to them: launching it would not run any agent. Only the author of the system can change this, in Architect.",
+      "someTitle_one": "{{count}} agent will not run",
+      "someTitle_other": "{{count}} agents will not run",
+      "some": "The flow never hands work to: {{names}}. Only the author of the system can change this, in Architect."
+    }
   },
   "library": {
     "reservedMcpSecret": "This project declares a reserved MCP secret name. Rename it in the secrets requirements.",
@@ -1788,7 +1795,15 @@
       "warnings_other": "{{count}} warnings, nothing blocks the save",
       "reasonChecking": "Check in progress…",
       "reasonBlocked": "Fix the points above first.",
-      "done": "Version {{number}} saved"
+      "done": "Version {{number}} saved",
+      "reach": {
+        "noneTitle": "No agent is reached by the flow",
+        "none": "This system declares agents, but no step of its flow hands work to them. Saved like this, launching it would not run any agent.",
+        "someTitle_one": "{{count}} agent is not reached by the flow",
+        "someTitle_other": "{{count}} agents are not reached by the flow",
+        "some": "These agents will never run, unless a step of the flow hands work to them: {{names}}.",
+        "open": "Open the flow"
+      }
     },
     "tree": {
       "title": "Library",

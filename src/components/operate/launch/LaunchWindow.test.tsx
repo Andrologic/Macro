@@ -564,3 +564,38 @@ it("keeps the version it was opened for: no picker, the check starts at once", a
   expect(calls.filter(call => call.command === "architect_launch_prepare")).toHaveLength(1);
   expect(primary().disabled).toBe(false);
 });
+
+/** An agent as the launch check describes it. */
+const reviewerAgent = (patch: Partial<LaunchPreview["permissions"]["agents"][string]> = {}): LaunchPreview["permissions"]["agents"][string] => ({
+  usage: "reachable", harness: "codex", harnessVersion: null, model: null, mcpServers: ["issues"], completionCheck: null,
+  permissions: { preset: "read-only", directories: {}, outside: null, reviewer: null, rules: [] }, ...patch,
+});
+
+const only = (patch: Partial<LaunchPreview["permissions"]["agents"][string]>) => ({ ...preview().permissions, agents: { writer: reviewerAgent({ mcpServers: [], model: { name: "gpt-5.2", effort: null }, ...patch }) } });
+
+it.each([
+  ["declared but absent from the flow", "declaredOnly"],
+  ["declared in a system that has no flow", "unknown"],
+] as const)("warns before launching, and again in consent, when the only agent is %s", async (_name, usage) => {
+  install(() => preview({ consentToken: "review", permissions: only({ usage }) }));
+  await show();
+  const warning = dialog().querySelector('section[aria-label="No agent will run"]')!;
+  expect(warning.textContent).toContain("never hands work to them: launching it would not run any agent");
+  expect(primary().disabled).toBe(false);
+  await click(primary());
+  // Consent keeps the warning, and lists no engine or model for an agent that will not run.
+  expect(dialog().querySelector('section[aria-label="No agent will run"]')).not.toBeNull();
+  expect(dialog().textContent).not.toContain("Codex");
+  expect(dialog().textContent).not.toContain("gpt-5.2");
+});
+
+it("names the agents a flow does not reach when others do take part, and stays silent when all are reached", async () => {
+  const permissions = { ...preview().permissions, agents: { writer: reviewerAgent({ mcpServers: [] }), spare: reviewerAgent({ mcpServers: [], usage: "declaredOnly" }) } };
+  install(() => preview({ permissions }));
+  await show();
+  expect(dialog().querySelector('section[aria-label="1 agent will not run"]')?.textContent).toContain("never hands work to: spare");
+  view.unmount();
+  install(() => preview({ permissions: { ...permissions, agents: { writer: permissions.agents.writer } } }));
+  await show();
+  expect(dialog().textContent).not.toContain("will not run");
+});

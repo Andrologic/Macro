@@ -147,6 +147,27 @@ pub struct PreviewWarning {
     pub location: Location,
 }
 
+/// What the flow does not reach, read the way the launch preview reads it: the agents a system
+/// declares, and which of them no step of the flow (or of a composition it calls) hands work to.
+/// A system without a flow reaches none. Argentic reports a step that cannot be reached, but not
+/// an agent that no step uses: this is the same reading as `Usage`, so both views agree.
+pub(crate) struct FlowReach {
+    pub declared: Vec<String>,
+    pub unreached: Vec<String>,
+}
+
+pub(crate) fn flow_reach(source: &OpenedSource) -> Result<FlowReach> {
+    let doc: Value = serde_json::from_str(source.authored_json())?;
+    let (reached, _) = reachable(&doc);
+    let declared: Vec<String> = fields(&doc["agents"]).map(|(id, _)| id.clone()).collect();
+    let unreached = declared
+        .iter()
+        .filter(|id| !reached.contains(id.as_str()))
+        .cloned()
+        .collect();
+    Ok(FlowReach { declared, unreached })
+}
+
 pub(crate) fn inspect(
     source: &OpenedSource,
     package_format: &'static str,

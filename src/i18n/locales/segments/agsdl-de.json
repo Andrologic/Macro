@@ -167,7 +167,14 @@
     "chooseSystem": "System auswählen",
     "recheckReason": "Prüfen Sie erneut, um fortzufahren.",
     "chooseSystemReason": "Wählen Sie ein System zum Starten.",
-    "noSystemMatch": "Kein System passt zu Ihrer Suche."
+    "noSystemMatch": "Kein System passt zu Ihrer Suche.",
+    "reach": {
+      "noneTitle": "Kein Agent wird ausgeführt",
+      "none": "Diese Version deklariert Agenten, aber ihr Ablauf übergibt ihnen nie Arbeit: Ein Start würde keinen Agenten ausführen. Nur der Autor des Systems kann das in Architect ändern.",
+      "someTitle_one": "{{count}} Agent wird nicht ausgeführt",
+      "someTitle_other": "{{count}} Agenten werden nicht ausgeführt",
+      "some": "Der Ablauf übergibt nie Arbeit an: {{names}}. Nur der Autor des Systems kann das in Architect ändern."
+    }
   },
   "library": {
     "reservedMcpSecret": "Dieses Projekt deklariert einen reservierten MCP-Geheimnisnamen. Benenne ihn in der Datei für erforderliche Geheimnisse um.",
@@ -1788,7 +1795,15 @@
       "warnings_other": "{{count}} Warnungen, nichts blockiert das Speichern",
       "reasonChecking": "Prüfung läuft…",
       "reasonBlocked": "Beheben Sie zuerst die obigen Punkte.",
-      "done": "Version {{number}} gespeichert"
+      "done": "Version {{number}} gespeichert",
+      "reach": {
+        "noneTitle": "Der Ablauf erreicht keinen Agenten",
+        "none": "Dieses System deklariert Agenten, aber kein Schritt seines Ablaufs übergibt ihnen Arbeit. So gespeichert, würde ein Start keinen Agenten ausführen.",
+        "someTitle_one": "{{count}} Agent wird vom Ablauf nicht erreicht",
+        "someTitle_other": "{{count}} Agenten werden vom Ablauf nicht erreicht",
+        "some": "Diese Agenten werden nie ausgeführt, solange kein Schritt des Ablaufs ihnen Arbeit übergibt: {{names}}.",
+        "open": "Ablauf öffnen"
+      }
     },
     "tree": {
       "title": "Bibliothek",

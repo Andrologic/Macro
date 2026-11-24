@@ -19,6 +19,7 @@ import { notify } from "../ui/toastService";
 import { LaunchChecklist, ModelRow, SecretRow, pendingCount } from "./launch/LaunchChecklist";
 import { LaunchConsent } from "./launch/LaunchConsent";
 import { LaunchMcpDetails, LaunchMcpNotes, LaunchMcpSettings } from "./launch/LaunchMcpDetails";
+import { LaunchReach } from "./launch/LaunchReach";
 import { LaunchSummary } from "./launch/LaunchSummary";
 import { comboboxClass, failureCode, failureText, isFolderFailure, isRecheckFailure, selectClass } from "./launch/launchModel";
 
@@ -311,6 +312,7 @@ export default function ArchitectLaunchDialog({ initialVersion }: { initialVersi
         </div>}
       </LaunchSummary>}
       {version && !current && !problem && <div role="status" className="space-y-2"><Skeleton className="h-8" /></div>}
+      {current && <LaunchReach preview={current} />}
       {current && <LaunchMcpSettings preview={current} disabled={busy || checking} onChange={setMcpSettings} />}
       {current && <LaunchChecklist preview={current} overrides={modelOverrides} folderConfirmed={folderConfirmed} disabled={busy} checking={checking}
         onOverride={override} onChooseFolder={() => void chooseFolder()}

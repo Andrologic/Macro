@@ -167,7 +167,14 @@
     "chooseSystem": "Elegir un sistema",
     "recheckReason": "Vuelva a comprobar para continuar.",
     "chooseSystemReason": "Elija un sistema para iniciar.",
-    "noSystemMatch": "Ningún sistema coincide con su búsqueda."
+    "noSystemMatch": "Ningún sistema coincide con su búsqueda.",
+    "reach": {
+      "noneTitle": "Ningún agente se ejecutará",
+      "none": "Esta versión declara agentes, pero su flujo nunca les encarga trabajo: lanzarla no ejecutaría ningún agente. Solo el autor del sistema puede cambiarlo, en Architect.",
+      "someTitle_one": "{{count}} agente no se ejecutará",
+      "someTitle_other": "{{count}} agentes no se ejecutarán",
+      "some": "El flujo nunca encarga trabajo a: {{names}}. Solo el autor del sistema puede cambiarlo, en Architect."
+    }
   },
   "library": {
     "reservedMcpSecret": "Este proyecto declara un nombre de secreto MCP reservado. Cámbialo en el archivo de secretos requeridos.",
@@ -1788,7 +1795,15 @@
       "warnings_other": "{{count}} advertencias, nada bloquea el guardado",
       "reasonChecking": "Comprobación en curso…",
       "reasonBlocked": "Corrija primero los puntos anteriores.",
-      "done": "Versión {{number}} guardada"
+      "done": "Versión {{number}} guardada",
+      "reach": {
+        "noneTitle": "El flujo no llega a ningún agente",
+        "none": "Este sistema declara agentes, pero ningún paso de su flujo les encarga trabajo. Guardado así, al lanzarlo no se ejecutaría ningún agente.",
+        "someTitle_one": "El flujo no llega a {{count}} agente",
+        "someTitle_other": "El flujo no llega a {{count}} agentes",
+        "some": "Estos agentes no se ejecutarán nunca mientras ningún paso del flujo les encargue trabajo: {{names}}.",
+        "open": "Abrir el flujo"
+      }
     },
     "tree": {
       "title": "Biblioteca",

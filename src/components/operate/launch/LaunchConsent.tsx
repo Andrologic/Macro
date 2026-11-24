@@ -6,6 +6,7 @@ import { InfoBlock } from "../../architect/ArchitectDialogShell";
 import { PermissionSummary } from "../../architect/PermissionSummary";
 import { Icon } from "../../ui/Icon";
 import { LaunchMcpDetails, mcpServersInUse } from "./LaunchMcpDetails";
+import { LaunchReach } from "./LaunchReach";
 import { interpreterEnvironment } from "./launchModel";
 
 /**
@@ -22,8 +23,12 @@ export function LaunchConsent({ preview }: { preview: LaunchPreview }) {
   const localToolsInUse = [...usedServers].some(id => permissions.mcpServers[id]?.transport.type === "local");
   const effective: typeof permissions = {
     ...permissions,
+    // An agent the flow never reaches asks for nothing: no engine, no model, no permission is listed for it.
     agents: Object.fromEntries(Object.entries(permissions.agents)
-      .map(([id, agent]) => [id, { ...agent, mcpServers: agent.mcpServers.filter(server => preview.agentMcp[id]?.[server]?.equipped) }])),
+      .map(([id, agent]) => [id, {
+        ...agent, usage: agent.usage === "reachable" ? agent.usage : "declaredOnly" as const,
+        mcpServers: agent.mcpServers.filter(server => preview.agentMcp[id]?.[server]?.equipped),
+      }])),
     mcpServers: Object.fromEntries(Object.entries(permissions.mcpServers).filter(([id]) => usedServers.has(id))),
     directCalls: permissions.directCalls.flatMap(call => {
       if (call.target.type === "shell") return [call];
@@ -38,6 +43,7 @@ export function LaunchConsent({ preview }: { preview: LaunchPreview }) {
   const addresses = permissions.externalReferences.filter(reference => reference.kind !== "mcpEndpoint" && reference.usage !== "declaredOnly");
   return <div className="space-y-3">
     <InfoBlock icon={<Info size={13} />}><p className="!m-0">{t("agsdl.launch.consentIntro")}</p></InfoBlock>
+    <LaunchReach preview={preview} />
     <PermissionSummary source={effective} sections={["permissions", "engines"]} />
     <LaunchMcpDetails preview={preview} expanded />
     {checks.length > 0 && <section aria-label={t("agsdl.launch.checksTitle")}>

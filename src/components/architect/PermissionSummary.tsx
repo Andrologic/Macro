@@ -26,6 +26,12 @@ export function PermissionSummary({ source, sections = ["permissions", "engines"
   const capabilityText = ({ id, subject, remote }: Capability) => id === "useTool"
     ? t(remote ? "agsdl.architect.permissions.useRemoteTool" : "agsdl.architect.permissions.useTool", { name: subject })
     : t(`agsdl.architect.permissions.cap.${id}`, { subject });
+  // One line per engine: two agents on the same engine read "Codex (model a, b)", not "Codex · Codex (model a)".
+  const models = new Map<string, string[]>();
+  for (const { harness, model: name } of model.engines) models.set(harness, [...models.get(harness) ?? [], ...name ? [name] : []]);
+  const engineLines = [...models].map(([harness, names]) => names.length
+    ? t("agsdl.architect.permissions.engineModel", { engine: engineNames[harness] ?? harness, model: names.join(", ") })
+    : engineNames[harness] ?? harness);
   const prepare: ReactNode[] = [];
   if (model.secrets.some(secret => secret.requested)) prepare.push(<li key="secrets" className="space-y-0.5">
     {model.secrets.filter(secret => secret.requested).map(secret => <Line key={`${secret.server}/${secret.name}`} icon={<KeyRound size={13} />}>
@@ -57,9 +63,7 @@ export function PermissionSummary({ source, sections = ["permissions", "engines"
     </section>}
     {sections.includes("engines") && model.engines.length > 0 && <section aria-label={t("agsdl.architect.permissions.engines")}>
       <Heading>{t("agsdl.architect.permissions.engines")}</Heading>
-      <p className="!m-0">{model.engines.map(engine => engine.model
-        ? t("agsdl.architect.permissions.engineModel", { engine: engineNames[engine.harness] ?? engine.harness, model: engine.model })
-        : engineNames[engine.harness] ?? engine.harness).join(" · ")}</p>
+      <p className="!m-0">{engineLines.join(" · ")}</p>
       <p className="!m-0 text-[11px] text-muted-foreground">{t("agsdl.architect.permissions.enginesHint")}</p>
     </section>}
     {sections.includes("prepare") && <section aria-label={t("agsdl.architect.permissions.prepare")}>

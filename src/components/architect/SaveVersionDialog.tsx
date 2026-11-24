@@ -4,6 +4,7 @@ import { readDocument } from "../../services/agsdl/document";
 import { diagnosticIssue, issueView, parseUpgradeDetails, type IssueView, type ItemIssue } from "../../services/agsdl/itemIssues";
 import { AgsdlUserError } from "../../services/agsdl/userErrors";
 import { architectLibrary } from "../../services/ipc/architectLibrary";
+import { projectSettings } from "../../stores/agsdl/projectEdits";
 import { agsdlSessionKey, useAgsdlStore } from "../../stores/useAgsdlStore";
 import { useArchitectLaunchStore } from "../../stores/useArchitectLaunchStore";
 import { useArchitectLibraryStore } from "../../stores/useArchitectLibraryStore";
@@ -19,9 +20,15 @@ import { useDraftMatchesVersion } from "./useDraftMatchesVersion";
 type Check =
   | { status: "checking" }
   /** `blocking` issues stop the save. `warnings` never do. */
-  | { status: "done"; blocking: ItemIssue[]; warnings: ItemIssue[] }
+  | { status: "done"; blocking: ItemIssue[]; warnings: ItemIssue[]; reach: Reach }
   /** No dry run exists for this draft. The save itself still reports what is wrong. */
   | { status: "unavailable" };
+
+/** What the flow does not reach, as the dry run reports it: the same reading the launch window uses. */
+interface Reach { none: boolean; agents: string[]; technical: string[] }
+const noReach: Reach = { none: false, agents: [], technical: [] };
+const reachCodes = ["NO_AGENT_REACHED", "AGENT_NOT_REACHED"];
+const unescapePointer = (part: string) => part.replace(/~1/g, "/").replace(/~0/g, "~");
 
 const legacyContract = (source: string | undefined) => {
   try { return !!source && readDocument(source).contract === "agsdl-0.3.0"; } catch { return false; }
@@ -56,6 +63,7 @@ export function SaveVersionDialog({ blueprintId, onClose, onShow }: {
   const session = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]);
   const versions = useArchitectLibraryStore(state => state.versions);
   const draftName = useArchitectLibraryStore(state => state.draft?.name ?? "");
+  const agentNames = session?.project ? projectSettings(session.project).agentNames : undefined;
   const [note, setNote] = useState("");
   const [check, setCheck] = useState<Check>({ status: "checking" });
   const [busy, setBusy] = useState(false);
@@ -75,8 +83,16 @@ export function SaveVersionDialog({ blueprintId, onClose, onShow }: {
     setCheck({ status: "checking" });
     architectLibrary.validateDraft(blueprintId, revision, pending).then(view => {
       if (!active) return;
-      const issues = view.diagnostics.map(diagnosticIssue);
-      setCheck(view.projection ? { status: "done", blocking: [], warnings: issues } : { status: "done", blocking: issues, warnings: [] });
+      if (!view.projection) { setCheck({ status: "done", blocking: view.diagnostics.map(diagnosticIssue), warnings: [], reach: noReach }); return; }
+      const unreached = view.diagnostics.filter(diagnostic => reachCodes.includes(diagnostic.code));
+      setCheck({
+        status: "done", blocking: [], reach: {
+          none: unreached.some(diagnostic => diagnostic.code === "NO_AGENT_REACHED"),
+          agents: unreached.filter(diagnostic => diagnostic.code === "AGENT_NOT_REACHED").map(diagnostic => unescapePointer(diagnostic.pointer.split("/")[2] ?? "")),
+          technical: unreached.map(diagnostic => [diagnostic.code, diagnostic.pointer, diagnostic.message].join(" · ")),
+        },
+        warnings: view.diagnostics.filter(diagnostic => !reachCodes.includes(diagnostic.code)).map(diagnosticIssue),
+      });
     }).catch(() => { if (active) setCheck({ status: "unavailable" }); });
     return () => { active = false; };
   }, [blueprintId, revision, pending]);
@@ -134,6 +150,19 @@ export function SaveVersionDialog({ blueprintId, onClose, onShow }: {
       <p className="!m-0 font-medium text-red-500">{issuesTitle}</p>
       <p className="!mb-1">{t("agsdl.architect.saveVersion.issueCount", { count: shown.length })}</p>
       <ItemIssueList issues={shown} onShow={onShow && (view => { onClose(); onShow(view); })} />
+    </div>}
+    {check.status === "done" && (check.reach.none || check.reach.agents.length > 0) && <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2">
+      <p className="!m-0 flex items-center gap-2 font-medium text-amber-500"><Icon name="triangle-alert" size={13} />
+        {check.reach.none ? t("agsdl.architect.saveVersion.reach.noneTitle") : t("agsdl.architect.saveVersion.reach.someTitle", { count: check.reach.agents.length })}</p>
+      <p className="!m-0 !mt-1 break-words">{check.reach.none ? t("agsdl.architect.saveVersion.reach.none")
+        : t("agsdl.architect.saveVersion.reach.some", { names: check.reach.agents.map(id => agentNames?.[id] ?? id).join(", ") })}</p>
+      <div className="!mt-1 flex items-baseline gap-3">
+        {onShow && <button type="button" className="agsdl-link" onClick={() => { onClose(); onShow("flow"); }}>{t("agsdl.architect.saveVersion.reach.open")}</button>}
+      </div>
+      <details className="agsdl-details !mt-1 !border-0 !pt-0">
+        <DisclosureSummary>{t("agsdl.viewer.technicalDetails")}</DisclosureSummary>
+        <ul className="space-y-1 font-mono text-[11px]">{check.reach.technical.map((line, index) => <li key={index} className="break-words">{line}</li>)}</ul>
+      </details>
     </div>}
     {check.status === "done" && check.warnings.length > 0 && <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2">
       <p className="!m-0 flex items-center gap-2 font-medium text-amber-500"><Icon name="triangle-alert" size={13} />{t("agsdl.architect.saveVersion.warnings", { count: check.warnings.length })}</p>

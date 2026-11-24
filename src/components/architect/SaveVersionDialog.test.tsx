@@ -113,6 +113,32 @@ it("lists warnings without blocking the save", async () => {
   expect(primary().disabled).toBe(false);
 });
 
+it("warns, without blocking, when no agent is reached by the flow, and says it before the version exists", async () => {
+  const diagnostic = { code: "NO_AGENT_REACHED", file: null, pointer: "/flow", message: "No step of the flow hands work to any declared agent" };
+  validation = () => projectViewFixture(modern, { diagnostics: [diagnostic] });
+  const shown: string[] = [];
+  open(modern, projectViewFixture(modern));
+  await mount(view => shown.push(view));
+  expect(dialogText()).toContain("No agent is reached by the flow");
+  expect(dialogText()).toContain("launching it would not run any agent");
+  expect(primary().disabled).toBe(false);
+  // It is a warning of its own, not a line of the generic list, and the code stays on demand.
+  expect(dialogText()).not.toContain("warning, nothing blocks the save");
+  expect(dialogText()).toContain("NO_AGENT_REACHED · /flow");
+  await click(byText("button", "Open the flow"));
+  expect(shown).toEqual(["flow"]);
+});
+
+it("names the agents the flow does not reach by the name their author gave them", async () => {
+  const diagnostics = ["relecteur", "a~1b"].map(id => ({ code: "AGENT_NOT_REACHED", file: null, pointer: `/agents/${id}`, message: `No step of the flow hands work to agent '${id}'` }));
+  validation = () => projectViewFixture(modern, { diagnostics });
+  open(modern, projectViewFixture(modern, { settings: { ...projectViewFixture(modern).settings, agentNames: { relecteur: "Relecteur" } } }));
+  await mount();
+  expect(dialogText()).toContain("2 agents are not reached by the flow");
+  expect(dialogText()).toContain("Relecteur, a/b");
+  expect(primary().disabled).toBe(false);
+});
+
 it("tells an older-format system it will be converted, without a dry run for it", async () => {
   open(legacy);
   await mount();

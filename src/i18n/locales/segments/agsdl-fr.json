@@ -167,7 +167,14 @@
     "chooseSystem": "Choisir un système",
     "recheckReason": "Revérifiez pour continuer.",
     "chooseSystemReason": "Choisissez un système à lancer.",
-    "noSystemMatch": "Aucun système ne correspond à votre recherche."
+    "noSystemMatch": "Aucun système ne correspond à votre recherche.",
+    "reach": {
+      "noneTitle": "Aucun agent ne travaillera",
+      "none": "Cette version déclare des agents, mais son flow ne leur confie jamais de travail : la lancer ne ferait travailler aucun agent. Seul l’auteur du système peut le modifier, dans Architect.",
+      "someTitle_one": "{{count}} agent ne travaillera pas",
+      "someTitle_other": "{{count}} agents ne travailleront pas",
+      "some": "Le flow ne confie jamais de travail à : {{names}}. Seul l’auteur du système peut le modifier, dans Architect."
+    }
   },
   "library": {
     "reservedMcpSecret": "Ce projet déclare un nom de secret MCP réservé. Renommez-le dans le fichier des secrets requis.",
@@ -1788,7 +1795,15 @@
       "warnings_other": "{{count}} avertissements, rien ne bloque l’enregistrement",
       "reasonChecking": "Vérification en cours…",
       "reasonBlocked": "Corrigez d’abord les points ci-dessus.",
-      "done": "Version {{number}} enregistrée"
+      "done": "Version {{number}} enregistrée",
+      "reach": {
+        "noneTitle": "Aucun agent n’est atteint par le flow",
+        "none": "Ce système déclare des agents, mais aucune étape de son flow ne leur confie de travail. Enregistré ainsi, son lancement ne ferait travailler aucun agent.",
+        "someTitle_one": "{{count}} agent n’est pas atteint par le flow",
+        "someTitle_other": "{{count}} agents ne sont pas atteints par le flow",
+        "some": "Ces agents ne travailleront jamais, tant qu’une étape du flow ne leur confie pas de travail : {{names}}.",
+        "open": "Ouvrir le flow"
+      }
     },
     "tree": {
       "title": "Bibliothèque",

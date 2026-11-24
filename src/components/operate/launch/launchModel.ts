@@ -121,3 +121,11 @@ export const selectClass = "!rounded-md !px-2 !py-1 !text-xs";
 
 /** The searchable picker in the same dense size as the selects. */
 export const comboboxClass = "!rounded-md !py-1 !pl-2 !text-xs";
+
+type PreviewAgents = LaunchPreview["permissions"]["agents"];
+
+/** Agents the flow hands work to, and those it never reaches. A system without a flow reaches none. */
+export function flowReach(agents: PreviewAgents): { declared: string[]; unreached: string[] } {
+  const declared = Object.keys(agents);
+  return { declared, unreached: declared.filter(id => agents[id].usage !== "reachable") };
+}

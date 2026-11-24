@@ -174,6 +174,11 @@ impl Storage {
         if let Ok(source) = &source {
             authoring.accept_restored_files(source)?;
         }
+        // A dry run also says what will not take part once the version runs. It never blocks.
+        let reach = match (&source, save) {
+            (Ok(source), false) => Some(super::super::preview::flow_reach(source)?),
+            _ => None,
+        };
         let mut view = ProjectView::folder_from_source(
             editor::disk_inventory(&root)?,
             expected,
@@ -182,6 +187,10 @@ impl Storage {
             source,
         )?;
         if !save {
+            if view.projection.is_some() {
+                view.diagnostics
+                    .extend(reach.iter().flat_map(reach_diagnostics));
+            }
             return Ok(view);
         }
         sidecars(stage.path(), &view.settings, &authoring)?;
@@ -419,5 +428,38 @@ impl Storage {
         }
         let (settings, _) = read_sidecars(&self.checked_artifact_path(&artifact)?)?;
         Ok(settings.hidden_agent_ids)
+    }
+}
+
+/// Warnings for agents the flow does not reach. One for the whole system when none is reached.
+pub(crate) fn reach_diagnostics(reach: &super::super::preview::FlowReach) -> Vec<Diagnostic> {
+    let pointer = |id: &str| format!("/agents/{}", id.replace('~', "~0").replace('/', "~1"));
+    let warning = |code: &str, pointer: String, message: String| Diagnostic {
+        code: code.into(),
+        file: None,
+        pointer,
+        message,
+        source: None,
+    };
+    if reach.declared.is_empty() {
+        Vec::new()
+    } else if reach.unreached.len() == reach.declared.len() {
+        vec![warning(
+            "NO_AGENT_REACHED",
+            "/flow".into(),
+            "No step of the flow hands work to any declared agent".into(),
+        )]
+    } else {
+        reach
+            .unreached
+            .iter()
+            .map(|id| {
+                warning(
+                    "AGENT_NOT_REACHED",
+                    pointer(id),
+                    format!("No step of the flow hands work to agent '{id}'"),
+                )
+            })
+            .collect()
     }
 }
