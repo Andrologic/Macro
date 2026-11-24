@@ -925,7 +925,7 @@ fn invalid_name(error: &io::Error) -> bool {
     #[cfg(unix)]
     return matches!(
         error.raw_os_error(),
-        Some(libc::ENAMETOOLONG | libc::EINVAL)
+        Some(libc::ENAMETOOLONG | libc::EINVAL | libc::EILSEQ)
     );
     #[cfg(windows)]
     {
@@ -934,6 +934,12 @@ fn invalid_name(error: &io::Error) -> bool {
             code == ERROR_FILENAME_EXCED_RANGE as i32 || code == ERROR_INVALID_NAME as i32
         });
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn invalid_name_includes_rejected_filename_encoding() {
+    assert!(invalid_name(&io::Error::from_raw_os_error(libc::EILSEQ)));
 }
 
 pub(super) fn apply_working(

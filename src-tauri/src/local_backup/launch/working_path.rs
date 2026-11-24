@@ -50,10 +50,14 @@ impl Encoding {
                 {
                     return Err("Unsafe native launch path component".into());
                 }
-                #[cfg(unix)]
+                #[cfg(all(unix, not(target_os = "macos")))]
                 {
                     use std::os::unix::ffi::OsStringExt;
                     Ok(Some(OsString::from_vec(bytes)))
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    Ok(String::from_utf8(bytes).ok().map(OsString::from))
                 }
                 #[cfg(windows)]
                 Ok(String::from_utf8(bytes)
@@ -283,6 +287,23 @@ mod tests {
         for name in ["report-1230.txt", "a-long~1.md", ".env", "café.txt"] {
             assert!(windows_name(name), "{name:?}");
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_import_skips_non_utf8_unix_names() {
+        assert_eq!(
+            Encoding::UnixBytes
+                .component(&URL_SAFE_NO_PAD.encode(b"non-utf8-\xff.txt"))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            Encoding::UnixBytes
+                .component(&URL_SAFE_NO_PAD.encode("café.txt"))
+                .unwrap(),
+            Some(OsString::from("café.txt"))
+        );
     }
 }
 
