@@ -96,7 +96,9 @@ impl Entry {
 }
 
 fn streamed_name(name: &str) -> bool {
-    DATABASE_ENTRIES.contains(&name) || architect_artifact_prefix(name).is_some()
+    DATABASE_ENTRIES.contains(&name)
+        || architect_artifact_prefix(name).is_some()
+        || super::launch::file(name)
 }
 
 pub(super) fn stage(

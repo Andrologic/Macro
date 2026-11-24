@@ -982,6 +982,7 @@ async fn generated_profile_recovers_from_io_faults_and_process_death() {
     let marker = RestoreJournal {
         preserved: format!("preserved-{}.zip", uuid::Uuid::new_v4()),
         phase: RestorePhase::Rollback,
+        launch: launch::SnapshotRollback::default(),
     };
     let mut total = 0;
     for &(mode, point, nth, default_action) in FAULT_POINTS {
@@ -1140,6 +1141,7 @@ fn restore_space_check_counts_preservation_and_both_volumes() {
             version: 0,
             app_version: String::new(),
             files,
+            launch: None,
             browser: BTreeMap::new(),
             browser_sha256: String::new(),
         }
@@ -1454,4 +1456,262 @@ async fn profile_scale() {
         "500×10, {} byte envelopes, {} byte ZIP: migration {migration:?}, export capture {capture_time:?}, export validation {validate_time:?}, restore input validation {load:?}, restore startup {restore:?}",
         document.len(), fs::metadata(path).unwrap().len()
     );
+}
+
+struct LaunchFixture {
+    folder: PathBuf,
+    snapshot: PathBuf,
+    scope: argentic_runtime::api::RuntimeProjectionScope030,
+}
+
+impl Drop for LaunchFixture {
+    fn drop(&mut self) {
+        let _ = crate::architect_launch::resources::remove_snapshot(&self.snapshot);
+    }
+}
+
+async fn seed_launch_resources(data: &Path, config: &Path, label: &str) -> LaunchFixture {
+    use crate::architect_launch::resources;
+    let source = tempfile::tempdir().unwrap();
+    let document = serde_json::json!({
+        "projectFormat": "agsdl-project-1", "contract": "agsdl-0.4.0", "id": label,
+        "agents": {"worker": {"harness": "codex", "permissions": "read-only"}}
+    })
+    .to_string();
+    fs::write(source.path().join("agsdl.json"), &document).unwrap();
+    let deep_member = source.path().join("a/".repeat(33)).join("notes.txt");
+    fs::create_dir_all(deep_member.parent().unwrap()).unwrap();
+    fs::write(&deep_member, "retained notes").unwrap();
+    let _lease = resources::launch_lease(config).await.unwrap();
+    let owner = resources::reserve_backup_owner(data, config).unwrap();
+    let folder = data
+        .canonicalize()
+        .unwrap()
+        .join(resources::WORKING_FOLDERS)
+        .join(&owner)
+        .join("run-fixture");
+    create_private_root(&folder.join("empty")).unwrap();
+    private_write(&folder.join("result.sh"), label.as_bytes(), true);
+    let source = argentic_runtime::source::OpenedSource::open_path(source.path()).unwrap();
+    let retained = source.retain(config).unwrap();
+    let mut bound = serde_json::json!({});
+    retained.bind_scope(&mut bound).unwrap();
+    let snapshot_id = bound["projectSnapshot"].as_str().unwrap();
+    let snapshot = config.join(resources::SNAPSHOTS).join(snapshot_id);
+    resources::register_backup_snapshot(snapshot.parent().unwrap(), snapshot_id, &owner).unwrap();
+    resources::seal_snapshot_tree(&snapshot).unwrap();
+
+    let scope = argentic_runtime::api::RuntimeProjectionScope030 {
+        system_start_id: format!("backup-{label}"),
+        snapshot_id: format!("capture-{label}"),
+        source: crate::db::agsdl_execution::dto::EngineSourceRevision {
+            owner: crate::db::agsdl_execution::dto::EngineSourceOwner {
+                project_id: "project".into(),
+                plan_id: BLUEPRINT.into(),
+                branch: "main".into(),
+            },
+            revision: "1".into(),
+            source_sha256: hash(document.as_bytes()),
+        },
+    };
+    let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
+    sqlx::query("INSERT INTO engine_flow030_runs VALUES (?, 'invocation', ?, 'epoch', ?, '{}', '{\"verdict\":\"succeeded\"}')")
+        .bind(&scope.system_start_id).bind(&scope.snapshot_id).bind(serde_json::to_string(&scope.source).unwrap())
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO engine_start030_requests VALUES (?, '{}', ?, 'invocation', ?, 'epoch', '{}', '{}')")
+        .bind(&scope.system_start_id).bind(&scope.system_start_id).bind(&scope.snapshot_id)
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO architect_launch_runs VALUES (?, ?, 1, ?, ?, ?, 1, '{}')")
+        .bind(&scope.system_start_id)
+        .bind(BLUEPRINT)
+        .bind(snapshot_id)
+        .bind(label)
+        .bind(folder.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    LaunchFixture {
+        folder,
+        snapshot,
+        scope,
+    }
+}
+
+async fn launch_profile(label: &str) -> (tempfile::TempDir, PathBuf, PathBuf, LaunchFixture) {
+    let (temp, data, config) = tests::profile().await;
+    let bytes = envelope(BTreeMap::new());
+    seed(&data, &[(BLUEPRINT, &bytes)]).await;
+    open_and_migrate(&data).await.unwrap().close().await;
+    let fixture = seed_launch_resources(&data, &config, label).await;
+    (temp, data, config, fixture)
+}
+
+#[tokio::test]
+async fn backup_restores_a_deleted_runs_owned_resources() {
+    let (temp, data, config, fixture) = launch_profile("original").await;
+    let external = temp.path().join("chosen");
+    create_private_root(&external).unwrap();
+    private_write(&external.join("outside.txt"), b"user data", false);
+    let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
+    sqlx::query("INSERT INTO engine_flow030_runs VALUES ('external', 'external', 'external', 'epoch', '{}', '{}', '{\"verdict\":\"succeeded\"}')")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO engine_start030_requests VALUES ('external', '{}', 'external', 'external', 'external', 'epoch', '{}', '{}')")
+        .execute(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO architect_launch_runs
+        SELECT 'external',blueprint_id,number,retained_snapshot_id,NULL,?,0,'{}'
+        FROM architect_launch_runs WHERE system_id=?",
+    )
+    .bind(external.to_str().unwrap())
+    .bind(&fixture.scope.system_start_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&external, fixture.folder.join("outside-link")).unwrap();
+
+    let backup = temp.path().join("export.zip");
+    queue_export(&data, &backup);
+    process_startup(&data, &config).await.unwrap();
+    let archive = bundle::load(&backup).unwrap();
+    assert!(archive
+        .files
+        .keys()
+        .all(|name| !name.ends_with("outside.txt")));
+    assert!(archive
+        .files
+        .iter()
+        .any(|(name, entry)| name.ends_with("/result.sh") && entry.native.is_some()));
+    sqlx::query("DELETE FROM architect_launch_runs WHERE system_id='external'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    crate::architect_launch::delete_run(&pool, &data, &config, fixture.scope.clone())
+        .await
+        .unwrap();
+    assert!(!fixture.folder.exists() && !fixture.snapshot.exists());
+    pool.close().await;
+
+    tests::queue_restore(&data, &archive);
+    process_startup(&data, &config).await.unwrap();
+    assert_eq!(
+        status_code(&data.join("local-backup")),
+        Some(BackupStatusCode::Restored)
+    );
+    assert_eq!(
+        fs::read(fixture.folder.join("result.sh")).unwrap(),
+        b"original"
+    );
+    assert!(fixture.folder.join("empty").is_dir());
+    assert!(fixture.snapshot.join("files.json").is_file());
+    #[cfg(unix)]
+    assert_eq!(
+        fs::read_link(fixture.folder.join("outside-link")).unwrap(),
+        external
+    );
+    assert_eq!(
+        fs::read(external.join("outside.txt")).unwrap(),
+        b"user data"
+    );
+    let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
+    let chosen = crate::architect_launch::read_folder(&pool, "external")
+        .await
+        .unwrap();
+    assert_eq!(Path::new(&chosen), external);
+    sqlx::query("DELETE FROM architect_launch_runs WHERE system_id='external'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    crate::architect_launch::delete_run(&pool, &data, &config, fixture.scope.clone())
+        .await
+        .unwrap();
+    assert!(!fixture.snapshot.exists() && !fixture.folder.exists());
+    assert!(external.is_dir());
+
+    let (_destination, other_data, other_config) = tests::profile().await;
+    tests::queue_restore(&other_data, &archive);
+    process_startup(&other_data, &other_config).await.unwrap();
+    assert_eq!(
+        status_code(&other_data.join("local-backup")),
+        Some(BackupStatusCode::Restored)
+    );
+    let other_pool = db::create_pool(&other_data.join("macro.db")).await.unwrap();
+    let relocated = PathBuf::from(
+        crate::architect_launch::read_folder(&other_pool, &fixture.scope.system_start_id)
+            .await
+            .unwrap(),
+    );
+    assert!(relocated.starts_with(other_data.canonicalize().unwrap()));
+    assert_eq!(fs::read(relocated.join("result.sh")).unwrap(), b"original");
+    let other_snapshot = other_config
+        .join(crate::architect_launch::resources::SNAPSHOTS)
+        .join(fixture.snapshot.file_name().unwrap());
+    assert!(other_snapshot.join("files.json").is_file());
+    sqlx::query("DELETE FROM architect_launch_runs WHERE system_id='external'")
+        .execute(&other_pool)
+        .await
+        .unwrap();
+    crate::architect_launch::delete_run(
+        &other_pool,
+        &other_data,
+        &other_config,
+        fixture.scope.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(!relocated.exists() && !other_snapshot.exists());
+}
+
+#[tokio::test]
+async fn launch_resources_roll_back_with_the_profile_after_io_failure_or_process_death() {
+    let (_incoming_temp, incoming_data, incoming_config, incoming) =
+        launch_profile("incoming").await;
+    let archive = capture(&incoming_data, &incoming_config, BTreeMap::new(), true)
+        .await
+        .unwrap();
+    for (point, action) in [
+        ("rename:/agsdl-snapshots/", "crash"),
+        ("write:/agsdl-working-folders/", "crash"),
+        ("write:/agsdl-working-folders/", "EIO"),
+    ] {
+        let (_temp, data, config, original) = launch_profile("original").await;
+        let incoming_snapshot = config
+            .join(crate::architect_launch::resources::SNAPSHOTS)
+            .join(incoming.snapshot.file_name().unwrap());
+        tests::queue_restore(&data, &archive);
+        run_fault(&data, &config, "restore", point, action, 1).await;
+        process_startup(&data, &config).await.unwrap();
+        assert!(
+            !data.join("local-backup/restoring.json").exists(),
+            "{point}/{action}"
+        );
+        assert!(!incoming_snapshot.exists(), "{point}/{action}");
+        assert!(
+            original.snapshot.join("files.json").is_file(),
+            "{point}/{action}"
+        );
+        assert_eq!(
+            fs::read(original.folder.join("result.sh")).unwrap(),
+            b"original",
+            "{point}/{action}"
+        );
+        assert!(original.folder.join("empty").is_dir(), "{point}/{action}");
+        let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
+        assert_eq!(
+            crate::architect_launch::read_folder(&pool, &original.scope.system_start_id)
+                .await
+                .unwrap(),
+            original.folder.to_str().unwrap(),
+            "{point}/{action}"
+        );
+        assert!(
+            crate::architect_launch::read_folder(&pool, &incoming.scope.system_start_id)
+                .await
+                .is_err(),
+            "{point}/{action}"
+        );
+        pool.close().await;
+        assert_staging_empty(&data);
+    }
 }

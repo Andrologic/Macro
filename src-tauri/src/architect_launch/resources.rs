@@ -4,8 +4,8 @@ use std::{fs, io};
 use tempfile::TempDir;
 use walkdir::WalkDir;
 
-const SNAPSHOTS: &str = "agsdl-snapshots";
-const WORKING_FOLDERS: &str = "agsdl-working-folders";
+pub(crate) const SNAPSHOTS: &str = "agsdl-snapshots";
+pub(crate) const WORKING_FOLDERS: &str = "agsdl-working-folders";
 
 fn storage_failure() -> crate::db::agsdl_execution::dto::EngineFailure {
     failure(
@@ -16,7 +16,7 @@ fn storage_failure() -> crate::db::agsdl_execution::dto::EngineFailure {
 }
 
 // Serialize changes to retained ownership with admission and startup cleanup.
-pub(super) async fn launch_lease(host_root: &Path) -> Result<File> {
+pub(crate) async fn launch_lease(host_root: &Path) -> Result<File> {
     let path = host_root.join(".agsdl-snapshot-lifetime.lock");
     tokio::task::spawn_blocking(move || {
         let mut options = fs::OpenOptions::new();
@@ -77,11 +77,7 @@ pub(super) async fn database_owner(pool: &SqlitePool, host: &Path) -> Result<Dat
             .fetch_optional(pool)
             .await?;
     let registry = host.join(".agsdl-database-owners.json");
-    let mut owners: Vec<DatabaseOwner> = match fs::read(&registry) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| storage_failure())?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(_) => return Err(storage_failure()),
-    };
+    let mut owners = read_registry(&registry)?;
     let index = owners
         .iter()
         .position(|entry| entry.path == path)
@@ -136,6 +132,77 @@ pub(super) async fn database_owner(pool: &SqlitePool, host: &Path) -> Result<Dat
     Ok(owner)
 }
 
+fn read_registry(path: &Path) -> Result<Vec<DatabaseOwner>> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| storage_failure()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(_) => Err(storage_failure()),
+    }
+}
+
+/// Reserve the destination profile's existing key before the restore writes
+/// its replacement database. Startup fills in the new file identity.
+pub(crate) fn reserve_backup_owner(data: &Path, host: &Path) -> Result<String> {
+    let path = data
+        .canonicalize()
+        .map_err(|_| storage_failure())?
+        .join("macro.db");
+    let registry = host.join(".agsdl-database-owners.json");
+    let mut owners = read_registry(&registry)?;
+    if let Some(owner) = owners.iter().find(|owner| owner.path == path) {
+        return Ok(owner.key.clone());
+    }
+    let id = uuid::Uuid::new_v4();
+    let key = ownership_key(&path, &id.to_string());
+    owners.push(DatabaseOwner {
+        id,
+        path,
+        identity: String::new(),
+        key: key.clone(),
+        legacy_key: key.clone(),
+    });
+    write_json(host, &registry, &owners).map_err(|_| storage_failure())?;
+    Ok(key)
+}
+
+pub(crate) fn backup_snapshot_needs_owner(root: &Path, id: &str, owner: &str) -> io::Result<bool> {
+    let path = root.join(format!("{id}.owners.json"));
+    Ok(snapshot_owners(&path)?.is_some_and(|owners| !owners.contains(owner)))
+}
+
+/// Called under the launch lease before publishing a restored snapshot.
+pub(crate) fn register_backup_snapshot(root: &Path, id: &str, owner: &str) -> io::Result<()> {
+    let path = root.join(format!("{id}.owners.json"));
+    let mut owners = snapshot_owners(&path)?.unwrap_or_default();
+    if owners.insert(owner.to_owned()) {
+        write_json(root, &path, &owners)?;
+    }
+    Ok(())
+}
+
+/// Undo ownership acquired to publish a new snapshot during restore. Another
+/// profile may have claimed it after the restoring process died.
+pub(crate) fn rollback_backup_snapshot(root: &Path, id: &str, owner: &str) -> io::Result<()> {
+    let path = root.join(format!("{id}.owners.json"));
+    let Some(mut owners) = snapshot_owners(&path)? else {
+        return Ok(());
+    };
+    if !owners.remove(owner) {
+        return Ok(());
+    }
+    if owners.is_empty() {
+        match remove_snapshot(&root.join(id)) {
+            Ok(()) => (),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error),
+        }
+        crate::fs::profile::remove_file(&path)?;
+        crate::fs::profile::sync_directory(root)
+    } else {
+        write_json(root, &path, &owners)
+    }
+}
+
 fn managed_root(data: &Path, name: &str, create: bool) -> io::Result<Option<PathBuf>> {
     let path = data.canonicalize()?.join(name);
     if create {
@@ -166,7 +233,7 @@ pub(super) fn new_working_folder(data: &Path, database: &str) -> Result<TempDir>
         .map_err(|_| storage_failure())
 }
 
-fn snapshot_id(name: &str) -> bool {
+pub(crate) fn snapshot_id(name: &str) -> bool {
     name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
@@ -233,6 +300,10 @@ pub(super) fn seal_snapshot(project: &Path, workspace: &Path) -> Result<()> {
             "Workspace overlaps private archive storage",
         ));
     }
+    seal_snapshot_tree(snapshot)
+}
+
+pub(crate) fn seal_snapshot_tree(snapshot: &Path) -> Result<()> {
     for item in WalkDir::new(snapshot)
         .contents_first(true)
         .follow_root_links(false)
@@ -266,7 +337,7 @@ pub(super) fn seal_snapshot(project: &Path, workspace: &Path) -> Result<()> {
 }
 
 /// Called with the exclusive launch lease by startup and run deletion.
-pub(super) fn remove_snapshot(path: &Path) -> io::Result<()> {
+pub(crate) fn remove_snapshot(path: &Path) -> io::Result<()> {
     for item in WalkDir::new(path).follow_root_links(false) {
         let item = item?;
         if item.file_type().is_symlink() {
