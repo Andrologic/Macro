@@ -1,9 +1,9 @@
 // File System Commands
 // This module contains the desktop FS command surface.
 
+use super::confined::{self, ConfinedDir, ConfinedRoot, Located};
 use crate::core::error::{io_error_to_backend_error, BackendError};
 use crate::core::tool_policy::is_macro_scoped_path;
-use crate::fs::confined::{self, ConfinedDir, ConfinedRoot, Located};
 use crate::fs::dto::{
     DirEntryDto, FileContentDto, FileStatsDto, WorkspaceFileSearchResultDto,
     WorkspaceFileSearchRootDto, WriteResultDto,
