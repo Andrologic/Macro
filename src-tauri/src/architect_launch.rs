@@ -10,6 +10,7 @@ use crate::db::{
     agsdl_execution::{dto::EngineSourceOwner, failure, Result},
     architect_library::VersionKey,
 };
+use crate::secrets::archive_mcp::{self, ArchiveMcpKey};
 use argentic_runtime::{capture::ModelOverride, persistence::dto::EngineSourceRevision};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -304,14 +305,14 @@ impl VersionInput {
         preview.entry_point.is_some() && self.settings.start_message_required.unwrap_or(true)
     }
 
-    fn secret_id(&self, server: &str, name: &str) -> Result<String> {
+    fn secret_id(&self, server: &str, name: &str) -> Result<ArchiveMcpKey> {
         secret_id(&self.key.blueprint_id, &self.origin, server, name)
     }
 }
 
-fn secret_id(blueprint: &str, origin: &str, server: &str, name: &str) -> Result<String> {
+fn secret_id(blueprint: &str, origin: &str, server: &str, name: &str) -> Result<ArchiveMcpKey> {
     let digest = Sha256::digest(serde_json::to_vec(&(blueprint, origin, server, name))?);
-    Ok(format!("architect-launch:{digest:x}"))
+    Ok(ArchiveMcpKey::from_digest(digest.into()))
 }
 
 fn vault_error() -> crate::db::agsdl_execution::dto::EngineFailure {
@@ -571,7 +572,7 @@ fn secret_requirements(
     for (server, names) in &launch_mcp.secrets {
         let remote = launch_mcp.remote.contains_key(server);
         for name in names {
-            let stored = crate::secrets::get_api_key(&input.secret_id(server, name)?)
+            let stored = archive_mcp::get(&input.secret_id(server, name)?)
                 .map_err(|_| vault_error())?
                 .is_some_and(|value| mcp::valid_secret(&value, remote));
             requirements.push(SecretRequirement {
@@ -598,7 +599,7 @@ fn secret_provider(
             .iter()
             .map(|name| {
                 let key = secret_id(&source.owner.plan_id, &origin, server, name).ok()?;
-                let value = crate::secrets::get_api_key(&key).ok()??;
+                let value = archive_mcp::get(&key).ok()??;
                 (!value.is_empty() && !value.contains('\0')).then(|| (name.clone(), value))
             })
             .collect()
@@ -1080,7 +1081,7 @@ pub(crate) async fn set_secret(
             "The secret is not required by this version or has no value",
         ));
     }
-    crate::secrets::set_api_key(&input.secret_id(server, name)?, value).map_err(|_| vault_error())
+    archive_mcp::set(&input.secret_id(server, name)?, value).map_err(|_| vault_error())
 }
 
 #[cfg(test)]

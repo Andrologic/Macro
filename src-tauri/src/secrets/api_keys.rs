@@ -29,6 +29,9 @@ pub fn get_api_key(provider_id: &str) -> Result<Option<String>, SecretError> {
 }
 
 pub fn set_api_key(provider_id: &str, api_key: &str) -> Result<(), SecretError> {
+    if super::archive_mcp::legacy_id(provider_id) {
+        return Err(SecretError::ReservedIdentifier);
+    }
     POLICY.mutation(|store, mut data| {
         data.api_keys
             .insert(provider_id.to_owned(), api_key.to_owned());

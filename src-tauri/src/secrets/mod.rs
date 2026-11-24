@@ -1,4 +1,5 @@
 mod api_keys;
+pub(crate) mod archive_mcp;
 pub(crate) mod blocking;
 mod chatgpt;
 pub(crate) mod policy;

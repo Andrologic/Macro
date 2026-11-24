@@ -143,10 +143,26 @@ fn recognized(value: &Value) -> Result<ProviderSecretsFile, SecretError> {
     if let Some(namespaces) = value.get("namespaces") {
         object_fields(
             namespaces,
-            &["providers", "speech", "mcp", "webSearch", "system"],
+            &[
+                "providers",
+                "speech",
+                "mcp",
+                "webSearch",
+                "system",
+                "archiveMcp",
+            ],
         )?;
-        for map in namespaces.as_object().unwrap().values() {
-            check_map(map)?;
+        for (namespace, map) in namespaces.as_object().unwrap() {
+            if namespace == "archiveMcp" {
+                if !map
+                    .as_object()
+                    .is_some_and(|map| map.values().all(Value::is_string))
+                {
+                    return Err(SecretError::PolicyUnavailable);
+                }
+            } else {
+                check_map(map)?;
+            }
         }
     }
     if let Some(keys) = value.get("api_keys") {
@@ -176,7 +192,12 @@ fn recognized(value: &Value) -> Result<ProviderSecretsFile, SecretError> {
 
 impl ProviderSecretsFile {
     pub(in crate::secrets) fn policy_values(&self) -> Result<Vec<String>, SecretError> {
-        let mut values: Vec<String> = self.api_keys.values().cloned().collect();
+        let mut values: Vec<String> = self
+            .api_keys
+            .values()
+            .chain(self.namespaces.archive_mcp.values())
+            .cloned()
+            .collect();
         for secret in self.chatgpt_sessions.values() {
             values.push(secret.access_token.clone());
             values.push(secret.refresh_token.clone());

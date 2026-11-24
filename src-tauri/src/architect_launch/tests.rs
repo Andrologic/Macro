@@ -1006,7 +1006,7 @@ async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
     let source = input.source_revision();
     assert!(provider(&source, "used", &names).is_none());
     for name in &names {
-        crate::secrets::set_api_key(&input.secret_id("used", name).unwrap(), name).unwrap();
+        archive_mcp::set(&input.secret_id("used", name).unwrap(), name).unwrap();
     }
     assert!(secret_requirements(&input, &servers)
         .unwrap()
@@ -1021,7 +1021,7 @@ async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
         input.secret_id("used", "TOKEN").unwrap(),
         secret_id(&input.key.blueprint_id, r#"["origin",1]"#, "used", "TOKEN").unwrap()
     );
-    crate::secrets::set_api_key(&input.secret_id("used", "TOKEN").unwrap(), "changed").unwrap();
+    archive_mcp::set(&input.secret_id("used", "TOKEN").unwrap(), "changed").unwrap();
     let values = provider(&source, "used", &names).unwrap();
     assert_eq!(
         values,
