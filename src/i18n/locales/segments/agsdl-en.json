@@ -1107,6 +1107,8 @@
     "mcpServer": "MCP server",
     "mcpTool": "Tool",
     "mcpArguments": "Arguments",
+    "showFullArguments": "Show full arguments",
+    "hideFullArguments": "Hide full arguments",
     "planDetails": "Read the full plan",
     "questionDetails": "Read the full question",
     "messageDetails": "Read the exact received message",

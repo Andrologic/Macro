@@ -1107,6 +1107,8 @@
     "mcpServer": "MCP 서버",
     "mcpTool": "도구",
     "mcpArguments": "인수",
+    "showFullArguments": "전체 인수 보기",
+    "hideFullArguments": "전체 인수 숨기기",
     "planDetails": "전체 계획 읽기",
     "questionDetails": "전체 질문 읽기",
     "messageDetails": "수신한 메시지 원문 읽기",

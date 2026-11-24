@@ -3,7 +3,7 @@ import type { HumanContinuation030 } from '../../types/generated/ipc/HumanContin
 import type { HumanPage030 } from '../../types/generated/ipc/HumanPage030';
 import type { PublicHumanRequest030 } from '../../types/generated/ipc/PublicHumanRequest030';
 import type { HumanAnswer030 } from '../../types/generated/ipc/HumanAnswer030';
-import { object, pointerPart, scanSource } from './document';
+import { object, scanSource } from './document';
 
 export type ExecutionHumanRequestView =
   | { kind: 'approval'; title: string; description?: string; message: string; choices: readonly { value: string; label: string }[] }
@@ -29,21 +29,33 @@ export function nativeCommandSummary030(raw: string): { command: string; file: s
   } catch { return null; }
 }
 
-export function nativeMcpSummary030(raw: string): { server: string; tool: string; args: string } | null {
+function visibleControls(text: string): string {
+  return text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, char =>
+    '\\u' + char.codePointAt(0)!.toString(16).padStart(4, '0'));
+}
+
+const MCP_ARGUMENT_PREVIEW_LIMIT = 4096;
+
+export function nativeMcpSummary030(raw: string) {
   try {
     const { tree, bytes, spans } = scanSource(raw, Infinity);
     const request = object(object(tree).nativeRequest);
     if (request.method !== 'mcp/tool/requestApproval') return null;
-    const { server, tool, arguments: args } = object(request.params);
-    const path = '/nativeRequest/params/arguments';
-    const span = spans.get(path);
-    if (typeof server !== 'string' || typeof tool !== 'string' || !span || bytes[span.start] !== '{'.charCodeAt(0)) return null;
-    const decoder = new TextDecoder();
-    const entries = Object.keys(object(args)).map(key => {
-      const value = spans.get(path + '/' + pointerPart(key))!;
-      return '  ' + JSON.stringify(key) + ': ' + decoder.decode(bytes.subarray(value.start, value.end));
-    });
-    return { server, tool, args: entries.length ? '{\n' + entries.join(',\n') + '\n}' : '{}' };
+    const { server, tool } = object(request.params);
+    const span = spans.get('/nativeRequest/params/arguments');
+    if (typeof server !== 'string' || typeof tool !== 'string' || !span || bytes[span.start] !== 123) return null;
+    const previewEnd = Math.min(span.end, span.start + MCP_ARGUMENT_PREVIEW_LIMIT);
+    const preview = visibleControls(new TextDecoder().decode(bytes.subarray(span.start, previewEnd), {
+      stream: previewEnd < span.end,
+    }));
+    const truncated = previewEnd < span.end || preview.length > MCP_ARGUMENT_PREVIEW_LIMIT;
+    return {
+      server: visibleControls(server),
+      tool: visibleControls(tool),
+      preview: preview.slice(0, MCP_ARGUMENT_PREVIEW_LIMIT) + (truncated ? '…' : ''),
+      truncated,
+      fullArguments: () => visibleControls(new TextDecoder().decode(bytes.subarray(span.start, span.end))),
+    };
   } catch { return null; }
 }
 

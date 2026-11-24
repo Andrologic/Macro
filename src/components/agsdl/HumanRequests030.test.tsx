@@ -135,11 +135,28 @@ it('shows exact MCP tool arguments and submits a decision through the native req
   transport.setCurrent(request); await render(ready(request));
   const summary = host.querySelector('[data-native-mcp-summary]')!;
   expect(Array.from(summary.querySelectorAll('dd'), value => value.textContent)).toEqual([
-    'issues', 'lookup', '{\n  "number": 9007199254740993,\n  "filter": {"state":"open"}\n}',
+    'issues', 'lookup', '{"number":9007199254740993,"filter":{"state":"open"}}',
   ]);
   expect(summary.closest('details')).toBeNull();
   await act(async () => host.querySelectorAll<HTMLButtonElement>('form button')[0].click());
   expect(transport.submissions[0].answer).toEqual({ kind: 'decision', decision: 'yes', comment: '' });
+});
+it('mounts large MCP arguments on demand and shows controls as escapes', async () => {
+  const args = JSON.stringify({ value: 'x'.repeat(2 * 1024 * 1024) + '\u202eend-of-argument' });
+  const actionJson = '{"nativeRequest":{"method":"mcp/tool/requestApproval","params":{"server":"issues","tool":"look\\nup","arguments":' + args + '}}}';
+  const request = humanFixture030({ content: { kind: 'actionApproval', title: 'Allow lookup?', actionJson } });
+  await render(ready(request));
+  const summary = host.querySelector('[data-native-mcp-summary]')!;
+  const toggle = summary.querySelector('button')!;
+  expect(summary.textContent).toContain('look\\u000aup');
+  expect(summary.querySelector('pre')!.textContent).toHaveLength(4097);
+  expect(host.textContent).not.toContain('end-of-argument');
+  await act(async () => toggle.click());
+  expect(summary.querySelector('pre')!.textContent).toEndWith('\\u202eend-of-argument"}');
+  await render(ready({ ...request, state: { kind: 'expired', resolution: resolutionFixture030({ reason: 'approvalTimeout', answer: null }) } }));
+  expect(summary.querySelector('pre')).toBeNull();
+  await act(async () => summary.querySelector('button')!.click());
+  expect(summary.querySelector('pre')!.textContent).toEndWith('\\u202eend-of-argument"}');
 });
 it('restores every native terminal reason and response after remount without inventing an answer', async () => {
   const resolution = resolutionFixture030();

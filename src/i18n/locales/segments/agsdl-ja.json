@@ -1107,6 +1107,8 @@
     "mcpServer": "MCP サーバー",
     "mcpTool": "ツール",
     "mcpArguments": "引数",
+    "showFullArguments": "引数の全文を表示",
+    "hideFullArguments": "引数の全文を非表示",
     "planDetails": "計画の全文を読む",
     "questionDetails": "質問の全文を読む",
     "messageDetails": "受信したメッセージの原文を読む",

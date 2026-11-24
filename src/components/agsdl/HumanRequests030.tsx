@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { RunAttestedHumanAnswer030, RunHumanOccurrence030, RunHumanRequest030, RunRead030 } from '../../types/agsdlRunUi030';
 import {
   humanDuration030, humanRemainingMs030, humanRequestKey030, nativeCommandSummary030, nativeMcpSummary030, runHumanView030,
@@ -38,6 +38,25 @@ function AttestedAnswer({ answer }: { answer: RunAttestedHumanAnswer030 }) {
   </div>;
 }
 
+function McpApprovalArguments({ mcp, pending }: {
+  mcp: NonNullable<ReturnType<typeof nativeMcpSummary030>>;
+  pending: boolean;
+}) {
+  const { t } = useAgsdlTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const full = useMemo(() => expanded ? mcp.fullArguments() : null, [expanded, mcp]);
+  const id = useId();
+  return <>
+    {(pending || expanded) && <pre id={id} className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-muted/60 p-2" tabIndex={0}>
+      {full ?? mcp.preview}
+    </pre>}
+    {(!pending || mcp.truncated) && <button type="button" aria-expanded={expanded} aria-controls={pending || expanded ? id : undefined}
+      className="underline" onClick={() => setExpanded(!expanded)}>
+      {t(expanded ? 'agsdl.human030.hideFullArguments' : 'agsdl.human030.showFullArguments')}
+    </button>}
+  </>;
+}
+
 function HumanRequestCard030({ request, client, captureKey, fresh, onOpenRequest, onOpenOccurrence, showOccurrence, suppressNotification, onRequestUpdated }: {
   request: RunHumanRequest030; client: HumanRequestClient030; captureKey?: string; fresh: boolean;
   onOpenRequest: HumanRequests030Props['onOpenRequest'];
@@ -64,11 +83,13 @@ function HumanRequestCard030({ request, client, captureKey, fresh, onOpenRequest
   let storageUnavailable = false;
   try { blocked = client.blocked(request); revisionStale = client.stale(request); } catch { storageUnavailable = true; }
   const content = request.content;
-  const command = content.kind === 'actionApproval' ? nativeCommandSummary030(content.actionJson) : null;
-  const mcp = content.kind === 'actionApproval' ? nativeMcpSummary030(content.actionJson) : null;
+  const actionJson = content.kind === 'actionApproval' ? content.actionJson : null;
+  const mcp = useMemo(() => actionJson === null ? null : nativeMcpSummary030(actionJson), [actionJson]);
+  const command = useMemo(() => actionJson === null || mcp ? null : nativeCommandSummary030(actionJson), [actionJson, mcp]);
   const qualified = content.kind !== 'unclassified' && (content.kind !== 'question' || content.answerContract.kind === 'available');
   const open = request.state.kind === 'open' && fresh && !readFailed && !revisionStale && !blocked && !storageFailed && !storageUnavailable && qualified && !busy;
-  const view = runHumanView030(request, { plan: t('agsdl.human030.plan'), question: t('agsdl.human030.question'), unknown: t('agsdl.human030.unknown') });
+  const details = runHumanView030(request, { plan: t('agsdl.human030.plan'), question: t('agsdl.human030.question'), unknown: t('agsdl.human030.unknown') });
+  const view = mcp ? { ...details, message: '' } : details;
 
   useEffect(() => {
     if (!fresh || request.state.kind !== 'open' || !qualified || suppressNotification?.(request)) return;
@@ -129,14 +150,14 @@ function HumanRequestCard030({ request, client, captureKey, fresh, onOpenRequest
       <dt className="text-muted-foreground">{t('agsdl.human030.mcpServer')}</dt><dd>{mcp.server}</dd>
       <dt className="text-muted-foreground">{t('agsdl.human030.mcpTool')}</dt><dd>{mcp.tool}</dd>
       <dt className="text-muted-foreground">{t('agsdl.human030.mcpArguments')}</dt>
-      <dd><pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-muted/60 p-2" tabIndex={0}>{mcp.args}</pre></dd>
+      <dd><McpApprovalArguments key={`${request.revision}:${state.kind}`} mcp={mcp} pending={state.kind === 'open'} /></dd>
     </dl>}
     {state.kind !== "open" && <details><summary>{t("agsdl.human030.draftHint")}</summary>
       <ExecutionHumanRequest request={view} labels={{ choice: t("agsdl.human030.choice"), comment: t("agsdl.human030.comment"), answer: t("agsdl.human030.answer"), submit: t("agsdl.human030.submit"), approve: t("agsdl.human030.approve"), reject: t("agsdl.human030.reject"), failed: t("agsdl.human030.sendUncertain") }} open={false} onAnswer={send} draft={draft} />
     </details>}
     {state.kind === "open" && <ExecutionHumanRequest request={view} labels={{ choice: t('agsdl.human030.choice'), comment: t('agsdl.human030.comment'), answer: t('agsdl.human030.answer'),
       submit: t('agsdl.human030.submit'), approve: t('agsdl.human030.approve'), reject: t('agsdl.human030.reject'), failed: t('agsdl.human030.sendUncertain'),
-      messageDetails: content.kind === 'flowChoice' ? t('agsdl.human030.messageDetails') : content.kind === 'actionApproval' ? t('agsdl.human030.actionDetails')
+      messageDetails: content.kind === 'flowChoice' ? t('agsdl.human030.messageDetails') : content.kind === 'actionApproval' && !mcp ? t('agsdl.human030.actionDetails')
         : view.kind === 'plan' ? t('agsdl.human030.planDetails') : view.kind === 'question' ? t('agsdl.human030.questionDetails') : undefined }}
       open={open} onAnswer={send} draft={draft} onDraftChange={saveDraft} />}
     {state.kind !== 'open' && (draft.choice !== null || draft.text !== '') && <p className="text-muted-foreground">{t('agsdl.human030.draftHint')}</p>}
