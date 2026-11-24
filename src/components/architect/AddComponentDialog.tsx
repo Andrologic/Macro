@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { localProjectEdit } from "../../stores/agsdl/projectEdits";
+import { localProjectEdit, projectSettings } from "../../stores/agsdl/projectEdits";
 import {
   componentId, emptyNewComponent, planNewComponent, usedComponentIds, validateNewComponent,
   type NewComponentField, type NewComponentForm, type NewComponentKind,
@@ -43,7 +43,11 @@ export function AddComponentDialog({ kind, target, onClose }: { kind: NewCompone
         const current = store.sessions[agsdlSessionKey(target)];
         const next = planNewComponent(kind, form, current.source, !!current.project);
         if (current.project) {
-          await store.applyProjectBatch(target, [...next.files, ...next.changes.map(change => localProjectEdit(current.project!.saved, change))], undefined, current.version);
+          // AgSDL keeps an agent under its identifier only: the name the author typed is Macro's, kept beside the project.
+          const typed = form.name.trim();
+          const settings = kind === "agent" && typed !== next.id
+            ? { agentNames: { ...projectSettings(current.project).agentNames, [next.id]: typed } } : undefined;
+          await store.applyProjectBatch(target, [...next.files, ...next.changes.map(change => localProjectEdit(current.project!.saved, change))], settings, current.version);
         } else await store.edit(target, next.changes, current.version);
         setApplied(true);
       }
@@ -76,7 +80,7 @@ export function AddComponentDialog({ kind, target, onClose }: { kind: NewCompone
         <input value={form.name} autoFocus maxLength={80} disabled={disabled} aria-invalid={shown?.field === "name" || undefined}
           placeholder={t(`agsdl.architect.add.${kind}.namePlaceholder`)} onChange={event => set({ name: event.target.value })} />
         {fieldError("name")}
-        {!shown && id && id !== form.name.trim() && <span className="text-xs text-muted-foreground">{t("agsdl.architect.add.savedAs", { id })}</span>}
+        {!shown && id && id !== form.name.trim() && <span className="text-xs text-muted-foreground">{t(kind === "agent" && project ? "agsdl.architect.add.agentFileName" : "agsdl.architect.add.savedAs", { id })}</span>}
       </label>
       {kind !== "tool" && <label className="agsdl-edit-field">{label("description")}
         <input value={form.description} disabled={disabled} maxLength={200} onChange={event => set({ description: event.target.value })} />

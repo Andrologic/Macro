@@ -18,6 +18,10 @@ use unicode_normalization::UnicodeNormalization;
 pub(crate) struct MacroSettings {
     schema_version: u32,
     pub(super) hidden_agent_ids: Vec<String>,
+    /// Names the author gave agents. AgSDL knows an agent only by its identifier, which also
+    /// names its files: the name is what people read, the identifier is what the files keep.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(super) agent_names: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) entry_message_hint: Option<String>,
     pub(crate) working_folder_mode: WorkingFolderMode,
@@ -40,6 +44,7 @@ impl Default for MacroSettings {
         Self {
             schema_version: 1,
             hidden_agent_ids: Vec::new(),
+            agent_names: BTreeMap::new(),
             entry_message_hint: None,
             working_folder_mode: WorkingFolderMode::PerExecution,
             start_message_required: None,
@@ -68,6 +73,7 @@ impl MacroSettings {
         }
         Self {
             hidden_agent_ids: take(metadata, "hiddenAgentIds").unwrap_or_default(),
+            agent_names: take(metadata, "agentNames").unwrap_or_default(),
             entry_message_hint: take(metadata, "entryMessageHint"),
             working_folder_mode: take(metadata, "workingFolderMode").unwrap_or_default(),
             start_message_required: take(metadata, "startMessageRequired"),
@@ -79,6 +85,9 @@ impl MacroSettings {
     fn for_editor(&self, metadata: &mut BTreeMap<String, Value>) {
         if !self.hidden_agent_ids.is_empty() {
             metadata.insert("hiddenAgentIds".into(), json!(self.hidden_agent_ids));
+        }
+        if !self.agent_names.is_empty() {
+            metadata.insert("agentNames".into(), json!(self.agent_names));
         }
         if let Some(hint) = &self.entry_message_hint {
             metadata.insert("entryMessageHint".into(), json!(hint));

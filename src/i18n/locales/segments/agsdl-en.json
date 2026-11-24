@@ -1932,7 +1932,8 @@
         "saving": "A save is running: try again in a moment.",
         "invalid": "The saved draft cannot be read as a system: fix it first.",
         "unsaved": "Save the draft first: it has changes that are not saved yet."
-      }
+      },
+      "agentFileName": "Its files are named “{{id}}”."
     },
     "launch": {
       "intro": "What the person who launches this system is asked or allowed to set. These are Macro settings: they follow each saved version and are not included in exports.",

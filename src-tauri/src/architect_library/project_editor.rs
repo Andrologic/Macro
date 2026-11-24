@@ -59,11 +59,22 @@ impl FileChange {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SettingsChange {
     hidden_agent_ids: Option<Vec<String>>,
+    /// The whole map of agent names: it replaces the previous one.
+    agent_names: Option<BTreeMap<String, String>>,
     #[serde(default, deserialize_with = "nullable")]
     entry_message_hint: Option<Option<String>>,
     working_folder_mode: Option<super::editor_document::WorkingFolderMode>,
     #[serde(default, deserialize_with = "nullable")]
     start_message_required: Option<Option<bool>>,
+}
+
+/// A name is one line of text for people, at most 80 characters, for an agent identifier of at most 64.
+fn agent_name_fits(id: &str, name: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && !name.trim().is_empty()
+        && name.chars().count() <= 80
+        && !name.chars().any(char::is_control)
 }
 
 fn nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
@@ -101,6 +112,12 @@ impl EditBatch {
         }
         if let Some(settings) = &self.settings {
             size = size.saturating_add(serde_json::to_vec(&settings.hidden_agent_ids)?.len());
+            if let Some(names) = &settings.agent_names {
+                if !names.iter().all(|(id, name)| agent_name_fits(id, name)) {
+                    return Err(Error::Editor("INVALID_AGENT_NAME"));
+                }
+                size = size.saturating_add(serde_json::to_vec(names)?.len());
+            }
             size = size.saturating_add(
                 settings
                     .entry_message_hint
@@ -223,6 +240,10 @@ impl EditBatch {
                 .as_ref()
                 .map(|_| &settings.hidden_agent_ids);
             inverse_size = inverse_size.saturating_add(serde_json::to_vec(&ids)?.len());
+            if patch.agent_names.is_some() {
+                inverse_size =
+                    inverse_size.saturating_add(serde_json::to_vec(&settings.agent_names)?.len());
+            }
             if patch.entry_message_hint.is_some() {
                 inverse_size = inverse_size
                     .saturating_add(settings.entry_message_hint.as_ref().map_or(0, String::len));
@@ -236,6 +257,9 @@ impl EditBatch {
                     .collect::<std::collections::BTreeSet<_>>()
                     .into_iter()
                     .collect();
+            }
+            if let Some(names) = patch.agent_names {
+                settings.agent_names = names;
             }
             if let Some(hint) = patch.entry_message_hint {
                 settings.entry_message_hint = hint;

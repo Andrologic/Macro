@@ -69,13 +69,15 @@ export interface LegacyImportReport {
 export interface MacroProjectSettings {
   schemaVersion: 1;
   hiddenAgentIds: string[];
+  /** Agent identifier → the name its author gave it. AgSDL itself has only the identifier, which also names the files. */
+  agentNames?: Record<string, string>;
   entryMessageHint?: string | null;
   workingFolderMode: "perExecution" | "atLaunch";
   startMessageRequired?: boolean | null;
   launchFields?: unknown;
 }
 
-export type MacroSettingsChange = Partial<Pick<MacroProjectSettings, "hiddenAgentIds" | "entryMessageHint" | "workingFolderMode" | "startMessageRequired">>;
+export type MacroSettingsChange = Partial<Pick<MacroProjectSettings, "hiddenAgentIds" | "agentNames" | "entryMessageHint" | "workingFolderMode" | "startMessageRequired">>;
 
 export type ProjectTarget =
   | { kind: "draft"; blueprintId: string; revision: number }

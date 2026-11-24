@@ -1932,7 +1932,8 @@
         "saving": "Se está guardando: inténtelo de nuevo en un momento.",
         "invalid": "El borrador guardado no se puede leer como sistema: corríjalo primero.",
         "unsaved": "Guarde primero el borrador: tiene cambios sin guardar."
-      }
+      },
+      "agentFileName": "Sus archivos se llamarán «{{id}}»."
     },
     "launch": {
       "intro": "Lo que la persona que lanza este sistema debe o puede ajustar. Son ajustes propios de Macro: acompañan a cada versión guardada y no se incluyen en la exportación.",

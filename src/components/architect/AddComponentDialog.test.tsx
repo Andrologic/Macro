@@ -63,7 +63,7 @@ it("writes the agent file and declares it in the manifest through one project ba
   expect(submit().disabled).toBe(true);
   expect(submit().title).toBe("Give it a name.");
   await fillField(field(0), "Relecteur sécurité");
-  expect(dialogText()).toContain("Saved as “relecteur-securite”.");
+  expect(dialogText()).toContain("Its files are named “relecteur-securite”.");
   await fillField(field(1), "Reviews the change");
   await fillField(field(2), "Report what is missing.");
   expect(submit().disabled).toBe(false);
@@ -78,9 +78,19 @@ it("writes the agent file and declares it in the manifest through one project ba
   expect(written.agents["relecteur-securite"]).toEqual({ file: "agents/relecteur-securite.json" });
   expect(written.agents.writer).toBeDefined();
   expect(written.flow).toBeUndefined();
+  // The name the author typed is kept as typed; only the files use the identifier.
+  expect(batches[0].settings).toEqual({ agentNames: { "relecteur-securite": "Relecteur sécurité" } });
   expect(success).toHaveBeenCalledTimes(1);
   expect(String(success.mock.calls[0][0])).toContain("Relecteur sécurité");
   expect(closed).toBe(1);
+});
+
+it("keeps no separate name when the typed name is already its identifier", async () => {
+  await mount("agent", projectDraft());
+  await fillField(field(0), "relecteur");
+  await click(submit());
+  await flush();
+  expect(batches[0].settings).toBeUndefined();
 });
 
 it("refuses a name that is already used, and says so beside the field", async () => {

@@ -1932,7 +1932,8 @@
         "saving": "Un enregistrement est en cours : réessayez dans un instant.",
         "invalid": "Le brouillon enregistré n’est pas lisible comme un système : corrigez-le d’abord.",
         "unsaved": "Enregistrez d’abord le brouillon : il a des modifications non enregistrées."
-      }
+      },
+      "agentFileName": "Ses fichiers s’appelleront « {{id}} »."
     },
     "launch": {
       "intro": "Ce que la personne qui lance ce système doit ou peut régler. Ce sont des réglages propres à Macro : ils suivent chaque version enregistrée et ne sont pas transmis à l’export.",

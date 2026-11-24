@@ -116,6 +116,17 @@ it("lists agents as plain rows that open the same card as a block of the graph",
   expect(document.querySelector('[role="dialog"]')?.textContent).toContain("implement");
 });
 
+it("shows the name an author gave an agent, while the identifier stays what the files use", async () => {
+  settings = { ...defaultSettings, agentNames: { implement: "Rédacteur du correctif" } };
+  await mount();
+  await click(tab("Agents"));
+  const row = panel().querySelector('ul[aria-label="Agents"] li button')!;
+  expect(row.textContent).toContain("Rédacteur du correctif");
+  expect(row.querySelector("strong")?.textContent).toBe("Rédacteur du correctif");
+  await click(row);
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Rédacteur du correctif");
+});
+
 it("says plainly when a kind of item is absent", async () => {
   await mount();
   await click(tab("Skills"));

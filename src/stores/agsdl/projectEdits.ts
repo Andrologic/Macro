@@ -37,7 +37,7 @@ export const byteSize = (text: string) => utf8.encode(text).byteLength;
 export function batchSize({ files, settings, discardMigrationFiles }: ProjectBatch) {
   return files.reduce((size, file) => size + byteSize(file.path) + 1 + (file.kind === "write" ? byteSize(file.text) : 0), 0)
     + (discardMigrationFiles?.reduce((size, path) => size + byteSize(path) + 1, 0) ?? 0)
-    + (settings ? byteSize(JSON.stringify(settings.hiddenAgentIds ?? null)) + byteSize(settings.entryMessageHint ?? "") : 0);
+    + (settings ? byteSize(JSON.stringify(settings.hiddenAgentIds ?? null)) + byteSize(JSON.stringify(settings.agentNames ?? null)) + byteSize(settings.entryMessageHint ?? "") : 0);
 }
 
 export function checkBatch(batch: ProjectBatch) {
@@ -118,6 +118,7 @@ export async function prepareProjectEdit(
   const currentSettings = projectSettings(project);
   const undoSettings: MacroSettingsChange | undefined = settings && {};
   if (undoSettings && settings?.hiddenAgentIds !== undefined) undoSettings.hiddenAgentIds = currentSettings.hiddenAgentIds;
+  if (undoSettings && settings?.agentNames !== undefined) undoSettings.agentNames = currentSettings.agentNames ?? {};
   if (undoSettings && settings?.entryMessageHint !== undefined) undoSettings.entryMessageHint = currentSettings.entryMessageHint ?? null;
   if (undoSettings && settings?.workingFolderMode !== undefined) undoSettings.workingFolderMode = currentSettings.workingFolderMode;
   if (undoSettings && settings?.startMessageRequired !== undefined) undoSettings.startMessageRequired = currentSettings.startMessageRequired ?? null;

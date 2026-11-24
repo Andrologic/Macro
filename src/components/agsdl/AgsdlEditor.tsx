@@ -98,7 +98,19 @@ export const AgsdlEditor: React.FC<{
   const project = session?.project;
   const projectTarget = "blueprintId" in target && project ? target : undefined;
   const source = session?.source;
-  const displayMetadata = session?.display;
+  const agentNames = project ? projectSettings(project).agentNames : undefined;
+  // An agent's own name is Macro's: the cards of the document are titled with it, the identifier stays in the files.
+  const displayMetadata = useMemo(() => {
+    const display = session?.display;
+    const named = Object.entries(agentNames ?? {});
+    if (!named.length) return display;
+    const cards = { ...display?.cards };
+    for (const [id, title] of named) {
+      const path = `/agents/${id.replace(/~/g, "~0").replace(/\//g, "~1")}`;
+      cards[path] = { ...cards[path], title };
+    }
+    return { ...display, cards };
+  }, [session?.display, agentNames]);
   const migrationMetadata = session?.migration;
   const reports = session?.reports;
   const review = useMemo(() => session?.history.length ? reviewDesignChanges(session.history.at(-1)!.source, session.source, session.history.at(-1), session) : undefined, [session]);

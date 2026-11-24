@@ -1932,7 +1932,8 @@
         "saving": "Es wird gerade gespeichert: Versuchen Sie es gleich erneut.",
         "invalid": "Der gespeicherte Entwurf lässt sich nicht als System lesen: Korrigieren Sie ihn zuerst.",
         "unsaved": "Speichern Sie zuerst den Entwurf: Er hat ungespeicherte Änderungen."
-      }
+      },
+      "agentFileName": "Seine Dateien heißen „{{id}}“."
     },
     "launch": {
       "intro": "Was die Person, die dieses System startet, einstellen muss oder kann. Das sind Macro-Einstellungen: Sie begleiten jede gespeicherte Version und werden nicht exportiert.",

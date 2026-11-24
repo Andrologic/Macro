@@ -617,7 +617,7 @@ async fn file_batches_edit_migrated_projects_and_hold_versions_read_only() {
     let fixed = json!({ "files": [
         { "kind": "write", "path": agent_path, "text": text },
         { "kind": "remove", "path": "new.txt" },
-    ], "settings": { "hiddenAgentIds": ["reviewer"], "entryMessageHint": "Review the code" } });
+    ], "settings": { "hiddenAgentIds": ["reviewer"], "agentNames": { "reviewer": "Relecteur" }, "entryMessageHint": "Review the code" } });
     let saved = storage
         .edit_project(&pool, BLUEPRINT, 6, batch(fixed), true)
         .await
@@ -638,12 +638,29 @@ async fn file_batches_edit_migrated_projects_and_hold_versions_read_only() {
         assert_eq!(error.diagnostic().code, "EDITOR_LIMIT");
     }
 
+    // A name is one non-blank line of at most 80 characters: nothing else is stored.
+    for name in ["  ", "two\nlines", &"x".repeat(81)] {
+        let invalid = json!({ "files": [], "settings": { "agentNames": { "reviewer": name } } });
+        let error = storage
+            .edit_project(&pool, BLUEPRINT, 7, batch(invalid), false)
+            .await
+            .unwrap_err();
+        let crate::db::DbError::Architect(error) = error else {
+            panic!("{error:?}")
+        };
+        assert_eq!(error.diagnostic().code, "INVALID_AGENT_NAME");
+    }
+
     let frozen = storage
         .freeze(&pool, BLUEPRINT.into(), 7, None, None)
         .await
         .unwrap();
     assert_eq!(serde_json::to_value(frozen).unwrap()["number"], 8);
     let version = storage.open_version_project(&pool, &key(8)).await.unwrap();
+    assert_eq!(
+        version.project.settings.agent_names.get("reviewer").map(String::as_str),
+        Some("Relecteur")
+    );
     assert_eq!(
         version.project.settings.entry_message_hint.as_deref(),
         Some("Review the code")
