@@ -1590,7 +1590,7 @@ async fn archive_write_approval_uses_admitted_folder_and_current_ceiling() {
     remove_test_snapshot(&pool, &manager, id).await;
 }
 
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+#[cfg(all(target_arch = "aarch64", any(target_os = "linux", target_os = "macos")))]
 #[tokio::test]
 #[ignore = "requires a disposable Macro data directory with a logged-in Codex 0.171.0 private profile"]
 async fn real_codex_read_only_launch_from_archive() {

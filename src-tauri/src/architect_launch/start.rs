@@ -399,9 +399,12 @@ pub(super) async fn observe_codex(
         return Ok(observed);
     }
     let context = manager.engine_context();
-    // The app-server catalogue on Linux ARM64 is qualified in a read-only
+    // Catalogue discovery on qualified ARM64 platforms uses a read-only
     // profile. Physical work still qualifies its own effective permissions.
-    let read_only = cfg!(all(target_os = "linux", target_arch = "aarch64"));
+    let read_only = cfg!(all(
+        target_arch = "aarch64",
+        any(target_os = "linux", target_os = "macos")
+    ));
     if let Some(observed) = argentic_runtime::api::observe_codex(&context, scope, read_only).await?
     {
         return Ok(observed);
