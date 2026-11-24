@@ -18,6 +18,43 @@ it('previews an MCP argument array without materializing its elements', () => {
   expect(summary?.fullArguments()).toBe(args);
 });
 
+it('validates the complete MCP approval envelope, including skipped values', () => {
+  const approval = (args: string) => '{"nativeRequest":{"method":"mcp/tool/requestApproval","params":' +
+    '{"server":"issues","tool":"lookup","arguments":' + args + '}}}';
+  for (const args of [
+    '{"missing":}', '{"mismatch":[1}}', '{"trailing":[1,]}', '{"trailing":1,}',
+    '{"badNumber":01}', '{"badNumber":1.}', '{"badNumber":1e}', '{"badLiteral":trueish}',
+    '{"badEscape":"\\x00"}', '{"badEscape":"\\u000z"}', '{"rawControl":"\t"}',
+    '{"deep":' + '['.repeat(129) + '0' + ']'.repeat(129) + '}',
+  ]) {
+    expect(nativeMcpSummary030(approval(args))).toBeNull();
+  }
+  expect(nativeMcpSummary030(approval('{}') + ' false')).toBeNull();
+  expect(nativeMcpSummary030(approval('{}').replace('"nativeRequest"', '"unused":[},"nativeRequest"'))).toBeNull();
+  expect(nativeMcpSummary030(approval('{}').replace('"tool":', '"to\\u006fl":"other","tool":'))).toBeNull();
+  const args = '{"escaped":"\\u000a\\/", "all":[-0.1e-3,true,false,null,{},[]]}';
+  const raw = approval(args).replace('"nativeRequest"', '"native\\u0052equest"');
+  expect(nativeMcpSummary030(' \r\n' + raw + '\t')?.fullArguments()).toBe(args);
+});
+
+it('bounds each decoded MCP label independently of the arguments', () => {
+  const server = 'x'.repeat(1024 * 1024);
+  const tool = 'a'.repeat(254) + '🧪' + '\\u0062'.repeat(256);
+  const raw = '{"nativeRequest":{"method":"mcp/tool/requestApproval","params":' +
+    '{"server":"' + server + '","tool":"' + tool + '","arguments":{}}}}';
+  const summary = nativeMcpSummary030(raw);
+  expect(summary?.server).toBe('x'.repeat(255) + '…');
+  expect(summary?.tool).toBe('a'.repeat(254) + '…');
+  expect(summary?.preview).toBe('{}');
+  expect(summary?.truncated).toBe(false);
+
+  const controls = raw.replace(tool, '\\u202e'.repeat(256));
+  const visibleTool = nativeMcpSummary030(controls)?.tool;
+  expect(visibleTool).toHaveLength(256);
+  expect(visibleTool).toStartWith('\\u202e');
+  expect(visibleTool).toEndWith('…');
+});
+
 it('assembles exact pages only after verifying continuation, scope, cursor and total', async () => {
   expect((await loadHumanRequests030(scope, async (_s, next) => next ? last : first, () => true))?.requests).toHaveLength(65);
   await expect(loadHumanRequests030(scope, async (_s, next) => next ? {...last, cursor: 'changed'} : first, () => true)).rejects.toThrow('Invalid');

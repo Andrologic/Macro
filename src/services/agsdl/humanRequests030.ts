@@ -36,87 +36,139 @@ function visibleControls(text: string): string {
 }
 
 const MCP_ARGUMENT_PREVIEW_LIMIT = 4096;
+const MCP_LABEL_LIMIT = 256;
+const NATIVE_JSON_DEPTH_LIMIT = 128;
 const argumentEncoder = new TextEncoder();
 
 type JsonSpan = { start: number; end: number };
+type JsonFields = { readonly [key: string]: JsonFields | true };
 
-/** Skip native JSON containers without materializing their contents or indexing their children. */
-function nativeJsonSpans(raw: string, start: number, keys: readonly string[]) {
+const mcpApprovalFields: JsonFields = {
+  nativeRequest: { method: true, params: { server: true, tool: true, arguments: true } },
+};
+// JSON can encode each character of a selected key as a six-character escape.
+const maxSelectedKeySpan = 'nativeRequest'.length * 6 + 2;
+
+/** Validate the envelope while retaining only spans used by the preview. */
+function nativeJsonSpans(raw: string) {
   const spans = new Map<string, JsonSpan>();
   const whitespace = /[ \t\r\n]*/y;
-  const stringTokens = /["\\]/g;
-  const structure = /[[\]{}"]/g;
-  const primitive = /[^ \t\r\n,}\]]+/y;
-  const skipWhitespace = (at: number) => {
+  // eslint-disable-next-line no-control-regex -- JSON forbids raw ASCII controls in strings.
+  const stringTokens = /["\\\u0000-\u001f]/g;
+  const escape = /(?:["\\/bfnrt]|u[0-9a-fA-F]{4})/y;
+  const primitive = /(?:-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null)/y;
+  let at = 0;
+
+  const invalid = (): never => { throw new Error('Invalid native JSON'); };
+  const skipWhitespace = () => {
     whitespace.lastIndex = at;
     whitespace.test(raw);
-    return whitespace.lastIndex;
+    at = whitespace.lastIndex;
   };
-  const stringEnd = (at: number) => {
+  const consume = (token: string) => {
+    if (raw[at] !== token) return false;
+    at++;
+    return true;
+  };
+  const skipString = () => {
     stringTokens.lastIndex = at + 1;
     for (let token = stringTokens.exec(raw); token; token = stringTokens.exec(raw)) {
-      if (token[0] === '"') return stringTokens.lastIndex;
-      stringTokens.lastIndex++;
-    }
-    throw new Error('Unterminated native JSON string');
-  };
-  const valueEnd = (at: number) => {
-    switch (raw[at]) {
-      case '"': return stringEnd(at);
-      case '{':
-      case '[': {
-        let depth = 1;
-        structure.lastIndex = at + 1;
-        for (let token = structure.exec(raw); token; token = structure.exec(raw)) {
-          if (token[0] === '"') structure.lastIndex = stringEnd(token.index);
-          else if (token[0] === '[' || token[0] === '{') depth++;
-          else if (--depth === 0) return structure.lastIndex;
-        }
-        break;
+      if (token[0] === '"') {
+        at = stringTokens.lastIndex;
+        return;
       }
-      default:
-        primitive.lastIndex = at;
-        if (primitive.test(raw)) return primitive.lastIndex;
+      if (token[0] !== '\\') invalid();
+      escape.lastIndex = stringTokens.lastIndex;
+      if (!escape.test(raw)) invalid();
+      stringTokens.lastIndex = escape.lastIndex;
     }
-    throw new Error('Incomplete native JSON value');
+    invalid();
   };
 
-  let at = skipWhitespace(start);
-  if (raw[at++] !== '{') throw new Error('Expected a native JSON object');
-  at = skipWhitespace(at);
-  if (raw[at] === '}') return spans;
-  while (raw[at] === '"') {
-    const keyEnd = stringEnd(at);
-    const key: string = JSON.parse(raw.slice(at, keyEnd));
-    const colon = skipWhitespace(keyEnd);
-    if (raw[colon] !== ':') break;
-    const valueStart = skipWhitespace(colon + 1);
-    const end = valueEnd(valueStart);
-    if (keys.includes(key)) {
-      if (spans.has(key)) throw new Error('Duplicate native JSON key');
-      spans.set(key, { start: valueStart, end });
+  function scanValue(depth: number, fields?: JsonFields) {
+    if (depth > NATIVE_JSON_DEPTH_LIMIT) invalid();
+    if (fields && raw[at] !== '{') invalid();
+    switch (raw[at]) {
+      case '{': scanObject(depth, fields); return;
+      case '[':
+        at++;
+        skipWhitespace();
+        if (consume(']')) return;
+        do {
+          skipWhitespace();
+          scanValue(depth + 1);
+          skipWhitespace();
+        } while (consume(','));
+        if (!consume(']')) invalid();
+        return;
+      case '"': skipString(); return;
+      default:
+        primitive.lastIndex = at;
+        if (!primitive.test(raw)) invalid();
+        at = primitive.lastIndex;
     }
-    at = skipWhitespace(end);
-    if (raw[at] === '}') return spans;
-    if (raw[at] !== ',') break;
-    at = skipWhitespace(at + 1);
   }
-  throw new Error('Invalid native JSON object');
+
+  function scanObject(depth: number, fields?: JsonFields) {
+    at++;
+    skipWhitespace();
+    if (consume('}')) return;
+    const seen = fields && new Set<string>();
+    do {
+      skipWhitespace();
+      if (raw[at] !== '"') invalid();
+      const keyStart = at;
+      skipString();
+      const key: string | undefined = fields && at - keyStart <= maxSelectedKeySpan
+        ? JSON.parse(raw.slice(keyStart, at)) : undefined;
+      const selected = fields && key !== undefined && Object.hasOwn(fields, key) ? fields[key] : undefined;
+      if (selected && key !== undefined) {
+        if (seen?.has(key)) invalid();
+        seen?.add(key);
+      }
+      skipWhitespace();
+      if (!consume(':')) invalid();
+      skipWhitespace();
+      const start = at;
+      scanValue(depth + 1, selected === true ? undefined : selected);
+      if (selected === true && key !== undefined) spans.set(key, { start, end: at });
+      skipWhitespace();
+    } while (consume(','));
+    if (!consume('}')) invalid();
+  }
+
+  skipWhitespace();
+  scanValue(0, mcpApprovalFields);
+  skipWhitespace();
+  if (at !== raw.length) invalid();
+  return spans;
+}
+
+export function mcpApprovalLabel030(text: string): string {
+  const label = visibleControls(text.slice(0, MCP_LABEL_LIMIT));
+  if (text.length <= MCP_LABEL_LIMIT && label.length <= MCP_LABEL_LIMIT) return label;
+  return label.slice(0, MCP_LABEL_LIMIT - 1).replace(/[\uD800-\uDBFF]$/, '') + '…';
+}
+
+/** Decode a bounded prefix of a validated JSON string without cutting an escape. */
+function readMcpLabel(raw: string, span: JsonSpan | undefined): string | undefined {
+  if (!span || raw[span.start] !== '"') return undefined;
+  const end = span.end - 1;
+  let at = span.start + 1;
+  // Read one extra code unit so the display can indicate truncation.
+  for (let length = 0; at < end && length <= MCP_LABEL_LIMIT; length++) {
+    if (raw[at] !== '\\') at++;
+    else at += raw[at + 1] === 'u' ? 6 : 2;
+  }
+  return mcpApprovalLabel030(JSON.parse(raw.slice(span.start, at) + '"'));
 }
 
 export function nativeMcpSummary030(raw: string) {
   try {
-    // Rust supplies serialized JSON. Only decode the metadata strings and the preview.
-    const native = nativeJsonSpans(raw, 0, ['nativeRequest']).get('nativeRequest');
-    if (!native) return null;
-    const request = nativeJsonSpans(raw, native.start, ['method', 'params']);
-    const readString = (span: JsonSpan | undefined): string | undefined =>
-      span && raw[span.start] === '"' ? JSON.parse(raw.slice(span.start, span.end)) : undefined;
-    const params = request.get('params');
-    if (readString(request.get('method')) !== 'mcp/tool/requestApproval' || !params) return null;
-    const fields = nativeJsonSpans(raw, params.start, ['server', 'tool', 'arguments']);
-    const server = readString(fields.get('server'));
-    const tool = readString(fields.get('tool'));
+    const fields = nativeJsonSpans(raw);
+    if (readMcpLabel(raw, fields.get('method')) !== 'mcp/tool/requestApproval') return null;
+    const server = readMcpLabel(raw, fields.get('server'));
+    const tool = readMcpLabel(raw, fields.get('tool'));
     const span = fields.get('arguments');
     if (server === undefined || tool === undefined || !span || raw[span.start] !== '{') return null;
 
@@ -131,8 +183,8 @@ export function nativeMcpSummary030(raw: string) {
     // Avoid splitting an astral character when control escapes expand the preview.
     const prefix = preview.slice(0, MCP_ARGUMENT_PREVIEW_LIMIT).replace(/[\uD800-\uDBFF]$/, '');
     return {
-      server: visibleControls(server),
-      tool: visibleControls(tool),
+      server,
+      tool,
       preview: prefix + (truncated ? '…' : ''),
       truncated,
       fullArguments: () => visibleControls(raw.slice(span.start, span.end)),

@@ -144,11 +144,13 @@ it('shows exact MCP tool arguments and submits a decision through the native req
 it('mounts large MCP arguments on demand and shows controls as escapes', async () => {
   const args = JSON.stringify({ value: 'x'.repeat(2 * 1024 * 1024) + '\u202eend-of-argument' });
   const actionJson = '{"nativeRequest":{"method":"mcp/tool/requestApproval","params":{"server":"issues","tool":"look\\nup","arguments":' + args + '}}}';
-  const request = humanFixture030({ content: { kind: 'actionApproval', title: 'Allow issues/look\nup?', actionJson } });
+  const title = 'Allow issues/look\nup?' + 'z'.repeat(1024 * 1024);
+  const request = humanFixture030({ content: { kind: 'actionApproval', title, actionJson } });
   await render(ready(request));
   const summary = host.querySelector('[data-native-mcp-summary]')!;
   const toggle = summary.querySelector('button')!;
   expect(host.textContent).toContain('Allow issues/look\\u000aup?');
+  expect(host.textContent).not.toContain('z'.repeat(256));
   expect(summary.textContent).toContain('look\\u000aup');
   expect(summary.querySelector('pre')!.textContent).toHaveLength(4097);
   expect(host.textContent).not.toContain('end-of-argument');

@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { RunAttestedHumanAnswer030, RunHumanOccurrence030, RunHumanRequest030, RunRead030 } from '../../types/agsdlRunUi030';
 import {
-  humanDuration030, humanRemainingMs030, humanRequestKey030, nativeCommandSummary030, nativeMcpSummary030, runHumanView030,
+  humanDuration030, humanRemainingMs030, humanRequestKey030, mcpApprovalLabel030, nativeCommandSummary030, nativeMcpSummary030, runHumanView030,
   type HumanFormDraft030, type HumanRequestClient030, type HumanSendOutcome030, type ReadHuman030,
 } from '../../services/agsdl/humanRequests030';
 import { claimHumanAttention030 } from '../../services/agsdl/humanAttention030';
@@ -88,8 +88,9 @@ function HumanRequestCard030({ request, client, captureKey, fresh, onOpenRequest
   const command = useMemo(() => actionJson === null || mcp ? null : nativeCommandSummary030(actionJson), [actionJson, mcp]);
   const qualified = content.kind !== 'unclassified' && (content.kind !== 'question' || content.answerContract.kind === 'available');
   const open = request.state.kind === 'open' && fresh && !readFailed && !revisionStale && !blocked && !storageFailed && !storageUnavailable && qualified && !busy;
-  const details = runHumanView030(request, { plan: t('agsdl.human030.plan'), question: t('agsdl.human030.question'), unknown: t('agsdl.human030.unknown') });
-  const view = mcp ? { ...details, message: '' } : details;
+  const view = mcp && content.kind === 'actionApproval'
+    ? { kind: 'actionApproval' as const, title: mcpApprovalLabel030(content.title), message: '' }
+    : runHumanView030(request, { plan: t('agsdl.human030.plan'), question: t('agsdl.human030.question'), unknown: t('agsdl.human030.unknown') });
 
   useEffect(() => {
     if (!fresh || request.state.kind !== 'open' || !qualified || suppressNotification?.(request)) return;
