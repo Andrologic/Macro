@@ -420,6 +420,43 @@ async fn archive_equipment_denies_every_tool_before_discovery() {
     assert!(prepared.secrets.is_empty());
 }
 
+#[tokio::test]
+async fn invalid_endpoint_blocks_equipment_or_direct_calls_but_not_excluded_equipment() {
+    for (direct, denied, blocked) in [
+        (false, true, false),
+        (false, false, true),
+        (true, true, true),
+    ] {
+        let data = tempfile::tempdir().unwrap();
+        let project = loopback_review_project(data.path(), "http://example.invalid/issues", direct);
+        let (pool, version) = import_archive_fixture(data.path(), project.path()).await;
+        let input = VersionInput::read(&pool, &Storage::new(data.path()), version)
+            .await
+            .unwrap();
+        let ceiling = serde_json::from_value(if denied {
+            json!({"preset":"workspace","rules":[{"action":"mcp","match":"issues","effect":"deny"}]})
+        } else {
+            json!("workspace")
+        })
+        .unwrap();
+        let (blockers, mcp) = requirements(
+            &input,
+            &input.preview().unwrap(),
+            &json!({"agsdlHostPermissions":"workspace"}),
+            &ceiling,
+            data.path(),
+            LOCAL_MCP_SUPPORTED,
+        )
+        .unwrap();
+        assert_eq!(
+            blockers.iter().any(|b| b.code == "mcpEndpointUnsupported"),
+            blocked
+        );
+        assert!(mcp.remote.is_empty());
+        assert!(mcp.secrets.is_empty());
+    }
+}
+
 #[cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux")))]
 #[tokio::test]
 #[ignore = "requires a disposable Macro data directory with a qualified, logged-in Codex profile"]

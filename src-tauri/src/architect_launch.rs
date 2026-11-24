@@ -777,8 +777,13 @@ fn requirements(
         agents: mcp::agent_access(input, preview, ceiling, root)?,
         ..Default::default()
     };
-    let qualification =
-        argentic_runtime::api::product_slice(input.archive.source().authored_json(), None);
+    // Argentic checks the whole document when dispatching a direct call.
+    let qualification = preview
+        .direct_calls
+        .iter()
+        .any(|call| call.usage == Usage::Reachable)
+        .then(|| argentic_runtime::api::product_slice(input.archive.source().authored_json(), None))
+        .flatten();
     if let Some(endpoint) = qualification
         .as_ref()
         .filter(|issue| issue.code == "MCP_ENDPOINT_UNSUPPORTED")
@@ -809,6 +814,13 @@ fn requirements(
         match &server.transport {
             McpTransport::Remote { url } => {
                 if blockers.iter().any(|blocker| blocker.subject == *id) {
+                    continue;
+                }
+                // Agent equipment qualifies its own endpoint after exclusions.
+                let endpoint =
+                    json!({"contract": preview.contract, "mcpServers": {"server": {"url": url}}});
+                if argentic_runtime::api::product_slice(&endpoint.to_string(), None).is_some() {
+                    blockers.push(Blocker::new("mcpEndpointUnsupported", id));
                     continue;
                 }
                 if direct && !workspace_calls {
