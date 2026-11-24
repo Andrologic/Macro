@@ -755,3 +755,34 @@ it("recovers typed inputs when editing a saved schedule", async () => {
   });
   expect(onSaved).toHaveBeenCalledTimes(1);
 });
+
+it("switches to the latest version's fields before saving a following schedule", async () => {
+  const onSaved = () => {};
+  const older = { ...archive, number: 1 };
+  install(args => {
+    const version = args.version as typeof archive;
+    const isLatest = version.number === archive.number;
+    return preview({ version, launchFields: {
+      version: "macro-launch-fields/1",
+      fields: [{ key: "ticket", label: isLatest ? "Ticket name" : "Ticket number",
+        type: isLatest ? "text" : "number", required: true }],
+    } });
+  }, command => { if (command === "architect_schedule_save") return "schedule-1"; throw new Error(command); });
+  view = createHost();
+  await view.render(<ArchitectLaunchDialog initialVersion={older} schedule={{ onSaved }} />);
+  await flush();
+  await fillField(dialog().querySelector('input[type="datetime-local"]')!, "2098-01-02T09:30");
+  await fillField(dialog().querySelector('input[type="number"]')!, "42");
+  expect(primary().disabled).toBe(false);
+  const follow = byText("label", "Always use the latest version", dialog())!;
+  await click(follow.querySelector("input"));
+  await flush();
+  expect(dialog().textContent).toContain("Ticket name");
+  expect(primary().disabled).toBe(true);
+  await fillField(dialog().querySelector("textarea")!, "Intake");
+  await click(primary());
+  expect(calls.find(call => call.command === "architect_schedule_save")?.args.request).toMatchObject({
+    launch: { version: archive, launchValues: { ticket: "Intake" } },
+    policy: { alwaysLatest: true },
+  });
+});

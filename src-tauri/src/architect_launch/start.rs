@@ -571,7 +571,15 @@ impl StartAuthority030 for ArchiveStart<'_> {
                 if *confirmed != folder_reuse_token(&scope)? {
                     return Err(changed());
                 }
-            } else if folder_in_use(db, &scope).await? {
+            } else if folder_in_use(
+                db,
+                &scope,
+                self.occurrence
+                    .as_ref()
+                    .and_then(schedule::Occurrence::overlapping_schedule),
+            )
+            .await?
+            {
                 return Err(launch_failure("WORKING_FOLDER_IN_USE", "workingFolder"));
             }
         }

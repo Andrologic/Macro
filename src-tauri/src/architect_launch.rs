@@ -696,7 +696,11 @@ fn folder_reuse_token(scope: &Value) -> Result<String> {
     ))
 }
 
-async fn folder_in_use(db: &mut SqliteConnection, scope: &Value) -> Result<bool> {
+async fn folder_in_use(
+    db: &mut SqliteConnection,
+    scope: &Value,
+    overlapping_schedule: Option<&str>,
+) -> Result<bool> {
     Ok(sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM architect_launch_runs launch
           JOIN engine_flow030_runs run ON run.system_id=launch.system_id
@@ -708,10 +712,14 @@ async fn folder_in_use(db: &mut SqliteConnection, scope: &Value) -> Result<bool>
             launch.working_folder=? OR
             json_extract(json_extract(json_extract(start.capture_json,'$.privateCaptureJson'),
               '$.callScopeJson'),'$.rootIdentity')=?
+          ) AND NOT EXISTS (
+            SELECT 1 FROM architect_launch_schedule_runs scheduled
+            WHERE scheduled.system_id=launch.system_id AND scheduled.schedule_id=?
           ))",
     )
     .bind(scope["root"].as_str())
     .bind(scope["rootIdentity"].as_str())
+    .bind(overlapping_schedule)
     .fetch_one(db)
     .await?)
 }
@@ -1041,7 +1049,7 @@ async fn prepare_with_consent(
             .and_then(|path| chosen_folder(path, app_data, manager.root()));
         if let Some(folder) = folder {
             let scope = start::scope_for(&folder, &owner(&input.key.blueprint_id))?;
-            if folder_in_use(&mut *pool.acquire().await?, &scope).await? {
+            if folder_in_use(&mut *pool.acquire().await?, &scope, None).await? {
                 reuse_token = Some(folder_reuse_token(&scope)?);
             }
             configuration.working_folder = Some(folder);

@@ -297,6 +297,15 @@ async fn scheduled_start_links_real_archive_run_and_report_skipped_overlap() {
     );
     assert!(runs[0].run_name.is_some());
     assert_eq!(list_uses(&pool, key.clone()).await.unwrap().len(), 2);
+    let folder = read_folder(&pool, &runs[0].system_start_id).await.unwrap();
+    let scope = start::scope_for(Path::new(&folder), &owner(&key.blueprint_id)).unwrap();
+    let mut db = pool.acquire().await.unwrap();
+    assert!(folder_in_use(&mut db, &scope, None).await.unwrap());
+    assert!(folder_in_use(&mut db, &scope, Some("another-schedule"))
+        .await
+        .unwrap());
+    assert!(!folder_in_use(&mut db, &scope, Some(&id)).await.unwrap());
+    drop(db);
     let call = |_, _| std::future::ready(Err(invalid("UNEXPECTED_START", "")));
     tick(&pool, NOW + 2 * HOUR, NOW, call).await.unwrap();
     assert_eq!(
@@ -354,6 +363,18 @@ async fn suspend_fences_reserved_start_and_latest_is_resolved_at_dispatch() {
     sqlx::query("INSERT INTO architect_versions(blueprint_id,number,revision,artifact_id,storage_state,archive_sha256)
         SELECT blueprint_id,2,revision,artifact_id,storage_state,archive_sha256 FROM architect_versions WHERE blueprint_id=? AND number=1")
         .bind(&key.blueprint_id).execute(&pool).await.unwrap();
+    let outdated = wire_request(&key, None, true, false, true);
+    let error = save(
+        &manager,
+        &pool,
+        data.path(),
+        serde_json::from_value(outdated).unwrap(),
+        || NOW,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, "SCHEDULE_LATEST_CHANGED");
+    assert_eq!(list(&pool).await.unwrap().len(), 1);
     let row = &list(&pool).await.unwrap()[0];
     assert_eq!((row.version.number, row.latest_number), (1, 2));
 
@@ -383,4 +404,44 @@ async fn suspend_fences_reserved_start_and_latest_is_resolved_at_dispatch() {
     assert_eq!(row.issue_code.as_deref(), Some("SCHEDULE_INTERRUPTED"));
     assert_eq!(row.next_at_ms, Some(due + HOUR));
     assert_eq!(row.version.number, 1);
+}
+
+#[tokio::test]
+async fn recovery_retains_a_suspended_uncommitted_one_time_launch() {
+    let (data, pool, key, manager) = fixture().await;
+    let preview = prepare(
+        &manager,
+        &pool,
+        data.path(),
+        key.clone(),
+        None,
+        BTreeMap::new(),
+    )
+    .await
+    .unwrap();
+    let mut wire = wire_request(&key, preview.consent_token, true, false, false);
+    wire["timing"]["repeat"] = json!({"kind":"once"});
+    let id = save(
+        &manager,
+        &pool,
+        data.path(),
+        serde_json::from_value(wire).unwrap(),
+        || NOW,
+    )
+    .await
+    .unwrap();
+    let due = NOW + HOUR;
+    assert!(claim(&pool, &id, due, NOW).await.unwrap().is_some());
+    act(&pool, &id, ScheduleAction::Suspend, due).await.unwrap();
+    recover(&pool).await.unwrap();
+    let row = list(&pool).await.unwrap().remove(0);
+    assert!(row.suspended && !row.starting);
+    assert_eq!(row.next_at_ms, Some(due));
+    assert_eq!(row.issue_code, None);
+    assert!(claim(&pool, &id, due + 1, due + 1).await.unwrap().is_none());
+    act(&pool, &id, ScheduleAction::Resume, due + 1)
+        .await
+        .unwrap();
+    let (occurrence, _) = claim(&pool, &id, due + 1, due + 1).await.unwrap().unwrap();
+    assert_eq!(occurrence.due_at, due);
 }

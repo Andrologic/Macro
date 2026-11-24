@@ -191,7 +191,7 @@ pub(crate) async fn save(
         start_message: launch.start_message,
         launch_values: launch.launch_values,
         model_overrides: launch.model_overrides,
-        reuse_folder: policy.allow_overlap || launch.folder_reuse_token.is_some(),
+        reuse_folder: launch.folder_reuse_token.is_some(),
         folder_binding,
         policy,
     };
@@ -203,6 +203,11 @@ pub(crate) async fn save(
         }
     }
     let key = &preview.version;
+    if settings.policy.always_latest
+        && latest_archive_number(&mut db, &key.blueprint_id).await? != Some(key.number)
+    {
+        return Err(invalid("SCHEDULE_LATEST_CHANGED", "version"));
+    }
     let id = persist(&mut db, id, key, &settings, timing).await?;
     // Keep inherited consent on this version even if the older version is removed.
     record_consent(
@@ -215,6 +220,18 @@ pub(crate) async fn save(
     .await?;
     db.commit().await?;
     Ok(id)
+}
+
+async fn latest_archive_number(
+    db: &mut SqliteConnection,
+    blueprint_id: &str,
+) -> Result<Option<i64>> {
+    Ok(sqlx::query_scalar(
+        "SELECT MAX(number) FROM architect_versions WHERE blueprint_id=? AND storage_state='archive'",
+    )
+    .bind(blueprint_id)
+    .fetch_one(db)
+    .await?)
 }
 
 async fn persist(
@@ -311,9 +328,14 @@ pub(crate) struct Occurrence {
     id: String,
     due_at: i64,
     folder_binding: Option<String>,
+    allow_overlap: bool,
 }
 
 impl Occurrence {
+    pub(super) fn overlapping_schedule(&self) -> Option<&str> {
+        self.allow_overlap.then_some(self.id.as_str())
+    }
+
     pub(super) fn check_folder(&self, scope: &Value) -> Result<()> {
         if self.folder_binding.as_deref() != Some(folder_reuse_token(scope)?.as_str()) {
             return Err(invalid("WORKING_FOLDER_CHANGED", "workingFolder"));
@@ -408,6 +430,7 @@ async fn claim(
                 id: id.to_owned(),
                 due_at,
                 folder_binding: settings.folder_binding.clone(),
+                allow_overlap: settings.policy.allow_overlap,
             });
         }
     }
@@ -454,12 +477,17 @@ async fn recover(pool: &SqlitePool) -> Result<()> {
     // already visible in Operate after the runtime's own restart recovery.
     let mut db = pool.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::query(
-        "UPDATE architect_launch_schedules AS s SET issue_code='SCHEDULE_INTERRUPTED',issue_at_ms=inflight_at_ms
+        "UPDATE architect_launch_schedules AS s
+         SET next_at_ms=CASE WHEN suspended=1 THEN inflight_at_ms ELSE next_at_ms END,
+             issue_code=CASE WHEN suspended=1 THEN issue_code ELSE 'SCHEDULE_INTERRUPTED' END,
+             issue_at_ms=CASE WHEN suspended=1 THEN issue_at_ms ELSE inflight_at_ms END
          WHERE inflight_at_ms IS NOT NULL AND NOT EXISTS (
              SELECT 1 FROM architect_launch_schedule_runs link WHERE link.schedule_id=s.id
                  AND link.due_at_ms=s.inflight_at_ms
-         )"
-    ).execute(&mut *db).await?;
+         )",
+    )
+    .execute(&mut *db)
+    .await?;
     sqlx::query("UPDATE architect_launch_schedules SET inflight_at_ms=NULL WHERE inflight_at_ms IS NOT NULL")
         .execute(&mut *db).await?;
     db.commit().await?;

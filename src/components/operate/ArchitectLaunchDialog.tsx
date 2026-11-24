@@ -23,7 +23,7 @@ import { LaunchConsent } from "./launch/LaunchConsent";
 import { LaunchFieldsForm } from "./launch/LaunchFieldsForm";
 import { LaunchMcpDetails, LaunchMcpNotes, LaunchMcpSettings } from "./launch/LaunchMcpDetails";
 import { LaunchReach } from "./launch/LaunchReach";
-import { initialScheduleFields, LaunchScheduleFields, toScheduleTiming } from "./launch/LaunchScheduleFields";
+import { initialScheduleFields, LaunchScheduleFields, toScheduleTiming, type ScheduleFields } from "./launch/LaunchScheduleFields";
 import { LaunchSummary } from "./launch/LaunchSummary";
 import { comboboxClass, failureCode, failureText, isFolderFailure, isRecheckFailure, selectClass } from "./launch/launchModel";
 
@@ -114,10 +114,13 @@ export default function ArchitectLaunchDialog({ initialVersion, schedule, onClos
   const [problem, setProblem] = useState<Problem>();
   const [notice, setNotice] = useState("");
   const selected = systems?.find(system => system.id === blueprintId);
+  const alwaysLatest = !!schedule && scheduleFields.policy.alwaysLatest;
+  const latestNumber = selected?.versions[0]?.number;
+  const requestedNumber = alwaysLatest ? latestNumber : number;
   const usable = selected?.versions.filter(option =>
     !(unavailableVersion?.blueprintId === blueprintId && unavailableVersion.number === option.number)) ?? [];
-  const version = number === undefined ? usable[0] : usable.find(option => option.number === number);
-  const versionMissing = !!systems && number !== undefined && !version;
+  const version = requestedNumber === undefined ? usable[0] : usable.find(option => option.number === requestedNumber);
+  const versionMissing = !!systems && requestedNumber !== undefined && !version;
   const versionNumber = version?.number;
 
   useEffect(() => {
@@ -182,6 +185,11 @@ export default function ArchitectLaunchDialog({ initialVersion, schedule, onClos
     setProblem(undefined);
     setNotice("");
     setConsent(false);
+  };
+  const changeScheduleFields = (next: ScheduleFields) => {
+    const nextNumber = next.policy.alwaysLatest ? latestNumber : number ?? usable[0]?.number;
+    if (nextNumber !== versionNumber) reset();
+    setScheduleFields(next);
   };
   const chooseFolder = async () => {
     try {
@@ -260,7 +268,11 @@ export default function ArchitectLaunchDialog({ initialVersion, schedule, onClos
       } else {
         const text = failureText(failure, t);
         if (code.startsWith("INVALID_SCHEDULE_")) text.message = t("agsdl.schedule.invalidTiming");
-        if (code === "SCHEDULE_CHANGED") text.message = t("agsdl.schedule.changed");
+        if (code === "SCHEDULE_CHANGED" || code === "SCHEDULE_LATEST_CHANGED") text.message = t("agsdl.schedule.changed");
+        if (code === "SCHEDULE_LATEST_CHANGED") {
+          reset();
+          setSystemsRevision(value => value + 1);
+        }
         setProblem({ ...text, recheck: false });
       }
     } finally {
@@ -321,8 +333,8 @@ export default function ArchitectLaunchDialog({ initialVersion, schedule, onClos
       </div>}
       {noVersion && <div role="status" className="space-y-2"><p className="!m-0">{t("agsdl.launch.noVersion")}</p>{openArchitect}</div>}
       {versionMissing && <div role="alert" className="space-y-1">
-        <p className="!m-0 text-red-500">{t("agsdl.launch.versionMissing", { number })}</p>
-        {usable.length > 0 && <Select className={selectClass} aria-label={t("agsdl.launch.versionLabel")} value=""
+        <p className="!m-0 text-red-500">{t("agsdl.launch.versionMissing", { number: requestedNumber })}</p>
+        {!alwaysLatest && usable.length > 0 && <Select className={selectClass} aria-label={t("agsdl.launch.versionLabel")} value=""
           onChange={event => { setNumber(Number(event.target.value)); reset(); }}>
           <option value="" disabled>{t("agsdl.launch.chooseVersion")}</option>
           {usable.map(option => <option key={option.number} value={option.number}>{t("agsdl.library.version", { number: option.number })}</option>)}
@@ -338,7 +350,7 @@ export default function ArchitectLaunchDialog({ initialVersion, schedule, onClos
           placeholder={current.startMessageHint ? undefined : t("agsdl.launch.messagePlaceholder")} onChange={event => setMessage(event.target.value)}
           onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); proceed(); } }} />
       </div>}
-      {version && selected && <LaunchSummary scheduled={!!schedule} versions={usable} versionNumber={version.number} note={current?.note ?? version.note ?? null}
+      {version && selected && <LaunchSummary scheduled={!!schedule} versions={alwaysLatest ? [version] : usable} versionNumber={version.number} note={current?.note ?? version.note ?? null}
         folderMode={current?.workingFolderMode ?? "perExecution"} folder={current?.configuration.workingFolder ?? null}
         checking={(!current && !problem) || checking} disabled={busy} runName={name} onRunName={setName}
         onVersion={value => { setNumber(value); reset(); }} onChooseFolder={() => void chooseFolder()}>
@@ -348,8 +360,8 @@ export default function ArchitectLaunchDialog({ initialVersion, schedule, onClos
             overrides={modelOverrides} disabled={busy} onOverride={override} />)}
         </div>}
       </LaunchSummary>}
-      {schedule && current && <LaunchScheduleFields value={scheduleFields} onChange={setScheduleFields}
-        editing={!!existing} sharedFolder={current.workingFolderMode === "atLaunch"} disabled={busy} />}
+      {schedule && (current || (alwaysLatest && versionMissing)) && <LaunchScheduleFields value={scheduleFields} onChange={changeScheduleFields}
+        editing={!!existing} sharedFolder={current?.workingFolderMode === "atLaunch"} disabled={busy} />}
       {version && !current && !problem && <div role="status" className="space-y-2"><Skeleton className="h-8" /></div>}
       {current && <LaunchReach preview={current} />}
       {current && <LaunchMcpSettings preview={current} disabled={busy || checking} onChange={setMcpSettings} />}
