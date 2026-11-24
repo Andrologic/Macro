@@ -1417,21 +1417,21 @@ async fn validate(archive: &Archive, data: &Path) -> Result<()> {
     let mut total = 0usize;
     let mut draft_inventories = BTreeMap::<&str, (usize, u64)>::new();
     for (name, entry) in &archive.files {
-        let path = destination(name, temp.path(), temp.path())?;
         total = total
             .checked_add(entry.data.len())
             .ok_or("Backup too large")?;
         if total > LIMIT as usize {
             return Err("Backup too large".into());
         }
-        if name == "data/macro.db" {
-            copy_entry_to_file(entry, name, &path)?;
-            continue;
-        }
         if launch::file(name) {
             entry
                 .copy_verified(name, io::sink())
                 .map_err(|error| error.to_string())?;
+            continue;
+        }
+        let path = destination(name, temp.path(), temp.path())?;
+        if name == "data/macro.db" {
+            copy_entry_to_file(entry, name, &path)?;
             continue;
         }
         if let Some(prefix) = architect_artifact_prefix(name) {
@@ -1613,7 +1613,9 @@ fn check_raw_manifest(archive: &Archive) -> Result<()> {
     }
     let mut total = 0usize;
     for (name, entry) in &archive.files {
-        raw_destination(name, Path::new("data"), Path::new("config"))?;
+        if !launch::file(name) {
+            raw_destination(name, Path::new("data"), Path::new("config"))?;
+        }
         total = total
             .checked_add(entry.data.len())
             .ok_or("Preserved profile too large")?;
@@ -2428,25 +2430,28 @@ async fn process_startup_locked(
             atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
             let applied = launch::apply_snapshots(&archive, config, &marker.launch)
                 .and_then(|()| launch::apply_working(&archive, data, &working, false))
-                .and_then(|()| apply(&archive, data, config));
-            if let Err(error) = applied {
-                let original = load_archive(&preservation, data)?;
-                validate_raw(&original)?;
-                launch::apply_working(&original, data, &BTreeMap::new(), true)
-                    .and_then(|()| apply_files(&original, data, config, true))
-                    .and_then(|()| launch::rollback_snapshots(config, &marker.launch))
-                    .map_err(|rollback| format!("Restore failed: {error}. Rollback failed: {rollback}. Original preserved in {}", dir.display()))?;
-                let status = BackupStatus { message: error.clone(), code: Some(BackupStatusCode::Failed), path: None, browser: None };
-                publish_status(&dir, &status)?;
-                marker.phase = RestorePhase::InstallHold;
-                atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
-                install_restore_hold(data).await?;
-                remove_durable(&request_path)?;
-                rotate_before_journal_removal().map_err(|error| error.to_string())?;
-                remove_journal(&journal)?;
-                return Err(error);
-            }
-            let status = BackupStatus { message: String::new(), code: Some(BackupStatusCode::Restored), path: Some(preservation.to_string_lossy().into()), browser: Some(archive.browser) };
+                .and_then(|diagnostics| apply(&archive, data, config).map(|()| diagnostics));
+            let diagnostics = match applied {
+                Ok(diagnostics) => diagnostics,
+                Err(error) => {
+                    let original = load_archive(&preservation, data)?;
+                    validate_raw(&original)?;
+                    launch::apply_working(&original, data, &BTreeMap::new(), true)
+                        .and_then(|_| apply_files(&original, data, config, true))
+                        .and_then(|()| launch::rollback_snapshots(config, &marker.launch))
+                        .map_err(|rollback| format!("Restore failed: {error}. Rollback failed: {rollback}. Original preserved in {}", dir.display()))?;
+                    let status = BackupStatus { message: error.clone(), code: Some(BackupStatusCode::Failed), path: None, browser: None };
+                    publish_status(&dir, &status)?;
+                    marker.phase = RestorePhase::InstallHold;
+                    atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
+                    install_restore_hold(data).await?;
+                    remove_durable(&request_path)?;
+                    rotate_before_journal_removal().map_err(|error| error.to_string())?;
+                    remove_journal(&journal)?;
+                    return Err(error);
+                }
+            };
+            let status = BackupStatus { message: diagnostics, code: Some(BackupStatusCode::Restored), path: Some(preservation.to_string_lossy().into()), browser: Some(archive.browser) };
             publish_status(&dir, &status)?;
             marker.phase = RestorePhase::InstallHold;
             atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;

@@ -24,6 +24,29 @@ folders and their Git metadata, including `@macro`, are outside this archive.
 Copy those projects separately. Unapproved configuration proposals are not
 exported.
 
+Backups also include the Argentic copies retained for Architect launches and the
+per-execution working folders that Macro created for them. Architect library
+artifacts use portable paths. Working-folder contents use native path components
+in the manifest, encoded as URL-safe Base64 without padding. Unix components
+preserve their bytes. Windows components preserve their little-endian UTF-16
+code units. ZIP payloads for those files use fixed-length identifiers derived
+from their manifest keys. Macro can also read earlier working-folder manifests
+that stored text paths.
+
+When restoring onto a filesystem that cannot represent a working-folder name,
+Macro skips that entry and lists it in Diagnostics. If the entry is a directory,
+its subtree is skipped. If names alias on the destination volume, the first
+entry created is kept and the other is reported. The original archive retains
+all entries. The automatic rollback of an interrupted restore requires the
+complete original tree on the original filesystem.
+
+Restoring to another profile moves managed working-folder references. Macro
+rebases absolute symlinks expressed beneath a restored managed working folder,
+including dangling links. External and relative symlinks retain their targets
+when the destination supports them. An absolute external target from a different
+path format is skipped and reported. Macro never copies external link targets or
+uses restored links as paths for writing backup data.
+
 Every portable restoration detaches managed credentials, including on the same
 computer with the same provider IDs. The archive excludes the provider secret
 store, its version-zero/version-one migration backups and pending migration

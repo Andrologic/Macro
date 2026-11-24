@@ -2,6 +2,9 @@ use super::*;
 use crate::architect_launch::resources;
 use sqlx::Row;
 
+mod working_path;
+use working_path::Encoding;
+
 const WORKING: &str = "data/agsdl-working-folders/";
 const SNAPSHOTS: &str = "config/agsdl-snapshots/";
 
@@ -11,20 +14,34 @@ pub(super) struct Manifest {
     directories: BTreeSet<String>,
     links: BTreeMap<String, Link>,
     missing: BTreeSet<String>,
+    // Absent in older archives, which used text paths for working members.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    working_paths: Option<Encoding>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Link {
-    target: PathBuf,
+    target: LinkTarget,
     directory: bool,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum LinkTarget {
+    Legacy(PathBuf),
+    Native {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        managed: Option<String>,
+    },
 }
 
 #[derive(Default)]
 struct References {
     snapshots: BTreeSet<String>,
     // External paths stay in their original database rows.
-    working: BTreeMap<String, (String, PathBuf)>,
+    working: BTreeMap<String, (String, String)>,
 }
 
 fn working_prefix(name: &str) -> Option<&str> {
@@ -36,6 +53,52 @@ fn working_prefix(name: &str) -> Option<&str> {
         })
     })?;
     Some(&name[..WORKING.len() + key.len() + 1 + folder.len()])
+}
+
+fn working_name(data: &Path, path: &Path) -> Result<String> {
+    let relative =
+        working_path::strip_root(path, data).ok_or("Working path is outside the profile")?;
+    let mut parts = relative.components();
+    let root: PathBuf = parts.by_ref().take(3).collect();
+    let mut name = format!("data/{}", archive_relative_path(&root)?);
+    if working_prefix(&name) != Some(name.as_str()) {
+        return Err("Invalid managed working folder".into());
+    }
+    for part in parts {
+        let Component::Normal(part) = part else {
+            return Err("Invalid managed working path".into());
+        };
+        name.push('/');
+        name.push_str(&Encoding::encode(part));
+    }
+    Ok(name)
+}
+
+pub(super) fn encoded_working_file(archive: &Archive, name: &str) -> bool {
+    archive
+        .launch
+        .as_ref()
+        .is_some_and(|manifest| manifest.working_paths.is_some())
+        && working_prefix(name).is_some_and(|prefix| prefix.len() < name.len())
+}
+
+fn database_folder(path: &str, encoding: Option<Encoding>) -> Result<String> {
+    let join_tail = |separators: &[char]| {
+        let tail: Vec<_> = path.rsplitn(4, separators).take(3).collect();
+        match tail.as_slice() {
+            [folder, owner, root] => {
+                let name = format!("data/{root}/{owner}/{folder}");
+                (working_prefix(&name) == Some(name.as_str())).then_some(name)
+            }
+            _ => None,
+        }
+    };
+    match encoding {
+        Some(Encoding::UnixBytes) => join_tail(&['/']),
+        Some(Encoding::WindowsUtf16Le) => join_tail(&['/', '\\']),
+        None => join_tail(&['/']).or_else(|| join_tail(&['/', '\\'])),
+    }
+    .ok_or_else(|| "Invalid managed working folder".into())
 }
 
 fn snapshot_prefix(name: &str) -> Option<&str> {
@@ -69,7 +132,7 @@ fn snapshot_ids(archive: &Archive) -> BTreeSet<&str> {
         .collect()
 }
 
-async fn references(database: &Path) -> Result<References> {
+async fn references(database: &Path, encoding: Option<Encoding>) -> Result<References> {
     let mut db = SqliteConnection::connect_with(
         &SqliteConnectOptions::new()
             .filename(database)
@@ -92,18 +155,8 @@ async fn references(database: &Path) -> Result<References> {
             }
             result.snapshots.insert(id);
             if row.get("owns_working_folder") {
-                let folder = PathBuf::from(row.get::<String, _>("working_folder"));
-                let tail = folder
-                    .ancestors()
-                    .nth(3)
-                    .ok_or("Invalid managed working folder")?;
-                let name = format!(
-                    "data/{}",
-                    archive_relative_path(folder.strip_prefix(tail).map_err(|e| e.to_string())?)?
-                );
-                if working_prefix(&name) != Some(name.as_str()) {
-                    return Err("Invalid managed working folder".into());
-                }
+                let folder: String = row.get("working_folder");
+                let name = database_folder(&folder, encoding)?;
                 result.working.insert(name, (row.get("system_id"), folder));
             }
         }
@@ -145,10 +198,7 @@ fn collect_working(
     for item in walkdir::WalkDir::new(path).follow_root_links(false) {
         let item = item.map_err(|error| error.to_string())?;
         let path = item.path();
-        let name = format!(
-            "data/{}",
-            archive_relative_path(path.strip_prefix(data).map_err(|e| e.to_string())?)?
-        );
+        let name = working_name(data, path)?;
         let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
         if metadata.file_type().is_symlink() {
             #[cfg(windows)]
@@ -159,6 +209,11 @@ fn collect_working(
             #[cfg(not(windows))]
             let directory = false;
             let target = fs::read_link(path).map_err(|error| error.to_string())?;
+            let managed = working_name(data, &target).ok();
+            let target = LinkTarget::Native {
+                path: Encoding::encode(target.as_os_str()),
+                managed,
+            };
             manifest.links.insert(name, Link { target, directory });
         } else if metadata.is_dir() && !storage::is_link_or_reparse_point(&metadata) {
             manifest.directories.insert(name);
@@ -178,7 +233,7 @@ pub(super) async fn capture(
     config: &Path,
     raw: bool,
 ) -> Result<()> {
-    let references = match references(database).await {
+    let references = match references(database, Some(Encoding::NATIVE)).await {
         Ok(references) => references,
         // C3 preserves even an unreadable original database as raw bytes.
         Err(_) if raw => References::default(),
@@ -186,6 +241,8 @@ pub(super) async fn capture(
     };
     let mut manifest = Manifest::default();
     let staging = Arc::new(private_staging(data)?);
+    // Architect creates working folders beneath the canonical profile path.
+    let data = &data.canonicalize().map_err(|error| error.to_string())?;
     for id in references.snapshots {
         let path = snapshot_root(config).join(&id);
         safe_parent(&path, config)?;
@@ -250,20 +307,21 @@ pub(super) async fn capture(
         || !manifest.missing.is_empty()
         || !snapshot_ids(archive).is_empty()
     {
+        manifest.working_paths = (!manifest.directories.is_empty()).then_some(Encoding::NATIVE);
         archive.launch = Some(manifest);
     }
     Ok(())
 }
 
 pub(super) fn check_targets(archive: &Archive, data: &Path, config: &Path) -> Result<()> {
-    let Some(manifest) = &archive.launch else {
+    if archive.launch.is_none() {
         return Ok(());
-    };
-    for name in manifest
-        .directories
-        .iter()
-        .chain(manifest.links.keys())
-        .chain(archive.files.keys().filter(|name| file(name)))
+    }
+    safe_parent(&data.join(resources::WORKING_FOLDERS), data)?;
+    for name in archive
+        .files
+        .keys()
+        .filter(|name| snapshot_prefix(name).is_some())
     {
         let path = destination(name, data, config)?;
         if !fits_existing_file(&path) {
@@ -271,13 +329,23 @@ pub(super) fn check_targets(archive: &Archive, data: &Path, config: &Path) -> Re
                 "Launch resource {name:?} exceeds the destination filesystem path limit"
             ));
         }
-        if let Some(prefix) = working_prefix(name) {
-            safe_parent(&data_path(data, prefix), data)?;
-        } else {
-            safe_parent(&path, config)?;
-        }
+        safe_parent(&path, config)?;
     }
     Ok(())
+}
+
+fn validate_working_name(name: &str, encoding: Option<Encoding>) -> Result<&str> {
+    let prefix = working_prefix(name).ok_or("Invalid launch working path")?;
+    if let Some(encoding) = encoding {
+        if let Some(relative) = name[prefix.len()..].strip_prefix('/') {
+            for part in relative.split('/') {
+                encoding.component(part)?;
+            }
+        }
+    } else {
+        destination(name, Path::new("data"), Path::new("config"))?;
+    }
+    Ok(prefix)
 }
 
 pub(super) fn validate_paths(archive: &Archive) -> Result<()> {
@@ -290,8 +358,7 @@ pub(super) fn validate_paths(archive: &Archive) -> Result<()> {
         };
     };
     for name in &manifest.directories {
-        destination(name, Path::new("data"), Path::new("config"))?;
-        let prefix = working_prefix(name).ok_or("Invalid launch directory")?;
+        let prefix = validate_working_name(name, manifest.working_paths)?;
         if name != prefix
             && !manifest
                 .directories
@@ -307,8 +374,7 @@ pub(super) fn validate_paths(archive: &Archive) -> Result<()> {
             .keys()
             .filter(|name| working_prefix(name).is_some()),
     ) {
-        destination(name, Path::new("data"), Path::new("config"))?;
-        let prefix = working_prefix(name).ok_or("Invalid launch member")?;
+        let prefix = validate_working_name(name, manifest.working_paths)?;
         if name == prefix
             || !paths.insert(name)
             || !manifest
@@ -321,6 +387,23 @@ pub(super) fn validate_paths(archive: &Archive) -> Result<()> {
     for name in archive.files.keys().filter(|name| destination_path(name)) {
         if !file(name) {
             return Err("Invalid launch backup file".into());
+        }
+        if snapshot_prefix(name).is_some() {
+            destination(name, Path::new("data"), Path::new("config"))?;
+        }
+    }
+    for link in manifest.links.values() {
+        match (&link.target, manifest.working_paths) {
+            (LinkTarget::Native { path, managed }, Some(encoding)) => {
+                encoding.link(path)?;
+                if let Some(managed) = managed {
+                    validate_working_name(managed, Some(encoding))?;
+                }
+            }
+            (LinkTarget::Legacy(target), None)
+                if !target.as_os_str().is_empty()
+                    && !target.as_os_str().as_encoded_bytes().contains(&0) => {}
+            _ => return Err("Invalid launch link target".into()),
         }
     }
     for name in &manifest.missing {
@@ -407,7 +490,7 @@ pub(super) async fn validate(archive: &Archive, database: &Path) -> Result<()> {
         // Earlier profile backups only contained the database references.
         return Ok(());
     };
-    let references = references(database).await?;
+    let references = references(database, manifest.working_paths).await?;
     let mut actual: BTreeSet<String> = snapshot_ids(archive)
         .into_iter()
         .map(|id| format!("{SNAPSHOTS}{id}"))
@@ -442,7 +525,7 @@ pub(super) async fn filter_preserved(archive: &mut Archive, database: &Path) -> 
     let Some(manifest) = &mut archive.launch else {
         return Ok(());
     };
-    let references = references(database).await?;
+    let references = references(database, manifest.working_paths).await?;
     let retain = |name: &str| {
         working_prefix(name).is_some_and(|prefix| references.working.contains_key(prefix))
     };
@@ -593,32 +676,37 @@ pub(super) async fn relocate_working(
     owner: &str,
 ) -> Result<BTreeMap<String, PathBuf>> {
     let mut paths = BTreeMap::new();
-    if archive.launch.is_none() {
+    let Some(manifest) = &mut archive.launch else {
         return Ok(paths);
-    }
+    };
     let staging = Arc::new(private_staging(data)?);
     let path = staging.path().join("working.db");
     copy_entry_to_file(&archive.files["data/macro.db"], "data/macro.db", &path)?;
-    let references = references(&path).await?;
+    let references = references(&path, manifest.working_paths).await?;
     if references.working.is_empty() {
         return Ok(paths);
     }
+    let data = data.canonicalize().map_err(|error| error.to_string())?;
     let mut db = connection(&path).await?;
     let mut changed = false;
     let mut targets = BTreeSet::new();
+    let mut legacy_relocations = Vec::new();
     for (name, (id, old)) in references.working {
-        let folder = old.file_name().ok_or("Invalid managed working folder")?;
+        let folder = name.rsplit_once('/').unwrap().1;
+        let mut basename = folder.to_owned();
+        // A run basename can collide when two source owners merge or when
+        // the destination filesystem ignores case. Give each row its own root.
+        while !targets.insert(basename.to_ascii_lowercase()) {
+            basename = format!("run-{}", uuid::Uuid::new_v4().simple());
+        }
         let target = data
             .join(resources::WORKING_FOLDERS)
             .join(owner)
-            .join(folder);
-        if !targets.insert(target.clone()) {
-            return Err("Conflicting managed working folder references".into());
-        }
-        if target != old {
-            let target_text = target
-                .to_str()
-                .ok_or("Invalid managed working folder destination")?;
+            .join(basename);
+        let target_text = target
+            .to_str()
+            .ok_or("Invalid managed working folder destination")?;
+        if target_text != old {
             sqlx::query("UPDATE architect_launch_runs SET working_folder=? WHERE system_id=?")
                 .bind(target_text)
                 .bind(id)
@@ -626,8 +714,27 @@ pub(super) async fn relocate_working(
                 .await
                 .map_err(|e| e.to_string())?;
             changed = true;
+            if manifest.working_paths.is_none() {
+                legacy_relocations.push((PathBuf::from(old), target.clone()));
+            }
         }
         paths.insert(name, target);
+    }
+    for link in manifest.links.values_mut() {
+        if let LinkTarget::Legacy(target) = &mut link.target {
+            for (old, new) in &legacy_relocations {
+                if let Some(suffix) = working_path::strip_root(target, old) {
+                    if target.is_absolute()
+                        && suffix
+                            .components()
+                            .all(|part| matches!(part, Component::Normal(_)))
+                    {
+                        *target = new.join(suffix);
+                        break;
+                    }
+                }
+            }
+        }
     }
     db.close().await.map_err(|e| e.to_string())?;
     if changed {
@@ -637,39 +744,180 @@ pub(super) async fn relocate_working(
     Ok(paths)
 }
 
+struct WorkingRestore<'a> {
+    data: &'a Path,
+    paths: &'a BTreeMap<String, PathBuf>,
+    encoding: Option<Encoding>,
+    raw: bool,
+    skipped: BTreeMap<String, &'static str>,
+}
+
+impl WorkingRestore<'_> {
+    fn path(&self, name: &str) -> Result<Option<PathBuf>> {
+        let prefix = working_prefix(name).ok_or("Invalid launch working folder")?;
+        let mut path = if self.raw {
+            data_path(self.data, prefix)
+        } else {
+            self.paths
+                .get(prefix)
+                .ok_or("Unmapped launch working folder")?
+                .clone()
+        };
+        if let Some(relative) = name[prefix.len()..].strip_prefix('/') {
+            if let Some(encoding) = self.encoding {
+                for part in relative.split('/') {
+                    let Some(component) = encoding.component(part)? else {
+                        return Ok(None);
+                    };
+                    path.push(component);
+                }
+            } else {
+                path.push(relative);
+            }
+        }
+        Ok(fits_existing_file(&path).then_some(path))
+    }
+
+    fn omitted(&self, name: &str) -> bool {
+        std::iter::successors(Some(name), |name| {
+            name.rsplit_once('/').map(|(parent, _)| parent)
+        })
+        .any(|name| self.skipped.contains_key(name))
+    }
+
+    fn omit(&mut self, name: &str, reason: &'static str) -> Result<()> {
+        if self.raw {
+            return Err(format!(
+                "Cannot recover working resource {}: {reason}",
+                self.describe(name)
+            ));
+        }
+        self.skipped.insert(name.to_owned(), reason);
+        Ok(())
+    }
+
+    fn create<T>(
+        &mut self,
+        name: &str,
+        create: impl FnOnce(&Path) -> io::Result<T>,
+    ) -> Result<Option<(PathBuf, T)>> {
+        if self.omitted(name) {
+            return Ok(None);
+        }
+        let Some(path) = self.path(name)? else {
+            self.omit(name, "name or path length unsupported by the destination")?;
+            return Ok(None);
+        };
+        match create(&path) {
+            Ok(value) => Ok(Some((path, value))),
+            Err(error) if unavailable_name(&error, &path) => {
+                self.omit(name, "name conflicts with another entry or is unsupported by the destination filesystem")?;
+                Ok(None)
+            }
+            Err(error) => Err(format!(
+                "Cannot restore working resource {}: {error}",
+                self.describe(name)
+            )),
+        }
+    }
+
+    fn describe(&self, name: &str) -> String {
+        let prefix = working_prefix(name).expect("validated working name");
+        match (self.encoding, name[prefix.len()..].strip_prefix('/')) {
+            (Some(encoding), Some(relative)) => {
+                let parts: Vec<_> = relative
+                    .split('/')
+                    .map(|part| encoding.describe(part))
+                    .collect();
+                format!("{prefix}/{}", parts.join("/"))
+            }
+            _ => format!("{name:?}"),
+        }
+    }
+
+    fn diagnostics(&self) -> String {
+        if self.skipped.is_empty() {
+            return String::new();
+        }
+        let mut report = format!("Skipped {} working-folder entries or directory trees during restore. The source archive retains their contents.", self.skipped.len());
+        for (name, reason) in &self.skipped {
+            let line = format!("\n{}: {reason}", self.describe(name));
+            if report.len() + line.len() > 64 * 1024 {
+                report.push_str("\nFurther entries omitted from this diagnostic.");
+                break;
+            }
+            report.push_str(&line);
+        }
+        report
+    }
+}
+
+fn unavailable_name(error: &io::Error, path: &Path) -> bool {
+    if error.kind() == io::ErrorKind::AlreadyExists {
+        return fs::symlink_metadata(path).is_ok();
+    }
+    // Verify that the volume rejects the name itself. An unrelated I/O
+    // failure during creation must still trigger rollback.
+    invalid_name(error) && fs::symlink_metadata(path).is_err_and(|error| invalid_name(&error))
+}
+
+fn invalid_name(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    return matches!(
+        error.raw_os_error(),
+        Some(libc::ENAMETOOLONG | libc::EINVAL)
+    );
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{ERROR_FILENAME_EXCED_RANGE, ERROR_INVALID_NAME};
+        return error.raw_os_error().is_some_and(|code| {
+            code == ERROR_FILENAME_EXCED_RANGE as i32 || code == ERROR_INVALID_NAME as i32
+        });
+    }
+}
+
 pub(super) fn apply_working(
     archive: &Archive,
     data: &Path,
     paths: &BTreeMap<String, PathBuf>,
     raw: bool,
-) -> Result<()> {
+) -> Result<String> {
     let Some(manifest) = &archive.launch else {
-        return Ok(());
+        return Ok(String::new());
     };
-    let root = data.join(resources::WORKING_FOLDERS);
+    let data = &data.canonicalize().map_err(|error| error.to_string())?;
     if raw {
-        remove_working_tree(data, &root)?;
+        remove_working_tree(data, &data.join(resources::WORKING_FOLDERS))?;
     } else {
-        for target in paths.values() {
+        for target in paths.values().filter(|path| fits_existing_file(path)) {
             remove_working_tree(data, target)?;
         }
     }
-    let target = |name: &str| -> Result<PathBuf> {
-        if raw {
-            return Ok(data_path(data, name));
-        }
-        let prefix = working_prefix(name).ok_or("Invalid launch working folder")?;
-        let folder = paths.get(prefix).ok_or("Unmapped launch working folder")?;
-        Ok(match name.strip_prefix(prefix).unwrap().strip_prefix('/') {
-            Some(relative) => folder.join(relative),
-            None => folder.clone(),
-        })
+    let mut restore = WorkingRestore {
+        data,
+        paths,
+        encoding: manifest.working_paths,
+        raw,
+        skipped: BTreeMap::new(),
     };
     let mut dirs = BTreeSet::new();
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
     for name in &manifest.directories {
-        let path = target(name)?;
-        storage::ensure_staging_dir(data, &path).map_err(|e| e.to_string())?;
-        record_dirs(&mut dirs, &path, data);
+        // The manifest orders each parent before its children. Create each
+        // directory exclusively so aliases cannot merge two subtrees.
+        if let Some((path, ())) = restore.create(name, |path| {
+            if working_prefix(name) == Some(name.as_str()) {
+                storage::ensure_staging_dir(data, path.parent().unwrap())?;
+            }
+            profile::mkdir(&builder, path)
+        })? {
+            record_dirs(&mut dirs, &path, data);
+        }
     }
     let mut written = Vec::with_capacity(FILE_SYNC_BATCH);
     for (name, entry) in archive
@@ -677,24 +925,85 @@ pub(super) fn apply_working(
         .range(WORKING.to_owned()..)
         .take_while(|(name, _)| name.starts_with(WORKING))
     {
-        write_launch_file(name, entry, &target(name)?, data, &mut dirs, &mut written)?;
+        if let Some((_, mut file)) = restore.create(name, |path| {
+            profile::create_private_file(path, entry.executable)
+        })? {
+            entry
+                .copy_verified(name, &mut file)
+                .map_err(|error| error.to_string())?;
+            written.push(file);
+            if written.len() == FILE_SYNC_BATCH {
+                sync_written_files(&mut written)?;
+            }
+        }
     }
     sync_written_files(&mut written)?;
     // Never traverse a restored link. All parents and regular files have
     // already been created and validated against the manifest.
     for (name, link) in &manifest.links {
-        let path = target(name)?;
-        profile::check("symlink", &path).map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&link.target, &path).map_err(|e| e.to_string())?;
-        #[cfg(windows)]
-        if link.directory {
-            std::os::windows::fs::symlink_dir(&link.target, &path).map_err(|e| e.to_string())?;
-        } else {
-            std::os::windows::fs::symlink_file(&link.target, &path).map_err(|e| e.to_string())?;
+        if restore.omitted(name) {
+            continue;
+        }
+        let mut directory = link.directory;
+        let target = match &link.target {
+            LinkTarget::Legacy(target) => Some(target.clone()),
+            LinkTarget::Native { path, managed } => {
+                if let Some(managed) = managed.as_ref().filter(|name| {
+                    !raw && working_prefix(name).is_some_and(|prefix| paths.contains_key(prefix))
+                }) {
+                    directory |= manifest.directories.contains(managed);
+                    if restore.omitted(managed) {
+                        None
+                    } else {
+                        restore.path(managed)?
+                    }
+                } else {
+                    restore
+                        .encoding
+                        .expect("validated link encoding")
+                        .link(path)?
+                }
+            }
+        };
+        let Some(target) = target else {
+            restore.omit(name, "link target is unavailable on the destination")?;
+            continue;
+        };
+        if let Some((_, false)) =
+            restore.create(name, |path| create_working_link(&target, path, directory))?
+        {
+            restore.omit(name, "destination does not support creating this symlink")?;
         }
     }
-    sync_dirs(dirs)
+    sync_dirs(dirs)?;
+    Ok(restore.diagnostics())
+}
+
+fn create_working_link(target: &Path, path: &Path, directory: bool) -> io::Result<bool> {
+    profile::check("symlink", path)?;
+    #[cfg(unix)]
+    let result = {
+        let _ = directory;
+        std::os::unix::fs::symlink(target, path)
+    };
+    #[cfg(windows)]
+    let result = if directory {
+        std::os::windows::fs::symlink_dir(target, path)
+    } else {
+        std::os::windows::fs::symlink_file(target, path)
+    };
+    match result {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => Ok(false),
+        #[cfg(windows)]
+        Err(error)
+            if error.raw_os_error()
+                == Some(windows_sys::Win32::Foundation::ERROR_PRIVILEGE_NOT_HELD as i32) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn remove_working_tree(data: &Path, path: &Path) -> Result<()> {

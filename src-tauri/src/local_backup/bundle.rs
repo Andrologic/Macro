@@ -4,6 +4,7 @@ use super::{
 use base64::{engine::general_purpose::STANDARD, Engine};
 use sha2::Digest;
 use std::{
+    collections::BTreeMap,
     fs::{self, File},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -13,6 +14,12 @@ use tempfile::TempDir;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 const MANIFEST: &str = "profile.json";
+const WORKING_PAYLOAD: &str = "launch-working/";
+
+// The manifest can hold paths longer than a ZIP member name (65,535 bytes).
+fn working_payload(name: &str) -> String {
+    format!("{WORKING_PAYLOAD}{}", super::hash(name.as_bytes()))
+}
 
 #[derive(Clone)]
 pub(super) enum NativeEntry {
@@ -134,7 +141,12 @@ pub(super) fn write(archive: &Archive, file: impl Write + Seek) -> io::Result<()
     for (name, entry) in &archive.files {
         if entry.native.is_some() {
             let size = entry.size(name).map_err(io::Error::other)?;
-            zip.start_file(name, options.large_file(size >= u64::from(u32::MAX)))?;
+            let payload =
+                super::launch::encoded_working_file(archive, name).then(|| working_payload(name));
+            zip.start_file(
+                payload.as_deref().unwrap_or(name),
+                options.large_file(size >= u64::from(u32::MAX)),
+            )?;
             entry.copy_verified(name, &mut zip)?;
         }
     }
@@ -173,6 +185,16 @@ pub(super) fn load(path: &Path) -> Result<Archive> {
         serde_json::from_slice(&bytes).map_err(|e| e.to_string())?
     };
     super::validate_architect_paths(&archive.files)?;
+    let mut working = BTreeMap::new();
+    for name in archive
+        .files
+        .keys()
+        .filter(|name| super::launch::encoded_working_file(&archive, name))
+    {
+        if working.insert(working_payload(name), name).is_some() {
+            return Err("Duplicate working payload in profile backup manifest".into());
+        }
+    }
     let mut members = Vec::new();
     let mut names = std::collections::BTreeSet::new();
     for index in 0..zip.len() {
@@ -184,6 +206,16 @@ pub(super) fn load(path: &Path) -> Result<Archive> {
         if name == MANIFEST {
             continue;
         }
+        let name = if name.starts_with(WORKING_PAYLOAD) {
+            (*working
+                .get(&name)
+                .ok_or("Unexpected working payload in profile backup bundle")?)
+            .clone()
+        } else if super::launch::encoded_working_file(&archive, &name) {
+            return Err("Invalid working payload in profile backup bundle".into());
+        } else {
+            name
+        };
         if !streamed_name(&name)
             || !archive
                 .files
