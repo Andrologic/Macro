@@ -3334,7 +3334,7 @@
     "slashMenuLabel": "Kontext oder Befehl einfügen"
   },
   "backup": {
-    "exclusions": "Projektordner, deren Git-Verlauf und Anbieter-Zugangsdaten sind ausgeschlossen. Sichern Sie Ihre Projekte separat.",
+    "exclusions": "Nicht enthalten: Ordner, die Sie selbst gewählt haben, etwa Ihre Projekte und deren Git-Verlauf. Bewahren Sie davon eine eigene Kopie auf. Zugangsdaten gelangen nie auf einen anderen Computer: Verbinden Sie Anbieter und Werkzeuge nach einer Wiederherstellung erneut.",
     "limitsTitle": "Kompatibilität, Grenzen und private Daten",
     "limits": "Das Sicherungsmanifest darf bis zu 256 MiB groß sein. Architect-Dateien werden separat im Archiv gespeichert. Verwenden Sie dieselbe Macro-Version. Die Wiederherstellung behält die gespeicherten Projektpfade bei und ersetzt das gesamte Profil.",
     "exportHelp": "Lokale Daten beim nächsten Start in einem neuen Archiv speichern.",
@@ -3370,8 +3370,8 @@
     "recoveryActionFailed": "Die Aktion ist fehlgeschlagen. Prüfen Sie die Diagnosedetails.",
     "startupRecovery": "Die Wiederherstellung der Browserdaten konnte nicht abgeschlossen werden. Das native Wiederherstellungsarchiv bleibt erhalten. Prüfen Sie die Diagnose, geben Sie bei Bedarf lokalen Speicher frei und starten Sie Macro erneut.",
     "title": "Sicherung und Wiederherstellung",
-    "scope": "Lokale Macro-Daten: Unterhaltungen, gespeicherte Anhänge, Code-Checkpoints, Entwürfe, wartende Anweisungen, Wiederherstellungsantworten und allgemeine Einstellungen.",
-    "secrets": "Zugangsdaten der Anbieter, MCP-Umgebungsvariablen und Header sind von portablen Exporten ausgeschlossen. Verbinden Sie Anbieter nach der Wiederherstellung erneut. Gespräche und Dateien bleiben private Daten; bewahren Sie das Archiv sicher auf.",
+    "scope": "Eine Sicherung enthält Ihre Architect-Bibliothek (Systeme, Entwürfe und gespeicherte Versionen), Ihre Ausführungen samt Verlauf, die Startressourcen und Arbeitsordner, die Macro dafür angelegt hat, Ihre Unterhaltungen und Ihre Einstellungen.",
+    "secrets": "Zugangsdaten sind von jeder Sicherung ausgeschlossen: Schlüssel für Anbieter, Sprache und Websuche, Geheimnisse von Werkzeugen (Umgebungsvariablen und Header) und Anmeldungen. Verbinden Sie sie nach einer Wiederherstellung erneut, auf diesem Computer ebenso wie auf einem anderen. Unterhaltungen und Dateiinhalte können private Daten enthalten. Das Archiv ist nicht verschlüsselt: Bewahren Sie es sicher auf.",
     "recovery": "Wiederherstellung erforderlich. Die Originaldaten bleiben erhalten.",
     "path": "Absoluter Pfad zur lokalen Sicherungsdatei",
     "export": "Sicherung vorbereiten",

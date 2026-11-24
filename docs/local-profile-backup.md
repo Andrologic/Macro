@@ -12,17 +12,19 @@ when preparing the request and before restoring. A damaged or incompatible
 archive does not replace the profile. Use the same Macro version that created
 the archive.
 
-The profile includes Architect drafts, versions and original recovery envelopes,
-SQLite conversations, messages, stored citation contents,
-code checkpoint histories, private direct checkpoints, global approved
+The profile includes the Architect library (drafts, versions and original
+recovery envelopes), the runs and their history, SQLite conversations,
+messages, stored citation contents, private direct checkpoints, global approved
 configuration, native UI state, message images and composer/questionnaire
 drafts, queued instructions and unsaved assistant recovery responses. Queued
 instructions retain their identity and text but load paused; resuming requires
 an explicit action. Restoring an older archive without these recovery keys
-clears the newer values instead of mixing two profile states. Project source
-folders and their Git metadata, including `@macro`, are outside this archive.
-Copy those projects separately. Unapproved configuration proposals are not
-exported.
+clears the newer values instead of mixing two profile states. Folders you chose
+yourself, such as project source folders and their Git metadata, including
+`@macro`, are outside this archive. Copy those separately. Unapproved
+configuration proposals are not exported. The settings section says the same in
+plain words: what a backup contains, what it leaves out, and that credentials
+are reconnected after a restore.
 
 Backups also include the Argentic copies retained for Architect launches and the
 per-execution working folders that Macro created for them. Architect library
