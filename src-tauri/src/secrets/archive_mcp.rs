@@ -13,6 +13,56 @@ impl ArchiveMcpKey {
     }
 }
 
+/// Both identifiers used before credentials were bound to their destination.
+pub(crate) struct LegacyArchiveMcpKey([String; 2]);
+
+impl LegacyArchiveMcpKey {
+    pub(crate) fn from_digest(digest: [u8; 32]) -> Self {
+        let digest = sha2::digest::Output::<sha2::Sha256>::from(digest);
+        Self([
+            format!("architect-launch:{digest:x}"),
+            format!("archive-mcp:{digest:x}"),
+        ])
+    }
+}
+
+pub(crate) fn has_legacy(key: &LegacyArchiveMcpKey) -> Result<bool, SecretError> {
+    POLICY.read(|data| {
+        Ok(key
+            .0
+            .iter()
+            .any(|id| data.namespaces.archive_mcp.contains_key(id)))
+    })
+}
+
+/// The launch service must prove the destination before attempting this move.
+pub(crate) fn reassociate_legacy(
+    old: &LegacyArchiveMcpKey,
+    new: &ArchiveMcpKey,
+    valid: impl Fn(&str) -> bool,
+) -> Result<bool, SecretError> {
+    POLICY.mutation(|store, mut data| {
+        let keys = &mut data.namespaces.archive_mcp;
+        if let Some(current) = keys.get(&new.0) {
+            return Ok(valid(current));
+        }
+        let mut values = old.0.iter().filter_map(|id| keys.get(id));
+        let Some(value) = values.next() else {
+            return Ok(false);
+        };
+        if !valid(value) || values.any(|other| other != value) {
+            return Ok(false);
+        }
+        let value = value.clone();
+        for id in &old.0 {
+            keys.remove(id);
+        }
+        keys.insert(new.0.clone(), value);
+        store.write_file(&data)?;
+        Ok(true)
+    })
+}
+
 pub(super) fn legacy_id(id: &str) -> bool {
     id.strip_prefix("architect-launch:").is_some_and(|digest| {
         digest.len() == 64

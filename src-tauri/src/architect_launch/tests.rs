@@ -959,11 +959,17 @@ async fn mcp_qualifies_retained_code_and_defends_against_legacy_secret_names() {
     }
 }
 
+fn legacy_secret_id(input: &VersionInput, namespace: &str, server: &str, name: &str) -> String {
+    let digest = Sha256::digest(
+        serde_json::to_vec(&(&input.key.blueprint_id, &input.origin, server, name)).unwrap(),
+    );
+    format!("{namespace}:{digest:x}")
+}
+
 #[tokio::test]
 async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
     let _guard = crate::secrets::lock_test_store();
     let data = tempfile::tempdir().unwrap();
-    crate::secrets::init(data.path()).unwrap();
     let mut doc = manifest();
     doc["mcpServers"] = json!({"used":{"command":["sh","./serve.sh"]},"spare":{"command":["sh"]}});
     doc["mcpFiles"] = json!({"used":["serve.sh"]});
@@ -973,6 +979,15 @@ async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
     let input = VersionInput::read(&pool, &Storage::new(data.path()), version)
         .await
         .unwrap();
+    let old_id = legacy_secret_id(&input, "architect-launch", "used", "TOKEN");
+    fs::write(
+        data.path().join("provider-secrets.json"),
+        json!({"version": 2, "namespaces": {"providers": { (old_id.clone()): "TOKEN" }}})
+            .to_string(),
+    )
+    .unwrap();
+    crate::secrets::init(data.path()).unwrap();
+    assert_eq!(crate::secrets::get_api_key(&old_id).unwrap(), None);
     let projected = input.preview().unwrap();
     let manager = manager_for_test(data.path()).await;
     {
@@ -1008,13 +1023,14 @@ async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
     let provider = secret_provider(&input, &servers).unwrap();
     let source = input.source_revision();
     assert!(provider(&source, "used", &names).is_none());
-    for name in &names {
-        archive_mcp::set(&input.secret_id("used", name, None).unwrap(), name).unwrap();
-    }
-    assert!(secret_requirements(&input, &servers)
-        .unwrap()
+    archive_mcp::set(&input.secret_id("used", "SECOND", None).unwrap(), "SECOND").unwrap();
+    let requirements = secret_requirements(&pool, &Storage::new(data.path()), &input, &servers)
+        .await
+        .unwrap();
+    assert!(requirements
         .iter()
-        .all(|secret| secret.stored));
+        .all(|secret| secret.stored && !secret.legacy_reset_required));
+    assert!(!archive_mcp::has_legacy(&input.legacy_secret_key("used", "TOKEN").unwrap()).unwrap());
     assert!(provider(&source, "spare", &names).is_none());
     assert!(provider(&source, "used", &names[..1]).is_none());
     let mut foreign = source.clone();

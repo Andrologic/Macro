@@ -143,6 +143,7 @@
     "folderNone": "Ninguna carpeta elegida",
     "secretNeeded": "La herramienta «{{server}}» necesita «{{name}}».",
     "secretValue": "Valor de {{name}}",
+    "legacySecretReset": "Macro no pudo verificar el destino del secreto anterior. Vuelve a introducirlo para este destino.",
     "secretHelp": "Se guarda en la caja fuerte de este equipo, para este sistema y no para una versión.",
     "secretSaved": "«{{name}}» guardado.",
     "secretFailed": "Macro no pudo guardar este secreto.",

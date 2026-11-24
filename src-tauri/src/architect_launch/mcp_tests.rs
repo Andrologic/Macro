@@ -460,7 +460,12 @@ async fn remote_credential_rotation_is_shared_only_by_origin_and_delivery() {
     let first_provider = secret_provider(&input, &first).unwrap();
 
     archive_mcp::set(&key(&first), "original").unwrap();
-    assert!(!secret_requirements(&input, &moved).unwrap()[0].stored);
+    assert!(
+        !secret_requirements(&pool, &Storage::new(data.path()), &input, &moved)
+            .await
+            .unwrap()[0]
+            .stored
+    );
     archive_mcp::set(&key(&moved), "new-server").unwrap();
     assert_eq!(
         first_provider(&source, "issues", &names).unwrap()[&names[0]],
@@ -475,6 +480,123 @@ async fn remote_credential_rotation_is_shared_only_by_origin_and_delivery() {
         secret_provider(&input, &moved).unwrap()(&source, "issues", &names).unwrap()[&names[0]],
         "new-server"
     );
+}
+
+#[tokio::test]
+async fn legacy_remote_secrets_require_complete_history_with_the_same_origin_and_delivery() {
+    let _guard = crate::secrets::lock_test_store();
+    let first_url = "https://example.invalid/mcp";
+    for (second_url, expected) in [
+        ("https://EXAMPLE.invalid:443/other-path", true),
+        ("https://example.invalid:8443/mcp", false),
+    ] {
+        let data = tempfile::tempdir().unwrap();
+        let mut doc = manifest();
+        doc["mcpServers"] = json!({"issues":{"url": first_url}});
+        doc["secrets"] = json!({"issues":["ISSUES_TOKEN"]});
+        doc["flow"] = json!({
+            "entry":"tool","steps":{"tool":{"type":"call","mcp":{"server":"issues","tool":"lookup"}}}
+        });
+        let (pool, version) = archive_fixture(data.path(), doc.clone()).await;
+        let storage = Storage::new(data.path());
+        let blueprint = version.blueprint_id.clone();
+        let draft = storage.open_draft_project(&pool, &blueprint).await.unwrap();
+        // Edit the retained project manifest, preserving the secret declaration file.
+        doc["mcpServers"]["issues"]["url"] = json!(second_url);
+        doc["secrets"] = json!({"file":"secrets.json"});
+        let edits = serde_json::from_value(json!({"files":[
+            {"kind":"write","path":"agsdl.json","text":doc.to_string()}
+        ]}))
+        .unwrap();
+        let saved = storage
+            .edit_project(&pool, &blueprint, draft.project.revision, edits, true)
+            .await
+            .unwrap();
+        storage
+            .freeze(&pool, blueprint.clone(), saved.revision, None, None)
+            .await
+            .unwrap();
+
+        let input = VersionInput::read(&pool, &storage, version.clone())
+            .await
+            .unwrap();
+        let name = "ISSUES_TOKEN";
+        let id = legacy_secret_id(&input, "archive-mcp", "issues", name);
+        fs::write(
+            data.path().join("provider-secrets.json"),
+            json!({"version": 2, "namespaces": {"archiveMcp": { (id): TOKEN }}}).to_string(),
+        )
+        .unwrap();
+        crate::secrets::init(data.path()).unwrap();
+
+        let settings = remote_settings();
+        let launch = |url, settings| {
+            let names = vec![name.to_owned()];
+            mcp::LaunchMcp {
+                remote: BTreeMap::from([(
+                    "issues".into(),
+                    mcp::RemoteGrant::new(url::Url::parse(url).unwrap(), &names, settings).unwrap(),
+                )]),
+                secrets: BTreeMap::from([("issues".into(), names)]),
+                ..Default::default()
+            }
+        };
+        let mut changed = settings.clone();
+        changed.delivery.insert(
+            name.into(),
+            mcp::SecretDelivery::Header {
+                name: "X-Token".into(),
+            },
+        );
+        let different_delivery = launch(first_url, &changed);
+        let result = secret_requirements(&pool, &storage, &input, &different_delivery)
+            .await
+            .unwrap();
+        assert!(!result[0].stored && result[0].legacy_reset_required);
+
+        let first = launch(first_url, &settings);
+        let result = secret_requirements(&pool, &storage, &input, &first)
+            .await
+            .unwrap();
+        assert_eq!(result[0].stored, expected);
+        assert_eq!(result[0].legacy_reset_required, !expected);
+        let current = secret_provider(&input, &first).unwrap();
+        let resolved = current(&input.source_revision(), "issues", &[name.into()]);
+        assert_eq!(
+            resolved.as_ref().map(|values| values[name].as_str()),
+            expected.then_some(TOKEN)
+        );
+
+        let next_version = VersionKey {
+            blueprint_id: blueprint,
+            number: 2,
+        };
+        let next = VersionInput::read(&pool, &storage, next_version.clone())
+            .await
+            .unwrap();
+        let recorded = next.preview().unwrap();
+        let server = &recorded.mcp_servers["issues"];
+        assert_eq!(server.required_secrets, [name]);
+        assert!(matches!(&server.transport, McpTransport::Remote { url } if url == second_url));
+        let second = launch(second_url, &settings);
+        let result = secret_requirements(&pool, &storage, &next, &second)
+            .await
+            .unwrap();
+        assert_eq!(result[0].stored, expected);
+        assert_eq!(result[0].legacy_reset_required, !expected);
+
+        if !expected {
+            // Deleting the conflicting version does not prove where the old value went.
+            drop(next);
+            drop(input);
+            storage.delete_version(&pool, next_version).await.unwrap();
+            let input = VersionInput::read(&pool, &storage, version).await.unwrap();
+            let result = secret_requirements(&pool, &storage, &input, &first)
+                .await
+                .unwrap();
+            assert!(!result[0].stored && result[0].legacy_reset_required);
+        }
+    }
 }
 
 #[test]

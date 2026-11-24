@@ -143,6 +143,7 @@
     "folderNone": "선택한 폴더 없음",
     "secretNeeded": "도구 “{{server}}”에 “{{name}}”이(가) 필요합니다.",
     "secretValue": "{{name}} 값",
+    "legacySecretReset": "Macro에서 이전 비밀값의 전송 대상을 확인하지 못했습니다. 이 대상에 사용할 값을 다시 입력하세요.",
     "secretHelp": "이 컴퓨터의 보관함에 특정 버전이 아닌 이 시스템용으로 저장됩니다.",
     "secretSaved": "“{{name}}”을(를) 저장했습니다.",
     "secretFailed": "이 비밀 정보를 저장하지 못했습니다.",

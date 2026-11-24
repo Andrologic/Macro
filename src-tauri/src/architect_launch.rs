@@ -22,6 +22,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod legacy_mcp;
+use legacy_mcp::secret_requirements;
 mod resources;
 pub(crate) mod start;
 pub(crate) use resources::cleanup;
@@ -579,6 +581,7 @@ struct SecretRequirement {
     server: String,
     name: String,
     stored: bool,
+    legacy_reset_required: bool,
 }
 
 fn direct_mcp(preview: &ImportPreview, id: &str) -> bool {
@@ -589,27 +592,6 @@ fn direct_mcp(preview: &ImportPreview, id: &str) -> bool {
 }
 
 type ServerSecrets = BTreeMap<String, Vec<String>>;
-
-fn secret_requirements(
-    input: &VersionInput,
-    launch_mcp: &mcp::LaunchMcp,
-) -> Result<Vec<SecretRequirement>> {
-    let mut requirements = Vec::new();
-    for (server, names) in &launch_mcp.secrets {
-        let remote = launch_mcp.remote.get(server);
-        for name in names {
-            let stored = archive_mcp::get(&input.secret_id(server, name, remote)?)
-                .map_err(|_| vault_error())?
-                .is_some_and(|value| mcp::valid_secret(&value, remote.is_some()));
-            requirements.push(SecretRequirement {
-                server: server.clone(),
-                name: name.clone(),
-                stored,
-            });
-        }
-    }
-    Ok(requirements)
-}
 
 fn secret_provider(
     input: &VersionInput,
@@ -1079,7 +1061,7 @@ pub(crate) async fn prepare(
             Err(error) => blockers.push(Blocker::codex(error.code)),
         }
     }
-    let secrets = secret_requirements(&input, &launch_mcp)?;
+    let secrets = secret_requirements(pool, &Storage::new(app_data), &input, &launch_mcp).await?;
     let mut db = pool.acquire().await?;
     let machine = machine_id(manager.root())?;
     let consent_token = consent_token(&mut db, &input, &summary, &machine).await?;

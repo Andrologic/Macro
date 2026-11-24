@@ -24,6 +24,7 @@ export interface LaunchSecret {
   server: string;
   name: string;
   stored: boolean;
+  legacyResetRequired?: boolean;
 }
 
 export type McpToolEffect = "allow" | "ask" | "deny";

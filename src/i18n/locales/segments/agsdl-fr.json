@@ -143,6 +143,7 @@
     "folderNone": "Aucun dossier choisi",
     "secretNeeded": "L’outil « {{server}} » a besoin de « {{name}} ».",
     "secretValue": "Valeur de {{name}}",
+    "legacySecretReset": "Macro n’a pas pu vérifier la destination de l’ancien secret. Saisissez-le à nouveau pour cette destination.",
     "secretHelp": "Rangé dans le coffre de cet ordinateur, pour ce système et non pour une version.",
     "secretSaved": "« {{name}} » enregistré.",
     "secretFailed": "Macro n’a pas pu enregistrer ce secret.",

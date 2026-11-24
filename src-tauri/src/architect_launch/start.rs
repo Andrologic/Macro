@@ -142,10 +142,14 @@ pub(crate) async fn launch(
         )
         .await?;
     }
-    if let Some(secret) = secret_requirements(&input, &launch_mcp)?
-        .iter()
-        .find(|secret| !secret.stored)
-    {
+    let secrets = secret_requirements(
+        runtime.pool,
+        &Storage::new(runtime.app_data),
+        &input,
+        &launch_mcp,
+    )
+    .await?;
+    if let Some(secret) = secrets.iter().find(|secret| !secret.stored) {
         return Err(launch_failure("MCP_SECRETS_UNAVAILABLE", &secret.server));
     }
 

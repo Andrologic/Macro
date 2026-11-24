@@ -53,6 +53,9 @@ export function SecretRow({ version, secret, configuration, disabled, onSaved }:
       <Icon name="lock" size={13} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden="true" />
       <span className="min-w-0 break-words">{t("agsdl.launch.secretNeeded", { server: secret.server, name: secret.name })}</span>
     </p>
+    {secret.legacyResetRequired && <p className="!m-0 pl-5 text-[11px] text-muted-foreground">
+      {t("agsdl.launch.legacySecretReset")}
+    </p>}
     <div className="flex items-center gap-2 pl-5">
       <Input type="password" autoComplete="off" spellCheck={false} className="!h-7 min-w-0 flex-1 text-xs" value={value}
         disabled={disabled || pending} aria-label={t("agsdl.launch.secretValue", { name: secret.name })}

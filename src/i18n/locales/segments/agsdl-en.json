@@ -143,6 +143,7 @@
     "folderNone": "No folder chosen",
     "secretNeeded": "The tool “{{server}}” needs “{{name}}”.",
     "secretValue": "Value of {{name}}",
+    "legacySecretReset": "Macro could not verify where the old secret was used. Enter it again for this destination.",
     "secretHelp": "Kept in this computer’s vault, for this system and not for a single version.",
     "secretSaved": "“{{name}}” saved.",
     "secretFailed": "Macro could not save this secret.",
