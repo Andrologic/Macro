@@ -850,6 +850,62 @@ async fn invalid_endpoint_blocks_equipment_or_direct_calls_but_not_excluded_equi
 }
 
 #[tokio::test]
+async fn archive_start_skips_a_host_denied_endpoint_with_a_declared_shell_call() {
+    let data = tempfile::tempdir().unwrap();
+    let mut doc = manifest();
+    doc["agents"]["worker"]["mcpServers"] = json!(["issues"]);
+    doc["agents"]["worker"]["permissions"] = json!({
+        "preset":"read-only","rules":[{"action":"mcp","match":"issues/read","effect":"allow"}],
+    });
+    doc["mcpServers"] = json!({"issues":{"url":"http://example.invalid/issues"}});
+    // Qualification reads every declared step. Leave the composition uncalled
+    // so the real Start path is exercised even without native shell execution.
+    doc["compositions"] = json!({"check":{
+        "parameters":[],"entry":"shell","steps":{
+            "shell":{"type":"call","command":"echo checked","next":{"output":"done"}},
+        },"outputs":["done"],
+    }});
+    let (pool, version) = archive_fixture(data.path(), doc).await;
+    let manager = manager_for_test(data.path()).await;
+    observe_fixture(&manager);
+    set_host_ceiling(
+        &manager,
+        json!({
+            "preset":"read-only","rules":[{"action":"mcp","match":"issues","effect":"deny"}],
+        }),
+    )
+    .await;
+    let prepared = preview(&manager, &pool, data.path(), version.clone(), None).await;
+    assert!(prepared.blockers.is_empty());
+    assert!(prepared
+        .mcp_notes
+        .iter()
+        .any(|note| note.server == "issues" && note.unsupported_endpoint));
+    assert!(!prepared.agent_mcp["worker"]["issues"].equipped);
+
+    let host = HostState::new();
+    let agent = Arc::new(ScriptedAgent::default());
+    agent.install(&host);
+    let receipt = start::launch(
+        runtime(&host, &manager, &pool, data.path()),
+        request(version, prepared.consent_token),
+    )
+    .await
+    .unwrap();
+    let authored = &receipt.capture.authored_source;
+    let document: Value = serde_json::from_str(authored).unwrap();
+    assert_eq!(
+        document["compositions"]["check"]["steps"]["shell"]["type"],
+        "call"
+    );
+    assert!(crate::agsdl_host_capture::product_slice030(authored, None)
+        .is_some_and(|diagnostic| diagnostic.pointer == "/mcpServers/issues/url"));
+    let id = &receipt.capture.identity.system_start_id;
+    agent.wait(&host, id).await.unwrap();
+    remove_test_snapshot(&pool, &manager, id).await;
+}
+
+#[tokio::test]
 async fn archive_launch_dispatches_valid_direct_call_with_an_excluded_invalid_endpoint() {
     let _guard = crate::secrets::lock_test_store();
     let data = tempfile::tempdir().unwrap();

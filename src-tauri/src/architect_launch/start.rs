@@ -125,9 +125,10 @@ pub(crate) async fn launch(
     }
     let mut summary = permissions(&preview, &launch_mcp)?;
     record_host_permissions(&mut summary, &policy.agsdl_host_permissions)?;
-    record_host_permissions(&mut summary, ceiling.permissions())?;
+    let host_permissions = ceiling.permissions().clone();
+    record_host_permissions(&mut summary, &host_permissions)?;
     let mcp_ceiling = (!launch_mcp.agents.is_empty())
-        .then(|| serde_json::to_value(ceiling.permissions()))
+        .then(|| serde_json::to_value(&host_permissions))
         .transpose()?;
     drop(ceiling);
     let machine = machine_id(runtime.manager.root())?;
@@ -255,6 +256,7 @@ pub(crate) async fn launch(
         call_permissions_json: call_permissions.to_string(),
         call_scope_json: scope.to_string(),
         permission_notice030: false,
+        archive_host_permissions: Some(host_permissions),
     };
     let preflight = material.public();
     if !preflight.runtime_supported || !preflight.static_valid {

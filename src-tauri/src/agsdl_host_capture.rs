@@ -78,6 +78,7 @@ pub(crate) struct CompilationCapture {
     pub call_permissions_json: String,
     pub call_scope_json: String,
     pub(crate) permission_notice030: bool,
+    pub(crate) archive_host_permissions: Option<crate::agsdl_permissions::RequestedPermissions>,
 }
 
 #[cfg(test)]
@@ -530,6 +531,7 @@ pub(crate) async fn compile_input(
         call_permissions_json,
         call_scope_json,
         permission_notice030,
+        archive_host_permissions: None,
     })
 }
 
@@ -582,21 +584,29 @@ impl CompilationCapture {
         )
     }
 
-    fn start_product_diagnostic(&self, plan: Option<&str>) -> Option<PreflightDiagnostic> {
-        if self.source.owner.project_id == crate::architect_launch::PROJECT_ID {
-            if let Ok(mut document) = exact_json::value(&self.authored_source) {
-                // Agent-only archives can declare unused endpoints. Archive
-                // admission filters MCP by reachable calls, and the original
-                // document remains the input and identity of the compiler.
-                if !declared_steps030(&document).any(|(_, step)| step["type"] == "call") {
-                    if let Some(object) = document.as_object_mut() {
-                        object.remove("mcpServers");
-                    }
-                    return product_slice030(&document.to_string(), plan);
-                }
-            }
+    fn product_diagnostic(
+        &self,
+        authored: &Value,
+        compiled: Option<&str>,
+    ) -> Option<PreflightDiagnostic> {
+        match argentic_runtime::api::qualify_product(
+            authored,
+            compiled,
+            self.archive_host_permissions.as_ref(),
+        ) {
+            Ok(report) => report
+                .blocking_diagnostic()
+                .map(|diagnostic| PreflightDiagnostic {
+                    code: diagnostic.code.clone(),
+                    pointer: diagnostic.pointer.clone(),
+                    message: diagnostic.message.clone(),
+                }),
+            Err(error) => Some(PreflightDiagnostic {
+                code: error.code,
+                pointer: error.pointer,
+                message: error.message,
+            }),
         }
-        product_slice030(&self.authored_source, plan)
     }
 
     pub(crate) fn start_material030_checked(
@@ -742,7 +752,7 @@ impl CompilationCapture {
         {
             return Err(refuse());
         }
-        if let Some(diagnostic) = self.start_product_diagnostic(Some(plan_json)) {
+        if let Some(diagnostic) = self.product_diagnostic(&authored, Some(plan_json)) {
             return Err(failure(
                 &diagnostic.code,
                 &diagnostic.pointer,
@@ -944,8 +954,15 @@ impl CompilationCapture {
                 message: "Host or project settings limit this run to read-only access, including agents requesting workspace writes.".into(),
             });
         }
-        let product_diagnostic = self
-            .start_product_diagnostic(self.result.get("compiledPlanJson").and_then(Value::as_str));
+        let product_diagnostic =
+            exact_json::value(&self.authored_source)
+                .ok()
+                .and_then(|authored| {
+                    self.product_diagnostic(
+                        &authored,
+                        self.result.get("compiledPlanJson").and_then(Value::as_str),
+                    )
+                });
         let product_supported = product_diagnostic.is_none();
         native_diagnostics.extend(product_diagnostic);
         let incomplete = findings.len().saturating_add(native_diagnostics.len()) > 64;
@@ -1361,6 +1378,7 @@ mod start_material030_tests {
                 call_permissions_json: json!({"mode":"Implement"}).to_string(),
                 call_scope_json: json!({"root":"/synthetic"}).to_string(),
                 permission_notice030: false,
+                archive_host_permissions: None,
                 native_registry_json: ticket.to_string(),
             },
             request,
