@@ -123,6 +123,28 @@ export default function ArchitectLaunchDialog({ initialVersion, schedule, onClos
   const versionMissing = !!systems && requestedNumber !== undefined && !version;
   const versionNumber = version?.number;
 
+  const reset = useCallback(() => {
+    setFieldInputs(new Map());
+    setPreview(undefined);
+    setConfiguration(undefined);
+    setModelOverrides({});
+    setConfirmedFolderToken(null);
+    setProblem(undefined);
+    setNotice("");
+    setConsent(false);
+  }, []);
+  const handleUnavailableArchive = useCallback((key: VersionKey) => {
+    if (alwaysLatest) {
+      reset();
+      setMessage("");
+      setSystemsRevision(value => value + 1);
+    } else {
+      setNumber(key.number);
+    }
+    setConsent(false);
+    setUnavailableVersion(key);
+  }, [alwaysLatest, reset]);
+
   useEffect(() => {
     let active = true;
     setSystemsFailed(false);
@@ -146,15 +168,13 @@ export default function ArchitectLaunchDialog({ initialVersion, schedule, onClos
       setPreview(undefined);
       setChecking(false);
       if (failureCode(failure) === "ARCHIVE_UNAVAILABLE") {
-        setNumber(versionNumber);
-        setUnavailableVersion({ blueprintId, number: versionNumber });
-        if (alwaysLatest) setSystemsRevision(value => value + 1);
+        handleUnavailableArchive({ blueprintId, number: versionNumber });
       } else {
         setProblem({ ...failureText(failure, t), recheck: true });
       }
     });
     return () => { active = false; };
-  }, [blueprintId, versionNumber, configuration, modelOverrides, revision, t, alwaysLatest]);
+  }, [blueprintId, versionNumber, configuration, modelOverrides, revision, t, handleUnavailableArchive]);
 
   const current = preview?.version.blueprintId === blueprintId && preview.version.number === versionNumber ? preview : undefined;
   const folderConfirmed = !!current?.folderReuseToken && current.folderReuseToken === confirmedFolderToken;
@@ -177,16 +197,6 @@ export default function ArchitectLaunchDialog({ initialVersion, schedule, onClos
     setChecking(true);
     setRevision(value => value + 1);
   }, []);
-  const reset = () => {
-    setFieldInputs(new Map());
-    setPreview(undefined);
-    setConfiguration(undefined);
-    setModelOverrides({});
-    setConfirmedFolderToken(null);
-    setProblem(undefined);
-    setNotice("");
-    setConsent(false);
-  };
   const changeScheduleFields = (next: ScheduleFields) => {
     const nextNumber = next.policy.alwaysLatest ? latestNumber : number ?? usable[0]?.number;
     if (nextNumber !== versionNumber) reset();
@@ -263,13 +273,7 @@ export default function ArchitectLaunchDialog({ initialVersion, schedule, onClos
         if (isFolderFailure(code)) setConfirmedFolderToken(null);
         recheck();
       } else if (code === "ARCHIVE_UNAVAILABLE") {
-        if (alwaysLatest) {
-          reset();
-          setSystemsRevision(value => value + 1);
-        }
-        setConsent(false);
-        setNumber(current.version.number);
-        setUnavailableVersion(current.version);
+        handleUnavailableArchive(current.version);
       } else {
         const text = failureText(failure, t);
         if (code.startsWith("INVALID_SCHEDULE_")) text.message = t("agsdl.schedule.invalidTiming");
@@ -339,6 +343,10 @@ export default function ArchitectLaunchDialog({ initialVersion, schedule, onClos
       {noVersion && <div role="status" className="space-y-2"><p className="!m-0">{t("agsdl.launch.noVersion")}</p>{openArchitect}</div>}
       {versionMissing && <div role="alert" className="space-y-1">
         <p className="!m-0 text-red-500">{t("agsdl.launch.versionMissing", { number: requestedNumber })}</p>
+        {alwaysLatest && <button type="button" className="agsdl-link" onClick={() => {
+          setUnavailableVersion(undefined);
+          setSystemsRevision(value => value + 1);
+        }}>{t("agsdl.retry")}</button>}
         {!alwaysLatest && usable.length > 0 && <Select className={selectClass} aria-label={t("agsdl.launch.versionLabel")} value=""
           onChange={event => { setNumber(Number(event.target.value)); reset(); }}>
           <option value="" disabled>{t("agsdl.launch.chooseVersion")}</option>

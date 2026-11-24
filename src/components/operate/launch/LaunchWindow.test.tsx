@@ -814,3 +814,53 @@ it("refreshes the latest version when the prepared archive disappears before sav
   await click(primary());
   expect(onSaved).toHaveBeenCalledTimes(1);
 });
+
+it("clears the unavailable version's inputs when preparation falls back to an older archive", async () => {
+  let remaining = versions;
+  install(args => {
+    const version = args.version as typeof archive;
+    if (version.number === 2) {
+      remaining = versions.filter(option => option.number !== 2);
+      throw { code: "ARCHIVE_UNAVAILABLE" };
+    }
+    return preview({ version, launchFields: {
+      version: "macro-launch-fields/1",
+      fields: [{ key: "ticket", label: "Ticket", type: "text", required: true }],
+    } });
+  }, undefined, () => remaining);
+  view = createHost();
+  await view.render(<ArchitectLaunchDialog initialVersion={archive} schedule={{ onSaved: () => {}, existing: {
+    id: "schedule-1", version: archive, systemLabel: "QA", latestNumber: archive.number,
+    nextAtMs: new Date("2098-01-02T09:30").getTime(), suspended: false, starting: false,
+    issueCode: null, issueAtMs: null, configuration: { workingFolder: "/previous" }, startMessage: null,
+    modelOverrides: { worker: { name: "previous" } }, launchValues: { ticket: "previous" },
+    policy: { catchUp: true, allowOverlap: false, alwaysLatest: true },
+  } }} />);
+  await flush();
+  expect(dialog().querySelector("textarea")?.value).toBe("");
+  expect(primary().disabled).toBe(true);
+  const prepared = calls.filter(call => call.command === "architect_launch_prepare");
+  expect(prepared.at(-1)?.args).toMatchObject({ version: { ...archive, number: 1 }, modelOverrides: {} });
+  expect(prepared.at(-1)?.args.configuration).toBeFalsy();
+});
+
+it("retries preparation when the listed latest archive becomes readable again", async () => {
+  let readable = false;
+  install(args => {
+    const version = args.version as typeof archive;
+    if (version.number === 2 && !readable) throw { code: "ARCHIVE_UNAVAILABLE" };
+    return preview({ version });
+  });
+  view = createHost();
+  await view.render(<ArchitectLaunchDialog initialVersion={{ ...archive, number: 1 }} schedule={{ onSaved: () => {} }} />);
+  await flush();
+  await fillField(dialog().querySelector('input[type="datetime-local"]')!, "2098-01-02T09:30");
+  await click(byText("label", "Always use the latest version", dialog())!.querySelector("input"));
+  await flush();
+  expect(primary().disabled).toBe(true);
+  readable = true;
+  await click(byText("button", "Retry", dialog()));
+  await flush();
+  expect(primary().disabled).toBe(false);
+  expect(dialog().querySelector("button[aria-expanded]")?.textContent).toContain("Version 2");
+});
