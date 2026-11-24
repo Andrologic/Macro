@@ -78,12 +78,18 @@ async fn standalone_post042_matches_migrated_macro_schema_and_constraints() {
             .fetch_all(&macro_pool)
             .await
             .unwrap();
-    let expected = objects(&macro_pool).await;
+    let pre_052 = create_pool(&temp.path().join("macro-pre-052.sqlite"))
+        .await
+        .unwrap();
+    operate_inbox::remove_delete_reference_schema(&mut pre_052.acquire().await.unwrap())
+        .await
+        .unwrap();
+    let expected = objects(&pre_052).await;
     assert!(!expected.is_empty());
     for pool in [&standalone_file, &standalone_memory] {
         assert_eq!(objects(pool).await, expected);
     }
-    for pool in [&macro_pool, &standalone_file, &standalone_memory] {
+    for pool in [&macro_pool, &pre_052, &standalone_file, &standalone_memory] {
         constraint_probe(pool).await;
     }
     let after = sqlx::query_as::<_, (i64, String, String)>(
@@ -94,6 +100,7 @@ async fn standalone_post042_matches_migrated_macro_schema_and_constraints() {
     .unwrap();
     assert_eq!(before, after);
     macro_pool.close().await;
+    pre_052.close().await;
     standalone_file.close().await;
     standalone_memory.close().await;
 }
@@ -119,4 +126,36 @@ async fn macro_retains_call_clock_and_retirement_migration_ids() {
             (42, "042_retire_execution020".into())
         ]
     );
+}
+
+#[tokio::test]
+async fn macro_052_retention_guards_require_matching_delete_authorization() {
+    let temp = tempfile::tempdir().unwrap();
+    let pool = create_pool(&temp.path().join("macro.sqlite"))
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::raw_sql(r#"
+        INSERT INTO engine_flow030_runs VALUES ('first','flow-1','snapshot','epoch','{}','{}','{}');
+        INSERT INTO engine_flow030_runs VALUES ('second','flow-2','snapshot','epoch','{}','{}','{}');
+        INSERT INTO engine_start030_requests VALUES ('first','{"entry":{"deliveryId":"one"}}','first','flow-1','snapshot','epoch','{}','{}');
+        INSERT INTO engine_start030_requests VALUES ('second','{"entry":{"deliveryId":"two"}}','second','flow-2','snapshot','epoch','{}','{}');
+        INSERT INTO operate_run_deletions VALUES ('first','flow-1');
+    "#).execute(&mut *tx).await.unwrap();
+
+    assert!(
+        sqlx::query("DELETE FROM engine_start030_entries WHERE delivery_id='two'")
+            .execute(&mut *tx)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        sqlx::query("DELETE FROM engine_start030_entries WHERE delivery_id='one'")
+            .execute(&mut *tx)
+            .await
+            .unwrap()
+            .rows_affected(),
+        1
+    );
+    tx.rollback().await.unwrap();
 }
