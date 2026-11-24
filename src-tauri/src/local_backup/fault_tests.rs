@@ -1182,6 +1182,7 @@ async fn profile_fault_assertions_detect_deliberate_mutations() {
         ("skip-member-checksum", "local_backup::qualification::damaged_preservation_blocks_recovery_and_retains_journal_for_retry"),
         ("classify-disk-full-as-permanent", "local_backup::fault_tests::disk_full_during_migration_keeps_rows_retryable"),
         ("skip-restore-space-check", "local_backup::fault_tests::restore_space_check_counts_preservation_and_both_volumes"),
+        ("treat-eexist-as-alias", "local_backup::fault_tests::false_working_name_collision_rolls_back"),
         #[cfg(unix)]
         ("reject-symlinked-profile-root", "local_backup::fault_tests::relocated_profile_opens_and_exports_through_symlinks"),
         #[cfg(unix)]
@@ -1750,6 +1751,21 @@ async fn backup_restores_a_deleted_runs_owned_resources() {
 async fn launch_resources_roll_back_with_the_profile_after_io_failure_or_process_death() {
     let (_incoming_temp, incoming_data, incoming_config, incoming) =
         launch_profile("incoming").await;
+    let names = generated_working_names();
+    let selector = |name: &Path| name.to_string_lossy().replace('\\', "/");
+    let mut creation_points =
+        BTreeSet::from(["create:/result.sh".to_owned(), "mkdir:/empty".to_owned()]);
+    #[cfg(unix)]
+    {
+        creation_points.insert("symlink:/internal-link".to_owned());
+        for name in &names {
+            let link = Path::new("native-links").join(name.file_name().unwrap());
+            let path = incoming.folder.join(&link);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink("../result.sh", path).unwrap();
+            creation_points.insert(format!("symlink:/{}", selector(&link)));
+        }
+    }
     let archive = capture(&incoming_data, &incoming_config, BTreeMap::new(), true)
         .await
         .unwrap();
@@ -1757,73 +1773,106 @@ async fn launch_resources_roll_back_with_the_profile_after_io_failure_or_process
         ("rename:/agsdl-snapshots/".to_owned(), "crash"),
         ("write:/agsdl-working-folders/".to_owned(), "crash"),
         ("write:/agsdl-working-folders/".to_owned(), "EIO"),
-        ("create:/agsdl-working-folders/".to_owned(), "ENAMETOOLONG"),
     ];
     let actions = if extended() {
         FAULT_ACTIONS
     } else {
         &["crash", "EIO"]
     };
-    for name in generated_working_names() {
+    for name in &names {
+        creation_points.insert(format!("create:/{}", selector(name)));
+        creation_points.insert(format!("mkdir:/{}", selector(name.parent().unwrap())));
         for &action in actions {
-            faults.push((
-                format!("write:/{}", name.to_string_lossy().replace('\\', "/")),
-                action,
-            ));
+            faults.push((format!("write:/{}", selector(name)), action));
         }
     }
-    for (point, action) in faults {
-        let (_temp, data, config, original) = launch_profile("original").await;
-        let incoming_snapshot = config
-            .join(crate::architect_launch::resources::SNAPSHOTS)
-            .join(incoming.snapshot.file_name().unwrap());
-        tests::queue_restore(&data, &archive);
-        run_fault(&data, &config, "restore", &point, action, 1).await;
-        process_startup(&data, &config).await.unwrap();
-        assert!(
-            !data.join("local-backup/restoring.json").exists(),
-            "{point}/{action}"
-        );
-        assert!(!incoming_snapshot.exists(), "{point}/{action}");
-        assert!(
-            original.snapshot.join("files.json").is_file(),
-            "{point}/{action}"
-        );
-        assert_eq!(
-            fs::read(original.folder.join("result.sh")).unwrap(),
-            b"original",
-            "{point}/{action}"
-        );
-        assert!(original.folder.join("empty").is_dir(), "{point}/{action}");
-        assert_working_names(&original.folder, "original");
-        #[cfg(unix)]
-        {
-            let member = generated_working_names()
-                .into_iter()
-                .nth(3)
-                .unwrap_or_else(|| PathBuf::from("result.sh"));
-            assert_eq!(
-                fs::read_link(original.folder.join("internal-link")).unwrap(),
-                original.folder.join(member)
-            );
+    for point in creation_points {
+        for action in ["EEXIST", "ENAMETOOLONG", "EINVAL", "EIO", "crash"] {
+            faults.push((point.clone(), action));
         }
-        let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
-        assert_eq!(
-            crate::architect_launch::read_folder(&pool, &original.scope.system_start_id)
-                .await
-                .unwrap(),
-            original.folder.to_str().unwrap(),
-            "{point}/{action}"
-        );
-        assert!(
-            crate::architect_launch::read_folder(&pool, &incoming.scope.system_start_id)
-                .await
-                .is_err(),
-            "{point}/{action}"
-        );
-        pool.close().await;
-        assert_staging_empty(&data);
     }
+    use futures::StreamExt;
+    futures::stream::iter(faults)
+        .for_each_concurrent(6, |(point, action)| {
+            assert_launch_rollback(&archive, &incoming, point, action)
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn false_working_name_collision_rolls_back() {
+    let (_temp, data, config, incoming) = launch_profile("incoming").await;
+    let archive = capture(&data, &config, BTreeMap::new(), true)
+        .await
+        .unwrap();
+    assert_launch_rollback(&archive, &incoming, "create:/result.sh".into(), "EEXIST").await;
+}
+
+async fn assert_launch_rollback(
+    archive: &Archive,
+    incoming: &LaunchFixture,
+    point: String,
+    action: &str,
+) {
+    let (_temp, data, config, original) = launch_profile("original").await;
+    let incoming_snapshot = config
+        .join(crate::architect_launch::resources::SNAPSHOTS)
+        .join(incoming.snapshot.file_name().unwrap());
+    tests::queue_restore(&data, archive);
+    run_fault(&data, &config, "restore", &point, action, 1).await;
+    process_startup(&data, &config).await.unwrap();
+    assert_eq!(
+        status_code(&data.join("local-backup")),
+        Some(if action == "crash" {
+            BackupStatusCode::RolledBack
+        } else {
+            BackupStatusCode::Failed
+        }),
+        "{point}/{action}"
+    );
+    assert!(
+        !data.join("local-backup/restoring.json").exists(),
+        "{point}/{action}"
+    );
+    assert!(!incoming_snapshot.exists(), "{point}/{action}");
+    assert!(
+        original.snapshot.join("files.json").is_file(),
+        "{point}/{action}"
+    );
+    assert_eq!(
+        fs::read(original.folder.join("result.sh")).unwrap(),
+        b"original",
+        "{point}/{action}"
+    );
+    assert!(original.folder.join("empty").is_dir(), "{point}/{action}");
+    assert_working_names(&original.folder, "original");
+    #[cfg(unix)]
+    {
+        let member = generated_working_names()
+            .into_iter()
+            .nth(3)
+            .unwrap_or_else(|| PathBuf::from("result.sh"));
+        assert_eq!(
+            fs::read_link(original.folder.join("internal-link")).unwrap(),
+            original.folder.join(member)
+        );
+    }
+    let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
+    assert_eq!(
+        crate::architect_launch::read_folder(&pool, &original.scope.system_start_id)
+            .await
+            .unwrap(),
+        original.folder.to_str().unwrap(),
+        "{point}/{action}"
+    );
+    assert!(
+        crate::architect_launch::read_folder(&pool, &incoming.scope.system_start_id)
+            .await
+            .is_err(),
+        "{point}/{action}"
+    );
+    pool.close().await;
+    assert_staging_empty(&data);
 }
 
 #[cfg(unix)]

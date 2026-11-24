@@ -910,6 +910,10 @@ impl WorkingRestore<'_> {
 
 fn unavailable_name(error: &io::Error, path: &Path) -> bool {
     if error.kind() == io::ErrorKind::AlreadyExists {
+        #[cfg(test)]
+        if profile::mutated("treat-eexist-as-alias") {
+            return true;
+        }
         return fs::symlink_metadata(path).is_ok();
     }
     // Verify that the volume rejects the name itself. An unrelated I/O
