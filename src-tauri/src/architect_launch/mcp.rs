@@ -277,6 +277,14 @@ impl RemoteGrant {
         })
     }
 
+    pub(super) fn credential_binding(&self, name: &str) -> Option<(String, &'static str, String)> {
+        let (mode, header) = match self.delivery.get(name)? {
+            McpHttpSecret::Bearer => ("bearer", AUTHORIZATION.as_str().to_owned()),
+            McpHttpSecret::Header(header) => ("header", header.to_ascii_lowercase()),
+        };
+        Some((self.parsed_url.origin().ascii_serialization(), mode, header))
+    }
+
     fn covers(&self, url: &Url, addresses: &[SocketAddr], names: &[String]) -> bool {
         url == &self.parsed_url
             && !addresses.is_empty()

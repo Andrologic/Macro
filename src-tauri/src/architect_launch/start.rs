@@ -148,6 +148,7 @@ pub(crate) async fn launch(
         return Err(launch_failure("MCP_SECRETS_UNAVAILABLE", &secret.server));
     }
 
+    let provide_secrets = secret_provider(&input, &launch_mcp)?;
     let chosen_scope = chosen
         .as_deref()
         .map(|folder| scope_for(folder, &engine_request.source.owner))
@@ -325,7 +326,7 @@ pub(crate) async fn launch(
                 runtime
                     .manager
                     .engine_context_with_mcp_ceiling(mcp_ceiling)
-                    .with_mcp_secrets(secret_provider(&input, launch_mcp.secrets))
+                    .with_mcp_secrets(provide_secrets)
                     .with_mcp_http(mcp::authorizer(input.source_revision(), launch_mcp.remote)),
                 runtime.tasks.clone(),
                 identity,

@@ -1002,11 +1002,11 @@ async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
     assert!(blockers.is_empty());
     assert_eq!(servers.secrets.len(), 1);
     let names = servers.secrets["used"].clone();
-    let provider = secret_provider(&input, servers.secrets.clone());
+    let provider = secret_provider(&input, &servers).unwrap();
     let source = input.source_revision();
     assert!(provider(&source, "used", &names).is_none());
     for name in &names {
-        archive_mcp::set(&input.secret_id("used", name).unwrap(), name).unwrap();
+        archive_mcp::set(&input.secret_id("used", name, None).unwrap(), name).unwrap();
     }
     assert!(secret_requirements(&input, &servers)
         .unwrap()
@@ -1018,10 +1018,17 @@ async fn mcp_vault_provider_is_scoped_and_reloads_only_declared_values() {
     foreign.owner.plan_id = "another-blueprint".into();
     assert!(provider(&foreign, "used", &names).is_none());
     assert_ne!(
-        input.secret_id("used", "TOKEN").unwrap(),
-        secret_id(&input.key.blueprint_id, r#"["origin",1]"#, "used", "TOKEN").unwrap()
+        input.secret_id("used", "TOKEN", None).unwrap(),
+        secret_id(
+            &input.key.blueprint_id,
+            r#"["origin",1]"#,
+            "used",
+            "TOKEN",
+            None
+        )
+        .unwrap()
     );
-    archive_mcp::set(&input.secret_id("used", "TOKEN").unwrap(), "changed").unwrap();
+    archive_mcp::set(&input.secret_id("used", "TOKEN", None).unwrap(), "changed").unwrap();
     let values = provider(&source, "used", &names).unwrap();
     assert_eq!(
         values,

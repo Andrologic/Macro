@@ -327,6 +327,50 @@ async fn archive_review_project_remote_headers_consent_and_current_tool_policy()
 }
 
 #[tokio::test]
+async fn remote_credential_rotation_is_shared_only_by_origin_and_delivery() {
+    let _guard = crate::secrets::lock_test_store();
+    let data = tempfile::tempdir().unwrap();
+    crate::secrets::init(data.path()).unwrap();
+    let (pool, version) = archive_fixture(data.path(), manifest()).await;
+    let input = VersionInput::read(&pool, &Storage::new(data.path()), version)
+        .await
+        .unwrap();
+    let names = vec!["ISSUES_TOKEN".to_owned()];
+    let launch = |url| mcp::LaunchMcp {
+        secrets: BTreeMap::from([("issues".into(), names.clone())]),
+        remote: BTreeMap::from([("issues".into(), mcp::RemoteGrant::new(url, &names).unwrap())]),
+        ..Default::default()
+    };
+    let first = launch("https://example.invalid/mcp?tenant=one");
+    let same_origin = launch("https://EXAMPLE.invalid:443/other-path");
+    let moved = launch("https://example.invalid:8443/mcp");
+    let key = |launch: &mcp::LaunchMcp| {
+        input
+            .secret_id("issues", &names[0], launch.remote.get("issues"))
+            .unwrap()
+    };
+    let source = input.source_revision();
+    let first_provider = secret_provider(&input, &first).unwrap();
+
+    archive_mcp::set(&key(&first), "original").unwrap();
+    assert!(!secret_requirements(&input, &moved).unwrap()[0].stored);
+    archive_mcp::set(&key(&moved), "new-server").unwrap();
+    assert_eq!(
+        first_provider(&source, "issues", &names).unwrap()[&names[0]],
+        "original"
+    );
+    archive_mcp::set(&key(&same_origin), "rotated").unwrap();
+    assert_eq!(
+        first_provider(&source, "issues", &names).unwrap()[&names[0]],
+        "rotated"
+    );
+    assert_eq!(
+        secret_provider(&input, &moved).unwrap()(&source, "issues", &names).unwrap()[&names[0]],
+        "new-server"
+    );
+}
+
+#[tokio::test]
 async fn endpoint_consent_matches_exact_revision_destination_and_secret_names() {
     let data = tempfile::tempdir().unwrap();
     let (pool, version) = archive_fixture(data.path(), manifest()).await;

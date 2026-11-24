@@ -305,13 +305,34 @@ impl VersionInput {
         preview.entry_point.is_some() && self.settings.start_message_required.unwrap_or(true)
     }
 
-    fn secret_id(&self, server: &str, name: &str) -> Result<ArchiveMcpKey> {
-        secret_id(&self.key.blueprint_id, &self.origin, server, name)
+    fn secret_id(
+        &self,
+        server: &str,
+        name: &str,
+        remote: Option<&mcp::RemoteGrant>,
+    ) -> Result<ArchiveMcpKey> {
+        secret_id(&self.key.blueprint_id, &self.origin, server, name, remote)
     }
 }
 
-fn secret_id(blueprint: &str, origin: &str, server: &str, name: &str) -> Result<ArchiveMcpKey> {
-    let digest = Sha256::digest(serde_json::to_vec(&(blueprint, origin, server, name))?);
+fn secret_id(
+    blueprint: &str,
+    origin: &str,
+    server: &str,
+    name: &str,
+    remote: Option<&mcp::RemoteGrant>,
+) -> Result<ArchiveMcpKey> {
+    let destination = remote
+        .map(|grant| grant.credential_binding(name).ok_or_else(vault_error))
+        .transpose()?;
+    let digest = Sha256::digest(serde_json::to_vec(&(
+        "archive-mcp-credential/1",
+        blueprint,
+        origin,
+        server,
+        name,
+        destination,
+    ))?);
     Ok(ArchiveMcpKey::from_digest(digest.into()))
 }
 
@@ -570,11 +591,11 @@ fn secret_requirements(
 ) -> Result<Vec<SecretRequirement>> {
     let mut requirements = Vec::new();
     for (server, names) in &launch_mcp.secrets {
-        let remote = launch_mcp.remote.contains_key(server);
+        let remote = launch_mcp.remote.get(server);
         for name in names {
-            let stored = archive_mcp::get(&input.secret_id(server, name)?)
+            let stored = archive_mcp::get(&input.secret_id(server, name, remote)?)
                 .map_err(|_| vault_error())?
-                .is_some_and(|value| mcp::valid_secret(&value, remote));
+                .is_some_and(|value| mcp::valid_secret(&value, remote.is_some()));
             requirements.push(SecretRequirement {
                 server: server.clone(),
                 name: name.clone(),
@@ -587,23 +608,33 @@ fn secret_requirements(
 
 fn secret_provider(
     input: &VersionInput,
-    servers: ServerSecrets,
-) -> std::sync::Arc<argentic_runtime::host::McpSecretProvider> {
+    launch_mcp: &mcp::LaunchMcp,
+) -> Result<std::sync::Arc<argentic_runtime::host::McpSecretProvider>> {
     let source = input.source_revision();
-    let origin = input.origin.clone();
-    std::sync::Arc::new(move |revision, server, requested| {
-        if revision != &source || servers.get(server)?.as_slice() != requested {
+    let mut servers = BTreeMap::new();
+    for (server, names) in &launch_mcp.secrets {
+        let remote = launch_mcp.remote.get(server);
+        let keys = names
+            .iter()
+            .map(|name| Ok((name.clone(), input.secret_id(server, name, remote)?)))
+            .collect::<Result<Vec<_>>>()?;
+        servers.insert(server.clone(), keys);
+    }
+    Ok(std::sync::Arc::new(move |revision, server, requested| {
+        if revision != &source {
             return None;
         }
-        requested
-            .iter()
-            .map(|name| {
-                let key = secret_id(&source.owner.plan_id, &origin, server, name).ok()?;
-                let value = archive_mcp::get(&key).ok()??;
-                (!value.is_empty() && !value.contains('\0')).then(|| (name.clone(), value))
+        let keys = servers.get(server)?;
+        if !keys.iter().map(|(name, _)| name).eq(requested) {
+            return None;
+        }
+        keys.iter()
+            .map(|(name, key)| {
+                let value = archive_mcp::get(key).ok()??;
+                mcp::valid_secret(&value, false).then(|| (name.clone(), value))
             })
             .collect()
-    })
+    }))
 }
 
 async fn consent_token(
@@ -1081,7 +1112,11 @@ pub(crate) async fn set_secret(
             "The secret is not required by this version or has no value",
         ));
     }
-    archive_mcp::set(&input.secret_id(server, name)?, value).map_err(|_| vault_error())
+    archive_mcp::set(
+        &input.secret_id(server, name, launch_mcp.remote.get(server))?,
+        value,
+    )
+    .map_err(|_| vault_error())
 }
 
 #[cfg(test)]
