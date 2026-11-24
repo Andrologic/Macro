@@ -147,9 +147,9 @@ export async function readWorkflowRun030(snapshot: RunCapture030, conversationId
   return retainedRunValue030(bundle.access.getSnapshot().runs[snapshot.systemStartId])!;
 }
 
-/** Exact activation vocabulary published by Rust discovery030 and runtime_projection. */
-export const workflowPhaseStates030 = {
-  ready: 'active', queued: 'queued', running: 'active', body: 'active', group: 'active',
+/** Known phases use native task states. Unrecognized phases remain readable. */
+const workflowPhaseStates030 = {
+  ready: 'active', queued: 'queued', deferred: 'queued', running: 'active', body: 'active', group: 'active',
   done: 'completed', preparing: 'active', barrier: 'active', stopping: 'stopRequested',
   steering: 'active', withdrawingSteer: 'stopRequested',
 } as const satisfies Record<string, WorkflowAgentTaskState>;
@@ -195,7 +195,8 @@ export function projectWorkflowAgentTasks030(plan: ArchitectPlanRecord, inspecti
     const physical = items.some(item => item.activation.physical);
     const active = instance.currentActivationId !== null || physical;
     const phaseStates: Readonly<Record<string, WorkflowAgentTaskState>> = workflowPhaseStates030;
-    const phases = items.map(item => phaseStates[item.activation.phase] ?? 'uncertain');
+    const phases = items.map(({ activation }) =>
+      Object.hasOwn(phaseStates, activation.phase) ? phaseStates[activation.phase] : 'uncertain');
     const taskState: WorkflowAgentTaskState = attention ? 'approval' : active ? state.stopping ? 'stopRequested' : 'active'
       : phases.includes('uncertain') ? 'uncertain' : phases.includes('stopRequested') ? 'stopRequested'
       : phases.includes('active') ? 'active' : instance.queueActivationIds.length > 0 || phases.includes('queued') ? 'queued'
