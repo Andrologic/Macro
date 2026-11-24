@@ -143,6 +143,24 @@ it('ties diagnostics to attested visits, retains run-level facts and navigates t
   expect(host.querySelector('[data-diagnostic-id="run-level"]')).not.toBeNull();
 });
 
+it('explains unconfirmed termination and the host time limit in Operate', async () => {
+  const run = inspectionFixture030();
+  if (run.state.occurrences.kind !== 'ready' || run.state.diagnostics.kind !== 'ready') throw new Error('Missing run fixture');
+  const [first, ...rest] = run.state.occurrences.value;
+  const occurrences = ready([{ ...first, activation: { ...first.activation,
+    callResultJson: JSON.stringify({ kind: 'failed', error: { code: 'CALL_FAILED', message: 'Native call failure' } }),
+  } }, ...rest]);
+  const diagnostics = ready([{ ...run.state.diagnostics.value[0], code: 'MCP_TERMINATION_UNCERTAIN', message: 'Native termination failure' }]);
+  let bridge: RunGraphBridge030 | undefined;
+  await mount(monitorFixture030({ ...run, state: { ...run.state, verdict: 'interrupted', terminationUncertain: true, occurrences, diagnostics } }),
+    { renderGraph: (value: RunGraphBridge030) => { bridge = value; return null; } });
+  expect(host.textContent).toContain('The runtime could not confirm that all work ended.');
+  expect(host.textContent).toContain('The runtime could not confirm that the remote MCP call ended.');
+  await act(async () => bridge!.selectOccurrence(bridge!.occurrences[0].key));
+  expect(host.textContent).toContain('or its host time limit expired.');
+  expect(host.textContent).toContain('Native call failure');
+});
+
 it('passes availability, completeness, revision and staleness to the graph, including outer conflicts', async () => {
   const run = inspectionFixture030();
   const access = monitorFixture030(run); let bridge: RunGraphBridge030 | undefined;

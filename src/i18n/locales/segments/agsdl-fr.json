@@ -1468,8 +1468,10 @@
       "missed": "Issue normale : accord requis non obtenu"
     },
     "humanWaits": "Attentes humaines",
+    "terminationUncertain": "Le moteur n’a pas pu confirmer que tous les travaux avaient pris fin.",
     "diagnosticCode": {
-      "CALL_FAILED": "L’appel n’a pas pu démarrer ou joindre son service.",
+      "CALL_FAILED": "L’appel n’a pas pu démarrer ou joindre son service, ou le délai fixé par l’hôte a expiré.",
+      "MCP_TERMINATION_UNCERTAIN": "Le moteur n’a pas pu confirmer que l’appel MCP distant avait pris fin.",
       "TIMEOUT": "Le travail a dépassé son budget de temps machine.",
       "BRANCH_FAILED": "Une branche a signalé un échec de travail. Son traitement est indiqué séparément.",
       "OUTPUT_INVALID": "Le résultat produit ne respectait pas le contrat attendu.",

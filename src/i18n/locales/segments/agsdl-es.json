@@ -1468,8 +1468,10 @@
       "missed": "Resultado normal: acuerdo requerido no alcanzado"
     },
     "humanWaits": "Esperas humanas",
+    "terminationUncertain": "El motor no pudo confirmar que todo el trabajo había terminado.",
     "diagnosticCode": {
-      "CALL_FAILED": "La llamada no pudo iniciarse o contactar su servicio.",
+      "CALL_FAILED": "La llamada no pudo iniciarse o contactar con su servicio, o se agotó el tiempo asignado por el anfitrión.",
+      "MCP_TERMINATION_UNCERTAIN": "El motor no pudo confirmar que la llamada MCP remota había terminado.",
       "TIMEOUT": "El trabajo superó su tiempo de máquina permitido.",
       "BRANCH_FAILED": "Una rama informó de un fallo de trabajo. Su tratamiento se muestra por separado.",
       "OUTPUT_INVALID": "El resultado no cumplió el contrato esperado.",

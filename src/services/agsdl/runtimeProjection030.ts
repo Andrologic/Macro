@@ -41,7 +41,8 @@ export async function loadRuntimeProjection030(scope: RuntimeProjectionQuery030,
         !equalScope(page.scope, { ...expected, snapshotId: page.scope.snapshotId }) ||
         (first && !equalScope(page.scope, first.scope)) || page.flowInvocationId !== flowInvocationId || !page.flowInvocationId ||
         !/^(0|[1-9][0-9]*)$/.test(page.total) || page.items.length > 100 ||
-        (first && (page.revision !== first.revision || page.total !== first.total || page.stopping !== first.stopping || page.verdict !== first.verdict)) ||
+        (first && (page.revision !== first.revision || page.total !== first.total || page.stopping !== first.stopping || page.verdict !== first.verdict ||
+          (page.terminationUncertain === true) !== (first.terminationUncertain === true))) ||
         (offset > 0 && page.items.length === 0)) throw new Error('Invalid runtime projection page');
     first ??= structuredClone(page);
     for (const item of page.items) {

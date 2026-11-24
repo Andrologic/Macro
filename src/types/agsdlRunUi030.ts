@@ -86,6 +86,7 @@ export interface RunStateUi030 {
   readonly ownerStatus: 'live' | 'revoked';
   readonly stopping: boolean;
   readonly physicalPending: string;
+  readonly terminationUncertain?: boolean;
   readonly stop: NativeFact030<RunStop030>;
   readonly uncertainties: NativeFact030<readonly RunUncertainty030[]>;
   readonly humans: RunRead030<readonly RunHumanRequest030[]>;

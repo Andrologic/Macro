@@ -1,4 +1,4 @@
-import { isFlowDocumentContract } from './contract';
+import { AGSDL_CONTRACT, isFlowDocumentContract } from './contract';
 import type { NativeDtoGap030, NativeFact030, RunCapture030, RunRead030, RunRefusal030, RunVerdict030 } from '../../types/agsdlRunUi030';
 import type { EngineSourceOwner, ExecutionIntentScope, ExecutionRunCorrelation030, PublicRunSummary030 } from '../../types/generated/ipc';
 import { listExecutionRuns030, readExecutionSnapshot030, readExecutionRuntimeProjection030,
@@ -148,7 +148,10 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
           (run.ownerStatus === 'live' || run.ownerStatus === 'revoked') && typeof run.stopping === 'boolean');
         verdict(run.verdict);
         requireFact(run.versions.snapshot === '2' && isFlowDocumentContract(run.versions.contract) && run.versions.profile === 'macro-agsdl-030-v1', 'CONTRACT_UNSUPPORTED');
-        ids.add(run.systemStartId); runs.push(structuredClone(run));
+        // Native 0.4 projections overlay the durable interruption on the reducer verdict.
+        const interrupted = run.versions.contract === AGSDL_CONTRACT && run.interruptedAt !== null;
+        ids.add(run.systemStartId);
+        runs.push(structuredClone(interrupted ? { ...run, stopping: false, verdict: 'interrupted' } : run));
       }
       after = page.nextCursor;
       if (after !== null) cursors.add(after);
@@ -273,7 +276,8 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     const humans = history?.humans ?? await readHumanFacts030({ systemStartId: scope.systemStartId, source: scope.source }, transport.readExecutionHumans030);
     return { capture, inbox: summary.inbox, observation: history?.observation ?? observe(), state: { scope, flowInvocationId: runtime.flowInvocationId,
       revision: runtime.revision, verdict: verdict(runtime.verdict), ownerStatus: summary.ownerStatus as 'live' | 'revoked',
-      stopping: runtime.stopping, physicalPending: summary.physicalPending, modelOverrides: runtime.modelOverrides,
+      stopping: runtime.stopping, physicalPending: summary.physicalPending, terminationUncertain: runtime.terminationUncertain,
+      modelOverrides: runtime.modelOverrides,
       stop: unavailable('stop-proof'), uncertainties: unavailable('uncertainty'), humans,
       occurrences: { kind: 'ready', revision: runtime.revision, value: sections.activations.map(activation => ({
         scope, activation, details: unavailable('occurrence-details'),

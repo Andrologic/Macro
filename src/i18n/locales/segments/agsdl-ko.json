@@ -1468,8 +1468,10 @@
       "missed": "정상 결과: 필요한 동의 미도달"
     },
     "humanWaits": "사람의 응답 대기",
+    "terminationUncertain": "런타임에서 모든 작업이 종료되었는지 확인하지 못했습니다.",
     "diagnosticCode": {
-      "CALL_FAILED": "호출을 시작하거나 서비스에 연결할 수 없습니다.",
+      "CALL_FAILED": "호출을 시작하거나 서비스에 연결하지 못했거나 호스트의 제한 시간이 지났습니다.",
+      "MCP_TERMINATION_UNCERTAIN": "런타임에서 원격 MCP 호출이 종료되었는지 확인하지 못했습니다.",
       "TIMEOUT": "작업이 기계 시간 한도를 초과했습니다.",
       "BRANCH_FAILED": "분기가 작업 실패를 보고했습니다. 처리 상태는 별도로 표시됩니다.",
       "OUTPUT_INVALID": "생성된 결과가 예상 계약을 충족하지 못했습니다.",

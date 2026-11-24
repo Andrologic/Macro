@@ -174,6 +174,7 @@ function ScopedMonitor030({ canvas, controls, capturedControls, projectPicker, a
           ...(state.stop.kind === 'available' && state.stop.value.kind === 'uncertain' ? [tr('summarySentence.uncertain')] : []),
           ...(state.humans.kind === 'ready' && state.humans.value.some(request => request.state.kind === 'open') ? [tr('summarySentence.human')] : []),
         ].join(' ')}</p>
+        {state.terminationUncertain && <p role="status">{tr('terminationUncertain')}</p>}
         <p>{tr('stopLabel')}: {state.stop.kind === 'available' ? tr(`stop.${state.stop.value.kind}`) : tr('unavailable')}</p>
         <p title={tr('physicalHelp')}>{tr('physicalPending')}: {state.physicalPending}</p>
         {state.modelOverrides && Object.entries(state.modelOverrides).map(([agent, model]) =>

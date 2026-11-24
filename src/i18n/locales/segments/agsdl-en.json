@@ -1468,8 +1468,10 @@
       "missed": "Normal outcome: required agreement not reached"
     },
     "humanWaits": "Human waits",
+    "terminationUncertain": "The runtime could not confirm that all work ended.",
     "diagnosticCode": {
-      "CALL_FAILED": "The call could not start or reach its service.",
+      "CALL_FAILED": "The call could not start or reach its service, or its host time limit expired.",
+      "MCP_TERMINATION_UNCERTAIN": "The runtime could not confirm that the remote MCP call ended.",
       "TIMEOUT": "The work exceeded its machine-time budget.",
       "BRANCH_FAILED": "A branch reported a work failure. Its handling is shown separately.",
       "OUTPUT_INVALID": "The produced result did not satisfy the expected contract.",

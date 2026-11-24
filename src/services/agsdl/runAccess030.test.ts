@@ -1,5 +1,7 @@
 import { expect, it } from 'bun:test';
 import type { ExecutionRunCorrelation030, PublicExecutionIntent, PublicRunSummary030 } from '../../types/generated/ipc';
+import { sourceDigest } from '../agsdlExecution/sourceDigest';
+import { AGSDL_CONTRACT } from './contract';
 import { createRunInspectionAccess030 } from './runAccess030';
 import { initialRunSelection030, retainedRunValue030 } from './runtimeProjection030';
 import { fixture, intentFor, transportFor, type Fixture } from './runAccess030.testSupport';
@@ -21,6 +23,23 @@ it('maps only attested facts, keeps exact revisions and exposes missing facts wi
   expect(inspection.capture.authoredSource).toBe(f.capture.authoredSource);
   expect(Object.isFrozen(inspection.state.scope.source.owner)).toBe(true);
   expect(calls).toEqual(['list', 'intents', 'correlation:run', 'snapshot', 'runtime', 'humans']);
+});
+
+it('reads an interrupted 0.4 projection and retains the native termination warning', async () => {
+  const f = await fixture();
+  f.capture.authoredSource = f.capture.authoredSource.replace('agsdl-0.3.0', AGSDL_CONTRACT);
+  f.capture.source.sourceSha256 = await sourceDigest(f.capture.authoredSource);
+  f.capture.versions = { ...f.capture.versions, contract: AGSDL_CONTRACT };
+  f.summary = { ...f.summary, versions: f.capture.versions, verdict: null, ownerStatus: 'revoked', interruptedAt: '2026-01-01T00:00:00Z' };
+  f.runtime = { ...f.runtime, verdict: 'interrupted', terminationUncertain: true };
+  const { transport, scope } = transportFor(f);
+  const access = createRunInspectionAccess030(scope, transport);
+  await access.refreshHistory();
+  await access.refreshRun('run');
+  expect(retainedRunValue030(access.getSnapshot().runs.run)?.state).toMatchObject({
+    verdict: 'interrupted', stopping: false, terminationUncertain: true, physicalPending: '1',
+  });
+  expect(retainedRunValue030(access.getSnapshot().history)?.[0].verdict).toBe('interrupted');
 });
 
 it('reads all discovery pages before publishing history and never assumes no human waits', async () => {

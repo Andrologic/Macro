@@ -1468,8 +1468,10 @@
       "missed": "Normales Ergebnis: erforderliche Zustimmung nicht erreicht"
     },
     "humanWaits": "Menschliche Wartezeiten",
+    "terminationUncertain": "Die Laufzeit konnte nicht bestätigen, dass alle Arbeiten beendet wurden.",
     "diagnosticCode": {
-      "CALL_FAILED": "Der Aufruf konnte nicht starten oder seinen Dienst erreichen.",
+      "CALL_FAILED": "Der Aufruf konnte nicht starten oder seinen Dienst erreichen, oder das Zeitlimit des Hosts ist abgelaufen.",
+      "MCP_TERMINATION_UNCERTAIN": "Die Laufzeit konnte nicht bestätigen, dass der entfernte MCP-Aufruf beendet wurde.",
       "TIMEOUT": "Die Arbeit hat ihr Maschinenzeitbudget überschritten.",
       "BRANCH_FAILED": "Ein Zweig hat einen Arbeitsfehler gemeldet. Seine Behandlung wird gesondert angezeigt.",
       "OUTPUT_INVALID": "Das Ergebnis erfüllte den erwarteten Vertrag nicht.",
