@@ -12,11 +12,13 @@ import {
   type HiddenOperateAgents, type OperateInboxFilter, type OperateRunInput, type OperateRunRow,
   type OperateRunTarget, type OperateThreadRow,
 } from '../services/operateInboxModel';
-import { stopExecution030, updateOperateInbox } from '../services/tauriIpc';
+import { controlExecution030, deleteExecution030, stopExecution030, updateOperateInbox } from '../services/tauriIpc';
 import {
   openWorkflowRun030, refreshArchiveRunAccess, subscribeWorkflowRunAccess030, workflowAgentTaskId,
-  workflowRunAccessSnapshot030, type WorkflowRunRegistration030,
+  workflowRunAccessSnapshot030, workflowRunTargetSnapshot030, type WorkflowRunRegistration030,
 } from '../services/workflowAgentTasks';
+import { instanceOperatorState030, runOperatorAction030, threadOperatorAction030, type ObservedOperatorAction030 } from '../services/agsdl/operator030';
+import type { RunOperatorAction030 } from '../services/ipc/agsdlExecution030';
 import { useAppStore } from './useAppStore';
 import { useTaskStore } from './useTaskStore';
 
@@ -51,7 +53,7 @@ function readRunInputs(
     const latest = inspection && (!history || (inspection.observation?.order ?? 0) >= (history.observation?.order ?? 0))
       ? { ...inspection.state, inbox: inspection.inbox, observation: inspection.observation } : history;
     if (!latest) return [];
-    const { scope, verdict, physicalPending, stopping, inbox: facts, observation } = latest;
+    const { scope, verdict, physicalPending, stopping, paused, inbox: facts, observation } = latest;
     if (state && runCaptureKey030(scope) !== runCaptureKey030(state.scope)) return [];
     const requestsByInstance = new Map<string, RunHumanRequest030[]>();
     const unlinkedRequests: RunHumanRequest030[] = [];
@@ -71,13 +73,17 @@ function readRunInputs(
     return [{
       scope, conversationId: registration.scope.conversationId,
       location: registration.location ?? { kind: 'local' },
-      systemLabel, runName: registration.archiveRuns?.get(id)?.runName ?? undefined, status: operateRunStatus(verdict, physicalPending, stopping ?? false, facts?.stoppedByUser ?? false),
+      systemLabel, runName: registration.archiveRuns?.get(id)?.runName ?? undefined,
+      status: operateRunStatus(verdict, physicalPending, stopping ?? false, facts?.stoppedByUser ?? false, paused),
+      physicalPending, operatorAction: inspection && runOperatorAction030(inspection) || undefined,
       facts, stale: snapshot.history.kind === 'stale' || read?.kind === 'stale' || !!snapshot.runFailures[id],
       observedAtMs: observation?.atMs ?? Date.now(), unlinkedRequests,
       threads: (state?.instances ?? []).map(instance => ({
         instanceId: instance.id, agentId: instance.agent, requests: requestsByInstance.get(instance.id) ?? [],
         agentLabel: instance.selectorName ? `${instance.agent} · ${instance.selectorName}` : instance.agent,
-        reason: failures.has(instance.id) ? 'error' : undefined,
+        reason: inspection && instanceOperatorState030(inspection, instance)
+          ? 'interrupted' : failures.has(instance.id) ? 'error' : undefined,
+        operatorAction: inspection ? threadOperatorAction030(inspection, instance) : undefined,
       })),
     }];
   });
@@ -113,6 +119,10 @@ export function subscribeOperateInbox(): () => void {
     const registrations = workflowRunAccessSnapshot030().filter(item => projects.has(item.scope.owner.projectId) ||
       item.scope.owner.projectId === ARCHIVE_RUN_PROJECT || item.location?.kind === 'remote');
     const runs = registrations.flatMap(item => readRunInputs(item, taskLabels));
+    const currentIds = new Set(runs.map(run => run.scope.systemStartId));
+    for (const id of hiddenByExecution.keys()) {
+      if (!currentIds.has(id)) hiddenByExecution.delete(id);
+    }
     for (const run of runs) {
       if (run.location.kind !== 'local') continue;
       const id = run.scope.systemStartId;
@@ -211,7 +221,7 @@ export async function openOperateThread(thread: OperateThreadRow) {
 
 const terminating = new Map<string, Promise<void>>();
 /** Call after the user confirms. The next engine projection decides when Stop is complete. */
-export function terminateOperateRun(run: OperateRunRow): Promise<void> {
+export function terminateOperateRun(run: OperateRunTarget & Pick<OperateRunRow, 'key' | 'canTerminate'>): Promise<void> {
   if (!run.canTerminate) return Promise.reject(new Error('Run unavailable'));
   const existing = terminating.get(run.key);
   if (existing) return existing;
@@ -227,4 +237,64 @@ export function terminateOperateRun(run: OperateRunRow): Promise<void> {
   })();
   terminating.set(run.key, operation);
   return operation;
+}
+
+const controls = new Map<string, Promise<void>>();
+const pendingRequests = new Map<string, string>();
+const controlKey = (scope: OperateRunTarget['scope'], action: RunOperatorAction030) =>
+  'macro.operate.control:' + JSON.stringify([runCaptureKey030(scope), action.kind, 'activationId' in action ? action.activationId : null]);
+
+export function controlOperateRun(target: OperateRunTarget, observed: ObservedOperatorAction030): Promise<void> {
+  const { revision, ...action } = observed;
+  const key = controlKey(target.scope, action);
+  const observation = JSON.stringify([key, revision]);
+  const existing = controls.get(observation);
+  if (existing) return existing;
+  let pending = pendingRequests.get(key);
+  try { pending = localStorage.getItem(key) ?? pending; } catch { /* storage can be unavailable */ }
+  const prefix = revision + ':';
+  const requestId = pending?.startsWith(prefix) ? pending.slice(prefix.length) : crypto.randomUUID();
+  const value = prefix + requestId;
+  pendingRequests.set(key, value);
+  try { localStorage.setItem(key, value); } catch { /* keep the in-memory copy */ }
+  const forget = () => {
+    if (pendingRequests.get(key) === value) pendingRequests.delete(key);
+    try {
+      if (localStorage.getItem(key) === value) localStorage.removeItem(key);
+    } catch { /* storage can be unavailable */ }
+  };
+  const operation = controlExecution030({ scope: target.scope, requestId, action }).then(forget, error => {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+    if (['OPERATOR_TRANSITION', 'CONFLICT', 'CORRELATION', 'HOST_CAPABILITY', 'INPUT_CONSTRAINT'].includes(String(code))) forget();
+    throw error;
+  }).finally(async () => {
+    controls.delete(observation);
+    await accessFor(target)?.refreshRun(target.scope.systemStartId).catch(() => {});
+  });
+  controls.set(observation, operation);
+  return operation;
+}
+
+/** Run data is removed by the command even if cleanup needs to be retried. */
+export async function deleteOperateRun(run: OperateRunRow): Promise<void> {
+  if (!run.canDelete) throw new Error('Run unavailable');
+  const access = accessFor(run);
+  let removed = false;
+  try {
+    await deleteExecution030(run.scope);
+    removed = true;
+  } catch (error) {
+    removed = typeof error === 'object' && error !== null && 'code' in error && error.code === 'DELETE_CLEANUP_PENDING';
+    throw error;
+  } finally {
+    if (removed) {
+      const selected = workflowRunTargetSnapshot030();
+      if (selected && sameHumanScope030(selected.scope, run.scope)) openWorkflowRun030(null);
+      useOperateInboxStore.setState(state => ({
+        runs: state.runs.filter(item => item.location.kind !== 'local' || runCaptureKey030(item.scope) !== runCaptureKey030(run.scope)),
+      }));
+      await access?.refreshHistory().catch(() => {});
+      await refreshArchiveRunAccess().catch(() => {});
+    }
+  }
 }

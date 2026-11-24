@@ -42,6 +42,9 @@ pub struct RunSummary030 {
     pub versions: EngineVersions,
     pub revision: String,
     pub stopping: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub paused: Option<bool>,
     pub verdict: Option<String>,
     pub owner_status: String,
     pub interrupted_at: Option<String>,
@@ -167,23 +170,9 @@ fn validated_summary(
     let mut counts = BTreeMap::<String, usize>::new();
     let mut physical_pending = 0usize;
     for activation in &state.activations {
-        require(
-            matches!(
-                activation.phase.as_str(),
-                "ready"
-                    | "queued"
-                    | "running"
-                    | "body"
-                    | "group"
-                    | "done"
-                    | "preparing"
-                    | "steering"
-                    | "withdrawingSteer"
-                    | "barrier"
-                    | "stopping"
-            ),
-            "Flow discovery activation phase is inconsistent",
-        )?;
+        // Argentic persists phases as strings. Discovery counts them without
+        // interpreting them, so a new native phase cannot hide a run.
+        opaque(&activation.phase)?;
         *counts.entry(activation.phase.clone()).or_default() += 1;
         if activation.physical {
             physical_pending += 1;
@@ -205,6 +194,15 @@ fn validated_summary(
             _ => None,
         })
         .collect();
+    let interrupted_at: Option<String> = row.try_get("interrupted_at")?;
+    let interrupted = plan.versions.contract == argentic_core::AGSDL_040
+        && (interrupted_at.is_some()
+            || (state.verdict.as_deref() == Some("cancelled")
+                && row.try_get::<bool, _>("shutdown_hold")?));
+    let paused = state.paused && !interrupted && state.verdict.is_none();
+    let stopping = state.stopping
+        && !(plan.versions.contract == argentic_core::AGSDL_040
+            && (interrupted || state.verdict.is_some()));
     Ok(RunSummary030 {
         system_start_id: id.system_start_id.clone(),
         flow_invocation_id: id.flow_invocation_id.clone(),
@@ -212,10 +210,15 @@ fn validated_summary(
         source: capture.source,
         versions: capture.versions,
         revision: state.revision,
-        stopping: state.stopping,
-        verdict: state.verdict,
+        stopping,
+        paused: paused.then_some(true),
+        verdict: if interrupted {
+            Some("interrupted".into())
+        } else {
+            state.verdict
+        },
         owner_status: status,
-        interrupted_at: row.try_get("interrupted_at")?,
+        interrupted_at,
         phase_counts: counts
             .into_iter()
             .map(|(phase, count)| PhaseCount030 {
@@ -269,7 +272,7 @@ pub(crate) async fn list_runs_in_transaction030(
             before: 0,
         }
     };
-    let rows = sqlx::query("SELECT s.rowid AS seq,s.request_id,s.request_json,s.capture_json,s.receipt_json,s.system_id,s.invocation_id,s.snapshot_id,s.capture_epoch, r.system_id AS run_system,r.invocation_id AS run_invocation,r.snapshot_id AS run_snapshot,r.epoch AS run_epoch,r.source_json AS run_source,r.plan_json AS run_plan,r.state_json AS run_state, o.system_id AS owner_system,o.invocation_id AS owner_invocation,o.snapshot_id AS owner_snapshot,o.capture_epoch AS owner_capture_epoch,o.status AS owner_status,o.capture_sha256 AS owner_capture_hash, i.interrupted_at AS interrupted_at FROM engine_start030_requests s LEFT JOIN engine_flow030_runs r ON r.system_id=s.system_id AND r.invocation_id=s.invocation_id LEFT JOIN engine_flow030_owners o ON o.system_id=s.system_id LEFT JOIN engine_flow030_interruptions i ON i.system_id=s.system_id WHERE s.rowid<=? AND (?=0 OR s.rowid<?) AND json_extract(s.capture_json,'$.source.owner.projectId')=? AND json_extract(s.capture_json,'$.source.owner.planId')=? AND json_extract(s.capture_json,'$.source.owner.branch')=? ORDER BY s.rowid DESC LIMIT ?")
+    let rows = sqlx::query("SELECT s.rowid AS seq,s.request_id,s.request_json,s.capture_json,s.receipt_json,s.system_id,s.invocation_id,s.snapshot_id,s.capture_epoch, r.system_id AS run_system,r.invocation_id AS run_invocation,r.snapshot_id AS run_snapshot,r.epoch AS run_epoch,r.source_json AS run_source,r.plan_json AS run_plan,r.state_json AS run_state, o.system_id AS owner_system,o.invocation_id AS owner_invocation,o.snapshot_id AS owner_snapshot,o.capture_epoch AS owner_capture_epoch,o.status AS owner_status,o.capture_sha256 AS owner_capture_hash, i.interrupted_at AS interrupted_at, EXISTS(SELECT 1 FROM operate_shutdown_holds h WHERE h.system_id=r.system_id AND h.invocation_id=r.invocation_id) AS shutdown_hold FROM engine_start030_requests s LEFT JOIN engine_flow030_runs r ON r.system_id=s.system_id AND r.invocation_id=s.invocation_id LEFT JOIN engine_flow030_owners o ON o.system_id=s.system_id LEFT JOIN engine_flow030_interruptions i ON i.system_id=s.system_id WHERE s.rowid<=? AND (?=0 OR s.rowid<?) AND json_extract(s.capture_json,'$.source.owner.projectId')=? AND json_extract(s.capture_json,'$.source.owner.planId')=? AND json_extract(s.capture_json,'$.source.owner.branch')=? ORDER BY s.rowid DESC LIMIT ?")
         .bind(cursor.upper).bind(cursor.before).bind(cursor.before)
         .bind(&cursor.owner.project_id).bind(&cursor.owner.plan_id).bind(&cursor.owner.branch)
         .bind(i64::from(limit)+1).fetch_all(&mut *connection).await?;

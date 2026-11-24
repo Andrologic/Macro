@@ -1220,6 +1220,22 @@
       "workEnded": "Motivo: trabajo asociado finalizado"
     }
   },
+  "operator": {
+    "interruptWork": "Interrumpir",
+    "resumeWork": "Reanudar",
+    "pauseRun": "Pausar la ejecución",
+    "resumeRun": "Reanudar la ejecución",
+    "unavailable": "Esta acción no está disponible para el trabajo en curso.",
+    "changed": "La ejecución ha cambiado. Actualiza la vista y vuelve a intentarlo.",
+    "failed": "No se ha podido confirmar la acción. Vuelve a intentarlo.",
+    "holding": "Interrumpiendo al agente…",
+    "held": "Agente interrumpido. Se ha suspendido su presupuesto de tiempo de máquina.",
+    "interrupted": "Interrumpido. Este trabajo no se puede reanudar.",
+    "runMenu": "Acciones de la ejecución",
+    "paused": "Ejecución en pausa. No se iniciarán trabajos nuevos.",
+    "approvalsExpiring": "Las aprobaciones pendientes pueden caducar durante la pausa.",
+    "stopDescription": "La ejecución terminará de forma definitiva. Su historial seguirá disponible."
+  },
   "inbox": {
     "attention": "Pendientes",
     "active": "En curso",
@@ -1239,6 +1255,8 @@
     "confirmTerminate": "¿Finalizar definitivamente {{run}}?",
     "actionFailed": "No se pudo completar la acción.",
     "status": {
+      "paused": "En pausa",
+      "interrupted": "Interrumpida",
       "active": "En curso",
       "stopping": "Finalizando",
       "succeeded": "Completada",
@@ -1285,6 +1303,7 @@
       "snoozeElapsed": "aplazamiento vencido"
     },
     "menu": {
+      "deleteRun": "Eliminar…",
       "openThread": "Abrir hilo",
       "openRun": "Ver la ejecución",
       "markRead": "Marcar como leído",
@@ -1309,6 +1328,13 @@
       "time": "Hora",
       "past": "Elija un momento futuro.",
       "deadlineWarning": "El plazo de respuesta de esta solicitud vence el {{time}}, antes de que termine el aplazamiento. Si nadie responde antes, caducará."
+    },
+    "deleteDialog": {
+      "title": "¿Eliminar esta ejecución?",
+      "description": "Se eliminarán «{{run}}» y sus conversaciones. Macro borrará la carpeta que creó para esta ejecución y la copia conservada cuando ninguna ejecución la use. Las carpetas elegidas se conservarán.",
+      "confirm": "Eliminar",
+      "failed": "No se ha podido eliminar la ejecución. Vuelve a intentarlo.",
+      "cleanupPending": "La ejecución se ha eliminado. Macro volverá a intentar limpiar los archivos restantes al reiniciarse."
     },
     "terminateDialog": {
       "title": "¿Finalizar esta ejecución?",

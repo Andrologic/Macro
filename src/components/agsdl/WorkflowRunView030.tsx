@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type Re
 import { CapturedRunGraph030 } from "./CapturedRunGraph030";
 import { ExecutionMonitor030, type ExecutionMonitorProps030 } from "./ExecutionMonitor030";
 import { HumanRequests030 } from "./HumanRequests030";
-import { markOperateRunOpened } from "../../stores/useOperateInboxStore";
+import { markOperateRunOpened, useOperateInboxStore } from "../../stores/useOperateInboxStore";
 import { isOperateRequestSnoozed } from "../../services/operateInboxModel";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { subscribeWorkflowRunAccess030, workflowRunAccessSnapshot030, openWorkflowRun030,
@@ -49,9 +49,10 @@ export function WorkflowRunView030({ bundle, currentSource, target, initialInsta
     return () => window.cancelAnimationFrame(frame);
   }, [exact, focusKey, requestVisible, target?.requestId]);
   const registration = registry.find(item => item.access === access);
+  const hiddenAgents = useOperateInboxStore(store => store.hiddenAgents);
   const visibleRead = visibleRunId ? snapshot.runs[visibleRunId] : undefined;
   const finished = exact && visibleRead?.kind === 'ready' && visibleRead.value.inbox?.opened === false &&
-    visibleRead.value.state.verdict !== null && visibleRead.value.state.physicalPending === '0' ? visibleRead.value : null;
+    (visibleRead.value.state.verdict === 'interrupted' || (visibleRead.value.state.verdict !== null && visibleRead.value.state.physicalPending === '0')) ? visibleRead.value : null;
   useEffect(() => {
     if (finished) void markOperateRunOpened({ scope: finished.state.scope, conversationId: registration?.scope.conversationId }).catch(() => {});
   }, [finished, registration?.scope.conversationId]);
@@ -90,8 +91,11 @@ export function WorkflowRunView030({ bundle, currentSource, target, initialInsta
     </div>}
     {exact ? <ExecutionMonitor030 key={target ? JSON.stringify(target) : `${access.scopeKey}:${initialRunId ?? ""}`} access={access}
       taskStale={taskStale}
-      onSelection={selectRun} initialInstanceId={initialInstanceId} initialRunId={targetRunId ?? initialRunId} exactInitialRun={!!target} currentSource={currentSource} canvas={canvas} controls={controls} capturedControls={onExpand && <button className="agsdl-icon-button" aria-label={t(expanded ? "agsdl.shrink" : "agsdl.expand")} title={t(expanded ? "agsdl.shrink" : "agsdl.expand")} onClick={onExpand}>{expanded ? <X size={14} /> : <Maximize2 size={14} />}</button>} projectPicker={projectPicker} renderHumans={humans} renderGraph={value => <CapturedRunGraph030 bridge={value} currentSource={currentSource} onInspect={value.inspect} />}
-      openRun={initialInstanceId && target ? () => openWorkflowRun030(target) : undefined} />
+      onSelection={selectRun} initialInstanceId={initialInstanceId} initialRunId={targetRunId ?? initialRunId} exactInitialRun={!!target} currentSource={currentSource} canvas={canvas} controls={controls} capturedControls={onExpand && <button className="agsdl-icon-button" aria-label={t(expanded ? "agsdl.shrink" : "agsdl.expand")} title={t(expanded ? "agsdl.shrink" : "agsdl.expand")} onClick={onExpand}>{expanded ? <X size={14} /> : <Maximize2 size={14} />}</button>} projectPicker={projectPicker} renderHumans={humans} renderGraph={value => <CapturedRunGraph030 bridge={value} currentSource={currentSource} onInspect={value.inspect}
+        hiddenAgents={value.inspection && hiddenAgents?.(value.inspection.state.scope)}
+        onOpenInstance={instanceId => value.inspection && openWorkflowRun030({ scope: value.inspection.state.scope, instanceId, conversationId: registration?.scope.conversationId })} />}
+      operate={{ local: registration?.location?.kind !== 'remote', conversationId: registration?.scope.conversationId }}
+      openRun={initialInstanceId && target ? () => openWorkflowRun030({ scope: target.scope, conversationId: target.conversationId }) : undefined} />
       : <p role="status" className="p-3 text-xs">{t('agsdl.shell030.exactUnavailable')}</p>}
     {target?.requestId && exact && !requestVisible &&
       <p role="status" className="p-3 text-xs">{t('agsdl.shell030.requestUnavailable')}</p>}

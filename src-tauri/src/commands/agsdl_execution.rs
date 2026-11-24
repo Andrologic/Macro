@@ -150,7 +150,7 @@ pub async fn execution_read_runtime_projection030(
     scope: crate::agsdl_host_projection030::RuntimeProjectionQuery030,
     continuation: Option<crate::agsdl_host_projection030::RuntimeProjectionContinuation030>,
 ) -> repository::Result<crate::agsdl_host_projection030::RuntimeProjectionPage030> {
-    crate::agsdl_host_projection030::read(&host, &pool(&state).await?, scope, continuation).await
+    crate::db::operate_inbox::read_runtime(&host, &pool(&state).await?, scope, continuation).await
 }
 #[tauri::command]
 pub async fn execution_start<R: tauri::Runtime>(
@@ -704,4 +704,45 @@ pub async fn execution_deliver030(
     request: crate::agsdl_host_flow030::DeliveryRequest030,
 ) -> repository::Result<crate::agsdl_host_flow030::DeliveryReceipt030> {
     host.deliver_message(&pool(&database).await?, request).await
+}
+
+/// The native journal retains the request and receipt across observer loss.
+#[tauri::command]
+pub async fn execution_control030(
+    app: tauri::AppHandle,
+    request: argentic_runtime::api::OperatorRequest,
+) -> repository::Result<repository::flow030::FlowReceipt030> {
+    tokio::spawn(async move {
+        let state = app.state::<DbPool>();
+        let host = app.state::<crate::agsdl_host::HostState>();
+        crate::db::operate_inbox::control_run(&host, &pool(&state).await?, request).await
+    })
+    .await
+    .map_err(|_| {
+        repository::failure(
+            "UNCERTAIN",
+            "operator",
+            "Native control did not acknowledge",
+        )
+    })?
+}
+
+#[tauri::command]
+pub async fn execution_delete030(
+    app: tauri::AppHandle,
+    scope: argentic_runtime::api::RuntimeProjectionScope030,
+) -> repository::Result<()> {
+    tokio::spawn(async move {
+        let state = app.state::<DbPool>();
+        let manager = app.state::<crate::config::ConfigManager>();
+        launch::delete_run(
+            &pool(&state).await?,
+            &launch_data(&app)?,
+            manager.root(),
+            scope,
+        )
+        .await
+    })
+    .await
+    .map_err(|_| repository::failure("UNCERTAIN", "run", "Native deletion did not acknowledge"))?
 }

@@ -467,6 +467,7 @@ async fn interruption_child() {
         let original = capture_raw(&data, &config, browser_fixture("original")).unwrap();
         let marker = RestoreJournal {
             phase: RestorePhase::Rollback,
+            launch: launch::SnapshotRollback::default(),
             preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()),
         };
         preserve_raw(&original, &preserved_path(&dir, &marker).unwrap()).unwrap();
@@ -634,6 +635,7 @@ async fn damaged_preservation_blocks_recovery_and_retains_journal_for_retry() {
     fs::create_dir_all(&dir).unwrap();
     let marker = RestoreJournal {
         phase: RestorePhase::Rollback,
+        launch: launch::SnapshotRollback::default(),
         preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()),
     };
     let path = preserved_path(&dir, &marker).unwrap();

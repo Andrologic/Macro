@@ -96,3 +96,25 @@ export function updateOperateInbox(
 ): Promise<void> {
   return invoke('execution_update_operate_inbox', { systemStartId: scope.systemStartId, snapshotId: scope.snapshotId, action });
 }
+
+export type RunOperatorAction030 =
+  | { kind: 'interruptWork' | 'resumeWork'; activationId: string }
+  | { kind: 'pauseRun' | 'resumeRun' };
+
+export interface RunOperatorReceipt030 {
+  eventId: string;
+  revision: string;
+  effectIds: string[];
+}
+
+export function controlExecution030(request: {
+  scope: import('../../types/generated/ipc').RuntimeProjectionScope030;
+  requestId: string;
+  action: RunOperatorAction030;
+}): Promise<RunOperatorReceipt030> {
+  return invoke('execution_control030', { request });
+}
+
+export function deleteExecution030(scope: import('../../types/generated/ipc').RuntimeProjectionScope030): Promise<void> {
+  return invoke('execution_delete030', { scope });
+}

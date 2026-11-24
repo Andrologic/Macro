@@ -1220,6 +1220,22 @@
       "workEnded": "Reason: related work ended"
     }
   },
+  "operator": {
+    "interruptWork": "Interrupt",
+    "resumeWork": "Resume",
+    "pauseRun": "Pause run",
+    "resumeRun": "Resume run",
+    "unavailable": "This action is unavailable while the current work is running.",
+    "changed": "The execution changed. Refresh and try again.",
+    "failed": "The action could not be confirmed. Try again.",
+    "holding": "Interrupting the agent…",
+    "held": "Agent interrupted. Its machine-time budget is suspended.",
+    "interrupted": "Interrupted. This work cannot resume.",
+    "runMenu": "Run actions",
+    "paused": "Run paused. No new work will start.",
+    "approvalsExpiring": "Pending approvals can still expire while the run is paused.",
+    "stopDescription": "This will stop the run permanently. Its history will remain available."
+  },
   "inbox": {
     "attention": "Needs attention",
     "active": "In progress",
@@ -1239,6 +1255,8 @@
     "confirmTerminate": "Permanently terminate {{run}}?",
     "actionFailed": "The action could not be completed.",
     "status": {
+      "paused": "Paused",
+      "interrupted": "Interrupted",
       "active": "In progress",
       "stopping": "Terminating",
       "succeeded": "Completed",
@@ -1285,6 +1303,7 @@
       "snoozeElapsed": "snooze ended"
     },
     "menu": {
+      "deleteRun": "Delete…",
       "openThread": "Open thread",
       "openRun": "View run",
       "markRead": "Mark as read",
@@ -1309,6 +1328,13 @@
       "time": "Time",
       "past": "Choose a moment in the future.",
       "deadlineWarning": "The response deadline for this request is {{time}}, before the snooze ends. If nobody answers by then, it will expire."
+    },
+    "deleteDialog": {
+      "title": "Delete this run?",
+      "description": "“{{run}}” and its conversations will be deleted. Macro will remove the work folder it created for this run and release the retained copy when no run uses it. User-selected folders are kept.",
+      "confirm": "Delete",
+      "failed": "The run could not be deleted. Try again.",
+      "cleanupPending": "The run was deleted. Macro will retry the remaining file cleanup on restart."
     },
     "terminateDialog": {
       "title": "Terminate this run?",

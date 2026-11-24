@@ -1220,6 +1220,22 @@
       "workEnded": "理由：関連作業の終了"
     }
   },
+  "operator": {
+    "interruptWork": "中断",
+    "resumeWork": "再開",
+    "pauseRun": "実行を一時停止",
+    "resumeRun": "実行を再開",
+    "unavailable": "現在の作業ではこの操作を実行できません。",
+    "changed": "実行の状態が変わりました。更新して再試行してください。",
+    "failed": "操作を確認できませんでした。再試行してください。",
+    "holding": "エージェントを中断しています…",
+    "held": "エージェントは中断され、マシン時間の計測は停止しています。",
+    "interrupted": "中断されました。この作業は再開できません。",
+    "runMenu": "実行の操作",
+    "paused": "実行を一時停止しました。新しい作業は開始されません。",
+    "approvalsExpiring": "一時停止中も保留中の承認が期限切れになることがあります。",
+    "stopDescription": "実行は完全に停止します。履歴は引き続き確認できます。"
+  },
   "inbox": {
     "attention": "対応が必要",
     "active": "実行中",
@@ -1239,6 +1255,8 @@
     "confirmTerminate": "{{run}} を完全に終了しますか？",
     "actionFailed": "操作を完了できませんでした。",
     "status": {
+      "paused": "一時停止中",
+      "interrupted": "中断",
       "active": "実行中",
       "stopping": "終了処理中",
       "succeeded": "完了",
@@ -1285,6 +1303,7 @@
       "snoozeElapsed": "保留期間終了"
     },
     "menu": {
+      "deleteRun": "削除…",
       "openThread": "スレッドを開く",
       "openRun": "実行を表示",
       "markRead": "既読にする",
@@ -1309,6 +1328,13 @@
       "time": "時刻",
       "past": "未来の日時を選んでください。",
       "deadlineWarning": "この依頼の回答期限は {{time}} で、保留の終了より前です。それまでに回答がないと期限切れになります。"
+    },
+    "deleteDialog": {
+      "title": "この実行を削除しますか？",
+      "description": "「{{run}}」と会話を削除します。Macro が作成した作業フォルダーを削除し、どの実行でも使用しなくなった保存コピーも削除します。ユーザーが選択したフォルダーは残ります。",
+      "confirm": "削除",
+      "failed": "実行を削除できませんでした。再試行してください。",
+      "cleanupPending": "実行を削除しました。残りのファイルは Macro の再起動時に再度削除を試みます。"
     },
     "terminateDialog": {
       "title": "この実行を終了しますか？",

@@ -47,3 +47,19 @@ it('sends a named instance reply only to its retained selector', async () => {
   await expect(sendRunMessage030({ ...named, capture: flow.capture }, 'worker', 'queue', 'Reply', instance.id)).rejects.toThrow();
   expect(requests).toHaveLength(count);
 });
+
+it('lets a held flow thread resume through steer or queue on its exact selector', async () => {
+  const base = inspectionFixture030();
+  const currentActivationId = 'active-hold';
+  const instance = { ...base.state.instances[0], selectorKind: 'named', selectorName: 'review', currentActivationId, discarded: false };
+  const run = { ...base, state: { ...base.state, stopping: false, instances: [instance],
+    operatorWorks: { [currentActivationId]: { kind: 'held' as const } } } };
+  expect(messageTargets030(run)).toEqual([]);
+  expect(messageTargets030(run, 'another-instance')).toEqual([]);
+  expect(messageTargets030({ ...run, state: { ...run.state,
+    instances: [{ ...instance, selectorKind: 'new' }] } }, instance.id)).toEqual([]);
+  for (const delivery of ['steer', 'queue'] as const) {
+    await sendRunMessage030(run, 'worker', delivery, 'Continue', instance.id, `retry-${delivery}`);
+    expect(requests.at(-1)).toMatchObject({ delivery, instance: 'review', deliveryId: `retry-${delivery}` });
+  }
+});

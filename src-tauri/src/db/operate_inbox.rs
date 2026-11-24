@@ -3,6 +3,9 @@ use argentic_runtime::persistence::{failure, opaque, require, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqliteConnection, SqlitePool};
 
+pub(crate) const DELETE_SCHEMA_VERSION: i64 = 52;
+pub(crate) const DELETE_SCHEMA_NAME: &str = "052_operate_delete";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct OperateRunFacts {
@@ -53,10 +56,13 @@ pub(crate) async fn list_runs(pool: &SqlitePool, request: RunListRequest030) -> 
     let mut runs = Vec::with_capacity(page.runs.len());
     for mut summary in page.runs {
         let row = sqlx::query(
-            "SELECT inbox.started_at_ms, inbox.finished_at_ms, inbox.opened,
+            "SELECT inbox.started_at_ms, coalesce(inbox.finished_at_ms,
+               CAST(unixepoch(interruption.interrupted_at) * 1000 AS INTEGER)) AS finished_at_ms, inbox.opened,
                EXISTS(SELECT 1 FROM engine_flow030_system_stop_requests st
                       WHERE st.system_id=inbox.system_id AND st.invocation_id=inbox.invocation_id AND st.event_id IS NOT NULL) AS user_stop
-             FROM operate_inbox_runs inbox WHERE system_id=? AND invocation_id=?",
+             FROM operate_inbox_runs inbox
+             LEFT JOIN engine_flow030_interruptions interruption ON interruption.system_id=inbox.system_id
+             WHERE inbox.system_id=? AND inbox.invocation_id=?",
         ).bind(&summary.system_start_id).bind(&summary.flow_invocation_id).fetch_one(&mut *tx).await?;
         let inbox = OperateRunFacts {
             started_at_ms: row.try_get("started_at_ms")?,
@@ -141,8 +147,10 @@ pub(crate) async fn update(
                 WHERE inbox.system_id=? AND EXISTS (
                     SELECT 1 FROM engine_flow030_runs r WHERE r.system_id=inbox.system_id
                       AND r.invocation_id=inbox.invocation_id AND r.snapshot_id=?
-                      AND r.state_json ->> '$.verdict' IS NOT NULL
-                      AND NOT EXISTS(SELECT 1 FROM json_each(r.state_json, '$.activations') WHERE value ->> '$.physical'=1)
+                      AND ((r.state_json ->> '$.verdict' IS NOT NULL
+                        AND NOT EXISTS(SELECT 1 FROM json_each(r.state_json, '$.activations') WHERE value ->> '$.physical'=1))
+                        OR (r.plan_json ->> '$.versions.contract'='agsdl-0.4.0' AND EXISTS(
+                          SELECT 1 FROM engine_flow030_interruptions i WHERE i.system_id=r.system_id)))
                 )")
                 .bind(system_id).bind(snapshot_id).execute(pool).await?;
         }
@@ -198,9 +206,21 @@ pub(crate) async fn update(
     Ok(())
 }
 
+pub(crate) async fn remove_delete_reference_schema(
+    connection: &mut SqliteConnection,
+) -> crate::db::DbResult<()> {
+    if super::table_exists(connection, "operate_run_deletions".into()).await? {
+        sqlx::raw_sql(include_str!("migrations/052_operate_delete_reference.sql"))
+            .execute(&mut *connection)
+            .await?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn remove_reference_schema(
     connection: &mut SqliteConnection,
 ) -> crate::db::DbResult<()> {
+    remove_delete_reference_schema(connection).await?;
     sqlx::raw_sql(
         "DROP TRIGGER IF EXISTS macro_operate_work_progress;
          DROP TRIGGER IF EXISTS macro_operate_human_changed;
@@ -217,3 +237,6 @@ pub(crate) async fn remove_reference_schema(
 
 #[cfg(test)]
 mod tests;
+
+mod operator_controls;
+pub(crate) use operator_controls::{control_run, read_runtime};

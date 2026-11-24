@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import type { OperateAttentionRow, OperateThreadRow } from '../../services/operateInboxModel';
 import {
-  markOperateRunOpened, openOperateRun, openOperateThread,
+  controlOperateRun, markOperateRunOpened, openOperateRun, openOperateThread,
 } from '../../stores/useOperateInboxStore';
 import { workflowAgentTaskId } from '../../services/workflowAgentTasks';
 import { useAppStore } from '../../stores/useAppStore';
@@ -10,13 +10,16 @@ import type { SidebarMenuPosition } from '../ui/SidebarMenu';
 import { OperateElapsed, OperateMarkers, OperateMenuItem, useOperateFormat } from './OperateColumnParts';
 import { OperateChip, OperateMenuSeparator, OperateRow, OperateRunLink } from './OperateRow';
 import { OperateSnoozeDialog, OperateSnoozeMenu } from './OperateSnooze';
-import { operateReasonPresentation } from './operateColumnModel';
+import { operatorErrorKey030 } from '../../services/agsdl/operator030';
+import { operateReasonPresentation, operateThreadState } from './operateColumnModel';
 import { useAgsdlTranslation } from '../agsdl/useAgsdlTranslation';
 
 const systemRunLabel = (item: { systemLabel: string; runLabel: string }) => `${item.systemLabel} · ${item.runLabel}`;
 
 /** A thread listed in "À traiter" or "Reportés". */
-export function OperateThreadRowView({ thread, variant }: { thread: OperateThreadRow; variant: 'attention' | 'snoozed' }) {
+export function OperateThreadRowView({ thread, variant, runFinished = false }: {
+  thread: OperateThreadRow; variant: 'attention' | 'snoozed' | 'run'; runFinished?: boolean;
+}) {
   const { t } = useAgsdlTranslation();
   const { clock, moment, full } = useOperateFormat();
   const selected = useAppStore(state => thread.location.kind === 'local'
@@ -25,18 +28,29 @@ export function OperateThreadRowView({ thread, variant }: { thread: OperateThrea
   const [snoozeMenu, setSnoozeMenu] = useState<SidebarMenuPosition | null>(null);
   const [snoozeDialog, setSnoozeDialog] = useState(false);
   const failed = () => notify.error(t('agsdl.inbox.actionFailed'));
+  const [pending, setPending] = useState(false);
+  const action = thread.operatorAction;
   const reason = thread.reason ?? 'activity';
-  const { icon, tone } = operateReasonPresentation[reason];
+  const { icon, tone } = thread.reason || variant !== 'run'
+    ? operateReasonPresentation[reason] : { icon: 'message-circle' as const, tone: 'muted' as const };
   const snoozedUntil = thread.facts?.snoozeUntilMs ?? null;
-  const reasonWord = t(`agsdl.inbox.reason.${reason}`);
+  const reasonWord = variant === 'run' ? t(`agsdl.inbox.threadState.${operateThreadState(thread, runFinished)}`)
+    : t(`agsdl.inbox.reason.${reason}`);
   const runLabel = systemRunLabel(thread);
   const returns = variant === 'snoozed' && snoozedUntil !== null
     ? t('agsdl.inbox.returns', { time: new Date(snoozedUntil).toDateString() === new Date().toDateString() ? clock(snoozedUntil) : moment(snoozedUntil) })
     : null;
   const canSnooze = thread.canSnooze;
   const startSnooze = (position: SidebarMenuPosition) => setSnoozeMenu(position);
+  const applyControl = async () => {
+    if (!action || pending) return;
+    setPending(true);
+    try { await controlOperateRun(thread, action); }
+    catch (error) { notify.error(t(`agsdl.operator.${operatorErrorKey030(error)}`)); }
+    finally { setPending(false); }
+  };
   return <>
-    <OperateRow icon={icon} tone={tone} title={thread.agentLabel} selected={selected} dimmed={thread.hidden && variant === 'snoozed'}
+    <OperateRow icon={icon} tone={tone} title={thread.agentLabel} selected={selected} dimmed={thread.hidden && variant !== 'attention'}
       openLabel={`${thread.agentLabel} · ${reasonWord}`} openTitle={`${thread.agentLabel} · ${runLabel}`}
       openRef={openRef} onOpen={() => void openOperateThread(thread).catch(failed)}
       markers={<OperateMarkers hidden={thread.hidden} location={thread.location} />}
@@ -54,7 +68,8 @@ export function OperateThreadRowView({ thread, variant }: { thread: OperateThrea
       renderMenu={(close, position) => <>
         <OperateMenuItem icon="message-circle" onClick={() => { close(); void openOperateThread(thread).catch(failed); }}>{t('agsdl.inbox.menu.openThread')}</OperateMenuItem>
         <OperateMenuItem icon="workflow" onClick={() => { close(); openOperateRun(thread); }}>{t('agsdl.inbox.menu.openRun')}</OperateMenuItem>
-        {/* Interrompre / Reprendre (lot Interrompre): added here, above the separator below, once Argentic keeps the work open. */}
+        {action && <OperateMenuItem icon={action.kind === 'resumeWork' ? 'play' : 'pause'} disabled={pending}
+          onClick={() => { close(); void applyControl(); }}>{t(`agsdl.operator.${action.kind}`)}</OperateMenuItem>}
         {canSnooze && <>
           <OperateMenuSeparator />
           <OperateMenuItem icon="clock" onClick={() => { close(); startSnooze(position); }}>

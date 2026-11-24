@@ -352,6 +352,8 @@ mod fault {
                 "ENAMETOOLONG" => libc::ENAMETOOLONG,
                 #[cfg(unix)]
                 "EEXIST" => libc::EEXIST,
+                #[cfg(unix)]
+                "EINVAL" => libc::EINVAL,
                 #[cfg(windows)]
                 "EACCES" => 5,
                 #[cfg(windows)]
@@ -362,6 +364,8 @@ mod fault {
                 "ENAMETOOLONG" => 206,
                 #[cfg(windows)]
                 "EEXIST" => 183,
+                #[cfg(windows)]
+                "EINVAL" => 123,
                 action => panic!("Unknown test filesystem fault: {action}"),
             };
             Err(io::Error::from_raw_os_error(code))

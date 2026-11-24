@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
 import type { RunInspection030 } from '../../services/agsdl/runtimeProjection030';
 import { messagePrompt030, messageTargets030, runMessages030, sendRunMessage030 } from '../../services/agsdl/messages030';
@@ -12,19 +12,25 @@ export function Messages030({ run, stale, refresh, instanceId }: { instanceId?: 
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
+  const pending = useRef<{ key: string; id: string }>(null);
   const messages = runMessages030(run, instanceId);
   const instanceView = instanceId !== undefined;
   const readOnly = instanceView && stale;
   const title = tr(instanceView ? 'instanceTrace' : 'title');
   const target = targets.includes(agent) ? agent : targets[0];
   const canSend = target && run.state.verdict === null && !run.state.stopping && run.state.ownerStatus === 'live';
-  const sendDisabled = stale || busy || error || !prompt.trim();
-  useEffect(() => { setError(false); }, [run.state.revision]);
+  const sendDisabled = stale || busy || !prompt.trim();
   const send = async () => {
     if (!canSend || sendDisabled) return;
     setBusy(true); setError(false);
-    try { await sendRunMessage030(run, target, mode, prompt, instanceId); setPrompt(''); refresh(); }
-    catch { setError(true); }
+    const key = JSON.stringify([target, mode, prompt]);
+    if (pending.current?.key !== key) pending.current = { key, id: crypto.randomUUID() };
+    try {
+      await sendRunMessage030(run, target, mode, prompt, instanceId, pending.current.id);
+      pending.current = null;
+      setPrompt('');
+      refresh();
+    } catch { setError(true); refresh(); }
     finally { setBusy(false); }
   };
   if (!instanceView && !targets.length && !messages.length) return null;

@@ -42,6 +42,7 @@ export async function loadRuntimeProjection030(scope: RuntimeProjectionQuery030,
         (first && !equalScope(page.scope, first.scope)) || page.flowInvocationId !== flowInvocationId || !page.flowInvocationId ||
         !/^(0|[1-9][0-9]*)$/.test(page.total) || page.items.length > 100 ||
         (first && (page.revision !== first.revision || page.total !== first.total || page.stopping !== first.stopping || page.verdict !== first.verdict ||
+          !!page.paused !== !!first.paused || !!page.interruptedWhilePaused !== !!first.interruptedWhilePaused ||
           (page.terminationUncertain === true) !== (first.terminationUncertain === true))) ||
         (offset > 0 && page.items.length === 0)) throw new Error('Invalid runtime projection page');
     first ??= structuredClone(page);
@@ -97,6 +98,7 @@ export type RunHistoryEntry030 = Pick<RunInspection030['state'], 'scope' | 'verd
   readonly capture: RunInspection030['capture'];
   readonly interruptedAt?: string | null;
   readonly stopping?: boolean;
+  readonly paused?: boolean;
   readonly inbox?: OperateRunFacts;
   readonly observation?: { readonly order: number; readonly atMs: number };
 };

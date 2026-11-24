@@ -24,6 +24,7 @@ import type {
   RuntimeInstance030,
   RuntimePath030,
   RuntimeProjectionScope030,
+  RuntimeProjectionPage030,
 } from './generated/ipc';
 
 /** Decimal integers and JSON retain their exact wire text, never JS numbers. */
@@ -85,6 +86,9 @@ export interface RunStateUi030 {
   readonly modelOverrides?: Readonly<Record<string, { name: string; effort?: string }>>;
   readonly ownerStatus: 'live' | 'revoked';
   readonly stopping: boolean;
+  readonly paused?: boolean;
+  readonly interruptedWhilePaused?: boolean;
+  readonly operatorWorks?: RuntimeProjectionPage030['operatorWorks'];
   readonly physicalPending: string;
   readonly terminationUncertain?: boolean;
   readonly stop: NativeFact030<RunStop030>;

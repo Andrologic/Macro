@@ -993,6 +993,8 @@ pub fn run() {
             commands::agsdl_execution::execution_submit_intent,
             commands::agsdl_execution::execution_close_intent,
             commands::agsdl_execution::execution_deliver030,
+            commands::agsdl_execution::execution_control030,
+            commands::agsdl_execution::execution_delete030,
             commands::agsdl_execution::execution_stop,
             commands::agsdl_execution::execution_ensure_stop,
             commands::agsdl_execution::execution_read_snapshot,

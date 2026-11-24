@@ -143,6 +143,7 @@
     "browserRuntimeSessionReplacedReload": "Recargar pestaña"
   },
   "shutdown": {
+    "executionInterrupted": "Los trabajos activos, en pausa o interrumpidos podrían no reanudarse después de cerrar Macro.",
     "activeWorkSingle": "Hay una tarea en curso. Cerrar Macro la interrumpirá.",
     "activeWorkMultiple": "Hay {{count}} tareas en curso. Cerrar Macro las interrumpirá.",
     "closeTitle": "¿Cerrar Macro?",

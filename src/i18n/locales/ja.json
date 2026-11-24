@@ -143,6 +143,7 @@
     "browserRuntimeSessionReplacedReload": "タブを再読み込み"
   },
   "shutdown": {
+    "executionInterrupted": "Macro を閉じると、実行中、一時停止中、または中断中の作業を再開できなくなる場合があります。",
     "activeWorkSingle": "実行中のタスクがあります。Macro を閉じると中断されます。",
     "activeWorkMultiple": "{{count}} 件のタスクが実行中です。Macro を閉じると中断されます。",
     "closeTitle": "Macro を閉じますか？",

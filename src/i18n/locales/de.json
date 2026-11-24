@@ -143,6 +143,7 @@
     "browserRuntimeSessionReplacedReload": "Tab neu laden"
   },
   "shutdown": {
+    "executionInterrupted": "Laufende, pausierte oder unterbrochene Arbeiten können nach dem Schließen von Macro möglicherweise nicht fortgesetzt werden.",
     "activeWorkSingle": "Eine Aufgabe läuft noch. Beim Schließen von Macro wird sie unterbrochen.",
     "activeWorkMultiple": "{{count}} Aufgaben laufen noch. Beim Schließen von Macro werden sie unterbrochen.",
     "closeTitle": "Macro schließen?",

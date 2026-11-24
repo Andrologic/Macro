@@ -1,5 +1,4 @@
 import { afterEach,expect,it,mock } from 'bun:test';
-import { readFileSync } from 'node:fs';
 import { installTauriRuntimeMock,removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 import { createRunInspectionAccess030 } from './agsdl/runAccess030';
 import { nativeAgentRunFixture030,nativeIntentFor030,nativeTransportFor030 } from './agsdl/runAccess030.testSupport';
@@ -9,7 +8,6 @@ configureProductionWorkflowRunAccess030,
 configureWorkflowRunAccess030,
 getWorkflowRunAccess030,
 loadWorkflowAgentTasks,projectWorkflowAgentTasks030,readWorkflowRun030,
-workflowPhaseStates030,
 workflowRunAccessSnapshot030
 } from './workflowAgentTasks';
 import { workflowTaskFixture } from './workflowAgentTasks.fixtures';
@@ -79,11 +77,7 @@ it('uses durable receipt-attested correlation independently of a new open intent
   await expect(uncorrelated.refreshRun(f.capture.systemStartId)).rejects.toMatchObject({code:'SCOPE_INVALID'});
 });
 
-it('covers every activation phase published by Rust and keeps done physical work active', async () => {
-  const rust = readFileSync(new URL('../../src-tauri/src/db/agsdl_execution/discovery030.rs',import.meta.url),'utf8');
-  const vocabulary = rust.slice(rust.indexOf('activation.phase.as_str()'),rust.indexOf('"Flow discovery activation phase'));
-  expect(Object.keys(workflowPhaseStates030).sort()).toEqual([...vocabulary.matchAll(/"([a-zA-Z]+)"/g)].map(item=>item[1]).sort());
-  expect(workflowPhaseStates030).toMatchObject({steering:'active',withdrawingSteer:'stopRequested'});
+it('projects native task states and keeps done physical work active', async () => {
   const statuses = {queued:'InProgress',running:'InProgress',done:'Completed',preparing:'InProgress',stopping:'Blocked'} as const;
   for (const [phase,status] of Object.entries(statuses)) {
     const f = await nativeAgentRunFixture030(`native-${phase}`,phase); const {transport,scope} = nativeTransportFor030(f);
@@ -95,6 +89,31 @@ it('covers every activation phase published by Rust and keeps done physical work
       const occurrences = inspection.state.occurrences; if(occurrences.kind !== 'ready') throw new Error('Occurrences not ready');
       expect(projectWorkflowAgentTasks030(plan,{...inspection,state:{...inspection.state,verdict:null,physicalPending:'1',instances:inspection.state.instances.map(instance=>({...instance,discarded:false,currentActivationId:'activation-1'})),occurrences:{...occurrences,value:occurrences.value.map(item=>({...item,activation:{...item.activation,physical:true}}))}}})[0].status).toBe('InProgress');
     }
+  }
+});
+
+it('projects deferred work as pending and keeps unknown native phases readable', async () => {
+  const fixture = await nativeAgentRunFixture030('phase-projection', 'preparing');
+  const { scope, transport } = nativeTransportFor030(fixture);
+  const access = createRunInspectionAccess030(scope, transport);
+  await access.refreshRun(fixture.capture.systemStartId);
+  const read = access.getSnapshot().runs[fixture.capture.systemStartId];
+  if (read.kind !== 'ready') throw new Error('Run not ready');
+  const inspection = read.value;
+  const { state } = inspection;
+  const { occurrences } = state;
+  if (occurrences.kind !== 'ready') throw new Error('Occurrences not ready');
+
+  for (const [phase, expected] of Object.entries({
+    deferred: 'queued', steering: 'active', withdrawingSteer: 'stopRequested',
+    futureNativePhase: 'uncertain', constructor: 'uncertain',
+  } as const)) {
+    const value = occurrences.value.map(item => ({ ...item, activation: { ...item.activation, phase } }));
+    const [task] = projectWorkflowAgentTasks030(plan, {
+      ...inspection,
+      state: { ...state, occurrences: { ...occurrences, value } },
+    });
+    expect(task.workflow_execution?.state).toBe(expected);
   }
 });
 

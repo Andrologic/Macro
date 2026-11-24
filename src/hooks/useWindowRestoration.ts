@@ -110,11 +110,13 @@ const getRestartSafetySnapshot = async (): Promise<RestartSafetySnapshot> => {
   });
 };
 
-const confirmCloseWithActiveWork = async (activeWorkCount: number, retirementStarted = false): Promise<boolean> => {
+const confirmCloseWithActiveWork = async (activeWorkCount: number, retirementStarted = false, activeExecutions = false): Promise<boolean> => {
   const { ask } = await import('@tauri-apps/plugin-dialog');
   return ask(
     retirementStarted
       ? i18n.t('shutdown.retirementPending', 'Task shutdown has begun. Closing is incomplete. Try closing Macro again.')
+      : activeExecutions
+      ? i18n.t('shutdown.executionInterrupted')
       : activeWorkCount === 1
       ? i18n.t('shutdown.activeWorkSingle', 'A task is still running. Closing Macro will interrupt it.')
       : i18n.t('shutdown.activeWorkMultiple', '{{count}} tasks are still running. Closing Macro will interrupt them.', { count: activeWorkCount }),
@@ -546,7 +548,7 @@ export function useWindowRestoration() {
         installerRequestedClose = await appInstallerCloseRequestPending();
         const approvedSafety = await getRestartSafetySnapshot();
         if (approvedSafety.hasActiveWork) {
-          if (!(await confirmCloseWithActiveWork(approvedSafety.activeWorkCount, nativeShutdownStartedRef.current))) {
+          if (!(await confirmCloseWithActiveWork(approvedSafety.activeWorkCount, nativeShutdownStartedRef.current, !!approvedSafety.activeExecutions?.length))) {
             if (installerRequestedClose) {
               await appInstallerCloseRespond(false);
             }
@@ -564,7 +566,7 @@ export function useWindowRestoration() {
         const safetyAfterConsent = await getRestartSafetySnapshot();
         if (
           hasUnapprovedRestartSafetyActivity(approvedSafety, safetyAfterConsent)
-          && !(await confirmCloseWithActiveWork(safetyAfterConsent.activeWorkCount, nativeShutdownStartedRef.current))
+          && !(await confirmCloseWithActiveWork(safetyAfterConsent.activeWorkCount, nativeShutdownStartedRef.current, !!safetyAfterConsent.activeExecutions?.length))
         ) {
           if (installerRequestedClose) {
             await appInstallerCloseRespond(false);

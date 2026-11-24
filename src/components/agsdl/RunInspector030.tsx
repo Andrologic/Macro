@@ -11,6 +11,7 @@ const diagnosticCodes = new Set(['CALL_FAILED', 'TIMEOUT', 'BRANCH_FAILED', 'OUT
 /** The shell canvas consumes this bridge without replacing static or native ids. */
 export interface RunGraphBridge030 {
   readonly inspect?: () => void;
+  readonly inspection?: RunInspection030;
   readonly capture: RunInspection030['capture'];
   readonly occurrences: readonly RunGraphOccurrence030[];
   readonly occurrenceRead: ReturnType<typeof runGraphReadState030> & { readonly projectionAvailable: boolean };
@@ -61,7 +62,7 @@ export function RunInspector030({ inspection, selectedStepId, selectedOccurrence
   const visibleDiagnostics = diagnostics?.filter(diagnostic => !selected || diagnostic.activationId === selected.activationId || !graph.some(item => item.activationId === diagnostic.activationId));
   const humans = retainedRunValue030(state.humans);
   const openHumans = humans?.filter(request => request.state.kind === 'open') ?? [];
-  const canvas = renderGraph?.({ capture, occurrences: graph, occurrenceRead: { ...runGraphReadState030(state.occurrences, stale, refreshing), projectionAvailable: semantics !== null }, selectedStepId, selectedOccurrenceKey, selectStep, selectOccurrence: selectVisit });
+  const canvas = renderGraph?.({ capture, inspection, occurrences: graph, occurrenceRead: { ...runGraphReadState030(state.occurrences, stale, refreshing), projectionAvailable: semantics !== null }, selectedStepId, selectedOccurrenceKey, selectStep, selectOccurrence: selectVisit });
   if (graphOnly) return <div className="agsdl-run-canvas">{canvas}</div>;
   return <section aria-label={tr('inspector')} className="min-w-0 space-y-3">
     {canvas}

@@ -22,9 +22,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod delete_run;
 mod legacy_mcp;
+pub(crate) mod resources;
+pub(crate) use delete_run::delete_run;
 use legacy_mcp::secret_requirements;
-mod resources;
 pub(crate) mod start;
 pub(crate) use resources::cleanup;
 

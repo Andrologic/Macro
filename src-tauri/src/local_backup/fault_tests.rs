@@ -982,6 +982,7 @@ async fn generated_profile_recovers_from_io_faults_and_process_death() {
     let marker = RestoreJournal {
         preserved: format!("preserved-{}.zip", uuid::Uuid::new_v4()),
         phase: RestorePhase::Rollback,
+        launch: launch::SnapshotRollback::default(),
     };
     let mut total = 0;
     for &(mode, point, nth, default_action) in FAULT_POINTS {
@@ -1140,6 +1141,7 @@ fn restore_space_check_counts_preservation_and_both_volumes() {
             version: 0,
             app_version: String::new(),
             files,
+            launch: None,
             browser: BTreeMap::new(),
             browser_sha256: String::new(),
         }
@@ -1180,6 +1182,7 @@ async fn profile_fault_assertions_detect_deliberate_mutations() {
         ("skip-member-checksum", "local_backup::qualification::damaged_preservation_blocks_recovery_and_retains_journal_for_retry"),
         ("classify-disk-full-as-permanent", "local_backup::fault_tests::disk_full_during_migration_keeps_rows_retryable"),
         ("skip-restore-space-check", "local_backup::fault_tests::restore_space_check_counts_preservation_and_both_volumes"),
+        ("treat-eexist-as-alias", "local_backup::fault_tests::false_working_name_collision_rolls_back"),
         #[cfg(unix)]
         ("reject-symlinked-profile-root", "local_backup::fault_tests::relocated_profile_opens_and_exports_through_symlinks"),
         #[cfg(unix)]
@@ -1454,4 +1457,690 @@ async fn profile_scale() {
         "500×10, {} byte envelopes, {} byte ZIP: migration {migration:?}, export capture {capture_time:?}, export validation {validate_time:?}, restore input validation {load:?}, restore startup {restore:?}",
         document.len(), fs::metadata(path).unwrap().len()
     );
+}
+
+struct LaunchFixture {
+    folder: PathBuf,
+    snapshot: PathBuf,
+    scope: argentic_runtime::api::RuntimeProjectionScope030,
+}
+
+impl Drop for LaunchFixture {
+    fn drop(&mut self) {
+        let _ = crate::architect_launch::resources::remove_snapshot(&self.snapshot);
+    }
+}
+
+fn generated_working_names() -> Vec<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let names = [
+            b"report-12:30.txt".as_slice(),
+            b"back\\slash.txt",
+            b"control\x01.txt",
+            b"non-utf8-\xff.txt",
+            b"CON.txt",
+            b"trailing.",
+            b"trailing ",
+            b"Case.txt",
+            b"case.txt",
+        ];
+        let mut paths: Vec<_> = names
+            .into_iter()
+            .map(|bytes| {
+                Path::new("native-names").join(std::ffi::OsString::from_vec(bytes.to_vec()))
+            })
+            .collect();
+        // The native path fits Linux PATH_MAX. Its manifest key exceeds the
+        // old portable 4 KiB budget after encoding.
+        let mut deep = PathBuf::from("native-names");
+        for _ in 0..16 {
+            deep.push("x".repeat(210));
+        }
+        paths.push(PathBuf::from("native-names/dir:with\\separators/child.txt"));
+        paths.push(deep.join("end.txt"));
+        paths
+    }
+    #[cfg(not(target_os = "linux"))]
+    Vec::new()
+}
+
+fn working_fixture_bytes(name: &Path, label: &str) -> Vec<u8> {
+    [label.as_bytes(), b"/", name.as_os_str().as_encoded_bytes()].concat()
+}
+
+fn assert_working_names(folder: &Path, label: &str) {
+    for name in generated_working_names() {
+        assert_eq!(
+            fs::read(folder.join(&name)).unwrap(),
+            working_fixture_bytes(&name, label),
+            "{name:?}"
+        );
+    }
+}
+
+async fn seed_launch_resources(data: &Path, config: &Path, label: &str) -> LaunchFixture {
+    use crate::architect_launch::resources;
+    let source = tempfile::tempdir().unwrap();
+    let document = serde_json::json!({
+        "projectFormat": "agsdl-project-1", "contract": "agsdl-0.4.0", "id": label,
+        "agents": {"worker": {"harness": "codex", "permissions": "read-only"}}
+    })
+    .to_string();
+    fs::write(source.path().join("agsdl.json"), &document).unwrap();
+    let deep_member = source.path().join("a/".repeat(33)).join("notes.txt");
+    fs::create_dir_all(deep_member.parent().unwrap()).unwrap();
+    fs::write(&deep_member, "retained notes").unwrap();
+    let _lease = resources::launch_lease(config).await.unwrap();
+    let owner = resources::reserve_backup_owner(data, config).unwrap();
+    let folder = data
+        .canonicalize()
+        .unwrap()
+        .join(resources::WORKING_FOLDERS)
+        .join(&owner)
+        .join("run-fixture");
+    create_private_root(&folder.join("empty")).unwrap();
+    private_write(&folder.join("result.sh"), label.as_bytes(), true);
+    for name in generated_working_names() {
+        let path = folder.join(&name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        private_write(&path, &working_fixture_bytes(&name, label), false);
+    }
+    #[cfg(unix)]
+    {
+        let member = generated_working_names()
+            .into_iter()
+            .nth(3)
+            .unwrap_or_else(|| PathBuf::from("result.sh"));
+        std::os::unix::fs::symlink(folder.join(member), folder.join("internal-link")).unwrap();
+    }
+    let source = argentic_runtime::source::OpenedSource::open_path(source.path()).unwrap();
+    let retained = source.retain(config).unwrap();
+    let mut bound = serde_json::json!({});
+    retained.bind_scope(&mut bound).unwrap();
+    let snapshot_id = bound["projectSnapshot"].as_str().unwrap();
+    let snapshot = config.join(resources::SNAPSHOTS).join(snapshot_id);
+    resources::register_backup_snapshot(snapshot.parent().unwrap(), snapshot_id, &owner).unwrap();
+    resources::seal_snapshot_tree(&snapshot).unwrap();
+
+    let scope = argentic_runtime::api::RuntimeProjectionScope030 {
+        system_start_id: format!("backup-{label}"),
+        snapshot_id: format!("capture-{label}"),
+        source: crate::db::agsdl_execution::dto::EngineSourceRevision {
+            owner: crate::db::agsdl_execution::dto::EngineSourceOwner {
+                project_id: "project".into(),
+                plan_id: BLUEPRINT.into(),
+                branch: "main".into(),
+            },
+            revision: "1".into(),
+            source_sha256: hash(document.as_bytes()),
+        },
+    };
+    let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
+    sqlx::query("INSERT INTO engine_flow030_runs VALUES (?, 'invocation', ?, 'epoch', ?, '{}', '{\"verdict\":\"succeeded\"}')")
+        .bind(&scope.system_start_id).bind(&scope.snapshot_id).bind(serde_json::to_string(&scope.source).unwrap())
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO engine_start030_requests VALUES (?, '{}', ?, 'invocation', ?, 'epoch', '{}', '{}')")
+        .bind(&scope.system_start_id).bind(&scope.system_start_id).bind(&scope.snapshot_id)
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO architect_launch_runs VALUES (?, ?, 1, ?, ?, ?, 1, '{}')")
+        .bind(&scope.system_start_id)
+        .bind(BLUEPRINT)
+        .bind(snapshot_id)
+        .bind(label)
+        .bind(folder.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    LaunchFixture {
+        folder,
+        snapshot,
+        scope,
+    }
+}
+
+async fn launch_profile(label: &str) -> (tempfile::TempDir, PathBuf, PathBuf, LaunchFixture) {
+    let (temp, data, config) = tests::profile().await;
+    let bytes = envelope(BTreeMap::new());
+    seed(&data, &[(BLUEPRINT, &bytes)]).await;
+    open_and_migrate(&data).await.unwrap().close().await;
+    let fixture = seed_launch_resources(&data, &config, label).await;
+    (temp, data, config, fixture)
+}
+
+fn seed_read_only_cache(folder: &Path, content: &str) {
+    let directory = folder.join("read-only/cache");
+    fs::create_dir_all(&directory).unwrap();
+    let file = directory.join("module");
+    fs::write(&file, content).unwrap();
+    for path in [
+        file.as_path(),
+        &directory,
+        directory.parent().unwrap(),
+        folder,
+    ] {
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn backup_restores_a_deleted_runs_owned_resources() {
+    use crate::architect_launch::resources;
+
+    let (temp, data, config, fixture) = launch_profile("original").await;
+    let external = temp.path().join("chosen");
+    create_private_root(&external).unwrap();
+    private_write(&external.join("outside.txt"), b"user data", false);
+    seed_read_only_cache(&external, "user module");
+    let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
+    sqlx::query("INSERT INTO engine_flow030_runs VALUES ('external', 'external', 'external', 'epoch', '{}', '{}', '{\"verdict\":\"succeeded\"}')")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO engine_start030_requests VALUES ('external', '{}', 'external', 'external', 'external', 'epoch', '{}', '{}')")
+        .execute(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO architect_launch_runs
+        SELECT 'external',blueprint_id,number,retained_snapshot_id,NULL,?,0,'{}'
+        FROM architect_launch_runs WHERE system_id=?",
+    )
+    .bind(external.to_str().unwrap())
+    .bind(&fixture.scope.system_start_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&external, fixture.folder.join("outside-link")).unwrap();
+    seed_read_only_cache(&fixture.folder, "archived module");
+
+    let orphan = fixture.folder.with_file_name("run-orphan");
+    seed_read_only_cache(&orphan, "orphaned module");
+    resources::cleanup(&pool, &data, &config).await.unwrap();
+    assert!(!orphan.exists());
+    assert!(fixture.folder.join("read-only/cache/module").is_file());
+
+    let backup = temp.path().join("export.zip");
+    queue_export(&data, &backup);
+    process_startup(&data, &config).await.unwrap();
+    let archive = bundle::load(&backup).unwrap();
+    assert!(archive
+        .files
+        .keys()
+        .all(|name| !name.ends_with("outside.txt")));
+    assert!(archive
+        .files
+        .iter()
+        .any(|(name, entry)| name.contains("/run-fixture/") && entry.native.is_some()));
+    sqlx::query("DELETE FROM architect_launch_runs WHERE system_id='external'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    crate::architect_launch::delete_run(&pool, &data, &config, fixture.scope.clone())
+        .await
+        .unwrap();
+    assert!(!fixture.folder.exists() && !fixture.snapshot.exists());
+    assert!(fs::metadata(external.join("read-only/cache"))
+        .unwrap()
+        .permissions()
+        .readonly());
+    pool.close().await;
+
+    seed_read_only_cache(&fixture.folder, "stale module");
+    tests::queue_restore(&data, &archive);
+    process_startup(&data, &config).await.unwrap();
+    assert_eq!(
+        status_code(&data.join("local-backup")),
+        Some(BackupStatusCode::Restored)
+    );
+    assert_eq!(
+        fs::read(fixture.folder.join("result.sh")).unwrap(),
+        b"original"
+    );
+    assert_eq!(
+        fs::read(fixture.folder.join("read-only/cache/module")).unwrap(),
+        b"archived module"
+    );
+    assert!(fixture.folder.join("empty").is_dir());
+    assert_working_names(&fixture.folder, "original");
+    assert!(fixture.snapshot.join("files.json").is_file());
+    #[cfg(unix)]
+    assert_eq!(
+        fs::read_link(fixture.folder.join("outside-link")).unwrap(),
+        external
+    );
+    assert_eq!(
+        fs::read(external.join("outside.txt")).unwrap(),
+        b"user data"
+    );
+    let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
+    let chosen = crate::architect_launch::read_folder(&pool, "external")
+        .await
+        .unwrap();
+    assert_eq!(Path::new(&chosen), external);
+    sqlx::query("DELETE FROM architect_launch_runs WHERE system_id='external'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    crate::architect_launch::delete_run(&pool, &data, &config, fixture.scope.clone())
+        .await
+        .unwrap();
+    assert!(!fixture.snapshot.exists() && !fixture.folder.exists());
+    assert!(external.is_dir());
+
+    let (_destination, other_data, other_config) = tests::profile().await;
+    tests::queue_restore(&other_data, &archive);
+    process_startup(&other_data, &other_config).await.unwrap();
+    assert_eq!(
+        status_code(&other_data.join("local-backup")),
+        Some(BackupStatusCode::Restored)
+    );
+    let other_pool = db::create_pool(&other_data.join("macro.db")).await.unwrap();
+    let relocated = PathBuf::from(
+        crate::architect_launch::read_folder(&other_pool, &fixture.scope.system_start_id)
+            .await
+            .unwrap(),
+    );
+    assert!(relocated.starts_with(other_data.canonicalize().unwrap()));
+    assert_eq!(fs::read(relocated.join("result.sh")).unwrap(), b"original");
+    assert_working_names(&relocated, "original");
+    #[cfg(unix)]
+    {
+        let member = generated_working_names()
+            .into_iter()
+            .nth(3)
+            .unwrap_or_else(|| PathBuf::from("result.sh"));
+        assert_eq!(
+            fs::read_link(relocated.join("internal-link")).unwrap(),
+            relocated.join(&member)
+        );
+        assert_eq!(
+            fs::read(relocated.join("internal-link")).unwrap(),
+            fs::read(relocated.join(member)).unwrap()
+        );
+        assert_eq!(
+            fs::read_link(relocated.join("outside-link")).unwrap(),
+            external
+        );
+    }
+    let other_snapshot = other_config
+        .join(crate::architect_launch::resources::SNAPSHOTS)
+        .join(fixture.snapshot.file_name().unwrap());
+    assert!(other_snapshot.join("files.json").is_file());
+    sqlx::query("DELETE FROM architect_launch_runs WHERE system_id='external'")
+        .execute(&other_pool)
+        .await
+        .unwrap();
+    crate::architect_launch::delete_run(
+        &other_pool,
+        &other_data,
+        &other_config,
+        fixture.scope.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(!relocated.exists() && !other_snapshot.exists());
+    assert_eq!(
+        fs::read(external.join("read-only/cache/module")).unwrap(),
+        b"user module"
+    );
+    resources::remove_working_tree(&external).unwrap();
+}
+
+#[tokio::test]
+async fn launch_resources_roll_back_with_the_profile_after_io_failure_or_process_death() {
+    let (_incoming_temp, incoming_data, incoming_config, incoming) =
+        launch_profile("incoming").await;
+    let names = generated_working_names();
+    let selector = |name: &Path| name.to_string_lossy().replace('\\', "/");
+    let mut creation_points =
+        BTreeSet::from(["create:/result.sh".to_owned(), "mkdir:/empty".to_owned()]);
+    #[cfg(unix)]
+    {
+        creation_points.insert("symlink:/internal-link".to_owned());
+        for name in &names {
+            let link = Path::new("native-links").join(name.file_name().unwrap());
+            let path = incoming.folder.join(&link);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink("../result.sh", path).unwrap();
+            creation_points.insert(format!("symlink:/{}", selector(&link)));
+        }
+    }
+    let archive = capture(&incoming_data, &incoming_config, BTreeMap::new(), true)
+        .await
+        .unwrap();
+    let mut faults = vec![
+        ("rename:/agsdl-snapshots/".to_owned(), "crash"),
+        ("write:/agsdl-working-folders/".to_owned(), "crash"),
+        ("write:/agsdl-working-folders/".to_owned(), "EIO"),
+    ];
+    let actions = if extended() {
+        FAULT_ACTIONS
+    } else {
+        &["crash", "EIO"]
+    };
+    for name in &names {
+        creation_points.insert(format!("create:/{}", selector(name)));
+        creation_points.insert(format!("mkdir:/{}", selector(name.parent().unwrap())));
+        for &action in actions {
+            faults.push((format!("write:/{}", selector(name)), action));
+        }
+    }
+    for point in creation_points {
+        for action in ["EEXIST", "ENAMETOOLONG", "EINVAL", "EIO", "crash"] {
+            faults.push((point.clone(), action));
+        }
+    }
+    use futures::StreamExt;
+    futures::stream::iter(faults)
+        .for_each_concurrent(6, |(point, action)| {
+            assert_launch_rollback(&archive, &incoming, point, action)
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn false_working_name_collision_rolls_back() {
+    let (_temp, data, config, incoming) = launch_profile("incoming").await;
+    let archive = capture(&data, &config, BTreeMap::new(), true)
+        .await
+        .unwrap();
+    assert_launch_rollback(&archive, &incoming, "create:/result.sh".into(), "EEXIST").await;
+}
+
+async fn assert_launch_rollback(
+    archive: &Archive,
+    incoming: &LaunchFixture,
+    point: String,
+    action: &str,
+) {
+    let (_temp, data, config, original) = launch_profile("original").await;
+    seed_read_only_cache(&original.folder, "original module");
+    let incoming_snapshot = config
+        .join(crate::architect_launch::resources::SNAPSHOTS)
+        .join(incoming.snapshot.file_name().unwrap());
+    tests::queue_restore(&data, archive);
+    run_fault(&data, &config, "restore", &point, action, 1).await;
+    process_startup(&data, &config).await.unwrap();
+    assert_eq!(
+        status_code(&data.join("local-backup")),
+        Some(if matches!(action, "crash" | "persistent-EIO") {
+            BackupStatusCode::RolledBack
+        } else {
+            BackupStatusCode::Failed
+        }),
+        "{point}/{action}"
+    );
+    assert!(
+        !data.join("local-backup/restoring.json").exists(),
+        "{point}/{action}"
+    );
+    assert!(!incoming_snapshot.exists(), "{point}/{action}");
+    assert!(
+        original.snapshot.join("files.json").is_file(),
+        "{point}/{action}"
+    );
+    assert_eq!(
+        fs::read(original.folder.join("result.sh")).unwrap(),
+        b"original",
+        "{point}/{action}"
+    );
+    assert!(original.folder.join("empty").is_dir(), "{point}/{action}");
+    assert_eq!(
+        fs::read(original.folder.join("read-only/cache/module")).unwrap(),
+        b"original module",
+        "{point}/{action}"
+    );
+    assert_working_names(&original.folder, "original");
+    #[cfg(unix)]
+    {
+        let member = generated_working_names()
+            .into_iter()
+            .nth(3)
+            .unwrap_or_else(|| PathBuf::from("result.sh"));
+        assert_eq!(
+            fs::read_link(original.folder.join("internal-link")).unwrap(),
+            original.folder.join(member)
+        );
+    }
+    let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
+    assert_eq!(
+        crate::architect_launch::read_folder(&pool, &original.scope.system_start_id)
+            .await
+            .unwrap(),
+        original.folder.to_str().unwrap(),
+        "{point}/{action}"
+    );
+    assert!(
+        crate::architect_launch::read_folder(&pool, &incoming.scope.system_start_id)
+            .await
+            .is_err(),
+        "{point}/{action}"
+    );
+    pool.close().await;
+    assert_staging_empty(&data);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn restore_rebases_absolute_links_without_normalizing_the_suffix() {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use std::os::unix::fs::symlink;
+
+    let (source, source_data, source_config, fixture) = launch_profile("relocate").await;
+    let alias = source.path().join("alias");
+    symlink(&source_data, &alias).unwrap();
+    let alias_folder = alias.join(
+        fixture
+            .folder
+            .strip_prefix(source_data.canonicalize().unwrap())
+            .unwrap(),
+    );
+    let sub = fixture.folder.join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::write(sub.join("NUL"), "raw suffix").unwrap();
+    let links = [
+        ("traversal", &fixture.folder, "/sub/../sub//NUL"),
+        ("alias", &alias_folder, "/sub/./../sub///"),
+        ("root", &fixture.folder, "///./"),
+    ];
+    let append = |root: &Path, suffix: &str| {
+        let mut path = root.as_os_str().to_owned();
+        path.push(suffix);
+        PathBuf::from(path)
+    };
+    for (name, root, suffix) in links {
+        symlink(append(root, suffix), fixture.folder.join(name)).unwrap();
+    }
+    symlink("sub", fixture.folder.join("relative-directory")).unwrap();
+    symlink("missing", fixture.folder.join("dangling")).unwrap();
+
+    let backup = source.path().join("export.zip");
+    queue_export(&source_data, &backup);
+    process_startup(&alias, &source_config).await.unwrap();
+    let archive = bundle::load(&backup).unwrap();
+    let manifest = serde_json::to_value(archive.launch.as_ref().unwrap()).unwrap();
+    let recorded_links = manifest["links"].as_object().unwrap();
+    for (name, directory) in [
+        ("traversal", false),
+        ("alias", true),
+        ("root", true),
+        ("relative-directory", true),
+        ("dangling", false),
+    ] {
+        let key = URL_SAFE_NO_PAD.encode(name);
+        let (_, link) = recorded_links
+            .iter()
+            .find(|(name, _)| name.rsplit('/').next() == Some(key.as_str()))
+            .unwrap();
+        assert_eq!(link["directory"], directory, "{name}");
+    }
+    let (_target, data, config) = tests::profile().await;
+    tests::queue_restore(&data, &archive);
+    process_startup(&data, &config).await.unwrap();
+    assert_eq!(
+        status_code(&data.join("local-backup")),
+        Some(BackupStatusCode::Restored)
+    );
+    let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
+    let relocated = PathBuf::from(
+        crate::architect_launch::read_folder(&pool, &fixture.scope.system_start_id)
+            .await
+            .unwrap(),
+    );
+    for (name, _, suffix) in links {
+        let actual = fs::read_link(relocated.join(name)).unwrap();
+        assert_eq!(actual.as_os_str(), append(&relocated, suffix).as_os_str());
+    }
+    assert_eq!(
+        fs::read(relocated.join("traversal")).unwrap(),
+        b"raw suffix"
+    );
+    pool.close().await;
+}
+
+// Exercise a foreign archive on Linux using an unpaired Windows surrogate.
+// The source filesystem can store that name but it has no UTF-8 equivalent.
+#[cfg(unix)]
+#[tokio::test]
+async fn restore_reports_unrepresentable_working_members_and_keeps_the_rest() {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let (_source, source_data, source_config, source) = launch_profile("foreign").await;
+    let mut archive = capture(&source_data, &source_config, BTreeMap::new(), true)
+        .await
+        .unwrap();
+    let root = format!(
+        "data/{}",
+        source
+            .folder
+            .strip_prefix(&source_data.canonicalize().unwrap())
+            .unwrap()
+            .display()
+    );
+    let temp = Arc::new(private_staging(&source_data).unwrap());
+    let database = temp.path().join("source.db");
+    copy_entry_to_file(&archive.files["data/macro.db"], "data/macro.db", &database).unwrap();
+    let mut db = connection(&database).await.unwrap();
+    let windows_folder = format!(
+        r"\\?\C:\Macro\{}",
+        root.strip_prefix("data/").unwrap().replace('/', "\\")
+    );
+    sqlx::query("UPDATE architect_launch_runs SET working_folder=?")
+        .bind(windows_folder)
+        .execute(&mut db)
+        .await
+        .unwrap();
+    db.close().await.unwrap();
+    add_database_file(&mut archive.files, &temp, "data/macro.db", &database).unwrap();
+    let encode = |units: &[u16]| {
+        URL_SAFE_NO_PAD.encode(
+            units
+                .iter()
+                .copied()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>(),
+        )
+    };
+    let good = encode(&"ordinary.txt".encode_utf16().collect::<Vec<_>>());
+    let bad = encode(&[0xd800]);
+    let omitted_child = format!("{root}/{bad}/{good}");
+    archive
+        .files
+        .retain(|name, _| !name.starts_with(&format!("{root}/")));
+    archive.launch = Some(
+        serde_json::from_value(serde_json::json!({
+            "directories": [root, format!("{root}/{bad}")],
+            "links": {}, "missing": [], "workingPaths": "windowsUtf16Le"
+        }))
+        .unwrap(),
+    );
+    add_file(
+        &mut archive.files,
+        format!("{root}/{good}"),
+        b"portable content".to_vec(),
+    )
+    .unwrap();
+    add_file(
+        &mut archive.files,
+        omitted_child,
+        b"inside omitted directory".to_vec(),
+    )
+    .unwrap();
+
+    let (_target, data, config) = tests::profile().await;
+    tests::queue_restore(&data, &archive);
+    process_startup(&data, &config).await.unwrap();
+    let status: BackupStatus =
+        serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap()).unwrap();
+    assert_eq!(status.code, Some(BackupStatusCode::Restored));
+    assert!(
+        status.message.contains("Skipped 1 working-folder"),
+        "{}",
+        status.message
+    );
+    assert!(status.message.contains("[00, d8]"), "{}", status.message);
+    let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
+    let working = crate::architect_launch::read_folder(&pool, &source.scope.system_start_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read(Path::new(&working).join("ordinary.txt")).unwrap(),
+        b"portable content"
+    );
+    assert_eq!(fs::read_dir(working).unwrap().count(), 1);
+    pool.close().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn restore_reads_legacy_working_paths_and_rebases_their_links() {
+    let (_source, source_data, source_config, source) = launch_profile("legacy").await;
+    let mut archive = capture(&source_data, &source_config, BTreeMap::new(), true)
+        .await
+        .unwrap();
+    let root = format!(
+        "data/{}",
+        source
+            .folder
+            .strip_prefix(&source_data.canonicalize().unwrap())
+            .unwrap()
+            .display()
+    );
+    let legacy_path = format!("{root}/legacy.txt");
+    archive
+        .files
+        .retain(|name, _| !name.starts_with(&format!("{root}/")));
+    // Legacy ZIP members use their plain manifest path as the payload name.
+    let staging = Arc::new(private_staging(&source_data).unwrap());
+    let entry = bundle::stage(&staging, &legacy_path, &b"legacy content"[..], false).unwrap();
+    archive.files.insert(legacy_path, entry);
+    archive.launch = Some(serde_json::from_value(serde_json::json!({
+        "directories": [root, format!("{root}/sub")],
+        "links": {(format!("{root}/old-link")): {"target": source.folder.join("sub/.././legacy.txt"), "directory": false}},
+        "missing": []
+    })).unwrap());
+
+    let (_target, data, config) = tests::profile().await;
+    tests::queue_restore(&data, &archive);
+    process_startup(&data, &config).await.unwrap();
+    assert_eq!(
+        status_code(&data.join("local-backup")),
+        Some(BackupStatusCode::Restored)
+    );
+    let pool = db::create_pool(&data.join("macro.db")).await.unwrap();
+    let working = PathBuf::from(
+        crate::architect_launch::read_folder(&pool, &source.scope.system_start_id)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        fs::read_link(working.join("old-link")).unwrap().as_os_str(),
+        working.join("sub/.././legacy.txt").as_os_str()
+    );
+    assert_eq!(
+        fs::read(working.join("old-link")).unwrap(),
+        b"legacy content"
+    );
+    pool.close().await;
 }

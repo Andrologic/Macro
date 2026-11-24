@@ -81,6 +81,9 @@ fn canonical_name(version: i64) -> Option<&'static str> {
     if version == crate::architect_launch::OWNER_SCHEMA_VERSION {
         return Some(crate::architect_launch::OWNER_SCHEMA_NAME);
     }
+    if version == operate_inbox::DELETE_SCHEMA_VERSION {
+        return Some(operate_inbox::DELETE_SCHEMA_NAME);
+    }
     let index = usize::try_from(version).ok()?.checked_sub(1)?;
     NAMES.get(index).copied()
 }
@@ -228,6 +231,8 @@ pub(crate) async fn remove_reference_schema(
 ) -> DbResult<()> {
     if !versions.contains(&48) {
         operate_inbox::remove_reference_schema(c).await?;
+    } else if !versions.contains(&operate_inbox::DELETE_SCHEMA_VERSION) {
+        operate_inbox::remove_delete_reference_schema(c).await?;
     }
     if !versions.contains(&42) {
         restore_execution020_reference(c).await?;
