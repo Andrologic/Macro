@@ -597,10 +597,10 @@ pub(crate) fn agsdl_write_denied(
         if !crate::fs::path_is_same_or_descendant(&path, &root) {
             return true;
         }
-        // Existing targets are lexically normalized by the real write validator
-        // before capability lookup. Canonicalize that returned path as well: with
-        // symlinks followed by .., it can name a third target distinct from both
-        // OS resolution of the raw path and lexical resolution of that raw path.
+        // The write validator resolves the raw path physically beneath the root
+        // handle (symlinks before `..` included) and returns the target the write
+        // will actually reach. Check capabilities against that physical target too,
+        // in addition to the lexical spelling of the raw path.
         let Ok(execution_path) =
             crate::fs::validate_path_for_write(std::path::Path::new(raw), &root)
         else {
