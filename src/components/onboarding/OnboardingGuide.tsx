@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
+import { demoWorkflowJourney } from '../../services/operateWorkspace';
 import { loadPreference, PREF_KEYS, savePreference } from '../../services/preferences';
 import { useAppStore } from '../../stores/useAppStore';
 import type { AppMode } from '../../types';
@@ -22,7 +23,7 @@ import {
 const PANEL_GAP = 14;
 const VIEWPORT_PADDING = 14;
 
-type TourSection = 'basics' | 'architect' | 'implement' | 'chat' | 'system';
+type TourSection = 'basics' | 'architect' | 'operate' | 'chat' | 'system';
 type TourPlacement = 'top' | 'right' | 'bottom' | 'left' | 'center';
 
 interface TourStep {
@@ -75,10 +76,9 @@ const TOUR_STEPS: TourStep[] = [
   {
     id: 'panel-toggles',
     section: 'basics',
-    targetId: 'toggle-right-panel',
-    fallbackTargetId: 'mode-context-header',
+    targetId: 'toggle-left-panel',
     placement: 'bottom',
-    icon: 'panel-right-open',
+    icon: 'panel-left-open',
   },
   {
     id: 'settings-and-help',
@@ -93,110 +93,44 @@ const TOUR_STEPS: TourStep[] = [
     mode: 'Architect',
     targetId: 'mode-architect',
     fallbackTargetId: 'mode-switcher',
-    openLeft: false,
-    openRight: true,
     placement: 'bottom',
     icon: 'compass',
   },
   {
-    id: 'architect-plan-selector',
+    id: 'architect-navigator',
     section: 'architect',
     mode: 'Architect',
-    targetId: 'architect-plan-selector',
-    fallbackTargetId: 'mode-context-header',
-    openLeft: false,
-    openRight: true,
-    placement: 'bottom',
+    targetId: 'architect-project-navigator',
+    openLeft: true,
+    placement: 'right',
     icon: 'layers',
   },
   {
-    id: 'architect-generate',
+    id: 'architect-conversation',
     section: 'architect',
     mode: 'Architect',
-    targetId: 'architect-generate-strategy',
-    fallbackTargetId: 'chat-control-row',
-    openLeft: false,
-    openRight: true,
-    placement: 'top',
-    icon: 'sparkles',
+    targetId: 'mode-context-header',
+    placement: 'bottom',
+    icon: 'message-square',
   },
   {
-    id: 'architect-strategy',
+    id: 'architect-agsdl',
     section: 'architect',
     mode: 'Architect',
-    targetId: 'architect-strategy-panel',
-    fallbackTargetId: 'right-panel',
-    openLeft: false,
+    targetId: 'architect-agsdl-panel',
     openRight: true,
     placement: 'left',
     icon: 'network',
     pointCount: 3,
   },
   {
-    id: 'architect-validate',
-    section: 'architect',
-    mode: 'Architect',
-    targetId: 'architect-validate-plan',
-    fallbackTargetId: 'architect-strategy-panel',
-    openLeft: true,
-    openRight: true,
-    placement: 'top',
-    icon: 'shield',
-  },
-  {
-    id: 'implement-mode',
-    section: 'implement',
+    id: 'operate-executions',
+    section: 'operate',
     mode: 'Implement',
-    targetId: 'mode-implement',
-    fallbackTargetId: 'mode-switcher',
+    targetId: 'operate-executions',
     openLeft: true,
-    openRight: true,
-    placement: 'bottom',
-    icon: 'code',
-  },
-  {
-    id: 'implement-tasks',
-    section: 'implement',
-    mode: 'Implement',
-    targetId: 'implement-task-panel',
-    fallbackTargetId: 'left-panel',
-    openLeft: true,
-    openRight: true,
     placement: 'right',
-    icon: 'list-todo',
-  },
-  {
-    id: 'implement-agent',
-    section: 'implement',
-    mode: 'Implement',
-    targetId: 'implement-agent-toggle',
-    fallbackTargetId: 'chat-control-row',
-    openLeft: true,
-    openRight: true,
-    placement: 'top',
-    icon: 'map',
-  },
-  {
-    id: 'implement-terminal',
-    section: 'implement',
-    mode: 'Implement',
-    targetId: 'implement-terminal-toggle',
-    fallbackTargetId: 'mode-context-header',
-    openLeft: true,
-    openRight: true,
-    placement: 'bottom',
-    icon: 'terminal',
-  },
-  {
-    id: 'implement-changes',
-    section: 'implement',
-    mode: 'Implement',
-    targetId: 'implement-changes-panel',
-    fallbackTargetId: 'right-panel',
-    openLeft: true,
-    openRight: true,
-    placement: 'left',
-    icon: 'git-compare',
+    icon: 'workflow',
   },
   {
     id: 'chat-mode',
@@ -256,13 +190,9 @@ const TOUR_STEPS: TourStep[] = [
   {
     id: 'footer',
     section: 'system',
-    mode: 'Implement',
-    targetId: 'footer-status-bar',
-    fallbackTargetId: 'app-shell',
-    openLeft: true,
-    openRight: true,
+    targetId: 'notification-center',
     placement: 'top',
-    icon: 'git-branch',
+    icon: 'bell',
   },
   {
     id: 'done',
@@ -277,7 +207,7 @@ const TOUR_STEPS: TourStep[] = [
 const SECTION_LABEL_KEYS: Record<TourSection, string> = {
   basics: 'onboarding.sections.basics',
   architect: 'onboarding.sections.architect',
-  implement: 'onboarding.sections.implement',
+  operate: 'onboarding.sections.operate',
   chat: 'onboarding.sections.chat',
   system: 'onboarding.sections.system',
 };
@@ -742,7 +672,9 @@ export const OnboardingGuide: React.FC = () => {
 
           <div className="space-y-3">
             <p className="text-sm leading-relaxed text-muted-foreground">
-              {t(getStepTranslationKey(activeStep.id, 'body'))}
+              {activeStep.id === 'operate-executions' && demoWorkflowJourney
+                ? t('onboarding.steps.operate-executions.demoBody')
+                : t(getStepTranslationKey(activeStep.id, 'body'))}
             </p>
 
             {activeStepPoints.length > 0 && (

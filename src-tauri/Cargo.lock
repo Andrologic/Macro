@@ -93,7 +93,7 @@ dependencies = [
 [[package]]
 name = "argentic-core"
 version = "0.1.0"
-source = "git+https://github.com/Andrologic/argentic.git?rev=351b989d4135729f90e6f7496fc317c8c7abe651#351b989d4135729f90e6f7496fc317c8c7abe651"
+source = "git+https://github.com/Andrologic/argentic.git?rev=28d3b44ea6d4b7412fe2e9dc5380867523ef1808#28d3b44ea6d4b7412fe2e9dc5380867523ef1808"
 dependencies = [
  "regex",
  "serde",
@@ -105,14 +105,18 @@ dependencies = [
 [[package]]
 name = "argentic-runtime"
 version = "0.1.0"
-source = "git+https://github.com/Andrologic/argentic.git?rev=351b989d4135729f90e6f7496fc317c8c7abe651#351b989d4135729f90e6f7496fc317c8c7abe651"
+source = "git+https://github.com/Andrologic/argentic.git?rev=28d3b44ea6d4b7412fe2e9dc5380867523ef1808#28d3b44ea6d4b7412fe2e9dc5380867523ef1808"
 dependencies = [
  "argentic-core",
  "async-trait",
+ "axum",
  "base64 0.22.1",
  "cap-std",
+ "crc32fast",
+ "flate2",
  "futures",
  "libc",
+ "percent-encoding",
  "portable-pty",
  "regex",
  "reqwest 0.12.28",
@@ -128,6 +132,8 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "unicase",
+ "unicode-general-category",
  "unicode-normalization",
  "url",
  "uuid",
@@ -3197,6 +3203,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "percent-encoding",
  "portable-pty",
  "regex",
  "reqwest 0.12.28",
@@ -3234,6 +3241,8 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ts-rs",
+ "unicase",
+ "unicode-general-category",
  "unicode-normalization",
  "url",
  "urlencoding",
@@ -3611,7 +3620,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.21.7",
  "chrono",
  "getrandom 0.2.17",
  "http",
@@ -7239,6 +7248,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
 
 [[package]]
+name = "unicode-general-category"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b993bddc193ae5bd0d623b49ec06ac3e9312875fdae725a975c51db1cc1677f"
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7659,7 +7674,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

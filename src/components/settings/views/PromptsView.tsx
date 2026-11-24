@@ -1,12 +1,12 @@
 import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  PROMPT_EDITOR_DEFINITIONS,
-  PROMPT_EDITOR_KEYS,
-  getDefaultPromptValue,
-  usePromptDraft,
-  type PromptEditorDefinition,
-} from './promptDraft';
+  PROMPT_PREFERENCE_DEFINITIONS,
+  PROMPT_PREFERENCE_KEYS,
+  getDefaultPromptForPreferenceKey,
+  type PromptPreferenceDefinition,
+} from '../../../services/preferences';
+import { usePromptDraft } from './promptDraft';
 import { Icon } from '../../ui/Icon';
 import { cn } from '../../../utils/cn';
 import { SettingsSectionHeader } from '../SettingsSectionHeader';
@@ -18,11 +18,11 @@ export const PromptsView: React.FC = () => {
 
   const hasAnyModifiedPrompt = useMemo(
     () =>
-      PROMPT_EDITOR_KEYS.some((key) => prompts[key] !== getDefaultPromptValue(key)),
+      PROMPT_PREFERENCE_KEYS.some((key) => prompts[key] !== getDefaultPromptForPreferenceKey(key)),
     [prompts]
   );
   const isDirty = useMemo(
-    () => PROMPT_EDITOR_KEYS.some((key) => prompts[key] !== savedPrompts[key]),
+    () => PROMPT_PREFERENCE_KEYS.some((key) => prompts[key] !== savedPrompts[key]),
     [prompts, savedPrompts]
   );
   const handleSave = async () => {
@@ -36,9 +36,9 @@ export const PromptsView: React.FC = () => {
     }
   };
 
-  const renderPromptEditor = (definition: PromptEditorDefinition) => {
+  const renderPromptEditor = (definition: PromptPreferenceDefinition) => {
     const key = definition.key;
-    const isModified = prompts[key] !== getDefaultPromptValue(key);
+    const isModified = prompts[key] !== getDefaultPromptForPreferenceKey(key);
 
     return (
       <div key={key} className="space-y-3">
@@ -56,7 +56,7 @@ export const PromptsView: React.FC = () => {
           </div>
           <button
             type="button"
-            onClick={() => changePrompt(key, getDefaultPromptValue(key))}
+            onClick={() => changePrompt(key, getDefaultPromptForPreferenceKey(key))}
             disabled={!isModified}
             className={cn(
               'shrink-0 px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
@@ -137,10 +137,10 @@ export const PromptsView: React.FC = () => {
       )}
 
       <div className="space-y-6 bg-card/40 p-5 rounded-xl border border-border/50">
-        {PROMPT_EDITOR_DEFINITIONS.map((definition, index) => (
+        {PROMPT_PREFERENCE_DEFINITIONS.map((definition, index) => (
           <React.Fragment key={definition.key}>
             {renderPromptEditor(definition)}
-            {index < PROMPT_EDITOR_DEFINITIONS.length - 1 ? (
+            {index < PROMPT_PREFERENCE_DEFINITIONS.length - 1 ? (
               <div className="h-px bg-border/50" />
             ) : null}
           </React.Fragment>

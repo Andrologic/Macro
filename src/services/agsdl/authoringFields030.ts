@@ -16,7 +16,7 @@ export interface AuthoringField030 {
 /** Edit an exact subtree with the same patch engine as the document, never JSON.stringify its parsed owner. */
 export function patchAuthoringValue030(value: string, path: string, valueJson?: string): string {
   if (!path) return valueJson ?? "";
-  const wrapper = `{"contract":"agsdl-0.3.0","value":${value || "{}"}}`;
+  const wrapper = `{"contract":"agsdl-0.4.0","value":${value || "{}"}}`;
   const pointer = `/value${path}`;
   if (valueJson === undefined && !scanSource(wrapper).spans.has(pointer)) return value;
   return sourceAt(applyChanges(wrapper, [{ op: valueJson === undefined ? "remove" : "set", path: pointer, ...(valueJson === undefined ? {} : { valueJson }) }]), "/value");

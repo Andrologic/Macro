@@ -12,6 +12,189 @@ async fn pool(state: &State<'_, DbPool>) -> repository::Result<sqlx::SqlitePool>
         .map_err(|_| repository::failure("STORAGE", "", "Execution database unavailable"))
 }
 
+use crate::architect_launch::{self as launch, start as archive_start, LaunchConfiguration};
+use crate::db::architect_library::VersionKey;
+
+fn launch_data(app: &tauri::AppHandle) -> repository::Result<std::path::PathBuf> {
+    app.path()
+        .app_data_dir()
+        .map_err(|_| repository::failure("STORAGE", "", "Launch storage is unavailable"))
+}
+
+#[tauri::command]
+pub(crate) async fn architect_launch_prepare(
+    app: tauri::AppHandle,
+    state: State<'_, DbPool>,
+    manager: State<'_, crate::config::ConfigManager>,
+    version: VersionKey,
+    configuration: Option<LaunchConfiguration>,
+    model_overrides: Option<
+        std::collections::BTreeMap<String, argentic_runtime::capture::ModelOverride>,
+    >,
+) -> repository::Result<launch::LaunchPreview> {
+    launch::prepare(
+        &manager,
+        &pool(&state).await?,
+        &launch_data(&app)?,
+        version,
+        configuration,
+        model_overrides.unwrap_or_default(),
+    )
+    .await
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ArchiveLaunchReceipt {
+    identity: repository::flow030::FlowIdentity030,
+    source: EngineSourceRevision,
+}
+
+#[tauri::command]
+pub(crate) async fn architect_launch_start(
+    app: tauri::AppHandle,
+    request: archive_start::LaunchRequest,
+) -> repository::Result<ArchiveLaunchReceipt> {
+    tokio::spawn(async move {
+        let state = app.state::<DbPool>();
+        let pool = pool(&state).await?;
+        start_archive(&app, &pool, request, None).await
+    })
+    .await
+    .map_err(|_| {
+        repository::failure(
+            "RUNTIME_UNAVAILABLE",
+            "",
+            "Native Start task did not acknowledge",
+        )
+    })?
+}
+
+pub(crate) async fn start_archive(
+    app: &tauri::AppHandle,
+    pool: &sqlx::SqlitePool,
+    request: archive_start::LaunchRequest,
+    occurrence: Option<launch::schedule::Occurrence>,
+) -> repository::Result<ArchiveLaunchReceipt> {
+    let host = app.state::<crate::agsdl_host::HostState>();
+    let manager = app.state::<crate::config::ConfigManager>();
+    let ai = app.state::<crate::ai::AiState>();
+    let app_data = launch_data(app)?;
+    let runtime = archive_start::Runtime {
+        host: &host,
+        manager: &manager,
+        pool,
+        app_data: &app_data,
+        tasks: ai.stream_tasks.clone(),
+    };
+    let result = match occurrence {
+        Some(occurrence) => {
+            archive_start::launch_occurrence(runtime, request, Some(occurrence)).await?
+        }
+        None => archive_start::launch(runtime, request).await?,
+    };
+    Ok(ArchiveLaunchReceipt {
+        identity: result.receipt.identity,
+        source: result.capture.source,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn architect_schedule_list(
+    state: State<'_, DbPool>,
+) -> repository::Result<Vec<launch::schedule::Schedule>> {
+    launch::schedule::list(&pool(&state).await?).await
+}
+
+#[tauri::command]
+pub(crate) async fn architect_schedule_save(
+    app: tauri::AppHandle,
+    state: State<'_, DbPool>,
+    manager: State<'_, crate::config::ConfigManager>,
+    request: launch::schedule::SaveSchedule,
+) -> repository::Result<String> {
+    let guard = state
+        .source_ready(None)
+        .await
+        .map_err(|_| repository::failure("STORAGE", "", "Execution database unavailable"))?;
+    launch::schedule::save(
+        &manager,
+        &guard.ready.pool,
+        &launch_data(&app)?,
+        request,
+        launch::schedule::now,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn architect_schedule_action(
+    state: State<'_, DbPool>,
+    id: String,
+    action: launch::schedule::ScheduleAction,
+) -> repository::Result<()> {
+    let guard = state
+        .source_ready(None)
+        .await
+        .map_err(|_| repository::failure("STORAGE", "", "Execution database unavailable"))?;
+    launch::schedule::act(&guard.ready.pool, &id, action, launch::schedule::now()).await
+}
+
+#[tauri::command]
+pub(crate) async fn architect_launch_set_secret(
+    app: tauri::AppHandle,
+    state: State<'_, DbPool>,
+    manager: State<'_, crate::config::ConfigManager>,
+    version: VersionKey,
+    server: String,
+    name: String,
+    value: String,
+    configuration: Option<launch::LaunchConfiguration>,
+) -> repository::Result<()> {
+    launch::set_secret(
+        &manager,
+        &pool(&state).await?,
+        &launch_data(&app)?,
+        version,
+        &server,
+        &name,
+        &value,
+        configuration,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn architect_launch_run_systems(
+    state: State<'_, DbPool>,
+) -> repository::Result<Vec<launch::RunRecord>> {
+    launch::run_systems(&pool(&state).await?).await
+}
+
+#[tauri::command]
+pub(crate) async fn architect_launch_open_folder(
+    app: tauri::AppHandle,
+    state: State<'_, DbPool>,
+    system_start_id: String,
+) -> repository::Result<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let folder = launch::read_folder(&pool(&state).await?, &system_start_id).await?;
+    if !std::path::Path::new(&folder).is_dir() {
+        return Err(repository::failure(
+            "NOT_FOUND",
+            "workingFolder",
+            "The run folder is unavailable",
+        ));
+    }
+    app.opener().open_path(folder, None::<&str>).map_err(|_| {
+        repository::failure(
+            "OPEN_FAILED",
+            "workingFolder",
+            "The run folder could not be opened",
+        )
+    })
+}
+
 #[tauri::command]
 pub async fn execution_read_runtime_projection030(
     state: State<'_, DbPool>,
@@ -19,7 +202,7 @@ pub async fn execution_read_runtime_projection030(
     scope: crate::agsdl_host_projection030::RuntimeProjectionQuery030,
     continuation: Option<crate::agsdl_host_projection030::RuntimeProjectionContinuation030>,
 ) -> repository::Result<crate::agsdl_host_projection030::RuntimeProjectionPage030> {
-    crate::agsdl_host_projection030::read(&host, &pool(&state).await?, scope, continuation).await
+    crate::db::operate_inbox::read_runtime(&host, &pool(&state).await?, scope, continuation).await
 }
 #[tauri::command]
 pub async fn execution_start<R: tauri::Runtime>(
@@ -52,7 +235,7 @@ pub async fn execution_start<R: tauri::Runtime>(
         Err(repository::failure(
             "UNSUPPORTED_EDITION",
             "profile",
-            "Only AgSDL 0.3 execution is supported",
+            "Only AgSDL 0.3 and 0.4 execution is supported",
         ))
     })
     .await
@@ -111,7 +294,7 @@ pub async fn execution_stop<R: tauri::Runtime>(
     Err(repository::failure(
         "NOT_FOUND",
         "systemStartId",
-        "AgSDL 0.3 run not found",
+        "AgSDL run not found",
     ))
 }
 
@@ -156,7 +339,7 @@ pub async fn execution_ensure_stop<R: tauri::Runtime>(
         Err(repository::failure(
             "NOT_FOUND",
             "systemStartId",
-            "AgSDL 0.3 run not found",
+            "AgSDL run not found",
         ))
     })
     .await
@@ -191,7 +374,7 @@ pub(crate) async fn read_public_snapshot(
             || capture.identity.system_start_id != system_start_id
             || capture.versions.profile != request.profile
             || capture.versions.snapshot != "2"
-            || capture.versions.contract != "agsdl-0.3.0"
+            || !argentic_core::supports_contract(&capture.versions.contract)
         {
             return Err(repository::failure(
                 "CORRELATION",
@@ -210,7 +393,7 @@ pub(crate) async fn read_public_snapshot(
     Err(repository::failure(
         "NOT_FOUND",
         "systemStartId",
-        "AgSDL 0.3 capture not found",
+        "AgSDL capture not found",
     ))
 }
 
@@ -223,11 +406,22 @@ pub async fn execution_model_choices(
 }
 
 #[tauri::command]
+pub async fn execution_update_operate_inbox(
+    state: State<'_, DbPool>,
+    system_start_id: String,
+    snapshot_id: String,
+    action: crate::db::operate_inbox::OperateInboxAction,
+) -> repository::Result<()> {
+    crate::db::operate_inbox::update(&pool(&state).await?, &system_start_id, &snapshot_id, action)
+        .await
+}
+
+#[tauri::command]
 pub async fn execution_list_runs030(
     app: tauri::AppHandle,
     state: State<'_, DbPool>,
     request: repository::discovery030::RunListRequest030,
-) -> repository::Result<repository::discovery030::RunPage030> {
+) -> repository::Result<crate::db::operate_inbox::RunPage030> {
     let workspace_state = app.state::<crate::WorkspaceMetadataRoot>();
     let workspace = workspace_state.0.read().await.clone();
     list_runs030_scoped(&pool(&state).await?, &workspace, request).await
@@ -237,15 +431,18 @@ pub(crate) async fn list_runs030_scoped(
     pool: &sqlx::SqlitePool,
     workspace: &std::path::Path,
     request: repository::discovery030::RunListRequest030,
-) -> repository::Result<repository::discovery030::RunPage030> {
-    let metadata = crate::agsdl_host_capture::metadata_root(&workspace)?;
+) -> repository::Result<crate::db::operate_inbox::RunPage030> {
+    if request.owner.project_id == launch::PROJECT_ID && request.owner.branch == launch::BRANCH {
+        return crate::db::operate_inbox::list_runs(pool, request).await;
+    }
+    let metadata = crate::workspace::architect::execution_history_metadata_root(workspace);
     let _scope = crate::workspace::architect::lock_execution_history_owner(
         workspace,
         &metadata,
         &request.owner,
     )
     .await?;
-    repository::discovery030::list_runs030(pool, request).await
+    crate::db::operate_inbox::list_runs(pool, request).await
 }
 
 #[tauri::command]
@@ -340,8 +537,38 @@ pub async fn execution_read_run_correlation030(
     scope: ExecutionIntentScope,
     system_start_id: String,
 ) -> IntentResult<ExecutionRunCorrelation030> {
-    let _guard = intent_scope(&app, &scope).await?;
-    intents::read_run_correlation030(&intent_pool(&app).await?, &scope, &system_start_id).await
+    let workspace = app
+        .state::<crate::WorkspaceMetadataRoot>()
+        .0
+        .read()
+        .await
+        .clone();
+    read_run_correlation030_scoped(
+        &intent_pool(&app).await?,
+        &workspace,
+        &scope,
+        &system_start_id,
+    )
+    .await
+}
+
+pub(crate) async fn read_run_correlation030_scoped(
+    pool: &sqlx::SqlitePool,
+    workspace: &std::path::Path,
+    scope: &ExecutionIntentScope,
+    system_start_id: &str,
+) -> IntentResult<ExecutionRunCorrelation030> {
+    intents::validate_key(&ExecutionIntentKey {
+        scope: scope.clone(),
+        intent_id: system_start_id.into(),
+    })?;
+    if scope.owner.project_id == launch::PROJECT_ID && scope.owner.branch == launch::BRANCH {
+        return intents::read_archive_run_correlation(pool, scope, system_start_id).await;
+    }
+    let _guard = crate::workspace::architect::lock_execution_correlation_scope(workspace, scope)
+        .await
+        .map_err(intent_failure)?;
+    intents::read_run_correlation030(pool, scope, system_start_id).await
 }
 #[tauri::command]
 pub async fn execution_read_intent(
@@ -407,14 +634,14 @@ async fn submit_retained(
                 Err(repository::failure(
                     "UNSUPPORTED_EDITION",
                     "profile",
-                    "Only AgSDL 0.3 execution is supported",
+                    "Only AgSDL 0.3 and 0.4 execution is supported",
                 ))
             }
         }
         ExecutionIntentPayload::Deliver { .. } => Err(repository::failure(
             "UNSUPPORTED_EDITION",
             "payload",
-            "Use the AgSDL 0.3 delivery command",
+            "Use the AgSDL flow delivery command",
         )),
     };
     let guard = intent_scope(&app, &key.scope).await?;
@@ -529,4 +756,45 @@ pub async fn execution_deliver030(
     request: crate::agsdl_host_flow030::DeliveryRequest030,
 ) -> repository::Result<crate::agsdl_host_flow030::DeliveryReceipt030> {
     host.deliver_message(&pool(&database).await?, request).await
+}
+
+/// The native journal retains the request and receipt across observer loss.
+#[tauri::command]
+pub async fn execution_control030(
+    app: tauri::AppHandle,
+    request: argentic_runtime::api::OperatorRequest,
+) -> repository::Result<repository::flow030::FlowReceipt030> {
+    tokio::spawn(async move {
+        let state = app.state::<DbPool>();
+        let host = app.state::<crate::agsdl_host::HostState>();
+        crate::db::operate_inbox::control_run(&host, &pool(&state).await?, request).await
+    })
+    .await
+    .map_err(|_| {
+        repository::failure(
+            "UNCERTAIN",
+            "operator",
+            "Native control did not acknowledge",
+        )
+    })?
+}
+
+#[tauri::command]
+pub async fn execution_delete030(
+    app: tauri::AppHandle,
+    scope: argentic_runtime::api::RuntimeProjectionScope030,
+) -> repository::Result<()> {
+    tokio::spawn(async move {
+        let state = app.state::<DbPool>();
+        let manager = app.state::<crate::config::ConfigManager>();
+        launch::delete_run(
+            &pool(&state).await?,
+            &launch_data(&app)?,
+            manager.root(),
+            scope,
+        )
+        .await
+    })
+    .await
+    .map_err(|_| repository::failure("UNCERTAIN", "run", "Native deletion did not acknowledge"))?
 }

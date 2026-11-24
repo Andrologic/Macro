@@ -5,11 +5,11 @@ import * as sharedScanner from '../../src/vendor/agsdl/shared/json.mjs';
 import * as sharedValues from '../../src/vendor/agsdl/shared/values.mjs';
 // @ts-expect-error Historical scanner has no declaration file; its test-only contract is typed below.
 import * as experimentalScanner from '../../src/vendor/agsdl/experimental/readers/javascript/json.mjs';
-import * as v030 from '../../src/vendor/agsdl/v0.3/json.mjs';
-import * as values from '../../src/vendor/agsdl/v0.3/values.mjs';
-import * as schemas from '../../src/vendor/agsdl/v0.3/valueschema.mjs';
-import { SchemaChecker } from '../../src/vendor/agsdl/v0.3/schemacheck.mjs';
-import documentSchema from '../../src/vendor/agsdl/v0.3/schema/agsdl.schema.json';
+import * as v030 from '../../src/vendor/agsdl/v0.4/json.mjs';
+import * as values from '../../src/vendor/agsdl/v0.4/values.mjs';
+import * as schemas from '../../src/vendor/agsdl/v0.4/valueschema.mjs';
+import { SchemaChecker } from '../../src/vendor/agsdl/v0.4/schemacheck.mjs';
+import documentSchema from '../../src/vendor/agsdl/v0.4/schema/agsdl.schema.json';
 import * as exact from '../../src/services/agsdlExecution/exact';
 import type { ExactJsonText } from '../../src/services/agsdlExecution/contracts';
 import * as integers from '../../src/services/agsdlExecution/workIntegers030';

@@ -1,0 +1,373 @@
+import { afterEach, beforeEach, expect, it } from "bun:test";
+import { act } from "react";
+import { createExampleDocument } from "../../services/agsdl/examples";
+import type { BlueprintDraft, BlueprintVersionSummary, MacroProjectSettings, ProjectView } from "../../services/ipc/architectLibrary";
+import { useAgsdlStore } from "../../stores/useAgsdlStore";
+import { useArchitectDialogStore } from "../../stores/useArchitectDialogStore";
+import { useArchitectLibraryStore } from "../../stores/useArchitectLibraryStore";
+import { useArchitectViewStore } from "../../stores/useArchitectViewStore";
+import ArchitectLibraryNavigator from "./ArchitectLibraryNavigator";
+import ArchitectStrategyPanel from "./ArchitectStrategyPanel";
+import { byText, click, createHost, defaultSettings, flush, installNative, removeNative } from "./architectLibrary.testSupport";
+
+const source = createExampleDocument("release").source;
+let view: ReturnType<typeof createHost>;
+let calls: Array<{ command: string; args: Record<string, unknown> }>;
+let settings: MacroProjectSettings;
+let revision: number;
+let versions: BlueprintVersionSummary[];
+let draftState: Partial<BlueprintDraft>;
+let saveFailures: number;
+const initialLibrary = useArchitectLibraryStore.getState();
+
+const projectView = (): ProjectView => ({
+  revision, settings, files: [{ path: "agsdl.json", size: 10, executable: false }, { path: "agents/implement.json", size: 20, executable: false }],
+  projection: { source, origins: {} }, diagnostics: [],
+});
+const draft = (): BlueprintDraft => ({ id: "bp", projectId: "p", name: "Revue de code", revision, origin: null, archived: false,
+  conversationId: null, history: null, storageState: "draft", document: { source, annexes: {} }, project: projectView(), ...draftState });
+
+beforeEach(() => {
+  calls = [];
+  settings = defaultSettings;
+  revision = 1;
+  versions = [];
+  draftState = {};
+  saveFailures = 0;
+  installNative(async (command, args) => {
+    calls.push({ command, args });
+    switch (command) {
+      case "architect_list_projects": return [{ id: "p", name: "Mes systèmes" }];
+      case "architect_list_blueprints": return [{ id: "bp", projectId: "p", name: "Revue de code", revision, origin: null, archived: false, conversationId: null }];
+      case "architect_list_versions": return versions;
+      case "architect_get_draft": return draft();
+      case "plugin:dialog|save": return "/tmp/original.json";
+      case "architect_export_original_envelope": return undefined;
+      case "architect_get_version": return { ...versions.find(item => item.number === (args.key as { number: number }).number)!, project: { ...projectView(), settings: { ...settings, hiddenAgentIds: [] } } };
+      case "architect_save_draft": {
+        if (saveFailures-- > 0) throw new Error("disk full");
+        const batch = args.batch as { settings?: Partial<MacroProjectSettings> };
+        settings = { ...settings, ...batch.settings };
+        revision += 1;
+        return projectView();
+      }
+      default: throw new Error(`Unexpected command ${command}`);
+    }
+  });
+});
+afterEach(() => {
+  view?.unmount();
+  removeNative();
+  useArchitectLibraryStore.setState(initialLibrary);
+  useAgsdlStore.setState({ sessions: {} });
+  useArchitectDialogStore.setState({ dialog: null });
+  useArchitectViewStore.setState({ views: {}, filesVisible: false });
+  try { localStorage.clear(); } catch { /* not available */ }
+});
+
+const mount = async () => {
+  view = createHost();
+  await view.render(<><ArchitectLibraryNavigator /><ArchitectStrategyPanel /></>);
+  await flush();
+  await click(document.querySelector('nav section[aria-label="Mes systèmes"] button'));
+  await click(document.querySelector('nav button[title="Revue de code"]'));
+  await flush();
+};
+const panel = () => document.querySelector("aside")!;
+const tab = (label: string) => [...panel().querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(item => item.textContent?.startsWith(label))!;
+const headerButtons = () => [...panel().querySelectorAll("header > div:first-of-type button")].map(button => button.textContent?.trim()).filter(Boolean);
+
+it("puts what to do first in the header: the draft state, saving a version, and the system's views", async () => {
+  await mount();
+  const header = panel().querySelector("header")!;
+  expect(header.textContent).toContain("Revue de code");
+  expect(header.querySelector('[role="status"]')?.textContent).toBe("Draft · saved");
+  expect(headerButtons()).toEqual(["Save version"]);
+  expect([...panel().querySelectorAll('[role="tab"]')].map(item => item.textContent?.trim())).toEqual(["Flow", "Agents2", "Skills", "Tools", "Launch"]);
+  expect(tab("Flow").getAttribute("aria-selected")).toBe("true");
+  expect(panel().querySelectorAll(".agsdl-graph-node").length).toBeGreaterThan(0);
+  // Every tab points at the one panel that shows the chosen view.
+  const panelId = panel().querySelector('[role="tabpanel"]')?.id;
+  expect(panelId).toBeTruthy();
+  expect([...panel().querySelectorAll('[role="tab"]')].every(item => item.getAttribute("aria-controls") === panelId)).toBe(true);
+});
+
+it("downloads the original of an editable draft with a missing migration resource", async () => {
+  draftState.project = {
+    ...projectView(),
+    diagnostics: [{ code: "MIGRATION_RESOURCE", file: "missing.txt", pointer: "", message: "File not found" }],
+  };
+  await mount();
+  await click(byText("button", "Download original", panel()));
+  await flush();
+  expect(calls.find(call => call.command === "architect_export_original_envelope")?.args)
+    .toEqual({ blueprintId: "bp", revision, number: null, destination: "/tmp/original.json" });
+});
+
+it("lists agents as plain rows that open the same card as a block of the graph", async () => {
+  await mount();
+  await click(tab("Agents"));
+  const list = panel().querySelector('ul[aria-label="Agents"]')!;
+  expect(list.querySelectorAll("li")).toHaveLength(2);
+  expect(list.textContent).toContain("implement");
+  expect(list.textContent).toContain("used in the flow");
+  expect(panel().querySelector(".agsdl-graph-node")).toBeNull();
+  await click(list.querySelector("li button"));
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("implement");
+});
+
+it("shows the name an author gave an agent, while the identifier stays what the files use", async () => {
+  settings = { ...defaultSettings, agentNames: { implement: "Rédacteur du correctif" } };
+  await mount();
+  await click(tab("Agents"));
+  const row = panel().querySelector('ul[aria-label="Agents"] li button')!;
+  expect(row.textContent).toContain("Rédacteur du correctif");
+  expect(row.querySelector("strong")?.textContent).toBe("Rédacteur du correctif");
+  await click(row);
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Rédacteur du correctif");
+});
+
+it("says plainly when a kind of item is absent", async () => {
+  await mount();
+  await click(tab("Skills"));
+  expect(panel().textContent).toContain("This system uses no skill.");
+  await click(tab("Tools"));
+  expect(panel().textContent).toContain("This system uses no tool server.");
+});
+
+it("hides an agent's thread from Operate with a checkbox that saves at once, as a Macro setting", async () => {
+  await mount();
+  await click(tab("Agents"));
+  await click(panel().querySelector('ul[aria-label="Agents"] li button'));
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.querySelector("section[aria-label='In Operate']")?.textContent).toContain("A Macro setting");
+  const box = dialog.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+  expect(box.checked).toBe(false);
+  await act(async () => box.click());
+  await flush();
+  const save = calls.find(call => call.command === "architect_save_draft")!;
+  expect(save.args).toMatchObject({ blueprintId: "bp", expectedRevision: 1, batch: { files: [], settings: { hiddenAgentIds: ["implement"] } } });
+  expect(dialog.querySelector('[role="status"]')?.textContent).toBe("Saved");
+  expect(dialog.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
+  expect(settings.hiddenAgentIds).toEqual(["implement"]);
+  await click(dialog.querySelector('button[aria-label="Close"]'));
+  expect(panel().querySelector('ul[aria-label="Agents"]')?.textContent).toContain("Hidden in Operate");
+  // The block of the graph carries the same small sign, and only for that agent.
+  await click(tab("Flow"));
+  const marked = [...panel().querySelectorAll(".agsdl-graph-node")].filter(node => node.querySelector('[aria-label="Hidden in Operate"]'));
+  expect(marked).toHaveLength(1);
+  expect(marked[0].textContent).toContain("implement");
+});
+
+it("puts the box back and offers a retry when the setting could not be saved", async () => {
+  await mount();
+  await click(tab("Agents"));
+  await click(panel().querySelector('ul[aria-label="Agents"] li button'));
+  const dialog = document.querySelector('[role="dialog"]')!;
+  saveFailures = 1;
+  await act(async () => dialog.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+  await flush();
+  expect(dialog.querySelector('[role="alert"]')?.textContent).toContain("The setting was not saved.");
+  expect(dialog.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(false);
+  expect(settings.hiddenAgentIds).toEqual([]);
+  await click(byText("button", "Retry", dialog));
+  await flush();
+  expect(dialog.querySelector('[role="alert"]')).toBeNull();
+  expect(dialog.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
+  expect(settings.hiddenAgentIds).toEqual(["implement"]);
+});
+
+it("keeps the files out of sight until asked, remembers the choice, and shows them read only", async () => {
+  await mount();
+  expect(tab("Files")).toBeUndefined();
+  await click(panel().querySelector('button[aria-label="More actions"]'));
+  const item = document.querySelector('[role="menuitemcheckbox"]')!;
+  expect(item.getAttribute("aria-checked")).toBe("false");
+  await click(item);
+  expect(tab("Files")).toBeDefined();
+  expect(localStorage.getItem("macro_architect_show_files_v1")).toBe("1");
+  await click(tab("Files"));
+  expect(panel().textContent).toContain("Read only. To change an item");
+  expect(panel().querySelector("textarea")).toBeNull();
+  // Hiding them again returns to the flow, never to an empty view.
+  await click(panel().querySelector('button[aria-label="More actions"]'));
+  await click(document.querySelector('[role="menuitemcheckbox"]'));
+  expect(tab("Files")).toBeUndefined();
+  expect(tab("Flow").getAttribute("aria-selected")).toBe("true");
+});
+
+it("shows a saved version read only, with its note, Adapt and Export, and no way to save", async () => {
+  versions = [{ blueprintId: "bp", number: 2, revision: 1, note: "First line\nSecond line, a longer explanation of what changed.", storageState: "archive", createdAt: "2026-11-22T10:00:00Z" }];
+  await mount();
+  await click(panel().ownerDocument.querySelector('nav [aria-label="Versions"] button'));
+  await flush();
+  const header = panel().querySelector("header")!;
+  expect(header.querySelector('[role="status"]')?.textContent).toContain("Version 2");
+  expect(header.querySelector('[role="status"]')?.textContent).toContain("read-only");
+  expect(header.textContent).toContain("First line");
+  expect(headerButtons().filter(label => ["Adapt", "Export", "Save version"].includes(label!))).toEqual(["Adapt", "Export"]);
+  expect(header.querySelector("button[aria-label='More actions']")).not.toBeNull();
+  await click(byText("button", "Export", header));
+  expect([...document.querySelectorAll('[role="menuitem"]')].map(entry => entry.textContent?.trim())).toEqual(["Archive (.agsdl)…", "Project folder…"]);
+  await click(document.querySelectorAll('[role="menuitem"]')[1]);
+  expect(useArchitectDialogStore.getState().dialog).toMatchObject({ kind: "export", format: "project", target: { kind: "version", key: { blueprintId: "bp", number: 2 } } });
+  await click(byText("button", "Show more", header));
+  expect(header.textContent).toContain("Back to draft");
+});
+
+it("replaces the editor with a recovery card for a draft that could not be recovered", async () => {
+  draftState = { storageState: "recovery", project: undefined };
+  await mount();
+  expect(panel().querySelector("[data-recovery-card]")).not.toBeNull();
+  expect(panel().querySelector('[role="tab"]')).toBeNull();
+  expect(headerButtons()).not.toContain("Save version");
+  expect(panel().textContent).toContain("This draft could not be recovered");
+});
+
+it("opens the save-version dialog with Ctrl+S from the panel, but never for a version", async () => {
+  await mount();
+  const event = new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true });
+  await act(async () => panel().querySelector("header")!.dispatchEvent(event));
+  expect(event.defaultPrevented).toBe(true);
+  expect(useArchitectDialogStore.getState().dialog).toEqual({ kind: "saveVersion", blueprintId: "bp" });
+});
+
+it("states where an adapted draft comes from, by the origin's name", async () => {
+  draftState = { origin: { blueprintId: "bp", number: 1 } };
+  versions = [{ blueprintId: "bp", number: 1, revision: 1, note: null, storageState: "archive" }];
+  await mount();
+  expect(panel().querySelector("header")?.textContent).toContain("Adapted from version 1 of “Revue de code”");
+});
+
+it("says a draft comes from a version to repair, with what to do next", async () => {
+  draftState = { origin: { blueprintId: "bp", number: 1 } };
+  versions = [{ blueprintId: "bp", number: 1, revision: 1, note: null, storageState: "recovery" }];
+  await mount();
+  expect(panel().querySelector("header")?.textContent).toContain("Comes from a version to repair. Fix the issues shown, then save a version.");
+});
+
+const emptySource = '{"contract":"agsdl-0.4.0","id":"blank","title":"Blank","agents":{}}';
+const withoutAgents = () => ({ ...projectView(), projection: { source: emptySource, origins: {} } });
+
+it("gives every component tab its own panel and an empty state, never the graph", async () => {
+  draftState = { document: { source: emptySource, annexes: {} }, project: withoutAgents() };
+  await mount();
+  for (const [label, text] of [["Agents", "This system contains no agent."], ["Skills", "This system uses no skill."], ["Tools", "This system uses no tool server."]]) {
+    await click(tab(label));
+    expect(tab(label).getAttribute("aria-selected")).toBe("true");
+    expect(panel().querySelector(".agsdl-graph-node")).toBeNull();
+    expect(panel().textContent).toContain(text);
+  }
+});
+
+it("shows the same panels when the draft has no project files, as in the legacy library", async () => {
+  draftState = { document: { source: emptySource, annexes: {} }, project: undefined };
+  await mount();
+  await click(tab("Agents"));
+  expect(panel().querySelector(".agsdl-graph-node")).toBeNull();
+  expect(panel().textContent).toContain("This system contains no agent.");
+  expect(byText("button", "Add an agent", panel())).toBeDefined();
+  // Skills are files of the project: without project files they are not offered.
+  await click(tab("Skills"));
+  expect(panel().textContent).toContain("This system uses no skill.");
+  expect(byText("button", "Add a skill", panel())).toBeUndefined();
+});
+
+it("offers to add an agent by hand on the draft, and not on a saved version", async () => {
+  draftState = { document: { source: emptySource, annexes: {} }, project: withoutAgents() };
+  versions = [{ blueprintId: "bp", number: 1, revision: 0, note: null, storageState: "archive" }];
+  await mount();
+  await click(tab("Agents"));
+  expect(byText("button", "Add an agent", panel())).toBeDefined();
+  await click(panel().ownerDocument.querySelector('nav [aria-label="Versions"] button'));
+  await flush();
+  await click(tab("Agents"));
+  expect(byText("button", "Add an agent", panel())).toBeUndefined();
+});
+
+it("holds the launch settings in their own tab, saved at once, and keeps them out of the document dialog", async () => {
+  await mount();
+  await click(tab("Launch"));
+  expect(tab("Launch").getAttribute("aria-selected")).toBe("true");
+  expect(panel().querySelector(".agsdl-graph-node")).toBeNull();
+  const text = panel().textContent ?? "";
+  expect(text).toContain("Working folder");
+  expect(text).toContain("Each run gets its own folder");
+  expect(text).toContain("Require a start message");
+  expect(text).toContain("Entry message hint");
+  const folder = panel().querySelector<HTMLSelectElement>("select")!;
+  await act(async () => { folder.value = "atLaunch"; folder.dispatchEvent(new Event("change", { bubbles: true })); });
+  await flush();
+  expect(settings.workingFolderMode).toBe("atLaunch");
+  expect(panel().textContent).toContain("The person who launches chooses the folder.");
+  await click(panel().querySelector('button[aria-label="Document and definitions"]'));
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.textContent).not.toContain("Working folder");
+  expect(dialog.textContent).not.toContain("Require a start message");
+});
+
+it("keeps the draft's Save version button off while nothing changed since the latest version, and says why", async () => {
+  versions = [
+    { blueprintId: "bp", number: 1, revision: 0, note: null, storageState: "archive" },
+    { blueprintId: "bp", number: 2, revision: 1, note: null, storageState: "archive" },
+  ];
+  await mount();
+  const header = panel().querySelector("header")!;
+  const save = byText("button", "Save version", header)!;
+  expect(save.disabled).toBe(true);
+  expect(save.title).toBe("Nothing changed since version 2.");
+  expect(header.querySelector('[role="status"]')?.textContent).toBe("Draft · same as version 2");
+  const event = new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true });
+  await act(async () => header.dispatchEvent(event));
+  expect(useArchitectDialogStore.getState().dialog).toBeNull();
+});
+
+it("offers Save version again once the draft is ahead of the latest version", async () => {
+  versions = [{ blueprintId: "bp", number: 1, revision: 1, note: null, storageState: "archive" }];
+  await mount();
+  const save = () => byText("button", "Save version", panel().querySelector("header")!)!;
+  expect(save().disabled).toBe(true);
+  // A change made after the version: Macro's settings are saved with the draft and with each version.
+  await click(tab("Launch"));
+  const box = panel().querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+  await act(async () => box.click());
+  await flush();
+  expect(save().disabled).toBe(false);
+  expect(panel().querySelector("header")?.querySelector('[role="status"]')?.textContent).toBe("Draft · saved");
+});
+
+it("never ignores a version that cannot become an archive when comparing the draft", async () => {
+  versions = [{ blueprintId: "bp", number: 1, revision: 1, note: null, storageState: "recovery" }];
+  await mount();
+  expect(byText("button", "Save version", panel().querySelector("header")!)!.disabled).toBe(false);
+});
+
+it("keeps a long blueprint name readable: two lines at most, the full name in a tooltip", async () => {
+  const name = "Revue de code approfondie avec relecture croisée et rapport final";
+  draftState = { name };
+  await mount();
+  const title = panel().querySelector("header strong")!;
+  expect(title.getAttribute("title")).toBe(name);
+  expect(title.className).toContain("line-clamp-2");
+  expect(title.className).not.toContain("truncate");
+});
+
+it("keeps the location of an agent's instructions file under a collapsed detail", async () => {
+  const doc = JSON.parse(source);
+  doc.agents.implement.instructions = { uri: "agents/implement/instructions.md" };
+  const text = JSON.stringify(doc);
+  draftState = { document: { source: text, annexes: {} }, project: { ...projectView(), projection: { source: text, origins: {} } } };
+  await mount();
+  await click(tab("Agents"));
+  await click([...panel().querySelectorAll('ul[aria-label="Agents"] li button')].find(button => button.textContent?.includes("implement")));
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.textContent).toContain("The text is in a file of the project.");
+  const where = [...dialog.querySelectorAll("details")].find(item => item.querySelector("summary")?.textContent?.includes("Where it is stored"))!;
+  expect(where).toBeDefined();
+  expect(where.open).toBe(false);
+  expect(where.textContent).toContain("agents/implement/instructions.md");
+  // Outside the collapsed details (this one and the advanced properties), the path is not shown.
+  const clone = dialog.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll("details").forEach(item => item.remove());
+  expect(clone.textContent).not.toContain("agents/implement/instructions.md");
+});

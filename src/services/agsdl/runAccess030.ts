@@ -1,12 +1,14 @@
+import { AGSDL_CONTRACT, isFlowDocumentContract } from './contract';
 import type { NativeDtoGap030, NativeFact030, RunCapture030, RunRead030, RunRefusal030, RunVerdict030 } from '../../types/agsdlRunUi030';
 import type { EngineSourceOwner, ExecutionIntentScope, ExecutionRunCorrelation030, PublicRunSummary030 } from '../../types/generated/ipc';
 import { listExecutionRuns030, readExecutionSnapshot030, readExecutionRuntimeProjection030,
   readExecutionHumans030, readExecutionIntentsVersioned, readExecutionRunCorrelation030 } from '../tauriIpc';
 import { MacroServiceError, toServiceError } from '../contracts/errors';
 import { sourceDigest } from '../agsdlExecution/sourceDigest';
-import { readDocument } from './document';
+import { MAX_AGSDL_PROJECTION_BYTES, readDocument } from './document';
 import { readHumanFacts030, sameHumanScope030 } from './humanReadAccess030';
 import { loadRuntimeProjection030, retainedRunValue030, runtimeSections030 } from './runtimeProjection030';
+import { ARCHIVE_RUN_PROJECT } from '../ipc/architectLaunch';
 import type { RunHistoryEntry030, RunInspection030, RunInspectionAccess030, RunMonitorSnapshot030, RunReadFailure030 } from './runtimeProjection030';
 export type { RunReadFailure030 } from './runtimeProjection030';
 
@@ -60,7 +62,7 @@ function requireFact(condition: unknown, code = 'CORRELATION', message = 'Native
   if (!condition) throw new MacroServiceError(code, message);
 }
 function verdict(value: string | null): RunVerdict030 {
-  requireFact(value === null || value === 'succeeded' || value === 'failed' || value === 'cancelled');
+  requireFact(value === null || value === 'succeeded' || value === 'failed' || value === 'cancelled' || value === 'interrupted');
   return value;
 }
 function freeze<T>(value: T): T {
@@ -95,7 +97,7 @@ function discoveryKey(run: PublicRunSummary030): string {
   return JSON.stringify([run.systemStartId, run.snapshotId, run.flowInvocationId, run.revision,
     owner.projectId, owner.planId, owner.branch, revision, sourceSha256,
     versions.snapshot, versions.contract, versions.profile, versions.compiler, versions.runtime, versions.registry,
-    run.ownerStatus, run.stopping, run.verdict, run.physicalPending, run.phaseCounts.map(item => [item.phase, item.count])]);
+    run.ownerStatus, run.stopping, run.paused, run.verdict, run.physicalPending, run.phaseCounts.map(item => [item.phase, item.count])]);
 }
 
 /** One immutable observation scope per adapter. All refreshes are serialized;
@@ -115,6 +117,8 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
   let snapshot: RunAccessSnapshot030 = freeze({ history: { kind: 'loading', retained: null },
     historyOrder: [], retainedAdmission: unavailable('qualification'), runs: {}, excludedRuns: {}, runFailures: {} });
   const listeners = new Set<() => void>();
+  let observationOrder = 0;
+  const observe = () => ({ order: ++observationOrder, atMs: Date.now() });
   const retainedSummaries = new Map<string, PublicRunSummary030>();
   // This adapter owns exactly one scopeKey. Successful immutable proofs are
   // indexed by run and discovery; failures are deliberately never cached.
@@ -143,8 +147,11 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
           decimal(run.revision) && decimal(run.physicalPending) &&
           (run.ownerStatus === 'live' || run.ownerStatus === 'revoked') && typeof run.stopping === 'boolean');
         verdict(run.verdict);
-        requireFact(run.versions.snapshot === '2' && run.versions.contract === 'agsdl-0.3.0' && run.versions.profile === 'macro-agsdl-030-v1', 'CONTRACT_UNSUPPORTED');
-        ids.add(run.systemStartId); runs.push(structuredClone(run));
+        requireFact(run.versions.snapshot === '2' && isFlowDocumentContract(run.versions.contract) && run.versions.profile === 'macro-agsdl-030-v1', 'CONTRACT_UNSUPPORTED');
+        // Native 0.4 projections overlay the durable interruption on the reducer verdict.
+        const interrupted = run.versions.contract === AGSDL_CONTRACT && run.interruptedAt !== null;
+        ids.add(run.systemStartId);
+        runs.push(structuredClone(interrupted ? { ...run, stopping: false, verdict: 'interrupted' } : run));
       }
       after = page.nextCursor;
       if (after !== null) cursors.add(after);
@@ -160,8 +167,9 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     const capture = await transport.readExecutionSnapshot030(run.systemStartId);
     requireFact(sameHumanScope030(capture, run) && sameVersions(capture.versions, run.versions) &&
       sameHumanScope030(capture, correlation.receipt) && sameVersions(capture.versions, correlation.receipt.versions));
+    const maxBytes = expected.owner.projectId === ARCHIVE_RUN_PROJECT ? MAX_AGSDL_PROJECTION_BYTES : undefined;
     requireFact(await sourceDigest(capture.authoredSource) === capture.source.sourceSha256 &&
-      readDocument(capture.authoredSource).contract === 'agsdl-0.3.0');
+      readDocument(capture.authoredSource, maxBytes).contract === capture.versions.contract);
     return structuredClone(capture);
   }
   function verifyRetained(run: PublicRunSummary030) {
@@ -180,12 +188,14 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
   }
   async function historyEntry(run: PublicRunSummary030, capture: RunCapture030): Promise<RunHistoryEntry030> {
     verifyRetained(run);
+    const humans = await readHumanFacts030({ systemStartId: run.systemStartId, source: run.source }, transport.readExecutionHumans030);
     return { capture, scope: { systemStartId: run.systemStartId, snapshotId: run.snapshotId, source: run.source },
-      verdict: verdict(run.verdict), physicalPending: run.physicalPending, interruptedAt: run.interruptedAt,
-      humans: await readHumanFacts030({ systemStartId: run.systemStartId, source: run.source }, transport.readExecutionHumans030),
+      verdict: verdict(run.verdict), physicalPending: run.physicalPending, interruptedAt: run.interruptedAt, inbox: run.inbox,
+      humans, observation: observe(), stopping: run.stopping, paused: run.paused,
       chronology: unavailable('chronology') };
   }
   async function admission(runs: readonly PublicRunSummary030[]): Promise<NativeFact030<string | null>> {
+    if (expected.owner.projectId === ARCHIVE_RUN_PROJECT) return { kind: 'available', value: null };
     const intents = await transport.readExecutionIntentsVersioned({ scope: structuredClone(expected) });
     requireFact(intents.length <= 1);
     const intent = intents[0];
@@ -246,7 +256,7 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
       const read = Object.hasOwn(retainedRuns, run.systemStartId) ? retainedRuns[run.systemStartId] : undefined;
       const retained = read && retainedRunValue030(read);
       if (retained && (run.revision !== retained.state.revision || run.ownerStatus !== retained.state.ownerStatus ||
-        run.stopping !== retained.state.stopping || run.physicalPending !== retained.state.physicalPending ||
+        run.stopping !== retained.state.stopping || !!run.paused !== !!retained.state.paused || run.physicalPending !== retained.state.physicalPending ||
         run.verdict !== retained.state.verdict || run.snapshotId !== retained.state.scope.snapshotId ||
         run.flowInvocationId !== retained.state.flowInvocationId || !sameHumanScope030(run, retained.state.scope) ||
         !sameVersions(run.versions, retained.capture.versions))) {
@@ -257,53 +267,80 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     }
     if (changed) publish({ ...snapshot, runs: retainedRuns });
   }
+  async function inspect(summary: PublicRunSummary030, capture: RunCapture030, history?: RunHistoryEntry030): Promise<RunInspection030> {
+    const scope = { systemStartId: summary.systemStartId, source: summary.source, snapshotId: summary.snapshotId };
+    const runtime = await loadRuntimeProjection030(scope, summary.flowInvocationId, transport.readExecutionRuntimeProjection030, () => true);
+    requireFact(runtime && runtime.revision === summary.revision && runtime.stopping === summary.stopping &&
+      runtime.verdict === summary.verdict && !!runtime.paused === !!summary.paused, 'REVISION_CONFLICT');
+    const sections = runtimeSections030(runtime);
+    requireFact(BigInt(sections.activations.filter(activation => activation.physical).length) === BigInt(summary.physicalPending));
+    const humans = history?.humans ?? await readHumanFacts030({ systemStartId: scope.systemStartId, source: scope.source }, transport.readExecutionHumans030);
+    return { capture, inbox: summary.inbox, observation: history?.observation ?? observe(), state: { scope, flowInvocationId: runtime.flowInvocationId,
+      revision: runtime.revision, verdict: verdict(runtime.verdict), ownerStatus: summary.ownerStatus as 'live' | 'revoked',
+      stopping: runtime.stopping, physicalPending: summary.physicalPending, modelOverrides: runtime.modelOverrides,
+      paused: runtime.paused, operatorWorks: runtime.operatorWorks,
+      interruptedWhilePaused: runtime.interruptedWhilePaused, terminationUncertain: runtime.terminationUncertain,
+      stop: unavailable('stop-proof'), uncertainties: unavailable('uncertainty'), humans,
+      occurrences: { kind: 'ready', revision: runtime.revision, value: sections.activations.map(activation => ({
+        scope, activation, details: unavailable('occurrence-details'),
+      })) }, instances: sections.instances, groups: sections.groups, paths: sections.paths,
+      diagnostics: unavailable('diagnostics'), chronology: unavailable('chronology') } };
+  }
+  const refreshHistory = (includeRuns: boolean) => enqueue(async () => {
+    const previous = snapshot.history;
+    let admissionError: RunInspectionReadError030 | undefined;
+    publish({ ...snapshot, history: { kind: 'loading', retained: retainedRunValue030(previous) } });
+    try {
+      const runs = await summaries(), history: RunHistoryEntry030[] = [];
+      invalidateRetained(runs);
+      let retainedAdmission: NativeFact030<string | null>;
+      try { retainedAdmission = await admission(runs); }
+      catch (error) { retainedAdmission = unavailable('qualification'); admissionError = new RunInspectionReadError030(error); }
+      const results = await correlations(runs);
+      const excludedRuns: Record<string, RunRefusal030<'consult'>> = Object.create(null);
+      const runFailures: Record<string, RunReadFailure030> = Object.create(null);
+      const inspections: Record<string, RunRead030<RunInspection030>> = Object.create(null);
+      for (const run of runs) {
+        const result = results.get(run.systemStartId)!;
+        if (result.kind === 'excluded') { excludedRuns[run.systemStartId] = result.refusal; continue; }
+        try {
+          if (result.kind === 'failed') throw result.error;
+          const capture = await captureFor(run, result.value);
+          const entry = await historyEntry(run, capture);
+          history.push(entry);
+          if (includeRuns) {
+            const value = await inspect(run, capture, entry);
+            inspections[run.systemStartId] = { kind: 'ready', revision: value.state.revision, value };
+          }
+        } catch (error) { runFailures[run.systemStartId] = readFailure(error, run.revision); }
+      }
+      const retainedRuns = Object.fromEntries(Object.entries(snapshot.runs).filter(([id]) =>
+        history.some(item => item.scope.systemStartId === id) || Object.hasOwn(runFailures, id)));
+      for (const [id, error] of Object.entries(runFailures)) {
+        const retained = retainedRuns[id] && retainedRunValue030(retainedRuns[id]);
+        if (retained) retainedRuns[id] = { kind: 'stale', revision: retained.state.revision, retained, refusal: refusal(error) };
+      }
+      for (const entry of history) retainedSummaries.set(entry.scope.systemStartId,
+        structuredClone(runs.find(run => run.systemStartId === entry.scope.systemStartId)!));
+      publish({ history: { kind: 'ready', revision: JSON.stringify(history.map(item => {
+        const run = runs.find(run => run.systemStartId === item.scope.systemStartId)!;
+        return [run.systemStartId, run.snapshotId, run.revision];
+      })), value: history }, historyOrder: runs.filter(run => !Object.hasOwn(excludedRuns, run.systemStartId)).map(run => run.systemStartId),
+      retainedAdmission, runs: { ...retainedRuns, ...inspections }, excludedRuns, runFailures });
+    } catch (error) {
+      publish({ ...snapshot, history: failed(previous, error), retainedAdmission: unavailable('qualification') });
+      throw new RunInspectionReadError030(error);
+    }
+    // The history is complete and remains ready even if the independent
+    // intent read failed. Notify callers without rolling that history back.
+    if (admissionError) throw admissionError;
+  });
   return {
     scopeKey,
     getSnapshot: () => snapshot,
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    refreshHistory: () => enqueue(async () => {
-      const previous = snapshot.history;
-      let admissionError: RunInspectionReadError030 | undefined;
-      publish({ ...snapshot, history: { kind: 'loading', retained: retainedRunValue030(previous) } });
-      try {
-        const runs = await summaries(), history: RunHistoryEntry030[] = [];
-        invalidateRetained(runs);
-        let retainedAdmission: NativeFact030<string | null>;
-        try { retainedAdmission = await admission(runs); }
-        catch (error) { retainedAdmission = unavailable('qualification'); admissionError = new RunInspectionReadError030(error); }
-        const results = await correlations(runs);
-        const excludedRuns: Record<string, RunRefusal030<'consult'>> = Object.create(null);
-        const runFailures: Record<string, RunReadFailure030> = Object.create(null);
-        for (const run of runs) {
-          const result = results.get(run.systemStartId)!;
-          if (result.kind === 'excluded') { excludedRuns[run.systemStartId] = result.refusal; continue; }
-          try {
-            if (result.kind === 'failed') throw result.error;
-            const capture = await captureFor(run, result.value);
-            history.push(await historyEntry(run, capture));
-          } catch (error) { runFailures[run.systemStartId] = readFailure(error, run.revision); }
-        }
-        const retainedRuns = Object.fromEntries(Object.entries(snapshot.runs).filter(([id]) =>
-          history.some(item => item.scope.systemStartId === id) || Object.hasOwn(runFailures, id)));
-        for (const [id, error] of Object.entries(runFailures)) {
-          const retained = retainedRuns[id] && retainedRunValue030(retainedRuns[id]);
-          if (retained) retainedRuns[id] = { kind: 'stale', revision: retained.state.revision, retained, refusal: refusal(error) };
-        }
-        for (const entry of history) retainedSummaries.set(entry.scope.systemStartId,
-          structuredClone(runs.find(run => run.systemStartId === entry.scope.systemStartId)!));
-        publish({ history: { kind: 'ready', revision: JSON.stringify(history.map(item => {
-          const run = runs.find(run => run.systemStartId === item.scope.systemStartId)!;
-          return [run.systemStartId, run.snapshotId, run.revision];
-        })), value: history }, historyOrder: runs.filter(run => !Object.hasOwn(excludedRuns, run.systemStartId)).map(run => run.systemStartId),
-        retainedAdmission, runs: retainedRuns, excludedRuns, runFailures });
-      } catch (error) {
-        publish({ ...snapshot, history: failed(previous, error), retainedAdmission: unavailable('qualification') });
-        throw new RunInspectionReadError030(error);
-      }
-      // The history is complete and remains ready even if the independent
-      // intent read failed. Notify callers without rolling that history back.
-      if (admissionError) throw admissionError;
-    }),
+    refreshHistory: () => refreshHistory(false),
+    refreshCatalog: () => refreshHistory(true),
     refreshRun: systemStartId => enqueue(async () => {
       const previous = Object.hasOwn(snapshot.runs, systemStartId) ? snapshot.runs[systemStartId] : { kind: 'loading' as const, retained: null };
       let admissionError: RunInspectionReadError030 | undefined;
@@ -335,23 +372,9 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
         if (result.kind === 'excluded') throw new MacroServiceError(result.refusal.code, result.refusal.message);
         const capture = await captureFor(summary, result.value);
         verifyRetained(summary);
-        const scope = { systemStartId, source: summary.source, snapshotId: summary.snapshotId };
-        const runtime = await loadRuntimeProjection030(scope, summary.flowInvocationId, transport.readExecutionRuntimeProjection030, () => true);
-        requireFact(runtime && runtime.revision === summary.revision && runtime.stopping === summary.stopping &&
-          runtime.verdict === summary.verdict, 'REVISION_CONFLICT');
-        const sections = runtimeSections030(runtime);
-        requireFact(BigInt(sections.activations.filter(activation => activation.physical).length) === BigInt(summary.physicalPending));
-        const humans = await readHumanFacts030({ systemStartId, source: summary.source }, transport.readExecutionHumans030);
-        const value: RunInspection030 = { capture, state: { scope, flowInvocationId: runtime.flowInvocationId,
-          revision: runtime.revision, verdict: verdict(runtime.verdict), ownerStatus: summary.ownerStatus as 'live' | 'revoked',
-          stopping: runtime.stopping, physicalPending: summary.physicalPending,
-          stop: unavailable('stop-proof'), uncertainties: unavailable('uncertainty'), humans,
-          occurrences: { kind: 'ready', revision: runtime.revision, value: sections.activations.map(activation => ({
-            scope, activation, details: unavailable('occurrence-details'),
-          })) }, instances: sections.instances, groups: sections.groups, paths: sections.paths,
-          diagnostics: unavailable('diagnostics'), chronology: unavailable('chronology') } };
+        const value = await inspect(summary, capture);
         retainedSummaries.set(systemStartId, structuredClone(summary));
-        publish({ ...snapshot, runs: { ...snapshot.runs, [systemStartId]: { kind: 'ready', revision: runtime.revision, value } } });
+        publish({ ...snapshot, runs: { ...snapshot.runs, [systemStartId]: { kind: 'ready', revision: value.state.revision, value } } });
       } catch (error) {
         const failure = new RunInspectionReadError030(error);
         const runFailures = { ...snapshot.runFailures }, excludedRuns = { ...snapshot.excludedRuns };

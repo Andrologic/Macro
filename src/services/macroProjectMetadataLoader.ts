@@ -6,7 +6,11 @@ import {
   resolveTargetBranch,
   type ArchitectPlanSummary,
 } from './architectPlanService';
-import { planMatchesArchitectScope, compareArchitectPlanSelectionPriority } from './architectPlanSelection';
+import {
+  compareArchitectPlanSelectionPriority,
+  isActiveArchitectAgsdlPlan,
+  planMatchesArchitectScope,
+} from './architectPlanSelection';
 import * as tauriIpc from './tauriIpc';
 import { devLogger } from '../utils/devLogger';
 
@@ -90,6 +94,7 @@ export interface LoadMacroProjectMetadataForSelectionParams {
   candidateBranches?: Array<string | null | undefined>;
   includeArchivedInVisible?: boolean;
   includeDeletedInVisible?: boolean;
+  agsdlOnlyForSelection?: boolean;
   deps?: Partial<MacroProjectMetadataLoaderDeps>;
 }
 
@@ -193,7 +198,7 @@ const findBranchForPlan = (
 
 const selectCatalogPlan = (params: {
   branches: ArchitectPlanCatalogBranch[];
-  visiblePlans: ArchitectPlanSummary[];
+  candidates: ArchitectPlanSummary[];
   rememberedPlanId?: string | null;
   currentActivePlanId?: string | null;
   preferCurrentActivePlan?: boolean;
@@ -207,8 +212,8 @@ const selectCatalogPlan = (params: {
   // A project-context restoration still gives its remembered selection priority.
   const selectedCurrentPlan = params.currentTargetBranch
     ? params.branches.find((branch) => branch.branchName === params.currentTargetBranch)
-      ?.plans.find((plan) => plan.id === params.currentActivePlanId && params.visiblePlans.includes(plan)) ?? null
-    : findVisiblePlanById(params.visiblePlans, params.currentActivePlanId);
+      ?.plans.find((plan) => plan.id === params.currentActivePlanId && params.candidates.includes(plan)) ?? null
+    : findVisiblePlanById(params.candidates, params.currentActivePlanId);
   const currentPlan = (params.preferCurrentActivePlan ?? Boolean(params.currentTargetBranch))
     ? selectedCurrentPlan : null;
   if (currentPlan) {
@@ -221,7 +226,7 @@ const selectCatalogPlan = (params: {
 
   const rememberedPlan = params.rememberedPlanId === params.currentActivePlanId && selectedCurrentPlan
     ? selectedCurrentPlan
-    : findVisiblePlanById(params.visiblePlans, params.rememberedPlanId);
+    : findVisiblePlanById(params.candidates, params.rememberedPlanId);
   if (rememberedPlan) {
     return {
       plan: rememberedPlan,
@@ -244,7 +249,7 @@ const selectCatalogPlan = (params: {
       ? branch.plans.find(
           (plan) =>
             plan.id === branch.activePlanId &&
-            params.visiblePlans.includes(plan),
+            params.candidates.includes(plan),
         ) ?? null
       : null;
     if (branchActivePlan) {
@@ -256,7 +261,7 @@ const selectCatalogPlan = (params: {
     }
   }
 
-  const recentPlan = [...params.visiblePlans].sort(
+  const recentPlan = [...params.candidates].sort(
     compareArchitectPlanSelectionPriority,
   )[0] ?? null;
   return {
@@ -354,7 +359,9 @@ export const loadMacroProjectMetadataForSelection = async (
 
   const selected = selectCatalogPlan({
     branches,
-    visiblePlans,
+    candidates: params.agsdlOnlyForSelection
+      ? visiblePlans.filter(isActiveArchitectAgsdlPlan)
+      : visiblePlans,
     rememberedPlanId: params.rememberedPlanId,
     currentActivePlanId: params.currentActivePlanId,
     preferCurrentActivePlan: params.preferCurrentActivePlan,

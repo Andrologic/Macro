@@ -4,6 +4,7 @@ import { createMergeWorkflowBlockedError, isMergeWorkflowMergeExecutionAction } 
 import { overlayPersistedMergeWorkflowSession } from './mergeWorkflowPersistence';
 import { loadTaskPlanFinalizationReview } from './taskReviewWorkflow';
 import { evolveMergeWorkflowRuntimeRepository, markMergeWorkflowRepositoryMerged, runRepositoryMergeStrategy } from './taskRepositoryWorkflow';
+import { assertPlanDevelopmentRecoveryAllowed } from './planLifecycleSaga';
 
 /** Resume the existing saga before attempting another strategy. Already merged repositories stay merged. */
 export async function runTaskPlanFinalizationWorkflow(
@@ -35,6 +36,12 @@ export async function runTaskPlanFinalizationWorkflow(
   }
 
   const branchName = ports.resolveTargetBranch(summary.storageBranch);
+  const pendingSagas = (await ports.loadPlanLifecycleSagas()).filter(
+    (saga) => saga.planId === task.plan_id && saga.branchName === branchName &&
+      (saga.operation === 'finalize' || saga.operation === 'archive'),
+  );
+  pendingSagas.forEach(assertPlanDevelopmentRecoveryAllowed);
+  const pendingFinalizationSaga = pendingSagas.some(saga => saga.operation === 'finalize');
   const reviewRuntime = overlayPersistedMergeWorkflowSession({
     runtime: await loadTaskPlanFinalizationReview(ports, {
       taskId: task.id,
@@ -52,12 +59,6 @@ export async function runTaskPlanFinalizationWorkflow(
   await persistRuntime(reviewRuntime);
 
   const preferredAction = options?.mergeStrategyAction;
-  const pendingFinalizationSaga = (await ports.loadPlanLifecycleSagas()).some(
-    (saga) =>
-      saga.operation === 'finalize' &&
-      saga.planId === task.plan_id &&
-      saga.branchName === branchName
-  );
   if (
     pendingFinalizationSaga &&
     isMergeWorkflowMergeExecutionAction(preferredAction) &&

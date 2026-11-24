@@ -711,10 +711,7 @@ export const prepareChatMessages = async (
 
   if (appMode === "Architect") {
     const activePlanContext = architectPlanOverride === undefined ? appState.activePlanContext : architectPlanOverride;
-    const nodes = architectPlanOverride === undefined ? appState.planNodes : architectPlanOverride?.nodes ?? [];
-    systemInstructions.push(...await ports.architectPlanInstructions(activePlanContext, nodes, executionContext, {
-      getProjectGitFlowSettings: projectId => appState.getProjectById(projectId)?.gitFlowSettings ?? null,
-    }));
+    systemInstructions.push(...await ports.architectPlanInstructions(activePlanContext));
   }
 
   const systemMessage =

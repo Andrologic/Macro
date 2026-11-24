@@ -1,0 +1,87 @@
+{
+  "contract": "agsdl-0.4.0",
+  "id": "plan-and-build",
+  "title": "Plan, build and review",
+  "description": "An architect plans and instructs a builder; a fresh reviewer sends the change back until it is approved.",
+  "agents": {
+    "architect": {
+      "harness": "claude-code",
+      "instructions": "Study the request and the code. Write a plan, then instructions that tell the builder exactly what to implement.",
+      "permissions": "read-only",
+      "instructs": true,
+      "results": {
+        "plan": {
+          "required": true,
+          "mediaType": "text/markdown"
+        }
+      }
+    },
+    "builder": {
+      "harness": "codex",
+      "instructions": "Implement changes in the repository and keep the tests passing.",
+      "permissions": "workspace"
+    },
+    "reviewer": {
+      "harness": "claude-code",
+      "instructions": "Review the change and the builder's report. Choose revise with precise remarks, or approved.",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "plan",
+    "steps": {
+      "plan": {
+        "type": "agent",
+        "agent": "architect",
+        "next": {
+          "ready": {
+            "step": "build",
+            "message": {
+              "prompt": {
+                "from": [
+                  "instructions"
+                ]
+              },
+              "resources": {
+                "plan": {
+                  "from": [
+                    "results",
+                    "plan"
+                  ]
+                }
+              }
+            }
+          },
+          "unclear": []
+        }
+      },
+      "build": {
+        "type": "agent",
+        "agent": "builder",
+        "maxVisits": 3,
+        "prompt": "Address the review in resources.review without leaving the plan.",
+        "next": "review"
+      },
+      "review": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new",
+        "next": {
+          "revise": {
+            "step": "build",
+            "message": {
+              "resources": {
+                "review": {
+                  "from": [
+                    "text"
+                  ]
+                }
+              }
+            }
+          },
+          "approved": []
+        }
+      }
+    }
+  }
+}

@@ -76,14 +76,24 @@ export interface PlanLifecycleSaga {
   phase: PlanLifecyclePhase;
   conversationId?: string | null;
   requiresMetadataCommit?: boolean;
+  checkpointFinalizationGeneration?: string | null;
   cleanupResources?: PlanLifecycleCleanupResource[];
   finalizationRepositories?: PlanFinalizationRepositoryCheckpoint[];
+  developmentRecoveryVersion?: 1;
   generation?: number;
   legacyCreatedAt?: string;
   createdAt: string;
   updatedAt: string;
   lastError?: string;
 }
+
+export const assertPlanDevelopmentRecoveryAllowed = (
+  saga: Pick<PlanLifecycleSaga, 'developmentRecoveryVersion'>,
+): void => {
+  if (saga.developmentRecoveryVersion !== 1) {
+    throw new Error('This legacy plan operation requires manual inspection before continuing.');
+  }
+};
 
 export const getPlanLifecycleSagaKey = (
   saga: Pick<PlanLifecycleSaga, 'branchName' | 'planId' | 'operation'>,
@@ -213,6 +223,9 @@ const parseSagaEntry = (entry: unknown): PlanLifecycleSaga => {
   if (saga.generation !== undefined && !isDurableGeneration(saga.generation)) {
     throw new PlanLifecycleSagaCorruptionError();
   }
+  if (saga.developmentRecoveryVersion !== undefined && saga.developmentRecoveryVersion !== 1) {
+    throw new PlanLifecycleSagaCorruptionError();
+  }
   if (
     saga.legacyCreatedAt !== undefined &&
     (!isDurableGeneration(saga.generation) || saga.legacyCreatedAt !== saga.createdAt)
@@ -221,6 +234,15 @@ const parseSagaEntry = (entry: unknown): PlanLifecycleSaga => {
   }
   if (saga.requiresMetadataCommit !== undefined && (saga.operation !== 'archive' || typeof saga.requiresMetadataCommit !== 'boolean')) {
     throw new PlanLifecycleSagaCorruptionError();
+  }
+  if (saga.checkpointFinalizationGeneration !== undefined) {
+    const target = saga.checkpointFinalizationGeneration;
+    const prefix = getPlanLifecycleSagaKey({ planId: saga.planId, branchName: saga.branchName, operation: 'finalize' }) + ':';
+    if (saga.operation !== 'archive' ||
+      (saga.phase !== 'metadata_commit_pending' && saga.phase !== 'metadata_committed') ||
+      (target !== null && (typeof target !== 'string' || !target.startsWith(prefix) || target.length === prefix.length))) {
+      throw new PlanLifecycleSagaCorruptionError();
+    }
   }
   if (saga.cleanupResources !== undefined && (
     !Array.isArray(saga.cleanupResources) || !saga.cleanupResources.every(isCleanupResource)
@@ -304,59 +326,7 @@ export const parsePlanLifecycleSagas = (value: string | null | undefined): PlanL
   try {
     const parsed: unknown = JSON.parse(value);
     if (!Array.isArray(parsed)) throw new PlanLifecycleSagaCorruptionError();
-    return parsed.map((entry) => {
-      const saga = entry as Partial<PlanLifecycleSaga>;
-      const allowedPhases: Record<PlanLifecycleOperation, readonly PlanLifecyclePhase[]> = {
-        archive: ['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_commit_pending', 'metadata_committed'],
-        delete: ['prepared', 'git_cleanup_complete', 'metadata_deleted'],
-        finalize: ['prepared', 'git_merges_complete', 'metadata_written'],
-        provision: ['prepared', 'metadata_written'],
-      };
-      if (
-        !saga || typeof saga.planId !== 'string' || typeof saga.branchName !== 'string' ||
-        (saga.operation !== 'archive' && saga.operation !== 'delete' && saga.operation !== 'finalize' && saga.operation !== 'provision') ||
-        !allowedPhases[saga.operation as PlanLifecycleOperation]?.includes(saga.phase as PlanLifecyclePhase) ||
-        typeof saga.createdAt !== 'string' || typeof saga.updatedAt !== 'string'
-      ) throw new PlanLifecycleSagaCorruptionError();
-      if (saga.generation !== undefined && !isDurableGeneration(saga.generation)) {
-        throw new PlanLifecycleSagaCorruptionError();
-      }
-      if (
-        saga.legacyCreatedAt !== undefined &&
-        (!isDurableGeneration(saga.generation) || saga.legacyCreatedAt !== saga.createdAt)
-      ) {
-        throw new PlanLifecycleSagaCorruptionError();
-      }
-      if (saga.requiresMetadataCommit !== undefined && (saga.operation !== 'archive' || typeof saga.requiresMetadataCommit !== 'boolean')) {
-        throw new PlanLifecycleSagaCorruptionError();
-      }
-      if (saga.cleanupResources !== undefined && (
-        !Array.isArray(saga.cleanupResources) || !saga.cleanupResources.every(isCleanupResource)
-      )) throw new PlanLifecycleSagaCorruptionError();
-      const cleanupMayStillRun =
-        (saga.operation === 'archive' && (saga.phase === 'prepared' || saga.phase === 'metadata_written')) ||
-        ((saga.operation === 'delete' || saga.operation === 'provision') && saga.phase === 'prepared');
-      if (cleanupMayStillRun && !Array.isArray(saga.cleanupResources)) {
-        throw new PlanLifecycleSagaCorruptionError();
-      }
-      if (
-        saga.operation === 'finalize' && (
-          !Array.isArray(saga.finalizationRepositories) ||
-          !saga.finalizationRepositories.every(isFinalizationRepository)
-        )
-      ) throw new PlanLifecycleSagaCorruptionError();
-      if (saga.operation !== 'finalize' && saga.finalizationRepositories !== undefined) {
-        throw new PlanLifecycleSagaCorruptionError();
-      }
-      if (
-        saga.operation === 'archive' &&
-        saga.requiresMetadataCommit === false &&
-        (saga.phase === 'metadata_commit_pending' || saga.phase === 'metadata_committed')
-      ) {
-        throw new PlanLifecycleSagaCorruptionError();
-      }
-      return saga as PlanLifecycleSaga;
-    });
+    return parsed.map(parseSagaEntry);
   } catch (error) {
     if (error instanceof PlanLifecycleSagaCorruptionError) throw error;
     throw new PlanLifecycleSagaCorruptionError();
@@ -659,6 +629,8 @@ const persistPlanLifecycleSaga = async (
         } else {
           if (
             existing.createdAt !== saga.createdAt ||
+            (existing.checkpointFinalizationGeneration !== undefined &&
+              existing.checkpointFinalizationGeneration !== saga.checkpointFinalizationGeneration) ||
             (
               existing.legacyCreatedAt !== undefined &&
               saga.legacyCreatedAt !== undefined &&
@@ -716,7 +688,11 @@ const persistPlanLifecycleSaga = async (
 export const startPlanLifecycleSaga = async (
   saga: PlanLifecycleSaga,
   transport: PlanLifecycleSagaTransport = defaultTransport,
-): Promise<void> => persistPlanLifecycleSaga(saga, transport, true);
+): Promise<void> => {
+  // Only an explicitly started operation can authorize later development recovery.
+  saga.developmentRecoveryVersion = 1;
+  await persistPlanLifecycleSaga(saga, transport, true);
+};
 
 export const upsertPlanLifecycleSaga = async (
   saga: PlanLifecycleSaga,

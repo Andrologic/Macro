@@ -1,3 +1,4 @@
+import { LOCAL_INDEX_KEY_PREFIX, LOCAL_PLAN_KEY_PREFIX, LOCAL_PLAN_CHAT_KEY_PREFIX } from './agsdl/legacyLocalStorage';
 import { normalizePlanIcon } from './planIcon';
 import type { PlanNode, PredictedBranch, ProjectGitFlowSettings } from '../types';
 import * as tauriIpc from './tauriIpc';
@@ -306,6 +307,7 @@ export interface ArchitectPlanActivationOptions {
   summaryHint?: ArchitectPlanSummary | null;
   scopedProjectIdsHint?: string[];
   allowIndexFallback?: boolean;
+  requireStoredConversation?: boolean;
 }
 
 export const applyArchitectPlanLifecycleForStatus = <T extends {
@@ -461,11 +463,7 @@ export interface ArchitectPlanIndex {
   reservedPlanSlugs: string[];
 }
 
-export const LOCAL_INDEX_KEY_PREFIX = 'macro_architect_plan_index';
-
-export const LOCAL_PLAN_KEY_PREFIX = 'macro_architect_plan';
-
-export const LOCAL_PLAN_CHAT_KEY_PREFIX = 'macro_architect_plan_chat';
+export { LOCAL_INDEX_KEY_PREFIX, LOCAL_PLAN_KEY_PREFIX, LOCAL_PLAN_CHAT_KEY_PREFIX };
 
 export const DEFAULT_GIT_FLOW_BASE_BRANCH = 'main';
 
@@ -523,6 +521,10 @@ export const normalizeBranchName = (value?: string, fallbackBranch = DEFAULT_GIT
     .replace(/\/+$/, '');
   return normalized || fallbackBranch;
 };
+
+export const matchesStoredArchitectPlanBranch = (stored: unknown, branchName: string): boolean =>
+  stored == null ||
+  (typeof stored === 'string' && (!stored.trim() || normalizeBranchName(stored, '') === branchName));
 
 export const getArchitectPlanIndexCacheKey = (branchName: string): string =>
   normalizeBranchName(branchName);

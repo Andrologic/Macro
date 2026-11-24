@@ -121,10 +121,13 @@
     }
   },
   "startup": {
+    "architectCutoverProgress": "Migrating Architect library ({{completed}}/{{total}})",
     "interrupted": "Startup interrupted",
     "failedTitle": "Macro could not finish booting.",
     "failedDescription": "Macro could not initialize its local data. You can retry safely.",
     "failedSteps": "Failed steps",
+    "architectImportIncomplete": "Architect library import is incomplete.",
+    "architectImportRetryHint": "Check the problem below, then choose Retry.",
     "metadataRecovery": {
       "restoredWithCommit": "Metadata @macro restored from history ({{commit}})",
       "restored": "Metadata @macro restored from history",
@@ -140,6 +143,7 @@
     "browserRuntimeSessionReplacedReload": "Reload tab"
   },
   "shutdown": {
+    "executionInterrupted": "Running, paused or interrupted executions may contain work that cannot resume after you close Macro.",
     "activeWorkSingle": "A task is still running. Closing Macro will interrupt it.",
     "activeWorkMultiple": "{{count}} tasks are still running. Closing Macro will interrupt them.",
     "closeTitle": "Close Macro?",
@@ -263,7 +267,7 @@
   },
   "header": {
     "architect": "Architect",
-    "implement": "Implement",
+    "implement": "Operate",
     "chat": "Chat",
     "debug": "Debug",
     "selectProject": "Select Project",
@@ -281,7 +285,7 @@
     "sections": {
       "basics": "Basics",
       "architect": "Architect",
-      "implement": "Implement",
+      "operate": "Operate",
       "chat": "Chat",
       "system": "System"
     },
@@ -289,7 +293,7 @@
     "steps": {
       "welcome": {
         "title": "Welcome to Macro",
-        "body": "Macro is organized by modes. The best onboarding shows controls when they become useful, then lets the user take back control.",
+        "body": "Use Architect to design AgSDL workflows, Operate to monitor executions, and Chat for conversations with their own context.",
         "points": [
           "The guide changes mode automatically.",
           "The left and right panels reopen when a step needs them.",
@@ -298,16 +302,16 @@
       },
       "modes": {
         "title": "Mode selector",
-        "body": "These three buttons change the whole workspace. Architect is for scoping, Implement is for executing, and Chat is for free-form discussion with context.",
+        "body": "Use this selector to switch between Architect, Operate, and Chat.",
         "points": [
-          "Architect: conversations, plans, and strategy.",
-          "Implement: tasks, terminal, and change validation.",
-          "Chat: conversations, sources, and general tools."
+          "Design AgSDL workflows in Architect.",
+          "Monitor executions and respond to requests in Operate.",
+          "Start a conversation with its own files, sources, and tools in Chat."
         ]
       },
       "panel-toggles": {
         "title": "Side panels",
-        "body": "Panel buttons hide or show context areas. The left panel often contains the work list, while the right panel contains details or validation."
+        "body": "The buttons in the top bar show or hide the side panels available in the current mode."
       },
       "settings-and-help": {
         "title": "Settings and onboarding",
@@ -315,32 +319,33 @@
       },
       "architect-mode": {
         "title": "Architect mode",
-        "body": "Architect turns a discussion into a strategy when the user explicitly asks for one."
+        "body": "Each blueprint has an AgSDL draft, a design conversation, and saved versions."
       },
-      "architect-plan-selector": {
-        "title": "Plans",
-        "body": "The plan selector isolates conversations and strategies for each plan."
+      "architect-navigator": {
+        "title": "Projects and systems",
+        "body": "In the left panel, select a project and open a system or create one."
       },
-      "architect-generate": {
-        "title": "Generate the strategy",
-        "body": "This action builds the task graph and predictable branches from the conversation and project context."
+      "architect-conversation": {
+        "title": "Design conversation",
+        "body": "Open a blueprint and describe the system you want in the center conversation. The agent can read and edit the draft."
       },
-      "architect-strategy": {
-        "title": "Strategy and branches",
-        "body": "The right panel shows the strategy. The Graph / Branches switch helps move from a dependency view to a Git execution view.",
+      "architect-agsdl": {
+        "title": "AgSDL viewer",
+        "body": "Open a system in the left panel to show its graph on the right.",
         "points": [
-          "Graph: dependencies and logical order.",
-          "Branches: work grouped by feature branch.",
-          "Expand opens a more comfortable explorer."
+          "Inspect the agents and their exchanges in the graph.",
+          "Select a component to see its details.",
+          "Use Expand view to open the graph in a larger window."
         ]
       },
       "architect-validate": {
         "title": "Validate the plan",
         "body": "Validation freezes the plan enough to provision branches and feed Implement. Started or completed tasks are protected from destructive regenerations."
       },
-      "implement-mode": {
-        "title": "Implement mode",
-        "body": "Implement is for picking up a task, discussing execution, opening a terminal, and validating modified files before commit."
+      "operate-executions": {
+        "title": "Executions in Operate",
+        "body": "Select a run to see its status and requests, or select an agent instance to read its messages.",
+        "demoBody": "In this demo, use the plus button to launch a workflow. Select a task to follow its conversation."
       },
       "implement-tasks": {
         "title": "Task queue",
@@ -379,8 +384,8 @@
         "body": "The composer accepts text, mentions, and pasted images. The arrow button sends, or stops generation when a response is running."
       },
       "footer": {
-        "title": "Git bar and notifications",
-        "body": "The bottom bar summarizes the group, branches, fetch / pull / push, and the notification center. Watch this area when Macro asks for a sync action."
+        "title": "Notifications and updates",
+        "body": "Open the notification center using the bell at the bottom of the window. The update button appears beside it when an update is available."
       },
       "done": {
         "title": "Restartable onboarding",
@@ -1755,7 +1760,7 @@
     "count_other": "{{count}} projects",
     "name": "Project name",
     "emptyWorkspaceTitle": "Add a project to start using Macro.",
-    "emptyWorkspaceBody": "Architect and Implement need a project before they can create plans, tasks, branches, and worktrees.",
+    "emptyWorkspaceBody": "Your project holds the AgSDL systems you design in Architect.",
     "emptyWorkspaceStrategyPanel": "Strategy will be available after you add a project.",
     "emptyWorkspaceTasksPanel": "Tasks will be available after you add a project.",
     "emptyWorkspaceChangesPanel": "Changes will be available after you add a project.",
@@ -1838,8 +1843,8 @@
     "initGitTitle": "Initialize Git?",
     "initialCommitTitle": "Create initial commit?",
     "createDevelopTitle": "Create develop?",
-    "initGitDescription": "This folder is not a Git repository yet. Initialize Git now to enable worktrees and editable workflows. If you skip this step, the project will be added as read-only.",
-    "initialCommitDescription": "This repository has no initial commit yet. Create it now to enable branches, worktrees, and editable workflows. If you skip this step, the project will be added as read-only.",
+    "initGitDescription": "This folder is not a Git repository yet. Initialize Git to prepare Git-backed Macro storage.",
+    "initialCommitDescription": "Create the initial commit to enable Git-backed Macro storage. Without it, the project stays read-only.",
     "createDevelopDescription": "This repository can work in mainline mode: Macro will use {{mainBranch}} as both the main branch and the development target. Create develop only if this project intentionally uses a separate integration branch.",
     "mainlineModeExplanation": "Keep {{branchName}} as the development target. Feature work merges back into {{branchName}}, and urgent fixes can use hotfix plans.",
     "developModeLabel": "Separate develop",
@@ -1933,7 +1938,7 @@
     "accessGitStateUnknown": "Macro could not confirm whether this folder is a Git repository. Check its Git status before enabling implementation actions.",
     "accessMissingInitialCommit": "The repository has no initial commit yet. This project stays read-only until the first commit is created.",
     "accessManualAndMissingGit": "This project is manually read-only and Git is not initialized yet.",
-    "accessEditableHelp": "This project is editable and can be used for branches, worktrees, terminal sessions, and implementation.",
+    "accessEditableHelp": "Macro can write to this project’s storage.",
     "accessBlockDirtyWorktree": "This project still has a dirty worktree. Clean it up before switching to read-only.",
     "accessBlockLiveTerminal": "A live terminal session is still attached to this project. Close it before switching to read-only.",
     "accessBlockLastActionablePlan": "This project is the last editable project in an active plan.",
@@ -2164,7 +2169,7 @@
       "delete": "Delete",
       "deleting": "Deleting…",
       "deleteTitle": "Delete plan",
-      "deleteDescription": "The plan “{{name}}” and its local Macro branches will be deleted. This action cannot be undone.",
+      "deleteDescription": "The plan “{{name}}” will be deleted. This action cannot be undone.",
       "editUnavailable": "This plan can no longer be edited.",
       "editError": "Unable to edit the plan.",
       "archiveUnavailable": "This plan can no longer be archived.",
@@ -3098,8 +3103,8 @@
         "description": "Switch active mode to Architect"
       },
       "switchImplement": {
-        "label": "Switch to Implement mode",
-        "description": "Switch active mode to Implement"
+        "label": "Switch to Operate mode",
+        "description": "Switch active mode to Operate"
       },
       "switchChat": {
         "label": "Switch to Chat mode",
@@ -3336,9 +3341,9 @@
     "desktopRequired": "Open Macro on the desktop to back up or restore its local data.",
     "restoreHelp": "Replace the local data with an archive. Keep the previous profile for recovery.",
     "exportHelp": "Save the local data to a new archive at the next startup.",
-    "limits": "Maximum archive size: 256 MiB. Restore with the same Macro version. Project paths are kept as recorded; restoring does not reconnect moved projects or merge profiles.",
+    "limits": "The backup manifest can be up to 256 MiB. Architect files are stored separately inside the archive. Restore with the same Macro version. Restoration keeps the recorded project paths and replaces the entire profile.",
     "limitsTitle": "Compatibility, limits and private data",
-    "exclusions": "Project folders and their Git history are excluded, as are provider credentials. Keep a separate copy of your projects.",
+    "exclusions": "Not included: folders you chose yourself, such as your projects and their Git history. Keep your own copy of them. Credentials never travel to another computer: after a restore, reconnect your providers and tools.",
     "scheduled": "Operation prepared. Quit Macro completely, then reopen it. Keep this session unchanged until you quit.",
     "resultExported": "Backup saved.",
     "resultRestored": "Profile restored. The previous profile is retained at the path below.",
@@ -3353,10 +3358,20 @@
     "runtimeUnavailableTitle": "Desktop runtime unavailable",
     "runtimeUnavailableHint": "Macro is restarting or is not running. Retry once the desktop runtime is ready.",
     "startupTitle": "Profile recovery required",
+    "nativeRecoveryHint": "Macro paused opening the local profile. Retry to restart Macro and resume recovery.",
+    "restoreRecoveryTitle": "Profile restore could not finish",
+    "profileOpenFailedTitle": "Macro could not open the profile",
+    "profileOpenFailedHint": "Check the diagnostic details, then select Retry to restart Macro.",
+    "recoveryQuit": "Quit",
+    "revealPreservedArchive": "Reveal preserved archive",
+    "revealRecoveryFolder": "Open recovery folder",
+    "copyDiagnostics": "Copy diagnostics",
+    "diagnosticsCopied": "Diagnostics copied.",
+    "recoveryActionFailed": "The action failed. See the diagnostic details.",
     "startupRecovery": "Browser data restoration could not finish. The native recovery archive is retained. Check the diagnostic details, free local storage if necessary, then restart Macro to retry.",
     "title": "Backup and restore",
-    "scope": "Macro’s local data: conversations, stored attachments, code checkpoints, drafts, queued instructions, recovery responses and global preferences.",
-    "secrets": "Portable exports exclude provider credentials, MCP environment variables and headers. Credentials already on this installation remain here. On another installation, reconnect providers. Conversation and file contents may contain private data; store the archive securely.",
+    "scope": "A backup contains your Architect library (systems, drafts and saved versions), your runs and their history, the launch resources and working folders Macro created for them, your conversations and your settings.",
+    "secrets": "Credentials are left out of every backup: provider, speech and web search keys, the secrets of tools (environment variables and headers) and sign-ins. After a restore, reconnect them, on this computer as well as on another one. Conversations and file contents may contain private data. The archive is not encrypted: keep it somewhere safe.",
     "recovery": "Recovery required. Original data preserved.",
     "path": "Absolute path to the local backup file",
     "export": "Prepare backup",

@@ -6,9 +6,12 @@ import { projectStaticSemantics030 } from '../../services/agsdl/staticSemantics0
 import { runEffectFacts030, runGraphReadState030, runStepLabels030, normalRunOutcome030, commandResult030, callFailure030, occurrenceOutput030, runCaptureKey030, projectRunGraph030, type RunGraphOccurrence030 } from '../../services/agsdl/runGraphProjection030';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
 
+const diagnosticCodes = new Set(['CALL_FAILED', 'TIMEOUT', 'BRANCH_FAILED', 'OUTPUT_INVALID', 'MCP_TERMINATION_UNCERTAIN']);
+
 /** The shell canvas consumes this bridge without replacing static or native ids. */
 export interface RunGraphBridge030 {
   readonly inspect?: () => void;
+  readonly inspection?: RunInspection030;
   readonly capture: RunInspection030['capture'];
   readonly occurrences: readonly RunGraphOccurrence030[];
   readonly occurrenceRead: ReturnType<typeof runGraphReadState030> & { readonly projectionAvailable: boolean };
@@ -25,9 +28,10 @@ export function RunInspector030({ inspection, selectedStepId, selectedOccurrence
 }) {
   const { t } = useAgsdlTranslation();
   const tr = (key: string) => t(`agsdl.run030.${key}`);
+  const diagnosticLabel = (code: string) => tr('diagnosticCode.' + (diagnosticCodes.has(code) ? code : 'other'));
   const { capture, state } = inspection;
   const semantics = useMemo(() => {
-    try { return projectStaticSemantics030(capture.authoredSource); } catch { return null; }
+    try { return projectStaticSemantics030(capture.authoredSource, undefined, true); } catch { return null; }
   }, [capture.authoredSource]);
   const stepLabels = useMemo(() => semantics ? runStepLabels030(capture.authoredSource, semantics) : new Map<string, string>(), [semantics, capture.authoredSource]);
   const raw = retainedRunValue030(state.occurrences);
@@ -58,7 +62,7 @@ export function RunInspector030({ inspection, selectedStepId, selectedOccurrence
   const visibleDiagnostics = diagnostics?.filter(diagnostic => !selected || diagnostic.activationId === selected.activationId || !graph.some(item => item.activationId === diagnostic.activationId));
   const humans = retainedRunValue030(state.humans);
   const openHumans = humans?.filter(request => request.state.kind === 'open') ?? [];
-  const canvas = renderGraph?.({ capture, occurrences: graph, occurrenceRead: { ...runGraphReadState030(state.occurrences, stale, refreshing), projectionAvailable: semantics !== null }, selectedStepId, selectedOccurrenceKey, selectStep, selectOccurrence: selectVisit });
+  const canvas = renderGraph?.({ capture, inspection, occurrences: graph, occurrenceRead: { ...runGraphReadState030(state.occurrences, stale, refreshing), projectionAvailable: semantics !== null }, selectedStepId, selectedOccurrenceKey, selectStep, selectOccurrence: selectVisit });
   if (graphOnly) return <div className="agsdl-run-canvas">{canvas}</div>;
   return <section aria-label={tr('inspector')} className="min-w-0 space-y-3">
     {canvas}
@@ -99,7 +103,7 @@ export function RunInspector030({ inspection, selectedStepId, selectedOccurrence
         <p>{tr('commandOutput')}</p>
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{command.output || tr('noContent')}</pre>
       </div>}
-      {callFailure && <p role="status">{tr(`diagnosticCode.${['CALL_FAILED', 'TIMEOUT', 'OUTPUT_INVALID'].includes(callFailure.code) ? callFailure.code : 'other'}`)} · {callFailure.code}: {callFailure.message}</p>}
+      {callFailure && <p role="status">{diagnosticLabel(callFailure.code)} · {callFailure.code}: {callFailure.message}</p>}
       {callOutput !== null && !command && <ExactContent label={tr('result')} value={callOutput} />}
       {activation.physical && <p>{tr('physicalActive')}</p>}
       {details?.kind === 'available' ? <>
@@ -128,7 +132,7 @@ export function RunInspector030({ inspection, selectedStepId, selectedOccurrence
           </> : <p>{tr('runLevelDiagnostic')}</p>}
           {diagnostic.step && <p>{tr('diagnosticStep')}: {diagnostic.step.join(' / ')}</p>}
           <p>{tr(`disposition.${diagnostic.disposition}`)}</p>
-          <p>{tr(`diagnosticCode.${['CALL_FAILED', 'TIMEOUT', 'BRANCH_FAILED', 'OUTPUT_INVALID'].includes(diagnostic.code) ? diagnostic.code : 'other'}`)}</p>
+          <p>{diagnosticLabel(diagnostic.code)}</p>
           <p className="break-words">{diagnostic.message}</p>
           <div><span>{tr('cause')}: </span>{diagnostic.causeId === null ? tr('notReported') : <>
             <span className="break-words">{cause ? cause.message : diagnostic.causeId}</span>
@@ -156,5 +160,5 @@ export function ExactContent({ label, value }: { label: string; value: string | 
 
 /** Unknown native phases stay exact in advanced data; never imply success. */
 export function knownPhase(value: RunOccurrence030['activation']['phase']): string {
-  return ['ready', 'stopping', 'done', 'pending', 'preparing', 'barrier', 'body', 'group', 'escaped', 'excluded', 'withdrawn', 'queued', 'running', 'completed', 'succeeded', 'failed', 'cancelled', 'waiting', 'live', 'ended', 'idle', 'absorbed'].includes(value) ? value : 'unknown';
+  return ['ready', 'stopping', 'done', 'pending', 'preparing', 'steering', 'withdrawingSteer', 'barrier', 'body', 'group', 'escaped', 'excluded', 'withdrawn', 'queued', 'running', 'completed', 'succeeded', 'failed', 'cancelled', 'waiting', 'live', 'ended', 'idle', 'absorbed'].includes(value) ? value : 'unknown';
 }

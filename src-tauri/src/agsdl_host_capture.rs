@@ -77,7 +77,8 @@ pub(crate) struct CompilationCapture {
     pub generation: String,
     pub call_permissions_json: String,
     pub call_scope_json: String,
-    permission_notice030: bool,
+    pub(crate) permission_notice030: bool,
+    pub(crate) archive_host_permissions: Option<crate::agsdl_permissions::RequestedPermissions>,
 }
 
 #[cfg(test)]
@@ -256,7 +257,6 @@ pub(crate) async fn observation(
     let scope = execution_scope(workspace, source, task)?;
     let project = &source.project;
     let document = exact_json::value(&source.source).unwrap_or(Value::Null);
-    let is_030 = document.get("contract").and_then(Value::as_str) == Some("agsdl-0.3.0");
     // Report unsupported product features before attempting Codex account discovery.
     if let Some(diagnostic) = product_slice030(&source.source, None) {
         return Err(failure(
@@ -265,8 +265,12 @@ pub(crate) async fn observation(
             &diagnostic.message,
         ));
     }
+    let flow_document = document
+        .get("contract")
+        .and_then(Value::as_str)
+        .is_some_and(argentic_core::supports_contract);
     let uses_calls030 =
-        is_030 && declared_steps030(&document).any(|(_, step)| step["type"] == "call");
+        flow_document && declared_steps030(&document).any(|(_, step)| step["type"] == "call");
     if uses_calls030 {
         if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             return Err(failure(
@@ -290,7 +294,7 @@ pub(crate) async fn observation(
             ));
         }
     }
-    let uses_codex030 = is_030
+    let uses_codex030 = flow_document
         && document
             .get("agents")
             .and_then(Value::as_object)
@@ -356,7 +360,7 @@ pub(crate) async fn observation(
         ))?)
     );
     observation["version"] = Value::String(version);
-    if is_030 {
+    if flow_document {
         let (mut harnesses, agents) = match &codex030 {
             Some(observed) => {
                 let (harness, agents) =
@@ -386,9 +390,9 @@ pub(crate) async fn observation(
             "format":"macro-agsdl-registry/030",
             "modules":[
                 {"harness":"codex", "moduleJson":argentic_runtime::api::codex_module()},
-                {"harness":"claude-code", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/claude-code/module.json")},
-                {"harness":"opencode", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/opencode/module.json")},
-                {"harness":"pi", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/pi/module.json")}
+                {"harness":"claude-code", "moduleJson":include_str!("../../src/vendor/agsdl/v0.4/harnesses/claude-code/module.json")},
+                {"harness":"opencode", "moduleJson":include_str!("../../src/vendor/agsdl/v0.4/harnesses/opencode/module.json")},
+                {"harness":"pi", "moduleJson":include_str!("../../src/vendor/agsdl/v0.4/harnesses/pi/module.json")}
             ],
             "harnesses":harnesses, "agents":agents, "hostCapabilities": if cfg!(all(target_os="macos", target_arch="aarch64")) {
                 json!([{"name":"approval","support":"native","evidenceJson":"{\"runtime\":\"flow-human-clock\"}"},{"name":"call.command","support":"native","evidenceJson":"{\"transport\":\"confined-local\"}"},{"name":"call.mcp","support":"native","evidenceJson":"{\"transport\":\"confined-stdio\"}"}])
@@ -465,10 +469,10 @@ pub(crate) async fn compile_input(
         request.expected.as_ref(),
     )
     .await?;
-    if exact_json::value(&locked.source)?
+    if !exact_json::value(&locked.source)?
         .get("contract")
         .and_then(Value::as_str)
-        != Some("agsdl-0.3.0")
+        .is_some_and(argentic_core::supports_contract)
     {
         return Err(failure(
             "UNSUPPORTED_EDITION",
@@ -527,6 +531,7 @@ pub(crate) async fn compile_input(
         call_permissions_json,
         call_scope_json,
         permission_notice030,
+        archive_host_permissions: None,
     })
 }
 
@@ -579,7 +584,32 @@ impl CompilationCapture {
         )
     }
 
-    fn start_material030_checked(
+    fn product_diagnostic(
+        &self,
+        authored: &Value,
+        compiled: Option<&str>,
+    ) -> Option<PreflightDiagnostic> {
+        match argentic_runtime::api::qualify_product(
+            authored,
+            compiled,
+            self.archive_host_permissions.as_ref(),
+        ) {
+            Ok(report) => report
+                .blocking_diagnostic()
+                .map(|diagnostic| PreflightDiagnostic {
+                    code: diagnostic.code.clone(),
+                    pointer: diagnostic.pointer.clone(),
+                    message: diagnostic.message.clone(),
+                }),
+            Err(error) => Some(PreflightDiagnostic {
+                code: error.code,
+                pointer: error.pointer,
+                message: error.message,
+            }),
+        }
+    }
+
+    pub(crate) fn start_material030_checked(
         &self,
         locked_revision: &EngineSourceRevision,
         locked_source: &str,
@@ -708,9 +738,9 @@ impl CompilationCapture {
                 != Some(versions.registry.as_str())
             || plan.get("format").and_then(Value::as_str) != Some("macro-agsdl-compiled-plan/2")
             || versions.snapshot != "2"
-            || versions.contract != "agsdl-0.3.0"
+            || !argentic_core::supports_contract(&versions.contract)
             || versions.profile != request.profile
-            || authored.get("contract").and_then(Value::as_str) != Some("agsdl-0.3.0")
+            || authored.get("contract").and_then(Value::as_str) != Some(versions.contract.as_str())
             || plan
                 .get("entry")
                 .is_none_or(|entry| entry.is_null() != request.entry.is_none())
@@ -722,7 +752,7 @@ impl CompilationCapture {
         {
             return Err(refuse());
         }
-        if let Some(diagnostic) = product_slice030(&self.authored_source, Some(plan_json)) {
+        if let Some(diagnostic) = self.product_diagnostic(&authored, Some(plan_json)) {
             return Err(failure(
                 &diagnostic.code,
                 &diagnostic.pointer,
@@ -754,7 +784,11 @@ fn local_harness_diagnostics030(authored: &str, registry_json: &str) -> Vec<Pref
     let Ok(registry) = exact_json::value(registry_json) else {
         return vec![];
     };
-    if document.get("contract").and_then(Value::as_str) != Some("agsdl-0.3.0") {
+    if !document
+        .get("contract")
+        .and_then(Value::as_str)
+        .is_some_and(argentic_core::supports_contract)
+    {
         return vec![];
     }
     let Some(agents) = document.get("agents").and_then(Value::as_object) else {
@@ -897,7 +931,7 @@ impl CompilationCapture {
                         && finding.get("message").and_then(Value::as_str)
                             == Some("No native observation matches the complete agent declaration.")
                     {
-                        "No qualified native 0.3 agent capture is available.".into()
+                        "No qualified native AgSDL agent capture is available.".into()
                     } else if self
                         .result
                         .pointer("/runtime/profile")
@@ -920,10 +954,15 @@ impl CompilationCapture {
                 message: "Host or project settings limit this run to read-only access, including agents requesting workspace writes.".into(),
             });
         }
-        let product_diagnostic = product_slice030(
-            &self.authored_source,
-            self.result.get("compiledPlanJson").and_then(Value::as_str),
-        );
+        let product_diagnostic =
+            exact_json::value(&self.authored_source)
+                .ok()
+                .and_then(|authored| {
+                    self.product_diagnostic(
+                        &authored,
+                        self.result.get("compiledPlanJson").and_then(Value::as_str),
+                    )
+                });
         let product_supported = product_diagnostic.is_none();
         native_diagnostics.extend(product_diagnostic);
         let incomplete = findings.len().saturating_add(native_diagnostics.len()) > 64;
@@ -1077,8 +1116,8 @@ mod exact_capture_tests {
     fn local_harness_diagnostics_distinguish_missing_version_and_adapter() {
         let document = r#"{"contract":"agsdl-0.3.0","agents":{"a/b":{"harness":"opencode"},"other":{"harness":"pi"}}}"#;
         let registry = json!({"modules":[
-            {"harness":"opencode","moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/opencode/module.json")},
-            {"harness":"pi","moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/pi/module.json")}
+            {"harness":"opencode","moduleJson":include_str!("../../src/vendor/agsdl/v0.4/harnesses/opencode/module.json")},
+            {"harness":"pi","moduleJson":include_str!("../../src/vendor/agsdl/v0.4/harnesses/pi/module.json")}
         ],"harnesses":[
             {"harness":"opencode","installation":"available","version":"1.19.5"},
             {"harness":"pi","installation":"missing","version":null}
@@ -1339,6 +1378,7 @@ mod start_material030_tests {
                 call_permissions_json: json!({"mode":"Implement"}).to_string(),
                 call_scope_json: json!({"root":"/synthetic"}).to_string(),
                 permission_notice030: false,
+                archive_host_permissions: None,
                 native_registry_json: ticket.to_string(),
             },
             request,

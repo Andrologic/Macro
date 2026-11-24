@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { useNotificationCenterStore } from '../../stores/useNotificationCenterStore';
 import { openWorkflowNotificationContext } from '../../services/openWorkflowNotificationContext';
+import { installNotificationNavigation } from '../../services/notificationNavigation';
 import type { TFunction } from 'i18next';
 import type { ChatMessage, Conversation, PendingToolApproval } from '../../types';
 import type { CatalogedImplementTask } from '../../services/implementTaskCatalog';
@@ -15,11 +16,9 @@ interface TestAppState {
   standaloneProjects: Array<{ id: string }>;
   projectGroups: Array<{ id: string; projects: Array<{ id: string }> }>;
   setMode: ReturnType<typeof mock>;
-  setSelectedGroup: ReturnType<typeof mock>;
   setSelectedTask: ReturnType<typeof mock>;
   switchProjectContext: ReturnType<typeof mock>;
-  loadMacroProjectMetadataForSelection: ReturnType<typeof mock>;
-  activateArchitectPlan: ReturnType<typeof mock>;
+  openArchitectPlanNotification: ReturnType<typeof mock>;
 }
 
 interface TestChatState {
@@ -63,7 +62,6 @@ const taskListeners = new Set<StoreListener<TestTaskState>>();
 const notifyActionRequired = mock(
   (_title: string, _options: CapturedNotificationOptions) => undefined,
 );
-
 const useAppStore = Object.assign(() => appState, {
   getState: () => appState,
 });
@@ -85,8 +83,10 @@ const useTaskStore = Object.assign(() => taskState, {
 mock.module('../../stores/useAppStore', () => ({ useAppStore }));
 mock.module('../../stores/useChatStore', () => ({ useChatStore }));
 mock.module('../../stores/useTaskStore', () => ({ useTaskStore }));
+const actualToastService = await import('../ui/toastService');
 mock.module('../ui/toastService', () => ({
-  notify: { actionRequired: notifyActionRequired, dismiss: mock(() => undefined) },
+  ...actualToastService,
+  notify: { ...actualToastService.notify, actionRequired: notifyActionRequired, dismiss: mock(() => undefined) },
 }));
 
 const {
@@ -187,41 +187,17 @@ beforeEach(() => {
       navigationCalls.push('setMode');
       appState.mode = mode;
     }),
-    setSelectedGroup: mock((
-      groupId: string | null,
-      _options?: { restoreProjectContext?: boolean; ensureAutoPlan?: boolean },
-    ) => {
-      navigationCalls.push('setSelectedGroup');
-      appState.selectedGroupId = groupId;
-    }),
     setSelectedTask: mock((taskId: string | null) => {
       navigationCalls.push('setSelectedTask');
       appState.selectedTaskId = taskId;
     }),
-    switchProjectContext: mock(async () => {
+    switchProjectContext: mock(async (projectId: string) => {
       navigationCalls.push('switchProjectContext');
+      appState.selectedGroupId = null;
+      appState.selectedProjectId = projectId;
     }),
-    loadMacroProjectMetadataForSelection: mock(async (options: {
-      hydrateActivePlan?: boolean;
-    }) => {
-      navigationCalls.push(
-        options.hydrateActivePlan === false ? 'loadCatalog' : 'hydratePlan',
-      );
-      return {
-        snapshot: {
-          scopedProjectIds: ['project-current'],
-          visiblePlans: [
-            {
-              id: 'plan-owner',
-              targetBranch: 'develop',
-              conversationId: 'conversation-1',
-            },
-          ],
-        },
-      };
-    }),
-    activateArchitectPlan: mock(async () => {
-      navigationCalls.push('activatePlan');
+    openArchitectPlanNotification: mock(async () => {
+      navigationCalls.push('openArchitectPlanNotification');
       return true;
     }),
   };
@@ -245,23 +221,52 @@ beforeEach(() => {
 });
 
 describe('workflow attention notification subscriptions', () => {
-  it('uses the current conversation task identity instead of an obsolete notification context', async () => {
-    const conversation = makeConversation();
+  it.each(['approval', 'questionnaire', 'review'] as const)(
+    'ignores a persisted Implement %s action without navigating',
+    async (kind) => {
+      const conversation = makeConversation({ task_id: kind === 'questionnaire' ? null : 'task-1' });
+      chatState.hydrationStatus = 'ready';
+      chatState.conversations = [conversation];
+      taskState.tasks = [makeTask('InReview')];
+      appState.selectedTaskId = 'current-task';
+      useNotificationCenterStore.setState({ items: [{
+        id: 'legacy-item', level: 'info', variant: 'actionable', category: 'task_attention_required',
+        title: 'Legacy request', createdAt: '2026-09-04T10:00:00.000Z', readAt: null,
+        workflowNavigation: kind === 'review'
+          ? { kind, taskId: 'task-1' }
+          : { kind: 'conversation', requestKind: kind, conversationId: conversation.id },
+      }] });
+      const releaseNavigation = installNotificationNavigation(openWorkflowNotificationContext);
+      try {
+        expect(await actualToastService.executeRegisteredNotificationAction('legacy-item', 0)).toBe(true);
+        expect(useNotificationCenterStore.getState().items).toHaveLength(0);
+      } finally { releaseNavigation(); }
+      expect(navigationCalls).toEqual([]);
+      expect(appState.mode).toBe('Chat');
+      expect(appState.selectedTaskId).toBe('current-task');
+      expect(chatState.selectedConversationId).toBe('conversation-visible');
+    },
+  );
+  it('lets the Architect store refuse a stale notification without opening a fallback', async () => {
+    const conversation = makeConversation({ scope_mode: 'Architect', task_id: null });
     chatState.conversations = [conversation];
-    const navigation = { kind: 'conversation' as const, requestKind: 'approval' as const, conversationId: conversation.id };
-    chatState.conversations = [{ ...conversation, task_id: 'node-new' }];
-    taskState.tasks = [{ ...makeTask('InProgress'), id: 'task:v1:branch:plan:node-new', node_id: 'node-new' }];
-    await openWorkflowNotificationContext(navigation);
-    expect(appState.setSelectedTask).toHaveBeenCalledWith('task:v1:branch:plan:node-new');
-    expect(chatState.selectConversation).toHaveBeenCalledWith(conversation.id);
+    appState.openArchitectPlanNotification.mockResolvedValue(false);
+
+    await openWorkflowNotificationContext({ kind: 'conversation', requestKind: 'approval', conversationId: conversation.id });
+
+    expect(appState.openArchitectPlanNotification).toHaveBeenCalledWith(conversation.id);
+    expect(chatState.ensureConversationForCurrentMode).not.toHaveBeenCalled();
+    expect(chatState.selectConversation).not.toHaveBeenCalled();
+    expect(appState.setMode).not.toHaveBeenCalled();
   });
 
-  it('keeps navigation retryable while hydration or the task catalog is loading', async () => {
+
+
+  it('keeps conversation navigation retryable while chat is hydrating', async () => {
     chatState.hydrationStatus = 'hydrating';
-    await expect(openWorkflowNotificationContext({ kind: 'review', taskId: 'task-1' })).rejects.toThrow('Loading...');
-    chatState.hydrationStatus = 'ready';
-    taskState.isLoading = true;
-    await expect(openWorkflowNotificationContext({ kind: 'review', taskId: 'task-1' })).rejects.toThrow('Loading...');
+    await expect(openWorkflowNotificationContext({
+      kind: 'conversation', requestKind: 'approval', conversationId: 'conversation-1',
+    })).rejects.toThrow('Loading...');
     expect(navigationCalls).toEqual([]);
   });
 
@@ -271,13 +276,6 @@ describe('workflow attention notification subscriptions', () => {
     chatState.conversations = [makeConversation({ task_id: 'deleted' })];
     await openWorkflowNotificationContext({ kind: 'conversation', requestKind: 'questionnaire', conversationId: 'conversation-1' });
     expect(navigationCalls).toEqual([]);
-  });
-
-  it('restores a review through its current matching conversation, ignoring a stale stored association', async () => {
-    taskState.tasks = [{ ...makeTask('InReview'), conversation_id: 'deleted' }];
-    chatState.conversations = [makeConversation({ id: 'replacement' })];
-    await openWorkflowNotificationContext({ kind: 'review', taskId: 'task-1' });
-    expect(chatState.selectConversation).toHaveBeenCalledWith('replacement');
   });
 
   it('removes resolved calls to action after loaded state is known and leaves pending requests intact', () => {
@@ -625,7 +623,7 @@ describe('workflow attention notification subscriptions', () => {
     unsubscribe();
   });
 
-  it('emits one questionnaire notification and honors its explicit Architect group', async () => {
+  it('dispatches one Architect questionnaire notification through its exact-plan action', async () => {
     const conversation = makeConversation({
       scope_mode: 'Architect',
       task_id: null,
@@ -648,88 +646,30 @@ describe('workflow attention notification subscriptions', () => {
       notificationKey: 'workflow-attention:questionnaire:conversation-1:question-1',
     }));
     await options.actions[0]!.onClick();
-    expect(appState.setSelectedGroup).toHaveBeenCalledWith('group-other', {
-      restoreProjectContext: false,
-      ensureAutoPlan: false,
-    });
-    expect(appState.switchProjectContext).not.toHaveBeenCalled();
-    expect(appState.setMode).toHaveBeenCalledWith('Architect', {
-      ensureAutoPlan: false,
-    });
-    expect(appState.activateArchitectPlan).toHaveBeenCalledWith(
-      'plan-owner',
-      expect.objectContaining({
-        targetBranch: 'develop',
-        allowScopeSwitch: false,
-      }),
-    );
-    expect(navigationCalls).toEqual([
-      'setSelectedGroup',
-      'setMode',
-      'loadCatalog',
-      'activatePlan',
-      'ensureConversation',
-      'selectConversation',
-    ]);
-    expect(chatState.ensureConversationForCurrentMode).toHaveBeenCalledTimes(1);
-    expect(chatState.selectConversation).toHaveBeenCalledWith(conversation.id);
+
+    expect(appState.openArchitectPlanNotification).toHaveBeenCalledWith(conversation.id);
+    expect(navigationCalls).toEqual(['openArchitectPlanNotification']);
     unsubscribe();
   });
 
-  it('routes a project-only Architect request through its project context', async () => {
-    const conversation = makeConversation({
-      scope_mode: 'Architect',
-      task_id: null,
-      group_id: null,
-      project_id: 'project-other',
-    });
-    chatState = { ...chatState, conversations: [conversation] };
+  it('does not issue new desktop actions for retired Implement requests or reviews', () => {
+    const conversation = makeConversation();
+    chatState.conversations = [conversation];
     const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
     const message = makeQuestionnaire(conversation);
     updateChatState({
       messages: [message],
       messagesByConversationId: { [conversation.id]: [message] },
+      pendingToolApprovalByConversationId: { [conversation.id]: makeApproval(conversation) },
     });
-
-    const [, options] = notifyActionRequired.mock.calls[0]!;
-    await options.actions[0]!.onClick();
-
-    expect(appState.switchProjectContext).toHaveBeenCalledWith('project-other', {
-      restoreProjectContext: false,
-      ensureAutoPlan: false,
-    });
-    expect(appState.setSelectedGroup).not.toHaveBeenCalled();
-    expect(chatState.selectConversation).toHaveBeenCalledWith(conversation.id);
+    updateTaskState([makeTask('InReview')]);
+    expect(notifyActionRequired).not.toHaveBeenCalled();
     unsubscribe();
   });
 
-  it('emits one approval notification and routes its Implement action', async () => {
-    const conversation = makeConversation();
-    chatState = { ...chatState, conversations: [conversation] };
-    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
-
-    updateChatState({
-      pendingToolApprovalByConversationId: {
-        [conversation.id]: makeApproval(conversation),
-      },
-    });
-
-    expect(notifyActionRequired).toHaveBeenCalledTimes(1);
-    const [, options] = notifyActionRequired.mock.calls[0]!;
-    expect(options).toEqual(expect.objectContaining({
-      category: 'task_attention_required',
-      notificationKey: 'workflow-attention:approval:conversation-1:tool-call-1',
-    }));
-    await options.actions[0]!.onClick();
-    expect(appState.setMode).toHaveBeenCalledWith('Implement', {
-      ensureAutoPlan: true,
-    });
-    expect(appState.setSelectedTask).toHaveBeenCalledWith('task-1');
-    expect(chatState.selectConversation).toHaveBeenCalledWith(conversation.id);
-    unsubscribe();
-  });
-
-  it('routes a Chat questionnaire without selecting a task or project', async () => {
+  it('routes a Chat questionnaire while the task catalog is loading', async () => {
+    appState.mode = 'Implement';
+    taskState.isLoading = true;
     const conversation = makeConversation({
       scope_mode: 'Chat',
       task_id: null,
@@ -757,48 +697,6 @@ describe('workflow attention notification subscriptions', () => {
     unsubscribe();
   });
 
-  it('clears the selected task before opening a taskless Implement request', async () => {
-    const conversation = makeConversation({ task_id: null });
-    appState.selectedTaskId = 'task-current';
-    chatState = { ...chatState, conversations: [conversation] };
-    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
-
-    updateChatState({
-      pendingToolApprovalByConversationId: {
-        [conversation.id]: makeApproval(conversation),
-      },
-    });
-
-    const [, options] = notifyActionRequired.mock.calls[0]!;
-    await options.actions[0]!.onClick();
-
-    expect(appState.setSelectedTask).toHaveBeenCalledWith(null);
-    expect(chatState.ensureConversationForCurrentMode).toHaveBeenCalled();
-    expect(chatState.selectConversation).toHaveBeenCalledWith(conversation.id);
-    unsubscribe();
-  });
-
-  it('emits one review notification and routes its action to the task', async () => {
-    const conversation = makeConversation();
-    chatState = { ...chatState, conversations: [conversation] };
-    taskState = { isLoading: false, lastError: null, tasks: [makeTask('InProgress')] };
-    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
-
-    updateTaskState([makeTask('InReview')]);
-
-    expect(notifyActionRequired).toHaveBeenCalledTimes(1);
-    const [, options] = notifyActionRequired.mock.calls[0]!;
-    expect(options).toEqual(expect.objectContaining({
-      category: 'task_attention_required',
-      notificationKey: 'workflow-attention:review:task-1',
-    }));
-    await options.actions[0]!.onClick();
-    expect(appState.setMode).toHaveBeenCalledWith('Implement');
-    expect(appState.setSelectedTask).toHaveBeenCalledWith('task-1');
-    expect(chatState.selectConversation).toHaveBeenCalledWith('conversation-1');
-    unsubscribe();
-  });
-
   it('routes a group-only Architect request without starting context restoration', async () => {
     const conversation = makeConversation({
       scope_mode: 'Architect',
@@ -813,37 +711,9 @@ describe('workflow attention notification subscriptions', () => {
       messages: [message],
       messagesByConversationId: { [conversation.id]: [message] },
     });
-
     const [, options] = notifyActionRequired.mock.calls[0]!;
     await options.actions[0]!.onClick();
-
-    expect(appState.setSelectedGroup).toHaveBeenCalledWith('group-other', {
-      restoreProjectContext: false,
-      ensureAutoPlan: false,
-    });
-    expect(appState.setMode).toHaveBeenCalledWith('Architect', {
-      ensureAutoPlan: false,
-    });
-    expect(chatState.selectConversation).toHaveBeenCalledWith(conversation.id);
-    unsubscribe();
-  });
-
-  it('falls back to the current task conversation when a review conversation is stale', async () => {
-    const conversation = makeConversation();
-    chatState = {
-      ...chatState,
-      conversations: [conversation],
-      selectConversation: mock(async () => false),
-    };
-    taskState = { isLoading: false, lastError: null, tasks: [makeTask('InProgress')] };
-    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
-    updateTaskState([makeTask('InReview')]);
-
-    const [, options] = notifyActionRequired.mock.calls[0]!;
-    await options.actions[0]!.onClick();
-
-    expect(chatState.ensureConversationForCurrentMode).toHaveBeenCalledTimes(2);
-    expect(chatState.selectConversation).toHaveBeenCalledWith('conversation-1');
+    expect(appState.openArchitectPlanNotification).toHaveBeenCalledWith(conversation.id);
     unsubscribe();
   });
 
@@ -882,7 +752,7 @@ describe('workflow attention notification subscriptions', () => {
   });
 
   it('skips attention recalculation for ordinary streaming fragments', () => {
-    const conversation = makeConversation();
+    const conversation = makeConversation({ scope_mode: 'Chat', task_id: null });
     const streamingMessage: ChatMessage = {
       id: 'streaming-message',
       task_id: conversation.task_id ?? '',
@@ -953,7 +823,7 @@ describe('workflow attention notification subscriptions', () => {
 
     updateTaskState([makeTask('InReview')]);
     expect(taskRecalculations).toBe(1);
-    expect(notifyActionRequired).toHaveBeenCalledTimes(1);
+    expect(notifyActionRequired).not.toHaveBeenCalled();
     unsubscribe();
   });
 });
@@ -962,19 +832,44 @@ it('opens the exact 0.3 run and request from an attention action without convers
   const { emitRunAttentionNotification030, subscribeRunAttention030 } = await import('./WorkflowAttentionNotifications');
   const { workflowRunTargetSnapshot030, openWorkflowRun030 } = await import('../../services/workflowAgentTasks');
   const { inspectionFixture030, humanFixture030, monitorFixture030, ready } = await import('../../services/agsdl/runInspection030.testSupport');
-  const run = {...inspectionFixture030()}; const request = humanFixture030(run);
-  run.state = {...run.state,humans:ready([request])};
-  const access = monitorFixture030(run);
-  const stop = subscribeRunAttention030([{scope:{owner:run.capture.source.owner},access}],t);
-  const emitted = notifyActionRequired.mock.calls.length;
-  access.publish(access.snapshot);
-  expect(notifyActionRequired.mock.calls.length).toBe(emitted);
-  emitRunAttentionNotification030(request,t);
-  const options = notifyActionRequired.mock.calls.at(-1)![1];
-  expect(options.actions).toHaveLength(1);
-  await options.actions[0].onClick();
-  expect(workflowRunTargetSnapshot030()).toEqual({scope:request.scope,requestId:request.id});
-  expect(navigationCalls).toEqual([]);
-  expect(access.reads).toEqual([]);
-  stop(); openWorkflowRun030(null);
+  const run = inspectionFixture030('attention-run');
+  const otherRun = inspectionFixture030('other-attention-run');
+  const request = humanFixture030(run);
+  const otherRequest = humanFixture030(otherRun);
+  const wrongRevision = {
+    ...request,
+    scope: { ...request.scope, source: { ...request.scope.source, revision: '1' } },
+  };
+  const access = monitorFixture030({ ...run, state: { ...run.state, humans: ready([wrongRevision, request]) } });
+  const conversationId = 'design-conversation';
+  const stop = subscribeRunAttention030([{ scope: { owner: run.capture.source.owner, conversationId }, access }], t);
+  try {
+    expect(notifyActionRequired).toHaveBeenCalledTimes(1);
+
+    // The same request remains claimed across refreshes and both entry points.
+    const refreshed = { ...run, state: { ...run.state, humans: ready([{ ...request, revision: '2' }]) } };
+    access.publish(monitorFixture030(refreshed).snapshot);
+    emitRunAttentionNotification030(request, t);
+    expect(notifyActionRequired).toHaveBeenCalledTimes(1);
+
+    // The same request ID in another execution has its own action.
+    const secondRun = { ...otherRun, state: { ...otherRun.state, humans: ready([otherRequest]) } };
+    access.publish(monitorFixture030(refreshed, secondRun).snapshot);
+    expect(notifyActionRequired).toHaveBeenCalledTimes(2);
+    for (const [index, expected] of [request, otherRequest].entries()) {
+      const options = notifyActionRequired.mock.calls[index]![1];
+      expect(options.actions).toHaveLength(1);
+      await options.actions[0]!.onClick();
+      expect(workflowRunTargetSnapshot030()).toEqual({
+        scope: expected.scope,
+        requestId: expected.id,
+        conversationId,
+      });
+    }
+    expect(navigationCalls).toEqual([]);
+    expect(access.reads).toEqual([]);
+  } finally {
+    stop();
+    openWorkflowRun030(null);
+  }
 });

@@ -1,0 +1,126 @@
+{
+  "description": "A shared path waiting in an instance queue ends without a result when the other join stops it.",
+  "document": {
+    "contract": "agsdl-0.4.0",
+    "id": "shared-stop-queued",
+    "agents": {
+      "worker": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "origin",
+      "steps": {
+        "origin": {
+          "type": "agent",
+          "agent": "worker",
+          "next": [
+            "a",
+            "release"
+          ]
+        },
+        "a": {
+          "type": "agent",
+          "agent": "worker",
+          "next": {
+            "one": "j1",
+            "two": "j2"
+          },
+          "delivery": "queue"
+        },
+        "b": {
+          "type": "agent",
+          "agent": "worker",
+          "next": {
+            "one": "j1",
+            "two": "j2"
+          },
+          "delivery": "queue"
+        },
+        "j1": {
+          "type": "join",
+          "remaining": "stop"
+        },
+        "j2": {
+          "type": "join",
+          "remaining": "stop"
+        },
+        "release": {
+          "type": "call",
+          "command": "true",
+          "next": "b"
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start both branches."
+  },
+  "timeline": [
+    {
+      "work": "origin",
+      "returns": {
+        "text": "",
+        "results": {}
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "a"
+        },
+        {
+          "step": "release"
+        }
+      ]
+    },
+    {
+      "work": "release",
+      "command": {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "a"
+        }
+      ]
+    },
+    {
+      "work": "a",
+      "returns": {
+        "text": "",
+        "results": {},
+        "choice": "one"
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "origin": 1,
+      "a": 1,
+      "release": 1
+    },
+    "joins": [
+      {
+        "join": "j1",
+        "outcome": "done",
+        "branches": {
+          "a": {
+            "choice": "one"
+          },
+          "release": {
+            "ended": "without-result"
+          }
+        }
+      }
+    ],
+    "failures": [],
+    "cancelled": []
+  }
+}

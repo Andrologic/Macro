@@ -1,0 +1,30 @@
+{
+  "description": "An all join waits for proof that the steer entered the receiving work, even when that proof arrives after the work ends.",
+  "document": "cases/steer-in-branch.json",
+  "timeline": [
+    { "work": "start", "returns": { "text": "Ship the release." } },
+    { "work": "watch", "returns": { "text": "Update the changelog." } },
+    { "running": [{ "step": "code" }] },
+    { "work": "code", "returns": { "text": "Release ready and changelog updated." } },
+    { "running": [] },
+    { "steer": { "to": "signal", "nth": 1, "outcome": "received" } },
+    { "running": [{ "step": "review" }] },
+    { "work": "review", "returns": { "text": "Done.", "choice": "done" } }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": { "start": 1, "watch": 1, "code": 1, "review": 1 },
+    "messages": [{ "to": "signal", "prompt": "Update the changelog." }],
+    "joins": [
+      {
+        "join": "merge",
+        "outcome": "done",
+        "branches": {
+          "code": { "text": "Release ready and changelog updated." },
+          "watch": { "ended": "absorbed", "by": "code" }
+        }
+      }
+    ],
+    "failures": []
+  }
+}

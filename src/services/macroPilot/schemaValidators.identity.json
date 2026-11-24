@@ -11,7 +11,7 @@
   "resources": [
     {
       "path": "bun.lock",
-      "sha256": "8af4951c89da1da46bdf4e072bb36495c8cc1ae1368c4bbc67a94a01817257ea"
+      "sha256": "32ee8ffef193a0c5f1c3898d7e54f9054bbb2905bddf4903c3879a9761915183"
     },
     {
       "path": "contracts/macro-pilot/transport/schema.json",

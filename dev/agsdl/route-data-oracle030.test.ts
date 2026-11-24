@@ -15,7 +15,7 @@ it('retains both failure layers and exact lexical call outputs', async () => {
 it('keeps a deterministic distinct corpus with measured family coverage and all pinned files', async () => {
   const first=await buildRouteDataCorpus030(),second=await buildRouteDataCorpus030();
   expect(first).toEqual(second);
-  expect(first.files).toHaveLength(37);
+  expect(first.files).toHaveLength(50);
   expect(new Set(first.cases.map(c=>JSON.stringify(c.request))).size).toBe(first.cases.length);
   for (const [family,min] of Object.entries(first.minimums)) expect(first.cases.filter(c=>c.family===family).length).toBeGreaterThanOrEqual(min);
 });

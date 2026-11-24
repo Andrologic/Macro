@@ -1,5 +1,9 @@
 import { expect, it } from 'bun:test';
 import type { ExecutionRunCorrelation030, PublicExecutionIntent, PublicRunSummary030 } from '../../types/generated/ipc';
+import { sourceDigest } from '../agsdlExecution/sourceDigest';
+import { ARCHIVE_RUN_PROJECT } from '../ipc/architectLaunch';
+import { AGSDL_CONTRACT } from './contract';
+import { MAX_AGSDL_BYTES } from './document';
 import { createRunInspectionAccess030 } from './runAccess030';
 import { initialRunSelection030, retainedRunValue030 } from './runtimeProjection030';
 import { fixture, intentFor, transportFor, type Fixture } from './runAccess030.testSupport';
@@ -21,6 +25,42 @@ it('maps only attested facts, keeps exact revisions and exposes missing facts wi
   expect(inspection.capture.authoredSource).toBe(f.capture.authoredSource);
   expect(Object.isFrozen(inspection.state.scope.source.owner)).toBe(true);
   expect(calls).toEqual(['list', 'intents', 'correlation:run', 'snapshot', 'runtime', 'humans']);
+});
+
+it('reads an interrupted 0.4 projection and retains the native termination warning', async () => {
+  const f = await fixture();
+  f.capture.authoredSource = f.capture.authoredSource.replace('agsdl-0.3.0', AGSDL_CONTRACT);
+  f.capture.source.sourceSha256 = await sourceDigest(f.capture.authoredSource);
+  f.capture.versions = { ...f.capture.versions, contract: AGSDL_CONTRACT };
+  f.summary = { ...f.summary, versions: f.capture.versions, verdict: null, ownerStatus: 'revoked', interruptedAt: '2026-01-01T00:00:00Z' };
+  f.runtime = { ...f.runtime, verdict: 'interrupted', terminationUncertain: true };
+  const { transport, scope } = transportFor(f);
+  const access = createRunInspectionAccess030(scope, transport);
+  await access.refreshHistory();
+  await access.refreshRun('run');
+  expect(retainedRunValue030(access.getSnapshot().runs.run)?.state).toMatchObject({
+    verdict: 'interrupted', stopping: false, terminationUncertain: true, physicalPending: '1',
+  });
+  expect(retainedRunValue030(access.getSnapshot().history)?.[0].verdict).toBe('interrupted');
+});
+
+it('keeps an archive run inspectable when its assembled source exceeds the editor limit', async () => {
+  const f = await fixture();
+  f.capture.source.owner.projectId = ARCHIVE_RUN_PROJECT;
+  f.capture.authoredSource = JSON.stringify({
+    ...JSON.parse(f.capture.authoredSource),
+    contract: AGSDL_CONTRACT,
+    description: 'x'.repeat(MAX_AGSDL_BYTES),
+  });
+  f.capture.source.sourceSha256 = await sourceDigest(f.capture.authoredSource);
+  f.capture.versions = { ...f.capture.versions, contract: AGSDL_CONTRACT };
+  f.summary.versions = f.capture.versions;
+  const { transport, scope } = transportFor(f);
+  const access = createRunInspectionAccess030(scope, transport);
+  await access.refreshHistory();
+  expect(retainedRunValue030(access.getSnapshot().history)?.map(item => item.scope.systemStartId)).toEqual(['run']);
+  await access.refreshRun('run');
+  expect(access.getSnapshot().runs.run.kind).toBe('ready');
 });
 
 it('reads all discovery pages before publishing history and never assumes no human waits', async () => {
@@ -367,7 +407,10 @@ it('keeps fully read history ready on STORAGE_UNCERTAIN and permits manual inspe
   const history = retainedRunValue030(access.getSnapshot().history);
   transport.readExecutionIntentsVersioned = async () => { throw { code: 'STORAGE_UNCERTAIN', currentIntentKey: null }; };
   await expect(access.refreshHistory()).rejects.toMatchObject({ kind: 'uncertain', code: 'STORAGE_UNCERTAIN' });
-  expect(access.getSnapshot().history).toMatchObject({ kind: 'ready', value: history });
+  const after = access.getSnapshot().history;
+  expect(after.kind).toBe('ready');
+  const withoutClock = (entries: NonNullable<typeof history>) => entries.map(({ observation: _observation, ...entry }) => entry);
+  expect(withoutClock(retainedRunValue030(after)!)).toEqual(withoutClock(history!));
   expect(access.getSnapshot().retainedAdmission.kind).toBe('unavailable');
   expect(initialRunSelection030(access.getSnapshot())).toBeUndefined();
   expect(initialRunSelection030(access.getSnapshot(), 'run')).toBe('run');
@@ -384,7 +427,7 @@ it('invalidates retained admission and reports intent failure during run-only re
   transport.readExecutionIntentsVersioned = async () => { throw { code: 'STORAGE_UNCERTAIN', currentIntentKey: null }; };
   await expect(access.refreshRun('run')).rejects.toMatchObject({ kind: 'uncertain', code: 'STORAGE_UNCERTAIN' });
   expect(access.getSnapshot().retainedAdmission.kind).toBe('unavailable');
-  expect(access.getSnapshot().runs.run).toMatchObject({ kind: 'ready', value: old });
+  expect(access.getSnapshot().runs.run).toMatchObject({ kind: 'ready', value: { capture: old?.capture, state: old?.state, inbox: old?.inbox } });
   // No history refresh is needed to recover the independently read admission.
   transport.readExecutionIntentsVersioned = async () => [intentFor(f)];
   await access.refreshRun('run');
@@ -416,7 +459,7 @@ it('marks retained projections stale immediately after newer discovery even when
 
 it('uses native-compatible entries, phases, phase counts and distinct request ids for fixture admissions', async () => {
   const requests = new Set<string>();
-  const phases = new Set(['ready', 'queued', 'running', 'body', 'group', 'done', 'preparing', 'barrier', 'stopping']);
+  const phases = new Set(['ready', 'queued', 'running', 'body', 'group', 'done', 'preparing', 'steering', 'withdrawingSteer', 'barrier', 'stopping']);
   for (const id of ['first', 'second']) {
     const f = await fixture(id), intent = intentFor(f);
     if (intent.payload.kind !== 'start' || intent.state.kind !== 'admitted' || intent.state.admission.kind !== 'start030')

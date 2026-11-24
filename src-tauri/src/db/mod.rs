@@ -7,6 +7,7 @@ mod portable_normalization_io;
 pub mod agent_runs;
 #[allow(dead_code)]
 pub(crate) mod agsdl_execution;
+pub(crate) mod architect_library;
 pub(crate) mod chat_admission;
 pub(crate) mod connect_transfer;
 pub(crate) mod conversation_catalog;
@@ -22,6 +23,7 @@ pub(crate) mod inactive_storage;
 pub(crate) mod migration_history;
 #[allow(dead_code)]
 pub mod models;
+pub(crate) mod operate_inbox;
 pub mod pilot_files;
 pub mod pilot_reflections;
 pub mod pilot_tools;
@@ -49,6 +51,10 @@ pub enum DbError {
     AppDataDir,
     #[error("Validation error: {0}")]
     Validation(String),
+    #[error("{0}")]
+    AgsdlUpgrade(String),
+    #[error(transparent)]
+    Architect(#[from] crate::architect_library::Error),
     #[error("Migration error: {0}")]
     Migration(String),
 }
@@ -114,9 +120,57 @@ const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
+// Stamps supported by the SQL-only pool initialization.
 pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[
-    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
-    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    operate_inbox::DELETE_SCHEMA_VERSION,
 ];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
@@ -138,12 +192,7 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
         .app_data_dir()
         .map_err(|_| DbError::AppDataDir)?;
 
-    // Create the directory if it doesn't exist
-    std::fs::create_dir_all(&app_dir).map_err(|e| DbError::Migration(e.to_string()))?;
-
-    let db_path = app_db_path(&app_dir);
-
-    let pool = create_pool(&db_path).await?;
+    let pool = open_desktop_profile(&app_dir).await?;
     // A restarted producer must install a fresh authority generation locally.
     sqlx::query("UPDATE pilot_file_authorities SET active = 0")
         .execute(&pool)
@@ -171,7 +220,50 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
     Ok(pool)
 }
 
+/// Run retained-copy maintenance after publishing a usable desktop profile.
+pub(crate) fn schedule_architect_launch_cleanup(app: &AppHandle, pool: SqlitePool) {
+    let Ok(data) = app.path().app_data_dir() else {
+        return;
+    };
+    let host = app
+        .state::<crate::config::ConfigManager>()
+        .root()
+        .to_owned();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = crate::architect_launch::cleanup(&pool, &data, &host).await {
+            tracing::warn!(error = %error.message, "Could not clean up retained Architect launch resources");
+        }
+    });
+}
+
 /// The startup path used by init_db, exercised with real reopened SQLite pools.
+pub(crate) async fn open_desktop_profile(app_dir: &Path) -> DbResult<SqlitePool> {
+    crate::fs::profile::create_private_root(app_dir)
+        .map_err(|error| DbError::Migration(error.to_string()))?;
+    let path = app_db_path(app_dir);
+    // SQLite uses the database mode to create its WAL and shared-memory files.
+    match crate::fs::profile::create_private_file(&path, false) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(DbError::Migration(error.to_string())),
+    }
+    #[cfg(unix)]
+    harden_profile_database(app_dir)?;
+    create_pool(&path).await
+}
+
+#[cfg(unix)]
+fn harden_profile_database(app_dir: &Path) -> DbResult<()> {
+    for name in ["macro.db", "macro.db-wal", "macro.db-shm"] {
+        match crate::fs::profile::set_private_mode(&app_dir.join(name), false) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(DbError::Migration(error.to_string())),
+        }
+    }
+    Ok(())
+}
+
 pub(crate) async fn reconcile_runtime_after_restart(pool: &SqlitePool) -> DbResult<()> {
     agent_runs::reconcile_active_agent_runs_after_restart(pool).await?;
     conversation_goals::reconcile_audits_after_restart(pool).await?;
@@ -190,6 +282,10 @@ pub(crate) async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
 
 /// Startup restore changes schema/ownership only, not provider defaults or auth.
 pub(crate) async fn restore_admission_hold(db_path: &Path) -> DbResult<()> {
+    #[cfg(unix)]
+    if let Some(app_dir) = db_path.parent() {
+        harden_profile_database(app_dir)?;
+    }
     let pool = open_pool(db_path).await?;
     let result = chat_admission::hold_restored_profile(&pool).await;
     pool.close().await;
@@ -634,6 +730,26 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             "045_connect_target_activation",
             include_str!("migrations/022_connect_target_activation.sql"),
         ),
+        (
+            46,
+            "046_architect_library",
+            include_str!("migrations/046_architect_library.sql"),
+        ),
+        (
+            47,
+            "047_architect_legacy_import",
+            include_str!("migrations/047_architect_legacy_import.sql"),
+        ),
+        (
+            48,
+            "048_operate_inbox",
+            include_str!("migrations/048_operate_inbox.sql"),
+        ),
+        (
+            operate_inbox::DELETE_SCHEMA_VERSION,
+            operate_inbox::DELETE_SCHEMA_NAME,
+            include_str!("migrations/052_operate_delete.sql"),
+        ),
     ] {
         if !list_applied_migrations(connection)
             .await?
@@ -647,16 +763,24 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
     source_capture::validate_schema(connection).await?;
     chat_admission::validate_schema(connection).await?;
     connect_transfer::validate_schema(connection).await?;
+    // C3 profiles may already have cut over their library without migrations 050/051.
+    // Fresh and legacy profiles install both in the Architect cutover transaction.
+    if applied_migrations.contains(&architect_library::storage_index::VERSION) {
+        crate::architect_launch::migrate(connection).await?;
+    }
 
     Ok(())
 }
 
 // Version 2 is optional: it was a shipped data migration, not a schema dependency.
 fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
-    if applied
-        .iter()
-        .any(|version| !SUPPORTED_MIGRATION_VERSIONS.contains(version))
-        || (!applied.is_empty() && !applied.contains(&1))
+    if applied.iter().any(|version| {
+        *version != architect_library::storage_index::VERSION
+            && *version != crate::architect_launch::SCHEMA_VERSION
+            && *version != crate::architect_launch::OWNER_SCHEMA_VERSION
+            && *version != crate::architect_launch::schedule::SCHEMA_VERSION
+            && !SUPPORTED_MIGRATION_VERSIONS.contains(version)
+    }) || (!applied.is_empty() && !applied.contains(&1))
         || (applied.contains(&4) && !applied.contains(&3))
         || (applied.contains(&5) && !applied.contains(&4))
         || (applied.contains(&6) && !applied.contains(&5))
@@ -672,6 +796,16 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&16) && !applied.contains(&15))
         || (applied.contains(&17) && !applied.contains(&16))
         || (applied.contains(&18) && !applied.contains(&17))
+        || (applied.contains(&architect_library::storage_index::VERSION) && !applied.contains(&48))
+        || (applied.contains(&crate::architect_launch::SCHEMA_VERSION)
+            && !applied.contains(&architect_library::storage_index::VERSION))
+        || (applied.contains(&crate::architect_launch::OWNER_SCHEMA_VERSION)
+            && !applied.contains(&crate::architect_launch::SCHEMA_VERSION))
+        || (applied.contains(&crate::architect_launch::schedule::SCHEMA_VERSION)
+            && !applied.contains(&crate::architect_launch::OWNER_SCHEMA_VERSION))
+        || (applied.contains(&operate_inbox::DELETE_SCHEMA_VERSION) && !applied.contains(&48))
+        || (applied.contains(&48) && !applied.contains(&47))
+        || (applied.contains(&47) && !applied.contains(&46))
         || (applied.contains(&19) && !applied.contains(&18))
     {
         return Err(DbError::Migration(
@@ -728,7 +862,7 @@ async fn list_applied_migrations(connection: &mut SqliteConnection) -> DbResult<
         .collect())
 }
 
-async fn apply_migration(
+pub(crate) async fn apply_migration(
     connection: &mut SqliteConnection,
     version: i64,
     name: String,

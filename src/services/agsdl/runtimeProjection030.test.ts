@@ -32,6 +32,7 @@ it('rejects truncated, repeated, foreign, out-of-order and inconsistent pages', 
   await expect(run({...last,items:[]})).rejects.toThrow();
   await expect(run({...last,total:'102'})).rejects.toThrow();
   await expect(run({...last,revision:'10'})).rejects.toThrow();
+  await expect(run({...last,terminationUncertain:true})).rejects.toThrow();
   await expect(run({...last,scope:{...scope,snapshotId:'other'}})).rejects.toThrow();
   await expect(run({...last,items:[instance('099')]})).rejects.toThrow();
   await expect(run({...last,flowInvocationId:'foreign'})).rejects.toThrow();

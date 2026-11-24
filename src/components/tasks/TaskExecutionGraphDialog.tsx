@@ -17,7 +17,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { AgentDetails } from '../agsdl/AgentDetails';
 import { WorkflowBlockSummary } from '../agsdl/WorkflowBlockOverlay';
 import { WorkflowGraph } from '../agsdl/WorkflowGraph';
-import { WorkflowRunView030 } from '../architect/ArchitectStrategyPanel';
+import { WorkflowRunView030 } from '../agsdl/WorkflowRunView030';
 import { useAgsdlTranslation } from '../agsdl/useAgsdlTranslation';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';

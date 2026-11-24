@@ -167,9 +167,7 @@ impl PolicyOwner {
     #[cfg(test)]
     pub(crate) fn for_test(directory: &Path) -> Self {
         let mut owner = Self::new();
-        owner.injected_store = Some(LocalSecretStore::new(
-            directory.join("provider-secrets.json"),
-        ));
+        owner.injected_store = Some(store::test_store(directory.join("provider-secrets.json")));
         owner
     }
 
@@ -687,6 +685,9 @@ mod tests {
         let _serial = super::super::lock_test_store();
         let directory = tempfile::tempdir().unwrap();
         super::super::init(directory.path()).unwrap();
+        let isolated_dir = tempfile::tempdir().unwrap();
+        let isolated = PolicyOwner::for_test(isolated_dir.path());
+        isolated.initialize(isolated_dir.path()).unwrap();
         let panic = std::panic::catch_unwind(|| {
             let _ = POLICY.mutation::<()>(|store, mut data| {
                 data.api_keys
@@ -698,6 +699,7 @@ mod tests {
         assert!(panic.is_err());
         assert!(!POLICY.available());
         assert!(super::super::get_api_key("synthetic").is_err());
+        assert!(isolated.qualification_stamp().is_ok());
         let path = directory.path().join("provider-secrets.json");
         let bytes = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();

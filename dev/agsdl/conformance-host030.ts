@@ -9,8 +9,8 @@ import { compileHost030 } from '../../src/services/agsdlExecution/hostCompilatio
 import { createHostWorkPort030 } from '../../src/services/agsdlExecution/hostWorkPort030';
 import { createHostRoutePort030 } from '../../src/services/agsdlExecution/hostRouteBroker030';
 import { connectValueSchemaValidator030 } from '../../src/services/agsdlExecution/valueSchemaPort030';
-import { NumberToken, parse } from '../../src/vendor/agsdl/v0.3/json.mjs';
-import { validate } from '../../src/vendor/agsdl/v0.3/valueschema.mjs';
+import { NumberToken, parse } from '../../src/vendor/agsdl/v0.4/json.mjs';
+import { validate } from '../../src/vendor/agsdl/v0.4/valueschema.mjs';
 import type { HostRouteJob030 } from '../../src/services/agsdlExecution/hostRouteBroker030';
 import type { HostWorkJob030 } from '../../src/services/agsdlExecution/hostWorkPort030';
 import type { CapturedRegistry030 } from '../../src/services/agsdlExecution/contracts030';

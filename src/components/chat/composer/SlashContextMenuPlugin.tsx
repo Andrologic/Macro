@@ -1,3 +1,4 @@
+import { demoWorkflowJourney } from "../../../services/operateWorkspace";
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import {
   $createTextNode,
@@ -224,7 +225,7 @@ export const SlashContextMenuPlugin: React.FC<SlashContextMenuPluginProps> = ({
   const branchWorktrees = useTaskStore((state) => state.branchWorktrees);
 
   const executionContext = useMemo(
-    () =>
+    () => mode === "Architect" && !demoWorkflowJourney ? resolveProjectExecutionContext({ mode, projects: [] }) :
       resolveProjectExecutionContext({
         mode,
         projects: [

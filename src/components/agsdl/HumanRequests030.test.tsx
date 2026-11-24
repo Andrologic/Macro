@@ -129,6 +129,38 @@ it('shows the exact native command and file scope before an action decision', as
   await act(async () => host.querySelectorAll<HTMLButtonElement>('form button')[1].click());
   expect(transport.submissions[0].answer).toEqual({ kind: 'decision', decision: 'no', comment: '' });
 });
+it('shows exact MCP tool arguments and submits a decision through the native request', async () => {
+  const actionJson = '{"nativeRequest":{"method":"mcp/tool/requestApproval","params":{"server":"issues","tool":"lookup","arguments":{"number":9007199254740993,"filter":{"state":"open"}}}}}';
+  const request = humanFixture030({ content: { kind: 'actionApproval', title: 'Allow lookup?', actionJson } });
+  transport.setCurrent(request); await render(ready(request));
+  const summary = host.querySelector('[data-native-mcp-summary]')!;
+  expect(Array.from(summary.querySelectorAll('dd'), value => value.textContent)).toEqual([
+    'issues', 'lookup', '{"number":9007199254740993,"filter":{"state":"open"}}',
+  ]);
+  expect(summary.closest('details')).toBeNull();
+  await act(async () => host.querySelectorAll<HTMLButtonElement>('form button')[0].click());
+  expect(transport.submissions[0].answer).toEqual({ kind: 'decision', decision: 'yes', comment: '' });
+});
+it('mounts large MCP arguments on demand and shows controls as escapes', async () => {
+  const args = JSON.stringify({ value: 'x'.repeat(2 * 1024 * 1024) + '\u202eend-of-argument' });
+  const actionJson = '{"nativeRequest":{"method":"mcp/tool/requestApproval","params":{"server":"issues","tool":"look\\nup","arguments":' + args + '}}}';
+  const title = 'Allow issues/look\nup?' + 'z'.repeat(1024 * 1024);
+  const request = humanFixture030({ content: { kind: 'actionApproval', title, actionJson } });
+  await render(ready(request));
+  const summary = host.querySelector('[data-native-mcp-summary]')!;
+  const toggle = summary.querySelector('button')!;
+  expect(host.textContent).toContain('Allow issues/look\\u000aup?');
+  expect(host.textContent).not.toContain('z'.repeat(256));
+  expect(summary.textContent).toContain('look\\u000aup');
+  expect(summary.querySelector('pre')!.textContent).toHaveLength(4097);
+  expect(host.textContent).not.toContain('end-of-argument');
+  await act(async () => toggle.click());
+  expect(summary.querySelector('pre')!.textContent).toEndWith('\\u202eend-of-argument"}');
+  await render(ready({ ...request, state: { kind: 'expired', resolution: resolutionFixture030({ reason: 'approvalTimeout', answer: null }) } }));
+  expect(summary.querySelector('pre')).toBeNull();
+  await act(async () => summary.querySelector('button')!.click());
+  expect(summary.querySelector('pre')!.textContent).toEndWith('\\u202eend-of-argument"}');
+});
 it('restores every native terminal reason and response after remount without inventing an answer', async () => {
   const resolution = resolutionFixture030();
   const states: RunHumanState030[] = [

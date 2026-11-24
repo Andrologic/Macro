@@ -2,6 +2,8 @@ import { afterEach, expect, it } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { ExecutionMonitor030 } from './ExecutionMonitor030';
+import { CapturedRunGraph030 } from './CapturedRunGraph030';
+import { MAX_AGSDL_BYTES } from '../../services/agsdl/document';
 import { available, ready, historyFixture030, humanFixture030, inspectionFixture030, monitorFixture030 } from '../../services/agsdl/runInspection030.testSupport';
 import type { RunGraphBridge030 } from './RunInspector030';
 
@@ -16,6 +18,17 @@ async function click(text: string) {
   const button = [...host.querySelectorAll('button')].find(item => item.textContent?.includes(text));
   expect(button).toBeDefined(); await act(async () => button!.click());
 }
+it('renders the captured graph and inspection for a source larger than the editor limit', async () => {
+  const run = inspectionFixture030();
+  const authoredSource = JSON.stringify({
+    ...JSON.parse(run.capture.authoredSource),
+    description: 'x'.repeat(MAX_AGSDL_BYTES),
+  });
+  const access = monitorFixture030({ ...run, capture: { ...run.capture, authoredSource } });
+  await mount(access, { renderGraph: (bridge: RunGraphBridge030) => <CapturedRunGraph030 bridge={bridge} /> });
+  expect([...host.querySelectorAll('.agsdl-graph-node')].some(node => node.textContent?.includes('Review'))).toBe(true);
+  expect(host.textContent).toContain('No final verdict');
+});
 it('opens only read access and keeps occurrence selection on a revision conflict and run switches', async () => {
   const run = inspectionFixture030(); const old = inspectionFixture030('run-old');
   const access = monitorFixture030(run, old); let bridge: RunGraphBridge030 | undefined;
@@ -82,6 +95,17 @@ it('never publishes a paginated occurrence subset as a complete fan-out', async 
   await act(async () => access.publish({ ...access.snapshot, runs: { 'run-current': ready(run) } }));
   expect(host.textContent).toContain('Recorded occurrences: 2');
 });
+it('shows the two unconfirmed steer phases in the run inspector', async () => {
+  const run = inspectionFixture030();
+  const occurrences = run.state.occurrences;
+  if (occurrences.kind !== 'ready') throw new Error('Missing fixture occurrences');
+  const steers = ready(occurrences.value.map((item, index) => ({
+    ...item, activation: { ...item.activation, phase: index === 0 ? 'steering' : 'withdrawingSteer' },
+  })));
+  await mount(monitorFixture030({ ...run, state: { ...run.state, occurrences: steers } }));
+  expect(host.textContent).toContain('Waiting for steer receipt');
+  expect(host.textContent).toContain('Cancelling pending steer');
+});
 it('uses only attested human occurrence mappings and retains unknown mappings', async () => {
   const run = inspectionFixture030(); const human = humanFixture030(run);
   const mapped = { ...human, workIds: ['activation-1', 'work-2'], occurrences: [
@@ -130,6 +154,24 @@ it('ties diagnostics to attested visits, retains run-level facts and navigates t
   expect(host.querySelector('[data-diagnostic-id="visit-one"]')).toBeNull();
   expect(host.querySelector('[data-diagnostic-id="visit-two"]')).not.toBeNull();
   expect(host.querySelector('[data-diagnostic-id="run-level"]')).not.toBeNull();
+});
+
+it('explains unconfirmed termination and the host time limit in Operate', async () => {
+  const run = inspectionFixture030();
+  if (run.state.occurrences.kind !== 'ready' || run.state.diagnostics.kind !== 'ready') throw new Error('Missing run fixture');
+  const [first, ...rest] = run.state.occurrences.value;
+  const occurrences = ready([{ ...first, activation: { ...first.activation,
+    callResultJson: JSON.stringify({ kind: 'failed', error: { code: 'CALL_FAILED', message: 'Native call failure' } }),
+  } }, ...rest]);
+  const diagnostics = ready([{ ...run.state.diagnostics.value[0], code: 'MCP_TERMINATION_UNCERTAIN', message: 'Native termination failure' }]);
+  let bridge: RunGraphBridge030 | undefined;
+  await mount(monitorFixture030({ ...run, state: { ...run.state, verdict: 'interrupted', terminationUncertain: true, occurrences, diagnostics } }),
+    { renderGraph: (value: RunGraphBridge030) => { bridge = value; return null; } });
+  expect(host.textContent).toContain('The runtime could not confirm that all work ended.');
+  expect(host.textContent).toContain('The runtime could not confirm that the remote MCP call ended.');
+  await act(async () => bridge!.selectOccurrence(bridge!.occurrences[0].key));
+  expect(host.textContent).toContain('or its host time limit expired.');
+  expect(host.textContent).toContain('Native call failure');
 });
 
 it('passes availability, completeness, revision and staleness to the graph, including outer conflicts', async () => {
@@ -292,4 +334,16 @@ it('keeps graphless queue and steer messages in the collapsible run drawer', asy
   expect(drawer.hidden).toBe(true);
   expect(drawer.querySelector('section[aria-label="Messages"]')).toBe(messages);
   expect(host.querySelector('[data-captured]')).not.toBeNull();
+});
+
+it('opens the requested instance in its run when two runs use the same agent name', async () => {
+  const first = inspectionFixture030('first');
+  const second = inspectionFixture030('second');
+  const instance = { ...second.state.instances[0], id: 'another-conversation', selectorName: 'second inbox' };
+  const access = monitorFixture030(first, { ...second, state: { ...second.state, instances: [...second.state.instances, instance] } });
+  await mount(access, { initialRunId: 'second', initialInstanceId: instance.id });
+  expect(access.reads).toEqual(['history', 'second']);
+  const chosen = [...host.querySelectorAll('button[aria-pressed=true]')].find(item => item.textContent?.includes('second inbox'));
+  expect(chosen?.closest('details')?.open).toBe(true);
+  expect(host.querySelector('[data-run-id="first"]')).toBeNull();
 });

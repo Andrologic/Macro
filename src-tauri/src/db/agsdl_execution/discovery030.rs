@@ -4,7 +4,7 @@ use super::{
     decimal,
     dto::{EngineSourceOwner, EngineSourceRevision, EngineStartRequest, EngineVersions},
     failure,
-    flow030::{FlowEvent030, FlowEventKind030, FlowPlan030, FlowState030},
+    flow030::{FlowEvent030, FlowEventKind030, FlowPlan030, FlowState030, WorkResultRecord030},
     json_lexemes030::document_tokens_equal,
     opaque, require,
     start030::{StartCapture030, StartReceipt030},
@@ -13,7 +13,7 @@ use super::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{Connection, Row, SqlitePool};
+use sqlx::{Row, SqliteConnection};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
@@ -32,7 +32,7 @@ pub struct PhaseCount030 {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PublicRunSummary030 {
+pub struct RunSummary030 {
     pub system_start_id: String,
     pub flow_invocation_id: String,
     pub snapshot_id: String,
@@ -42,16 +42,22 @@ pub struct PublicRunSummary030 {
     pub versions: EngineVersions,
     pub revision: String,
     pub stopping: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub paused: Option<bool>,
     pub verdict: Option<String>,
     pub owner_status: String,
     pub interrupted_at: Option<String>,
     pub phase_counts: Vec<PhaseCount030>,
     pub physical_pending: String,
+    #[serde(skip)]
+    #[ts(skip)]
+    pub failed_instance_ids: Vec<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunPage030 {
-    pub runs: Vec<PublicRunSummary030>,
+    pub runs: Vec<RunSummary030>,
     pub next_cursor: Option<String>,
 }
 
@@ -65,11 +71,7 @@ struct Cursor030 {
 }
 
 fn correlation() -> super::dto::EngineFailure {
-    failure(
-        "CORRELATION",
-        "",
-        "Flow 0.3 discovery capture is inconsistent",
-    )
+    failure("CORRELATION", "", "Flow discovery capture is inconsistent")
 }
 fn validate_owner(owner: &EngineSourceOwner) -> Result<()> {
     opaque(&owner.project_id)?;
@@ -79,7 +81,7 @@ fn validate_owner(owner: &EngineSourceOwner) -> Result<()> {
 fn validated_summary(
     row: &sqlx::sqlite::SqliteRow,
     owner: &EngineSourceOwner,
-) -> Result<PublicRunSummary030> {
+) -> Result<RunSummary030> {
     // Nullable joined columns are read fallibly: a missing companion row is an
     // integrity failure, not a silently skipped historical run.
     let optional = |name: &str| -> Result<String> {
@@ -139,7 +141,7 @@ fn validated_summary(
         && serde_json::to_value(&plan.versions)? == serde_json::to_value(&capture.versions)?
         && plan.format == "macro-agsdl-compiled-plan/2"
         && capture.versions.snapshot == "2"
-        && capture.versions.contract == "agsdl-0.3.0"
+        && argentic_core::supports_contract(&capture.versions.contract)
         && capture.versions.profile == "macro-agsdl-030-v1"
         && plan.entry.is_some() == request.entry.is_some()
         && plan.entry.is_some() == receipt.enter.is_some()
@@ -156,49 +158,67 @@ fn validated_summary(
             None => state.events.is_empty() && !state.entered,
         }
         && document_tokens_equal(&plan.document_json, &capture.authored_source)?;
-    require(same, "Flow 0.3 discovery capture is inconsistent")?;
+    require(same, "Flow discovery capture is inconsistent")?;
     decimal(&state.revision)?;
     require(
         state
             .verdict
             .as_deref()
-            .is_none_or(|v| matches!(v, "succeeded" | "failed" | "cancelled")),
-        "Flow 0.3 discovery verdict is inconsistent",
+            .is_none_or(|v| matches!(v, "succeeded" | "failed" | "cancelled" | "interrupted")),
+        "Flow discovery verdict is inconsistent",
     )?;
     let mut counts = BTreeMap::<String, usize>::new();
     let mut physical_pending = 0usize;
     for activation in &state.activations {
-        require(
-            matches!(
-                activation.phase.as_str(),
-                "ready"
-                    | "queued"
-                    | "running"
-                    | "body"
-                    | "group"
-                    | "done"
-                    | "preparing"
-                    | "barrier"
-                    | "stopping"
-            ),
-            "Flow 0.3 discovery activation phase is inconsistent",
-        )?;
+        // Argentic persists phases as strings. Discovery counts them without
+        // interpreting them, so a new native phase cannot hide a run.
+        opaque(&activation.phase)?;
         *counts.entry(activation.phase.clone()).or_default() += 1;
         if activation.physical {
             physical_pending += 1;
         }
     }
-    Ok(PublicRunSummary030 {
+    // Latest activation per instance. Successful/ongoing work supersedes an older failure.
+    let mut latest = BTreeMap::new();
+    for activation in &state.activations {
+        if let Some(instance_id) = &activation.instance_id {
+            latest.insert(instance_id, &activation.result);
+        }
+    }
+    let failed_instance_ids = latest
+        .into_iter()
+        .filter_map(|(id, result)| match result {
+            Some(WorkResultRecord030::Failed { error }) if error.code != "CANCELLED" => {
+                Some(id.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    let interrupted_at: Option<String> = row.try_get("interrupted_at")?;
+    let interrupted = plan.versions.contract == argentic_core::AGSDL_040
+        && (interrupted_at.is_some()
+            || (state.verdict.as_deref() == Some("cancelled")
+                && row.try_get::<bool, _>("shutdown_hold")?));
+    let paused = state.paused && !interrupted && state.verdict.is_none();
+    let stopping = state.stopping
+        && !(plan.versions.contract == argentic_core::AGSDL_040
+            && (interrupted || state.verdict.is_some()));
+    Ok(RunSummary030 {
         system_start_id: id.system_start_id.clone(),
         flow_invocation_id: id.flow_invocation_id.clone(),
         snapshot_id: id.snapshot_id.clone(),
         source: capture.source,
         versions: capture.versions,
         revision: state.revision,
-        stopping: state.stopping,
-        verdict: state.verdict,
+        stopping,
+        paused: paused.then_some(true),
+        verdict: if interrupted {
+            Some("interrupted".into())
+        } else {
+            state.verdict
+        },
         owner_status: status,
-        interrupted_at: row.try_get("interrupted_at")?,
+        interrupted_at,
         phase_counts: counts
             .into_iter()
             .map(|(phase, count)| PhaseCount030 {
@@ -207,11 +227,12 @@ fn validated_summary(
             })
             .collect(),
         physical_pending: physical_pending.to_string(),
+        failed_instance_ids,
     })
 }
 
-pub(crate) async fn list_runs030(
-    pool: &SqlitePool,
+pub(crate) async fn list_runs_in_transaction030(
+    connection: &mut SqliteConnection,
     request: RunListRequest030,
 ) -> Result<RunPage030> {
     validate_owner(&request.owner)?;
@@ -220,11 +241,9 @@ pub(crate) async fn list_runs030(
         (1..=100).contains(&limit),
         "Run page limit must be between 1 and 100",
     )?;
-    let mut connection = pool.acquire().await?;
-    let mut tx = connection.begin().await?;
     let maximum: i64 =
         sqlx::query_scalar("SELECT coalesce(max(rowid),0) FROM engine_start030_requests")
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut *connection)
             .await?;
     let cursor = if let Some(after) = &request.after {
         require(after.len() <= 4096, "Run 0.3 cursor is too large")?;
@@ -253,10 +272,10 @@ pub(crate) async fn list_runs030(
             before: 0,
         }
     };
-    let rows = sqlx::query("SELECT s.rowid AS seq,s.request_id,s.request_json,s.capture_json,s.receipt_json,s.system_id,s.invocation_id,s.snapshot_id,s.capture_epoch, r.system_id AS run_system,r.invocation_id AS run_invocation,r.snapshot_id AS run_snapshot,r.epoch AS run_epoch,r.source_json AS run_source,r.plan_json AS run_plan,r.state_json AS run_state, o.system_id AS owner_system,o.invocation_id AS owner_invocation,o.snapshot_id AS owner_snapshot,o.capture_epoch AS owner_capture_epoch,o.status AS owner_status,o.capture_sha256 AS owner_capture_hash, i.interrupted_at AS interrupted_at FROM engine_start030_requests s LEFT JOIN engine_flow030_runs r ON r.system_id=s.system_id AND r.invocation_id=s.invocation_id LEFT JOIN engine_flow030_owners o ON o.system_id=s.system_id LEFT JOIN engine_flow030_interruptions i ON i.system_id=s.system_id WHERE s.rowid<=? AND (?=0 OR s.rowid<?) AND json_extract(s.capture_json,'$.source.owner.projectId')=? AND json_extract(s.capture_json,'$.source.owner.planId')=? AND json_extract(s.capture_json,'$.source.owner.branch')=? ORDER BY s.rowid DESC LIMIT ?")
+    let rows = sqlx::query("SELECT s.rowid AS seq,s.request_id,s.request_json,s.capture_json,s.receipt_json,s.system_id,s.invocation_id,s.snapshot_id,s.capture_epoch, r.system_id AS run_system,r.invocation_id AS run_invocation,r.snapshot_id AS run_snapshot,r.epoch AS run_epoch,r.source_json AS run_source,r.plan_json AS run_plan,r.state_json AS run_state, o.system_id AS owner_system,o.invocation_id AS owner_invocation,o.snapshot_id AS owner_snapshot,o.capture_epoch AS owner_capture_epoch,o.status AS owner_status,o.capture_sha256 AS owner_capture_hash, i.interrupted_at AS interrupted_at, EXISTS(SELECT 1 FROM operate_shutdown_holds h WHERE h.system_id=r.system_id AND h.invocation_id=r.invocation_id) AS shutdown_hold FROM engine_start030_requests s LEFT JOIN engine_flow030_runs r ON r.system_id=s.system_id AND r.invocation_id=s.invocation_id LEFT JOIN engine_flow030_owners o ON o.system_id=s.system_id LEFT JOIN engine_flow030_interruptions i ON i.system_id=s.system_id WHERE s.rowid<=? AND (?=0 OR s.rowid<?) AND json_extract(s.capture_json,'$.source.owner.projectId')=? AND json_extract(s.capture_json,'$.source.owner.planId')=? AND json_extract(s.capture_json,'$.source.owner.branch')=? ORDER BY s.rowid DESC LIMIT ?")
         .bind(cursor.upper).bind(cursor.before).bind(cursor.before)
         .bind(&cursor.owner.project_id).bind(&cursor.owner.plan_id).bind(&cursor.owner.branch)
-        .bind(i64::from(limit)+1).fetch_all(&mut *tx).await?;
+        .bind(i64::from(limit)+1).fetch_all(&mut *connection).await?;
     let more = rows.len() > limit as usize;
     let mut runs = Vec::new();
     let mut before = 0;
@@ -269,7 +288,6 @@ pub(crate) async fn list_runs030(
     } else {
         None
     };
-    tx.commit().await?;
     Ok(RunPage030 { runs, next_cursor })
 }
 

@@ -1,3 +1,4 @@
+import { isFlowDocumentContract } from "./contract";
 import type { AgsdlChange } from "../../types/agsdl";
 import {
 keyId,
@@ -35,7 +36,7 @@ export function renameStep(
   name: string,
 ): AgsdlChange[] {
   const doc = readDocument(source);
-  if (doc.contract === "agsdl-0.3.0") return renameStep030(source, graphIndex, stepIndex, name);
+  if (isFlowDocumentContract(doc.contract)) return renameStep030(source, graphIndex, stepIndex, name);
   if (doc.contract === "agsdl-0.2.0") throw new Error("agsdl.unsupportedEdition020");
   const graph = object(list(doc.graphs)[graphIndex]);
   const steps = list(graph.steps).map(object);
@@ -68,7 +69,7 @@ export function renameStep(
 /** Add a complete Agent declaration. Adding its invocation remains a draft graph edit. */
 export function addAgent(source: string, graphIndex?: number): AgsdlChange[] {
   const doc = readDocument(source);
-  if (doc.contract === "agsdl-0.3.0") {
+  if (isFlowDocumentContract(doc.contract)) {
     const id = nextId("agent", Object.keys(object(doc.agents))), changes = [set(`/agents/${id}`, { harness: "codex", permissions: "read-only" })];
     if (graphIndex !== undefined) {
       if (graphIndex !== 0 || !doc.flow) throw new Error("Select an existing flow or edit a composition explicitly.");
@@ -188,9 +189,9 @@ export function addStep(
   kind: "condition" | "approval" | "end" | "prepare" | "call" | "join",
 ): AgsdlChange[] {
   const doc = readDocument(source);
-  if (doc.contract === "agsdl-0.3.0") {
+  if (isFlowDocumentContract(doc.contract)) {
     if (graphIndex !== 0 || !doc.flow) throw new Error("Select the flow scope explicitly.");
-    if (!["call", "approval", "join"].includes(kind)) throw new Error("This step type does not exist in AgSDL 0.3. Use an empty route to end a path.");
+    if (!["call", "approval", "join"].includes(kind)) throw new Error("Use an empty route to end a path.");
     const id = nextId(kind, Object.keys(object(object(doc.flow).steps)));
     return [set(`/flow/steps/${id}`, kind === "call" ? { type: kind, command: "echo" } : { type: kind, next: kind === "approval" ? { approve: [], reject: [] } : { done: [] } })];
   }
@@ -257,7 +258,7 @@ export function addStep(
 export function addDefinition(source: string, kind: string): AgsdlChange[] {
   if (kind === "Agent") return addAgent(source);
   const doc = readDocument(source);
-  if (doc.contract === "agsdl-0.3.0") {
+  if (isFlowDocumentContract(doc.contract)) {
     const map = kind === "Skill" ? "skills" : kind === "Tool" ? "mcpServers" : "content";
     const id = nextId(kind.toLowerCase(), Object.keys(object(doc[map])));
     const value = kind === "Skill" ? { uri: "skills/example/SKILL.md" } : kind === "Tool" ? { command: ["example-mcp-server"] } : { value: "" };

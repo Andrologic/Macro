@@ -3,6 +3,7 @@ import type { HumanContinuation030 } from '../../types/generated/ipc/HumanContin
 import type { HumanPage030 } from '../../types/generated/ipc/HumanPage030';
 import type { PublicHumanRequest030 } from '../../types/generated/ipc/PublicHumanRequest030';
 import type { HumanAnswer030 } from '../../types/generated/ipc/HumanAnswer030';
+
 export type ExecutionHumanRequestView =
   | { kind: 'approval'; title: string; description?: string; message: string; choices: readonly { value: string; label: string }[] }
   | { kind: 'plan'; title: string; description?: string; message: string }
@@ -27,7 +28,171 @@ export function nativeCommandSummary030(raw: string): { command: string; file: s
   } catch { return null; }
 }
 
-const sameScope = (a: HumanScope030, b: HumanScope030) => a.systemStartId === b.systemStartId &&
+function visibleControls(text: string): string {
+  return text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, char => {
+    const code = char.codePointAt(0)!.toString(16);
+    return code.length > 4 ? '\\u{' + code + '}' : '\\u' + code.padStart(4, '0');
+  });
+}
+
+const MCP_ARGUMENT_PREVIEW_LIMIT = 4096;
+const MCP_LABEL_LIMIT = 256;
+const NATIVE_JSON_DEPTH_LIMIT = 128;
+const argumentEncoder = new TextEncoder();
+
+type JsonSpan = { start: number; end: number };
+type JsonFields = { readonly [key: string]: JsonFields | true };
+
+const mcpApprovalFields: JsonFields = {
+  nativeRequest: { method: true, params: { server: true, tool: true, arguments: true } },
+};
+// JSON can encode each character of a selected key as a six-character escape.
+const maxSelectedKeySpan = 'nativeRequest'.length * 6 + 2;
+
+/** Validate the envelope while retaining only spans used by the preview. */
+function nativeJsonSpans(raw: string) {
+  const spans = new Map<string, JsonSpan>();
+  const whitespace = /[ \t\r\n]*/y;
+  // eslint-disable-next-line no-control-regex -- JSON forbids raw ASCII controls in strings.
+  const stringTokens = /["\\\u0000-\u001f]/g;
+  const escape = /(?:["\\/bfnrt]|u[0-9a-fA-F]{4})/y;
+  const primitive = /(?:-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null)/y;
+  let at = 0;
+
+  const invalid = (): never => { throw new Error('Invalid native JSON'); };
+  const skipWhitespace = () => {
+    whitespace.lastIndex = at;
+    whitespace.test(raw);
+    at = whitespace.lastIndex;
+  };
+  const consume = (token: string) => {
+    if (raw[at] !== token) return false;
+    at++;
+    return true;
+  };
+  const skipString = () => {
+    stringTokens.lastIndex = at + 1;
+    for (let token = stringTokens.exec(raw); token; token = stringTokens.exec(raw)) {
+      if (token[0] === '"') {
+        at = stringTokens.lastIndex;
+        return;
+      }
+      if (token[0] !== '\\') invalid();
+      escape.lastIndex = stringTokens.lastIndex;
+      if (!escape.test(raw)) invalid();
+      stringTokens.lastIndex = escape.lastIndex;
+    }
+    invalid();
+  };
+
+  function scanValue(depth: number, fields?: JsonFields) {
+    if (depth > NATIVE_JSON_DEPTH_LIMIT) invalid();
+    if (fields && raw[at] !== '{') invalid();
+    switch (raw[at]) {
+      case '{': scanObject(depth, fields); return;
+      case '[':
+        at++;
+        skipWhitespace();
+        if (consume(']')) return;
+        do {
+          skipWhitespace();
+          scanValue(depth + 1);
+          skipWhitespace();
+        } while (consume(','));
+        if (!consume(']')) invalid();
+        return;
+      case '"': skipString(); return;
+      default:
+        primitive.lastIndex = at;
+        if (!primitive.test(raw)) invalid();
+        at = primitive.lastIndex;
+    }
+  }
+
+  function scanObject(depth: number, fields?: JsonFields) {
+    at++;
+    skipWhitespace();
+    if (consume('}')) return;
+    const seen = fields && new Set<string>();
+    do {
+      skipWhitespace();
+      if (raw[at] !== '"') invalid();
+      const keyStart = at;
+      skipString();
+      const key: string | undefined = fields && at - keyStart <= maxSelectedKeySpan
+        ? JSON.parse(raw.slice(keyStart, at)) : undefined;
+      const selected = fields && key !== undefined && Object.hasOwn(fields, key) ? fields[key] : undefined;
+      if (selected && key !== undefined) {
+        if (seen?.has(key)) invalid();
+        seen?.add(key);
+      }
+      skipWhitespace();
+      if (!consume(':')) invalid();
+      skipWhitespace();
+      const start = at;
+      scanValue(depth + 1, selected === true ? undefined : selected);
+      if (selected === true && key !== undefined) spans.set(key, { start, end: at });
+      skipWhitespace();
+    } while (consume(','));
+    if (!consume('}')) invalid();
+  }
+
+  skipWhitespace();
+  scanValue(0, mcpApprovalFields);
+  skipWhitespace();
+  if (at !== raw.length) invalid();
+  return spans;
+}
+
+export function mcpApprovalLabel030(text: string): string {
+  const label = visibleControls(text.slice(0, MCP_LABEL_LIMIT));
+  if (text.length <= MCP_LABEL_LIMIT && label.length <= MCP_LABEL_LIMIT) return label;
+  return label.slice(0, MCP_LABEL_LIMIT - 1).replace(/[\uD800-\uDBFF]$/, '') + '…';
+}
+
+/** Decode a bounded prefix of a validated JSON string without cutting an escape. */
+function readMcpLabel(raw: string, span: JsonSpan | undefined): string | undefined {
+  if (!span || raw[span.start] !== '"') return undefined;
+  const end = span.end - 1;
+  let at = span.start + 1;
+  // Read one extra code unit so the display can indicate truncation.
+  for (let length = 0; at < end && length <= MCP_LABEL_LIMIT; length++) {
+    if (raw[at] !== '\\') at++;
+    else at += raw[at + 1] === 'u' ? 6 : 2;
+  }
+  return mcpApprovalLabel030(JSON.parse(raw.slice(span.start, at) + '"'));
+}
+
+export function nativeMcpSummary030(raw: string) {
+  try {
+    const fields = nativeJsonSpans(raw);
+    if (readMcpLabel(raw, fields.get('method')) !== 'mcp/tool/requestApproval') return null;
+    const server = readMcpLabel(raw, fields.get('server'));
+    const tool = readMcpLabel(raw, fields.get('tool'));
+    const span = fields.get('arguments');
+    if (server === undefined || tool === undefined || !span || raw[span.start] !== '{') return null;
+
+    // A UTF-8 prefix cannot contain more UTF-16 code units than bytes.
+    const end = Math.min(span.end, span.start + MCP_ARGUMENT_PREVIEW_LIMIT + 1);
+    const bytes = argumentEncoder.encode(raw.slice(span.start, end));
+    const partial = end < span.end || bytes.length > MCP_ARGUMENT_PREVIEW_LIMIT;
+    const preview = visibleControls(new TextDecoder().decode(bytes.subarray(0, MCP_ARGUMENT_PREVIEW_LIMIT), {
+      stream: partial,
+    }));
+    const truncated = partial || preview.length > MCP_ARGUMENT_PREVIEW_LIMIT;
+    // Avoid splitting an astral character when control escapes expand the preview.
+    const prefix = preview.slice(0, MCP_ARGUMENT_PREVIEW_LIMIT).replace(/[\uD800-\uDBFF]$/, '');
+    return {
+      server,
+      tool,
+      preview: prefix + (truncated ? '…' : ''),
+      truncated,
+      fullArguments: () => visibleControls(raw.slice(span.start, span.end)),
+    };
+  } catch { return null; }
+}
+
+export const sameHumanScope030 = (a: HumanScope030, b: HumanScope030) => a.systemStartId === b.systemStartId &&
   a.source.revision === b.source.revision && a.source.sourceSha256 === b.source.sourceSha256 &&
   a.source.owner.projectId === b.source.owner.projectId && a.source.owner.planId === b.source.owner.planId &&
   a.source.owner.branch === b.source.owner.branch;
@@ -46,7 +211,7 @@ export async function loadHumanRequests030(scope: HumanScope030, read: (scope: H
     if (!current(captured)) return undefined;
     const page = await read(structuredClone(captured), next && structuredClone(next));
     if (!current(captured)) return undefined;
-    if (!sameScope(page.scope, captured) || (cursor !== undefined && page.cursor !== cursor) ||
+    if (!sameHumanScope030(page.scope, captured) || (cursor !== undefined && page.cursor !== cursor) ||
         !/^(0|[1-9][0-9]*)$/.test(page.total) || (total !== undefined && page.total !== total) ||
         page.requests.length > 64 || (offset > 0 && !page.requests.length)) throw new Error('Invalid human projection page');
     cursor = page.cursor; total = page.total;
@@ -55,7 +220,7 @@ export async function loadHumanRequests030(scope: HumanScope030, read: (scope: H
       ids.add(request.id); requests.push(request);
     }
     next = page.nextPage ?? undefined;
-    if (next && (!sameScope(next.scope, captured) || next.cursor !== cursor || next.offset !== offset + 64 || page.requests.length !== 64)) throw new Error('Invalid human projection continuation');
+    if (next && (!sameHumanScope030(next.scope, captured) || next.cursor !== cursor || next.offset !== offset + 64 || page.requests.length !== 64)) throw new Error('Invalid human projection continuation');
     offset += 64;
   } while (next);
   if (BigInt(total!) !== BigInt(requests.length)) throw new Error('Incomplete human projection');
@@ -123,7 +288,7 @@ export function runHumanView030(request: RunHumanRequest030, labels: { plan: str
   switch (content.kind) {
     case 'flowChoice': return { kind: 'approval', title: content.title, description: content.description,
       message: content.messageJson, choices: content.choices.map(value => ({ value, label: value })) };
-    case 'actionApproval': return { kind: 'actionApproval', title: content.title, message: content.actionJson };
+    case 'actionApproval': return { kind: 'actionApproval', title: visibleControls(content.title), message: content.actionJson };
     case 'plan': return { kind: 'plan', title: labels.plan, message: content.plan };
     case 'question': return { kind: 'question', title: labels.question, message: content.question, description: content.expectedResponse };
     case 'unclassified': return humanRequestView030({ content: content.content }, labels);
@@ -157,6 +322,31 @@ export function createHumanRequestClient030({ submit, read, storage }: {
   submit: SubmitHuman030; read: ReadHuman030; storage: HumanDraftStorage030;
 }) {
   const pending = new Map<string, Promise<HumanSendOutcome030>>();
+  // The shared client outlives views for individual instances. Apply readbacks
+  // before filtering by instance, since a read can change the request's links.
+  const readbacks = new Map<string, RunHumanRequest030>();
+  const listeners = new Set<() => void>();
+  let readbackVersion = 0;
+  const readbackKey = (request: RunHumanRequest030, captureKey?: string) =>
+    JSON.stringify([captureKey ?? null, humanRequestKey030(request)]);
+  const currentRequest = (request: RunHumanRequest030, captureKey?: string) => {
+    const cached = readbacks.get(readbackKey(request, captureKey));
+    if (!cached || BigInt(request.revision) > BigInt(cached.revision)) return request;
+    if (request.revision === cached.revision && request.clock.kind === 'available' &&
+        (cached.clock.kind !== 'available' || BigInt(request.clock.value.observedAtMs) > BigInt(cached.clock.value.observedAtMs))) {
+      return { ...cached, clock: request.clock };
+    }
+    return cached;
+  };
+  const retainReadback = (request: RunHumanRequest030, captureKey?: string) => {
+    const current = currentRequest(request, captureKey);
+    if (BigInt(current.revision) > BigInt(request.revision) ||
+        (current.revision === request.revision && current.state.kind !== 'open' && request.state.kind === 'open')) return current;
+    readbacks.set(readbackKey(request, captureKey), request);
+    readbackVersion++;
+    listeners.forEach(listener => listener());
+    return request;
+  };
   const key = (request: RunHumanRequest030, suffix: string) => `macro.human030.${suffix}.${humanRequestKey030(request)}`;
   const draftRecord = (request: RunHumanRequest030): Record<string, unknown> => {
     const raw = storage.getItem(key(request, 'draft'));
@@ -182,13 +372,20 @@ export function createHumanRequestClient030({ submit, read, storage }: {
     const minimum = previous !== null && BigInt(previous) > BigInt(revision) ? previous : revision;
     storage.setItem(key(request, 'draft'), JSON.stringify({ ...draftRecord(request), minimumRevision: minimum }));
   };
-  const readCurrent = async (request: RunHumanRequest030) => {
+  const readCurrent = async (request: RunHumanRequest030, captureKey?: string) => {
     const current = await read({ scope: request.scope, requestId: request.id });
     if (humanRequestKey030(current) !== humanRequestKey030(request)) throw new Error('CORRELATION');
-    if (BigInt(current.revision) < BigInt(request.revision) || stale(current)) throw new Error('REVISION_CONFLICT');
+    if (BigInt(current.revision) < BigInt(currentRequest(request, captureKey).revision) || stale(current))
+      throw new Error('REVISION_CONFLICT');
     return current;
   };
   return {
+    currentRequest,
+    readbackVersion: () => readbackVersion,
+    subscribeReadbacks(listener: () => void) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
     loadDraft(request: RunHumanRequest030): HumanFormDraft030 | null {
       const raw = storage.getItem(key(request, 'draft'));
       if (!raw) return null;
@@ -205,19 +402,20 @@ export function createHumanRequestClient030({ submit, read, storage }: {
     },
     stale,
     blocked(request: RunHumanRequest030) { return storage.getItem(key(request, 'attempt')) !== null; },
-    async refresh(request: RunHumanRequest030) {
-      const current = await readCurrent(request);
+    async refresh(request: RunHumanRequest030, captureKey?: string) {
+      const current = await readCurrent(request, captureKey);
       if (storage.getItem(key(request, 'attempt')) === 'refused') storage.removeItem(key(request, 'attempt'));
-      return current;
+      return retainReadback(current, captureKey);
     },
-    send(request: RunHumanRequest030, answer: ExecutionHumanAnswer): Promise<HumanSendOutcome030> {
+    send(request: RunHumanRequest030, answer: ExecutionHumanAnswer, captureKey?: string): Promise<HumanSendOutcome030> {
       const identity = humanRequestKey030(request);
       const inflight = pending.get(identity);
       if (inflight) return inflight;
       const input: RunHumanSubmission030 = { scope: request.scope, requestId: request.id,
         expectedRevision: request.revision, answer: runHumanAnswer030(request, answer) };
       // Persist before calling transport. Failure to persist must prevent sending.
-      const blocked = storage.getItem(key(request, 'attempt')) !== null || stale(request);
+      const blocked = storage.getItem(key(request, 'attempt')) !== null || stale(request) ||
+        currentRequest(request, captureKey) !== request;
       if (!blocked) storage.setItem(key(request, 'attempt'), 'pending');
       const operation = (async (): Promise<HumanSendOutcome030> => {
         let result: HumanSendOutcome030['result'] = null;
@@ -236,13 +434,13 @@ export function createHumanRequestClient030({ submit, read, storage }: {
           storage.setItem(key(request, 'attempt'), result.kind);
         }
         try {
-          const current = await readCurrent(request);
+          const current = await readCurrent(request, captureKey);
           if (fallback && (BigInt(current.revision) < BigInt(fallback.revision) ||
               (current.state.kind === 'open' && fallback.state.kind !== 'open')))
-            return { result, current: fallback, readFailed: true };
+            return { result, current: retainReadback(fallback, captureKey), readFailed: true };
           if (storage.getItem(key(request, 'attempt')) === 'refused') storage.removeItem(key(request, 'attempt'));
-          return { result, current, readFailed: false };
-        } catch { return { result, current: fallback, readFailed: true }; }
+          return { result, current: retainReadback(current, captureKey), readFailed: false };
+        } catch { return { result, current: fallback && retainReadback(fallback, captureKey), readFailed: true }; }
       })();
       pending.set(identity, operation);
       void operation.finally(() => pending.delete(identity)).catch(() => {});

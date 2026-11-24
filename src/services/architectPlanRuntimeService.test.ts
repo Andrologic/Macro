@@ -19,6 +19,7 @@ const readFailures = new Map<string, unknown>();
 const failNextWrites = new Set<string>();
 const loseNextWriteResponses = new Set<string>();
 const writeGates = new Map<string, Promise<void>>();
+const readScopes: string[] = [];
 const writeCalls: WriteCall[] = [];
 const casCalls: Array<{ key: string; expectedValueJson: string | null; valueJson: string }> = [];
 let revisionCounter = 0;
@@ -84,7 +85,8 @@ const createTauriModule = () => ({
   isTauriAvailable: () => true,
   workspaceGetActiveRoot: async () => 'C:/repo-a',
   fsReadFileWithOptions: async (params: ReadParams) => {
-    const fileTarget = requireTarget(params);
+    readScopes.push(String(params.workspaceScope));
+    const fileTarget = requireTarget(params.workspaceScope === "metadata_existing" ? { ...params, workspaceScope: "metadata" } : params);
     const key = fileKey(fileTarget);
     const failure = readFailures.get(key);
     if (failure !== undefined) throw failure;
@@ -339,6 +341,7 @@ const resetMockState = (): void => {
 };
 
 afterEach(() => {
+  readScopes.length = 0;
   resetMockState();
   registeredProjects = [];
 });
@@ -494,6 +497,19 @@ describe('architectPlanRuntimeService', () => {
     expect(journal()?.pending).toBeDefined();
 
     const restartedRuntime = await loadRuntimeService();
+    const previousWrites = writeCalls.length;
+    const previousClaims = casCalls.length;
+    readScopes.length = 0;
+    const observed = await restartedRuntime.readArchitectPlanRuntime({
+      branchName: 'develop', planId: 'plan-1', projectIds: ['project-a', 'project-b'], existingOnly: true,
+    });
+    expect(observed?.mergeWorkflows.first).toBeDefined();
+    expect(readScopes).toEqual(['metadata_existing', 'metadata_existing']);
+    expect(writeCalls).toHaveLength(previousWrites);
+    expect(casCalls).toHaveLength(previousClaims);
+    expect(persistedRecord('C:/repo-b')).toBeNull();
+    expect(journal()?.pending).toBeDefined();
+
     const recovered = await restartedRuntime.readArchitectPlanRuntime({
       branchName: 'develop',
       planId: 'plan-1',

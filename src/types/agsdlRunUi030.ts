@@ -1,5 +1,6 @@
+import type { FlowDocumentContract } from './agsdl';
 /**
- * Product contract for AgSDL 0.3. These types grant no native authority and are
+ * Product contract for AgSDL 0.3 and 0.4. These types grant no native authority and are
  * not generated IPC DTOs. See docs/agsdl-030.md for command adapters and gaps.
  * Native decoders must reject unknown fields and attest every returned fact.
  */
@@ -23,6 +24,7 @@ import type {
   RuntimeInstance030,
   RuntimePath030,
   RuntimeProjectionScope030,
+  RuntimeProjectionPage030,
 } from './generated/ipc';
 
 /** Decimal integers and JSON retain their exact wire text, never JS numbers. */
@@ -30,7 +32,7 @@ export type RunRevision030 = string;
 export type RunJson030 = string;
 export type RunVersions030 = Readonly<Omit<EngineVersions, 'snapshot' | 'contract' | 'profile'>> & {
   readonly snapshot: '2';
-  readonly contract: 'agsdl-0.3.0';
+  readonly contract: FlowDocumentContract;
   readonly profile: 'macro-agsdl-030-v1';
 };
 export type RunCapture030 = Readonly<Omit<PublicSnapshot, 'versions'>> & {
@@ -45,7 +47,10 @@ export type VersionedRunCaptureUi =
         readonly snapshot: '1'; readonly contract: 'agsdl-0.2.0'; readonly profile: 'macro-serial-inline-v1';
       };
     } }
-  | { readonly contract: 'agsdl-0.3.0'; readonly capture: RunCapture030 };
+  | { [Contract in FlowDocumentContract]: {
+      readonly contract: Contract;
+      readonly capture: RunCapture030 & { readonly versions: { readonly contract: Contract } };
+    } }[FlowDocumentContract];
 
 /** Missing projection fields are unavailable, not empty, false or zero. */
 export type NativeFact030<T> =
@@ -57,7 +62,7 @@ export type NativeDtoGap030 =
   | 'question-validator' | 'stop-proof' | 'diagnostics'
   | 'occurrence-details' | 'chronology' | 'uncertainty';
 
-export type RunVerdict030 = 'succeeded' | 'failed' | 'cancelled' | null;
+export type RunVerdict030 = 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | null;
 /** Independent of the flow verdict. Only native physical evidence confirms Stop. */
 export type RunStop030 =
   | { readonly kind: 'none' }
@@ -78,9 +83,14 @@ export interface RunStateUi030 {
   readonly flowInvocationId: string;
   readonly revision: RunRevision030;
   readonly verdict: RunVerdict030;
+  readonly modelOverrides?: Readonly<Record<string, { name: string; effort?: string }>>;
   readonly ownerStatus: 'live' | 'revoked';
   readonly stopping: boolean;
+  readonly paused?: boolean;
+  readonly interruptedWhilePaused?: boolean;
+  readonly operatorWorks?: RuntimeProjectionPage030['operatorWorks'];
   readonly physicalPending: string;
+  readonly terminationUncertain?: boolean;
   readonly stop: NativeFact030<RunStop030>;
   readonly uncertainties: NativeFact030<readonly RunUncertainty030[]>;
   readonly humans: RunRead030<readonly RunHumanRequest030[]>;

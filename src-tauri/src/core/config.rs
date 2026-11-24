@@ -139,18 +139,27 @@ fn finalize_desktop_workspace_path_for_mode(
     config: &mut AppConfig,
     app_data_dir: &Path,
     use_app_data_default: bool,
-) {
+) -> crate::core::Result<()> {
     if config.workspace_path_source.is_default() && use_app_data_default {
-        config.workspace_path = resolve_desktop_default_workspace_path(app_data_dir);
+        let workspace_path = resolve_desktop_default_workspace_path(app_data_dir);
+        std::fs::create_dir_all(&workspace_path).map_err(|error| {
+            crate::core::error::BackendError::Config {
+                message: format!(
+                    "Failed to create default workspace directory {}: {error}",
+                    workspace_path.display()
+                ),
+            }
+        })?;
+        config.workspace_path = workspace_path;
     }
+    Ok(())
 }
 
 pub fn finalize_desktop_workspace_path(
     config: &mut AppConfig,
     app_data_dir: &Path,
 ) -> crate::core::Result<()> {
-    finalize_desktop_workspace_path_for_mode(config, app_data_dir, !cfg!(debug_assertions));
-    Ok(())
+    finalize_desktop_workspace_path_for_mode(config, app_data_dir, !cfg!(debug_assertions))
 }
 
 pub fn apply_runtime_workspace(
@@ -190,8 +199,8 @@ pub(crate) fn test_finalize_desktop_workspace_path_for_mode(
     config: &mut AppConfig,
     app_data_dir: &Path,
     use_app_data_default: bool,
-) {
-    finalize_desktop_workspace_path_for_mode(config, app_data_dir, use_app_data_default);
+) -> crate::core::Result<()> {
+    finalize_desktop_workspace_path_for_mode(config, app_data_dir, use_app_data_default)
 }
 
 fn load_config_from_sources(
@@ -243,6 +252,30 @@ pub(crate) fn test_load_config_from_runtime_file(
     runtime_file: PathBuf,
 ) -> crate::core::Result<AppConfig> {
     load_config_from_sources(Some(runtime_file), None)
+}
+
+/// Include files that the optional legacy config loader can resolve by extension.
+pub(crate) fn legacy_settings_paths() -> Vec<PathBuf> {
+    let Some(path) = std::env::var_os("MACRO_CONFIG")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+    else {
+        return Vec::new();
+    };
+    if path.is_file() {
+        return vec![path];
+    }
+    let mut name = path.into_os_string();
+    name.push(".");
+    ["toml", "json", "yaml", "yml", "ini", "ron", "json5", "corn"]
+        .into_iter()
+        .map(|extension| {
+            let mut candidate = name.clone();
+            candidate.push(extension);
+            PathBuf::from(candidate)
+        })
+        .filter(|path| path.is_file())
+        .collect()
 }
 
 pub fn load_config() -> crate::core::Result<AppConfig> {

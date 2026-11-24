@@ -46,6 +46,7 @@ describe("internalAgentProfile", () => {
         "git_status",
         "git_commit",
         "plan_get",
+        "agsdl_get",
         "strategy_update",
       ],
       "plan_explorer"
@@ -56,19 +57,19 @@ describe("internalAgentProfile", () => {
       "read",
       "ast_grep",
       "git_status",
-      "plan_get",
+      "agsdl_get",
     ]);
   });
 
   it("keeps plan explorer aligned with the Architect chat action surface", () => {
     const filtered = filterToolIdsForInternalAgentProfile(
-      ["strategy_update", "strategy_delete", "plan_create", "plan_get"],
+      ["strategy_update", "strategy_delete", "plan_create", "plan_get", "agsdl_get", "agsdl_update"],
       "plan_explorer"
     );
 
     expect(filtered).toEqual([
-      "plan_create",
-      "plan_get",
+      "agsdl_get",
+      "agsdl_update",
     ]);
   });
 

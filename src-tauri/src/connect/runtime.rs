@@ -851,6 +851,7 @@ pub(super) fn test_bun() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::super::codec::Bytes;
+    use super::super::PROCESS_RESOURCES_TEST_LOCK;
     use super::test_bun as bun;
     use super::*;
     use crate::connect_resources::TRANSIT_INSTANCE_LIMIT;
@@ -886,6 +887,7 @@ mod tests {
     }
     #[tokio::test]
     async fn profiles_join_bootstrap_then_keep_persistent_child_idle_past_poll() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let (_dir, db, pool) = database().await;
         let owner = TransferRuntime::default();
         let job = owner.begin_transfer().unwrap();
@@ -926,6 +928,7 @@ mod tests {
 
     #[tokio::test]
     async fn wrong_hello_profile_refuses_before_work_and_returns_credits_after_join() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let (dir, db, _pool) = database().await;
         let owner = TransferRuntime::default();
         let budget = owner.budget().unwrap();
@@ -949,6 +952,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_retirement_quarantines_profile_and_refuses_replacement() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let (_dir, db, _pool) = database().await;
         let owner = TransferRuntime::default();
         let budget = owner.budget().unwrap();
@@ -968,6 +972,7 @@ mod tests {
 
     #[tokio::test]
     async fn busy_rejection_preserves_admitted_request_and_child_reuse() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let (_dir, db, pool) = database().await;
         let owner = TransferRuntime::default();
         let budget = owner.budget().unwrap();
@@ -994,6 +999,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoked_generation_cannot_spawn_after_waiting_for_database() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let directory = tempfile::tempdir().unwrap();
         let pool = crate::db::create_pool(&directory.path().join("waiting.db"))
             .await
@@ -1019,6 +1025,7 @@ mod tests {
 
     #[tokio::test]
     async fn child_eof_and_hello_deadline_keep_the_owner_until_reap() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let (directory, db, pool) = database().await;
         for (name, script) in [
             ("eof.ts", "process.exit(0);"),
@@ -1047,6 +1054,7 @@ mod tests {
 
     #[tokio::test]
     async fn real_scope_errors_and_caller_abandon_keep_bank_until_child_reap() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         for phase in [1, 2] {
             for after in [false, true] {
                 for abandon in [false, true] {
@@ -1098,6 +1106,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_bank_runs_all_nine_operations_on_one_real_child() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let (_dir, db, _) = database().await;
         let owner = TransferRuntime::default();
         let budget = owner.budget().unwrap();
@@ -1137,6 +1146,7 @@ mod tests {
 
     #[tokio::test]
     async fn real_codec_reuses_child_and_keeps_database_and_last_result_charged() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let (_dir, db, pool) = database().await;
         let owner = TransferRuntime::default();
         let budget = owner.budget().unwrap();
@@ -1174,6 +1184,7 @@ mod tests {
     }
     #[tokio::test]
     async fn cancelled_hello_is_joined_before_credits_and_database_return() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let (dir, db, pool) = database().await;
         let entry = dir.path().join("silent.ts");
         std::fs::write(&entry, "setInterval(() => {}, 1000);\n").unwrap();
@@ -1193,6 +1204,7 @@ mod tests {
     }
     #[tokio::test]
     async fn hostile_header_refuses_without_reading_its_payload_then_joins() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let (dir, db, pool) = database().await;
         let entry = dir.path().join("hostile.ts");
         std::fs::write(&entry, "import {writeSync} from 'node:fs';const h=Buffer.alloc(32);h.write('MCF1');h.writeUInt16BE(1,4);h[6]=1;h.writeUInt32BE(0xffffffff,24);writeSync(1,h);setInterval(()=>{},1000);\n").unwrap();

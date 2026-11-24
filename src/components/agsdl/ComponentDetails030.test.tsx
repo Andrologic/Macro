@@ -180,3 +180,14 @@ it("selects a scalar next destination from the same scope and preserves exact si
  expect(result).toContain('"future":9007199254740993');
  expect(result).toContain('"future":123456789012345678901234567890');
 });
+it("starts the first group right under the header and keeps list positions out of the labels", async () => {
+ const documentSource = source.replace('"permissions":"read-only"', '"permissions":"read-only","instructions":["Check the prerequisites",{"ref":"projectGuidance"}]');
+ await mount(documentSource);
+ const groups = [...document.body.querySelectorAll<HTMLElement>("details.agsdl-details")];
+ expect(groups[0].style.borderTopWidth).toBe("0px");
+ expect(groups[0].style.marginTop).toBe("0px");
+ expect(groups[1]?.style.borderTopWidth ?? "").toBe("");
+ const labels = [...document.body.querySelectorAll("label.agsdl-edit-field > span")].map(span => span.textContent ?? "");
+ expect(labels.some(label => label === "Shared content name")).toBe(true);
+ expect(labels.some(label => /· \d+$/.test(label))).toBe(false);
+});

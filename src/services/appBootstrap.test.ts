@@ -10,7 +10,6 @@ describe('appBootstrap', () => {
   let resumeApp: ReturnType<typeof mock>;
   let initializeTasks: ReturnType<typeof mock>;
   let resumeTasks: ReturnType<typeof mock>;
-  let initializeTerminal: ReturnType<typeof mock>;
   let initializeChat: ReturnType<typeof mock>;
   let initializeTools: ReturnType<typeof mock>;
   let initializeSkills: ReturnType<typeof mock>;
@@ -33,9 +32,6 @@ describe('appBootstrap', () => {
     });
     resumeTasks = mock(async () => {
       callOrder.push('resume-tasks');
-    });
-    initializeTerminal = mock(async () => {
-      callOrder.push('terminal');
     });
     initializeChat = mock(async () => {
       callOrder.push('chat');
@@ -67,7 +63,6 @@ describe('appBootstrap', () => {
       initializeChatCritical: initializeChat,
       initializeTasksCritical: initializeTasks,
       resumeTasksAfterInitialize: resumeTasks,
-      initializeTerminal,
       initializeTools,
       initializeSkills,
       initializeProviders,
@@ -99,7 +94,6 @@ describe('appBootstrap', () => {
     expect(resumeApp.mock.calls.length).toBe(1);
     expect(resumeTasks.mock.calls.length).toBe(1);
     expect(initializeShortcuts.mock.calls.length).toBe(1);
-    expect(initializeTerminal.mock.calls.length).toBe(1);
     expect(preloadModeComponents.mock.calls.length).toBe(1);
     expect(lowPriorityRuns).toHaveLength(1);
     expect(callOrder[0]).toBe('app');
@@ -146,7 +140,6 @@ describe('appBootstrap', () => {
       initializeChatCritical: initializeChat,
       initializeTasksCritical: initializeTasks,
       resumeTasksAfterInitialize: resumeTasks,
-      initializeTerminal,
       initializeTools,
       initializeSkills,
       initializeProviders,
@@ -187,7 +180,6 @@ describe('appBootstrap', () => {
       initializeChatCritical: initializeChat,
       initializeTasksCritical: initializeTasks,
       resumeTasksAfterInitialize: resumeTasks,
-      initializeTerminal,
       initializeTools,
       initializeSkills,
       initializeProviders,
@@ -230,7 +222,6 @@ describe('appBootstrap', () => {
       initializeChatCritical: initializeChat,
       initializeTasksCritical: initializeTasks,
       resumeTasksAfterInitialize: resumeTasks,
-      initializeTerminal,
       initializeTools,
       initializeSkills,
       initializeProviders,
@@ -281,7 +272,6 @@ describe('appBootstrap', () => {
       initializeChatCritical: initializeChat,
       initializeTasksCritical: initializeTasks,
       resumeTasksAfterInitialize: resumeTasks,
-      initializeTerminal,
       initializeTools,
       initializeSkills,
       initializeProviders,
@@ -336,7 +326,6 @@ const bootstrapDependencies = (overrides: Partial<AppBootstrapDependencies> = {}
   initializeChatCritical: async () => undefined,
   initializeTasksCritical: async () => undefined,
   resumeTasksAfterInitialize: async () => undefined,
-  initializeTerminal: async () => undefined,
   initializeTools: async () => undefined,
   initializeSkills: async () => undefined,
   initializeProviders: async () => undefined,
@@ -353,6 +342,65 @@ const bootstrapDependencies = (overrides: Partial<AppBootstrapDependencies> = {}
 });
 
 describe('appBootstrap ownership', () => {
+  it('imports after database initialization and retries an unavailable source on restart', async () => {
+    const events: string[] = [];
+    let available = false;
+    const controller = createAppBootstrapController(() => bootstrapDependencies({
+      initializeDatabaseCritical: async () => { events.push('database'); },
+      migrateArchitectLibrary: async () => {
+        events.push('import');
+        if (!available) throw new Error('Workspace unavailable');
+      },
+      initializeAppCritical: async () => { events.push('app'); },
+    }));
+    await controller.ensureStarted();
+    expect(events).toEqual(['database', 'import', 'app']);
+    expect(controller.getSnapshot().ready).toBe(true);
+    expect(controller.getSnapshot().warnings['Architect library import']).toBe('Workspace unavailable');
+    available = true;
+    await controller.restart();
+    expect(events).toEqual(['database', 'import', 'app', 'database', 'import', 'app']);
+    expect(controller.getSnapshot().warnings['Architect library import']).toBeUndefined();
+    await controller.stop();
+  });
+
+  it('makes Chat available while Architect migration is still running', async () => {
+    const migration = deferred<void>();
+    const migrateArchitectLibrary = mock(() => migration.promise);
+    const initializeChatCritical = mock(async () => {});
+    const controller = createAppBootstrapController(() => bootstrapDependencies({
+      migrateArchitectLibrary, initializeChatCritical,
+    }));
+    await controller.ensureStarted();
+    expect(migrateArchitectLibrary).toHaveBeenCalledTimes(1);
+    expect(initializeChatCritical).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot().ready).toBe(true);
+    migration.resolve();
+    await controller.stop();
+  });
+
+  it('retries the Architect import alone and keeps the restored shell ready on SQLite errors', async () => {
+    const failure = { code: 'DB_ERROR', message: 'database is locked' };
+    const migrateArchitectLibrary = mock(async (): Promise<void> => { throw failure; });
+    const initializeAppCritical = mock(async () => {});
+    const controller = createAppBootstrapController(() => bootstrapDependencies({
+      migrateArchitectLibrary, initializeAppCritical,
+    }));
+    await controller.ensureStarted();
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: 'ready', ready: true, startupError: null,
+      warnings: { 'Architect library import': failure.message },
+    });
+    await expect(controller.retryArchitectLibrary()).rejects.toThrow(failure.message);
+    expect(controller.getSnapshot().ready).toBe(true);
+    migrateArchitectLibrary.mockImplementation(async () => {});
+    await Promise.all([controller.retryArchitectLibrary(), controller.retryArchitectLibrary()]);
+    expect(migrateArchitectLibrary).toHaveBeenCalledTimes(3);
+    expect(initializeAppCritical).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot().warnings['Architect library import']).toBeUndefined();
+    await controller.stop();
+  });
+
   it('cancels idle work, settles start and makes a retained callback inert', async () => {
     const scheduled = deferred<() => void>();
     const cancel = mock(() => undefined);
@@ -500,6 +548,94 @@ describe('appBootstrap ownership', () => {
 });
 
 describe('production app initialization lifetime',()=>{
+  it('sends a fresh legacy storage snapshot via native IPC and skips browser-only runtimes', async () => {
+    const { getAppBootstrapDependencies } = await import('./appBootstrap');
+    const bridge = await import('./tauriRuntimeBridge');
+    const available = spyOn(tauriIpc, 'isTauriAvailable').mockReturnValue(false);
+    const browser = spyOn(bridge, 'isBrowserRuntimeBridgeEnabled').mockReturnValue(false);
+    const report = {
+      status: 'discoveryIncomplete',
+      issues: [{ location: 'workspace.json', message: 'Unreadable registry' }],
+    };
+    const invoke = spyOn(bridge, 'invoke').mockResolvedValue(report);
+    const key = 'macro_architect_plan:main:startup-test';
+    const original = localStorage.getItem(key);
+    try {
+      const migrate = getAppBootstrapDependencies().migrateArchitectLibrary!;
+      await migrate();
+      available.mockReturnValue(true);
+      browser.mockReturnValue(true);
+      await migrate();
+      expect(invoke).not.toHaveBeenCalled();
+
+      browser.mockReturnValue(false);
+      localStorage.setItem(key, '{ "id": "startup-test" }');
+      await expect(migrate()).rejects.toThrow('workspace.json: Unreadable registry');
+      expect(invoke).toHaveBeenCalledWith('architect_migrate_legacy', {
+        localStorage: { state: 'snapshot', value: expect.objectContaining({ [key]: '{ "id": "startup-test" }' }) },
+      });
+      localStorage.setItem(key, '{}');
+      invoke.mockResolvedValue({ status: 'complete' });
+      await migrate();
+      expect(invoke).toHaveBeenLastCalledWith('architect_migrate_legacy', {
+        localStorage: { state: 'snapshot', value: expect.objectContaining({ [key]: '{}' }) },
+      });
+    } finally {
+      if (original === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, original);
+      invoke.mockRestore();
+      browser.mockRestore();
+      available.mockRestore();
+    }
+  });
+
+  it('restores Architect through the native bootstrap and skips the legacy catalog on startup', async () => {
+    const { getAppBootstrapDependencies } = await import('./appBootstrap');
+    const { useAppStore } = await import('../stores/useAppStore');
+    const { useArchitectLibraryStore } = await import('../stores/useArchitectLibraryStore');
+    const { configureWorkflowRunAccess030 } = await import('./workflowAgentTasks');
+    const bridge = await import('./tauriRuntimeBridge');
+    const localContext = await import('./localProjectContext');
+    const serviceRuntime = await import('./serviceRuntime');
+    const desktop = spyOn(serviceRuntime, 'getServiceRuntime').mockReturnValue({
+      requestedTransport: 'desktop', effectiveTransport: 'desktop', effectiveProvider: 'ipc',
+    });
+    const original = useAppStore.getState();
+    const scope = createLifecycleScope();
+    const invoke = spyOn(bridge, 'invoke').mockImplementation(async (command) => {
+      if (command !== 'workspace_get_bootstrap') throw new Error(`Unexpected IPC: ${command}`);
+      return { plan: null, standaloneProjects: [], projectGroups: [], planNodes: [], predictedBranches: [] } as never;
+    });
+    const restoredSession = {
+      globalProjectId: null, selectedGroupId: null, selectedProjectId: null, mode: 'Architect', updatedAt: '',
+    } as const;
+    const session = spyOn(localContext, 'getLocalSessionContextState').mockResolvedValue(restoredSession);
+    const persistSession = spyOn(localContext, 'upsertLocalSessionContextState').mockResolvedValue(restoredSession);
+    const restore = spyOn(useArchitectLibraryStore.getState(), 'restoreSelection').mockResolvedValue(undefined);
+    const legacyCatalog = spyOn(useAppStore.getState(), 'loadMacroProjectMetadataForSelection');
+    try {
+      const dependencies = getAppBootstrapDependencies();
+      await dependencies.initializeAppCritical(scope);
+      await dependencies.resumeAppAfterInitialize(scope);
+      expect(useAppStore.getState().mode).toBe('Architect');
+      expect(useAppStore.getState().lastError).toBeNull();
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(invoke).toHaveBeenCalledWith('workspace_get_bootstrap');
+      expect(restore).toHaveBeenCalledTimes(1);
+      expect(legacyCatalog).not.toHaveBeenCalled();
+    } finally {
+      scope.stop();
+      restore.mockRestore();
+      legacyCatalog.mockRestore();
+      persistSession.mockRestore();
+      session.mockRestore();
+      invoke.mockRestore();
+      desktop.mockRestore();
+      useAppStore.setState(original, true);
+      configureWorkflowRunAccess030(undefined);
+    }
+  });
+
   it('forwards the lifecycle to the real initializeCritical dependency, including revocation',async()=>{
     const {getAppBootstrapDependencies}=await import('./appBootstrap');
     const {useAppStore}=await import('../stores/useAppStore');

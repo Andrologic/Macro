@@ -28,14 +28,6 @@ export interface PendingProjectCreation {
   directEdit?: boolean;
 }
 
-export interface PendingGitFlowConfirmation {
-  createPayload: PendingProjectCreation;
-  branches: string[];
-  currentBranch: string | null;
-  mainBranch: string;
-  baseBranch: string;
-}
-
 export interface PendingProjectSetupPrompt {
   createPayload: PendingProjectCreation;
   detection: ProjectGitFlowDetection;
@@ -167,47 +159,22 @@ export const buildPendingProjectCreation = ({
   };
 };
 
-export const getEffectiveProjectGitSetupState = (
-  detection: ProjectGitFlowDetection
-): ProjectGitSetupState =>
-  detection.setupState || (detection.repoDetected ? 'ready' : 'not_git');
+export const getDetectedProjectBranchSettings = (
+  detection: ProjectGitFlowDetection,
+): PendingProjectCreation['gitFlowSettings'] => {
+  if (!detection.repoDetected || !(detection.requiresConfirmation || detection.setupState === 'needs_branch_confirmation')) {
+    return undefined;
+  }
 
-export const shouldConfirmDetectedGitFlow = (
-  detection: ProjectGitFlowDetection
-): boolean =>
-  detection.repoDetected &&
-  (
-    detection.requiresConfirmation ||
-    getEffectiveProjectGitSetupState(detection) === 'needs_branch_confirmation'
-  );
+  const isProjectBranch = (name: string | null | undefined): name is string =>
+    Boolean(name && name !== '@macro');
+  const mainBranch = [detection.suggestedMainBranch, detection.currentBranch, detection.suggestedBaseBranch].find(isProjectBranch);
+  if (!mainBranch) return undefined;
 
-export const buildPendingGitFlowConfirmation = (
-  createPayload: PendingProjectCreation,
-  detection: ProjectGitFlowDetection
-): PendingGitFlowConfirmation => {
-  const branches = Array.from(
-    new Set(
-      [
-        ...detection.branches,
-        detection.currentBranch ?? null,
-        detection.suggestedMainBranch ?? null,
-        detection.suggestedBaseBranch ?? null,
-      ].filter((branch): branch is string => Boolean(branch?.trim()))
-    )
-  );
-  const defaultBranch = branches[0] || '';
-
-  return {
-    createPayload,
-    branches,
-    currentBranch: detection.currentBranch ?? null,
-    mainBranch: detection.suggestedMainBranch ?? detection.currentBranch ?? defaultBranch,
-    baseBranch:
-      detection.suggestedBaseBranch ??
-      detection.currentBranch ??
-      detection.suggestedMainBranch ??
-      defaultBranch,
-  };
+  return resolveProjectGitFlowSettings({
+    mainBranch,
+    baseBranch: [detection.suggestedBaseBranch, detection.currentBranch].find(isProjectBranch) ?? mainBranch,
+  });
 };
 
 export const buildPendingProjectSetupPrompt = (
@@ -275,32 +242,6 @@ export const buildProjectWithGitSetupPayload = (
   expectedSetupState: detection.setupState,
   expectedRecommendedActionSequence: detection.recommendedActionSequence,
 });
-
-export const buildDeclinedProjectSetupPayload = (
-  createPayload: PendingProjectCreation,
-  activeProjectSetupPrompt: ProjectSetupPromptDetails
-): PendingProjectCreation => {
-  if (activeProjectSetupPrompt.kind !== 'create_develop') {
-    return createPayload;
-  }
-
-  const mainBranch = activeProjectSetupPrompt.mainBranch || 'main';
-  return {
-    ...createPayload,
-    gitFlowSettings: resolveProjectGitFlowSettings({
-      mainBranch,
-      baseBranch: mainBranch,
-    }),
-  };
-};
-
-export const getAcceptedActionsAfterDecliningPrompt = (
-  pendingProjectSetupPrompt: PendingProjectSetupPrompt,
-  activeProjectSetupPrompt: ProjectSetupPromptDetails
-): ProjectGitSetupAction[] =>
-  activeProjectSetupPrompt.kind === 'create_develop'
-    ? pendingProjectSetupPrompt.acceptedActions
-    : [];
 
 /** Check a user-selected folder before proposing Git setup, including folders outside the current workspace. */
 export const validateExistingProjectDirectory = async (path: string): Promise<void> => {

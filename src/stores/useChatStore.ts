@@ -1,3 +1,8 @@
+import { confirmedBlueprintDraft, selectedBlueprintForConversation, useArchitectLibraryStore } from "./useArchitectLibraryStore";
+import { agsdlSessionKey, useAgsdlStore } from "./useAgsdlStore";
+import { architectLibrary } from "../services/ipc/architectLibrary";
+import { isAgsdlChatContextCurrent, resolveAgsdlSelectionPath } from "./agsdl/selectionRevision";
+import { demoWorkflowJourney, isOperateWorkspace } from '../services/operateWorkspace';
 import {
   getConversationFallbackTitle,
   getConversationFallbackDescription,
@@ -7,7 +12,7 @@ import {
   extractManualFeatureMetadataFromModelOutput,
   buildManualFeatureFallbackMetadata,
 } from "./chat/chatMetadataTransforms";
-import { assertRuntimeSelectionDestination } from "../services/agsdl/runtimeSelection";
+import { assertRuntimeSelectionDestination, isAgsdlReference } from "../services/agsdl/runtimeSelection";
 import { assertLegacyTaskOwnership } from '../services/workflowTaskOwnership';
 import { hasMultipleAgsdlContexts, persistableContextRefs, rebindAgsdlContextRefs, submissionHiddenContext } from "../services/chat/composerSubmission";
 import { agsdlContextForModel } from "../services/agsdl/chatContextPayload";
@@ -130,7 +135,7 @@ import { useTaskStore, type ImplementTask } from "./useTaskStore";
 import {
   getImplementAgentToolPolicy,
   getToolModePolicy as getLocalToolModePolicy,
-  isGitToolId,
+  isGitToolId, isRepositoryToolId,
   isToolAllowedForImplementAgent,
 } from "../services/toolModePolicy";
 import { resolveProjectExecutionMode } from '../services/projectExecutionMode';
@@ -158,17 +163,13 @@ import {
   type ArchitectPlanActivationPayload,
   type ArchitectPlanRecord,
   bindArchitectPlanConversation,
-  createArchitectPlan,
   getArchitectPlan,
   getArchitectPlanActivationPayload,
   getArchitectPlanChatTranscript,
-  getGitFlowBaseBranch,
   getArchitectPlanVisibleProjectIds,
   hasPersistedArchitectStrategy,
   isArchitectPlanReplicaDivergenceError,
   isArchitectPlanStrategyMutationLocked,
-  isArchitectPlanSlugAvailable,
-  isArchitectPlanSlugMutable,
   listArchitectPlans,
   resolvePlanProjectContextId,
   resolveTargetBranch,
@@ -192,7 +193,6 @@ import {
 import {
   getArchitectProfileAdjustedToolIds,
 } from "../services/architectToolSurface";
-import { handleDeferredArchitectToolCall } from "../services/deferredArchitectTool";
 import {
   canPlanFinalizationTaskReceiveMessages,
   isPlanFinalizationTaskSource,
@@ -231,11 +231,6 @@ import { classifyToolTraceRecovery } from "../services/toolTraceState";
 import {
   renderStandaloneTaskBranchName,
 } from "../services/architectGitNaming";
-import { provisionPlanBranches } from "../services/architectGitFlowService";
-import {
-  applyStrategyMutationPreview,
-  prepareStrategyMutationPreview,
-} from "../services/architectStrategyMutationGuard";
 import {
   getLocalProjectContextState,
 } from "../services/localProjectContext";
@@ -445,12 +440,6 @@ const LOCKED_AGENT_TOOL_IDS = [
   "skill_read_resource",
   "skill_run_script",
 ] as const;
-const ARCHITECT_STRATEGY_MUTATION_TOOL_IDS = new Set([
-  "agsdl_update",
-  "strategy_generate",
-  "strategy_update",
-  "strategy_delete",
-]);
 const assistantTurnContextByMessageId = new Map<
   string,
   { conversationId: string; mode: AppMode; agentType: AgentType | null }
@@ -900,7 +889,8 @@ interface ChatStore {
   getComposerDraftForContext: (contextKey: string) => ComposerDraft | null;
   clearComposerDraftForContext: (contextKey: string) => void;
   discardComposerDraftForConversation: (conversationId: string) => void;
-  migrateComposerDraftContext: (fromContextKey: string, toContextKey: string) => void;
+  migrateComposerDraftContext: (fromContextKey: string, toContextKey: string,
+    prepareRecovery?: (draft: ComposerDraft) => ComposerDraft | null) => void;
   getPendingToolApproval: (conversationId: string) => PendingToolApproval | null;
   approvePendingToolApprovalOnce: (conversationId: string, pilotActionToken?: symbol) => void;
   approvePendingToolApprovalForConversation: (conversationId: string, pilotActionToken?: symbol) => void;
@@ -1065,6 +1055,11 @@ const buildChatContextKey = (
   >,
 ): ChatContextKey => {
   if (appState.mode === "Architect") {
+    if (!demoWorkflowJourney) {
+      const draft = confirmedBlueprintDraft(useArchitectLibraryStore.getState());
+      // Keep the persisted composer key for confirmed drafts.
+      return JSON.stringify(["Architect", draft?.id ?? null, null]);
+    }
     if (appState.activeArchitectPlanId) {
       return [
         "Architect",
@@ -1765,6 +1760,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const resolveConversationExecutionContext = (conversationId: string, modeOverride?: "Chat" | "Implement") => {
     const appState = useAppStore.getState();
+    if (!modeOverride && appState.mode === "Architect" && !demoWorkflowJourney)
+      return resolveProjectExecutionContext({ mode: "Architect", projects: [] });
     const taskState = useTaskStore.getState();
     const base = resolveProjectExecutionContext({
       mode: modeOverride ?? appState.mode,
@@ -1809,8 +1806,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       getConflictAssistantContext(id), conflictAssistantSelection(id),
     ) ? id : null;
   };
+  const assertBlueprintAttachment = (conversationId: string, refs: ChatMessage["context_refs"]) => {
+    const ref = refs?.find(item => item.kind === "agsdl")?.agsdl;
+    if (ref?.blueprintId === undefined) return;
+    if (useAppStore.getState().mode !== "Architect" || ref.conversationId !== conversationId ||
+        selectedBlueprintForConversation(conversationId)?.id !== ref.blueprintId || !isAgsdlChatContextCurrent(ref))
+      throw buildSendError(i18n.t("agsdl.staleChatSelection", { ns: "agsdl" }));
+  };
+
   const assertImplementConversationContext = (conversationId: string) => {
     const conversation = get().conversations.find(conversation => conversation.id === conversationId);
+    if (!demoWorkflowJourney && conversation?.scope_mode === "Architect" &&
+        (useAppStore.getState().mode !== "Architect" || !selectedBlueprintForConversation(conversationId)))
+      throw buildSendError("Open the editable blueprint before sending to its conversation.");
     const taskId = conversation?.task_id;
     assertLegacyTaskOwnership(taskId ? useTaskStore.getState().getTaskById(taskId) : undefined, taskId ?? undefined);
     if (conversation?.scope_mode === 'Implement' && !conversation.task_id && !getConflictAssistantContext(conversationId)) {
@@ -3334,14 +3342,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return;
       }
 
-      if (
-        task.status === "AwaitingResponse" ||
-        task.status === "Completed" ||
-        task.status === "Failed" ||
-        task.status === "InReview"
-      ) {
-        return;
-      }
+      if (task.status !== "InProgress") return;
 
       taskIdsToMark.add(conversation.task_id);
     });
@@ -3352,20 +3353,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       awaitingResponseReconciliationTaskIds.add(taskId);
       try {
-        const currentTask = taskStore.getTaskById(taskId);
-        if (!currentTask) {
-          continue;
-        }
-
-        if (currentTask.status === "Pending") {
-          await taskStore.startTask(taskId);
-          lifecycle?.assertActive();
-        }
-
-        const refreshedTask = taskStore.getTaskById(taskId);
-        if (!refreshedTask || refreshedTask.status !== "InProgress") {
-          continue;
-        }
+        if (taskStore.getTaskById(taskId)?.status !== "InProgress") continue;
 
         await taskStore.markTaskAwaitingResponse(taskId);
         lifecycle?.assertActive();
@@ -3376,6 +3364,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const scheduleImplementAwaitingResponseReconciliation = () => {
+    if (!demoWorkflowJourney) return;
     const scope = subscriptionScope;
     if (!scope?.isActive()) return;
     if (awaitingResponseReconciliationScheduled) {
@@ -3564,9 +3553,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const ensureContextSelectionSync = (scope: ReturnType<typeof createLifecycleScope>) => {
     if (contextSelectionUnsubscribe) return;
 
+    if (!demoWorkflowJourney) scope.own(useArchitectLibraryStore.subscribe((next, previous) => {
+      if (scope.isActive() && useAppStore.getState().mode === "Architect" &&
+          confirmedBlueprintDraft(next)?.id !== confirmedBlueprintDraft(previous)?.id) {
+        if (previous.draft?.conversationId) stopConversationRuntimeLocally(previous.draft.conversationId);
+        beginArchitectPlanSwitchSelection();
+        void scope.track(get().ensureConversationForCurrentMode(scope)).catch(() => undefined);
+      }
+    }));
     contextSelectionUnsubscribe = useAppStore.subscribe(
       (nextState, previousState) => {
         if (!scope.isActive()) return;
+        if (!demoWorkflowJourney && previousState.mode === "Architect" && nextState.mode !== "Architect") {
+          const id = useArchitectLibraryStore.getState().draft?.conversationId;
+          if (id) stopConversationRuntimeLocally(id);
+        }
         const nextContextKey = buildChatContextKey(nextState);
         const previousContextKey = buildChatContextKey(previousState);
         if (nextContextKey === previousContextKey) {
@@ -4961,7 +4962,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const mode = modeOverride ?? useAppStore.getState().mode;
     const adjustAllowedToolIds = (allowedToolIds: string[]): string[] =>
       mode === "Architect"
-        ? getArchitectProfileAdjustedToolIds(allowedToolIds)
+        ? getArchitectProfileAdjustedToolIds(demoWorkflowJourney ? allowedToolIds : allowedToolIds.filter(id => !isRepositoryToolId(id)))
         : allowedToolIds;
 
     if (tauriIpc.isTauriAvailable()) {
@@ -5706,49 +5707,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
       taskTodo: handleTaskTodoToolCall,
       taskArtifact: handleTaskArtifactToolCall,
       architect: async (params) => {
-        if (["strategy_generate", "strategy_get", "strategy_update", "strategy_delete"].includes(params.toolName)) {
-          throw new Error("Strategy tools have been retired. Use agsdl_get and agsdl_update in the plan conversation.");
+        const { handleAgsdlToolCall, AgsdlAuthoringRefusal } = await import("./agsdl/tools");
+        try {
+          if (demoWorkflowJourney) return await handleAgsdlToolCall(params);
+          const blueprint = selectedBlueprintForConversation(params.conversationId);
+          if (!blueprint || useAppStore.getState().mode !== "Architect") throw new AgsdlAuthoringRefusal("The blueprint is no longer selected.");
+          return await handleAgsdlToolCall({ ...params, blueprintId: blueprint.id,
+            isCurrent: () => params.isCurrent() && useAppStore.getState().mode === "Architect" &&
+              selectedBlueprintForConversation(params.conversationId) === blueprint });
+
+        } catch (error) {
+          if (error instanceof AgsdlAuthoringRefusal) return {
+            kind: "result" as const, result: error.message, isError: true, errorKind: "validation" as const,
+          };
+          throw error;
         }
-        if (params.toolName === "agsdl_get" || params.toolName === "agsdl_update") {
-          const conversationId = assistantTurnContextByMessageId.get(params.assistantMessageId)?.conversationId;
-          if (!conversationId) throw new Error("The calling plan conversation is unavailable.");
-          const { handleAgsdlToolCall, AgsdlAuthoringRefusal } = await import("./agsdl/tools");
-          try {
-            return await handleAgsdlToolCall({
-              toolName: params.toolName,
-              args: params.args,
-              conversationId,
-              isCurrent: () => params.turnContext?.isCurrent() ?? false,
-            });
-          } catch (error) {
-            if (error instanceof AgsdlAuthoringRefusal) return {
-              kind: "result" as const, result: error.message, isError: true, errorKind: "validation" as const,
-            };
-            throw error;
-          }
-        }
-        return handleDeferredArchitectToolCall({
-          ...params,
-          planService: {
-            createArchitectPlan,
-            getArchitectPlan,
-            getGitFlowBaseBranch,
-            isArchitectPlanSlugAvailable,
-            isArchitectPlanSlugMutable,
-            listArchitectPlans,
-            resolvePlanProjectContextId,
-            resolveTargetBranch,
-            updateArchitectPlan,
-          },
-          strategyService: {
-            prepareStrategyMutationPreview,
-            applyStrategyMutationPreview,
-            guardDeps: { getArchitectPlan, updateArchitectPlan, provisionPlanBranches },
-          },
-          getAppState: () => useAppStore.getState(),
-          getTaskState: () => useTaskStore.getState(),
-          ensureArchitectConversationForPlan: get().ensureArchitectConversationForPlan,
-        });
       },
     },
     terminal: {
@@ -6384,10 +6357,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     previousAssistantContext: id => assistantTurnContextByMessageId.get(id),
     standaloneTaskInstruction: buildStandaloneImplementSystemInstruction,
     taskArtifactContext: (task, allowWrites) => buildTaskArtifactContextBlock({ task, getPlan: getArchitectPlan, allowWrites }),
-    architectPlanInstructions: async (...args) => {
+    architectPlanInstructions: async (plan) => {
+      if (!demoWorkflowJourney) return ["Design the blueprint attached to this conversation. Read agsdl_get and its guide, then read the project files you need. Submit an ordered file_operations batch with blueprint_id and revision. Write Macro settings through macro_settings. Review the file-local diagnostics after saving."];
       const { buildArchitectPlanInstructions } = await import("./chat/chatArchitectPlanPrompt");
-      const { AGSDL_AUTHORING_INSTRUCTION } = await import("./agsdl/tools");
-      return buildArchitectPlanInstructions(args[0], args[1], args[2], args[3], { kind: 'agsdl', instruction: AGSDL_AUTHORING_INSTRUCTION });
+      return buildArchitectPlanInstructions(plan);
     },
   };
 
@@ -6823,6 +6796,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (mode === "Architect") {
+      if (!demoWorkflowJourney) {
+        const draft = confirmedBlueprintDraft(useArchitectLibraryStore.getState());
+        return draft?.conversationId === conversation.id && !conversation.task_id;
+      }
       if (!selectedGroupId && !selectedProjectId) {
         return false;
       }
@@ -7118,7 +7095,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         : strategyFilterForSelectedProvider(toolIds);
     const appState = useAppStore.getState();
     const mode = modeOverride ?? appState.mode;
-    const activePlanContext = appState.activePlanContext;
+    const activePlanContext = demoWorkflowJourney ? appState.activePlanContext : null;
     const filterStrategyMutationToolsForActivePlan = (toolIds: string[]): string[] => {
       if (
         mode !== "Architect" ||
@@ -7126,7 +7103,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ) {
         return toolIds;
       }
-      return toolIds.filter((toolId) => !ARCHITECT_STRATEGY_MUTATION_TOOL_IDS.has(toolId));
+      return toolIds.filter((toolId) => toolId !== "agsdl_update");
     };
     const finalizeAllowedToolIds = (toolIds: string[]): string[] => {
       const uniqueToolIds = filterStrategyMutationToolsForActivePlan(
@@ -8166,7 +8143,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return {
       mode,
       agentType: mode === "Implement" ? app.agentType : null,
-      architectPlan: mode === "Architect" && app.activeArchitectPlanId
+      blueprintId: mode === "Architect" && !demoWorkflowJourney ? selectedBlueprintForConversation(conversationId)?.id : undefined,
+      architectPlan: mode === "Architect" && demoWorkflowJourney && app.activeArchitectPlanId
         ? { planId: app.activeArchitectPlanId, targetBranch: resolveTargetBranch(app.activePlanContext?.targetBranch) }
         : undefined,
       conversationTaskId: chat.conversations.find((conversation) => conversation.id === conversationId)?.task_id ?? null,
@@ -8204,6 +8182,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
   });
 
   const revalidateQueuedExecutionContext = async (entry: QueuedSubmission) => {
+    if (entry.intent.mode === "Architect" && !demoWorkflowJourney) {
+      if (!entry.intent.blueprintId || selectedBlueprintForConversation(entry.input.conversationId)?.id !== entry.intent.blueprintId)
+        throw new Error("The original blueprint is no longer selected.");
+      return resolveProjectExecutionContext({ mode: "Architect", projects: [] });
+    }
     const { revalidateQueuedExecutionContext: revalidate } = await import("./chat/chatQueuedSubmissionContext");
     return revalidate(entry, {
       app: () => useAppStore.getState(), tasks: () => useTaskStore.getState(),
@@ -8233,6 +8216,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     providerInputItems?: unknown[];
     contextRefs?: ChatMessage["context_refs"];
   }): Promise<ChatMessage> => {
+    assertImplementConversationContext(params.conversationId);
+    assertBlueprintAttachment(params.conversationId, params.contextRefs);
     try {
       return await createUserMessage(chatPersistenceAdapters, params);
     } catch (error) {
@@ -8314,7 +8299,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
         allowedForMode: getAllowedToolIdsForCurrentMode,
         filterForImplementTask: filterToolIdsForImplementTask,
-        filterForArchitectPlan: (ids, context) => filterToolIdsForArchitectPlan(ids, context, capturedPlan),
+        filterForArchitectPlan: (ids, context) => demoWorkflowJourney ? filterToolIdsForArchitectPlan(ids, context, capturedPlan) : ids,
         resolveScopedMcp: (...args) => guardPreparationEffect(() => resolveScopedMcpRuntime(...args)),
         reportUnavailableMcpServers: (failures, description) => {
           devLogger.warn("Scoped MCP servers are unavailable", { failures });
@@ -8569,6 +8554,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     messageId: string;
     clearQuestionnaireSession?: boolean;
     updatedMessage?: ChatMessage;
+    assertUserWrite?: () => void;
     replayRecovery?: {
       sessionId: string;
       turnId: string;
@@ -8661,6 +8647,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         if (tauriIpc.isTauriAvailable()) {
           if (params.replayRecovery) {
+            params.assertUserWrite?.();
             await tauriIpc.dbPrepareConversationReplay({
               conversationId: params.conversationId,
               messageId: params.messageId,
@@ -8758,6 +8745,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       contextRefs: findChatMessageInState(get(), params.messageId)?.context_refs ?? [],
     }, {
       mode: params.modeAtSend, agentType: params.agentTypeAtSend, architectPlan: params.architectPlanAtSend,
+      blueprintId: params.modeAtSend === "Architect" && !demoWorkflowJourney ? selectedBlueprintForConversation(params.conversationId)?.id : undefined,
       conversationTaskId: params.taskId, selectedTaskId: params.taskId, executionContext: params.executionContext,
       composerContextRefs: [], composerRevision: -1,
       provider: { selectedProviderId: params.providerId, selectedModelId: params.modelId,
@@ -9527,6 +9515,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       partial: message => persistAssistantPartialStreamResult(message),
       failed: markAssistantPersistenceFailure,
       sync: async (mode, conversationId, architectPlan) => {
+        if (!demoWorkflowJourney && mode === "Architect") return;
         const turn = architectTurns.get(conversationId);
         if (turn) turn.syncInFlight = true;
         try {
@@ -9687,17 +9676,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (
       mode === "Implement" &&
+      getConversationScopeMode(conversation) === "Implement" &&
       conversation.task_id &&
       appState.selectedTaskId !== conversation.task_id
     ) {
       const resolvedTask = resolveImplementTaskForContext({
         selectedTaskId: conversation.task_id,
         tasks: useTaskStore.getState().tasks,
-        standaloneProjects: appState.standaloneProjects,
-        projectGroups: appState.projectGroups,
-        selectedGroupId: appState.selectedGroupId,
-        selectedProjectId: appState.selectedProjectId,
-        localContext: null,
       });
       if (resolvedTask) {
         appState.setSelectedTask(resolvedTask.id);
@@ -10712,6 +10697,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const codeRecoveryKey = getAgentCodeReplayRecoveryKey(conversation.id);
         const codeRecoveryMarker = await tauriIpc.dbGetAppSetting(codeRecoveryKey);
         lifecycle?.assertActive();
+        if (codeRecoveryMarker && getConversationScopeMode(conversation) === "Implement") {
+          replayRecoveryBlockedConversationIds.add(conversation.id);
+          replayRecoveryError =
+            "An interrupted Implement replay was retained without changing its code or transcript.";
+          continue;
+        }
 
         let codeRecovery:
           | {
@@ -10890,6 +10881,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     const completedPendingConversationDeletionIds = new Set<string>();
     for (const saga of pendingLinkedTaskDeletions) {
+      if (!demoWorkflowJourney && saga.ownerType === "plan") continue;
       lifecycle?.assertActive();
       // Deletion plus toolbox cleanup and journal removal are one durable unit.
       if (
@@ -11002,6 +10994,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const pendingConversationIds = new Set(
       pendingLinkedTaskDeletions
         .filter((saga) =>
+          (demoWorkflowJourney || saga.ownerType !== "plan") &&
           saga.phase !== "prepared" &&
           saga.phase !== "draft_reverting" &&
           saga.phase !== "draft_reverted"
@@ -11220,6 +11213,67 @@ export const useChatStore = create<ChatStore>((set, get) => {
     let { mode, selectedGroupId, selectedProjectId, selectedTaskId } =
       appState;
     let state = get();
+    if (mode === "Architect" && !demoWorkflowJourney) {
+      const draft = confirmedBlueprintDraft(useArchitectLibraryStore.getState());
+      if (!draft) return modeFallback(null);
+      if (draft.archived && !draft.conversationId && !draft.history?.legacyConversationId &&
+          !(Array.isArray(draft.history?.origins) && draft.history.origins.some(origin => origin?.transcript)))
+        return modeFallback(null);
+      const linked = await architectLibrary.ensureConversation(draft.id);
+      const isDraftCurrent = () => isCurrentRequest() && confirmedBlueprintDraft(useArchitectLibraryStore.getState()) === draft;
+      lifecycle?.assertActive();
+      if (!isDraftCurrent() || !linked.conversationId || linked.id !== draft.id || linked.projectId !== draft.projectId) return modeFallback(null);
+      const row = await tauriIpc.getConversation(linked.conversationId);
+      lifecycle?.assertActive();
+      if (!isDraftCurrent()) return modeFallback(null);
+      if (!row || row.id !== linked.conversationId || row.scope_mode !== "Architect" || row.task_id) throw new Error("Invalid blueprint conversation");
+      const conversation = mapDbConversationToConversation(row);
+      set(state => ({
+        conversations: [...state.conversations.filter(item => item.id !== row.id), conversation],
+        ...(state.messageLoadStatusByConversationId[row.id] === "ready" &&
+          getOrderedConversationMessages(row.id).length < conversation.message_count ? {
+            messageLoadStatusByConversationId: { ...state.messageLoadStatusByConversationId, [row.id]: "idle" as const },
+          } : {}),
+      }));
+      const recovery = linked.draftRecovery;
+      if (recovery?.toConversationId === row.id && recovery.fromConversationId) {
+        const from = recovery.fromConversationId;
+        get().migrateComposerDraftContext(`conversation:${from}`, `conversation:${row.id}`, saved => {
+          const session = useAgsdlStore.getState().sessions[agsdlSessionKey({ blueprintId: draft.id })];
+          const selections = saved.contextRefs.filter(ref => ref.kind === "agsdl").map(ref => ref.data);
+          // A persisted document selection can also identify its blueprint when
+          // the old conversation key alone is ambiguous.
+          if (selections.some(ref => !isAgsdlReference(ref) ||
+              (ref.blueprintId !== undefined && ref.blueprintId !== draft.id) ||
+              ref.conversationId !== from)) return null;
+          const valid = saved.contextRefs.filter(ref => {
+            if (ref.kind === "agsdl") {
+              const selection = ref.data;
+              if (!isAgsdlReference(selection) || selection.blueprintId !== draft.id || !session ||
+                  selection.persistedRevision !== linked.revision ||
+                  selection.persistedRevision !== session.persistedRevision ||
+                  !isAgsdlChatContextCurrent(selection)) return false;
+              try {
+                for (const path of [selection.path, ...(selection.relatedPaths ?? [])]) {
+                  resolveAgsdlSelectionPath(session.source, path);
+                }
+                return true;
+              } catch { return false; }
+            }
+            // Citations belong to the old chat. A live reference to that chat
+            // could bring the original ambiguous transcript into the new one.
+            return ref.kind !== "source" && !(ref.kind === "conversation" &&
+              ("conversationId" in ref.data && ref.data.conversationId === from));
+          });
+          if (!recovery.owned && (selections.length === 0 ||
+              selections.length !== valid.filter(ref => ref.kind === "agsdl").length)) return null;
+          if (!saved.text && !saved.images.length && !valid.length) return null;
+          return { ...saved, contextRefs: valid };
+        });
+      }
+      if (draft.conversationId !== row.id) useArchitectLibraryStore.setState({ draft: { ...draft, conversationId: row.id } });
+      return modeFallback(row.id);
+    }
     const architectWorkspaceState =
       mode === "Architect"
         ? resolveProjectWorkspaceState({
@@ -11229,8 +11283,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
             selectedProjectId,
           })
         : null;
-    if (mode === 'Implement' && selectedTaskId?.startsWith('task:agsdl:v1:')) return modeFallback(null);
-
     if (
       mode === "Architect" &&
       architectWorkspaceState &&
@@ -11248,6 +11300,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (mode !== "Architect" || !appState.activeArchitectPlanId) {
       clearPendingArchitectConversationsExcept();
     }
+    if (isOperateWorkspace(mode)) return modeFallback(getSelectedConflictInspection());
 
     if (mode === "Architect" && appState.activeArchitectPlanId) {
       const architectResolutionStartedAt = Date.now();
@@ -11593,32 +11646,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         title: task ? `Task - ${task.title}` : "Task Session",
         taskId: selectedTaskId,
         projectId: projectId ?? null,
-        groupId: selectedGroupId,
-        selectConversation: false,
-      });
-      lifecycle?.assertActive();
-      if (!isCurrentRequest()) return modeFallback(null);
-      return modeFallback(created.id);
-    }
-
-    if (mode === "Implement") {
-      const fallbackProjectId =
-        getFocusedProjectForGroup(
-          appState.projectGroups,
-          selectedGroupId,
-          selectedProjectId,
-          localProjectContext,
-        )?.id ??
-        selectedProjectId ??
-        null;
-      const fallbackTitle = fallbackProjectId
-        ? `Repository review`
-        : "Implement Session";
-      const created = await createConversationRecord({
-            lifecycle,
-        title: fallbackTitle,
-        taskId: null,
-        projectId: fallbackProjectId,
         groupId: selectedGroupId,
         selectConversation: false,
       });
@@ -12535,49 +12562,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return get().selectedConversationId;
       }
 
-      let appState = useAppStore.getState();
-      // A verified, currently selected inspection owns the taskless context.
-      // Restoring a remembered task would invalidate that deliberate selection.
-      if (appState.mode === "Implement" && !getSelectedConflictInspection()) {
-        const contextBeforeRead = {
-          mode: appState.mode,
-          selectedGroupId: appState.selectedGroupId,
-          selectedProjectId: appState.selectedProjectId,
-          selectedTaskId: appState.selectedTaskId,
-        };
-        const localContext = appState.selectedGroupId
-          ? await getLocalProjectContextState(appState.selectedGroupId)
-          : null;
-        lifecycle?.assertActive();
-        const currentAppState = useAppStore.getState();
-        if (!isOwnerCurrent() || resolutionGeneration !== conversationResolutionGeneration ||
-          selectionRequestAtStart !== get().selectionRequestId ||
-          currentAppState.mode !== contextBeforeRead.mode ||
-          currentAppState.selectedGroupId !== contextBeforeRead.selectedGroupId ||
-          currentAppState.selectedProjectId !== contextBeforeRead.selectedProjectId ||
-          currentAppState.selectedTaskId !== contextBeforeRead.selectedTaskId) {
-          return get().selectedConversationId;
-        }
-        const resolvedTask = resolveImplementTaskForContext({
-          selectedTaskId: appState.selectedTaskId,
-          tasks: useTaskStore.getState().tasks,
-          standaloneProjects: appState.standaloneProjects,
-          projectGroups: appState.projectGroups,
-          selectedGroupId: appState.selectedGroupId,
-          selectedProjectId: appState.selectedProjectId,
-          localContext,
-        });
-        if (resolvedTask && appState.selectedTaskId !== resolvedTask.id) {
-          appState.setSelectedTask(resolvedTask.id);
-          appState = useAppStore.getState();
-        } else if (!resolvedTask && appState.selectedTaskId) {
-          appState.setSelectedTask(null);
-          appState = useAppStore.getState();
-        }
-      }
-      if (!isOwnerCurrent() || resolutionGeneration !== conversationResolutionGeneration) {
-        return get().selectedConversationId;
-      }
+      const appState = useAppStore.getState();
       const mode = appState.mode;
       const contextKey = buildChatContextKey(appState);
       const stateBeforeResolve = get();
@@ -13312,10 +13297,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       discardComposerDraftsForConversationIds([conversationId]);
     },
 
-    migrateComposerDraftContext: (fromContextKey, toContextKey) => {
+    migrateComposerDraftContext: (fromContextKey, toContextKey, prepareRecovery) => {
       if (!fromContextKey || !toContextKey || fromContextKey === toContextKey) return;
       set((state) => {
-        const draft = state.composerDraftsByContextKey[fromContextKey];
+        const previous = state.composerDraftsByContextKey[fromContextKey];
+        if (!previous || (prepareRecovery && state.composerDraftsByContextKey[toContextKey])) return state;
+        const draft = prepareRecovery ? prepareRecovery(previous) : previous;
         if (!draft) return state;
         const next = { ...state.composerDraftsByContextKey };
         delete next[fromContextKey];
@@ -13325,19 +13312,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const fromConversationId = fromContextKey.startsWith("conversation:")
           ? fromContextKey.slice("conversation:".length)
           : null;
-        if (
+        const canMove =
           !conversationId ||
           (!deletedConversationIds.has(conversationId) &&
             !useConversationArchiveStore
               .getState()
-              .archivedConversationIds.has(conversationId))
-        ) {
+              .archivedConversationIds.has(conversationId));
+        if (prepareRecovery && (!canMove || (conversationId && conversationId in state.pendingComposerDraftByConversationId))) return state;
+        if (canMove) {
           next[toContextKey] = conversationId && fromConversationId
             ? { ...draft, contextRefs: rebindAgsdlContextRefs(draft.contextRefs, fromConversationId, conversationId) }
             : draft;
         }
         persistComposerDrafts(next);
-        return { composerDraftsByContextKey: next };
+        if (!prepareRecovery || !fromConversationId || !(fromConversationId in state.pendingComposerDraftByConversationId)) {
+          return { composerDraftsByContextKey: next };
+        }
+        const pending = { ...state.pendingComposerDraftByConversationId };
+        delete pending[fromConversationId];
+        return { composerDraftsByContextKey: next, pendingComposerDraftByConversationId: pending };
       });
     },
 
@@ -13776,6 +13769,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (hasMultipleAgsdlContexts(capturedContextRefs)) {
         throw buildSendError(i18n.t('agsdl.multipleChatSelections', { ns: 'agsdl', defaultValue: 'Keep only one AgSDL selection before sending.' }));
       }
+      assertBlueprintAttachment(payload.conversationId, capturedContextRefs);
       payload.hiddenContext = submissionHiddenContext(capturedContextRefs, payload.hiddenContext);
       if (capturedContextRefs?.some(ref => ref.agsdl?.contextKind === "runtime")) await assertRuntimeSelectionDestination(capturedContextRefs, payload.conversationId, {
         conversation: () => get().conversations.find(item => item.id === payload.conversationId), plan: getArchitectPlan,
@@ -13800,7 +13794,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const queue = await getQueueRuntime();
         const entry = queue.capture(createConversationTurnId(), capturedInput, capturedQueueSnapshot!);
         entry.input.hiddenContext = capturedInput.hiddenContext;
-        if (entry.intent.mode === 'Architect' && !entry.intent.architectPlan) {
+        if (entry.intent.mode === 'Architect' && !entry.intent.architectPlan && !entry.intent.blueprintId) {
           throw buildSendError('Select a plan before sending an Architect message.');
         }
         const config = await loadScopedTurnConfiguration({
@@ -13818,6 +13812,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           useConversationArchiveStore.getState().archivedConversationIds.has(payload.conversationId)) {
           throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
         }
+        assertImplementConversationContext(payload.conversationId);
+        assertBlueprintAttachment(payload.conversationId, capturedContextRefs);
         await queue.accept(entry, queuedAdmissionStops.get(payload.conversationId) !== admissionStop);
         return "queued";
       }
@@ -13851,6 +13847,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         sessionId: runtime.sessionId, turnId: runtime.turnId, assistantMessageId: runtime.assistantMessageId ?? null,
       } };
       const steerAdmission = await beginChatIntent({ conversationId: payload.conversationId, kind: 'steer', id: messageId });
+      assertImplementConversationContext(payload.conversationId);
+      assertBlueprintAttachment(payload.conversationId, contextRefs);
       if (payload.images?.length) {
         const next = { ...get().messageImagesByMessageId, [messageId]: payload.images };
         if (!persistMessageImageCache(next)) {
@@ -14007,6 +14005,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       if (payload.contextRefs !== undefined) payload = { ...payload, contextRefs: resolvedRefs };
       else snapshot = { ...snapshot, composerContextRefs: resolvedRefs };
+      assertBlueprintAttachment(payload.conversationId, resolvedRefs);
       payload.hiddenContext = submissionHiddenContext(resolvedRefs, payload.hiddenContext);
       if (resolvedRefs?.some(ref => ref.agsdl?.contextKind === "runtime")) await assertRuntimeSelectionDestination(resolvedRefs, payload.conversationId, {
         conversation: () => get().conversations.find(item => item.id === payload.conversationId), plan: getArchitectPlan,
@@ -14019,6 +14018,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         owner: turnRuntime,
         messages: {
           persistence: chatPersistenceAdapters,
+          assertUserWrite: assertBlueprintAttachment,
           saveImages: (messageId, images) => {
             if (pilotTarget && payload.persistedUserMessage?.id === messageId) {
               if (!cacheNativeImages(messageId, images)) throw buildSendError(i18n.t('chat.sendImagesSaveFailed', 'The message could not be saved with its images. Retry the draft.'));
@@ -14079,6 +14079,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           },
           hasPendingArchitectConversation: (id) => pendingArchitectConversationDetailsById.has(id),
           materializeArchitectConversation: materializePendingArchitectConversationIfNeeded,
+          isBlueprintCurrent: (id, conversationId) => useAppStore.getState().mode === "Architect" && selectedBlueprintForConversation(conversationId)?.id === id,
           bindArchitectConversation: bindPendingArchitectConversationIfNeeded,
           syncArchitectMetadata: syncArchitectMetadataFromDb,
           generateMetadata: maybeGenerateConversationMetadata,
@@ -14499,6 +14500,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const validatedHiddenContext = submissionHiddenContext(editContextRefs, editedHiddenContext);
       options = { ...options, hiddenContext: validatedHiddenContext };
       const editedDestination = get().messages.find(message => message.id === messageId)?.conversation_id;
+      if (editedDestination) assertBlueprintAttachment(editedDestination, editContextRefs);
       if (editedDestination && editContextRefs?.some(ref => ref.agsdl?.contextKind === "runtime")) await assertRuntimeSelectionDestination(editContextRefs, editedDestination, {
         conversation: () => get().conversations.find(item => item.id === editedDestination), plan: getArchitectPlan,
       });
@@ -14534,6 +14536,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         set({ lastError: message, sendState: "error" });
         throw buildSendError(message);
       }
+      const editBlueprint = modeAtEdit === "Architect" && !demoWorkflowJourney
+        ? selectedBlueprintForConversation(target.conversation_id) : undefined;
+      if (editBlueprint === null) throw buildSendError("Open the editable blueprint before changing its conversation.");
       if (target.portable_history) {
         throw buildSendError("Imported history is read-only. Start a new message to continue.");
       }
@@ -14549,6 +14554,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       const conversationId = target.conversation_id;
+      const assertEditedUserWrite = () => {
+        if (editBlueprint && (useAppStore.getState().mode !== "Architect" || selectedBlueprintForConversation(conversationId) !== editBlueprint))
+          throw buildSendError("A different blueprint is selected.");
+        assertBlueprintAttachment(conversationId, editContextRefs);
+      };
+      assertEditedUserWrite();
       if (replayRecoveryBlockedConversationIds.has(conversationId)) {
         const message =
           "Replay recovery is pending for this conversation. Refresh the workspace to retry the recovery.";
@@ -14813,6 +14824,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? cloneProviderInputItems(options.providerInputItems)
           : target.provider_input_items;
         if (!tauriIpc.isTauriAvailable()) {
+          assertEditedUserWrite();
           await persistEditedUserMessage({
             messageId,
             turnId,
@@ -14841,6 +14853,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             messageId,
             clearQuestionnaireSession: options?.clearQuestionnaireSession,
             updatedMessage: updatedTargetMessage,
+            assertUserWrite: assertEditedUserWrite,
             replayRecovery: tauriIpc.isTauriAvailable()
               ? {
                   sessionId,
@@ -14889,7 +14902,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           taskId: target.task_id ?? "",
           userContent: newContent,
           modeAtSend: modeAtEdit,
-          architectPlanAtSend: appStateAtEdit.activeArchitectPlanId ? {
+          architectPlanAtSend: demoWorkflowJourney && appStateAtEdit.activeArchitectPlanId ? {
             planId: appStateAtEdit.activeArchitectPlanId,
             targetBranch: resolveTargetBranch(appStateAtEdit.activePlanContext?.targetBranch),
           } : undefined,

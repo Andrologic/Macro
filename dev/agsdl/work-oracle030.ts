@@ -8,8 +8,8 @@ import { evaluateWorkJournal030 } from '../../src/services/agsdlExecution/hostWo
 import { assembleVisibleText } from '../../src/services/agsdlExecution/invariants';
 import { ConformanceError } from '../../src/services/agsdlExecution/exact';
 import { connectValueSchemaValidator030 } from '../../src/services/agsdlExecution/valueSchemaPort030';
-import { NumberToken, parse } from '../../src/vendor/agsdl/v0.3/json.mjs';
-import { validate } from '../../src/vendor/agsdl/v0.3/valueschema.mjs';
+import { NumberToken, parse } from '../../src/vendor/agsdl/v0.4/json.mjs';
+import { validate } from '../../src/vendor/agsdl/v0.4/valueschema.mjs';
 export interface WorkRequest030 { op: 'controller' | 'submission' | 'requires' | 'visible' | 'host' | 'journal' | 'parse'; json: string }
 const validator = connectValueSchemaValidator030({ NumberToken, parse, validate });
 const errorValue = (error: unknown) => error instanceof ConformanceError

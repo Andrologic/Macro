@@ -23,7 +23,7 @@ it('uses the native Start command and preserves exact input under a verified 030
 it('rejects a historical or foreign native snapshot', async () => {
   response = { systemStartId: 'run', flowInvocationId: 'flow', snapshot: { ...snapshot,
     versions: { ...snapshot.versions, snapshot: '1', contract: 'agsdl-0.2.0', profile: 'macro-serial-inline-v1' } } };
-  await expect(ipc.startExecution030(request)).rejects.toThrow('not an AgSDL 0.3 capture');
+  await expect(ipc.startExecution030(request)).rejects.toThrow('not an AgSDL flow capture');
   response = { systemStartId: 'run', flowInvocationId: 'flow', snapshot: { ...snapshot,
     source: { ...source, revision: '2' } } };
   await expect(ipc.startExecution030(request)).rejects.toThrow('differs from the requested source');

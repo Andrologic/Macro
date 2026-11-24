@@ -5,11 +5,11 @@
 import { createHash } from 'node:crypto';
 // @ts-expect-error Historical scanner has no declaration file; its test-only contract is typed below.
 import * as sharedScanner from '../../src/vendor/agsdl/shared/json.mjs';
-import { loadHarnessModule, ModuleError, parse, readWithSpans, stringify, validateExact } from '../../src/vendor/agsdl/v0.3/reader.mjs';
-import type { ExactObject, ExactValue, HarnessModule030, ReaderOptions030 } from '../../src/vendor/agsdl/v0.3/reader.mjs';
-import { SchemaChecker } from '../../src/vendor/agsdl/v0.3/schemacheck.mjs';
-import { Graph, analyse_joins, open_body_forks, addressParts, type JoinInfo } from '../../src/vendor/agsdl/v0.3/graph.mjs';
-import * as permissions from '../../src/vendor/agsdl/v0.3/permissions.mjs';
+import { loadHarnessModule, ModuleError, parse, readWithSpans, stringify, validateExact } from '../../src/vendor/agsdl/v0.4/reader.mjs';
+import type { ExactObject, ExactValue, HarnessModule030, ReaderOptions030 } from '../../src/vendor/agsdl/v0.4/reader.mjs';
+import { SchemaChecker } from '../../src/vendor/agsdl/v0.4/schemacheck.mjs';
+import { Graph, analyse_joins, open_body_forks, addressParts, type JoinInfo } from '../../src/vendor/agsdl/v0.4/graph.mjs';
+import * as permissions from '../../src/vendor/agsdl/v0.4/permissions.mjs';
 import documentSchema from '../../src/vendor/agsdl/v0.3/schema/agsdl.schema.json';
 import moduleSchema from '../../src/vendor/agsdl/v0.3/schema/harness-module.schema.json';
 

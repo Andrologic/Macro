@@ -1,3 +1,4 @@
+import { isFlowDocumentContract } from "../agsdl/contract";
 import type { PublicSnapshot, PublicStartReceipt } from '../../types/generated/ipc';
 import type { StartRequest } from '../agsdlExecution/contracts';
 import type { EngineVersions030, ExecutionProfile030 } from '../agsdlExecution/contracts030';
@@ -12,14 +13,14 @@ export type PublicStartReceipt030 = Omit<PublicStartReceipt, 'snapshot'> & { rea
 
 function snapshot030(snapshot: PublicSnapshot): PublicSnapshot030 {
   const versions = snapshot.versions;
-  if (versions.snapshot !== '2' || versions.contract !== 'agsdl-0.3.0' || versions.profile !== 'macro-agsdl-030-v1') {
-    throw new Error('Native snapshot is not an AgSDL 0.3 capture.');
+  if (versions.snapshot !== '2' || !isFlowDocumentContract(versions.contract) || versions.profile !== 'macro-agsdl-030-v1') {
+    throw new Error('Native snapshot is not an AgSDL flow capture.');
   }
-  return { ...snapshot, versions: { snapshot: '2', contract: 'agsdl-0.3.0', profile: 'macro-agsdl-030-v1',
+  return { ...snapshot, versions: { snapshot: '2', contract: versions.contract, profile: 'macro-agsdl-030-v1',
     compiler: versions.compiler, runtime: versions.runtime, registry: versions.registry } };
 }
 
-/** Native admission validates the 0.3 execution slice. */
+/** Native admission validates the AgSDL execution slice. */
 export async function startExecution030(request: StartRequest030): Promise<PublicStartReceipt030> {
   const receipt = await invoke<PublicStartReceipt>('execution_start', { request });
   const snapshot = snapshot030(receipt.snapshot);
@@ -79,12 +80,41 @@ export function submitExecutionHuman030(input: {
   return invoke('execution_submit_human030', { input });
 }
 
-/** Stop a 0.3 run and wait until its native work has ended. */
+/** Request a run stop and return its native receipt. */
 export function stopExecution030(request: import('../agsdlExecution/contracts').StopRequest): Promise<import('../agsdlExecution/contracts').PublicStopState> {
   return import('./agsdlExecution').then(({ stopExecution }) => stopExecution(request));
 }
 
-/** A 0.3 delivery receipt records native admission, before consumption. */
+/** A delivery receipt records native admission, before consumption. */
 export function deliverExecution030(request: import('../../types/generated/ipc').DeliveryRequest030): Promise<import('../../types/generated/ipc').DeliveryReceipt030> {
   return invoke('execution_deliver030', { request });
+}
+
+export function updateOperateInbox(
+  scope: import('../../types/generated/ipc').RuntimeProjectionScope030,
+  action: import('../../types/generated/ipc').OperateInboxAction,
+): Promise<void> {
+  return invoke('execution_update_operate_inbox', { systemStartId: scope.systemStartId, snapshotId: scope.snapshotId, action });
+}
+
+export type RunOperatorAction030 =
+  | { kind: 'interruptWork' | 'resumeWork'; activationId: string }
+  | { kind: 'pauseRun' | 'resumeRun' };
+
+export interface RunOperatorReceipt030 {
+  eventId: string;
+  revision: string;
+  effectIds: string[];
+}
+
+export function controlExecution030(request: {
+  scope: import('../../types/generated/ipc').RuntimeProjectionScope030;
+  requestId: string;
+  action: RunOperatorAction030;
+}): Promise<RunOperatorReceipt030> {
+  return invoke('execution_control030', { request });
+}
+
+export function deleteExecution030(scope: import('../../types/generated/ipc').RuntimeProjectionScope030): Promise<void> {
+  return invoke('execution_delete030', { scope });
 }

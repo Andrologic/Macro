@@ -1,0 +1,51 @@
+{
+  "contract": "agsdl-0.4.0",
+  "id": "fanout-join-text-not-list",
+  "agents": {
+    "reviewer": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "start",
+    "steps": {
+      "start": {
+        "type": "agent",
+        "agent": "reviewer",
+        "next": [
+          "first",
+          "second"
+        ]
+      },
+      "first": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new",
+        "next": "collect"
+      },
+      "second": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new",
+        "next": "collect"
+      },
+      "collect": {
+        "type": "join",
+        "next": {
+          "step": "summarize",
+          "each": [
+            "branches",
+            "first",
+            "text"
+          ]
+        }
+      },
+      "summarize": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new"
+      }
+    }
+  }
+}

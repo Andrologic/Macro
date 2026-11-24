@@ -1,0 +1,112 @@
+{
+  "contract": "agsdl-0.4.0",
+  "id": "review-changed-files",
+  "title": "Review each changed file",
+  "description": "One reviewer per changed file, eight at a time, posts its comments on the pull request. The first blocker starts no further review and requests changes once the started reviewers have finished posting.",
+  "mcpServers": {
+    "github": {
+      "command": [
+        "github-mcp-server",
+        "stdio"
+      ]
+    }
+  },
+  "agents": {
+    "reviewer": {
+      "harness": "opencode",
+      "description": "Reviews one file of a pull request.",
+      "instructions": "Review the file you are given. Post one pull request comment per problem. Choose blocker if the change must not merge, fine otherwise.",
+      "mcpServers": [
+        "github"
+      ],
+      "permissions": {
+        "preset": "read-only",
+        "rules": [
+          {
+            "action": "mcp",
+            "match": "github",
+            "effect": "allow"
+          }
+        ]
+      }
+    },
+    "maintainer": {
+      "harness": "claude-code",
+      "instructions": "Request changes on the pull request, citing the blocking review.",
+      "mcpServers": [
+        "github"
+      ],
+      "permissions": {
+        "preset": "read-only",
+        "rules": [
+          {
+            "action": "mcp",
+            "match": "github",
+            "effect": "allow"
+          }
+        ]
+      }
+    }
+  },
+  "flow": {
+    "entry": "changed",
+    "steps": {
+      "changed": {
+        "type": "call",
+        "command": "git diff --name-only origin/main...HEAD",
+        "parse": "lines",
+        "next": {
+          "passed": {
+            "step": "review",
+            "each": [
+              "data",
+              "value"
+            ],
+            "concurrency": 8,
+            "max": 50,
+            "message": {
+              "prompt": "Review this changed file.",
+              "resources": {
+                "file": {
+                  "from": [
+                    "item"
+                  ]
+                }
+              }
+            }
+          },
+          "failed": []
+        }
+      },
+      "review": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new",
+        "timeoutMs": 600000,
+        "next": {
+          "blocker": "verdict",
+          "fine": "verdict"
+        }
+      },
+      "verdict": {
+        "type": "join",
+        "quorum": {
+          "count": 1,
+          "accept": [
+            "blocker"
+          ]
+        },
+        "remaining": "wait",
+        "next": {
+          "reached": "request-changes",
+          "missed": []
+        }
+      },
+      "request-changes": {
+        "type": "agent",
+        "agent": "maintainer",
+        "prompt": "Request changes, citing the blocking review below."
+      }
+    }
+  }
+}

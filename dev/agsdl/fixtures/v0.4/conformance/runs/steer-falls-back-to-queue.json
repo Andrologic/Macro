@@ -1,0 +1,32 @@
+{
+  "description": "The receiving work ends before receipt. Once non-receipt is established, the same message starts its own work and that work supplies the branch result.",
+  "document": "cases/steer-in-branch.json",
+  "timeline": [
+    { "work": "start", "returns": { "text": "Ship the release." } },
+    { "work": "watch", "returns": { "text": "Update the changelog." } },
+    { "running": [{ "step": "code" }] },
+    { "work": "code", "returns": { "text": "Release ready." } },
+    { "running": [] },
+    { "steer": { "to": "signal", "nth": 1, "outcome": "not-received" } },
+    { "running": [{ "step": "signal" }] },
+    { "work": "signal", "returns": { "text": "Changelog updated." } },
+    { "running": [{ "step": "review" }] },
+    { "work": "review", "returns": { "text": "Done.", "choice": "done" } }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": { "start": 1, "watch": 1, "code": 1, "signal": 1, "review": 1 },
+    "messages": [{ "to": "signal", "prompt": "Update the changelog." }],
+    "joins": [
+      {
+        "join": "merge",
+        "outcome": "done",
+        "branches": {
+          "code": { "text": "Release ready." },
+          "watch": { "text": "Changelog updated." }
+        }
+      }
+    ],
+    "failures": []
+  }
+}

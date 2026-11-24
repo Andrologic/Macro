@@ -60,6 +60,17 @@ const render = () => act(async () => { root.render(<SettingsModal />); });
 const button = (id: string) => [...document.body.querySelectorAll('nav button')].find((node) => node.textContent === id) as HTMLButtonElement;
 
 describe('settings contributions', () => {
+  it('falls back to the first available setting when opening the removed Git workflow tab', async () => {
+    expect(builtinIds).not.toContain('architect');
+    expect(builtinIds).toContain('pilot');
+    settingsRegistry.register(entry('test.a'));
+    useAppStore.setState({ activeSettingsTab: 'architect' });
+
+    await render();
+
+    expect(document.body.querySelector('[data-testid="test.a"]')).not.toBeNull();
+  });
+
   it('renders and navigates synthetic entries in deterministic order without shell branches', async () => {
     settingsRegistry.register(entry('test.b'));
     settingsRegistry.register(entry('test.a'));

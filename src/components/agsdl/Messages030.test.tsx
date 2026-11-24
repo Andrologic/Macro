@@ -10,3 +10,11 @@ it('renders consumption, queue fallback and the agent response without inventing
   for (const text of ['Sent', 'Moved to queue', 'Delivered', 'Consumed', 'Change the summary', 'Updated summary']) expect(html).toContain(text);
   expect(html).not.toContain('steerPending');
 });
+
+it('states when a flow instance has no exposed messages or final text', () => {
+  const run = inspectionFixture030();
+  const html = renderToStaticMarkup(<Messages030 run={run} instanceId={run.state.instances[0].id} stale={false} refresh={() => {}} />);
+  expect(html).toContain('No exchanges are available from the runtime for this instance.');
+  expect(html).not.toContain('<textarea');
+  expect(html).not.toContain('Inspect the synthetic sample');
+});

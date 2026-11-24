@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { loadHumanRequests030, humanAnswer030, exactQuestionAnswer030, humanRequestView030 } from './humanRequests030';
+import { loadHumanRequests030, humanAnswer030, exactQuestionAnswer030, humanRequestView030, nativeMcpSummary030 } from './humanRequests030';
 import type { HumanScope030 } from '../../types/generated/ipc/HumanScope030';
 import type { HumanPage030 } from '../../types/generated/ipc/HumanPage030';
 import type { PublicHumanRequest030 } from '../../types/generated/ipc/PublicHumanRequest030';
@@ -7,6 +7,54 @@ const scope: HumanScope030 = { systemStartId: 'run', source: { owner: { projectI
 const item = (id: string): PublicHumanRequest030 => ({ id, revision: '0', status: 'open', workIds: [], content: { kind: 'approval', title: 'T', description: 'D', message: 'M', choices: ['go'] } });
 const first: HumanPage030 = { scope, cursor: '', total: '65', requests: Array.from({length:64}, (_, i) => item(String(i))), nextPage: { scope, cursor: '', offset: 64 } };
 const last: HumanPage030 = { scope, cursor: '', total: '65', requests: [item('64')], nextPage: null };
+it('previews an MCP argument array without materializing its elements', () => {
+  const args = '{"nested":[{"text":"escaped \\" ] } \\\\ quote"},' +
+    '1,'.repeat(1024 * 1024) + '9007199254740993]}';
+  const raw = '{"nativeRequest":{"params":{"arguments":' + args +
+    ',"server":"issues","tool":"lookup"},"method":"mcp/tool/requestApproval"}}';
+  const summary = nativeMcpSummary030(raw);
+  expect(summary).toMatchObject({ server: 'issues', tool: 'lookup', truncated: true });
+  expect(summary?.preview).toBe(args.slice(0, 4096) + '…');
+  expect(summary?.fullArguments()).toBe(args);
+});
+
+it('validates the complete MCP approval envelope, including skipped values', () => {
+  const approval = (args: string) => '{"nativeRequest":{"method":"mcp/tool/requestApproval","params":' +
+    '{"server":"issues","tool":"lookup","arguments":' + args + '}}}';
+  for (const args of [
+    '{"missing":}', '{"mismatch":[1}}', '{"trailing":[1,]}', '{"trailing":1,}',
+    '{"badNumber":01}', '{"badNumber":1.}', '{"badNumber":1e}', '{"badLiteral":trueish}',
+    '{"badEscape":"\\x00"}', '{"badEscape":"\\u000z"}', '{"rawControl":"\t"}',
+    '{"deep":' + '['.repeat(129) + '0' + ']'.repeat(129) + '}',
+  ]) {
+    expect(nativeMcpSummary030(approval(args))).toBeNull();
+  }
+  expect(nativeMcpSummary030(approval('{}') + ' false')).toBeNull();
+  expect(nativeMcpSummary030(approval('{}').replace('"nativeRequest"', '"unused":[},"nativeRequest"'))).toBeNull();
+  expect(nativeMcpSummary030(approval('{}').replace('"tool":', '"to\\u006fl":"other","tool":'))).toBeNull();
+  const args = '{"escaped":"\\u000a\\/", "all":[-0.1e-3,true,false,null,{},[]]}';
+  const raw = approval(args).replace('"nativeRequest"', '"native\\u0052equest"');
+  expect(nativeMcpSummary030(' \r\n' + raw + '\t')?.fullArguments()).toBe(args);
+});
+
+it('bounds each decoded MCP label independently of the arguments', () => {
+  const server = 'x'.repeat(1024 * 1024);
+  const tool = 'a'.repeat(254) + '🧪' + '\\u0062'.repeat(256);
+  const raw = '{"nativeRequest":{"method":"mcp/tool/requestApproval","params":' +
+    '{"server":"' + server + '","tool":"' + tool + '","arguments":{}}}}';
+  const summary = nativeMcpSummary030(raw);
+  expect(summary?.server).toBe('x'.repeat(255) + '…');
+  expect(summary?.tool).toBe('a'.repeat(254) + '…');
+  expect(summary?.preview).toBe('{}');
+  expect(summary?.truncated).toBe(false);
+
+  const controls = raw.replace(tool, '\\u202e'.repeat(256));
+  const visibleTool = nativeMcpSummary030(controls)?.tool;
+  expect(visibleTool).toHaveLength(256);
+  expect(visibleTool).toStartWith('\\u202e');
+  expect(visibleTool).toEndWith('…');
+});
+
 it('assembles exact pages only after verifying continuation, scope, cursor and total', async () => {
   expect((await loadHumanRequests030(scope, async (_s, next) => next ? last : first, () => true))?.requests).toHaveLength(65);
   await expect(loadHumanRequests030(scope, async (_s, next) => next ? {...last, cursor: 'changed'} : first, () => true)).rejects.toThrow('Invalid');
@@ -110,6 +158,30 @@ it('requires a successful correlated read before retrying a definitive refusal',
   transport.setCurrent({ ...request, revision: '1' });
   await client.refresh(request);
   expect(client.blocked(request)).toBe(false);
+});
+
+it('retains request readback by run, capture and revision', async () => {
+  const request = humanFixture030();
+  const transport = humanTransportDouble030();
+  const client = createHumanRequestClient030({ ...transport, storage: memoryDraftStorage030() });
+  const latest = { ...request, revision: '2' };
+  transport.setCurrent(latest);
+  await client.refresh(request, 'capture-one');
+  expect(client.currentRequest(request, 'capture-one')).toBe(latest);
+  expect(client.currentRequest(request, 'capture-two')).toBe(request);
+  const otherRun = { ...request, scope: { ...request.scope, systemStartId: 'other-run' } };
+  expect(client.currentRequest(otherRun, 'capture-one')).toBe(otherRun);
+  if (latest.clock.kind !== 'available') throw new Error('Expected a native clock');
+  const clock = { ...latest.clock, value: { ...latest.clock.value, observedAtMs: (BigInt(latest.clock.value.observedAtMs) + 50000n).toString() } };
+  expect(client.currentRequest({ ...latest, clock }, 'capture-one').clock).toEqual(clock);
+  const newerProjection = { ...request, revision: '3' };
+  expect(client.currentRequest(newerProjection, 'capture-one')).toBe(newerProjection);
+
+  transport.setCurrent(request);
+  await expect(client.refresh(request, 'capture-one')).rejects.toThrow('REVISION_CONFLICT');
+  await client.send(request, { kind: 'approval', choice: 'refuser', comment: '' }, 'capture-one');
+  expect(transport.submissions).toHaveLength(0);
+  expect(client.currentRequest(request, 'capture-one')).toBe(latest);
 });
 
 it('does not submit if the local attempt cannot be retained', () => {

@@ -1,4 +1,4 @@
-import { agsdlContextForModel, readRuntimeCapture } from "../agsdl/chatContextPayload";
+import { readAgsdlSelectionPayload, readRuntimeCapture } from "../agsdl/chatContextPayload";
 import { sameRuntimeReference } from "../agsdl/runtimeSelection";
 import { serializeAgsdlChatContext } from "../agsdl/selectionContext";
 import type { Citation } from "../../stores/useCitationsStore";
@@ -109,7 +109,8 @@ export function submissionHiddenContext(refs: readonly PersistedContextReference
   if (supplied?.includes('<agsdl_selection>')) {
     const block = selection ? serializeAgsdlChatContext(selection) : undefined;
     if (block && supplied.includes(block)) return supplied;
-    if (!selection && agsdlContextForModel(supplied)) return supplied;
+    const legacy = readAgsdlSelectionPayload(supplied, true);
+    if (!selection && legacy && legacy.blueprint_id === undefined) return supplied;
     throw new Error('AgSDL context differs from its reference');
   }
   return [supplied, serializeAgsdlChatContext(selection)].filter(Boolean).join('\n\n') || undefined;

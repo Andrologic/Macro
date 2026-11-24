@@ -23,6 +23,7 @@ import type {
   AppBootstrapController,
   AppBootstrapSnapshot,
 } from "./services/appBootstrap";
+import { ARCHITECT_LIBRARY_IMPORT_STEP } from "./services/ipc/architectLibrary";
 import {
   getDatabaseInitializationStatus,
   isTauriAvailable,
@@ -37,7 +38,6 @@ import { BROWSER_RUNTIME_SESSION_REPLACED_EVENT } from "./services/browserRuntim
 // =============================================================================
 // These modals are not needed immediately on startup and can be loaded on-demand
 
-const DiffModal = lazy(() => import("./components/modals/DiffModal"));
 const SettingsModal = lazy(() => import("./components/settings/SettingsModal"));
 const ProjectModal = lazy(() => import("./components/modals/ProjectModal"));
 const ProjectNavigator = lazy(() =>
@@ -45,8 +45,8 @@ const ProjectNavigator = lazy(() =>
     default: module.ProjectNavigator,
   })),
 );
-const ProjectGitFlowModal = lazy(
-  () => import("./components/modals/ProjectGitFlowModal"),
+const ProjectAccessModal = lazy(
+  () => import("./components/modals/ProjectAccessModal"),
 );
 const CodeFileViewerModal = lazy(
   () => import("./components/modals/CodeFileViewerModal"),
@@ -468,6 +468,30 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
     void (application?.track(retry) ?? retry);
   };
 
+  const architectImportWarning = initStatus.warnings[ARCHITECT_LIBRARY_IMPORT_STEP];
+  useEffect(() => {
+    if (!initStatus.critical || !architectImportWarning) return;
+    notify.actionRequired(t("startup.architectImportIncomplete", "Architect library import is incomplete."), {
+      description: t("startup.architectImportRetryHint", "Check the reported problem, then choose Retry.") + " " + architectImportWarning,
+      tone: "warning",
+      notificationKey: "architect-library-import",
+      actions: [{
+        label: t("common.retry", "Retry"),
+        onClick: async () => {
+          const controller = appBootstrapRef.current;
+          if (!controller?.getSnapshot().warnings[ARCHITECT_LIBRARY_IMPORT_STEP]) return;
+          await controller.retryArchitectLibrary();
+          if (controller.getSnapshot().warnings[ARCHITECT_LIBRARY_IMPORT_STEP]) return;
+          const { useArchitectLibraryStore } = await import("./stores/useArchitectLibraryStore");
+          const library = useArchitectLibraryStore.getState();
+          if (library.projects.status !== "idle") {
+            await Promise.all([library.refreshProjects(), library.refreshBlueprints()]);
+          }
+        },
+      }],
+    });
+  }, [initStatus.critical, architectImportWarning, t]);
+
   const lastRecoveryToastKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (
@@ -643,13 +667,12 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
 
       {/* Modals - Lazy Loaded with Suspense */}
       <Suspense fallback={null}>
-        <DiffModal />
         <SettingsModal />
         <ProjectModal />
         {projectNavigatorOpen ? (
           <ProjectNavigator isOpen onClose={closeProjectNavigator} />
         ) : null}
-        <ProjectGitFlowModal />
+        <ProjectAccessModal />
         <CodeFileViewerModal />
         <AppUpdateController enabled={initStatus.ready} />
         <ReleaseNotesModal enabled={initStatus.ready} />

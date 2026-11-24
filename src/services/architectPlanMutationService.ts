@@ -13,6 +13,7 @@ buildUpsertReplicaMutationTarget,
 enqueueArchitectPlanCreation,
 enqueueArchitectPlanMutation,
 getPlanExecutionModes,
+recoverArchitectPlanReplicaMutations,
 runArchitectPlanReplicaMutation,
 type ArchitectPlanReplicaMutationTarget,
 } from './architectPlanMutationPersistence';
@@ -68,6 +69,7 @@ type CreateArchitectPlanInput,
 } from './architectPlanReadService';
 import { readIndexAtScope,readPlanChatAtScope } from './architectPlanReplicaStorage';
 import { normalizeArchitectPlanIdList } from './architectPlanScope';
+import type { PlanLocator } from './durableIdentity';
 import { normalizePlanIcon } from './planIcon';
 import { type ValidProjectRegistrySnapshot } from './validProjectRegistry';
 
@@ -883,6 +885,23 @@ export const setActiveArchitectPlan = async (
   });
 };
 
+const hardDeleteArchitectPlanReplicas = async (
+  branchName: string,
+  replicaSet: ArchitectPlanReplicaSet,
+  registrySnapshot: ValidProjectRegistrySnapshot | null | undefined,
+  deps: ResolvedArchitectPlanServiceDependencies,
+): Promise<void> => {
+  const plan = replicaSet.canonical.plan;
+  const targets = await Promise.all(dedupeScopes(replicaSet.expectedScopes).map((scope) =>
+    buildRemoveReplicaMutationTarget({ scope, branchName, planId: plan.id, plan, registrySnapshot })
+  ));
+  await runArchitectPlanReplicaMutation({
+    branchName, planId: plan.id, operation: 'delete', targets, registrySnapshot, deps,
+    commitMessage: `chore(metadata): hard delete architect plan ${plan.id}`,
+  });
+  invalidateArchitectPlanRuntimeCaches({ branchName, planId: plan.id });
+};
+
 export const deleteArchitectPlan = async (input: {
   branchName: string;
   planId: string;
@@ -899,25 +918,8 @@ export const deleteArchitectPlan = async (input: {
     if (!replicaSet) {
       throwPlanMetadataMissing(normalizedBranch, safeId);
     }
-    const scopes = dedupeScopes(replicaSet.expectedScopes);
-
     if (input.hardDelete) {
-      const targets = await Promise.all(scopes.map((scope) => buildRemoveReplicaMutationTarget({
-        scope,
-        branchName: normalizedBranch,
-        planId: safeId,
-        plan: replicaSet.canonical.plan,
-        registrySnapshot,
-      })));
-      await runArchitectPlanReplicaMutation({
-        branchName: normalizedBranch, planId: safeId, operation: 'delete', targets, registrySnapshot, deps,
-        commitMessage: `chore(metadata): hard delete architect plan ${safeId}`,
-      });
-      invalidateArchitectPlanRuntimeCaches({
-        branchName: normalizedBranch,
-        planId: safeId,
-      });
-      return;
+      return hardDeleteArchitectPlanReplicas(normalizedBranch, replicaSet, registrySnapshot, deps);
     }
 
     const deletedRecord = applyArchitectPlanLifecycleForStatus({
@@ -933,7 +935,7 @@ export const deleteArchitectPlan = async (input: {
       throwPlanMetadataMissing(normalizedBranch, safeId);
     }
     const deleted = deletedResult.plan;
-    const targets = await Promise.all(scopes.map((scope) => buildUpsertReplicaMutationTarget({
+    const targets = await Promise.all(dedupeScopes(replicaSet.expectedScopes).map((scope) => buildUpsertReplicaMutationTarget({
       scope,
       branchName: normalizedBranch,
       plan: deleted,
@@ -978,6 +980,48 @@ export const restoreArchitectPlan = async (
   return updateArchitectPlan({ branchName: normalizedBranch, planId, status: restoredStatus }, deps);
 };
 
+const writeArchitectPlanArchiveStatus = async (
+  branchName: string,
+  replicaSet: ArchitectPlanReplicaSet,
+  operation: 'archive' | 'restore',
+  registrySnapshot: ValidProjectRegistrySnapshot | null | undefined,
+  deps: ResolvedArchitectPlanServiceDependencies,
+): Promise<ArchitectPlanRecord> => {
+  const existing = replicaSet.canonical.plan;
+  const planId = existing.id;
+  const record = applyArchitectPlanLifecycleForStatus({
+    ...existing,
+    status: operation === 'archive' ? 'archived' : resolveArchivedArchitectPlanRestoreStatus(existing),
+    updatedAt: new Date().toISOString(),
+    revision: (existing.revision || 1) + 1,
+  }, existing.status);
+  const { plan } = sanitizeArchitectPlanRecord(branchName, planId, record, registrySnapshot, {
+    logContext: `plan_${operation}`,
+  });
+  if (!plan) throwPlanMetadataMissing(branchName, planId);
+  const targets = await Promise.all(dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
+    const target = await buildUpsertReplicaMutationTarget({
+      scope,
+      branchName,
+      plan,
+      registrySnapshot,
+      chatMessageCount: replicaSet.canonical.manifest.conversation.messageCount,
+    });
+    if (operation === 'archive' && target.index.activePlanId === planId) {
+      target.index.activePlanId = target.index.plans.find(
+        (summary) => summary.status !== 'deleted' && summary.status !== 'archived',
+      )?.id ?? null;
+    }
+    return target;
+  }));
+  await runArchitectPlanReplicaMutation({
+    branchName, planId, operation, targets, registrySnapshot, deps,
+    commitMessage: `chore(metadata): ${operation} architect plan ${planId}`,
+  });
+  invalidateArchitectPlanRuntimeCaches({ branchName, planId });
+  return plan;
+};
+
 export const archiveArchitectPlan = async (
   branchName: string,
   planId: string,
@@ -993,46 +1037,50 @@ export const archiveArchitectPlan = async (
     }, deps);
     if (!replicaSet) throwPlanMetadataMissing(normalizedBranch, safeId);
     assertPlanReplicaSetWritable(replicaSet, 'archive');
-    const now = new Date().toISOString();
-    const archivedRecord = applyArchitectPlanLifecycleForStatus({
-      ...replicaSet.canonical.plan,
-      status: 'archived',
-      updatedAt: now,
-      revision: (replicaSet.canonical.plan.revision || 1) + 1,
-    }, replicaSet.canonical.plan.status);
-    const archivedResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, archivedRecord, registrySnapshot, {
-      logContext: 'plan_archive',
-    });
-    if (!archivedResult.plan) {
-      throwPlanMetadataMissing(normalizedBranch, safeId);
-    }
-    const archived = archivedResult.plan;
-    const targets = await Promise.all(dedupeScopes(replicaSet.expectedScopes).map((scope) =>
-      buildUpsertReplicaMutationTarget({
-        scope,
-        branchName: normalizedBranch,
-        plan: archived,
-        registrySnapshot,
-        chatMessageCount: replicaSet.canonical.manifest.conversation.messageCount,
-      }).then((target) => ({
-        ...target,
-        index: {
-          ...target.index,
-          activePlanId: target.index.activePlanId === safeId
-            ? target.index.plans.find((plan) => plan.status !== 'deleted' && plan.status !== 'archived')?.id || null
-            : target.index.activePlanId,
-        },
-      }))
-    ));
-    await runArchitectPlanReplicaMutation({
-      branchName: normalizedBranch, planId: safeId, operation: 'archive', targets, registrySnapshot, deps,
-      commitMessage: `chore(metadata): archive architect plan ${safeId}`,
-    });
-    invalidateArchitectPlanRuntimeCaches({
-      branchName: normalizedBranch,
-      planId: safeId,
-    });
+    const archived = await writeArchitectPlanArchiveStatus(normalizedBranch, replicaSet, 'archive', registrySnapshot, deps);
     return (await getArchitectPlan(normalizedBranch, safeId, deps)) || archived;
+  });
+};
+
+export const mutateAgsdlPlanLifecycle = async (
+  { branchName, planId, operation, expectedRevision }: PlanLocator & {
+    operation: 'archive' | 'restore' | 'delete';
+    expectedRevision: number;
+  },
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies(),
+): Promise<void> => {
+  if (
+    branchName !== normalizeBranchName(branchName) ||
+    branchName.split('/').some((segment) => !segment || segment === '.' || segment === '..') ||
+    planId !== sanitizeId(planId) || planId === '.' || planId === '..'
+  ) {
+    throw new Error('Invalid AgSDL plan identity.');
+  }
+  assertGitFlowTargetBranch(branchName);
+
+  return enqueueArchitectPlanMutation(branchName, planId, async () => {
+    await recoverArchitectPlanReplicaMutations(deps);
+    const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+    const replicaSet = await loadPlanReplicaSet(branchName, planId, { registrySnapshot, disableAutoHeal: true }, deps);
+    const plan = replicaSet?.canonical.plan;
+    if (!replicaSet || !plan?.agsdl || plan.id !== planId || plan.targetBranch !== branchName) {
+      throwPlanMetadataMissing(branchName, planId);
+    }
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1 || plan.revision !== expectedRevision) {
+      throw new Error('The AgSDL plan changed. Reload it before trying again.');
+    }
+    const { canArchive, canRestore, canDelete } = getArchitectPlanCrudCapabilities(plan);
+    if (!(operation === 'archive' ? canArchive : operation === 'restore' ? canRestore : canDelete)) {
+      throw new Error(`Cannot ${operation} AgSDL plan ${planId} in status ${plan.status}.`);
+    }
+    if (plan.missingProjectIds?.length) {
+      throw new Error(`Cannot ${operation} AgSDL plan ${planId} while expected project replicas are missing.`);
+    }
+    if (operation === 'delete') {
+      await hardDeleteArchitectPlanReplicas(branchName, replicaSet, registrySnapshot, deps);
+    } else {
+      await writeArchitectPlanArchiveStatus(branchName, replicaSet, operation, registrySnapshot, deps);
+    }
   });
 };
 
@@ -1047,6 +1095,7 @@ export interface ArchitectPlanMutationService {
   deleteArchitectPlan: typeof deleteArchitectPlan;
   restoreArchitectPlan: typeof restoreArchitectPlan;
   archiveArchitectPlan: typeof archiveArchitectPlan;
+  mutateAgsdlPlanLifecycle: typeof mutateAgsdlPlanLifecycle;
 }
 
 export const createArchitectPlanMutationService = (overrides: ArchitectPlanServiceDependencies = {}): ArchitectPlanMutationService => {
@@ -1061,5 +1110,6 @@ export const createArchitectPlanMutationService = (overrides: ArchitectPlanServi
     deleteArchitectPlan: (input) => deleteArchitectPlan(input, deps),
     restoreArchitectPlan: (branchName, planId) => restoreArchitectPlan(branchName, planId, deps),
     archiveArchitectPlan: (branchName, planId) => archiveArchitectPlan(branchName, planId, deps),
+    mutateAgsdlPlanLifecycle: (input) => mutateAgsdlPlanLifecycle(input, deps),
   };
 };

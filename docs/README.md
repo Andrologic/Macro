@@ -5,7 +5,7 @@ parcours correspondant à votre usage.
 
 | Vous voulez… | Commencez ici |
 | --- | --- |
-| Utiliser Macro et réaliser une première modification | [Guide utilisateur](user-guide/README.md) |
+| Utiliser Macro et créer un premier système | [Guide utilisateur](user-guide/README.md) |
 | Exécuter un travail comme agent dans Macro | [Documentation agents](agents/README.md) |
 | Développer Macro ou contribuer au dépôt | [Contribution](../CONTRIBUTING.md) et [développement](../DEVELOPMENT.md) |
 
@@ -24,6 +24,8 @@ contribue au code de Macro commence également par [AGENTS.md](../AGENTS.md).
 
 Ces documents gardent leur rôle et leur emplacement :
 
+- [Systèmes agentiques](agentic-systems.md), pour le recentrage du produit sur
+  AgSDL et les décisions qui priment sur la spécification en attendant sa réécriture.
 - [Installation](../INSTALL.md) et [support](../SUPPORT.md).
 - [Spécification fonctionnelle](functional-spec.md), pour le comportement cible.
 - [Architecture technique](technical-architecture.md), pour les responsabilités
@@ -40,13 +42,9 @@ Un guide pratique décrit le comportement disponible dans la version qu'il couvr
 ## Entretenir les guides
 
 Les premiers guides sont rédigés en français. Les libellés cités correspondent
-à l'interface française ; les modes Architect, Implement et Chat gardent leur nom.
+à l'interface française ; les modes portent les noms Architect, Operate et Chat.
 
-La base rédactionnelle initiale est la révision `1d983877` de `develop`,
-consultée le 20 octobre 2026. Son manifeste indique la version 0.1.8. Les étapes et les libellés ont été relus
-dans le code et les traductions. Le parcours complet doit encore être essayé
-dans l'application avant une publication comme tutoriel vérifié sur une version
-distribuée.
+Les guides de prise en main décrivent l’étape 0 du parcours AgSDL. Les actions ont été contrôlées dans les composants et les traductions. La vérification de bout en bout dans l’application reste à faire avant de publier ce tutoriel pour une version distribuée.
 
 Pour ajouter ou modifier une procédure :
 

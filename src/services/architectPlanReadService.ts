@@ -31,6 +31,7 @@ import {
   getPlanDir,
   logArchitectPlanActivationLoad,
   mergePlanSummaries,
+  matchesStoredArchitectPlanBranch,
   normalizeBranchName,
   normalizeContextProjectIds,
   normalizeProjectIds,
@@ -212,7 +213,8 @@ export const listLocalTargetBranches = (): string[] => {
 };
 
 export const listTargetBranchesAtScope = async (
-  scope: ArchitectMetadataScope
+  scope: ArchitectMetadataScope,
+  observeOnly = false,
 ): Promise<string[]> => {
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
     return listLocalTargetBranches();
@@ -233,8 +235,12 @@ export const listTargetBranchesAtScope = async (
       entries
         .filter((entry) => entry.kind === 'file')
         .map((entry) => entry.relative_path.replace(/\\/g, '/').replace(/^\/+/, ''))
-        .filter((relativePath) => relativePath.endsWith(suffix))
-        .map((relativePath) => normalizeBranchName(relativePath.slice(0, -suffix.length)))
+        .flatMap((relativePath) => {
+          if (relativePath.endsWith(suffix)) return [relativePath.slice(0, -suffix.length)];
+          const branch = observeOnly ? relativePath.match(/^(.+)\/plans\/[^/]+\/plan\.json$/)?.[1] : undefined;
+          return branch ? [branch] : [];
+        })
+        .map((branch) => normalizeBranchName(branch))
         .filter((branchName) => branchName.length > 0)
     ));
   } catch {
@@ -245,14 +251,15 @@ export const listTargetBranchesAtScope = async (
 export const readAggregatedIndex = async (
   branchName: string,
   registrySnapshot?: ValidProjectRegistrySnapshot | null,
-  deps?: ResolvedArchitectPlanServiceDependencies
+  deps?: ResolvedArchitectPlanServiceDependencies,
+  existingOnly = false,
 ): Promise<ArchitectPlanIndex> => {
   const normalized = normalizeBranchName(branchName);
   const resolvedDeps = deps ?? resolveArchitectPlanServiceDependencies();
   const resolvedRegistrySnapshot = resolvedDeps.tauri.isTauriAvailable()
     ? registrySnapshot ?? await resolvedDeps.loadRegistrySnapshot({ getAppState: resolvedDeps.getAppState })
     : registrySnapshot;
-  const cacheKey = `${getArchitectPlanIndexCacheKey(normalized)}::${getArchitectPlanCacheScope(resolvedDeps, resolvedRegistrySnapshot)}`;
+  const cacheKey = `${getArchitectPlanIndexCacheKey(normalized)}::${getArchitectPlanCacheScope(resolvedDeps, resolvedRegistrySnapshot)}::${existingOnly}`;
 
   return await loadCachedArchitectPlanValue({
     cache: architectPlanIndexCache,
@@ -286,7 +293,10 @@ export const readAggregatedIndex = async (
       const indexes = await Promise.all(
         dedupedScopes.map(async (scope) => ({
           scope,
-          index: await readIndexAtScope(scope, normalized, resolvedRegistrySnapshot),
+          index: await readIndexAtScope(
+            existingOnly ? existingMetadataScope(scope) : scope,
+            normalized, resolvedRegistrySnapshot, existingOnly,
+          ),
         }))
       );
 
@@ -329,12 +339,13 @@ export const readAggregatedIndex = async (
 };
 
 export const listArchitectPlanTargetBranchesImpl = async (
-  deps: ResolvedArchitectPlanServiceDependencies
+  deps: ResolvedArchitectPlanServiceDependencies,
+  existingOnly = false,
 ): Promise<string[]> => {
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const scopes = await resolveMetadataScopes(undefined, { includeAllKnown: true }, registrySnapshot, deps);
   const discoveredBranches = (
-    await Promise.all(scopes.map((scope) => listTargetBranchesAtScope(scope)))
+    await Promise.all(scopes.map((scope) => listTargetBranchesAtScope(existingOnly ? existingMetadataScope(scope) : scope, existingOnly)))
   ).flat();
 
   return Array.from(new Set([
@@ -798,12 +809,14 @@ export const buildArchitectPlanActivationSnapshot = async (params: {
   planId: string;
   summary?: ArchitectPlanSummary | null;
   registrySnapshot?: ValidProjectRegistrySnapshot | null;
+  requireStoredConversation?: boolean;
 }): Promise<ArchitectPlanActivationSnapshot | null> => {
   const planResult = await readPlanAtScopeWithDiagnostics(
     params.scope,
     params.branchName,
     params.planId,
-    params.registrySnapshot
+    params.registrySnapshot,
+    params.requireStoredConversation,
   );
   if (!planResult.plan || planResult.plan.status === 'deleted') {
     return null;
@@ -814,6 +827,10 @@ export const buildArchitectPlanActivationSnapshot = async (params: {
     params.branchName,
     params.planId
   );
+  if (params.requireStoredConversation &&
+      !matchesStoredArchitectPlanBranch(storedManifest?.targetBranch, params.branchName)) {
+    return null;
+  }
   const fallbackProjectIds = params.summary
     ? getArchitectPlanActionableProjectIds(params.summary)
     : resolvePlanProjectIds(planResult.plan);
@@ -861,7 +878,8 @@ export const buildArchitectPlanActivationSnapshot = async (params: {
     typeof storedManifest.conversation === 'object' &&
     typeof storedManifest.conversation.conversationId === 'string'
       ? storedManifest.conversation.conversationId
-      : params.summary?.conversationId ?? planResult.plan.conversationId ?? null;
+      : (params.requireStoredConversation ? null : params.summary?.conversationId) ??
+        planResult.plan.conversationId ?? null;
   const chatMessageCount =
     typeof params.summary?.chatMessageCount === 'number'
       ? params.summary.chatMessageCount
@@ -1044,6 +1062,7 @@ export const loadArchitectPlanActivationPayloadImpl = async (
           planId: safeId,
           summary,
           registrySnapshot,
+          requireStoredConversation: options.requireStoredConversation,
         })
       )
     )
@@ -1150,7 +1169,7 @@ export const getArchitectPlanActivationPayload = async (
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
 
-  if (isWorkspaceArchitectRuntimeAvailable(deps)) {
+  if (options.requireStoredConversation || isWorkspaceArchitectRuntimeAvailable(deps)) {
     return await loadArchitectPlanActivationPayloadImpl(
       normalizedBranch,
       planId,
@@ -1201,6 +1220,7 @@ export const assertPlanReplicaSetWritable = (
 };
 
 export interface ListArchitectPlansOptions {
+  existingOnly?: boolean;
   scopedProjectIdsHint?: string[];
   requestId?: string;
 }
@@ -1228,16 +1248,16 @@ export const listArchitectPlansWithDeps = async (
   activePlanId: string | null;
   plans: ArchitectPlanSummary[];
 }> => {
-  await recoverArchitectPlanReplicaMutations(deps);
+  if (!options.existingOnly) await recoverArchitectPlanReplicaMutations(deps);
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
-  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
+  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps, options.existingOnly);
   const hasPersistedDirectPlan = index.plans.some((plan) =>
     Object.values(plan.executionModesByProjectId ?? {}).includes('direct')
   );
 
-  if (isWorkspaceArchitectRuntimeAvailable(deps) &&
+  if (!options.existingOnly && isWorkspaceArchitectRuntimeAvailable(deps) &&
       canUseWorkspaceArchitectRuntimeForScope(registrySnapshot, options.scopedProjectIdsHint) &&
       !hasPersistedDirectPlan) {
     try {
@@ -1465,16 +1485,17 @@ export const inspectArchitectPlanMetadataHealth = async (input: {
   };
 };
 
-export const listArchitectPlanTargetBranches = async (): Promise<string[]> =>
-  listArchitectPlanTargetBranchesImpl(resolveArchitectPlanServiceDependencies());
+export const listArchitectPlanTargetBranches = async (existingOnly = false): Promise<string[]> =>
+  listArchitectPlanTargetBranchesImpl(resolveArchitectPlanServiceDependencies(), existingOnly);
 
 /** Queries and activation snapshots without a store or UI dependency. */
 export interface ArchitectPlanReadService {
-  listArchitectPlanTargetBranches: () => Promise<string[]>;
+  listArchitectPlanTargetBranches: typeof listArchitectPlanTargetBranches;
   listArchitectPlans: typeof listArchitectPlans;
   isArchitectPlanSlugAvailable: typeof isArchitectPlanSlugAvailable;
   getArchitectPlanActivationPayload: typeof getArchitectPlanActivationPayload;
   getArchitectPlan: typeof getArchitectPlan;
+  readArchitectPlanSnapshot: typeof readArchitectPlanSnapshot;
   getArchitectPlanChatMessages: typeof getArchitectPlanChatMessages;
   getArchitectPlanChatTranscript: typeof getArchitectPlanChatTranscript;
   inspectArchitectPlanMetadataHealth: typeof inspectArchitectPlanMetadataHealth;
@@ -1483,13 +1504,14 @@ export interface ArchitectPlanReadService {
 export const createArchitectPlanReadService = (overrides: ArchitectPlanServiceDependencies = {}): ArchitectPlanReadService => {
   const deps = resolveArchitectPlanServiceDependencies(overrides);
   return {
-    listArchitectPlanTargetBranches: () => listArchitectPlanTargetBranchesImpl(deps),
+    listArchitectPlanTargetBranches: (existingOnly) => listArchitectPlanTargetBranchesImpl(deps, existingOnly),
     listArchitectPlans: (branchName, includeDeleted, includeArchived, options) =>
       listArchitectPlansWithDeps(branchName, includeDeleted, includeArchived, deps, options),
     isArchitectPlanSlugAvailable: (params) => isArchitectPlanSlugAvailable(params, deps),
     getArchitectPlanActivationPayload: (branchName, planId, options) =>
       getArchitectPlanActivationPayload(branchName, planId, options, deps),
     getArchitectPlan: (branchName, planId) => getArchitectPlan(branchName, planId, deps),
+    readArchitectPlanSnapshot: (branchName, planId) => readArchitectPlanSnapshot(branchName, planId, deps),
     getArchitectPlanChatMessages: (branchName, planId) =>
       getArchitectPlanChatMessages(branchName, planId, deps),
     getArchitectPlanChatTranscript: (branchName, planId, options) =>

@@ -8,12 +8,12 @@ const changed = (source: string, edit: (doc: ReturnType<typeof JSON.parse>) => v
   const doc = JSON.parse(source); edit(doc); return JSON.stringify(doc);
 };
 
-describe('0.3 authoring defaults and historical editions', () => {
+describe('0.4 authoring defaults and historical editions', () => {
   it('creates a minimal graphless draft with a source title and explicit blueprint kind', () => {
     const draft = createEmptySystemDocument('Préparer la livraison', 'agsdl-0.3.0', 'blueprint');
     expect(JSON.parse(draft.source)).toEqual({ contract: 'agsdl-0.3.0', id: expect.stringMatching(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/), title: 'Préparer la livraison', agents: {} });
     expect(draft.design?.kind).toBe('blueprint');
-    expect(JSON.parse(createEmptySystemDocument('Default').source).contract).toBe('agsdl-0.3.0');
+    expect(JSON.parse(createEmptySystemDocument('Default').source).contract).toBe('agsdl-0.4.0');
   });
   it('retains exact source, annexes, provenance and opaque metadata during metadata-only edits', () => {
     for (const contract of ['agsdl-0.3.0'] as const) {
@@ -30,7 +30,7 @@ describe('0.3 authoring defaults and historical editions', () => {
     expect(AGSDL_EXAMPLES).toEqual(['release', 'feature', 'hotfix', 'bugfix']);
     for (const kind of AGSDL_EXAMPLES) {
       const doc = JSON.parse(createExample(kind));
-      expect(doc.contract).toBe('agsdl-0.3.0');
+      expect(doc.contract).toBe('agsdl-0.4.0');
       expect(doc.bindings).toBeUndefined(); expect(doc.configurations).toBeUndefined();
       expect(doc.agents.implement.instructions).toContainEqual({ ref: 'projectGuidance' });
       expect(doc.agents.implement.model).toBeUndefined();

@@ -2,25 +2,10 @@ use super::types::*;
 use schemars::{schema::RootSchema, schema_for};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Map, Value};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
-const DEFAULT_ARCHITECT_PROMPT: &str = r#"You are the Architect AI. Discuss the active plan directly with the user and produce structured strategies stored in the `@macro` branch metadata.
-
-IMPORTANT RULES:
-1. Each plan is isolated and retains its own conversation and strategy.
-2. Inspect selected project code when it adds useful context. If important information is missing, ask focused questions with the `question` tool. Do not impose a mandatory structured collection phase before strategy.
-3. Do not call `strategy_generate` automatically. Generate or regenerate strategy only after an explicit user request. Base it on the full plan conversation, the user's expressed intent, the plan scope, selected projects, inspected code context, and clarification answers.
-4. Respect the current Macro tool security level. Some tools may require approval or be unavailable.
-5. Use `strategy_get` to inspect strategies. Strategy mutations are only allowed while the active plan is draft; once validated, in progress, or completed, its strategy is temporarily immutable.
-6. The Architect chat surface includes `plan_create`, `plan_list`, `plan_get`, and `plan_update`; plan deletion, restoration, and active-plan switching stay UI-only.
-7. Never call `plan_delete`, `plan_restore`, or `plan_set_active` in Architect chat. Ask the user to use the plan selector for those operations.
-8. `plan_create` may only create a draft plan. `plan_update` may change the optional label/title alias, description, mutable draft slug, and draft-only scope metadata. It must never change plan status or activate a plan.
-9. Git workflow is strict. Prefer logical `plan_slug` and unique per-node `featureSlug` values; concrete branch names are derived from each project's settings. Express sequential work with dependencies, never by reusing a work slug.
-10. Declare artifactContracts only for critical durable handoffs that dependent tasks truly need. Do not add them to every node.
-11. If a strategy tool reports frozen-node conflicts and requests one repair retry, retry once while preserving frozen nodes exactly. If it stages a preview or blocks, stop and explain that user review is required.
-12. After using an Architect tool, provide a concise natural-language recap and the next useful step.
-16. Each executable strategy node must include concrete todos for its implementation checklist. Todos are task-local, use pending, in-progress, or done, and should describe the ordered work the Implement agent must perform on that task branch. Choose the natural number of todos for each task; small tasks may need 1-2, larger tasks may need more, and you must not pad every task to the same count.
-17. Do not create a "Finalize plan" strategy node yourself: Macro adds a synthetic finalization task after the terminal strategy nodes and handles the final merge."#;
+const DEFAULT_ARCHITECT_PROMPT: &str = "Help the user design an agentic system in Architect. Clarify the goal, inputs, responsibilities, and expected outputs. Use the AgSDL authoring tools to read and edit the system document. Summarize changes and report any open design questions.";
 
 const DEFAULT_IMPLEMENT_PROMPT: &str = "You are the Implementer. Follow the tasks to implement the specific feature. Use task_todo_get to inspect the current task checklist and task_todo_update to keep each todo status accurate; task completion is blocked while task todos remain pending or in-progress. Use task_artifact_list/task_artifact_get for inherited handoff context, and call task_artifact_put when a finding, map, contract, decision, or risk record should be reused by dependent tasks. When modifying an inherited artifact, create a new current-task artifact with supersedes_artifact_id instead of overwriting the parent. When you propose an implementation plan, keep it concise and execution-oriented: focus on the next concrete steps, key risks, and verification, not an exhaustive essay.";
 const DEFAULT_CHAT_PROMPT: &str = "You are a helpful AI assistant. When asked for a plan, keep it concise and easy to scan unless the user explicitly asks for a detailed version.";
@@ -193,13 +178,28 @@ pub fn default_document(kind: ConfigDocumentKind) -> Value {
     }
 }
 
+pub(super) const LEGACY_LANGUAGE_SERVER: &str = "languageServer";
+
 pub fn schema_for_kind(kind: ConfigDocumentKind) -> RootSchema {
     match kind {
         ConfigDocumentKind::Runtime => schema_for!(RuntimeDocument),
         ConfigDocumentKind::Settings => schema_for!(SettingsDocument),
         ConfigDocumentKind::Agents => schema_for!(AgentsDocument),
         ConfigDocumentKind::Providers => schema_for!(ProvidersDocument),
-        ConfigDocumentKind::Tools => schema_for!(ToolsDocument),
+        ConfigDocumentKind::Tools => {
+            let mut schema = schema_for!(ToolsDocument);
+            // Match active_document: old profiles may carry any value here.
+            schema
+                .schema
+                .object
+                .get_or_insert_with(Default::default)
+                .properties
+                .insert(
+                    LEGACY_LANGUAGE_SERVER.into(),
+                    schemars::schema::Schema::Bool(true),
+                );
+            schema
+        }
         ConfigDocumentKind::Skills => schema_for!(SkillsDocument),
         ConfigDocumentKind::Git => schema_for!(GitDocument),
     }
@@ -575,6 +575,19 @@ fn validate_skill_paths(value: &Value, scope: &ConfigScope) -> Vec<(String, Stri
     diagnostics
 }
 
+// Keep raw profile values and etags available for edits and pending approvals.
+pub(super) fn active_document(kind: ConfigDocumentKind, value: &Value) -> Cow<'_, Value> {
+    if kind == ConfigDocumentKind::Tools && value.get(LEGACY_LANGUAGE_SERVER).is_some() {
+        let mut active = value.clone();
+        if let Some(fields) = active.as_object_mut() {
+            fields.remove(LEGACY_LANGUAGE_SERVER);
+        }
+        Cow::Owned(active)
+    } else {
+        Cow::Borrowed(value)
+    }
+}
+
 pub fn validate_document(
     kind: ConfigDocumentKind,
     scope: &ConfigScope,
@@ -618,7 +631,9 @@ pub fn validate_document(
             ConfigDocumentKind::Settings => validate_typed::<SettingsDocument>(value),
             ConfigDocumentKind::Agents => validate_typed::<AgentsDocument>(value),
             ConfigDocumentKind::Providers => validate_typed::<ProvidersDocument>(value),
-            ConfigDocumentKind::Tools => validate_typed::<ToolsDocument>(value),
+            ConfigDocumentKind::Tools => {
+                validate_typed::<ToolsDocument>(&active_document(kind, value))
+            }
             ConfigDocumentKind::Skills => validate_typed::<SkillsDocument>(value),
             ConfigDocumentKind::Git => validate_typed::<GitDocument>(value),
         };
@@ -822,28 +837,6 @@ pub fn validate_document(
                 "config.tools.agsdl_host_permissions_invalid",
                 "Les permissions AgSDL de l’hôte ne peuvent pas être nulles.",
             ));
-        }
-        if let Some(server) = value.get("languageServer") {
-            if matches!(scope, ConfigScope::Project { .. }) {
-                diagnostics.push(diagnostic(
-                    kind,
-                    scope,
-                    Some("/languageServer".into()),
-                    "config.project.lsp_forbidden",
-                    "Le serveur LSP et ses racines autorisées sont configurés par l’utilisateur.",
-                ));
-            }
-            if let Ok(server) = serde_json::from_value::<LanguageServerSettings>(server.clone()) {
-                if let Err(message) = server.validate() {
-                    diagnostics.push(diagnostic(
-                        kind,
-                        scope,
-                        Some("/languageServer".into()),
-                        "config.tools.lsp_invalid",
-                        message,
-                    ));
-                }
-            }
         }
         diagnostics.extend(
             validate_mcp_secret_refs(value)
@@ -1103,14 +1096,6 @@ pub fn descriptors() -> Vec<ConfigDescriptor> {
             Deep,
             ApprovalRequired,
             Reconnect,
-        ),
-        descriptor(
-            Tools,
-            "/languageServer",
-            &["user"],
-            Replace,
-            ApprovalRequired,
-            Live,
         ),
         descriptor(
             Tools,
@@ -1715,8 +1700,9 @@ pub fn effective_documents(
         }
 
         if let Some(user) = user_documents.get(&kind) {
-            merge_values(&mut value, user);
-            for pointer in collect_leaf_pointers(user) {
+            let user = active_document(kind, user);
+            merge_values(&mut value, &user);
+            for pointer in collect_leaf_pointers(&user) {
                 provenance.insert(
                     (kind, pointer.clone()),
                     ConfigProvenance {
@@ -1731,7 +1717,7 @@ pub fn effective_documents(
 
         for (project_id, project_documents) in project_documents {
             if let Some(project) = project_documents.get(&kind) {
-                let mut restricted_project = project.clone();
+                let mut restricted_project = active_document(kind, project).into_owned();
                 if kind == ConfigDocumentKind::Tools {
                     if let Some(map) = restricted_project.as_object_mut() {
                         map.remove("agsdlHostPermissions");
@@ -1759,7 +1745,7 @@ pub fn effective_documents(
         );
 
         if let Some(session) = session_documents.get(&kind) {
-            let mut restricted_session = session.clone();
+            let mut restricted_session = active_document(kind, session).into_owned();
             if kind == ConfigDocumentKind::Tools {
                 if let Some(map) = restricted_session.as_object_mut() {
                     map.remove("agsdlHostPermissions");
@@ -1829,6 +1815,27 @@ pub fn strip_default_values(document: &mut Value, defaults: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn architect_prompt_defaults_to_agsdl_and_preserves_custom_prompts() {
+        let defaults = default_document(ConfigDocumentKind::Agents);
+        let architect = defaults["prompts"]["architect"].as_str().unwrap();
+        assert!(architect.contains("AgSDL authoring tools"));
+
+        let users = BTreeMap::from([(
+            ConfigDocumentKind::Agents,
+            json!({"prompts": {"architect": "Custom Architect instructions"}}),
+        )]);
+        let (effective, _) = effective_documents(&users, &[], &BTreeMap::new());
+        assert_eq!(
+            effective["agents"]["prompts"]["architect"],
+            "Custom Architect instructions"
+        );
+        assert_eq!(
+            effective["agents"]["prompts"]["chat"],
+            defaults["prompts"]["chat"]
+        );
+    }
 
     #[test]
     fn agsdl_host_permissions_are_user_only_and_typed() {
@@ -2602,7 +2609,8 @@ mod tests {
                     !matches!(
                         property.as_str(),
                         "$schema" | "schemaVersion" | "extensions"
-                    )
+                    ) && !(kind == ConfigDocumentKind::Tools
+                        && property.as_str() == LEGACY_LANGUAGE_SERVER)
                 })
                 .cloned()
                 .collect::<BTreeSet<_>>();

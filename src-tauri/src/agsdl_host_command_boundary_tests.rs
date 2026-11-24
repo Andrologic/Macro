@@ -31,16 +31,20 @@ struct CommandFixture {
 }
 impl CommandFixture {
     async fn new(executor: Arc<FakeExecutor>, with_ai: bool) -> Self {
-        use crate::db::agsdl_execution::dto::{
-            EngineAssociations, EngineEntry, EngineSourceOwner, EngineStartRequest,
-        };
-        use crate::workspace::metadata::{ProjectDto, WorkspaceState};
         let document = json!({"contract":"agsdl-0.3.0","id":"codex-demo","agents":{
         "writer":{"harness":"codex","permissions":"workspace","model":{"name":"fixture","effort":"high"}},
         "reviewer":{"harness":"codex","permissions":"read-only"}},
         "flow":{"entry":"write","steps":{
             "write":{"type":"agent","agent":"writer","maxVisits":3,"next":"review"},
             "review":{"type":"agent","agent":"reviewer","maxVisits":3,"next":{"approve":[],"revise":"write"}}}}});
+        Self::with_document(executor, with_ai, document.to_string()).await
+    }
+
+    async fn with_document(executor: Arc<FakeExecutor>, with_ai: bool, document: String) -> Self {
+        use crate::db::agsdl_execution::dto::{
+            EngineAssociations, EngineEntry, EngineSourceOwner, EngineStartRequest,
+        };
+        use crate::workspace::metadata::{ProjectDto, WorkspaceState};
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let mut fixture = MacroFixture {
@@ -70,7 +74,7 @@ impl CommandFixture {
         )
         .unwrap();
         std::fs::write(dir.join("plan.json"), serde_json::to_vec(&json!({
-        "id":"source", "projectIds":["project"], "revision":1, "updatedAt":"time", "agsdl":{"source":document.to_string()}
+        "id":"source", "projectIds":["project"], "revision":1, "updatedAt":"time", "agsdl":{"source":document}
     })).unwrap()).unwrap();
         let scope = EngineSourceOwner {
             project_id: "project".into(),
@@ -344,7 +348,10 @@ async fn execution_start_attaches_supervisor_and_completes_write_review() {
     .await
     .unwrap();
     assert_eq!(history.runs.len(), 1);
-    assert_eq!(history.runs[0].system_start_id, receipt.system_start_id);
+    assert_eq!(
+        history.runs[0].summary.system_start_id,
+        receipt.system_start_id
+    );
     assert!(!parent_repo
         .path()
         .join(crate::git::MACRO_WORKTREE_DIR_NAME)
@@ -505,6 +512,21 @@ async fn execution_stop_waits_for_fake_executor_physical_end() {
         .activations
         .iter()
         .all(|work| !work.physical));
+    let runs = crate::db::operate_inbox::list_runs(
+        &f.fixture.pool,
+        repository::discovery030::RunListRequest030 {
+            owner: f.request.source.owner.clone(),
+            after: None,
+            limit: None,
+        },
+    )
+    .await
+    .unwrap();
+    let run = &runs.runs[0];
+    assert!(run.inbox.stopped_by_user);
+    assert_eq!(run.summary.physical_pending, "0");
+    assert!(run.inbox.finished_at_ms.is_some());
+    assert!(!run.inbox.opened);
     f.finish().await;
 }
 
@@ -741,7 +763,7 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
     .unwrap();
     assert_eq!(page.runs.len(), 1);
     assert_eq!(
-        page.runs[0].system_start_id,
+        page.runs[0].summary.system_start_id,
         retained.receipt.identity.system_start_id
     );
     let mut foreign = list_request;
@@ -808,7 +830,7 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
             .await
             .unwrap();
     assert_eq!(
-        page.runs[0].system_start_id,
+        page.runs[0].summary.system_start_id,
         retained.receipt.identity.system_start_id
     );
     assert!(crate::workspace::architect::lock_execution_source_owner(
@@ -883,6 +905,207 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
     .await
     .unwrap();
     assert!(host.inspect_start_session().await.is_err());
+    // Model a restarted workspace where the registry and plan exist only at
+    // the local Macro tips. Keep the existing database and retained run.
+    fn commit_metadata(repo: &git2::Repository, files: &[(&str, &[u8])]) -> git2::Oid {
+        let mut index = git2::Index::new().unwrap();
+        for (path, content) in files {
+            index
+                .add(&git2::IndexEntry {
+                    ctime: git2::IndexTime::new(0, 0),
+                    mtime: git2::IndexTime::new(0, 0),
+                    dev: 0,
+                    ino: 0,
+                    mode: 0o100644,
+                    uid: 0,
+                    gid: 0,
+                    file_size: content.len() as u32,
+                    id: repo.blob(content).unwrap(),
+                    flags: 0,
+                    flags_extended: 0,
+                    path: path.as_bytes().to_vec(),
+                })
+                .unwrap();
+        }
+        let tree = repo.find_tree(index.write_tree_to(repo).unwrap()).unwrap();
+        let signature = git2::Signature::now("Macro Tests", "macro@example.invalid").unwrap();
+        let previous = repo
+            .find_reference("refs/heads/@macro")
+            .ok()
+            .map(|reference| reference.peel_to_commit().unwrap());
+        let parents: Vec<_> = previous.iter().collect();
+        repo.commit(
+            Some("refs/heads/@macro"),
+            &signature,
+            &signature,
+            "Metadata",
+            &tree,
+            &parents,
+        )
+        .unwrap()
+    }
+
+    state.standalone_projects[0].git_setup_state = "ready".into();
+    let workspace_repo = git2::Repository::init(&workspace).unwrap();
+    let registry = serde_json::to_vec(&state).unwrap();
+    let workspace_tip = commit_metadata(&workspace_repo, &[(".macro/workspace.json", &registry)]);
+    let project_repo = git2::Repository::init(&project).unwrap();
+    let plan = serde_json::to_vec(&json!({
+        "id":"source", "projectIds":["project"], "revision":1, "updatedAt":"time",
+        "status":"Validated", "targetBranch":"develop", "conversationId":"conversation",
+        "agsdl":{"source":authored}
+    }))
+    .unwrap();
+    let manifest = std::fs::read(dir.join("manifest.json")).unwrap();
+    let index =
+        br#"{"version":3,"activePlanId":"source","plans":[{"id":"source","hasAgsdl":true}]}"#;
+    let runtime = br#"{"schemaVersion":1,"planId":"source","updatedAt":"time","mergeWorkflows":{},"strategyPreview":null}"#;
+    let project_tip = commit_metadata(
+        &project_repo,
+        &[
+            (".macro/branches/develop/plans/index.json", index),
+            (".macro/branches/develop/plans/source/plan.json", &plan),
+            (
+                ".macro/branches/develop/plans/source/manifest.json",
+                &manifest,
+            ),
+            (".macro/branches/develop/plans/source/runtime.json", runtime),
+            (
+                ".macro/branches/develop/plans/source/chat.jsonl",
+                b"private fixture",
+            ),
+        ],
+    );
+    std::fs::remove_dir_all(&metadata).unwrap();
+    std::fs::remove_dir_all(project.join(".macro")).unwrap();
+    let app = tauri::test::mock_builder()
+        .manage(Arc::new(tokio::sync::RwLock::new(workspace.clone())))
+        .manage(crate::WorkspaceMetadataRoot(Arc::new(
+            tokio::sync::RwLock::new(workspace.clone()),
+        )))
+        .manage(crate::git::GitState::new())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let read = |path: &str| {
+        crate::commands::fs::fs_read_file(
+            app.state(),
+            app.state(),
+            app.state(),
+            path.to_string(),
+            Some(false),
+            Some("metadata_existing".into()),
+            Some(project.to_string_lossy().into_owned()),
+        )
+    };
+    let entries = crate::commands::fs::fs_list_dir(
+        app.state(),
+        app.state(),
+        app.state(),
+        "branches".into(),
+        Some(true),
+        Some(true),
+        None,
+        Some(false),
+        Some("metadata_existing".into()),
+        Some(project.to_string_lossy().into_owned()),
+    )
+    .await
+    .unwrap();
+    assert!(entries
+        .iter()
+        .any(|entry| entry.relative_path == "develop/plans/index.json"));
+    assert_eq!(
+        read("branches/develop/plans/index.json")
+            .await
+            .unwrap()
+            .content
+            .as_bytes(),
+        index
+    );
+    assert_eq!(
+        read("branches/develop/plans/source/plan.json")
+            .await
+            .unwrap()
+            .content
+            .as_bytes(),
+        plan
+    );
+    assert_eq!(
+        read("branches/develop/plans/source/runtime.json")
+            .await
+            .unwrap()
+            .revision,
+        crate::fs::operations::content_revision(runtime)
+    );
+    assert_eq!(
+        read("branches/develop/plans/source/manifest.json")
+            .await
+            .unwrap()
+            .content
+            .as_bytes(),
+        manifest
+    );
+    assert!(read("branches/develop/plans/source/chat.jsonl")
+        .await
+        .is_err());
+    let history = repository::discovery030::RunListRequest030 {
+        owner: request.source.owner.clone(),
+        after: None,
+        limit: Some(10),
+    };
+    let page =
+        crate::commands::agsdl_execution::list_runs030_scoped(&pool, &workspace, history.clone())
+            .await
+            .unwrap();
+    let system = &retained.receipt.identity.system_start_id;
+    assert_eq!(page.runs[0].summary.system_start_id, *system);
+    let correlation = crate::commands::agsdl_execution::read_run_correlation030_scoped(
+        &pool,
+        &workspace,
+        &intent.key.scope,
+        system,
+    )
+    .await
+    .unwrap();
+    assert_eq!(correlation.receipt.system_start_id, *system);
+    assert!(!metadata.exists());
+    assert!(!project.join(".macro").exists());
+    for (repo, tip) in [
+        (&workspace_repo, workspace_tip),
+        (&project_repo, project_tip),
+    ] {
+        assert!(repo.worktrees().unwrap().is_empty());
+        assert_eq!(repo.refname_to_id("refs/heads/@macro").unwrap(), tip);
+        assert!(!repo
+            .path()
+            .join(crate::git::MACRO_WORKTREE_DIR_NAME)
+            .exists());
+    }
+    commit_metadata(
+        &workspace_repo,
+        &[
+            ("workspace.json", b"{corrupt"),
+            ("workspace.json.bak", &registry),
+        ],
+    );
+    assert!(crate::commands::agsdl_execution::list_runs030_scoped(
+        &pool,
+        &workspace,
+        history.clone()
+    )
+    .await
+    .is_err());
+    commit_metadata(&workspace_repo, &[("workspace.json", &registry)]);
+    std::fs::create_dir_all(project.join(".macro")).unwrap();
+    assert!(read("branches/develop/plans/source/plan.json")
+        .await
+        .is_err());
+    assert!(
+        crate::commands::agsdl_execution::list_runs030_scoped(&pool, &workspace, history)
+            .await
+            .is_err()
+    );
+
     // Model on-disk corruption by bypassing the immutable-record trigger only
     // in this disposable database; the public reader must fail closed.
     sqlx::query("DROP TRIGGER engine_start030_immutable")
@@ -964,4 +1187,106 @@ async fn pending_application_ceiling_does_not_reach_runtime_until_accepted() {
         serde_json::to_value(ceiling.permissions()).unwrap(),
         json!("workspace")
     );
+}
+
+#[tokio::test]
+async fn agsdl040_project_and_archive_open_and_run_with_scripted_codex() {
+    use argentic_runtime::source::OpenedSource;
+    use sha2::{Digest, Sha256};
+    use std::io::{Cursor, Write};
+    use zip::{write::SimpleFileOptions, ZipWriter};
+
+    let _secret_guard = secrets::lock_test_store();
+    let tmp = tempfile::tempdir().unwrap();
+    secrets::init(tmp.path()).unwrap();
+
+    let project = tmp.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let manifest = json!({
+        "projectFormat": "agsdl-project-1",
+        "contract": argentic_core::AGSDL_040,
+        "id": "smoke",
+        "agents": {"worker":{"harness":"codex","permissions":"read-only"}},
+        "flow": {"file":"flow.json"}
+    })
+    .to_string();
+    let flow = json!({
+        "entry": "run",
+        "steps": {"run":{"type":"agent","agent":"worker","prompt":"Reply with OK."}}
+    })
+    .to_string();
+    let files = [
+        ("agsdl.json", manifest.as_bytes()),
+        ("flow.json", flow.as_bytes()),
+    ];
+    let mut inventory = serde_json::Map::new();
+    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, bytes) in files {
+        std::fs::write(project.join(name), bytes).unwrap();
+        inventory.insert(name.into(), json!({
+            "size":bytes.len(), "sha256":format!("{:x}", Sha256::digest(bytes)), "executable":false
+        }));
+        zip.start_file(format!("project/{name}"), SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.start_file("archive.json", SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(
+        json!({"archiveFormat":"agsdl-archive-1","files":inventory})
+            .to_string()
+            .as_bytes(),
+    )
+    .unwrap();
+    let archive = zip.finish().unwrap().into_inner();
+
+    let folder = OpenedSource::open_path(&project).unwrap();
+    let packed = OpenedSource::open_archive_bytes(&archive).unwrap();
+    let archive_path = tmp.path().join("smoke.agsdl");
+    std::fs::write(&archive_path, &archive).unwrap();
+    assert_eq!(
+        OpenedSource::open_path(&archive_path)
+            .unwrap()
+            .authored_json(),
+        packed.authored_json()
+    );
+    assert_eq!(folder.authored_json(), packed.authored_json());
+    let data = tmp.path().join("data");
+    std::fs::create_dir(&data).unwrap();
+    let mut previous_scope = None;
+    for input in [folder, packed] {
+        let retained = input.retain(&data).unwrap();
+        assert_eq!(
+            std::fs::read(retained.resource_root().join("flow.json")).unwrap(),
+            flow.as_bytes()
+        );
+        let mut scope = json!({});
+        retained.bind_scope(&mut scope).unwrap();
+        assert_ne!(scope, json!({}));
+        if let Some(previous) = &previous_scope {
+            assert_eq!(&scope, previous);
+        }
+        previous_scope = Some(scope);
+        // This step still starts versions from assembled JSON. Binding the
+        // retained package to a Macro launch belongs to the archive work.
+        let peer = Arc::new(fake_executor());
+        let fixture =
+            CommandFixture::with_document(peer.clone(), true, input.authored_json().into()).await;
+        let receipt = tokio::time::timeout(std::time::Duration::from_secs(15), fixture.start())
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            fixture.wait(&receipt.system_start_id),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let view = fixture.inspect(&receipt.system_start_id).await;
+        assert_eq!(view.capture.versions.contract, argentic_core::AGSDL_040);
+        assert_eq!(view.flow.state.verdict.as_deref(), Some("succeeded"));
+        assert_eq!(peer.starts.load(Ordering::SeqCst), 1);
+        fixture.finish().await;
+    }
 }

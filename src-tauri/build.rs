@@ -1,18 +1,63 @@
+use std::{fs, io, path::Path};
+
+fn copy_parity_source(from: &Path, to: &Path) -> io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_parity_source(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+fn expose_for_parity(root: &Path, path: &str, item: &str) {
+    let path = root.join(path);
+    let text = fs::read_to_string(&path).expect("read locked Argentic source");
+    assert!(text.contains(item), "Argentic parity hook changed: {item}");
+    fs::write(&path, text.replacen(item, &format!("pub(crate) {item}"), 1))
+        .expect("write test-only Argentic source");
+}
+
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(argentic_editor_parity)");
     println!("cargo:rerun-if-env-changed=ARGENTIC_EDITOR_PARITY_CORE");
     if let Some(core) = std::env::var_os("ARGENTIC_EDITOR_PARITY_CORE") {
         let core = std::path::PathBuf::from(core);
-        let source = core.join("src/lib.rs");
-        let codec = core.join("src/native_json.rs");
         let numbers = core.join("../argentic-runtime/src/native_numbers.rs");
         let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-        std::fs::write(
+        let parity_core = output.join("argentic-parity");
+        for directory in ["src", "assets"] {
+            let source = core.join(directory);
+            println!("cargo:rerun-if-changed={}", source.display());
+            copy_parity_source(&source, &parity_core.join(directory))
+                .expect("copy locked Argentic source for editor parity");
+        }
+        // The parity tests exercise pure internals. Only visibility changes in this
+        // copy. Macro still links the Cargo dependency as-is for production.
+        for (file, item) in [
+            ("lib.rs", "mod resource;"),
+            ("lib.rs", "mod native_json;"),
+            ("compile/host.rs", "fn encode("),
+            ("compile/configuration.rs", "fn json(value:"),
+            ("graph/mod.rs", "fn immediate_dominators("),
+        ] {
+            expose_for_parity(&parity_core.join("src"), file, item);
+        }
+        let source = parity_core.join("src/lib.rs");
+        let codec = parity_core.join("src/native_json.rs");
+        fs::write(
             output.join("argentic_editor_core.rs"),
-            format!("#[path = {source:?}]\nmod argentic_core;\n"),
-        )
-        .expect("write editor parity module");
-        std::fs::write(
+            format!(
+                "#[path = {source:?}]\nmod argentic_core;\n\
+                 pub(crate) use argentic_core::{{calculation, compile, exact, graph, native, native_json, reader, resource, validate, \
+                 validate_document_json, SourceBudget, AGSDL_040, GRAPH_LIMIT_CODE, MAX_SOURCE_BYTES, MAX_SOURCE_WORK}};\n"
+            ),
+        ).expect("write editor parity module");
+        fs::write(
             output.join("argentic_editor_codec.rs"),
             format!(
                 "#[path = {codec:?}]\nmod codec;\n#[path = {numbers:?}]\nmod native_numbers;\n"

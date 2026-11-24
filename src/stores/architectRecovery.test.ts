@@ -5,7 +5,8 @@ import type { ArchitectPlanRecord } from '../services/architectPlanService';
 import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
 import { createDeferred } from '../test-utils/deferred';
 
-// Exercise both stores together. Only native reads and provider restoration are replaced.
+// The demo still restores plan-based Architect chats from their exact replica.
+mock.module('../services/operateWorkspace', () => ({ demoWorkflowJourney: true, isOperateWorkspace: () => false }));
 const ipc = { ...await import('../services/tauriIpc') };
 const planService = { ...await import('../services/architectPlanService') };
 const readService = { ...await import('../services/architectPlanReadService') };
@@ -15,6 +16,11 @@ const providerDefaults = providerExports.useProviderStore.getState();
 const plan: ArchitectPlanRecord = {
   id: 'saved-plan', slug: 'saved-plan', title: 'Saved plan', description: '', status: 'draft',
   conversationId: 'saved-conversation', projectId: 'project-a', projectIds: ['project-a', 'project-b'],
+  agsdl: {
+    source: '{"contract":"agsdl-0.3.0","id":"saved-plan","title":"Saved plan","agents":{}}',
+    annexes: {},
+    revision: 1,
+  },
   targetBranch: 'main', targetBranchesByProjectId: { 'project-a': 'develop', 'project-b': 'develop' },
   nodes: [], predictedBranches: [], createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
 };

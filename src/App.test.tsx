@@ -41,6 +41,7 @@ let appBootstrapSnapshot: AppBootstrapSnapshot;
 let importCounter = 0;
 let browserRuntimeEnabled = false;
 const restartBootstrapMock = mock(async () => undefined);
+const retryArchitectLibraryMock = mock(async () => undefined);
 const actualRuntimeBridge = await import("./services/tauriRuntimeBridge");
 const actualDesktopPlatform = await import('./utils/desktopPlatform');
 const actualAppBootstrap = await import('./services/appBootstrap');
@@ -132,11 +133,8 @@ const registerAppMocks = () => {
       subscribe: () => () => undefined,
       ensureStarted: () => Promise.resolve(),
       restart: restartBootstrapMock,
+      retryArchitectLibrary: retryArchitectLibraryMock,
     },
-  }));
-
-  mock.module('./components/modals/DiffModal', () => ({
-    default: () => null,
   }));
 
   mock.module('./components/settings/SettingsModal', () => ({
@@ -152,7 +150,7 @@ const registerAppMocks = () => {
       isOpen ? <div data-testid="mock-project-navigator" /> : null,
   }));
 
-  mock.module('./components/modals/ProjectGitFlowModal', () => ({
+  mock.module('./components/modals/ProjectAccessModal', () => ({
     default: () => null,
   }));
 
@@ -187,6 +185,7 @@ describe('App layout containment', () => {
   beforeEach(() => {
     browserRuntimeEnabled = false;
     restartBootstrapMock.mockClear();
+    retryArchitectLibraryMock.mockClear();
     hydrateArchivedConversationIdsMock.mockClear();
     useConversationArchiveStore.setState({
       hydrateArchivedConversationIds: hydrateArchivedConversationIdsMock,
@@ -329,6 +328,43 @@ describe('App layout containment', () => {
     });
 
     expect(container.querySelector('[data-testid="mock-project-navigator"]')).not.toBeNull();
+  });
+
+  it('shows the Architect import diagnostic and retries without replacing the shell', async () => {
+    appBootstrapSnapshot.warnings = { 'Architect library import': 'workspace.json: Unreadable registry' };
+    const { default: App } = await loadApp();
+    const { notify } = await import('./components/ui/toastService');
+    const notification = spyOn(notify, 'actionRequired').mockReturnValue('architect-import-test');
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => root?.render(<App />));
+    expect(container.querySelector('[data-testid="panel-center"]')).not.toBeNull();
+    expect(notification).toHaveBeenCalledTimes(1);
+    const [, options] = notification.mock.calls[0];
+    expect(options.description).toContain('workspace.json: Unreadable registry');
+    expect(options.description).toContain('choose Retry');
+    const { useArchitectLibraryStore } = await import('./stores/useArchitectLibraryStore');
+    const { architectLibrary } = await import('./services/ipc/architectLibrary');
+    const project = { id: 'project', name: 'Notes' };
+    const blueprint = { id: 'imported', projectId: project.id, name: 'Actions', revision: 1,
+      archived: false, conversationId: null, origin: null };
+    spyOn(architectLibrary, 'listProjects').mockResolvedValue([project]);
+    spyOn(architectLibrary, 'listBlueprints').mockResolvedValue([blueprint]);
+    const previous = useArchitectLibraryStore.getState();
+    useArchitectLibraryStore.setState({ projectId: project.id, projects: { status: 'ready', value: [project] },
+      blueprints: { status: 'ready', value: [] } });
+    retryArchitectLibraryMock.mockImplementationOnce(async () => { appBootstrapSnapshot.warnings = {}; });
+    try {
+      await act(async () => options.actions[0].onClick());
+      expect(useArchitectLibraryStore.getState().blueprints).toEqual({ status: 'ready', value: [blueprint] });
+    } finally {
+      useArchitectLibraryStore.setState(previous, true);
+    }
+    expect(retryArchitectLibraryMock).toHaveBeenCalledTimes(1);
+    expect(restartBootstrapMock).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="panel-center"]')).not.toBeNull();
   });
 
   it('renders startup chrome while critical boot is pending', async () => {

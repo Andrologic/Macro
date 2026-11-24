@@ -16,7 +16,7 @@ export async function buildCompileCorpus030() {
     function add(family: string, op: string, input: unknown, raws: Record<string, string> = {}) { let json = JSON.stringify(input); for (const [token, raw] of Object.entries(raws))
         json = json.replaceAll(JSON.stringify(token), raw); cases.push({ id: `${family}:${cases.length}`, family, op, json }); }
     const moduleNames = ['codex', 'claude-code', 'opencode', 'pi'];
-    const modules = moduleNames.map(harness => ({ harness, moduleJson: readFileSync(root + `/src/vendor/agsdl/v0.3/harnesses/${harness}/module.json`, 'utf8') }));
+    const modules = moduleNames.map(harness => ({ harness, moduleJson: readFileSync(root + `/src/vendor/agsdl/v0.4/harnesses/${harness}/module.json`, 'utf8') }));
     const baseCaps = ['result-submission', 'continuity', 'permission-enforcement', 'contained-stop', 'response-attribution', 'completion-check', 'resources', 'model.name', 'model.effort', 'skills', 'mcpServers', 'plan', 'planFirst.auto', 'planFirst.ask', 'reviewer.person', 'reviewer.model', 'directories', 'instance.new', 'delivery.steer', 'delivery.queue', 'instructions', 'answer-timeout', 'harness-settings'];
     const evidence = '{"synthetic":"compile-corpus"}';
     function source(authored: string) { return { owner: { projectId: 'synthetic', planId: 'synthetic', branch: 'feature/synthetic' }, revision: '1', sourceSha256: digest(authored) }; }
@@ -60,7 +60,7 @@ export async function buildCompileCorpus030() {
         return { authored, source: source(authored), registry };
     }
     function paths(dir: string): string[] { return readdirSync(root + '/' + dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? paths(dir + '/' + e.name) : e.name.endsWith('.json') ? [dir + '/' + e.name] : []).sort(); }
-    for (const [directory, family] of [['dev/agsdl/fixtures/v0.3/conformance/cases', 'official'], ['dev/agsdl/fixtures/v0.3/conformance/runs', 'runs'], ['dev/agsdl/fixtures/v0.3/examples', 'examples'], ['src/demo/agsdl', 'demo']]) {
+    for (const [directory, family] of [['dev/agsdl/fixtures/v0.4/conformance/cases', 'official'], ['dev/agsdl/fixtures/v0.4/conformance/runs', 'runs'], ['dev/agsdl/fixtures/v0.4/examples', 'examples'], ['src/demo/agsdl', 'demo']]) {
         for (const path of paths(directory)) {
             if (family === 'demo' && !path.endsWith('.agsdl.json'))
                 continue;
@@ -70,10 +70,19 @@ export async function buildCompileCorpus030() {
             try {
                 const obj = record(decode(bytes));
                 if (obj.document)
-                    authored = encode(obj.document);
+                    authored = typeof obj.document === 'string'
+                        ? readFileSync(root + '/dev/agsdl/fixtures/v0.4/conformance/' + obj.document, 'utf8')
+                        : encode(obj.document);
             }
             catch { /* Invalid fixture bytes are intentionally submitted unchanged. */ }
             ;
+            // A live 0.4 flow can qualify delivery to a declared agent in the
+            // native host. That behaviour has its own Rust contract test.
+            let flow040 = false;
+            try {
+                const document = record(decode(authored));
+                flow040 = document.contract === 'agsdl-0.4.0' && document.flow != null;
+            } catch { /* The malformed fixture stays in the shared corpus. */ }
             for (const pinned of [false, true]) {
                 let input;
                 try {
@@ -84,7 +93,7 @@ export async function buildCompileCorpus030() {
                 }
                 ;
                 add(family, 'plan', input);
-                add(family, 'host', { ...input, registry: { ...input.registry, startEntry: null, deliveryInput: { agentName: 'worker', messageJson: '{"prompt":"Fixture"}' }, callInput: { inputJson: '{"value":9007199254740993}' } } });
+                add(family, 'host', { ...input, registry: { ...input.registry, startEntry: null, deliveryInput: { agentName: flow040 ? 'undeclared-in-fixture' : 'worker', messageJson: '{"prompt":"Fixture"}' }, callInput: { inputJson: '{"value":9007199254740993}' } } });
             }
         }
     }
@@ -141,7 +150,7 @@ export async function buildCompileCorpus030() {
         add('native-numbers', 'host', input, { '$number': raw });
         add('native-numbers', 'plan', input, { '$number': raw });
     }
-    for (const authored of ['{', '[]', 'true', '{"x":"\ud800"}', '{"contract":"agsdl-0.3.0","id":"test","agents":{}}', '{"a":1,"a":2}', '\ufeff{}']) {
+    for (const authored of ['{', '[]', 'true', '{"x":"�"}', '{"contract":"agsdl-0.3.0","id":"test","agents":{}}', '{"a":1,"a":2}', '\ufeff{}']) {
         const input = { ...copy(base), authored, source: source(authored) };
         for (const op of ['host', 'plan'])
             add('source-refusals', op, input);
@@ -202,7 +211,7 @@ export async function buildCompileCorpus030() {
         add('address-order', 'addressOrder', { left, right });
     }
     // Full graph/configuration exports on the static-valid domain of their callers.
-    const { read } = await import('../../src/vendor/agsdl/v0.3/reader.mjs');
+    const { read } = await import('../../src/vendor/agsdl/v0.4/reader.mjs');
     for (const file of files as {
         path: string;
     }[]) {

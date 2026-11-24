@@ -346,10 +346,28 @@ async fn register_project_config_roots(
     config_manager: &ConfigManager,
     config_watcher: &ConfigWatcherState,
 ) -> Result<()> {
+    reconcile_project_config_roots(
+        workspace_path,
+        Some((workspace_metadata_root, git_state)),
+        config_manager,
+        config_watcher,
+    )
+    .await
+}
+
+async fn reconcile_project_config_roots(
+    workspace_path: &std::path::Path,
+    legacy_mutation: Option<(&std::path::Path, GitState)>,
+    config_manager: &ConfigManager,
+    config_watcher: &ConfigWatcherState,
+) -> Result<()> {
     // Fetch the complete registry under the reconciliation lock. A grouped-only list
     // must never evict standalone projects, nor may an older snapshot win a race.
     let _reconciliation = CONFIG_ROOT_RECONCILIATION.lock().await;
-    let bootstrap = workspace::get_bootstrap(workspace_path, workspace_metadata_root).await?;
+    let bootstrap = match &legacy_mutation {
+        Some((metadata_root, _)) => workspace::get_bootstrap(workspace_path, metadata_root).await?,
+        None => workspace::read_workspace_bootstrap(workspace_path).await?,
+    };
     let projects = bootstrap.standalone_projects.into_iter().chain(
         bootstrap
             .project_groups
@@ -401,37 +419,60 @@ async fn register_project_config_roots(
             ));
             continue;
         }
-        let metadata_root =
-            match resolve_metadata_root(project_path.clone(), git_state.clone()).await {
-                Ok(root) => root,
-                Err(error) => {
-                    if let Err(invalidation) = config_manager
-                        .defer_project_repository_resolution(&project.id)
-                        .await
-                    {
+        let metadata_root = match &legacy_mutation {
+            None => crate::git::find_existing_macro_metadata_worktree_root(&project_path)
+                .unwrap_or_else(|| project_path.join(".macro")),
+            Some((_, git_state)) => {
+                match resolve_metadata_root(project_path.clone(), git_state.clone()).await {
+                    Ok(root) => root,
+                    Err(error) => {
+                        if let Err(invalidation) = config_manager
+                            .defer_project_repository_resolution(&project.id)
+                            .await
+                        {
+                            errors.push(format!(
+                                "Failed to invalidate configuration for project {}: {}",
+                                project.id, invalidation.message
+                            ));
+                        }
+                        roots.remove(&project.id);
                         errors.push(format!(
-                            "Failed to invalidate configuration for project {}: {}",
-                            project.id, invalidation.message
+                            "Failed to resolve configuration for project {}: {error}",
+                            project.id
                         ));
+                        continue;
                     }
-                    roots.remove(&project.id);
-                    errors.push(format!(
-                        "Failed to resolve configuration for project {}: {error}",
-                        project.id
-                    ));
-                    continue;
                 }
-            };
-        let config_file = metadata_root
+            }
+        };
+        let config_root = metadata_root
             .join("projects")
             .join(&project.id)
-            .join("config")
-            .join("git.json");
-        let initialize_git_config = !config_file.exists();
-        match config_manager
-            .register_project_root(&project.id, metadata_root)
-            .await
-        {
+            .join("config");
+        let initialize_git_config =
+            legacy_mutation.is_some() && !config_root.join("git.json").exists();
+        let registration = if legacy_mutation.is_some() {
+            config_manager
+                .register_project_root(&project.id, metadata_root)
+                .await
+        } else if !matches!(
+            config_root.symlink_metadata(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ) {
+            config_manager
+                .observe_project_root(&project.id, metadata_root)
+                .await
+        } else {
+            // Startup can still supply project-scoped defaults and persist local
+            // configuration for a registered project with no legacy config.
+            config_manager
+                .register_project_root(
+                    &project.id,
+                    config_manager.root().join(".runtime").join("workspace"),
+                )
+                .await
+        };
+        match registration {
             Ok(config_root) => {
                 if initialize_git_config {
                     let detection = workspace::detect_project_git_flow(
@@ -754,21 +795,33 @@ async fn load_live_terminal_project_ids(
         .collect())
 }
 
+async fn observe_workspace_bootstrap(
+    workspace_path: &std::path::Path,
+    config_manager: &ConfigManager,
+    config_watcher: &ConfigWatcherState,
+) -> Result<(WorkspaceBootstrapDto, crate::config::ConfigDocument)> {
+    let bootstrap = workspace::read_workspace_bootstrap(workspace_path).await?;
+    let message =
+        reconcile_project_config_roots(workspace_path, None, config_manager, config_watcher)
+            .await
+            .err()
+            .map(|error| format!("Existing project configuration could not be loaded: {error}"));
+    let diagnostic = config_manager
+        .record_reconciliation_diagnostic(message)
+        .await;
+    Ok((bootstrap, diagnostic))
+}
+
 #[tauri::command]
 pub async fn workspace_get_bootstrap(
     app: tauri::AppHandle,
     workspace_root: State<'_, WorkspaceMetadataRoot>,
-    git_state: State<'_, GitState>,
     config_manager: State<'_, ConfigManager>,
     config_watcher: State<'_, ConfigWatcherState>,
 ) -> Result<WorkspaceBootstrapDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
-    let metadata_root =
-        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    let (bootstrap, diagnostic) = load_bootstrap_with_config_diagnostic(
+    let (bootstrap, diagnostic) = observe_workspace_bootstrap(
         &workspace_path,
-        &metadata_root,
-        git_state.inner().clone(),
         config_manager.inner(),
         config_watcher.inner(),
     )
@@ -780,7 +833,6 @@ pub async fn workspace_get_bootstrap(
 #[tauri::command]
 pub async fn workspace_resolve_project_icons(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
-    git_state: State<'_, GitState>,
     project_ids: Vec<String>,
 ) -> Result<Vec<ProjectIconResolutionDto>> {
     if project_ids.len() > 256 {
@@ -790,9 +842,7 @@ pub async fn workspace_resolve_project_icons(
     }
 
     let workspace_path = workspace_root.inner().0.read().await.clone();
-    let metadata_root =
-        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    let bootstrap = workspace::get_bootstrap(&workspace_path, &metadata_root).await?;
+    let bootstrap = workspace::read_workspace_bootstrap(&workspace_path).await?;
     let projects_by_id = bootstrap
         .standalone_projects
         .iter()
@@ -865,12 +915,9 @@ pub async fn workspace_list_projects(
 #[tauri::command]
 pub async fn workspace_list_tasks(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
-    git_state: State<'_, GitState>,
 ) -> Result<WorkspaceTaskCatalogDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
-    let metadata_root =
-        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::list_tasks(&workspace_path, &metadata_root).await
+    workspace::read_workspace_tasks(&workspace_path).await
 }
 
 #[tauri::command]
@@ -2100,6 +2147,190 @@ pub async fn workspace_update_manual_feature_merge_workflow(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn startup_test_repo(path: &std::path::Path) -> git2::Repository {
+        let repo = git2::Repository::init(path).unwrap();
+        let signature = git2::Signature::now("Macro Tests", "macro@example.invalid").unwrap();
+        {
+            let tree = repo
+                .find_tree(repo.index().unwrap().write_tree().unwrap())
+                .unwrap();
+            repo.commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "Initial commit",
+                &tree,
+                &[],
+            )
+            .unwrap();
+        }
+        repo
+    }
+
+    #[tokio::test]
+    async fn startup_observation_accepts_git_and_non_git_workspaces_without_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let git_workspace = temp.path().join("git-workspace");
+        let direct_workspace = temp.path().join("direct-workspace");
+        let repo = startup_test_repo(&git_workspace);
+        std::fs::create_dir(&direct_workspace).unwrap();
+        let config_root = temp.path().join("app-config");
+        let manager = ConfigManager::initialize(config_root.clone())
+            .await
+            .unwrap();
+        let watcher = Arc::new(crate::config::ConfigWatcher::for_test(manager.root()));
+
+        for workspace_path in [&git_workspace, &direct_workspace] {
+            let (bootstrap, _) = observe_workspace_bootstrap(workspace_path, &manager, &watcher)
+                .await
+                .unwrap();
+            assert!(bootstrap.standalone_projects.is_empty());
+            assert!(bootstrap.project_groups.is_empty());
+            assert!(workspace::read_workspace_tasks(workspace_path)
+                .await
+                .unwrap()
+                .tasks
+                .is_empty());
+            assert!(!workspace_path.join(".macro").exists());
+        }
+        assert!(repo.find_reference("refs/heads/@macro").is_err());
+        assert!(repo.worktrees().unwrap().is_empty());
+        assert!(crate::git::find_existing_macro_metadata_worktree_root(&git_workspace).is_none());
+        assert!(config_root.join("runtime.json").is_file());
+        assert!(config_root.join("tools.json").is_file());
+    }
+
+    #[tokio::test]
+    async fn startup_observation_recovers_registry_and_tasks_from_local_macro_tip() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_path = temp.path().join("workspace");
+        let repo = startup_test_repo(&workspace_path);
+        let project_path = temp.path().join("app");
+        std::fs::create_dir_all(&project_path).unwrap();
+        let project: ProjectDto = serde_json::from_value(json!({
+            "id": "project-app", "name": "Application", "path": "../app",
+            "created_at": "2026-01-01T00:00:00Z", "status": "active",
+            "directEdit": true,
+            "metadata": {"description": "Source application", "tags": [], "team_members": [], "api_contracts": [], "dependencies": []}
+        })).unwrap();
+        let state = workspace::metadata::WorkspaceState {
+            standalone_projects: vec![project],
+            current_plan: Some(
+                serde_json::from_value(json!({
+                    "id": "plan", "description": "Previous work", "status": "Validated",
+                    "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+                    "project_ids": ["project-app"], "tasks": [{"id": "task", "status": "Pending"}]
+                }))
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        let macro_ref = "refs/heads/@macro";
+        let mut nested = repo.treebuilder(None).unwrap();
+        let registry = repo.blob(&serde_json::to_vec(&state).unwrap()).unwrap();
+        nested.insert("workspace.json", registry, 0o100644).unwrap();
+        let mut root = repo.treebuilder(None).unwrap();
+        root.insert(".macro", nested.write().unwrap(), 0o040000)
+            .unwrap();
+        let tree = repo.find_tree(root.write().unwrap()).unwrap();
+        let signature = git2::Signature::now("Macro Tests", "macro@example.invalid").unwrap();
+        let tip = repo
+            .commit(
+                Some(macro_ref),
+                &signature,
+                &signature,
+                "Metadata",
+                &tree,
+                &[],
+            )
+            .unwrap();
+
+        let bootstrap = workspace::read_workspace_bootstrap(&workspace_path)
+            .await
+            .unwrap();
+        let project = &bootstrap.standalone_projects[0];
+        assert_eq!(project.id, "project-app");
+        assert_eq!(project.path, "../app");
+        assert!(project.direct_edit);
+        assert_eq!(project.metadata.description, "Source application");
+        assert_eq!(bootstrap.plan.unwrap().id, "plan");
+        let catalog = workspace::read_workspace_tasks(&workspace_path)
+            .await
+            .unwrap();
+        assert_eq!(catalog.tasks[0]["id"], "task");
+        assert_eq!(repo.refname_to_id(macro_ref).unwrap(), tip);
+        assert!(repo.worktrees().unwrap().is_empty());
+        assert!(!workspace_path.join(".macro").exists());
+        assert!(!repo
+            .path()
+            .join(crate::git::MACRO_WORKTREE_DIR_NAME)
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn startup_observation_uses_legacy_registry_and_config_without_repairing_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_path = temp.path().join("workspace");
+        let project_path = temp.path().join("project");
+        let repo = startup_test_repo(&project_path);
+        let registry = workspace_path.join(".macro");
+        let project_config = project_path.join(".macro/projects/project/config");
+        std::fs::create_dir_all(&registry).unwrap();
+        std::fs::create_dir_all(&project_config).unwrap();
+        let project: ProjectDto = serde_json::from_value(json!({
+            "id": "project", "name": "project", "path": project_path,
+            "created_at": "2026-01-01T00:00:00Z", "status": "active",
+            "metadata": {"description": "", "tags": [], "team_members": [], "api_contracts": [], "dependencies": []}
+        })).unwrap();
+        let state = workspace::metadata::WorkspaceState {
+            standalone_projects: vec![project],
+            ..Default::default()
+        };
+        let backup = serde_json::to_vec(&state).unwrap();
+        std::fs::write(registry.join("workspace.json.bak"), &backup).unwrap();
+        let tools = br#"{"schemaVersion":1}"#;
+        std::fs::write(project_config.join("tools.json"), tools).unwrap();
+
+        let manager = ConfigManager::initialize(temp.path().join("app-config"))
+            .await
+            .unwrap();
+        let watcher = Arc::new(crate::config::ConfigWatcher::for_test(manager.root()));
+        let (bootstrap, _) = observe_workspace_bootstrap(&workspace_path, &manager, &watcher)
+            .await
+            .unwrap();
+        assert_eq!(bootstrap.standalone_projects[0].id, "project");
+        workspace::read_workspace_tasks(&workspace_path)
+            .await
+            .unwrap();
+        let snapshot = manager
+            .get_loaded_snapshot(&["project".into()])
+            .await
+            .unwrap();
+        assert!(snapshot.documents.iter().any(|document| {
+            document.kind == ConfigDocumentKind::Tools
+                && matches!(&document.scope, ConfigScope::Project { project_id } if project_id == "project")
+        }));
+        for outcome in manager
+            .reload_all_changed(ConfigChangeSource::ExternalEditor)
+            .await
+        {
+            outcome.unwrap();
+        }
+
+        assert!(!registry.join("workspace.json").exists());
+        assert_eq!(
+            std::fs::read(registry.join("workspace.json.bak")).unwrap(),
+            backup
+        );
+        assert_eq!(
+            std::fs::read(project_config.join("tools.json")).unwrap(),
+            tools
+        );
+        assert_eq!(std::fs::read_dir(&project_config).unwrap().count(), 1);
+        assert!(repo.find_reference("refs/heads/@macro").is_err());
+        assert!(repo.worktrees().unwrap().is_empty());
+    }
 
     #[tokio::test]
     async fn valid_registry_payload_survives_a_missing_config_root_but_primary_read_errors_fail() {

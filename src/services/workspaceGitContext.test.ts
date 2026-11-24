@@ -40,8 +40,8 @@ describe('workspace target to Git domain', () => {
     const freeChat = createWorkspaceSession(workspaceDefinitions.Chat, { ...selection, conversationId: null });
     expect(resolveWorkspaceGitContext(freeChat, input).project).toBeNull();
     const architect = createWorkspaceSession(workspaceDefinitions.Architect, { ...selection, projectId: 'api' });
-    expect(resolveWorkspaceGitContext(architect, input).project?.id).toBe('api');
-    expect(resolveWorkspaceGitContext({ ...architect, agentProfile: { ...architect.agentProfile, agentType: 'plan' } }, input).project?.id).toBe('api');
+    expect(resolveWorkspaceGitContext(architect, input).project).toBeNull();
+    expect(resolveWorkspaceGitContext({ ...architect, agentProfile: { ...architect.agentProfile, agentType: 'plan' } }, input).project).toBeNull();
   });
 
   it('refuses remote or incompatible references without falling back to local folders', () => {

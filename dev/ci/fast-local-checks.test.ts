@@ -235,7 +235,7 @@ test('runs native AgSDL conformance for evaluator, engine, fixture and CI change
     'src-tauri/src/db/agsdl_execution/v030/flow.rs',
     'src-tauri/src/db/migrations/040_execution_flow_human_clock030.sql',
     'src/services/agsdlExecution/hostWorkPort030.ts',
-    'src/vendor/agsdl/v0.3/valueschema.mjs',
+    'src/vendor/agsdl/v0.4/valueschema.mjs',
     'src/vendor/agsdl/shared/json.mjs',
     'src/vendor/agsdl/shared/values.mjs',
     'src/vendor/agsdl/experimental/readers/javascript/json.mjs',

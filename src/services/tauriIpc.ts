@@ -147,7 +147,7 @@ updateConversationScope,updateMessage,upsertConversationCitation,upsertConversat
 } from "./ipc/conversations";
 
 export {
-fsCopy,fsCreateDir,fsDelete,fsExists,fsListDir,fsMove,fsReadFile,
+fsDelete,fsExists,fsListDir,fsReadFile,
 fsReadFileWithOptions,fsSearchFiles,
 fsStat,fsWriteFile
 } from "./ipc/filesystem";
@@ -254,7 +254,7 @@ LocalBackupStatus
 
 export {
 localBackupAcknowledge,localBackupSchedule,
-localBackupStatus
+localBackupStatus,getProfileStartupRecovery
 } from "./ipc/backup";
 
 export type {
@@ -297,7 +297,10 @@ export * from './ipc/chatAdmission';
 // Versioned transport uses the same native Start/snapshot commands and rejects
 // a historical snapshot. Native qualification still gates 0.3 admission.
 export type { ExecutionRunCorrelation030 } from '../types/generated/ipc';
-export { listExecutionRuns030,readExecutionHumans030,readExecutionRunCorrelation030,readExecutionRuntimeProjection030,readExecutionSnapshot030,startExecution030,stopExecution030,submitExecutionHuman030 } from './ipc/agsdlExecution030';
+export { architectLaunch } from './ipc/architectLaunch';
+export { controlExecution030,deleteExecution030,listExecutionRuns030,readExecutionHumans030,readExecutionRunCorrelation030,readExecutionRuntimeProjection030,readExecutionSnapshot030,startExecution030,stopExecution030,submitExecutionHuman030 } from './ipc/agsdlExecution030';
 export type { PublicSnapshot030,PublicStartReceipt030,StartRequest030 } from './ipc/agsdlExecution030';
 
-export { deliverExecution030 } from './ipc/agsdlExecution030';
+export { deliverExecution030, updateOperateInbox } from './ipc/agsdlExecution030';
+
+export * from "./ipc/architectLibrary";

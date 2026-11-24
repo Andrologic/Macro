@@ -1,3 +1,4 @@
+import { isFlowDocumentContract } from "./contract";
 import type { AgsdlGraphEdge,AgsdlGraphNode } from "../../types/agsdl";
 import { keyId,list,object,readDocument,text } from "./document";
 import { projectViewer030 } from "./viewer030";
@@ -16,7 +17,7 @@ export function projectDocument(
   focusPath?: string,
 ): { nodes: AgsdlGraphNode[]; edges: AgsdlGraphEdge[] } {
   const doc = readDocument(source);
-  if (doc.contract === "agsdl-0.3.0") {
+  if (isFlowDocumentContract(doc.contract)) {
     const viewer = projectViewer030(source);
     const graph = viewer.graphs[graphIndex];
     const cards = view === "process" ? graph?.cards ?? [] : viewer.declarations;

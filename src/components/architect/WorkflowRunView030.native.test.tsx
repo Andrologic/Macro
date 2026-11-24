@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { WorkflowRunView030 } from './ArchitectStrategyPanel';
+import { WorkflowRunView030 } from '../agsdl/WorkflowRunView030';
 import { createRunInspectionAccess030 } from '../../services/agsdl/runAccess030';
 import { nativeAgentRunFixture030, nativeTransportFor030 } from '../../services/agsdl/runAccess030.testSupport';
 import { RunInspectionDouble030 } from '../../services/agsdl/runInspection030.testSupport';
@@ -81,7 +81,7 @@ it('shares attention deduplication through remount and never refocuses a request
   stop();
 });
 
-it('shows a local 030 catalog failure without hiding historical tasks',async()=>{
+it('shows an intent read failure alongside independently read 030 and historical tasks',async()=>{
   const {loadWorkflowAgentTasks,configureWorkflowRunAccess030,getWorkflowRunAccess030}=await import('../../services/workflowAgentTasks');
   const {workflowTaskFixture}=await import('../../services/workflowAgentTasks.fixtures');
   const old=await workflowTaskFixture();const f=await nativeAgentRunFixture030();const {transport,scope}=nativeTransportFor030(f);
@@ -90,7 +90,10 @@ it('shows a local 030 catalog failure without hiding historical tasks',async()=>
   try{
     const plans=[old.plan,{...old.plan,id:'sample-plan',projectIds:['sample-project'],conversationId:'design-conversation',agsdl:{revision:1,source:f.capture.authoredSource,annexes:{}}}];
     const ports={...old.ports,runs:async(request:Parameters<typeof old.ports.runs>[0])=>request.owner.projectId==='project'?{runs:[old.summary],nextCursor:null}:{runs:[],nextCursor:null}};
-    expect(await loadWorkflowAgentTasks(plans,null,ports)).toHaveLength(2);
+    const tasks = await loadWorkflowAgentTasks(plans,null,ports);
+    expect(tasks.filter(task => task.workflow_execution?.systemStartId === old.snapshot.systemStartId)).toHaveLength(2);
+    expect(tasks.filter(task => task.workflow_execution?.systemStartId === f.capture.systemStartId)).toHaveLength(1);
+    expect(tasks.find(task => task.workflow_execution?.systemStartId === f.capture.systemStartId)?.workflow_execution?.stale).not.toBe(true);
     host=document.createElement('div');document.body.append(host);root=createRoot(host);
     await act(async()=>root!.render(<WorkflowRunView030 bundle={getWorkflowRunAccess030(scope)!} />));
     expect(host.querySelector('[role="alert"]')).not.toBeNull();

@@ -3,15 +3,15 @@ import { ArrowLeft, Pencil, X } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
 import { DiscardChangesDialog } from "./DiscardChangesDialog";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
-import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../../stores/useAgsdlStore";
-import { agentPropertyLocks030, componentProperties, propertyChanges, type ComponentProperties } from "../../services/agsdl/componentProperties";
+import { agsdlSessionKey, useAgsdlStore, type AgsdlDocumentTarget } from "../../stores/useAgsdlStore";
+import { agentPropertyLocks030, componentProperties, projectComponentProperties, propertyChanges, type ComponentProperties } from "../../services/agsdl/componentProperties";
 import { object, pointerPart, scanSource } from "../../services/agsdl/document";
 import { authoringFields030, authoringValues030, patchAuthoringValue030, updateAuthoringField030, type AuthoringField030 } from "../../services/agsdl/authoringFields030";
 import { DisclosureSummary } from "./DisclosureSummary";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 
 export function ComponentDetails030({ title, target, card, canEdit = true, children, onClose, onAttach, onBack }: {
-  title: string; target: AgsdlTarget; card?: ViewerCard; canEdit?: boolean; children: ReactNode; onClose: () => void; onAttach?: () => Promise<void>; onBack?: () => void;
+  title: string; target: AgsdlDocumentTarget; card?: ViewerCard; canEdit?: boolean; children: ReactNode; onClose: () => void; onAttach?: () => Promise<void>; onBack?: () => void;
 }) {
   const { t } = useAgsdlTranslation();
   const session = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]);
@@ -33,7 +33,7 @@ export function ComponentDetails030({ title, target, card, canEdit = true, child
       if (!applied) {
         const changes = propertyChanges(draft.properties.fields, authoringValues030(draft.properties.fields, draft.values, draft.lineInputs, true));
         if (!changes.length) { setDraft(undefined); return; }
-        store.edit(target, changes, draft.version);
+        await store.edit(target, changes, draft.version);
         setDraft({ ...draft, version: useAgsdlStore.getState().sessions[agsdlSessionKey(target)].version }); setApplied(true);
       }
       await store.save(target); setDraft(undefined); setApplied(false);
@@ -44,14 +44,28 @@ export function ComponentDetails030({ title, target, card, canEdit = true, child
     if (draft && !locks?.locked(index)) setDraft({ ...draft, values: values.map((old, i) => i === index ? value : old),
       lineInputs: Object.fromEntries(Object.entries(draft.lineInputs).filter(([key]) => !key.startsWith(`${index}:`))) });
   };
+  const openEditor = async () => {
+    if (!card || !session) return;
+    setBusy(true); setError("");
+    try {
+      const store = useAgsdlStore.getState();
+      const project = session.project;
+      const properties = project && "blueprintId" in target
+        ? await projectComponentProperties(project.saved, card, path => store.readProjectFile(target, path))
+        : componentProperties(session.source, card);
+      if (useAgsdlStore.getState().sessions[agsdlSessionKey(target)]?.version !== session.version) throw new Error("conflict");
+      setDraft({ properties, values: properties.fields.map(field => field.value), lineInputs: {}, version: session.version });
+      setTab("properties");
+    } catch {
+      setError(t("agsdl.edition030.editFailed"));
+    } finally {
+      setBusy(false);
+    }
+  };
   return <Dialog title={title} onClose={close} closeOnBackdropClick panelClassName="agsdl-detail-modal" backdropClassName="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
     <header><strong>{title}</strong><div className="agsdl-header-actions">
       {!draft && onBack && <button className="agsdl-icon-button" onClick={onBack} title={t("agsdl.viewer.backToComponent")} aria-label={t("agsdl.viewer.backToComponent")}><ArrowLeft size={15} /><span className="sr-only">{t("agsdl.viewer.backToComponent")}</span></button>}
-      {!draft && canEdit && session?.status === "draft" && <button className="agsdl-icon-button" title={t("agsdl.viewer.editComponent")} aria-label={t("agsdl.viewer.editComponent")} disabled={busy || session.saving} onClick={() => {
-        if (!card) return;
-        const properties = componentProperties(session.source, card);
-        setDraft({ properties, values: properties.fields.map(field => field.value), lineInputs: {}, version: session.version }); setTab("properties"); setError("");
-      }}><Pencil size={15} /><span className="sr-only">{t("agsdl.viewer.editComponent")}</span></button>}
+      {!draft && canEdit && session?.status === "draft" && <button className="agsdl-icon-button" title={t("agsdl.viewer.editComponent")} aria-label={t("agsdl.viewer.editComponent")} disabled={busy || session.saving || (session.project && session.project.graphVersion !== session.version)} onClick={() => void openEditor()}><Pencil size={15} /><span className="sr-only">{t("agsdl.viewer.editComponent")}</span></button>}
       <button className="agsdl-icon-button" disabled={busy} onClick={close} title={t("agsdl.close")} aria-label={t("agsdl.close")}><X size={15} /><span className="sr-only">{t("agsdl.close")}</span></button></div></header>
     <div className="agsdl-inspector-body">
       {draft ? <form className="agsdl-exact-form" id="agsdl-exact-form" onSubmit={event => { event.preventDefault(); void save(); }}>
@@ -81,7 +95,7 @@ export function ComponentDetails030({ title, target, card, canEdit = true, child
           </label>)}
         </div>
       </form> : <>
-        {session && card && <BusinessFields030 fields={readProperties030(session.source, card)} />}
+        {session && card && <BusinessFields030 fields={readProperties030(session.source, card, !!session.project)} />}
         {children}
         {card?.edition030 && <details className="agsdl-details"><DisclosureSummary>{t("agsdl.authoring030.advanced")}</DisclosureSummary>
           <h4>{t("agsdl.authoring030.exactJson")}</h4>
@@ -118,16 +132,17 @@ function BusinessFields030({ fields, values = fields.map(field => field.value), 
 }) {
   const { t } = useAgsdlTranslation();
   const controls = authoringFields030(fields, values);
+  let first = true;
   return <>{(["general", "instructions", "mission", "information", "choices", "instance", "join"] as const).map(group => {
     const members = controls.filter(field => field.group === group && (onChange || field.value));
     const resources = group === "information" ? fields.findIndex(field => field.label === "resources") : -1;
     const choices = group === "choices" ? fields.findIndex(field => field.label === "next") : -1;
     if (!members.length && !(onChange && (resources >= 0 || choices >= 0))) return null;
-    return <details key={group} className="agsdl-details" open={["general", "instructions", "mission"].includes(group)} style={{ minWidth: 0 }}>
-      <DisclosureSummary>{t(`agsdl.authoring030.groups.${group}`)}</DisclosureSummary>
-      {["instructions", "mission", "information", "instance", "join"].includes(group) && <p className="agsdl-muted">{t(`agsdl.authoring030.hints.${group}`)}</p>}
-      {members.map(field => <label className="agsdl-edit-field" style={{ marginTop: 8, gap: 4 }} key={`${field.index}:${field.path}`}>
-        <span>{t(`agsdl.authoring030.fields.${field.label}`)}{field.name ? ` · ${field.name}` : ""}</span>
+    // The first group sits right under the header: a rule above it would separate nothing.
+    const top = first; first = false;
+    const locations = members.filter(field => field.label === "uri");
+    const renderField = (field: (typeof members)[number]) => <label className="agsdl-edit-field" style={{ marginTop: 8, gap: 4 }} key={`${field.index}:${field.path}`}>
+        <span>{t(`agsdl.authoring030.fields.${field.label}`)}{field.name && !/^\d+$/.test(field.name) ? ` · ${field.name}` : ""}</span>
         {!onChange ? <span style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{field.kind === "select" ? field.optionLabels ? field.optionLabels[field.value] ?? field.value : t(`agsdl.authoring030.options.${field.value}`, { defaultValue: field.value }) : field.value}</span>
           : field.kind === "select" ? <select value={field.value} disabled={disabled || locked?.(field.index)} onChange={event => onChange(updateAuthoringField030(values, field, event.target.value))}>
             {!["workType", "joinMode", "destination"].includes(field.label) && <option value="">{t("agsdl.authoring030.default")}</option>}
@@ -135,7 +150,19 @@ function BusinessFields030({ fields, values = fields.map(field => field.value), 
             {field.options?.map(value => <option key={value} value={value}>{field.optionLabels ? field.optionLabels[value] : t(`agsdl.authoring030.options.${value}`)}</option>)}
           </select> : ["multiline", "lines"].includes(field.kind) ? <textarea rows={3} value={field.value} disabled={disabled || locked?.(field.index)} onChange={event => field.kind === "lines" ? onLinesChange?.(field, event.target.value) : onChange(updateAuthoringField030(values, field, event.target.value))} />
             : <input value={field.value} inputMode={field.kind === "integer" ? "numeric" : undefined} disabled={disabled || locked?.(field.index)} onChange={event => onChange(updateAuthoringField030(values, field, event.target.value))} />}
-      </label>)}
+      </label>;
+    return <details key={group} className="agsdl-details" open={["general", "instructions", "mission"].includes(group)}
+      style={top ? { minWidth: 0, marginTop: 0, paddingTop: 0, borderTopWidth: 0 } : { minWidth: 0 }}>
+      <DisclosureSummary>{t(`agsdl.authoring030.groups.${group}`)}</DisclosureSummary>
+      {["instructions", "mission", "information", "instance", "join"].includes(group) && <p className="agsdl-muted">{t(`agsdl.authoring030.hints.${group}`)}</p>}
+      {/* Where a text lives (a file of the project, an address) is a detail: it stays one click away. */}
+      {members.filter(field => field.label !== "uri").map(renderField)}
+      {locations.length > 0 && <>
+        {!onChange && <p className="agsdl-muted">{t(locations.every(field => /^[a-z][a-z0-9+.-]*:\/\//i.test(field.value)) ? "agsdl.authoring030.location.web" : "agsdl.authoring030.location.file")}</p>}
+        <details className="agsdl-details"><DisclosureSummary>{t("agsdl.authoring030.location.details")}</DisclosureSummary>
+          {locations.map(renderField)}
+        </details>
+      </>}
       {onChange && resources >= 0 && <AddProperty030 kind="resource" disabled={disabled || locked?.(resources)} value={values[resources]} onChange={value => onChange(values.map((old, i) => i === resources ? value : old))} />}
       {onChange && choices >= 0 && <AddProperty030 kind="choice" disabled={disabled || locked?.(choices)} value={values[choices]} onChange={value => onChange(values.map((old, i) => i === choices ? value : old))} />}
     </details>;
@@ -163,6 +190,6 @@ function AddProperty030({ kind, disabled, value, onChange }: { kind: "resource" 
   </details>;
 }
 
-function readProperties030(source: string, card: ViewerCard): ComponentProperties["fields"] {
-  try { return componentProperties(source, card).fields; } catch { return []; }
+function readProperties030(source: string, card: ViewerCard, project: boolean): ComponentProperties["fields"] {
+  try { return componentProperties(source, card, project).fields; } catch { return []; }
 }

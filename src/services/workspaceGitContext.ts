@@ -1,3 +1,4 @@
+import { demoWorkflowJourney } from "./operateWorkspace";
 import type { WorkspaceSession } from '../domains/shell/workspace';
 import { workspaceDefinitions } from '../domains/shell/workspace';
 import { resolveFooterGitContext, type FooterGitContext, type ResolveFooterGitContextInput } from './footerGitContext';
@@ -17,7 +18,7 @@ export function resolveWorkspaceGitContext(
     candidates: [], project: null, reason: 'missing_context',
   });
   // No remote Git adapter is installed. A reference must never fall back to a local selection.
-  if (target.kind !== 'local') return unavailable();
+  if (target.kind !== 'local' || (mode === 'Architect' && !demoWorkflowJourney)) return unavailable();
   const scope = target.scope;
   if (scope.kind !== 'selection' && scope.kind !== workspaceDefinitions[mode].sessionKind) {
     return unavailable();

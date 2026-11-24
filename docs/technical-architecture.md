@@ -29,6 +29,10 @@ L'architecture repose sur quatre principes :
 - transport interchangeable entre backend desktop et backend distant
 - préservation d'un historique de travail auditable via la persistance locale et la branche metadata
 
+La bibliothèque d’Architect réside dans la base SQLite du profil. Le frontend passe par les commandes Tauri de la bibliothèque pour charger un brouillon, enregistrer avec sa révision attendue et figer une version. La base conserve l’identité de la version source d’une adaptation et les références qui empêchent la suppression d’une version utilisée.
+
+Lors de la migration des anciens profils, Macro convertit d’abord l’index de la bibliothèque SQLite. Le lecteur récupère ensuite les documents AgSDL 0.3 dans les métadonnées historiques. Une transaction enregistre les brouillons, leur première version et la fin de l’import. Une source historique illisible laisse l’import en attente. La bibliothèque convertie reste accessible. Les chemins de métadonnées Git décrits plus bas concernent le format historique et ses consommateurs.
+
 Le produit actuel fonctionne en desktop local avec backend Tauri embarqué.
 Les topologies client desktop ou web/mobile connecté à un kernel distant restent
 des objectifs futurs. Le prototype headless et le transport remote décrits plus
@@ -403,11 +407,11 @@ de stockage et d’exécution.
 
 `src/services/agsdl` contient la projection du graphe, les modifications
 atomiques par pointeurs JSON et les exemples. `src/stores/agsdl/tools.ts`
-orchestre les outils de lecture et de modification du document. Les lecteurs de référence 0.3 et 0.1 sont fournis sous leur licence dans
+orchestre les outils de lecture et de modification du document. Les lecteurs des éditions 0.4, 0.3 et 0.1 sont fournis sous leur licence dans
 `src/vendor/agsdl`, avec leurs adaptations navigateur documentées. Le dispatch
 est explicite. L’édition 0.2 est refusée à l’ouverture ; son exécution, son
 édition et la conversion automatique des anciens plans sont retirées. Les
-métadonnées Macro de conception et de présentation vivent dans l’enveloppe 0.3.
+métadonnées Macro de conception et de présentation vivent dans l’enveloppe du document.
 Le sérialiseur conserve les lexèmes numériques et les valeurs opaques. Une
 mutation d’outil vérifie la conversation propriétaire, le statut brouillon et
 la révision lue.
@@ -448,7 +452,7 @@ est raccordé au shell. L’UI ne conduit ni outbox, ni horloge, ni scheduler,
 ni relecture de commit native. Le lancement produit exige la qualification
 du profil fournisseur exact ; les preuves synthétiques ne la remplacent pas.
 
-Les lecteurs vérifient explicitement le contrat 0.3, les versions de capture
+Les lecteurs vérifient explicitement le contrat du document, les versions de capture
 et le profil d’exécution. L’ancienne admission 0.2 est retirée ; `start030`
 et `execution_deliver030` utilisent les tables natives conservées. Les entrées UI
 contiennent seulement scope public, identifiants publics, révision et réponse.
@@ -776,7 +780,6 @@ reprise après effets durables et les responsabilités qui restent dans l'UI.
 D'autres stores portent des responsabilités ciblées :
 
 - `useGitStore` pour arbres et commits Git
-- `useFileChangesStore` pour la review de changements
 - `useProviderStore` pour les providers et modèles IA
 - `useSpeechToTextStore` pour les fournisseurs vocaux et les préférences de dictée
 - `useToolsStore` pour les outils internes et MCP
@@ -1101,7 +1104,6 @@ Les blocs principaux sont :
 - `config/`
 - `secrets/`
 - `ipc_contracts/`
-- `lsp/`
 - `db/`
 - `fs/`
 - `git/`
@@ -1318,6 +1320,66 @@ Le module `fs` porte :
 - la validation des chemins
 - le support du watcher de fichiers
 - la résolution spéciale du workspace metadata
+
+#### Commandes de fichiers génériques et racines autorisées
+
+Depuis le recentrage sur les systèmes agentiques, les commandes génériques
+`fs_copy`, `fs_move` et `fs_create_dir` n'ont plus d'appelant et sont retirées.
+Les pièces jointes (`pilot_files_*`), les exports et imports
+(`architect_export_*`, `architect_import_*`, `db_conversation_import_archives`)
+et l'ouverture d'un dossier depuis Operate (`architect_launch_open_folder`)
+passent par des commandes dédiées, pas par les commandes génériques.
+
+Chaque commande restante agit sous une seule racine, résolue par
+`resolve_workspace_for_path` : le `workspacePath` fourni par l'appelant, sinon
+le workspace courant (`WorkspaceRoot`), ou le worktree de métadonnées `.macro`
+de cette racine quand `workspaceScope` vaut `metadata`, `metadata_existing` ou
+`direct`. Le drapeau historique `allowOutsideWorkspace` n'élargit plus l'accès
+natif : une requête hors de la racine est refusée.
+
+| Commande | Appelants | Racine autorisée |
+| --- | --- | --- |
+| `fs_read_file` | outils de l'assistant Architect/Chat (`workspaceToolExecutor`), références de fichiers du chat, services de plans Architect, checkpoints de code, vue Git (`getFileContent`) | projet de la conversation ou de la tâche, worktree de métadonnées, ou workspace courant |
+| `fs_write_file` | outils de l'assistant, persistance et réplicas des plans Architect, métadonnées de fonctionnalités, restauration de checkpoints | idem |
+| `fs_delete` | outils de l'assistant, persistance des plans, métadonnées de fonctionnalités, checkpoints | idem |
+| `fs_list_dir` | outils `list`/`glob` de l'assistant, lecture des plans, résolution de portée de projet, sonde d'accès du dossier choisi dans le dialogue natif de création de projet (profondeur 0) | idem ; pour la sonde, le dossier choisi lui-même |
+| `fs_stat`, `fs_exists` | outils de l'assistant, artefacts et réplicas de plans, checkpoints | idem |
+| `fs_search_files` | recherche de fichiers pour les mentions (`workspaceFileSearch`) | chaque projet ouvert transmis comme racine |
+
+Les mêmes opérations servent en interne l'exécution des outils de workspace
+(`core::workspace_execution`), les écritures Architect et la lecture de
+l'auditeur d'objectifs, avec la racine du projet concerné.
+
+#### Accès confiné par handles
+
+`fs::confined` ouvre la racine une seule fois puis résout chaque composant du
+chemin relativement à ce handle, sans jamais en sortir ni suivre un lien hors
+de la racine : `openat2(RESOLVE_BENEATH)` sous Linux, parcours `openat` avec
+`O_NOFOLLOW` sous macOS et les anciens noyaux Linux, ouvertures relatives à un
+handle avec contrôle des points d'analyse (reparse points) sous Windows, via
+cap-std. Un lien relatif qui reste dans la racine est suivi ; un lien absolu qui
+revient dans la racine est réouvert sous la racine par son chemin physique. Le
+chemin demandé n'est jamais normalisé lexicalement avant la résolution : dans
+`lien/../nom`, le `..` s'applique à la cible du lien, comme pour le système.
+
+Chaque handle ouvert est ensuite admis avant usage : son chemin physique (lu
+sur le handle via `/proc/self/fd`, `F_GETPATH` ou `GetFinalPathNameByHandleW`)
+doit rester sous la racine et hors du profil privé, et un fichier régulier qui
+possède plusieurs liens physiques ne doit pas partager son identité (device et
+inode, ou volume et index de fichier) avec un fichier du profil privé. Ce
+second contrôle couvre un lien physique placé dans le workspace, qui conserve
+son chemin de workspace. Les identités privées sont relevées à la demande,
+une fois par opération et par volume ; au-delà de 200 000 entrées ou en cas
+d'erreur de parcours, l'objet est refusé.
+
+Les lectures, écritures et suppressions utilisent ensuite les handles admis :
+une écriture lit l'entrée existante sans suivre de lien final, crée son
+temporaire et le publie relativement au handle du dossier parent admis, et
+crée les parents manquants un par un dans des handles déjà admis. Une
+suppression récursive déplace d'abord l'entrée dans son parent admis et
+vérifie son identité avant de la supprimer. La copie générique n'existe plus :
+copier revient à lire la source puis écrire la destination, et chacune est
+contrôlée.
 
 ### 9.5 `git`
 
@@ -1734,11 +1796,11 @@ Les patchs multi-fichiers vérifient toutes les préconditions avant la premièr
 
 L'historique durable des checkpoints conserve une frontière de compaction `oldestCompleteSequence`. Un replay qui élague des checkpoints sérialise toujours le document versionné complet et ne peut donc pas remettre cette frontière à `null`. Les fichiers sont indexés pendant la préparation du replay par l'identité composite projet, scope, workspace et chemin réel ; deux montages qui utilisent le même chemin relatif restent des cibles distinctes.
 
-Dans un processus Macro, chaque mutation acquiert un verrou associé à la cible canonique avant de valider la révision et le conserve jusqu'à la fin de l'écriture, de la suppression ou du rollback. Les lots multi-fichiers trient et dédupliquent leurs verrous avant acquisition afin d'éviter les interblocages. Les écritures et suppressions natives confinées ouvrent la racine du workspace comme une capacité : lecture de révision, création du temporaire et renommage restent relatifs au même handle, de sorte qu'un parent remplacé simultanément par un symlink ne peut pas rediriger l'effet hors du workspace. Les checkpoints refusent aussi les lots de plus de 64 fichiers ou dont les contenus avant/après dépassent 64 Mio. Lorsqu'un agent omet la révision pour `edit`, `delete` ou une mise à jour/suppression par patch, le fallback frontend réutilise automatiquement la révision observée pendant la préparation afin de conserver la protection optimiste. Le headless lie chaque mutation à un `execution_id` et à l'empreinte exacte de sa requête. Il synchronise un enregistrement `pending` avant de détacher l'effet du cycle HTTP, puis écrit et synchronise un enregistrement `completed` avant de publier le résultat. Le client persiste l'identifiant dans le stockage du webview sous l'identité de l'invocation logique avant l'envoi, borne chaque attente et consulte `/tools/executions/{execution_id}` après une perte de transport ; un second envoi de la même invocation réutilise exactement le même identifiant et le même corps, tandis que deux invocations distinctes au contenu identique restent séparées. Un `pending` retrouvé après redémarrage n'est jamais rejoué : le serveur renvoie un état indéterminé jusqu'à résolution explicite. Le journal réserve au plus quatre résultats simultanés de 80 Mio, reste sous 512 Mio et n'évince que des résultats terminés. Si la persistance du checkpoint côté client échoue, Macro restaure chaque cible en ordre inverse avec la révision après mutation comme garde. La relecture nécessaire aux checkpoints passe par la route authentifiée `/tools/checkpoint-snapshot`, mais la restauration de code lors du replay d'un ancien message reste désactivée hors Tauri tant que son marqueur de reprise n'est pas transportable.
+Dans un processus Macro, chaque mutation acquiert un verrou associé à la cible canonique avant de valider la révision et le conserve jusqu'à la fin de l'écriture, de la suppression ou du rollback. Les lots multi-fichiers trient et dédupliquent leurs verrous avant acquisition afin d'éviter les interblocages. Les écritures et suppressions natives confinées ouvrent la racine du workspace comme une capacité puis admettent le dossier parent : lecture de révision, création du temporaire et renommage restent relatifs à ce handle admis, de sorte qu'un parent remplacé simultanément par un symlink ne peut pas rediriger l'effet hors du dossier contrôlé. Les checkpoints refusent aussi les lots de plus de 64 fichiers ou dont les contenus avant/après dépassent 64 Mio. Lorsqu'un agent omet la révision pour `edit`, `delete` ou une mise à jour/suppression par patch, le fallback frontend réutilise automatiquement la révision observée pendant la préparation afin de conserver la protection optimiste. Le headless lie chaque mutation à un `execution_id` et à l'empreinte exacte de sa requête. Il synchronise un enregistrement `pending` avant de détacher l'effet du cycle HTTP, puis écrit et synchronise un enregistrement `completed` avant de publier le résultat. Le client persiste l'identifiant dans le stockage du webview sous l'identité de l'invocation logique avant l'envoi, borne chaque attente et consulte `/tools/executions/{execution_id}` après une perte de transport ; un second envoi de la même invocation réutilise exactement le même identifiant et le même corps, tandis que deux invocations distinctes au contenu identique restent séparées. Un `pending` retrouvé après redémarrage n'est jamais rejoué : le serveur renvoie un état indéterminé jusqu'à résolution explicite. Le journal réserve au plus quatre résultats simultanés de 80 Mio, reste sous 512 Mio et n'évince que des résultats terminés. Si la persistance du checkpoint côté client échoue, Macro restaure chaque cible en ordre inverse avec la révision après mutation comme garde. La relecture nécessaire aux checkpoints passe par la route authentifiée `/tools/checkpoint-snapshot`, mais la restauration de code lors du replay d'un ancien message reste désactivée hors Tauri tant que son marqueur de reprise n'est pas transportable.
 
 Les remplacements atomiques conservent les bits de permission Unix de la cible. Un nouveau fichier commençant par un shebang reçoit les bits exécutables, conformément au comportement de l'outil `write` d'Oh My Pi. Les checkpoints enregistrent également le mode Unix et le réappliquent lors d'un replay ou d'une compensation ; une restauration ne doit donc pas transformer silencieusement un script exécutable en fichier ordinaire. Sous WSL, cette garantie est appliquée au fichier temporaire avant la dernière validation de révision et le renommage.
 
-Les chemins d'une racine virtuelle multi-projets sont toujours relatifs à un montage : les chemins absolus, préfixes de lecteur et composants parents `..` sont rejetés avant la sélection du projet. L'accès natif revalide ensuite la cible canonique avec `allow_outside_workspace=false`. Sous WSL, une vérification `realpath` du workspace et de la cible empêche aussi un lien symbolique interne de rediriger une lecture ou une mutation hors du projet.
+Les chemins d'une racine virtuelle multi-projets sont toujours relatifs à un montage : les chemins absolus, préfixes de lecteur et composants parents `..` sont rejetés avant la sélection du projet. L'accès natif résout ensuite la cible sous le handle de la racine du projet (voir 9.4). Sous WSL, une vérification `realpath` du workspace et de la cible empêche aussi un lien symbolique interne de rediriger une lecture ou une mutation hors du projet.
 
 L'état d'une mutation headless est interrogeable par `execution_id` via
 `/tools/executions/{execution_id}` dans ce protocole. Cette capacité existe
@@ -1791,11 +1853,11 @@ La frontière frontend qui remet les résultats d'outils au flux applique une d�
 
 ### 13.6 Terminal agentique indépendant des projets
 
-Les quatre appels techniques `terminal_create_session`, `terminal_run`, `terminal_read` et `terminal_kill` forment l'outil terminal agentique et partagent un seul interrupteur visible. Ce terminal ne passe pas par l'exécuteur de workspace et son schéma n'expose aucun `project_id`. Le frontend crée toujours ses sessions avec `project_id: null`; son répertoire initial est le dossier personnel ou tout répertoire existant demandé. Une session rattachée à un projet par le terminal manuel de l'application est refusée par l'outil agentique.
+Les quatre appels techniques `terminal_create_session`, `terminal_run`, `terminal_read` et `terminal_kill` forment l'outil terminal agentique et partagent un seul interrupteur visible. Ce terminal ne passe pas par l'exécuteur de workspace et son schéma n'expose aucun `project_id`. Le frontend crée toujours ses sessions avec `project_id: null`; son répertoire initial est le dossier personnel ou tout répertoire existant demandé. L’outil agentique refuse les sessions rattachées à un projet.
 
 Dans chaque mode qui expose l'outil, `toolSecurityPolicy` force chaque `terminal_run` à demander une approbation avant l'exécution, quel que soit le niveau de risque, y compris YOLO et Strict. Cette décision précède l'évaluation habituelle du niveau de risque, ignore les autorisations mémorisées et désactive l'action qui autorise des appels similaires pour toute la conversation. La création, la lecture et l'arrêt d'une session agentique restent des opérations d'observation. Le bridge Copilot relaie les quatre appels au frontend afin qu'ils traversent le même contrôle. Le tool host natif refuse explicitement les appels terminal directs, car ce chemin ne possède pas de mécanisme de review utilisateur.
 
-Le terminal manuel reste un sous-système distinct et peut conserver un rattachement à la tâche, au projet et au worktree pour la navigation de l'interface.
+Les commandes projet et la préparation des worktrees utilisent leurs propres sessions PTY. Le store Terminal peut encore lire les onglets persistés par les versions précédentes.
 
 ### 13.7 Instructions `AGENTS.md` des dépôts
 
@@ -2420,7 +2482,7 @@ Le même document décrit la projection des instances d'agents natives dans le
 catalogue de tâches d'Operate. Les identités et états proviennent du journal
 natif ; les tâches ne déclenchent pas un second chat ni un worktree Git.
 
-Les constructeurs et les blueprints inclus créent en [AgSDL 0.3](agsdl-030.md).
+Les constructeurs et les blueprints inclus créent en [AgSDL 0.4.0](agsdl-030.md).
 La construction historique 0.1 reste explicite ; 0.2 est refusée. La
 copie d’un blueprint conserve son édition et ses octets. `guide030.ts` fournit
 la référence d’auteur chargée à la demande ; `tools.ts` garde les guides des
@@ -2429,7 +2491,7 @@ sources importées, la pagination UTF-8 et les contrôles de révision.
 elle ne déduit aucune installation depuis les préférences des fournisseurs Chat
 et n’ajoute pas d’IPC. Le runtime reste propriétaire de la qualification.
 
-En 0.3, les informations de conception et de présentation sont dans
+Depuis la 0.3, les informations de conception et de présentation sont dans
 l’enveloppe du plan, hors source. Les adaptations ciblent une chaîne existante
 sans réécrire les autres valeurs. La revue 0.3 utilise les pointeurs source des
 agents, routes et compositions, indépendamment de la projection du viewer.
@@ -2490,17 +2552,11 @@ ne constitue pas un retour arrière d'une écriture durable.
   l'envoi au fournisseur. La fin d'une ancienne dictée ne réinitialise pas celle
   du contexte suivant. Les nettoyages existants des fenêtres et de CodeMirror
   restent en place, ainsi que la barrière globale de fermeture de page.
-- **Terminaux.** La composition injecte un port de rendu typé dans le store,
-  sans import du rendu depuis le store. Les fermetures locales et événements
-  natifs passent par une finalisation commune. Les réponses tardives ne peuvent
-  pas recréer un onglet fermé. L'arrêt frontend libère les listeners, timers,
-  observers et ressources xterm et attend les appels admis, sans fermer les PTY
-  natifs. Le détachement d'une vue conserve au plus six rendus détachés ; il
-  n'introduit aucune expiration de session native.
-  La composition d'entrée installe un port léger. Le renderer et xterm restent
-  chargés avec le panneau Terminal ; le premier attachement acquiert ce port.
-  Après l'arrêt de l'application, un attachement tardif est refusé avant toute
-  création xterm. Le nettoyage d'un onglet non rendu ne charge pas le renderer.
+- **Terminaux.** Le store suit les sessions de Chat et les onglets utilisés
+  par les commandes de tâche. Les fermetures locales et les événements natifs
+  passent par une finalisation commune. Une réponse tardive ne peut pas recréer
+  un onglet fermé. À l’arrêt de l’application, le store libère les abonnements
+  et les timers et attend les appels admis. Les PTY natifs restent en vie.
 - **Caches.** L'identité de la requête protège les publications des caches Plans
   et panneaux après invalidation. Le registre des projets possède l'éviction
   ciblée des caches Git frontend lorsqu'un projet disparaît ou change de chemin.

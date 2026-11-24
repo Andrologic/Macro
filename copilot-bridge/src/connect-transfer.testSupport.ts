@@ -50,7 +50,9 @@ export class TransferParent {
     const fifo = (name: string) => {
       const path = join(directory, name); ensure(spawnSync('mkfifo', ['-m', '600', path]).status === 0);
       const bootstrap = openSync(path, constants.O_RDWR | constants.O_NONBLOCK);
-      return { bootstrap, read: openSync(path, constants.O_RDONLY | constants.O_NONBLOCK), write: openSync(path, constants.O_WRONLY | constants.O_NONBLOCK) };
+      // The bootstrap fd lets both blocking opens complete. Async fd reads and
+      // writes can then wait for the kernel instead of retrying with timers.
+      return { bootstrap, read: openSync(path, constants.O_RDONLY), write: openSync(path, constants.O_WRONLY) };
     };
     const input = fifo('input'), output = fifo('output');
     const stderrPath = join(directory, 'stderr'), stderr = openSync(stderrPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);

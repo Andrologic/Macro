@@ -4,8 +4,8 @@ import { createAgentWorkContract030 } from '../../src/services/agsdlExecution/ag
 import { evaluateHostWork030 } from '../../src/services/agsdlExecution/hostWorkTransition030';
 import { EMPTY_WORK_JOURNAL030 } from '../../src/services/agsdlExecution/hostWorkJournal030';
 import { connectValueSchemaValidator030 } from '../../src/services/agsdlExecution/valueSchemaPort030';
-import { NumberToken, parse } from '../../src/vendor/agsdl/v0.3/json.mjs';
-import { validate } from '../../src/vendor/agsdl/v0.3/valueschema.mjs';
+import { NumberToken, parse } from '../../src/vendor/agsdl/v0.4/json.mjs';
+import { validate } from '../../src/vendor/agsdl/v0.4/valueschema.mjs';
 import type { ExactJsonText } from '../../src/services/agsdlExecution/contracts';
 import type { WorkRequest030 } from './work-oracle030';
 export const WORK_SEED030 = 'work-030-20261112-v1';

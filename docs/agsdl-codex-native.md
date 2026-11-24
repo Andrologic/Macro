@@ -5,21 +5,22 @@ profile. Its model name comes from the qualified native catalogue. Macro never
 substitutes its HTTP transport when the native harness is unavailable. Macro
 agent tools outside AgSDL retain their own captured engine and tool policy.
 
-The current adapter qualifies the official Codex CLI **0.167.x on macOS ARM64
-and Linux ARM64**. Other
-versions and platforms are unavailable until qualified. Install that CLI on
-Macro's PATH. Macro checks its version and executable digest; it incorporates
-no private SDK or fork. The native model catalogue comes from this profile's
-`model/list`, with no fallback model. `maxTurns` and Macro tool aliases on a
+The adapter qualifies the official Codex CLI **0.167.x** on macOS ARM64 and
+Linux ARM64. Both platforms also support **0.171.0** for read-only runs with a
+private login. Install a qualified CLI on Macro's PATH. Macro checks its
+version and executable digest. The native model catalogue comes from this
+profile's `model/list`, with no fallback model. `maxTurns` and Macro tool aliases on a
 native Agent are unsupported.
 
 ## Private login
 
-Install the **complete official CLI package from one release**, including the
-`codex`, `codex-code-mode-host` and `codex-exec-server` executables. The two
-helpers must be regular executable siblings of the resolved native `codex`.
-Use the matching platform archives and verify their published digests. A lone
-`codex` binary can authenticate and list models while later tool execution fails.
+Install the **complete official CLI package from one release**. The 0.167.x
+packages and the macOS ARM64 package for 0.171.0 require both
+`codex-code-mode-host` and `codex-exec-server` as executable siblings of
+`codex`. The Linux ARM64 package for 0.171.0 bundles `exec-server` in the
+main binary and provides `codex-code-mode-host` as an executable sibling. Use
+the matching platform archives and verify their published digests. A lone `codex`
+binary can authenticate and list models while later tool execution fails.
 The native precheck reports `CODEX_PACKAGE_INCOMPLETE` for missing, unreadable or
 non-executable helpers. Their observed digests join the captured profile identity,
 so replacing a helper invalidates that capture. Presence and hashes alone do not
@@ -46,9 +47,13 @@ unavailable. Keep this profile outside every workspace used by its Agents.
 
 Run the official login in a terminal using only these private directories. Set
 `MACRO_ROOT` and `CODEX_BIN` to absolute paths, and check `CODEX_BIN --version`
-returns `codex-cli 0.167.x`. Do not copy an existing `auth.json` or create an API
-key. This profile supports a ChatGPT account whose stable account and routing
-identity Codex can attest through `account/read`.
+returns a qualified version. For 0.171.0, start Macro without
+`ARGENTIC_CODEX_AUTH_FILE` so it uses the private login. On Linux ARM64, keep
+the private profile outside `/tmp`. Argentic assigns the app-server a private
+temporary directory for its Unix sockets.
+Do not copy an existing `auth.json` or create an API key. This profile supports
+a ChatGPT account whose stable account and routing identity Codex can attest
+through `account/read`.
 
 ```sh
 MACRO_ROOT=/absolute/path/to/macro-config
@@ -84,9 +89,8 @@ does not change the captured account identity.
 The private login above remains the default. A native host can explicitly opt
 into reading an existing ChatGPT **file** session without loading that session's
 configuration. This experimental path is limited to the official **0.167.0**
-executable and the existing platform gates. A working ordinary 0.169 session
-does not qualify 0.169 as an AgSDL execution engine. Product qualification of
-this new authentication path still requires the real UI and standalone recipes.
+executable and the existing platform gates. Product qualification of this
+authentication path still requires the real UI and standalone recipes.
 
 Set `ARGENTIC_CODEX_EXECUTABLE` to the absolute executable path when the qualified package is installed alongside another Codex version. The native adapter checks the version, sibling executables and profile.
 
@@ -130,7 +134,9 @@ with a fixed diagnostic, never an automatic login, fallback or replay.
 | `CODEX_AUTH_SOURCE_UNAVAILABLE` / `CODEX_AUTH_SOURCE_UNSUPPORTED` | Check the host-selected file source and supported storage format privately. |
 | `CODEX_AUTH_EXPIRED` / `CODEX_AUTH_REFRESH_REQUIRED` | No usable renewed token is available. Keep the work stopped; this host cannot refresh it. |
 | `CODEX_AUTH_ACCOUNT_CHANGED` | Refuse continuation under the captured identity. |
-| `CODEX_AUTH_PROFILE_CONFLICT` / `CODEX_AUTH_VERSION_UNQUALIFIED` | Select a separate empty execution profile and the exact qualified executable. |
+| `CODEX_AUTH_PROFILE_CONFLICT` | Select a separate execution profile without stored auth for existing-file authentication. |
+| `CODEX_AUTH_VERSION_UNQUALIFIED` | For existing-file authentication, select Codex 0.167.0. To use a private login, unset `ARGENTIC_CODEX_AUTH_FILE` when starting Macro. |
+| `CODEX_LOGIN_REQUIRED` | Sign in to Macro's private profile with the procedure above, then check again. |
 | `CODEX_AUTH_FAILED` / `CODEX_AUTH_TIMEOUT` | Inspect the fixed diagnostic and physical Stop/drain state; no credential detail is retained in the error. |
 
 ## AgSDL 0.3 execution
@@ -257,7 +263,7 @@ qualification above remain; no old execution or document conversion is used.
 
 ## Bounded requalification
 
-A supported `0.167.x` version string is only an admission prerequisite. For a new
+A supported version string is only an admission prerequisite. For a new
 patch or changed executable, record the exact CLI version/digest, platform, host
 commit/tree, runtime schema revision and private profile diagnostic. Use an
 official isolated login in the profile belonging to that host, or the explicit

@@ -2,9 +2,11 @@
 
 ## 1. Objet du document
 
-Ce document définit la cible fonctionnelle de Macro en tant que produit fini.
+La [spécification des systèmes agentiques](agentic-systems.md) décrit la direction actuelle de Macro et le calendrier de livraison. À l’étape 1, un projet d’Architect regroupe des blueprints dans la bibliothèque locale de Macro. Chaque blueprint possède un brouillon modifiable et des versions numérotées, consultables en lecture seule. Adapter une version crée un nouveau blueprint et conserve sa provenance. Operate supervise les exécutions et Chat garde ses conversations indépendantes. Le lanceur de versions dans Operate relève de l’étape 3.
 
-Il décrit :
+Les descriptions de développement logiciel, de tâches de code et de revue Git ci-dessous documentent la version antérieure de Macro. Elles servent de référence pour lire les anciens profils et maintenir les clients historiques de Macro Pilot.
+
+Le document décrit :
 - ce qu'est Macro
 - ce que Macro doit permettre à un développeur de faire
 - comment les principaux workflows doivent fonctionner
@@ -67,7 +69,7 @@ Macro n'a pas vocation à être :
 - un simple chat généraliste sans workflow de développement
 - une interface publique pour les outils internes de debug de l'application
 
-Le périmètre fonctionnel public repose sur les modes `Architect`, `Implement` et `Chat`.
+Les trois modes visibles sont Architect, Operate et Chat.
 
 ---
 
@@ -121,11 +123,7 @@ moniteur 0.3 ; le contrat de consultation et d'actions est défini en section 7.
 La création depuis un blueprint reste disponible pour un plan vide. Cette
 conception ne lance pas les agents du graphe et ne crée pas de tâches Implement.
 
-Implement continue d'exécuter les tâches autonomes et celles des plans
-historiques. Pour ces tâches, l'utilisateur supervise l'exécution, examine les
-changements, puis valide leur intégration. Le démarrage d'un nouveau plan AgSDL
-depuis le produit est ouvert pour la tranche Codex qualifiée, avec contrôle
-natif avant lancement et arrêt depuis le panneau Architect (section 7.1).
+Operate affiche les instances d’agents et les exécutions AgSDL. Une demande humaine ouvre l’exécution à laquelle elle appartient. Le panneau Architect conserve le démarrage et l’arrêt du profil natif qualifié (section 7.1).
 
 ### 5.2 Unités fonctionnelles principales
 
@@ -258,7 +256,7 @@ Les artefacts de relais :
 Macro expose trois modes produits dans son périmètre public :
 
 - Architect
-- Implement
+- Operate
 - Chat
 
 Le mode `Debug` ne fait plus partie de l'application ni de la spécification fonctionnelle publique.
@@ -306,14 +304,14 @@ des anciennes tâches.
 
 #### Visualisation AgSDL
 
-Les nouvelles créations et les blueprints inclus utilisent [AgSDL 0.3](agsdl-030.md).
+Les nouvelles créations et les blueprints inclus utilisent [AgSDL 0.4.0](agsdl-030.md).
 Une copie conserve l’édition prise en charge de son modèle. Les documents 0.1
 gardent leur source, leurs annexes et leur guide. Ouvrir un document 0.2 affiche
 clairement une édition non supportée ; aucune conversion ni exécution de repli
 n’est effectuée. Les outils
-chargent le guide de la source à la demande, avec le guide 0.3 pour une source
+chargent le guide de la source à la demande, avec le guide 0.4.0 pour une source
 vide. Un catalogue de modèles Chat ne prouve pas la disponibilité d’un harness
-natif ; sans raccord qualifié, le catalogue 0.3 reste explicitement non évalué.
+natif ; sans raccord qualifié, le catalogue reste explicitement non évalué.
 
 Le panneau droit Architect présente un canvas AgSDL non éditable. La conversation
 conserve sa place centrale. L’agent peut modifier le document ; une modale permet
@@ -366,7 +364,9 @@ qualification n’est pas faite.
 
 Le [contrat UI/runtime 0.3](agsdl-030.md#contrat-produit-des-runs-03) définit les
 actions raccordées et les DTO natifs encore manquants. Start et Stop sont
-ouverts pour la tranche Codex 0.167.x qualifiée sur macOS ARM64 et Linux ARM64.
+ouverts pour Codex 0.167.x sur macOS ARM64 et Linux ARM64. Sur ces deux
+plateformes, Codex 0.171.0 est aussi qualifié pour le profil en lecture seule
+avec une connexion au profil privé.
 Les appels locaux, demandes humaines, messages en file et steer, délais,
 routes parallèles, fan-outs et joins sont raccordés au superviseur natif.
 Les compositions imbriquées, les erreurs locales ou du flow et les limites de
@@ -398,7 +398,13 @@ doit rester disponible pendant ces attentes. Une perte d'acquittement ou de
 host garde l'état incertain jusqu'à réconciliation native, sans replay
 automatique. Les capacités encore sans DTO attesté restent indisponibles.
 
-### 7.2 Mode Implement
+### 7.2 Mode Operate
+
+Operate découvre les exécutions du projet et leurs instances d’agents. Deux exécutions issues du même blueprint restent distinctes. Sélectionner une instance affiche les échanges que le moteur a enregistrés pour elle. L’inspecteur donne accès au graphe de l’exécution et à ses demandes humaines.
+
+Lorsqu’une lecture devient périmée, les derniers échanges disponibles restent consultables et les actions de réponse sont désactivées. Un ancien profil enregistré sous `Implement` rouvre Operate. Les tâches de code de ce profil restent inactives au démarrage.
+
+#### Contrat historique du mode Implement
 
 Le mode Implement est le mode d'exécution et de review.
 Il exécute les tâches autonomes et celles des plans historiques. Les mentions
@@ -443,6 +449,12 @@ La sauvegarde des brouillons applique les mêmes limites que leur restauration. 
 Un message accepté en file pendant un tour actif est sauvegardé localement avec son mode, sa tâche ou son plan, ses références et son choix de modèle. La navigation suivante ne change pas cette intention. Macro conserve la soumission jusqu'à la sauvegarde du message et de ses images. Après une interruption ou un redémarrage, un panneau de récupération persistant permet de modifier le texte d'un message encore en attente, de le retirer ou de réessayer l'envoi, même lorsque les notifications sont désactivées. Un message déjà enregistré ne peut plus être modifié ni renvoyé. Les droits et les secrets sont relus avant l'exécution. Une conversation archivée garde sa file suspendue ; sa suppression définitive supprime aussi sa file.
 
 La sauvegarde locale du profil inclut les instructions en file et les réponses assistant de secours. Leur restauration conserve le texte et les identités, sans déclencher d'envoi. Une archive ancienne qui omet ces données remplace aussi ce périmètre : les valeurs plus récentes sont retirées du profil actif après conservation dans la copie de récupération. La restauration ne fusionne pas les profils et ne réassocie pas les chemins des projets.
+
+Macro démarre même si une restauration est interrompue. Si la récupération
+échoue, l’écran de récupération s’affiche avant l’ouverture de la base de
+données et de la configuration. Macro conserve le journal et l’archive du
+profil précédent. L’écran permet de relancer la récupération, d’afficher
+l’archive ou le dossier de récupération et de copier le diagnostic.
 
 L'utilisateur peut joindre explicitement jusqu'à trois autres conversations du même projet comme sources de contexte. À l'envoi, Macro sélectionne au plus trois passages textuels pertinents par source dans la branche de transcript actuellement conservée, avec l'identifiant et la date de chaque message. En l'absence de correspondance lexicale, elle ne retient que le dernier passage et indique qu'il s'agit d'un repli récent. Les réponses incomplètes ne servent pas de source. La sélection est bornée et figée dans le message envoyé, où les citations restent consultables, y compris après une reprise ; un message en file conserve le choix des conversations et sélectionne les passages lorsqu'il part effectivement. Une conversation supprimée, devenue inaccessible ou encore active bloque la sélection. L'utilisateur peut retirer chaque source du composeur. Aucune mémoire automatique n'est créée.
 
@@ -912,7 +924,7 @@ Une tâche ne peut pas être considérée comme complète sans commit.
 
 ---
 
-## 14. Comportement du mode Implement
+## 14. Comportement historique du mode Implement
 
 ### 14.1 Conditions de démarrage
 
@@ -1063,7 +1075,7 @@ Une mutation qui repose sur une lecture préparatoire doit réutiliser la révis
 
 Une limite de sécurité interne atteinte pendant l'énumération doit produire une erreur récupérable qui invite à réduire le périmètre. Macro ne doit jamais convertir une énumération interne incomplète en `total_count`, `scan_complete` ou `total_is_exact` affirmatif.
 
-Les commandes lancées par les outils terminal doivent borner leur durée, leur mémoire de sortie et le temps consacré au drainage final de stdout/stderr. Une sortie tronquée conserve un début et une fin identifiables, avec le volume omis. L'annulation de la génération doit terminer le groupe de processus et ses descendants, y compris lorsqu'elle arrive pendant le démarrage, sans interrompre les terminaux interactifs ouverts par l'utilisateur.
+Les commandes lancées par les outils terminal doivent borner leur durée, leur mémoire de sortie et le temps consacré au drainage final de stdout/stderr. Une sortie tronquée conserve un début et une fin identifiables, avec le volume omis. L'annulation de la génération doit terminer le groupe de processus et ses descendants, y compris lorsqu'elle arrive pendant le démarrage, sans interrompre les sessions PTY des commandes de tâche.
 
 Tout résultat textuel d'outil dépassant 50 Kio doit être remplacé dans le contexte par un aperçu borné conservant son début et sa fin. Le contenu complet ne peut être annoncé sous une adresse `tool-output://…` qu'après sa persistance durable comme pièce jointe de la conversation ; il peut alors être relu par pages avec `read_file`. Si cette persistance échoue, l'aperçu doit rester borné sans exposer d'adresse inutilisable. Les fichiers joints et ces sorties récupérables doivent exposer des pages numérotées et un curseur opaque ; le mode brut paginé doit permettre de récupérer sans perte les contenus constitués d'une seule ligne très longue.
 
@@ -1220,7 +1232,7 @@ Le mode Chat peut accéder :
 
 La disponibilité de ces outils doit être configurable. Le terminal apparaît comme un seul outil dans l'interface, même si son contrat technique distingue la création de session, l'exécution, la lecture et l'arrêt. L'outil terminal agentique n'a aucune identité de projet ou de workspace dans son contrat. Il peut démarrer dans n'importe quel répertoire existant, que la conversation possède ou non un workspace de contexte. Chaque commande exige une approbation explicite et distincte dans tous les modes où l'outil est disponible, y compris au niveau de risque YOLO. Une approbation terminal ne peut jamais être mémorisée pour la conversation.
 
-Le terminal manuel de l'application est une fonctionnalité distincte. Il peut rester rattaché à une tâche et à un projet pour les besoins de navigation de l'interface, mais ses sessions ne sont pas utilisables par l'outil terminal agentique.
+Les commandes projet et la préparation des worktrees utilisent des sessions PTY liées à une tâche. Ces sessions sont distinctes de celles de l’outil terminal agentique.
 
 ---
 
@@ -1405,7 +1417,7 @@ Macro doit exposer un contrôle utilisateur sur au moins les dimensions suivante
 - disponibilité des outils par mode
 - activation, confiance et scripts des skills
 - niveau d'automatisation de l'implémentation
-- configuration du workflow Git
+- mode d’accès des projets et préparation de leur stockage dans Git
 - préférences d'apparence et d'interaction
 - raccourcis
 - prompts et cadrage du comportement système
@@ -1590,7 +1602,7 @@ Les règles suivantes sont fondatrices :
 - Une review humaine est obligatoire à la fin de chaque tâche.
 - Pour un plan historique, une tâche de finalisation synthétique converge
   depuis les feuilles de la stratégie et pilote l'intégration finale.
-- L'édition manuelle du code existe, mais comme mécanisme secondaire d'ajustement en review.
+- L’édition manuelle du code est prévue comme mécanisme secondaire d’ajustement en revue.
 - Les skills guident l'agent sans contourner la politique d'outils.
 - Le support du kernel distant fait partie de la cible produit.
 

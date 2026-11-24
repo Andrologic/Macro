@@ -1,3 +1,5 @@
+import { demoWorkflowJourney } from "../../services/operateWorkspace";
+import { confirmedBlueprintDraft, useArchitectLibraryStore } from "../../stores/useArchitectLibraryStore";
 import { captureAgsdlChatContext, getAgsdlContext, replaceAgsdlChatContext, legacyAgsdlReference, serializeAgsdlChatContext, readAgsdlChatSelection, isAgsdlChatContextCurrent } from "../../stores/agsdl/chatContext";
 import { createComposerTransaction } from "../../services/chat/composerTransaction";
 import { COMPOSER_REFERENCE_PATTERN, resolveReference, referenceText } from "../../services/chat/composerReferenceText";
@@ -109,7 +111,6 @@ import {
 } from '../architect/planSelectorEvents';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { getPlanNodeTodoState } from '../../services/planNodeTodos';
-import { TaskArtifactsButton } from '../implement/TaskArtifactsButton';
 import {
   getDependencyBlockedMessage,
   TaskBlockedState,
@@ -133,7 +134,6 @@ import { parseConversationGoalCommand } from '../../services/conversationGoalCom
 import { conversationGoalProductFlow } from '../../composition/goalProductComposition';
 import { isTauriAvailable } from '../../services/ipc/runtime';
 import { chatAdmissionMode, type ChatAdmissionMode } from '../../services/ipc/chatAdmission';
-import { GoalAuditArtifactsButton } from './GoalAuditArtifactsButton';
 import { StandaloneTaskLaunchProgressCard } from './StandaloneTaskLaunchProgressCard';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
 import { ChatFloatingNotice, ChatFloatingNoticeStack } from './ChatFloatingNotices';
@@ -197,6 +197,9 @@ const ImagePreviewModal = React.lazy(() =>
 );
 const ArchiveReaderDialog = React.lazy(() =>
   import('./ArchiveReaderDialog').then((module) => ({ default: module.ArchiveReaderDialog })),
+);
+const GoalAuditArtifactsButton = React.lazy(() =>
+  import('./GoalAuditArtifactsButton').then((module) => ({ default: module.GoalAuditArtifactsButton })),
 );
 const TransferConversationDialog = React.lazy(() =>
   import('../connect/TransferConversationDialog').then((module) => ({ default: module.TransferConversationDialog })),
@@ -1182,8 +1185,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     standaloneProjects,
     projectGroups,
     getProjectById,
-    activeArchitectPlanId,
-    activePlanContext,
+    activeArchitectPlanId: legacyPlanId,
+    activePlanContext: legacyPlanContext,
     openProjectModal,
     setLeftPanelOpen,
   } = useAppStore(useShallow((state) => ({
@@ -1365,6 +1368,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     () => tasks.find((task) => task.id === selectedTaskId) ?? null,
     [tasks, selectedTaskId]
   );
+  const libraryDraft = useArchitectLibraryStore(confirmedBlueprintDraft);
+  const libraryDraftLoading = useArchitectLibraryStore(state => state.draftStatus === "loading");
+  const libraryVersionNumber = useArchitectLibraryStore(s => s.versionNumber);
+  const libraryMode = mode === "Architect" && !demoWorkflowJourney;
+  const activeArchitectPlanId = libraryMode ? libraryDraft?.id : legacyPlanId;
+  const activePlanContext = libraryMode ? null : legacyPlanContext;
   const isArchitectPlanSelectionMissing = mode === 'Architect' && !activeArchitectPlanId;
   const shouldShowContextControlsForActiveContext = shouldShowContextControls({
     mode,
@@ -1785,6 +1794,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   );
 
   const isConversationPending =
+    (libraryMode && libraryDraftLoading) ||
     hydrationStatus === 'idle' ||
     hydrationStatus === 'hydrating' ||
     restoreStatus === 'idle' ||
@@ -2134,7 +2144,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       }),
     [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
-  const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
+  const isWorkspaceMissing = !libraryMode && isProjectWorkspaceMissing(workspaceState);
   const isModeProjectWorkspaceMissing =
     (mode === 'Architect' || mode === 'Implement') && isWorkspaceMissing;
   const selectedTaskScopedProjectIds = useMemo(() => {
@@ -2283,6 +2293,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   }, [copyRestoredConversation, isCopyingRestored, selectedConversationId, t]);
   const isComposerDisabled =
+    (libraryMode && (!libraryDraft || libraryDraft.archived || libraryDraft.conversationId !== selectedConversationId)) ||
     isConversationPending ||
     isModeProjectWorkspaceMissing ||
     isArchitectPlanSelectionMissing ||
@@ -2347,6 +2358,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   ]);
 
   const modeHeader = useMemo(() => {
+    if (libraryMode) return { icon: "compass" as const, title: t("header.architect", "Architect"), subtitle: libraryDraft?.name ?? null };
     if (mode === 'Architect') {
       return {
         icon: import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? 'pencil-ruler' as const : 'compass' as const,
@@ -2365,8 +2377,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
     if (mode === 'Implement') {
       return {
-        icon: import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? 'workflow' as const : 'check-square' as const,
-        title: `${t(import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? 'header.operate' : 'header.implement', 'Implement')} - ${(selectedTask ? getPlanFinalizationTaskDisplayTitle(selectedTask, t) : null) || (hasVerifiedConflictContext ? currentConversation?.title : null) || t('implement.selectTaskShort', 'Select a task')}`,
+        icon: 'workflow' as const,
+        title: `${t('header.operate', 'Operate')} - ${(selectedTask ? getPlanFinalizationTaskDisplayTitle(selectedTask, t) : null) || (hasVerifiedConflictContext ? currentConversation?.title : null) || t('implement.selectTaskShort', 'Select a task')}`,
         subtitle: null,
       };
     }
@@ -2378,6 +2390,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     };
   }, [
     currentConversation?.title,
+    libraryMode,
+    libraryDraft?.name,
     hasVerifiedConflictContext,
     activePlanContext,
     focusedProjectName,
@@ -2390,6 +2404,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   ]);
 
   useEffect(() => {
+    if (!demoWorkflowJourney) return;
     const handlePlanSelectorState = (event: Event) => {
       setArchitectPlanSelectorState(
         (event as CustomEvent<ArchitectPlanSelectorStateDetail>).detail ?? null
@@ -2433,7 +2448,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       : missingArchitectPlanActionKind === 'configure'
         ? t('architect.projectNavigator.manageProjects', 'Manage projects')
       : t('architect.selectPlanAction', 'Select a plan');
-  const missingArchitectPlanMessage = isMissingArchitectPlanActionUnavailable
+  const librarySelectionMessage = libraryVersionNumber === null
+    ? agsdlT("agsdl.library.chooseBlueprint")
+    : agsdlT("agsdl.library.versionReadOnly", { number: libraryVersionNumber });
+  const missingArchitectPlanMessage = libraryMode ? librarySelectionMessage : isMissingArchitectPlanActionUnavailable
     ? t('architect.projectNavigator.loadError', 'Unable to load plans.')
     : missingArchitectPlanActionKind === 'create'
     ? t(
@@ -3123,7 +3141,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       ? { ...draftAgsdlContext, conversationId: selectedConversationId }
       : draftAgsdlContext;
 
-    if (agsdlContext && (mode !== 'Architect' || agsdlContext.conversationId !== selectedConversationId || agsdlContext.planId !== activeArchitectPlanId || agsdlContext.branchName !== activePlanContext?.targetBranch || !isAgsdlChatContextCurrent(agsdlContext))) {
+    if (agsdlContext && (mode !== 'Architect' || agsdlContext.conversationId !== selectedConversationId || (libraryMode ? agsdlContext.blueprintId !== libraryDraft?.id : agsdlContext.planId !== activeArchitectPlanId || agsdlContext.branchName !== activePlanContext?.targetBranch) || !isAgsdlChatContextCurrent(agsdlContext))) {
       notify.warning(agsdlT("agsdl.staleChatSelection"));
       return;
     }
@@ -3269,7 +3287,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
     const conversationId = await ensureConversation();
     if (!conversationId) return;
-    if (agsdlContext && (mode !== 'Architect' || agsdlContext.conversationId !== selectedConversationId || agsdlContext.planId !== activeArchitectPlanId || agsdlContext.branchName !== activePlanContext?.targetBranch || !isAgsdlChatContextCurrent(agsdlContext))) {
+    if (agsdlContext && (mode !== 'Architect' || agsdlContext.conversationId !== selectedConversationId || (libraryMode ? agsdlContext.blueprintId !== libraryDraft?.id : agsdlContext.planId !== activeArchitectPlanId || agsdlContext.branchName !== activePlanContext?.targetBranch) || !isAgsdlChatContextCurrent(agsdlContext))) {
       notify.warning(agsdlT("agsdl.staleChatSelection"));
       return;
     }
@@ -4001,12 +4019,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             {selectedConversationId && currentConversation?.scope_mode === 'Chat' && !currentConversation.project_id && !currentConversation.group_id && !currentConversation.task_id && (
               <button type="button" className="rounded p-1.5 text-muted-foreground hover:bg-accent" title={t('chat.archive.title')} aria-label={t('chat.archive.title')} onClick={() => setArchiveReaderOpen(true)}><Icon name="archive" size={14} /></button>
             )}
-            {mode === 'Implement' && <TaskArtifactsButton />}
             {currentConversation?.project_id && (
-              <GoalAuditArtifactsButton key={`${currentConversation.project_id}:${currentConversation.id}:${activeConversationGoal?.goalId ?? ''}`}
-                projectId={currentConversation.project_id}
-                conversationId={currentConversation.id} goalId={activeConversationGoal?.goalId}
-                refreshKey={activeConversationGoal?.revision ?? 0} />
+              <Suspense fallback={null}>
+                <GoalAuditArtifactsButton key={`${currentConversation.project_id}:${currentConversation.id}:${activeConversationGoal?.goalId ?? ''}`}
+                  projectId={currentConversation.project_id}
+                  conversationId={currentConversation.id} goalId={activeConversationGoal?.goalId}
+                  refreshKey={activeConversationGoal?.revision ?? 0} />
+              </Suspense>
             )}
             {shouldShowContextIndicator && selectedConversationId && (
               <Suspense fallback={null}>
@@ -4091,7 +4110,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 <p className="text-muted-foreground text-sm">
                   {missingArchitectPlanMessage}
                 </p>
-                <button
+                {!libraryMode && <button
                   ref={missingArchitectPlanActionRef}
                   type="button"
                   onClick={handleMissingArchitectPlanAction}
@@ -4120,7 +4139,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     className={cn(isMissingArchitectPlanActionPending && 'animate-spin')}
                   />
                   {missingArchitectPlanActionLabel}
-                </button>
+                </button>}
               </div>
             </div>
           ) : isSelectedTaskDependencyBlocked && selectedTask ? (
@@ -4442,41 +4461,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
             <div className="flex items-center justify-between" data-tour-id="chat-control-row">
               <div className="flex items-center gap-2">
-                {mode === 'Implement' && (
-                  <div
-                    className="inline-flex items-center rounded-lg border border-border bg-muted/60 p-0.5"
-                    data-tour-id="implement-agent-toggle"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setAgentType('plan')}
-                      className={cn(
-                        'inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                        agentType === 'plan'
-                          ? 'bg-primary text-primary-foreground'
-                          : 'text-muted-foreground hover:text-foreground'
-                      )}
-                      title={t('chat.agentTypePlanTitle', 'Plan: read-only investigation')}
-                    >
-                      <Icon name="map" size={12} />
-                      {t('chat.agentTypePlan', 'Plan')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAgentType('build')}
-                      className={cn(
-                        'inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                        agentType === 'build'
-                          ? 'bg-primary text-primary-foreground'
-                          : 'text-muted-foreground hover:text-foreground'
-                      )}
-                      title={t('chat.agentTypeBuildTitle', 'Build: apply changes')}
-                    >
-                      <Icon name="code" size={12} />
-                      {t('chat.agentTypeBuild', 'Build')}
-                    </button>
-                  </div>
-                )}
                 <ModelDropdown
                   isOpen={openModelSelector === 'model'}
                   onOpenChange={(open) => setOpenModelSelector((current) => open ? 'model' : current === 'model' ? null : current)}

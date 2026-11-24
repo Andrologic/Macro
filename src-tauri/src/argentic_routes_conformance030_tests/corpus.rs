@@ -620,9 +620,9 @@ fn files(path: &Path) -> Vec<PathBuf> {
 fn documents(c: &mut Corpus) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     for directory in [
-        "dev/agsdl/fixtures/v0.3/conformance/cases",
-        "dev/agsdl/fixtures/v0.3/conformance/runs",
-        "dev/agsdl/fixtures/v0.3/examples",
+        "dev/agsdl/fixtures/v0.4/conformance/cases",
+        "dev/agsdl/fixtures/v0.4/conformance/runs",
+        "dev/agsdl/fixtures/v0.4/examples",
         "src/demo/agsdl",
     ] {
         for path in files(&root.join(directory)) {

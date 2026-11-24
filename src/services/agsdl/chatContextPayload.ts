@@ -4,6 +4,7 @@ import type { AgsdlSelectionReference } from '../../types';
 import { serializeAgsdlChatContext } from './selectionContext';
 
 export interface AgsdlSelectionPayload {
+  blueprint_id?: string;
   plan_id?: string;
   target_branch?: string;
   document: 'agsdl';
@@ -15,9 +16,10 @@ export interface AgsdlSelectionPayload {
   diagnostic?: string;
 }
 
-interface AgsdlTargetPayload extends AgsdlSelectionPayload {
-  plan_id: string;
-  target_branch: string;
+type AgsdlTargetPayload = AgsdlSelectionPayload & (
+  { blueprint_id: string; plan_id?: never; target_branch?: never } |
+  { blueprint_id?: never; plan_id: string; target_branch: string }
+) & {
   revision: string;
   path: string;
 }
@@ -35,15 +37,17 @@ export function readAgsdlSelectionPayload(hiddenContext: string | undefined, req
     const candidate: unknown = JSON.parse(blocks[0][1]);
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return undefined;
     const value = candidate as Record<string, unknown>;
-    if (value.context_kind !== undefined || !Object.keys(value).every(key => ['plan_id', 'target_branch', 'document', 'revision', 'persisted_revision', 'path', 'related_paths', 'title', 'diagnostic'].includes(key))) return undefined;
+    if (value.context_kind !== undefined || !Object.keys(value).every(key => ['blueprint_id', 'plan_id', 'target_branch', 'document', 'revision', 'persisted_revision', 'path', 'related_paths', 'title', 'diagnostic'].includes(key))) return undefined;
     if (value.document !== 'agsdl' || typeof value.title !== 'string') return undefined;
-    const targetFields = ['plan_id', 'target_branch', 'revision', 'path'];
+    const blueprint = value.blueprint_id !== undefined;
+    if (blueprint && (typeof value.blueprint_id !== "string" || !value.blueprint_id || value.plan_id !== undefined || value.target_branch !== undefined)) return;
+    const targetFields = blueprint ? ['revision', 'path'] : ['plan_id', 'target_branch', 'revision', 'path'];
     if (!targetFields.every(key => typeof value[key] === 'string' || (!requireTarget && value[key] === undefined))) return undefined;
     if (value.persisted_revision !== undefined && (!Number.isSafeInteger(value.persisted_revision) || Number(value.persisted_revision) < 0)) return undefined;
     if (value.related_paths !== undefined && (!Array.isArray(value.related_paths) || !value.related_paths.every(path => typeof path === 'string'))) return undefined;
     if (value.diagnostic !== undefined && typeof value.diagnostic !== 'string') return undefined;
     return {
-      plan_id: value.plan_id as string, target_branch: value.target_branch as string,
+      blueprint_id: value.blueprint_id as string | undefined, plan_id: value.plan_id as string, target_branch: value.target_branch as string,
       document: 'agsdl', revision: value.revision as string, path: value.path as string,
       title: value.title as string,
       ...(value.persisted_revision === undefined ? {} : { persisted_revision: value.persisted_revision as number }),
@@ -71,7 +75,7 @@ export function agsdlContextForModel(hiddenContext: string | undefined, refs?: r
   const payload = readAgsdlSelectionPayload(hiddenContext, true);
   if (!payload) return undefined;
   const selection: AgsdlSelectionReference = {
-    id: '', conversationId: '', planId: payload.plan_id, branchName: payload.target_branch,
+    id: '', conversationId: '', ...(payload.blueprint_id !== undefined ? { blueprintId: payload.blueprint_id } : { planId: payload.plan_id, branchName: payload.target_branch }),
     document: payload.document, version: payload.revision, persistedRevision: payload.persisted_revision ?? 0,
     path: payload.path, relatedPaths: payload.related_paths, title: payload.title, diagnostic: payload.diagnostic,
   };

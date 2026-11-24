@@ -464,12 +464,15 @@ const resetNotifyMocks = () => {
 const loadChatZoneModule = async (
   useRichComposer = false,
   chatStore: typeof useChatStore | UseBoundStore<StoreApi<MockChatState>> = useChatStore,
+  demoWorkflowJourney = true,
 ) => {
   importCounter += 1;
   mock.restore();
 
   installReactI18nextMock(translationMock);
 
+  // These fixtures exercise plan-based Architect, retained by the demo.
+  mock.module('../../services/operateWorkspace', () => ({ demoWorkflowJourney, isOperateWorkspace: (mode: string) => mode === 'Implement' }));
   mock.module('../../stores/useAppStore', () => ({
     useAppStore,
   }));
@@ -614,10 +617,6 @@ const loadChatZoneModule = async (
 
   mock.module('../modals/ImagePreviewModal', () => ({
     ImagePreviewModal: () => null,
-  }));
-
-  mock.module('../architect/PlanSelector', () => ({
-    PlanSelector: () => null,
   }));
 
   const RichComposer = useRichComposer
@@ -2666,6 +2665,33 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector(
       '[data-testid="standalone-task-launch-progress"]',
     )).toBeNull();
+  });
+
+  it('hides the blueprint transcript and locks the composer until the draft is confirmed', async () => {
+    await loadChatZoneModule(false, useChatStore, false);
+    const { useArchitectLibraryStore: library } = await import('../../stores/useArchitectLibraryStore');
+    const previous = library.getState();
+    const draft = {
+      id: 'blueprint', projectId: 'library', name: 'Design', origin: null, revision: 1,
+      document: { source: '', annexes: {} }, archived: false, history: null, conversationId: 'conv-1',
+    };
+    appState = { ...appState, mode: 'Architect' };
+    chatState.conversations = [{ ...buildConversation(), scope_mode: 'Architect' }];
+    chatState.messages = [buildMessage({ content: 'Existing blueprint transcript', role: 'user' })];
+    try {
+      library.setState({ draft, versionNumber: null, draftStatus: 'loading' });
+      await act(async () => requireRoot().render(<ChatZone />));
+      expect(getComposerEditor().disabled).toBe(true);
+      expect(requireContainer().textContent).not.toContain('Existing blueprint transcript');
+      await act(async () => library.setState({ draftStatus: 'error' }));
+      expect(getComposerEditor().disabled).toBe(true);
+      expect(requireContainer().textContent).not.toContain('Existing blueprint transcript');
+      await act(async () => library.setState({ draftStatus: 'idle' }));
+      expect(getComposerEditor().disabled).toBe(false);
+      expect(requireContainer().textContent).toContain('Existing blueprint transcript');
+    } finally {
+      await act(async () => library.setState(previous));
+    }
   });
 
   it('keeps the composer locked until archived conversations are hydrated', async () => {

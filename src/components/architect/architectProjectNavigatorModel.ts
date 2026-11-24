@@ -106,7 +106,7 @@ export const buildArchitectNavigatorPlanEntries = (params: {
 
   for (const branch of params.branches) {
     for (const plan of branch.plans) {
-      if (plan.status === 'deleted') {
+      if (plan.status === 'deleted' || plan.hasAgsdl !== true) {
         continue;
       }
       const locatorKey = toPlanLocatorKey({ branchName: branch.branchName, planId: plan.id });

@@ -1,0 +1,36 @@
+{
+  "description": "A restart preserves a committed stop and still waits for physical termination.",
+  "document": "cases/flow-error.json",
+  "timeline": [
+    {
+      "stopRun": true
+    },
+    {
+      "runState": "stopping"
+    },
+    {
+      "hostRestart": "resume"
+    },
+    {
+      "runState": "stopping"
+    },
+    { "hostRestart": "stop-only" },
+    { "runState": "stopping" },
+    {
+      "work": "build",
+      "stopped": true
+    }
+  ],
+  "expect": {
+    "run": "cancelled",
+    "starts": {
+      "build": 1
+    },
+    "failures": [],
+    "cancelled": [
+      {
+        "step": "build"
+      }
+    ]
+  }
+}

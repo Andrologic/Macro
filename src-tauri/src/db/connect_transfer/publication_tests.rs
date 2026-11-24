@@ -1318,7 +1318,7 @@ async fn connect_projection_019_partial_and_pinned_retries_survive_real_020_migr
                 .fetch_one(&migrated)
                 .await
                 .unwrap(),
-            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
+            crate::db::operate_inbox::DELETE_SCHEMA_VERSION
         );
     }
 }

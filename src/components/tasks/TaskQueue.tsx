@@ -1,3 +1,4 @@
+import { demoWorkflowJourney } from '../../services/operateWorkspace';
 import { visibleTaskQueueTasks } from '../../services/taskQueueVisibility';
 import { groupTaskQueueLanes, TASK_QUEUE_LANES, type TaskQueueLane } from '../../services/taskQueueLanes';
 import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
@@ -9,14 +10,12 @@ import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { getServiceRuntimeCapabilities } from '../../services';
-import { buildFileChangesRepositoryId, getFileChangesExecutionTargets } from '../../services/fileChangesReviewScope';
 import { useChatStore } from '../../stores/useChatStore';
 import {
   getTaskLifecycleCapabilities,
   useTaskStore,
   type ImplementTask,
 } from '../../stores/useTaskStore';
-import { useFileChangesStore } from '../../stores/useFileChangesStore';
 import {
   ALL_PROJECTS_FILTER,
   resolveAvailableProjectFilter,
@@ -49,9 +48,6 @@ import {
 } from '../../services/projectWorkspaceState';
 import {
   getTaskRepositoryDescriptors,
-  type ReviewRepositoryUiState,
-  type ReviewTaskSummary,
-  type TaskRepositoryDescriptor,
 } from '../../services/implementMultiRepoSummary';
 import {
   getTaskProjectCommand,
@@ -68,7 +64,6 @@ import type { MergeWorkflowRuntimeState } from '../../services/mergeWorkflow';
 import {
   resolveTaskMergeWorkflowNextActionLabel,
   resolveTaskMergeWorkflowPresentationState,
-  resolveTaskMergeWorkflowProgressLabel,
 } from '../../services/taskMergeWorkflowPresentation';
 import { SidebarMenu, sidebarMenuPosition, isSidebarTextInput, type SidebarMenuPosition } from '../ui/SidebarMenu';
 import { Icon, IconName } from '../ui/Icon';
@@ -208,14 +203,6 @@ const getTaskMenuPosition = (
 };
 
 interface MultiRepoTaskPresentation {
-  repositories: Array<{
-    id: string;
-    label: string;
-    title: string;
-    state: ReviewRepositoryUiState | null;
-    isNext: boolean;
-  }>;
-  progressLabel: string;
   nextActionLabel: string;
 }
 
@@ -688,8 +675,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     cancelTaskCommands,
     refreshFromPlan,
     missingBaseBranchIssue,
-    clearMissingBaseBranchIssue,
-    createMissingBaseBranch,
     taskError,
   } = useTaskStore(useShallow((state) => ({
     tasks: state.tasks,
@@ -713,19 +698,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     cancelTaskCommands: state.cancelTaskCommands,
     refreshFromPlan: state.refreshFromPlan,
     missingBaseBranchIssue: state.missingBaseBranchIssue,
-    clearMissingBaseBranchIssue: state.clearMissingBaseBranchIssue,
-    createMissingBaseBranch: state.createMissingBaseBranch,
     taskError: state.lastError,
   })));
   const requestSignature = useChatStore(selectTaskQueueRequestSignature);
-  const reviewRepositoryModes = useFileChangesStore(useShallow((state) => Object.fromEntries(state.repositories.map((repository) => [repository.id, repository.executionMode]))));
-  const reviewCurrentTaskId = useFileChangesStore((state) => state.currentTaskId);
-  const reviewLoadState = useFileChangesStore((state) => state.currentTaskLoadState);
-  const reviewIsLoading = useFileChangesStore((state) => state.isLoading);
-  const liveReviewSummary = useFileChangesStore((state) => state.reviewSummary);
   const lastErrorToastRef = useRef<string | null>(null);
   const readOnlyScopeToastRef = useRef<string | null>(null);
-  const missingBaseBranchToastRef = useRef<string | number | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const startingReviewsRef = useRef(new Set<string>());
   const {
@@ -782,91 +759,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     'implement.remoteTaskCommandsUnavailable',
     'Project commands are unavailable in remote mode.'
   );
-
-  useEffect(() => {
-    if (!missingBaseBranchIssue) {
-      if (missingBaseBranchToastRef.current !== null) {
-        notify.dismiss(missingBaseBranchToastRef.current);
-      }
-      missingBaseBranchToastRef.current = null;
-      return;
-    }
-
-    const toastId = [
-      'missing-base-branch',
-      missingBaseBranchIssue.taskId,
-      missingBaseBranchIssue.projectId,
-      missingBaseBranchIssue.missingRef,
-    ].join(':');
-    if (toastId === missingBaseBranchToastRef.current) {
-      return;
-    }
-
-    if (missingBaseBranchToastRef.current !== null) {
-      notify.dismiss(missingBaseBranchToastRef.current);
-    }
-
-    missingBaseBranchToastRef.current = toastId;
-    notify.actionRequired(
-      t(
-        'implement.missingBaseBranchToastTitle',
-        'Branche {{baseBranch}} introuvable',
-        { baseBranch: missingBaseBranchIssue.missingRef }
-      ),
-      {
-        notificationKey: toastId,
-        category: 'task_attention_required',
-        duration: 12000,
-        closeButton: true,
-        tone: 'warning',
-        actions: [
-          {
-            label: t('implement.missingBaseBranchCreateAction', 'Créer'),
-            variant: 'primary',
-            onClick: async () => {
-              setPendingTaskId(missingBaseBranchIssue.taskId);
-              try {
-                await createMissingBaseBranch(missingBaseBranchIssue);
-                notify.success(
-                  t('implement.missingBaseBranchCreated', '{{baseBranch}} créée', {
-                    baseBranch: missingBaseBranchIssue.missingRef,
-                  })
-                );
-              } catch (error) {
-                lastErrorToastRef.current =
-                  error instanceof Error
-                    ? error.message
-                    : t('common.error', 'An error occurred');
-                throw error;
-              } finally {
-                setPendingTaskId((current) =>
-                  current === missingBaseBranchIssue.taskId ? null : current
-                );
-              }
-            },
-          },
-          {
-            label: t('implement.missingBaseBranchEditAction', 'Paramètres'),
-            variant: 'secondary',
-            onClick: () => {
-              setSelectedTask(missingBaseBranchIssue.taskId);
-              setSelectedProject(missingBaseBranchIssue.projectId);
-              openProjectGitFlowModal(missingBaseBranchIssue.projectId);
-              clearMissingBaseBranchIssue();
-            },
-          },
-        ],
-      }
-    );
-  }, [
-    clearMissingBaseBranchIssue,
-    createMissingBaseBranch,
-    missingBaseBranchIssue,
-    openProjectGitFlowModal,
-    setSelectedProject,
-    setSelectedTask,
-    t,
-  ]);
 
   const handleCreateManualFeature = async ({
     projectId,
@@ -1129,8 +1021,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   const standalonePlanLabel = t('implement.planFilterStandalone', 'No plan / standalone');
 
   const buildMultiRepoPresentation = useCallback((
-    task: ImplementTask,
-    reviewSummary: ReviewTaskSummary | null
+    task: ImplementTask
   ): MultiRepoTaskPresentation | null => {
     const mergeWorkflowRuntime = mergeWorkflowRuntimeByTaskId[task.id] ?? null;
     const mergeWorkflowPresentation = resolveTaskMergeWorkflowPresentationState(
@@ -1147,43 +1038,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
       return null;
     }
 
-    const targets = getFileChangesExecutionTargets(task);
-    const repositoryId = (descriptor: TaskRepositoryDescriptor): string | undefined => {
-      const target = targets.find((target) => target.projectId === descriptor.projectId && target.branchName === descriptor.branchName);
-      return target ? buildFileChangesRepositoryId(target) : undefined;
-    };
-    const reviewSummaryByKey = new Map(
-      (reviewSummary?.repositories || []).map((repository) => [
-        repository.id,
-        repository,
-      ])
-    );
-    const repositoryLabelForSummary = (descriptor: TaskRepositoryDescriptor): string =>
-      descriptor.projectName ||
-      descriptor.repoPath?.replace(/\\/g, '/').split('/').filter(Boolean).pop() ||
-      descriptor.projectId;
-    const nextRepositoryDescriptor =
-      reviewSummary?.nextRepositoryId
-        ? repositoryDescriptors.find((descriptor) => {
-          const repositorySummary = reviewSummaryByKey.get(repositoryId(descriptor) ?? '');
-          return repositorySummary?.id === reviewSummary.nextRepositoryId;
-        }) ?? null
-        : null;
-
-    const repositories = repositoryDescriptors.map((descriptor) => {
-      const repositorySummary = reviewSummaryByKey.get(repositoryId(descriptor) ?? '') ?? null;
-      return {
-        id: descriptor.id,
-        label: descriptor.label,
-        title: descriptor.repoPath || descriptor.label,
-        state: repositorySummary?.state ?? null,
-        isNext: repositorySummary?.id === reviewSummary?.nextRepositoryId,
-      };
-    });
-
-    let progressLabel = t(repositoryDescriptors.length === 1 ? 'implement.repositoryCountInlineSingle' : 'implement.repositoryCountInline', repositoryDescriptors.length === 1 ? '{{count}} project involved' : '{{count}} projects involved', {
-      count: repositoryDescriptors.length,
-    });
     let nextActionLabel = t('implement.taskNextActionStart', 'Next: start implementation');
     const resolvedStatusGroup = resolveTaskQueueStatusGroup(
       task.status,
@@ -1194,10 +1048,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     if (resolvedStatusGroup === 'blocked' && task.is_blocked) {
       nextActionLabel = t('implement.taskNextActionBlocked', 'Next: unblock task dependencies');
     } else if (mergeWorkflowPresentation) {
-      progressLabel = resolveTaskMergeWorkflowProgressLabel(
-        mergeWorkflowPresentation,
-        t
-      );
       nextActionLabel = resolveTaskMergeWorkflowNextActionLabel(
         mergeWorkflowPresentation,
         t,
@@ -1207,39 +1057,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
       );
     } else if (isPlanFinalizationTask(task)) {
       nextActionLabel = t('implement.taskNextActionFinalizePlan', 'Next: finalize the plan');
-    } else if (reviewSummary && reviewSummary.repositoryCount > 0 && task.status === 'InReview') {
-      const resolvedCount = reviewSummary.stateCounts.committed + reviewSummary.stateCounts.no_changes;
-      progressLabel = t(reviewSummary.repositoryCount === 1 ? 'implement.taskValidationProgressSingle' : 'implement.taskValidationProgress', reviewSummary.repositoryCount === 1 ? '{{resolved}}/{{total}} project resolved' : '{{resolved}}/{{total}} projects resolved', {
-        resolved: resolvedCount,
-        total: reviewSummary.repositoryCount,
-      });
-
-      if (reviewSummary.repositories.some((repository) => repository.isCommitting)) {
-        nextActionLabel = t('implement.taskNextActionOpenReview', 'Next: open the review');
-      } else if (reviewSummary.nextAction === 'commit_repository' && nextRepositoryDescriptor) {
-        const mode = reviewRepositoryModes[repositoryId(nextRepositoryDescriptor) ?? ''] ?? targets.find(
-          (target) => buildFileChangesRepositoryId(target) === repositoryId(nextRepositoryDescriptor)
-        )?.executionMode;
-        const isDirect = mode === 'direct';
-        nextActionLabel = isDirect
-          ? t('implement.taskNextActionAcceptRepository', 'Next: accept changes in {{repository}}', {
-            repository: repositoryLabelForSummary(nextRepositoryDescriptor),
-          })
-          : t('implement.taskNextActionCommitRepository', 'Next: commit {{repository}}', {
-            repository: repositoryLabelForSummary(nextRepositoryDescriptor),
-          });
-      } else if (reviewSummary.nextAction === 'validate_repository' && nextRepositoryDescriptor) {
-        nextActionLabel = t('implement.taskNextActionValidateRepository', 'Next: validate {{repository}}', {
-          repository: repositoryLabelForSummary(nextRepositoryDescriptor),
-        });
-      } else if (reviewSummary.nextAction === 'complete_without_code_changes' || reviewSummary.nextAction === 'complete_task') {
-        nextActionLabel = t('implement.taskNextActionOpenReview', 'Next: open the review');
-      } else {
-        nextActionLabel = t(
-          'implement.taskNextActionValidateAllRepositories',
-          'Next: validate and resolve the remaining projects'
-        );
-      }
     } else if (task.status === 'InProgress') {
       nextActionLabel = t('implement.taskNextActionContinueImplementation', 'Next: continue implementation');
     } else if (task.status === 'AwaitingResponse') {
@@ -1258,11 +1075,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     }
 
     return {
-      repositories,
-      progressLabel,
       nextActionLabel,
     };
-  }, [getProjectById, mergeWorkflowRuntimeByTaskId, reviewRepositoryModes, t]);
+  }, [getProjectById, mergeWorkflowRuntimeByTaskId, t]);
 
   const availableProjects = useMemo(
     () => getAllProjects(projectGroups, standaloneProjects).filter(project => !excludedProjectIds.includes(project.id)),
@@ -1696,7 +1511,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   };
 
   const buildTaskActions = (task: ImplementTask): TaskActionDescriptor[] => {
-    if (isPlanFinalizationTask(task)) {
+    if (demoWorkflowJourney || isPlanFinalizationTask(task)) {
       return [{ key: 'execution_graph', label: t('implement.viewExecutionGraph', 'View workflow'), icon: 'workflow' }];
     }
 
@@ -1995,16 +1810,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   const multiRepoPresentationByTaskId = useMemo(() => {
     const map = new Map<string, MultiRepoTaskPresentation | null>();
     searchedTasks.forEach((task) => {
-      map.set(
-        task.id,
-        buildMultiRepoPresentation(
-          task,
-          reviewCurrentTaskId === task.id && reviewLoadState === 'ready' && !reviewIsLoading ? liveReviewSummary : null
-        )
-      );
+      map.set(task.id, buildMultiRepoPresentation(task));
     });
     return map;
-  }, [buildMultiRepoPresentation, liveReviewSummary, reviewCurrentTaskId, reviewLoadState, reviewIsLoading, searchedTasks]);
+  }, [buildMultiRepoPresentation, searchedTasks]);
   const taskListRows = useMemo<TaskListRow[]>(() => {
     const orderedTasks = [...draftTasks, ...TASK_QUEUE_LANES.flatMap(lane => tasksByStatusGroup[lane])];
     return orderedTasks.map(task => ({
@@ -2245,7 +2054,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   };
   const panelMenu = panelMenuPosition && <SidebarMenu position={panelMenuPosition} onClose={() => setPanelMenuPosition(null)} aria-label={t('implement.tasks', 'Tasks')} className="w-52">
         <button role="menuitem" type="button" disabled={Boolean(pendingTaskId) || editableProjectOptions.length === 0 || taskMutationDisabled || taskExecutionDisabled}
-          onClick={() => { setPanelMenuPosition(null); setCreateTaskError(null); setShowCreateTaskDialog(true); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name="plus" size={12} />{import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? t('implement.launchWorkflow', 'Launch a workflow') : t('implement.createStandaloneTask', 'Créer une tâche indépendante')}</button>
+          onClick={() => { setPanelMenuPosition(null); setCreateTaskError(null); setShowCreateTaskDialog(true); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name="plus" size={12} />{demoWorkflowJourney ? t('implement.launchWorkflow', 'Launch a workflow') : t('implement.createStandaloneTask', 'Créer une tâche indépendante')}</button>
         <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); openProjectNavigator(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="settings" size={12} />{t('implement.manageProjects', 'Manage projects')}</button>
       </SidebarMenu>;
 
@@ -2267,7 +2076,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     return (
       <aside
         className={cn('h-full w-full bg-card border-r border-border flex items-center justify-center', className)}
-        data-tour-id="implement-task-panel"
+        data-tour-id="operate-executions"
         onContextMenu={openPanelMenu}
       >
         {panelMenu}
@@ -2283,7 +2092,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   return (
     <aside
       className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}
-      data-tour-id="implement-task-panel"
+      data-tour-id="operate-executions"
       onContextMenu={openPanelMenu}
     >
       {panelMenu}
@@ -2344,7 +2153,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
                         'implement.readOnlyOnlyAction',
                         'At least one editable repository is required to create a standalone feature.'
                       )
-                    : import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1'
+                    : demoWorkflowJourney
                       ? t('implement.launchWorkflow', 'Launch a workflow')
                       : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
             }
@@ -2415,7 +2224,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
 
       {showCreateTaskDialog && (
         <React.Suspense fallback={null}>
-          {import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? (
+          {demoWorkflowJourney ? (
             <DemoBlueprintLaunchDialog
               projects={projectFilterOptions}
               onClose={() => setShowCreateTaskDialog(false)}
@@ -2469,7 +2278,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
                     <MemoizedTaskItem
                       task={row.task}
                       mergeWorkflowRuntime={mergeWorkflowRuntimeByTaskId[row.task.id] ?? null}
-                      multiRepoPresentation={row.multiRepoPresentation}
+                      multiRepoPresentation={demoWorkflowJourney ? null : row.multiRepoPresentation}
                       attention={attentionByTaskId.get(row.task.id)}
                       hasResolvedUserRequest={resolvedWaitTaskIds.has(row.task.id)}
                       isSelected={selectedTaskId === row.task.id}
@@ -2477,9 +2286,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
                       planLabel={getTaskPlanLabel(row.task)}
                       planKind={planKindsById.get(row.task.plan_id) ?? null}
                       isAssistantRunning={runningTaskIds.has(row.task.id)}
-                      taskCommandRunStatus={taskCommandRuns[row.task.id]?.status ?? null}
+                      taskCommandRunStatus={demoWorkflowJourney ? null : taskCommandRuns[row.task.id]?.status ?? null}
                       canRunTaskCommands={canRunTaskCommandsForTask(row.task)}
-                      showRunTaskCommands={row.task.task_source !== 'agsdl' && !isPlanFinalizationTask(row.task)}
+                      showRunTaskCommands={!demoWorkflowJourney && row.task.task_source !== 'agsdl' && !isPlanFinalizationTask(row.task)}
                       runTaskCommandsTitle={getRunTaskCommandsTitle(row.task)}
                       onSelect={() => {
                         if (row.task.task_source === 'agsdl') { setExecutionGraphTask(row.task); return; }

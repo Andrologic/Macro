@@ -220,6 +220,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
       case 'git_worktree_inspect': return { taskId: args.taskId, worktreePath: '/demo/luma', branchName: args.branchName, status: 'ready', isDirty: false };
       case 'db_get_initialization_status':
       case 'db_retry_initialize': return { status: 'ready', message: null };
+      case 'profile_startup_recovery': return null;
       case 'local_backup_status': return { browser: null };
       case 'config_get_snapshot':
       case 'config_list': return { ...structuredClone(config), documents: Object.keys(config.effective).map(k => document(k as ConfigDocumentKind)) };
@@ -499,7 +500,6 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
             files.delete(k);
         return;
       }
-      case 'fs_create_dir': return;
       case 'fs_exists': return files.has(fileKey(args)) || listFiles(string(args.path)).length > 0;
       case 'fs_list_dir': return listFiles(string(args.path));
       case 'fs_stat': return { path: args.path, is_file: files.has(fileKey(args)), is_dir: !files.has(fileKey(args)), size: files.get(fileKey(args))?.length ?? 0, modified: DEMO_DATE };

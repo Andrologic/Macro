@@ -1363,6 +1363,7 @@ impl HttpPort<'_, '_> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::PROCESS_RESOURCES_TEST_LOCK;
     use super::*;
     use crate::connect_resources::TRANSIT_INSTANCE_LIMIT;
     use crate::secrets::policy::PolicyOwner;
@@ -1443,6 +1444,7 @@ mod tests {
     }
     #[tokio::test]
     async fn complete_close_responses_survive_driver_completion_without_post_retry() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -1488,6 +1490,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_exchange_destroys_new_and_reused_lanes_before_returning_credits() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         for reuse in [false, true] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -1573,6 +1576,7 @@ mod tests {
 
     #[tokio::test]
     async fn real_poll_and_post_progress_independently_and_reuse_two_connections() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let posted = Arc::new(tokio::sync::Notify::new());
@@ -1644,6 +1648,7 @@ mod tests {
     }
     #[tokio::test]
     async fn app_shutdown_cancels_and_waits_for_http_owner_after_caller_disappears() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let runtime = super::super::TransferRuntime::default();
         let owned = runtime.clone();
         let started = Arc::new(tokio::sync::Notify::new());
@@ -1663,7 +1668,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let caller = scoped(move |lease, budget, database| {
+        let mut caller = scoped(move |lease, budget, database| {
             tokio::runtime::Handle::current().block_on(async {
                 let mut session = plain(lease, budget.clone(), address, database);
                 session.owner = Arc::new(owned.http_owner(database).unwrap());
@@ -1680,7 +1685,10 @@ mod tests {
                 assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_ok());
             })
         });
-        started.notified().await;
+        tokio::select! {
+            _ = started.notified() => {}
+            result = &mut caller => panic!("HTTP caller finished before emitting the request: {result:?}"),
+        }
         // The real blocking bridge retains the worker and policy scope after
         // this outer future is aborted. App shutdown joins physical ownership.
         caller.abort();
@@ -1699,6 +1707,7 @@ mod tests {
 
     #[tokio::test]
     async fn fresh_policy_revocation_stops_real_http_before_settlement() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let directory = tempfile::tempdir().unwrap();
         let policy = Arc::new(PolicyOwner::for_test(directory.path()));
         policy.initialize(directory.path()).unwrap();
@@ -1786,6 +1795,7 @@ mod tests {
 
     #[tokio::test]
     async fn truncated_body_and_unbounded_headers_close_without_reuse() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         for (wire, limit) in [
             (
                 b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nshort".to_vec(),
@@ -1842,6 +1852,7 @@ mod tests {
 
     #[tokio::test]
     async fn body_refusal_does_not_drain_and_returns_connection_only_after_close() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -1882,6 +1893,7 @@ mod tests {
     }
     #[tokio::test]
     async fn cancellation_during_slow_headers_closes_the_owned_socket() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let cancel = CancellationToken::new();
@@ -1990,6 +2002,7 @@ mod tests {
     }
     #[tokio::test]
     async fn tcp_connect_precedes_raw_but_tls_waits_and_cancel_closes_tcp() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let (acceptor, cert) = synthetic_tls();
         for release_raw in [false, true] {
             let directory = tempfile::tempdir().unwrap();
@@ -2081,6 +2094,7 @@ mod tests {
 
     #[tokio::test]
     async fn partial_tls_cancellation_and_total_deadline_keep_handshake_until_io_dies() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         for expire in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             let pool = crate::db::create_pool(&directory.path().join("partial-tls.db"))
@@ -2173,6 +2187,7 @@ mod tests {
 
     #[tokio::test]
     async fn real_tls_validates_the_synthetic_certificate_and_hostname() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let (acceptor, cert) = synthetic_tls();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -2236,6 +2251,7 @@ mod tests {
     }
     #[tokio::test]
     async fn completed_flush_releases_policy_before_headers_and_rejects_revoked_reply() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let (acceptor, cert) = synthetic_tls();
         for tls in [false, true] {
             for body in [b"".as_slice(), b"{}".as_slice()] {
@@ -2355,6 +2371,7 @@ mod tests {
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn blocked_write_keeps_scope_until_revocation_or_caller_abort_destroys_io() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let (acceptor, cert) = synthetic_tls();
         for tls in [false, true] {
             for abort in [false, true] {
@@ -2528,6 +2545,7 @@ mod tests {
 
     #[tokio::test]
     async fn selected_backing_survives_session_and_generation_until_last_reference() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let directory = tempfile::tempdir().unwrap();
         let policy = Arc::new(PolicyOwner::for_test(directory.path()));
         policy.initialize(directory.path()).unwrap();
@@ -2620,6 +2638,7 @@ mod tests {
 
     #[tokio::test]
     async fn selected_future_abandonment_destroys_both_sockets_before_join() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         for headers_ready in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             let policy = Arc::new(PolicyOwner::for_test(directory.path()));
@@ -2718,6 +2737,7 @@ mod tests {
 
     #[tokio::test]
     async fn selected_headers_priority_fairness_and_last_backing_resume_same_post() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let directory = tempfile::tempdir().unwrap();
         let policy = Arc::new(PolicyOwner::for_test(directory.path()));
         policy.initialize(directory.path()).unwrap();
@@ -2881,6 +2901,7 @@ mod tests {
 
     #[tokio::test]
     async fn selected_slow_headers_and_lane_error_preserve_other_response() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         for malformed in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             let policy = Arc::new(PolicyOwner::for_test(directory.path()));
@@ -3005,6 +3026,7 @@ mod tests {
 
     #[tokio::test]
     async fn completed_two_lanes_reuse_real_sockets_and_retire_idle_on_runtime_revoke() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         let (acceptor, cert) = synthetic_tls();
         for (tls, revoke) in [(false, false), (false, true), (true, false), (true, true)] {
             let directory = tempfile::tempdir().unwrap();
@@ -3128,6 +3150,7 @@ mod tests {
 
     #[tokio::test]
     async fn prepared_pending_completed_abandonment_and_restore_guards_close_socket() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         for phase in 0..12 {
             let directory = tempfile::tempdir().unwrap();
             let policy = Arc::new(PolicyOwner::for_test(directory.path()));
@@ -3286,6 +3309,7 @@ mod tests {
 
     #[tokio::test]
     async fn completed_close_reply_is_valid_but_never_restored_and_truncation_refuses() {
+        let _resources = PROCESS_RESOURCES_TEST_LOCK.lock().await;
         for truncated in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             let policy = Arc::new(PolicyOwner::for_test(directory.path()));

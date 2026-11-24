@@ -5,7 +5,12 @@ use std::path::{Path, PathBuf};
 
 use crate::core::error::{BackendError, Result};
 
+pub(crate) mod confined;
+#[cfg(test)]
+mod confined_tests;
 pub mod dto;
+pub(crate) mod plan_catalog;
+pub(crate) mod private_profile;
 pub mod watcher;
 
 // Core Path Validation and Normalization Functions
@@ -94,16 +99,7 @@ pub fn path_is_same_or_descendant(path: &Path, root: &Path) -> bool {
 
     #[cfg(not(windows))]
     {
-        let path_components = path.components().collect::<Vec<_>>();
-        let root_components = root.components().collect::<Vec<_>>();
-        if root_components.len() > path_components.len() {
-            return false;
-        }
-
-        root_components
-            .iter()
-            .zip(path_components.iter())
-            .all(|(root_component, path_component)| root_component == path_component)
+        path.starts_with(root)
     }
 }
 
@@ -122,6 +118,7 @@ fn reconstruct_missing_path(
         }
     })?;
     let candidate = normalize_path(&canonical_ancestor.join(missing_suffix));
+    private_profile::check_normalized(&candidate)?;
     ensure_within_workspace(&candidate, canonical_workspace, "Path")?;
     Ok(candidate)
 }
@@ -136,8 +133,10 @@ fn reconstruct_missing_path(
 /// * `Result<PathBuf>` - The resolved absolute path or an error
 pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
     let (abs_path, canonical_workspace) = resolve_absolute(path, workspace)?;
+    private_profile::check_normalized(&normalize_path(&abs_path))?;
     match abs_path.canonicalize() {
         Ok(canonical_path) => {
+            private_profile::check_normalized(&canonical_path)?;
             if path_is_same_or_descendant(&canonical_path, &canonical_workspace) {
                 Ok(normalize_path(&canonical_path))
             } else {
@@ -166,6 +165,31 @@ pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
     }
 }
 
+/// The entry an existing path names. Lexical normalization is only exact when
+/// the spelling has no `..`: in `link/../name` the `..` applies to the link's
+/// target, so the parent is resolved physically, as the operating system does,
+/// while a final symlink is kept as the entry itself.
+fn entry_path_for_write(abs_path: &Path, normalized: PathBuf) -> Result<PathBuf> {
+    if !abs_path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Ok(normalized);
+    }
+    let canonicalize = |path: &Path| {
+        path.canonicalize().map_err(|error| BackendError::Io {
+            message: format!("Failed to canonicalize path {:?}: {}", path, error),
+            source: error,
+        })
+    };
+    match (abs_path.parent(), abs_path.components().next_back()) {
+        (Some(parent), Some(std::path::Component::Normal(name))) => {
+            Ok(normalize_path(&canonicalize(parent)?.join(name)))
+        }
+        _ => canonicalize(abs_path),
+    }
+}
+
 /// Validate path for write operations
 /// Similar to `validate_path` but handles non-existent files
 /// Checks the closest existing ancestor directory and ensures it is within the
@@ -178,16 +202,19 @@ pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
 /// * `Result<PathBuf>` - The validated path or an error
 pub fn validate_path_for_write(path: &Path, workspace: &Path) -> Result<PathBuf> {
     let (abs_path, canonical_workspace) = resolve_absolute(path, workspace)?;
+    let normalized = normalize_path(&abs_path);
+    private_profile::check_normalized(&normalized)?;
 
     match abs_path.canonicalize() {
         Ok(canonical_path) => {
-            // Keep the lexical target for existing symlinks so callers that
-            // inspect symlink metadata retain their current behavior, but
-            // validate where the symlink resolves before allowing a write.
+            // Keep a final symlink itself so callers that inspect symlink
+            // metadata retain their behavior, but validate where it resolves.
+            private_profile::check_normalized(&canonical_path)?;
             ensure_within_workspace(&canonical_path, &canonical_workspace, "Path")?;
-            let normalized = normalize_path(&abs_path);
-            ensure_within_workspace(&normalized, &canonical_workspace, "Path")?;
-            Ok(normalized)
+            let entry = entry_path_for_write(&abs_path, normalized)?;
+            private_profile::check_normalized(&entry)?;
+            ensure_within_workspace(&entry, &canonical_workspace, "Path")?;
+            Ok(entry)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let (existing_ancestor, canonical_ancestor) = nearest_existing_ancestor(&abs_path)?;
@@ -896,3 +923,4 @@ mod tests {
 pub mod operations;
 
 pub(crate) mod mutation_locks;
+pub(crate) mod profile;

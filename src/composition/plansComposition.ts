@@ -23,6 +23,7 @@ export function startPlansComposition(): () => void {
     owner.own(installArchitectGitFlowPorts({
       getAppState,
       getArchitectPlan: plans.getArchitectPlan,
+      readArchitectPlanSnapshot: plans.readArchitectPlanSnapshot,
       updateArchitectPlan: plans.updateArchitectPlan,
       archiveArchitectPlan: plans.archiveArchitectPlan,
       restoreArchitectPlan: plans.restoreArchitectPlan,

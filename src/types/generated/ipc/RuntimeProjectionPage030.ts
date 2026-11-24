@@ -3,4 +3,4 @@ import type { RuntimeProjectionContinuation030 } from "./RuntimeProjectionContin
 import type { RuntimeProjectionItem030 } from "./RuntimeProjectionItem030";
 import type { RuntimeProjectionScope030 } from "./RuntimeProjectionScope030";
 
-export type RuntimeProjectionPage030 = { scope: RuntimeProjectionScope030, flowInvocationId: string, revision: string, stopping: boolean, verdict: string | null, total: string, items: Array<RuntimeProjectionItem030>, nextPage: RuntimeProjectionContinuation030 | null, };
+export type RuntimeProjectionPage030 = { scope: RuntimeProjectionScope030, flowInvocationId: string, revision: string, stopping: boolean, paused?: boolean, interruptedWhilePaused?: boolean, operatorWorks?: Record<string, { kind: 'holding' } | { kind: 'held' } | { kind: 'interrupted'; code: string }>, modelOverrides?: Record<string, { name: string; effort?: string }>, terminationUncertain?: boolean, verdict: string | null, total: string, items: Array<RuntimeProjectionItem030>, nextPage: RuntimeProjectionContinuation030 | null, };

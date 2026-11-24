@@ -121,10 +121,13 @@
     }
   },
   "startup": {
+    "architectCutoverProgress": "Architect-Bibliothek wird migriert ({{completed}}/{{total}})",
     "interrupted": "Start unterbrochen",
     "failedTitle": "Macro konnte den Start nicht abschließen.",
     "failedDescription": "Macro konnte die lokalen Daten nicht initialisieren. Sie können den Vorgang sicher wiederholen.",
     "failedSteps": "Fehlgeschlagene Schritte",
+    "architectImportIncomplete": "Der Import der Architect-Bibliothek ist unvollständig.",
+    "architectImportRetryHint": "Prüfen Sie das unten beschriebene Problem und wählen Sie Erneut versuchen.",
     "metadataRecovery": {
       "restoredWithCommit": "@macro-Metadaten aus dem Verlauf wiederhergestellt ({{commit}})",
       "restored": "@macro-Metadaten aus dem Verlauf wiederhergestellt",
@@ -140,6 +143,7 @@
     "browserRuntimeSessionReplacedReload": "Tab neu laden"
   },
   "shutdown": {
+    "executionInterrupted": "Laufende, pausierte oder unterbrochene Arbeiten können nach dem Schließen von Macro möglicherweise nicht fortgesetzt werden.",
     "activeWorkSingle": "Eine Aufgabe läuft noch. Beim Schließen von Macro wird sie unterbrochen.",
     "activeWorkMultiple": "{{count}} Aufgaben laufen noch. Beim Schließen von Macro werden sie unterbrochen.",
     "closeTitle": "Macro schließen?",
@@ -263,7 +267,7 @@
   },
   "header": {
     "architect": "Architect",
-    "implement": "Implement",
+    "implement": "Operate",
     "chat": "Chat",
     "debug": "Debug",
     "selectProject": "Wählen Sie Projekt aus",
@@ -281,7 +285,7 @@
     "sections": {
       "basics": "Grundlagen",
       "architect": "Architect",
-      "implement": "Implement",
+      "operate": "Operate",
       "chat": "Chat",
       "system": "System"
     },
@@ -289,7 +293,7 @@
     "steps": {
       "welcome": {
         "title": "Willkommen bei Macro",
-        "body": "Macro ist nach Modi organisiert. Das beste Onboarding zeigt Bedienelemente erst dann, wenn sie nützlich werden, und gibt danach die Kontrolle an den Nutzer zurück.",
+        "body": "Entwirf AgSDL-Workflows in Architect, verfolge Ausführungen in Operate und führe Unterhaltungen mit eigenem Kontext in Chat.",
         "points": [
           "Der Leitfaden wechselt den Modus automatisch.",
           "Das linke und rechte Panel werden wieder geöffnet, wenn ein Schritt sie benötigt.",
@@ -298,16 +302,16 @@
       },
       "modes": {
         "title": "Modusauswahl",
-        "body": "Diese drei Schaltflächen ändern die gesamte Arbeitsfläche. Architect dient der Eingrenzung, Implement der Ausführung und Chat der freien Diskussion mit Kontext.",
+        "body": "Mit dieser Auswahl wechselst du zwischen Architect, Operate und Chat.",
         "points": [
-          "Architect: Unterhaltungen, Pläne und Strategie.",
-          "Implement: Aufgaben, Terminal und Änderungsprüfung.",
-          "Chat: Unterhaltungen, Quellen und allgemeine Werkzeuge."
+          "Entwirf AgSDL-Workflows in Architect.",
+          "Verfolge Ausführungen und beantworte Anfragen in Operate.",
+          "Beginne in Chat eine Unterhaltung mit eigenen Dateien, Quellen und Werkzeugen."
         ]
       },
       "panel-toggles": {
         "title": "Seitenpanels",
-        "body": "Panel-Schaltflächen blenden Kontextbereiche ein oder aus. Das linke Panel enthält oft die Arbeitsliste, das rechte Details oder Prüfungen."
+        "body": "Die Schaltflächen in der oberen Leiste blenden die Seitenbereiche ein oder aus, die im aktuellen Modus verfügbar sind."
       },
       "settings-and-help": {
         "title": "Einstellungen und Onboarding",
@@ -315,32 +319,33 @@
       },
       "architect-mode": {
         "title": "Architect-Modus",
-        "body": "Architect wandelt ein Gespräch in eine Strategie um, wenn der Benutzer dies ausdrücklich anfordert."
+        "body": "Zu jedem Blueprint gehören ein AgSDL-Entwurf, ein Entwurfsgespräch und gespeicherte Versionen."
       },
-      "architect-plan-selector": {
-        "title": "Pläne",
-        "body": "Die Planauswahl trennt Gespräche und Strategien für jeden Plan."
+      "architect-navigator": {
+        "title": "Projekte und Systeme",
+        "body": "Wähle links ein Projekt und öffne ein System oder erstelle ein neues."
       },
-      "architect-generate": {
-        "title": "Strategie generieren",
-        "body": "Diese Aktion erstellt den Aufgabengraphen und vorhersehbare Branches aus dem Gespräch und Projektkontext."
+      "architect-conversation": {
+        "title": "Unterhaltung zum Entwurf",
+        "body": "Öffnen Sie einen Blueprint und beschreiben Sie das gewünschte System im Chat in der Mitte. Der Agent kann den Entwurf lesen und bearbeiten."
       },
-      "architect-strategy": {
-        "title": "Strategie und Branches",
-        "body": "Das rechte Panel zeigt die Strategie. Der Graph-/Branches-Schalter hilft beim Wechsel von einer Abhängigkeitsansicht zu einer Git-Ausführungsansicht.",
+      "architect-agsdl": {
+        "title": "AgSDL-Ansicht",
+        "body": "Öffne links ein System, um rechts seinen Graphen anzuzeigen.",
         "points": [
-          "Graph: Abhängigkeiten und logische Reihenfolge.",
-          "Branches: Arbeit nach Feature-Branch gruppiert.",
-          "Expand öffnet einen komfortableren Explorer."
+          "Sieh dir im Graphen die Agenten und ihren Austausch an.",
+          "Wähle eine Komponente aus, um ihre Details anzuzeigen.",
+          "Mit „Ansicht erweitern“ öffnest du den Graphen in einem größeren Fenster."
         ]
       },
       "architect-validate": {
         "title": "Plan validieren",
         "body": "Die Validierung friert den Plan weit genug ein, um Branches bereitzustellen und Implement zu speisen. Gestartete oder abgeschlossene Aufgaben sind vor destruktiver Neugenerierung geschützt."
       },
-      "implement-mode": {
-        "title": "Implement-Modus",
-        "body": "Implement dient dazu, eine Aufgabe zu übernehmen, die Ausführung zu besprechen, ein Terminal zu öffnen und geänderte Dateien vor dem Commit zu prüfen."
+      "operate-executions": {
+        "title": "Ausführungen in Operate",
+        "body": "Wählen Sie eine Ausführung, um ihren Status und ihre Anfragen zu sehen, oder eine Agenteninstanz, um ihre Nachrichten zu lesen.",
+        "demoBody": "In der Demo startest du über die Plus-Schaltfläche einen Workflow. Wähle eine Aufgabe aus, um ihre Unterhaltung zu verfolgen."
       },
       "implement-tasks": {
         "title": "Aufgabenliste",
@@ -379,8 +384,8 @@
         "body": "Der Composer akzeptiert Text, Erwähnungen und eingefügte Bilder. Die Pfeilschaltfläche sendet oder stoppt die Generierung, wenn eine Antwort läuft."
       },
       "footer": {
-        "title": "Git-Leiste und Benachrichtigungen",
-        "body": "Die untere Leiste fasst globales Projekt, Branches, fetch / pull / push und das Benachrichtigungszentrum zusammen. Achte auf diesen Bereich, wenn Macro eine Synchronisierungsaktion verlangt."
+        "title": "Benachrichtigungen und Updates",
+        "body": "Öffne die Benachrichtigungen über die Glocke am unteren Fensterrand. Wenn ein Update verfügbar ist, erscheint daneben die Update-Schaltfläche."
       },
       "done": {
         "title": "Onboarding neu startbar",
@@ -1755,7 +1760,7 @@
     "count_other": "{{count}} Projekte",
     "name": "Projektname",
     "emptyWorkspaceTitle": "Füge ein Projekt hinzu, um mit Macro zu beginnen.",
-    "emptyWorkspaceBody": "Architect und Implement benötigen ein Projekt, bevor sie Pläne, Aufgaben, Branches und Worktrees erstellen können.",
+    "emptyWorkspaceBody": "In deinem Projekt findest du die AgSDL-Systeme, die du in Architect entwirfst.",
     "emptyWorkspaceStrategyPanel": "Die Strategie ist verfügbar, nachdem du ein Projekt hinzugefügt hast.",
     "emptyWorkspaceTasksPanel": "Aufgaben sind verfügbar, nachdem du ein Projekt hinzugefügt hast.",
     "emptyWorkspaceChangesPanel": "Änderungen sind verfügbar, nachdem du ein Projekt hinzugefügt hast.",
@@ -1838,8 +1843,8 @@
     "initGitTitle": "Git initialisieren?",
     "initialCommitTitle": "Initialen Commit erstellen?",
     "createDevelopTitle": "develop erstellen?",
-    "initGitDescription": "Dieser Ordner ist noch kein Git-Repository. Initialisieren Sie Git jetzt, um Worktrees und bearbeitbare Workflows zu aktivieren. Wenn Sie diesen Schritt überspringen, wird das Projekt als read-only hinzugefügt.",
-    "initialCommitDescription": "Dieses Repository hat noch keinen initialen Commit. Erstellen Sie ihn jetzt, um Branches, Worktrees und bearbeitbare Workflows zu aktivieren. Wenn Sie diesen Schritt überspringen, wird das Projekt als read-only hinzugefügt.",
+    "initGitDescription": "Dieser Ordner ist noch kein Git-Repository. Initialisieren Sie Git, um den Git-basierten Macro-Speicher vorzubereiten.",
+    "initialCommitDescription": "Erstellen Sie den ersten Commit, um den Git-basierten Macro-Speicher zu aktivieren. Ohne ihn bleibt das Projekt schreibgeschützt.",
     "createDevelopDescription": "Dieses Repository kann im Mainline-Modus arbeiten: Macro verwendet {{mainBranch}} als Haupt-Branch und Entwicklungsziel. Erstellen Sie develop nur, wenn dieses Projekt bewusst einen separaten Integrations-Branch nutzt.",
     "mainlineModeExplanation": "Behalten Sie {{branchName}} als Entwicklungsziel. Feature-Arbeit wird zurück in {{branchName}} gemergt, und dringende Korrekturen können Hotfix-Pläne verwenden.",
     "developModeLabel": "Separates develop",
@@ -1933,7 +1938,7 @@
     "accessGitStateUnknown": "Macro konnte nicht bestätigen, ob dieser Ordner ein Git-Repository ist. Prüfe den Git-Status, bevor du Implementierungsaktionen aktivierst.",
     "accessMissingInitialCommit": "Das Repository hat noch keinen initialen Commit. Dieses Projekt bleibt read-only, bis der erste Commit erstellt wurde.",
     "accessManualAndMissingGit": "Dieses Projekt ist manuell read-only und Git ist noch nicht initialisiert.",
-    "accessEditableHelp": "Dieses Projekt ist bearbeitbar und kann für Branches, Worktrees, Terminalsitzungen und Implementierung verwendet werden.",
+    "accessEditableHelp": "Macro kann in den Speicher dieses Projekts schreiben.",
     "accessBlockDirtyWorktree": "Dieses Projekt hat noch einen geänderten Worktree. Bereinigen Sie ihn, bevor Sie auf read-only umstellen.",
     "accessBlockLiveTerminal": "Eine laufende Terminalsitzung ist noch an dieses Projekt gebunden. Schließen Sie sie, bevor Sie auf read-only umstellen.",
     "accessBlockLastActionablePlan": "Dieses Projekt ist das letzte bearbeitbare Projekt in einem aktiven Plan.",
@@ -2164,7 +2169,7 @@
       "delete": "Löschen",
       "deleting": "Wird gelöscht…",
       "deleteTitle": "Plan löschen",
-      "deleteDescription": "Der Plan „{{name}}“ und seine lokalen Macro-Branches werden gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.",
+      "deleteDescription": "Der Plan „{{name}}“ wird gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.",
       "editUnavailable": "Dieser Plan kann nicht mehr bearbeitet werden.",
       "editError": "Der Plan konnte nicht bearbeitet werden.",
       "archiveUnavailable": "Dieser Plan kann nicht mehr archiviert werden.",
@@ -3098,8 +3103,8 @@
         "description": "Aktiven Modus auf Architect umschalten"
       },
       "switchImplement": {
-        "label": "Zu Implement wechseln",
-        "description": "Aktiven Modus auf Implement umschalten"
+        "label": "Zu Operate wechseln",
+        "description": "Aktiven Modus auf Operate umschalten"
       },
       "switchChat": {
         "label": "Wechseln Sie in den Chat-Modus",
@@ -3329,9 +3334,9 @@
     "slashMenuLabel": "Kontext oder Befehl einfügen"
   },
   "backup": {
-    "exclusions": "Projektordner, deren Git-Verlauf und Anbieter-Zugangsdaten sind ausgeschlossen. Sichern Sie Ihre Projekte separat.",
+    "exclusions": "Nicht enthalten: Ordner, die Sie selbst gewählt haben, etwa Ihre Projekte und deren Git-Verlauf. Bewahren Sie davon eine eigene Kopie auf. Zugangsdaten gelangen nie auf einen anderen Computer: Verbinden Sie Anbieter und Werkzeuge nach einer Wiederherstellung erneut.",
     "limitsTitle": "Kompatibilität, Grenzen und private Daten",
-    "limits": "Maximale Größe: 256 MiB. Verwenden Sie dieselbe Macro-Version. Projektpfade bleiben unverändert; verschobene Projekte werden nicht neu zugeordnet und Profile nicht zusammengeführt.",
+    "limits": "Das Sicherungsmanifest darf bis zu 256 MiB groß sein. Architect-Dateien werden separat im Archiv gespeichert. Verwenden Sie dieselbe Macro-Version. Die Wiederherstellung behält die gespeicherten Projektpfade bei und ersetzt das gesamte Profil.",
     "exportHelp": "Lokale Daten beim nächsten Start in einem neuen Archiv speichern.",
     "restoreHelp": "Lokale Daten durch ein Archiv ersetzen. Das vorherige Profil zur Wiederherstellung behalten.",
     "desktopRequired": "Öffnen Sie Macro auf dem Desktop, um lokale Daten zu sichern oder wiederherzustellen.",
@@ -3353,10 +3358,20 @@
     "runtimeUnavailableTitle": "Desktop-Laufzeit nicht verfügbar",
     "runtimeUnavailableHint": "Macro wird neu gestartet oder läuft nicht. Versuche es erneut, sobald die Desktop-Laufzeit bereit ist.",
     "startupTitle": "Profilwiederherstellung erforderlich",
+    "nativeRecoveryHint": "Macro hat das Öffnen des lokalen Profils ausgesetzt. Wählen Sie Erneut versuchen, um Macro neu zu starten und die Wiederherstellung fortzusetzen.",
+    "restoreRecoveryTitle": "Die Profilwiederherstellung konnte nicht abgeschlossen werden",
+    "profileOpenFailedTitle": "Macro konnte das Profil nicht öffnen",
+    "profileOpenFailedHint": "Prüfen Sie die Diagnosedetails und wählen Sie Erneut versuchen, um Macro neu zu starten.",
+    "recoveryQuit": "Beenden",
+    "revealPreservedArchive": "Gesichertes Archiv anzeigen",
+    "revealRecoveryFolder": "Wiederherstellungsordner öffnen",
+    "copyDiagnostics": "Diagnose kopieren",
+    "diagnosticsCopied": "Diagnose kopiert.",
+    "recoveryActionFailed": "Die Aktion ist fehlgeschlagen. Prüfen Sie die Diagnosedetails.",
     "startupRecovery": "Die Wiederherstellung der Browserdaten konnte nicht abgeschlossen werden. Das native Wiederherstellungsarchiv bleibt erhalten. Prüfen Sie die Diagnose, geben Sie bei Bedarf lokalen Speicher frei und starten Sie Macro erneut.",
     "title": "Sicherung und Wiederherstellung",
-    "scope": "Lokale Macro-Daten: Unterhaltungen, gespeicherte Anhänge, Code-Checkpoints, Entwürfe, wartende Anweisungen, Wiederherstellungsantworten und allgemeine Einstellungen.",
-    "secrets": "Zugangsdaten der Anbieter, MCP-Umgebungsvariablen und Header sind von portablen Exporten ausgeschlossen. Verbinden Sie Anbieter nach der Wiederherstellung erneut. Gespräche und Dateien bleiben private Daten; bewahren Sie das Archiv sicher auf.",
+    "scope": "Eine Sicherung enthält Ihre Architect-Bibliothek (Systeme, Entwürfe und gespeicherte Versionen), Ihre Ausführungen samt Verlauf, die Startressourcen und Arbeitsordner, die Macro dafür angelegt hat, Ihre Unterhaltungen und Ihre Einstellungen.",
+    "secrets": "Zugangsdaten sind von jeder Sicherung ausgeschlossen: Schlüssel für Anbieter, Sprache und Websuche, Geheimnisse von Werkzeugen (Umgebungsvariablen und Header) und Anmeldungen. Verbinden Sie sie nach einer Wiederherstellung erneut, auf diesem Computer ebenso wie auf einem anderen. Unterhaltungen und Dateiinhalte können private Daten enthalten. Das Archiv ist nicht verschlüsselt: Bewahren Sie es sicher auf.",
     "recovery": "Wiederherstellung erforderlich. Die Originaldaten bleiben erhalten.",
     "path": "Absoluter Pfad zur lokalen Sicherungsdatei",
     "export": "Sicherung vorbereiten",

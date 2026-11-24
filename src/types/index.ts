@@ -276,21 +276,24 @@ export type ContextRefKind = 'plan-node' | 'predicted-branch' | 'skill' | 'file'
 interface AgsdlReferenceIdentity {
   id: string;
   conversationId: string;
-  branchName: string;
-  planId: string;
   document: 'agsdl';
   path: string;
   title: string;
   relatedPaths?: string[];
 }
 
-export interface AgsdlDocumentReference extends AgsdlReferenceIdentity {
+type DocumentIdentity = { blueprintId: string; planId?: never; branchName?: never } |
+  { blueprintId?: never; planId: string; branchName: string };
+export type AgsdlDocumentReference = AgsdlReferenceIdentity & DocumentIdentity & {
   contextKind?: 'document';
   version: string;
   persistedRevision: number;
   diagnostic?: string;
 }
 export interface AgsdlRuntimeReference extends AgsdlReferenceIdentity {
+  blueprintId?: never;
+  planId: string;
+  branchName: string;
   contextKind: 'runtime';
   systemStartId: SystemStartId;
   source: SourceRevision;

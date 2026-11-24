@@ -1,3 +1,5 @@
+import { MAX_AGSDL_PROJECTION_BYTES } from "./document";
+import { isFlowDocumentContract } from "./contract";
 import type { AgsdlReport } from "../../types/agsdl";
 import type { AgsdlEnvelopeMetadata } from "./design";
 import { keyId,list,object,readDocument,scanSource,text } from "./document";
@@ -48,6 +50,8 @@ export interface ViewerCard {
   tools?: ViewerReference[];
   interfaces?: ViewerReference[];
   issueCount?: number;
+  /** The author hid this agent's threads in Operate (a Macro setting, never part of the document). */
+  hiddenInOperate?: boolean;
   resources?: ViewerReference[];
   approvers?: ViewerReference[];
   approvalCall?: ViewerReference;
@@ -86,8 +90,8 @@ const ports = (value: unknown): ViewerPort[] =>
   }));
 
 /** A reading model only. Unresolved and ambiguous references never become links. */
-export function projectViewer(source: string, metadata?: AgsdlEnvelopeMetadata, reports: readonly AgsdlReport[] = []) {
-  if (object(scanSource(source).tree).contract === "agsdl-0.3.0") return projectViewer030(source, metadata, staticReportForSource030(source, reports));
+export function projectViewer(source: string, metadata?: AgsdlEnvelopeMetadata, reports: readonly AgsdlReport[] = [], project = false) {
+  if (isFlowDocumentContract(object(scanSource(source, project ? MAX_AGSDL_PROJECTION_BYTES : undefined).tree).contract)) return projectViewer030(source, metadata, staticReportForSource030(source, reports), project);
   const doc = readDocument(source);
   if (doc.contract === "agsdl-0.2.0") throw new Error("agsdl.unsupportedEdition020");
   if (doc.contract !== "agsdl-0.1.0")

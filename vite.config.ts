@@ -381,12 +381,6 @@ const manualVendorChunk = (id: string): string | undefined => {
     return "diagram-vendor";
   }
 
-  // The entry imports terminal styles; assigning CSS to this JS chunk makes
-  // Rollup load the terminal runtime eagerly with those styles.
-  if (!moduleId.endsWith(".css") && (hasNodePackage(moduleId, "xterm") || hasNodePackage(moduleId, "xterm-addon-fit"))) {
-    return "terminal-vendor";
-  }
-
   if (
     hasNodePackage(moduleId, "@tauri-apps/api") ||
     hasNodePackage(moduleId, "@tauri-apps/plugin-dialog") ||

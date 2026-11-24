@@ -1,3 +1,5 @@
+import { MAX_AGSDL_PROJECTION_BYTES } from "./document";
+import { isFlowDocumentContract } from "./contract";
 import { list, object, pointerPart, scanSource, text } from "./document";
 import type { AgsdlEnvelopeMetadata } from "./design";
 import type { ViewerCard, ViewerGraph, ViewerPromptSource, ViewerReference } from "./viewer";
@@ -25,11 +27,12 @@ export interface ViewerRoute030 {
 }
 
 /** Static source inspection only. Runtime normalization and message resolution belong to 05. */
-export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadata, report?: SourceBoundReport030) {
-  const scanned = scanSource(source);
+export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadata, report?: SourceBoundReport030, project = false) {
+  const scanned = scanSource(source, project ? MAX_AGSDL_PROJECTION_BYTES : undefined);
   const doc = object(scanned.tree);
-  if (doc.contract !== "agsdl-0.3.0") throw new Error("Expected agsdl-0.3.0.");
-  const static030 = projectStaticSemantics030(source, report);
+  const contract = doc.contract;
+  if (!isFlowDocumentContract(contract)) throw new Error("Expected an AgSDL 0.3 or 0.4 document.");
+  const static030 = projectStaticSemantics030(source, report, project);
   const occurrences = new Map(static030.occurrences.map(item => [item.occurrenceId, item]));
   const raw = (path: string) => {
     const span = scanned.spans.get(path);
@@ -55,7 +58,7 @@ export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadat
   const base = (path: string, id: string, value: unknown, kind: string): ViewerCard => {
     const item = object(value);
     return { path, id, title: text(item.title) || id, kind, mission: text(item.description), unresolved: false,
-      inputs: [], outputs: [], branches: [], details: { ...item, contract: "agsdl-0.3.0" },
+      inputs: [], outputs: [], branches: [], details: { ...item, contract },
       edition030: { sourceJson: raw(path) ?? "{}", maxVisitsJson: raw(`${path}/maxVisits`), routes: [] } };
   };
   const configureAgent = (card: ViewerCard, name: string) => {
@@ -127,7 +130,7 @@ export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadat
       return card;
     });
     const entryName = text(flow.entry);
-    return { path, static030, title: text(flow.title) || name, contract: "agsdl-0.3.0", cards, inputs: [], outputs: list(flow.outputs).map(name => ({ name: text(name), type: "" })),
+    return { path, static030, title: text(flow.title) || name, contract, cards, inputs: [], outputs: list(flow.outputs).map(name => ({ name: text(name), type: "" })),
       entry: { label: entryName, source: "step", target: Object.hasOwn(steps, entryName) ? `${path}/steps/${pointerPart(entryName)}` : undefined, unresolved: !Object.hasOwn(steps, entryName) },
       errorRoutes030: flow.onError === undefined ? [] : routes(flow.onError, `${path}/onError`, path, "error") };
   };
@@ -140,6 +143,6 @@ export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadat
     const display = metadata?.display?.cards?.[card.path];
     if (display) { card.details.displayAnnotations = display; if (display.title?.trim()) card.title = display.title; }
   }
-  return { title: metadata?.display?.title || text(doc.title) || text(doc.id), contract: "agsdl-0.3.0", systemDetails: doc, graphs, declarations,
+  return { title: metadata?.display?.title || text(doc.title) || text(doc.id), contract, systemDetails: doc, graphs, declarations,
     legacyCards: [] as ViewerCard[], migrated: false, migrationIssues: [] as string[], unresolved: [] as unknown[], dependencies: [] as unknown[] };
 }

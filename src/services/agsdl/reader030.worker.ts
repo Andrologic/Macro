@@ -1,4 +1,4 @@
-import { loadHarnessModule, ModuleError, readWithSpans, stringify } from '../../vendor/agsdl/v0.3/reader.mjs';
+import { loadHarnessModule, ModuleError, readWithSpans, stringify } from '../../vendor/agsdl/v0.4/reader.mjs';
 import type { WorkerRequest, WorkerResponse } from './reader030WorkerProtocol';
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {

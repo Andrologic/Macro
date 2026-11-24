@@ -1,7 +1,7 @@
 import { describe,expect,it } from 'bun:test';
 import { readDesign } from '../../services/agsdl/design';
 import type { ArchitectPlanRecord } from '../../services/architectPlanService';
-import { agsdlSessionKey,type AgsdlSession,type useAgsdlStore } from '../useAgsdlStore';
+import { agsdlSessionKey,type AgsdlSession,useAgsdlStore } from '../useAgsdlStore';
 import { builtInDesignSources,instantiateDesign,listDesignSources,saveBlueprint,type BlueprintDependencies } from './blueprints';
 
 const target = { branchName: 'feature/design', planId: 'source' };
@@ -11,6 +11,7 @@ function harness(source = '') {
   let saved = 0;
   let created: Parameters<BlueprintDependencies['createPlan']>[0] | undefined;
   const state: ReturnType<typeof useAgsdlStore.getState> = {
+    ...useAgsdlStore.getState(),
     sessions: { [agsdlSessionKey(target)]: session },
     load: async () => session,
     replace: (_target, next, annexes, version, metadata) => {
@@ -147,7 +148,7 @@ describe('included blueprint adaptation', () => {
       expect(design.context).toBe('');
       expect(design.requirements).toEqual([{ id: 'projectGuidance', label: 'Project instructions', description: 'Project checklist, commands and conventions to apply.', value: '', targetPath: '/content/projectGuidance/value' }]);
       const doc = JSON.parse(template.source);
-      expect(doc.contract).toBe('agsdl-0.3.0');
+      expect(doc.contract).toBe('agsdl-0.4.0');
       expect(doc.agents.implement.harness).toBe('codex');
       expect(doc.agents.implement.model).toBeUndefined();
       expect(doc.agents.review.permissions).toBe('read-only');

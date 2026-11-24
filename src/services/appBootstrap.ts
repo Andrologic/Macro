@@ -9,10 +9,13 @@ import { useProviderStore } from '../stores/useProviderStore';
 import { useShortcutsStore } from '../stores/useShortcutsStore';
 import { useSkillsStore } from '../stores/useSkillsStore';
 import { useTaskStore } from '../stores/useTaskStore';
-import { useTerminalStore } from '../stores/useTerminalStore';
 import { useToolsStore } from '../stores/useToolsStore';
 import { devLogger } from '../utils/devLogger';
+import { toServiceError } from './contracts/errors';
+import { isBrowserRuntimeBridgeEnabled } from './tauriRuntimeBridge';
+import { ARCHITECT_LIBRARY_IMPORT_STEP } from './ipc/architectLibrary';
 import {
+  architectLibrary,
   getDatabaseInitializationStatus,
   isTauriAvailable,
 } from './tauriIpc';
@@ -43,12 +46,12 @@ export type AppBootstrapInit = (context?: LifecycleContext) => Promise<void>;
 
 export interface AppBootstrapDependencies {
   initializeDatabaseCritical?: AppBootstrapInit;
+  migrateArchitectLibrary?: AppBootstrapInit;
   initializeAppCritical: AppBootstrapInit;
   resumeAppAfterInitialize: AppBootstrapInit;
   initializeChatCritical: AppBootstrapInit;
   initializeTasksCritical: AppBootstrapInit;
   resumeTasksAfterInitialize: AppBootstrapInit;
-  initializeTerminal: AppBootstrapInit;
   initializeTools: AppBootstrapInit;
   initializeSkills: AppBootstrapInit;
   initializeProviders: AppBootstrapInit;
@@ -68,6 +71,7 @@ export interface AppBootstrapDependencies {
 export interface AppBootstrapController {
   ensureStarted: () => Promise<void>;
   restart: () => Promise<void>;
+  retryArchitectLibrary: () => Promise<void>;
   stop: () => Promise<void>;
   drain: () => Promise<void>;
   getSnapshot: () => AppBootstrapSnapshot;
@@ -109,6 +113,7 @@ export const createAppBootstrapController = (
   let stopPromise: Promise<void> = retirement;
   let drainOwnedSubscriptions: (() => Promise<void>) | undefined;
   let runId = 0;
+  let retryArchitectLibraryForRun: (() => Promise<void>) | undefined;
   const listeners = new Set<() => void>();
 
   const notify = () => {
@@ -170,7 +175,7 @@ export const createAppBootstrapController = (
           }
 
           const duration = dependencies.now() - startTime;
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          const errorMessage = toServiceError(error).message;
           dependencies.error(
             `[Init] ${name} (${priority}) failed after ${duration.toFixed(2)}ms: ${errorMessage}`
           );
@@ -223,6 +228,32 @@ export const createAppBootstrapController = (
           }));
           return;
         }
+      }
+
+      const migrateArchitectLibrary = dependencies.migrateArchitectLibrary;
+      if (migrateArchitectLibrary) {
+        const step = ARCHITECT_LIBRARY_IMPORT_STEP;
+        const migrate = () => initWithTracking(step, migrateArchitectLibrary, 'critical', {
+          warningOnly: true,
+        });
+        void scope.track(migrate());
+        let retry: Promise<void> | undefined;
+        retryArchitectLibraryForRun = async () => {
+          if (!isActive() || !snapshot.warnings[step]) return;
+          retry ??= scope.track((async () => {
+            const imported = await migrate();
+            if (!isActive()) return;
+            if (!imported) throw new Error(snapshot.warnings[step]);
+            updateSnapshotForRun(activeRunId, (current) => {
+              const errors = { ...current.errors };
+              const warnings = { ...current.warnings };
+              delete errors[step];
+              delete warnings[step];
+              return { ...current, errors, warnings };
+            });
+          })()).finally(() => { retry = undefined; });
+          await retry;
+        };
       }
 
       const appCriticalOk = await initWithTracking(
@@ -283,10 +314,7 @@ export const createAppBootstrapController = (
         }
       });
 
-      const normalPriorityInit = Promise.all([
-        initWithTracking('Shortcuts', dependencies.initializeShortcuts, 'normal'),
-        initWithTracking('Terminal Store', dependencies.initializeTerminal, 'normal'),
-      ]).then(() => {
+      const normalPriorityInit = initWithTracking('Shortcuts', dependencies.initializeShortcuts, 'normal').then(() => {
         if (isActive()) {
           updateSnapshotForRun(activeRunId, (current) => ({ ...current, normal: true }));
         }
@@ -345,6 +373,7 @@ export const createAppBootstrapController = (
     const retired = owner;
     if (!retired) return stopPromise;
     owner = null;
+    retryArchitectLibraryForRun = undefined;
     runId += 1;
     startPromise = null;
     preloadTriggered = false;
@@ -377,6 +406,7 @@ export const createAppBootstrapController = (
   return {
     ensureStarted,
     restart,
+    retryArchitectLibrary: async () => { await retryArchitectLibraryForRun?.(); },
     stop,
     drain: () => Promise.all([retirement, owner?.drain()]).then(() => undefined),
     getSnapshot: () => snapshot,
@@ -443,6 +473,18 @@ export const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
     ]);
   },
   initializeDatabaseCritical: waitForDatabaseInitialization,
+  migrateArchitectLibrary: async (context) => {
+    if (
+      !isTauriAvailable() ||
+      isBrowserRuntimeBridgeEnabled() ||
+      (import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1')
+    ) return;
+    context?.assertActive();
+    const report = await architectLibrary.migrateLegacy();
+    if (report.status === 'discoveryIncomplete') {
+      throw new Error(report.issues.map(({ location, message }) => `${location}: ${message}`).join('\n'));
+    }
+  },
   initializeAppCritical: async context => {
     configureProductionWorkflowRunAccess030();
     await useAppStore.getState().initializeCritical(context);
@@ -451,7 +493,6 @@ export const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
   initializeChatCritical: useChatStore.getState().initializeCritical,
   initializeTasksCritical: useTaskStore.getState().initializeCritical,
   resumeTasksAfterInitialize: useTaskStore.getState().resumeAfterInitialize,
-  initializeTerminal: useTerminalStore.getState().initialize,
   initializeTools: useToolsStore.getState().loadSettings,
   initializeSkills: useSkillsStore.getState().loadSettings,
   initializeProviders: useProviderStore.getState().initialize,

@@ -156,8 +156,8 @@ export function argenticRustCounts(reader) {
 // Direct importers of the evaluation modules, both type and runtime edges.
 const EVALUATION_MODULES = new Set([
   ...['compiler030', 'compilerGraph030', 'configuration030', 'hostCompilation', 'metadata', 'agentWorkContracts030', 'exact', 'workIntegers030', 'valueSchemaPort030', 'agentWorkController030', 'agentSubmission030', 'hostWorkJournal030', 'hostWorkTransition030', 'invariants', 'routes030', 'prepareFlowRoute030', 'messages030', 'calls030', 'contentResolution030', 'hostHumanClock030', 'workClock030', 'hostWorkPort030', 'hostWorkPump030', 'hostRouteBroker030'].map((name) => `src/services/agsdlExecution/${name}.ts`),
-  ...['validator', 'graph', 'schemacheck', 'permissions', 'reader', 'json', 'values'].map((name) => `src/vendor/agsdl/v0.3/${name}.mjs`),
-  'src/vendor/agsdl/v0.3/valueschema.mjs', 'src/vendor/agsdl/shared/json.mjs', 'src/vendor/agsdl/shared/values.mjs', 'src/vendor/agsdl/experimental/readers/javascript/json.mjs',
+  ...['validator', 'graph', 'schemacheck', 'permissions', 'reader', 'json', 'values'].map((name) => `src/vendor/agsdl/v0.4/${name}.mjs`),
+  'src/vendor/agsdl/v0.4/valueschema.mjs', 'src/vendor/agsdl/shared/json.mjs', 'src/vendor/agsdl/shared/values.mjs', 'src/vendor/agsdl/experimental/readers/javascript/json.mjs',
 ]);
 export function argenticImportCounts(edges) {
   const counts = {};

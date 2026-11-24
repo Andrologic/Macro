@@ -1,0 +1,181 @@
+{
+  "description": "A person stops a run with a call, approval and fan-out composition open. A late result and failure cannot route, and the host waits for both executor confirmations.",
+  "document": {
+    "contract": "agsdl-0.4.0",
+    "id": "whole-run-stop",
+    "agents": {
+      "worker": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "compositions": {
+      "review-item": {
+        "parameters": [
+          "reviewer"
+        ],
+        "entry": "inspect",
+        "outputs": [
+          "ready"
+        ],
+        "steps": {
+          "inspect": {
+            "type": "agent",
+            "agent": {
+              "parameter": "reviewer"
+            },
+            "instance": "new",
+            "next": {
+              "output": "ready"
+            }
+          }
+        }
+      }
+    },
+    "flow": {
+      "entry": "list",
+      "steps": {
+        "list": {
+          "type": "call",
+          "command": "git diff --name-only",
+          "parse": "lines",
+          "next": [
+            {
+              "step": "review",
+              "each": [
+                "data",
+                "value"
+              ],
+              "concurrency": 1
+            },
+            "approve",
+            "check"
+          ]
+        },
+        "review": {
+          "type": "compose",
+          "composition": "review-item",
+          "agents": {
+            "reviewer": "worker"
+          },
+          "next": {
+            "ready": "gather"
+          }
+        },
+        "gather": {
+          "type": "join",
+          "next": "notify"
+        },
+        "approve": {
+          "type": "approval",
+          "timeoutMs": 1000,
+          "next": {
+            "publish": "publish",
+            "decline": []
+          }
+        },
+        "check": {
+          "type": "call",
+          "command": "make check",
+          "onError": "notify"
+        },
+        "publish": {
+          "type": "call",
+          "command": "make publish"
+        },
+        "notify": {
+          "type": "call",
+          "command": "make notify"
+        }
+      },
+      "onError": "notify"
+    }
+  },
+  "timeline": [
+    {
+      "work": "list",
+      "command": {
+        "exitCode": 0,
+        "stdout": "one.txt\ntwo.txt\n"
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "review/inspect",
+          "item": 0
+        },
+        {
+          "step": "approve"
+        },
+        {
+          "step": "check"
+        }
+      ]
+    },
+    {
+      "stopRun": true
+    },
+    {
+      "runState": "stopping"
+    },
+    {
+      "work": "review/inspect",
+      "item": 0,
+      "returns": {
+        "text": "Reviewed."
+      }
+    },
+    {
+      "work": "check",
+      "fails": "CALL_FAILED"
+    },
+    {
+      "elapse": 1000
+    },
+    {
+      "work": "review/inspect",
+      "item": 0,
+      "stopped": true
+    },
+    {
+      "runState": "stopping"
+    },
+    {
+      "work": "check",
+      "stopped": true
+    },
+    {
+      "runState": "cancelled"
+    }
+  ],
+  "expect": {
+    "run": "cancelled",
+    "starts": {
+      "list": 1,
+      "review": 1,
+      "review/inspect": 1,
+      "approve": 1,
+      "check": 1
+    },
+    "joins": [],
+    "failures": [],
+    "answers": [],
+    "cancelled": [
+      {
+        "step": "review",
+        "item": 0
+      },
+      {
+        "step": "review/inspect",
+        "item": 0
+      },
+      {
+        "step": "approve"
+      },
+      {
+        "step": "check"
+      }
+    ]
+  }
+}

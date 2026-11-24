@@ -41,6 +41,7 @@ export function captureQueuedSubmission(
     },
     intent: {
       mode: snapshot.mode, agentType: snapshot.agentType,
+      blueprintId: snapshot.blueprintId,
       architectPlan: snapshot.architectPlan,
       conversationTaskId: snapshot.conversationTaskId,
       selectedTaskId: snapshot.selectedTaskId,

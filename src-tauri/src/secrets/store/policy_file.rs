@@ -143,10 +143,26 @@ fn recognized(value: &Value) -> Result<ProviderSecretsFile, SecretError> {
     if let Some(namespaces) = value.get("namespaces") {
         object_fields(
             namespaces,
-            &["providers", "speech", "mcp", "webSearch", "system"],
+            &[
+                "providers",
+                "speech",
+                "mcp",
+                "webSearch",
+                "system",
+                "archiveMcp",
+            ],
         )?;
-        for map in namespaces.as_object().unwrap().values() {
-            check_map(map)?;
+        for (namespace, map) in namespaces.as_object().unwrap() {
+            if namespace == "archiveMcp" {
+                if !map
+                    .as_object()
+                    .is_some_and(|map| map.values().all(Value::is_string))
+                {
+                    return Err(SecretError::PolicyUnavailable);
+                }
+            } else {
+                check_map(map)?;
+            }
         }
     }
     if let Some(keys) = value.get("api_keys") {
@@ -176,7 +192,12 @@ fn recognized(value: &Value) -> Result<ProviderSecretsFile, SecretError> {
 
 impl ProviderSecretsFile {
     pub(in crate::secrets) fn policy_values(&self) -> Result<Vec<String>, SecretError> {
-        let mut values: Vec<String> = self.api_keys.values().cloned().collect();
+        let mut values: Vec<String> = self
+            .api_keys
+            .values()
+            .chain(self.namespaces.archive_mcp.values())
+            .cloned()
+            .collect();
         for secret in self.chatgpt_sessions.values() {
             values.push(secret.access_token.clone());
             values.push(secret.refresh_token.clone());
@@ -322,7 +343,7 @@ mod tests {
     #[test]
     fn restore_marker_blocks_capture_rotation_and_uncoordinated_initialization() {
         let directory = tempfile::tempdir().unwrap();
-        let store = LocalSecretStore::new(directory.path().join(SECRET_FILE_NAME));
+        let store = test_store(directory.path().join(SECRET_FILE_NAME));
         with_test_store_file_lock(&store, |store| {
             store.prepare_policy_file()?;
             let before = std::fs::read(&store.path)?;
@@ -345,7 +366,7 @@ mod tests {
     fn policy_file_strict_reads_preserve_unknown_and_unreadable_inputs() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(SECRET_FILE_NAME);
-        let store = LocalSecretStore::new(path.clone());
+        let store = test_store(path.clone());
         for input in [
             br#"{"version":99}"#.as_slice(),
             br#"{"version":99,"version":2}"#,
@@ -374,7 +395,7 @@ mod tests {
     fn policy_file_rotation_is_fresh_and_keeps_legacy_credentials() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(SECRET_FILE_NAME);
-        let store = LocalSecretStore::new(path.clone());
+        let store = test_store(path.clone());
         let session = serde_json::json!({"version":1,"kind":"chatgpt","payload":{
             "access_token":"synthetic-access","refresh_token":"synthetic-refresh",
             "id_token":"synthetic-id","account_id":null,"client_id":"synthetic-client",
@@ -402,7 +423,7 @@ mod tests {
         let _test_guard = super::super::super::lock_test_store();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(SECRET_FILE_NAME);
-        let store = LocalSecretStore::new(path.clone());
+        let store = test_store(path.clone());
         let original = br#"{ "version":1, "api_keys":{"test":"synthetic"} }"#;
         std::fs::write(&path, original).unwrap();
         with_test_store_file_lock(&store, |store| {
@@ -469,7 +490,7 @@ mod tests {
     fn policy_file_corruption_is_repaired_only_by_explicit_preparation() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(SECRET_FILE_NAME);
-        let store = LocalSecretStore::new(path.clone());
+        let store = test_store(path.clone());
         let original = b"{ broken synthetic JSON";
         std::fs::write(&path, original).unwrap();
         with_test_store_file_lock(&store, |store| {

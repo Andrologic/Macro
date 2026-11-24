@@ -36,6 +36,8 @@ pub enum SecretError {
     StoreUnavailable,
     #[error("Secret policy is unavailable; explicit recovery is required.")]
     PolicyUnavailable,
+    #[error("This secret identifier is reserved.")]
+    ReservedIdentifier,
     #[error("Secret storage error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Secret serialization error: {0}")]
@@ -83,13 +85,19 @@ pub(super) struct ProviderSecretsFile {
     #[serde(skip)]
     pub(super) api_keys: BTreeMap<String, String>,
     #[serde(default)]
-    namespaces: SecretNamespaces,
+    pub(super) namespaces: SecretNamespaces,
     #[serde(default)]
     pub(super) chatgpt_sessions: BTreeMap<String, ChatGptSecret>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-struct SecretNamespaces {
+pub(super) struct SecretNamespaces {
+    #[serde(
+        default,
+        rename = "archiveMcp",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub(super) archive_mcp: BTreeMap<String, String>,
     #[serde(default)]
     providers: BTreeMap<String, String>,
     #[serde(default)]
@@ -132,11 +140,17 @@ impl Default for ProviderSecretsFile {
 #[derive(Debug, Clone)]
 pub(super) struct LocalSecretStore {
     path: PathBuf,
+    #[cfg(test)]
+    test_mutex: Option<std::sync::Arc<Mutex<()>>>,
 }
 
 impl LocalSecretStore {
     pub(super) fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            #[cfg(test)]
+            test_mutex: None,
+        }
     }
 
     pub(super) fn read_file(&self) -> Result<ProviderSecretsFile, SecretError> {
@@ -360,7 +374,9 @@ pub(super) fn with_test_store_file_lock<T>(
 fn serialize_provider_secrets(data: &ProviderSecretsFile) -> Result<Vec<u8>, SecretError> {
     let mut persisted = data.clone();
     persisted.version = SECRET_FILE_VERSION;
-    persisted.namespaces = SecretNamespaces::from_flat(&persisted.api_keys);
+    let mut namespaces = SecretNamespaces::from_flat(&persisted.api_keys);
+    namespaces.archive_mcp = std::mem::take(&mut persisted.namespaces.archive_mcp);
+    persisted.namespaces = namespaces;
     let mut value = serde_json::to_value(&persisted)?;
     // Retain recognized legacy credentials, including id_token, until that
     // specific session is replaced or removed by its ordinary writer.
@@ -500,10 +516,23 @@ impl SecretNamespaces {
 }
 
 fn parse_provider_secrets_file(contents: &str) -> Result<ProviderSecretsFile, serde_json::Error> {
-    let raw = serde_json::from_str::<RawProviderSecretsFile>(contents)?;
+    let mut raw = serde_json::from_str::<RawProviderSecretsFile>(contents)?;
     let version = raw._version;
+    let mut archive_mcp = std::mem::take(&mut raw.namespaces.archive_mcp);
     let mut api_keys = raw.namespaces.into_flat();
     api_keys.extend(raw.api_keys);
+    api_keys.retain(|id, value| {
+        if super::archive_mcp::legacy_id(id) {
+            // Legacy keys identify neither the endpoint nor the delivery.
+            // Keep them in the vault, outside the namespace of active keys.
+            archive_mcp
+                .entry(id.clone())
+                .or_insert_with(|| value.clone());
+            false
+        } else {
+            true
+        }
+    });
     let mut chatgpt_sessions = BTreeMap::new();
     let raw_chatgpt_sessions = raw.chatgpt_sessions.clone();
 
@@ -523,7 +552,10 @@ fn parse_provider_secrets_file(contents: &str) -> Result<ProviderSecretsFile, se
         policy_epoch: raw.policy_epoch,
         raw_chatgpt_sessions,
         api_keys,
-        namespaces: SecretNamespaces::default(),
+        namespaces: SecretNamespaces {
+            archive_mcp,
+            ..Default::default()
+        },
         chatgpt_sessions,
     })
 }
@@ -777,7 +809,10 @@ fn with_store_lock_mode<T>(
     recovery: bool,
     operation: impl FnOnce(&LocalSecretStore) -> Result<T, SecretError>,
 ) -> Result<T, SecretError> {
-    let _guard = match STORE_MUTEX.lock() {
+    let mutex = &*STORE_MUTEX;
+    #[cfg(test)]
+    let mutex = store.test_mutex.as_deref().unwrap_or(mutex);
+    let _guard = match mutex.lock() {
         Ok(guard) => guard,
         Err(poisoned) if recovery => poisoned.into_inner(),
         Err(_) => return Err(SecretError::PolicyUnavailable),
@@ -787,7 +822,7 @@ fn with_store_lock_mode<T>(
     let unlock_result = FileExt::unlock(&file_guard);
     let result = result.and_then(|value| unlock_result.map(|()| value).map_err(SecretError::from));
     if recovery && result.is_ok() {
-        STORE_MUTEX.clear_poison();
+        mutex.clear_poison();
     }
     result
 }
@@ -820,5 +855,10 @@ pub(super) fn parse_chatgpt_secret(serialized: &str) -> Result<Option<ChatGptSec
 
 #[cfg(test)]
 pub(super) fn test_store(path: PathBuf) -> LocalSecretStore {
-    LocalSecretStore::new(path)
+    // A panic or a slow disk lock in another fixture must not affect this
+    // store. Separate handles for the same path still share the file lock.
+    LocalSecretStore {
+        path,
+        test_mutex: Some(std::sync::Arc::default()),
+    }
 }

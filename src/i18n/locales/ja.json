@@ -121,10 +121,13 @@
     }
   },
   "startup": {
+    "architectCutoverProgress": "Architect ライブラリを移行中 ({{completed}}/{{total}})",
     "interrupted": "起動が中断されました",
     "failedTitle": "Macro は起動を完了できませんでした。",
     "failedDescription": "Macro はローカルデータを初期化できませんでした。安全に再試行できます。",
     "failedSteps": "失敗した手順",
+    "architectImportIncomplete": "Architect ライブラリのインポートが完了していません。",
+    "architectImportRetryHint": "以下の問題を確認し、再試行を選択してください。",
     "metadataRecovery": {
       "restoredWithCommit": "履歴から @macro メタデータを復元しました ({{commit}})",
       "restored": "履歴から @macro メタデータを復元しました",
@@ -140,6 +143,7 @@
     "browserRuntimeSessionReplacedReload": "タブを再読み込み"
   },
   "shutdown": {
+    "executionInterrupted": "Macro を閉じると、実行中、一時停止中、または中断中の作業を再開できなくなる場合があります。",
     "activeWorkSingle": "実行中のタスクがあります。Macro を閉じると中断されます。",
     "activeWorkMultiple": "{{count}} 件のタスクが実行中です。Macro を閉じると中断されます。",
     "closeTitle": "Macro を閉じますか？",
@@ -263,7 +267,7 @@
   },
   "header": {
     "architect": "Architect",
-    "implement": "Implement",
+    "implement": "Operate",
     "chat": "Chat",
     "debug": "Debug",
     "selectProject": "プロジェクトの選択",
@@ -281,7 +285,7 @@
     "sections": {
       "basics": "基本",
       "architect": "Architect",
-      "implement": "Implement",
+      "operate": "Operate",
       "chat": "Chat",
       "system": "システム"
     },
@@ -289,7 +293,7 @@
     "steps": {
       "welcome": {
         "title": "Macro へようこそ",
-        "body": "Macro はモードごとに整理されています。最適なオンボーディングは、必要になったタイミングでコントロールを示し、その後ユーザーが操作を取り戻せるようにします。",
+        "body": "Architect で AgSDL ワークフローを設計し、Operate で実行状況を確認できます。Chat では会話ごとにコンテキストを持てます。",
         "points": [
           "ガイドは自動的にモードを切り替えます。",
           "手順で必要な場合、左右のパネルを開き直します。",
@@ -298,16 +302,16 @@
       },
       "modes": {
         "title": "モードセレクター",
-        "body": "この3つのボタンで作業画面全体が切り替わります。Architect は設計、Implement は実行、Chat はコンテキスト付きの自由な相談に使います。",
+        "body": "このセレクターで Architect、Operate、Chat を切り替えます。",
         "points": [
-          "Architect: 会話、計画、戦略。",
-          "Implement: タスク、ターミナル、変更の検証。",
-          "Chat: 会話、ソース、汎用ツール。"
+          "Architect で AgSDL ワークフローを設計します。",
+          "Operate で実行状況を確認し、リクエストに回答します。",
+          "Chat で会話を始め、ファイル、ソース、ツールを会話ごとに設定します。"
         ]
       },
       "panel-toggles": {
         "title": "サイドパネル",
-        "body": "パネルボタンはコンテキスト領域を表示または非表示にします。左パネルには作業リスト、右パネルには詳細や検証が表示されることが多いです。"
+        "body": "上部のボタンで、現在のモードで使えるサイドパネルを表示または非表示にできます。"
       },
       "settings-and-help": {
         "title": "設定とオンボーディング",
@@ -315,32 +319,33 @@
       },
       "architect-mode": {
         "title": "Architect モード",
-        "body": "Architect は、ユーザーが明示的に要求したときに会話を戦略へ変換します。"
+        "body": "各ブループリントには、AgSDL の下書き、設計用の会話、保存したバージョンがあります。"
       },
-      "architect-plan-selector": {
-        "title": "計画",
-        "body": "プランセレクターは、各プランの会話と戦略を分離します。"
+      "architect-navigator": {
+        "title": "プロジェクトとシステム",
+        "body": "左パネルでプロジェクトを選び、既存のシステムを開くか、新しいシステムを作成します。"
       },
-      "architect-generate": {
-        "title": "戦略を生成",
-        "body": "この操作は、会話とプロジェクトのコンテキストからタスクグラフと予測可能なブランチを作成します。"
+      "architect-conversation": {
+        "title": "設計の会話",
+        "body": "ブループリントを開き、中央の会話で作りたいシステムを説明します。エージェントは下書きを読み取り、編集できます。"
       },
-      "architect-strategy": {
-        "title": "戦略とブランチ",
-        "body": "右パネルには戦略が表示されます。Graph / Branches の切り替えで、依存関係ビューと Git 実行ビューを行き来できます。",
+      "architect-agsdl": {
+        "title": "AgSDL ビューアー",
+        "body": "左パネルでシステムを開くと、右側にグラフが表示されます。",
         "points": [
-          "Graph: 依存関係と論理順序。",
-          "Branches: 機能ブランチごとにまとめられた作業。",
-          "Expand はより使いやすいエクスプローラーを開きます。"
+          "グラフでエージェントとその間のやり取りを確認できます。",
+          "コンポーネントを選ぶと詳細が表示されます。",
+          "「表示を拡張」でグラフを大きなウィンドウに表示できます。"
         ]
       },
       "architect-validate": {
         "title": "計画を検証",
         "body": "検証により、ブランチを準備して Implement に渡せる程度まで計画を固定します。開始済みまたは完了済みのタスクは破壊的な再生成から保護されます。"
       },
-      "implement-mode": {
-        "title": "Implement モード",
-        "body": "Implement はタスクを引き受け、実行について相談し、ターミナルを開き、コミット前に変更ファイルを検証するためのモードです。"
+      "operate-executions": {
+        "title": "Operate で実行を確認",
+        "body": "実行を選ぶと状態とリクエストを確認できます。エージェントのインスタンスを選ぶと、そのメッセージを読めます。",
+        "demoBody": "デモでは、＋ボタンでワークフローを起動します。タスクを選ぶと、その会話を確認できます。"
       },
       "implement-tasks": {
         "title": "タスクキュー",
@@ -379,8 +384,8 @@
         "body": "Composer はテキスト、メンション、貼り付け画像を受け付けます。矢印ボタンは送信し、応答生成中は停止します。"
       },
       "footer": {
-        "title": "Git バーと通知",
-        "body": "下部バーにはグローバルプロジェクト、ブランチ、fetch / pull / push、通知センターがまとまっています。Macro が同期アクションを求めたときはここを確認します。"
+        "title": "通知とアップデート",
+        "body": "ウィンドウ下部のベルから通知センターを開けます。アップデートがあると、ベルの横に更新ボタンが表示されます。"
       },
       "done": {
         "title": "再開できるオンボーディング",
@@ -1755,7 +1760,7 @@
     "count_other": "{{count}}プロジェクト",
     "name": "プロジェクト名",
     "emptyWorkspaceTitle": "Macro を始めるにはプロジェクトを追加してください。",
-    "emptyWorkspaceBody": "Architect と Implement がプラン、タスク、ブランチ、worktree を作成するにはプロジェクトが必要です。",
+    "emptyWorkspaceBody": "Architect で設計した AgSDL システムは、プロジェクトに保存されます。",
     "emptyWorkspaceStrategyPanel": "プロジェクトを追加すると戦略を利用できます。",
     "emptyWorkspaceTasksPanel": "プロジェクトを追加するとタスクを利用できます。",
     "emptyWorkspaceChangesPanel": "プロジェクトを追加すると変更を利用できます。",
@@ -1838,8 +1843,8 @@
     "initGitTitle": "Git を初期化しますか？",
     "initialCommitTitle": "初回コミットを作成しますか？",
     "createDevelopTitle": "develop を作成しますか？",
-    "initGitDescription": "このフォルダーはまだ Git リポジトリではありません。今すぐ Git を初期化すると、worktree と編集可能なワークフローが使えるようになります。この手順をスキップすると、プロジェクトは read-only として追加されます。",
-    "initialCommitDescription": "このリポジトリにはまだ初回コミットがありません。今すぐ作成すると、ブランチ、worktree、編集可能なワークフローが使えるようになります。この手順をスキップすると、プロジェクトは read-only として追加されます。",
+    "initGitDescription": "このフォルダーはまだ Git リポジトリではありません。Git を初期化して、Macro の Git ベースのストレージを準備します。",
+    "initialCommitDescription": "最初のコミットを作成すると、Macro の Git ベースのストレージが有効になります。コミットを作成するまで、プロジェクトは読み取り専用です。",
     "createDevelopDescription": "このリポジトリは mainline モードで作業できます。Macro は {{mainBranch}} をメインブランチ兼開発ターゲットとして使います。develop は、このプロジェクトが意図的に別の統合ブランチを使う場合だけ作成してください。",
     "mainlineModeExplanation": "{{branchName}} を開発ターゲットのままにします。feature 作業は {{branchName}} にマージされ、緊急修正には hotfix プランを使えます。",
     "developModeLabel": "別の develop",
@@ -1933,7 +1938,7 @@
     "accessGitStateUnknown": "このフォルダーが Git リポジトリかどうかを確認できませんでした。実装操作を有効にする前に Git の状態を確認してください。",
     "accessMissingInitialCommit": "このリポジトリにはまだ初回コミットがありません。最初のコミットを作成するまで、このプロジェクトは read-only のままです。",
     "accessManualAndMissingGit": "このプロジェクトは手動で read-only に設定されており、Git もまだ初期化されていません。",
-    "accessEditableHelp": "このプロジェクトは編集可能で、ブランチ、worktree、ターミナルセッション、実装に利用できます。",
+    "accessEditableHelp": "Macro はこのプロジェクトのストレージに書き込めます。",
     "accessBlockDirtyWorktree": "このプロジェクトにはまだ変更のある worktree があります。read-only に切り替える前にクリーンアップしてください。",
     "accessBlockLiveTerminal": "このプロジェクトにはまだ稼働中のターミナルセッションがあります。read-only に切り替える前に閉じてください。",
     "accessBlockLastActionablePlan": "このプロジェクトはアクティブなプラン内で最後の編集可能プロジェクトです。",
@@ -2164,7 +2169,7 @@
       "delete": "削除",
       "deleting": "削除中…",
       "deleteTitle": "プランを削除",
-      "deleteDescription": "プラン「{{name}}」とローカルの Macro ブランチを削除します。この操作は元に戻せません。",
+      "deleteDescription": "プラン「{{name}}」を削除します。この操作は元に戻せません。",
       "editUnavailable": "このプランは編集できなくなりました。",
       "editError": "プランを編集できませんでした。",
       "archiveUnavailable": "このプランはアーカイブできなくなりました。",
@@ -3098,8 +3103,8 @@
         "description": "アクティブモードを Architect に切り替え"
       },
       "switchImplement": {
-        "label": "Implement モードに切り替え",
-        "description": "アクティブモードを Implement に切り替え"
+        "label": "Operate モードに切り替え",
+        "description": "アクティブモードを Operate に切り替え"
       },
       "switchChat": {
         "label": "チャットモードに切り替える",
@@ -3329,9 +3334,9 @@
     "slashMenuLabel": "コンテキストまたはコマンドを挿入"
   },
   "backup": {
-    "exclusions": "プロジェクトのフォルダーと Git 履歴、プロバイダーの認証情報は含まれません。プロジェクトは別途保存してください。",
+    "exclusions": "含まれないもの：ご自身で選んだフォルダー（プロジェクトとその Git 履歴など）。別途コピーを保管してください。認証情報は別のコンピューターには引き継がれません。復元後に、プロバイダーとツールを再接続してください。",
     "limitsTitle": "互換性、上限、プライベートデータ",
-    "limits": "上限は 256 MiB です。同じバージョンの Macro で復元してください。プロジェクトのパスは保持されます。移動したプロジェクトの再関連付けやプロファイルの統合は行いません。",
+    "limits": "バックアップのマニフェストは最大 256 MiB です。Architect のファイルはアーカイブ内に個別に保存されます。同じバージョンの Macro で復元してください。記録されたプロジェクトのパスを保持し、プロファイル全体を置き換えます。",
     "exportHelp": "次回起動時にローカルデータを新しいアーカイブに保存します。",
     "restoreHelp": "アーカイブでローカルデータを置き換えます。以前のプロファイルは復旧用に保持します。",
     "desktopRequired": "ローカルデータのバックアップと復元にはデスクトップ版 Macro を開いてください。",
@@ -3353,10 +3358,20 @@
     "runtimeUnavailableTitle": "デスクトップランタイムを利用できません",
     "runtimeUnavailableHint": "Macro は再起動中か、起動していません。デスクトップランタイムの準備ができたら再試行してください。",
     "startupTitle": "プロファイルの復旧が必要です",
+    "nativeRecoveryHint": "Macro はローカルプロファイルを開く処理を中断しました。再試行すると Macro が再起動し、復旧を再開します。",
+    "restoreRecoveryTitle": "プロファイルの復元を完了できませんでした",
+    "profileOpenFailedTitle": "Macro はプロファイルを開けませんでした",
+    "profileOpenFailedHint": "診断情報を確認し、再試行を選択して Macro を再起動してください。",
+    "recoveryQuit": "終了",
+    "revealPreservedArchive": "保存したアーカイブを表示",
+    "revealRecoveryFolder": "復旧フォルダーを開く",
+    "copyDiagnostics": "診断情報をコピー",
+    "diagnosticsCopied": "診断情報をコピーしました。",
+    "recoveryActionFailed": "操作に失敗しました。診断情報を確認してください。",
     "startupRecovery": "ブラウザーデータの復元を完了できませんでした。ネイティブの復旧アーカイブは保持されています。診断を確認し、必要に応じてローカルストレージの空き容量を増やしてから、Macroを再起動してください。",
     "title": "バックアップと復元",
-    "scope": "Macro のローカルデータ：会話、保存済み添付ファイル、コードのチェックポイント、下書き、待機中の指示、復旧用の回答、全般設定。",
-    "secrets": "プロバイダーの認証情報、MCP 環境変数とヘッダーはポータブルエクスポートに含まれません。復元後に再接続してください。会話やファイルは個人データを含むため、アーカイブを安全に保管してください。",
+    "scope": "バックアップには、Architect のライブラリ（システム、下書き、保存済みの版）、実行とその履歴、Macro が作成した起動用リソースと作業フォルダー、会話、設定が含まれます。",
+    "secrets": "認証情報はすべてのバックアップから除外されます。プロバイダー、音声、Web 検索のキー、ツールのシークレット（環境変数とヘッダー）、サインイン情報が対象です。復元後は、このコンピューターでも別のコンピューターでも再接続してください。会話やファイルの内容には個人データが含まれることがあります。アーカイブは暗号化されません。安全な場所に保管してください。",
     "recovery": "復旧が必要です。元のデータは保持されています。",
     "path": "ローカルバックアップファイルの絶対パス",
     "export": "バックアップを準備",

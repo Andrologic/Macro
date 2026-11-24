@@ -178,15 +178,29 @@ describe('createLoadImplementTaskCatalog', () => {
   });
 
   it('uses persisted plan status for admission and rejects partial catalog reads', async () => {
-    const plan = makePlan({ id: 'plan-direct', title: 'Direct', status: 'in_progress', targetBranch: 'develop',
-      executionModesByProjectId: { web: 'direct' },
+    releasePlanRuntimePorts?.();
+    const readScopes: string[] = [];
+    releasePlanRuntimePorts = installArchitectPlanRuntimePorts({
+      getProjectById: () => ({ path: '/repos/web' }),
+      tauri: {
+        ...await import('./tauriIpc'),
+        isTauriAvailable: () => true,
+        dbGetAppSetting: async () => null,
+        fsReadFileWithOptions: async params => {
+          readScopes.push(String(params.workspaceScope));
+          throw { code: 'FilesystemNotFound', message: 'No runtime file' };
+        },
+      },
+    });
+    const plan = makePlan({ id: 'plan-web', title: 'Web', status: 'in_progress', targetBranch: 'develop',
+      executionModesByProjectId: { web: 'git' },
       nodes: [{ id: 'task-direct', title: 'Active task', type: 'task', status: 'in-progress',
-        projectId: 'web', projectIds: ['web'], dependencies: [], executionModesByProjectId: { web: 'direct' } }] });
+        projectId: 'web', projectIds: ['web'], dependencies: [], executionModesByProjectId: { web: 'git' } }] });
     let failRead = false;
     const load = createLoadImplementTaskCatalog({
       getAppState: () => ({
         selectedGroupId: null, selectedProjectId: 'web', projectGroups: [],
-        standaloneProjects: [{ id: 'web', name: 'Web', path: '/repos/web', directEdit: true }],
+        standaloneProjects: [{ id: 'web', name: 'Web', path: '/repos/web', directEdit: false, gitSetupState: 'ready' }],
         activeArchitectPlanId: plan.id, activePlanContext: plan,
         planNodes: plan.nodes.map((node) => ({ ...node, status: 'pending' })),
         predictedBranches: [],
@@ -200,6 +214,7 @@ describe('createLoadImplementTaskCatalog', () => {
     });
     const catalog = await load([], { persistedOnly: true });
     expect(catalog.tasks.find((task) => task.id.includes('task-direct'))?.status).toBe('InProgress');
+    expect(readScopes).toEqual(['metadata_existing']);
     failRead = true;
     await expect(load([], { persistedOnly: true })).rejects.toThrow('unreadable plan');
   });

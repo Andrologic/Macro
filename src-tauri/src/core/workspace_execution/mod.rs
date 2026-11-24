@@ -1,5 +1,4 @@
 pub(crate) mod ast_search;
-mod post_write_diagnostics;
 pub(crate) mod tool_output;
 pub mod workspace_tools;
 pub use super::command_error::CommandError;
@@ -1663,7 +1662,6 @@ where
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
     let _mutation_guards = acquire_content_mutation_locks(&changes).await?;
-    let roots = post_write_diagnostics::capture_roots(&changes);
     let backups = prepare_mutation_backups(&changes).await?;
     let checkpoint_before = include_checkpoint_snapshots
         .then(|| checkpoint_before_snapshots(&backups, &changes))
@@ -1712,10 +1710,7 @@ where
         if let Some(payload) = checkpoint_payload {
             extra_fields.insert(INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD.to_string(), payload);
         }
-        // The write is committed. Diagnostics must neither hold mutation locks nor roll it back.
         drop(_mutation_guards);
-        let diagnostics = Box::pin(post_write_diagnostics::collect(&changes, roots)).await;
-        extra_fields.insert("diagnostics".into(), Value::Array(diagnostics));
         return assemble_post_write_response(&changes, report, extra_fields);
     }
 
@@ -2150,16 +2145,9 @@ pub async fn execute_workspace_tool_controlled_with_options(
     internal_options: WorkspaceToolExecutionOptions,
 ) -> CommandResult<String> {
     let Some(timeout_duration) = tool_execution_timeout(tool_id.trim()) else {
-        let registration = if matches!(tool_id.trim(), "write" | "edit" | "apply_patch") {
-            register_tool_execution(execution_id.as_deref())
-        } else {
-            None
-        };
-        let cancellation = registration
-            .as_ref()
-            .map(|(token, _)| token.clone())
-            .unwrap_or_else(|| Arc::new(ToolCancellation::new()));
-        let _guard = registration.map(|(_, guard)| guard);
+        let _registration = matches!(tool_id.trim(), "write" | "edit" | "apply_patch")
+            .then(|| register_tool_execution(execution_id.as_deref()))
+            .flatten();
         let expected_workspace_roots = internal_options.expected_workspace_roots.clone();
         let execution = Box::pin(execute_workspace_tool_inner(
             default_workspace,
@@ -2176,13 +2164,10 @@ pub async fn execute_workspace_tool_controlled_with_options(
             None,
             internal_options,
         ));
-        return post_write_diagnostics::with_context(cancellation, async move {
-            match expected_workspace_roots {
-                Some(roots) => fs::with_expected_workspace_roots(roots, execution).await,
-                None => execution.await,
-            }
-        })
-        .await;
+        return match expected_workspace_roots {
+            Some(roots) => fs::with_expected_workspace_roots(roots, execution).await,
+            None => execution.await,
+        };
     };
     let registration = register_tool_execution(execution_id.as_deref());
     let cancellation = registration
@@ -2258,7 +2243,6 @@ pub async fn execute_workspace_tool_controlled_with_options(
 
 /// Resident native ownership: cancellation is cooperative, never a dropped
 /// executor future. All inner filesystem/git joins finish before this returns.
-/// Post-write language-server diagnostics are outside this qualified transport.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_workspace_tool_owned(
     root: PathBuf,

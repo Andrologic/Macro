@@ -16,11 +16,13 @@ import {
   getPlanJsonPath,
   getPlanManifestPath,
   getPlanMarkdownPath,
+  getPlanRoot,
   getPlanTasksRoot,
   getTaskPlannedPath,
   localIndexKey,
   localPlanChatKey,
   localPlanKey,
+  matchesStoredArchitectPlanBranch,
   normalizeBranchName,
   normalizeContextProjectIds,
   normalizePlanLabel,
@@ -35,6 +37,7 @@ import {
   stripPlanReplicaMetadata,
   throwPlanMetadataMissing,
   toJsonLines,
+  toSummary,
   type ArchitectMetadataScope,
   type ArchitectPlanArtifactManifestSummary,
   type ArchitectPlanChatMessage,
@@ -285,33 +288,43 @@ export const deleteLocalPlanChat = (branchName: string, planId: string): void =>
   storage.removeItem(localPlanChatKey(branchName, planId));
 };
 
-export const normalizeSummariesForBranch = (
+const readIndexSummariesForBranch = (
+  scope: ArchitectMetadataScope,
   branchName: string,
   summaries: ArchitectPlanSummary[],
+  isLocal: boolean,
   registrySnapshot?: ValidProjectRegistrySnapshot | null,
-  options?: {
-    logContext?: string;
-    scopeKey?: string | null;
-  }
-): ArchitectPlanSummary[] =>
-  summaries.map((summary) =>
-    sanitizeArchitectPlanSummary(branchName, summary, registrySnapshot, options).summary
-  );
+): Promise<ArchitectPlanSummary[]> =>
+  Promise.all(summaries.map(async (summary) => {
+    if (typeof summary.hasAgsdl !== 'boolean' && typeof summary.id === 'string') {
+      const planId = sanitizeId(summary.id);
+      if (planId && planId !== '.' && planId !== '..') {
+        const plan = isLocal
+          ? readLocalPlan(branchName, planId)
+          : await readJsonFileAtScope<ArchitectPlanRecord>(scope, getPlanJsonPath(branchName, planId));
+        if (plan?.id === summary.id && typeof plan.agsdl?.source === 'string') {
+          summary = { ...summary, hasAgsdl: true };
+        }
+      }
+    }
+    return sanitizeArchitectPlanSummary(branchName, summary, registrySnapshot, {
+      logContext: 'index_read',
+      scopeKey: scope.scopeKey,
+    }).summary;
+  }));
 
 export const readIndexAtScope = async (
   scope: ArchitectMetadataScope,
   branchName: string,
-  registrySnapshot?: ValidProjectRegistrySnapshot | null
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+  observeOnly = false,
 ): Promise<ArchitectPlanIndex> => {
   const normalized = normalizeBranchName(branchName);
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
     const local = readLocalIndex(normalized);
     return {
       ...local,
-      plans: normalizeSummariesForBranch(normalized, local.plans, registrySnapshot, {
-        logContext: 'index_read',
-        scopeKey: scope.scopeKey,
-      }),
+      plans: await readIndexSummariesForBranch(scope, normalized, local.plans, true, registrySnapshot),
       reservedPlanSlugs: Array.from(new Set(local.reservedPlanSlugs.map((slug) => slugifyPlanTitle(slug)))),
     };
   }
@@ -329,15 +342,33 @@ export const readIndexAtScope = async (
     return {
       version: parsed.version === 2 ? 2 : 3,
       activePlanId: parsed.activePlanId || null,
-      plans: normalizeSummariesForBranch(normalized, parsed.plans, registrySnapshot, {
-        logContext: 'index_read',
-        scopeKey: scope.scopeKey,
-      }),
+      plans: await readIndexSummariesForBranch(scope, normalized, parsed.plans, false, registrySnapshot),
       reservedPlanSlugs: Array.from(new Set([...reservedPlanSlugs, ...planSlugsFromIndex])),
     };
   }
 
-  return emptyIndex();
+  if (!observeOnly) return emptyIndex();
+
+  // The legacy native catalog can recover an index from its plan files. Keep
+  // that discovery available to observers without replacing the on-disk index.
+  let entries;
+  try {
+    entries = await tauriIpc.fsListDir({
+      path: getPlanRoot(normalized),
+      recursive: false,
+      includeHidden: true,
+      allowOutsideWorkspace: false,
+      workspaceScope: getScopeWorkspaceScope(scope),
+      workspacePath: scope.workspacePath,
+    });
+  } catch {
+    return emptyIndex();
+  }
+  const records = await Promise.all(entries.filter(entry => entry.kind === 'directory').map(async entry => {
+    const { plan } = await readPlanAtScopeWithDiagnostics(scope, normalized, entry.name, registrySnapshot);
+    return plan ? toSummary(plan) : null;
+  }));
+  return { ...emptyIndex(), plans: records.filter((plan): plan is ArchitectPlanSummary => plan !== null) };
 };
 
 export const writeIndexAtScope = async (
@@ -390,27 +421,22 @@ export const readPlanAtScopeWithDiagnostics = async (
   scope: ArchitectMetadataScope,
   branchName: string,
   planId: string,
-  registrySnapshot?: ValidProjectRegistrySnapshot | null
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+  requireStoredBranch = false,
 ): Promise<SanitizedArchitectPlanResult> => {
   const normalized = normalizeBranchName(branchName);
   const safeId = sanitizeId(planId);
-  if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
-    return sanitizeArchitectPlanRecord(
-      normalized,
-      safeId,
-      readLocalPlan(normalized, safeId),
-      registrySnapshot,
-      {
-        logContext: 'plan_read',
-        scopeKey: scope.scopeKey,
-      }
-    );
-  }
+  const storedPlan = !tauriIpc.isTauriAvailable() || scope.source === 'local'
+    ? readLocalPlan(normalized, safeId)
+    : await readJsonFileAtScope<ArchitectPlanRecord>(scope, getPlanJsonPath(normalized, safeId));
+  const plan = requireStoredBranch && !matchesStoredArchitectPlanBranch(storedPlan?.targetBranch, normalized)
+    ? null
+    : storedPlan;
 
   return sanitizeArchitectPlanRecord(
     normalized,
     safeId,
-    await readJsonFileAtScope<ArchitectPlanRecord>(scope, getPlanJsonPath(normalized, safeId)),
+    plan,
     registrySnapshot,
     {
       logContext: 'plan_read',

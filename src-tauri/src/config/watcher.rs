@@ -73,10 +73,10 @@ impl ConfigWatcher {
         }
     }
 
-    pub fn start(
+    pub fn start<R: tauri::Runtime>(
         root: PathBuf,
         manager: ConfigManager,
-        app: AppHandle,
+        app: AppHandle<R>,
     ) -> Result<ConfigWatcherState, String> {
         let (signal_tx, signal_rx) = watch::channel(0_u64);
         let watcher_state = Arc::new(Self {

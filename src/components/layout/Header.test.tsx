@@ -183,6 +183,8 @@ describe('Header', () => {
     expect(render()).toContain('data-tour-id="toggle-left-panel"');
     appState.mode = 'Implement';
     expect(render()).toContain('data-tour-id="toggle-left-panel"');
+    expect(render()).toContain('Operate');
+    expect(render()).not.toContain('data-tour-id="toggle-right-panel"');
   });
 
   it('adds and withdraws an internal view through the live registry', async () => {

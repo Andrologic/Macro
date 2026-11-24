@@ -1,7 +1,7 @@
 /** An AgSDL failure the user can act on. The message stays the text agents read;
  * the key is what the interface shows. */
 export class AgsdlUserError extends Error {
-  constructor(readonly messageKey: string, message: string) {
+  constructor(readonly messageKey: string, message: string, readonly details?: string) {
     super(message);
     this.name = "AgsdlUserError";
   }

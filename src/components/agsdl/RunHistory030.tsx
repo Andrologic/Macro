@@ -38,7 +38,7 @@ export function RunHistory030({ history, historyOrder, runFailures, selected, co
       return <li key={id} data-run-id={id}>
       <button type="button" aria-pressed={selected === run.scope.systemStartId} onClick={() => select(run.scope.systemStartId)}
         className="w-full rounded border border-border px-2 py-1 text-left hover:bg-accent aria-pressed:bg-accent">
-        <span className="block break-words">{label(id)} · {run.interruptedAt ? t('agsdl.execution.interrupted030') : tr(`verdict.${run.verdict ?? 'pending'}`)}</span>
+        <span className="block break-words">{label(id)} · {run.interruptedAt || run.verdict === 'interrupted' ? t('agsdl.execution.interrupted030') : tr(`verdict.${run.verdict ?? 'pending'}`)}</span>
         <span className="block text-muted-foreground">{date(run.chronology)}</span>
         {run.humans.kind === 'ready' ? run.humans.value.some(request => request.state.kind === 'open') && <span className="block">{tr('waitingHuman')}</span> : <span className="block">{tr('humanUnknown')}</span>}
       </button>

@@ -470,9 +470,9 @@ fn repository(c: &mut Corpus) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut files = Vec::new();
     for directory in [
-        "dev/agsdl/fixtures/v0.3",
-        "src/vendor/agsdl/v0.3/schema",
-        "src/vendor/agsdl/v0.3/harnesses",
+        "dev/agsdl/fixtures/v0.4",
+        "src/vendor/agsdl/v0.4/schema",
+        "src/vendor/agsdl/v0.4/harnesses",
         "src/demo/agsdl",
     ] {
         json_files(&root.join(directory), &mut files);
@@ -540,11 +540,11 @@ fn repository(c: &mut Corpus) {
         }
     }
     assert_eq!(
-        source_counts["scenarios"], 37,
+        source_counts["scenarios"], 50,
         "official run corpus changed"
     );
     assert_eq!(
-        source_counts["staticCases"], 144,
+        source_counts["staticCases"], 147,
         "official static corpus changed"
     );
     assert_eq!(source_counts["examples"], 10, "official examples changed");

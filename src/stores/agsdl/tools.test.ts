@@ -204,8 +204,18 @@ describe("shared AgSDL authoring session", () => {
     ).rejects.toThrow("draft");
   });
 
-  it("initializes an empty document through an example and reads exact pointer values", async () => {
+  it("refuses to load or edit a software plan without an AgSDL document", async () => {
     delete plan.agsdl;
+    const original = structuredClone(plan);
+    await expect(call("agsdl_get")).rejects.toBeInstanceOf(AgsdlAuthoringRefusal);
+    await expect(call("agsdl_update", { example: "release", expected_revision: "old" })).rejects.toBeInstanceOf(AgsdlAuthoringRefusal);
+    await expect(useAgsdlStore.getState().load(target)).rejects.toThrow("unavailable");
+    expect(plan).toEqual(original);
+    expect(current()).toBeUndefined();
+  });
+
+  it("initializes an empty document through an example and reads exact pointer values", async () => {
+    plan.agsdl = { source: '', annexes: {}, revision: 1 };
     const read = JSON.parse(await call("agsdl_get"));
     expect(read.error).toBeNull();
     expect(read.examples).toContain("release");
@@ -215,17 +225,21 @@ describe("shared AgSDL authoring session", () => {
         example: "release",
       }),
     );
-    expect(result.persisted_revision).toBe(1);
+    expect(result.persisted_revision).toBe(2);
     expect(result.design_context).toMatchObject({ version: 1, kind: "system" });
-    expect(result.display_context).toMatchObject({ title: "Release", cards: { "/agents/implement": { title: "Release evidence" }, "/flow/steps/implement": { title: "Complete the mission" } } });
-    expect((plan as ArchitectPlanRecord).agsdl?.display).toEqual(result.display_context);
+    const display = JSON.parse(await call("agsdl_get", { section: "display", expected_revision: result.revision }));
+    expect(display.text_page.next_offset).toBeNull();
+    const displayContext = JSON.parse(display.text_page.content);
+    expect(displayContext).toMatchObject({ title: "Release", cards: { "/agents/implement": { title: "Release evidence" }, "/flow/steps/implement": { title: "Complete the mission" } } });
+    expect((plan as ArchitectPlanRecord).agsdl?.display).toEqual(displayContext);
+    useAgsdlStore.setState({ sessions: {} });
     const subtree = JSON.parse(
       await call("agsdl_get", { path: "/flow/entry" }),
     );
     expect(JSON.parse(subtree.source)).toBe("implement");
     await expect(
       call("agsdl_update", {
-        expected_revision: result.revision,
+        expected_revision: subtree.revision,
         example: "hotfix",
       }),
     ).rejects.toThrow("empty");
@@ -260,8 +274,8 @@ describe("shared AgSDL authoring session", () => {
 
 
 describe("edition-specific authoring", () => {
-  it("uses a 0.3 guide for empty documents, preserves 0.1 meaning and rejects candidate editions", () => {
-    expect(agsdlAuthoringGuide(undefined, true).contract).toBe("agsdl-0.3.0");
+  it("uses the 0.4 guide for empty documents, preserves 0.1 meaning and rejects candidate editions", () => {
+    expect(agsdlAuthoringGuide(undefined, true).contract).toBe("agsdl-0.4.0");
     expect(JSON.stringify(agsdlAuthoringGuide("agsdl-0.1.0"))).toContain("D declares root");
     expect(agsdlAuthoringGuide("agsdl-0.2.0")).toMatchObject({ supported: false });
     expect(agsdlAuthoringGuide("agsdl-exp-flow-0.2-c1")).toMatchObject({ supported: false });
@@ -578,11 +592,11 @@ it('discovers all 0.3 catalogues, composition parameters and steps across bounde
   expect(plan.agsdl.annexes).toEqual({ archive: 'unchanged' });
 });
 
-it('pages the complete 0.3 guide and keeps empty defaults independent of Chat providers', async () => {
-  delete plan.agsdl;
+it('pages the complete 0.4 guide and keeps empty defaults independent of Chat providers', async () => {
+  plan.agsdl = { source: '', annexes: {}, revision: 1 };
   const read = JSON.parse(await call('agsdl_get'));
   expect(read.macro_models).toBeUndefined();
-  expect(read.harness_catalogue).toMatchObject({ contract: 'agsdl-0.3.0', assessment: 'not-assessed', harnesses: [] });
+  expect(read.harness_catalogue).toMatchObject({ contract: 'agsdl-0.4.0', assessment: 'not-assessed', harnesses: [] });
   let recovered = '', offset = 0;
   do {
     const raw = await call('agsdl_get', { section: 'guide', limit: 1024, offset, expected_revision: read.revision });
@@ -590,14 +604,16 @@ it('pages the complete 0.3 guide and keeps empty defaults independent of Chat pr
     const page = JSON.parse(raw).text_page; recovered += page.content; offset = page.next_offset;
   } while (offset !== null);
   const guide = JSON.parse(recovered);
-  expect(guide.contract).toBe('agsdl-0.3.0');
-  expect(guide.minimal).toEqual({ contract: 'agsdl-0.3.0', id: 'new-system', agents: {} });
+  expect(guide.contract).toBe('agsdl-0.4.0');
+  expect(guide.minimal).toEqual({ contract: 'agsdl-0.4.0', id: 'new-system', agents: {} });
+  expect(guide.flow).toContain('only if the intended work became unavailable and delivery can be ruled out');
+  expect(guide.flow).toContain('Other refusals and uncertain receipt follow the normal failure routes');
   expect(guide.agent_shape.permissions).toBe('read-only');
   for (const field of ['instructs', 'permissions', 'results', 'conduct', 'models', 'equipment', 'messages', 'fanout', 'joins', 'compositions', 'calls', 'approvals', 'limits', 'validation', 'design', 'presentation']) expect(guide[field]).toBeString();
   expect(Object.keys(guide.examples)).toHaveLength(6);
 });
 
-it('keeps 0.3 design and display edits in the envelope, with one revision and exact source', async () => {
+it('keeps 0.4 design and display edits in the envelope, with one revision and exact source', async () => {
   const { createExampleDocument } = await import('../../services/agsdl/examples');
   plan.agsdl = { ...createExampleDocument('feature'), revision: 1 };
   const source = plan.agsdl.source;
@@ -613,7 +629,7 @@ it('keeps 0.3 design and display edits in the envelope, with one revision and ex
 });
 
 it('uses qualified harness model names and binds catalogue cursors to runtime observations', async () => {
-  delete plan.agsdl;
+  plan.agsdl = { source: '', annexes: {}, revision: 1 };
   const catalogue = { contract: 'agsdl-0.3.0' as const, assessment: 'runtime-catalogue' as const, harnesses: [{ name: 'codex', available: true, version: 'observed-version', models: Array.from({ length: 1000 }, (_, index) => ({ name: `local/open-model-${index}`, efforts: ['custom-effort'] })) }] };
   const nativeCall = (args: Record<string, unknown>) => handleAgsdlToolCall({ toolName: 'agsdl_get', args: { plan_id: target.planId, target_branch: target.branchName, ...args }, conversationId: 'conversation-test', isCurrent: () => true, readHarnessCatalogue: async () => catalogue });
   const first = JSON.parse(await nativeCall({ section: 'models' }));
@@ -627,7 +643,7 @@ it('uses qualified harness model names and binds catalogue cursors to runtime ob
 });
 
 it('revalidates source ownership after an asynchronous native catalogue read and reads source without it', async () => {
-  delete plan.agsdl;
+  plan.agsdl = { source: '', annexes: {}, revision: 1 };
   const read = JSON.parse(await call('agsdl_get'));
   const readHarnessCatalogue = mock(async () => {
     useAgsdlStore.getState().replace(target, '{}', undefined, current().version);

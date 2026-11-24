@@ -31,7 +31,7 @@ export function MacroAgentConfiguration({ configuration, providerId, modelId, di
   const models = qualified.filter(model => model.providerId === providerId);
   const nativeCode = catalogue?.unavailableProviders.find(provider => provider.providerId === "codex-native")?.code ?? nativeStatus?.code;
   const nativeMessage = nativeStatusError ? "diagnosticFailed" : !nativeCode ? "checking" : ({
-    CODEX_NOT_INSTALLED: "notInstalled", CODEX_VERSION_UNQUALIFIED: "versionUnqualified",
+    CODEX_NOT_INSTALLED: "notInstalled", CODEX_PACKAGE_INCOMPLETE: "packageIncomplete", CODEX_VERSION_UNQUALIFIED: "versionUnqualified",
     CODEX_PLATFORM_UNQUALIFIED: "platformUnqualified", CODEX_LOGIN_REQUIRED: "loginRequired",
     CODEX_SCOPE_CHECK_REQUIRED: "assessmentRequired", CODEX_PROFILE_UNQUALIFIED: "profileUnqualified", CODEX_SANDBOX_UNQUALIFIED: "sandboxUnqualified",
     CODEX_ACCOUNT_UNQUALIFIED: "accountUnqualified", CODEX_CONTEXT_UNQUALIFIED: "contextUnqualified", STOP_PENDING: "stopPending",

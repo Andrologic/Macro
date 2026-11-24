@@ -23,7 +23,7 @@ export const registerArchitectStrategyScenarios = (
   } = context;
 
   describe('useChatStore Architect AgSDL and policy', () => {
-    it.each(['agsdl-0.3.0'] as const)('routes revisioned AgSDL %s reads and updates to the calling draft without changing plan metadata', async (contract) => {
+    it.each(['agsdl-0.3.0', 'agsdl-0.4.0'] as const)('routes revisioned AgSDL %s reads and updates to the calling draft without changing plan metadata', async (contract) => {
       const originalSource = createExample('feature', contract);
       const nextSource = createExample('hotfix', contract);
       const plan = createPlan({
@@ -56,7 +56,8 @@ export const registerArchitectStrategyScenarios = (
       const target = { plan_id: plan.id, target_branch: 'develop' };
       const read = JSON.parse(String(await onToolCall('agsdl_get', target)));
       expect(read.source).toBe(originalSource);
-      expect(read.harness_catalogue).toMatchObject({ contract, assessment: 'not-assessed', harnesses: [] });
+      const models = JSON.parse(String(await onToolCall('agsdl_get', { ...target, section: 'models' })));
+      expect(JSON.parse(models.text_page.content)).toMatchObject({ contract, assessment: 'not-assessed', harnesses: [] });
       expect(read).not.toHaveProperty('macro_models');
       const result = JSON.parse(String(await onToolCall('agsdl_update', {
         ...target,
@@ -152,7 +153,7 @@ export const registerArchitectStrategyScenarios = (
       expect(streamOptions.allowedToolIds).not.toContain('mark_source_passage');
       expect(streamOptions.allowedToolIds).not.toContain('read_sources');
       expect(streamOptions.allowedToolIds).not.toContain('edit_source_passage');
-      expect(streamOptions.allowedToolIds).toContain('plan_get');
+      expect(streamOptions.allowedToolIds).not.toContain('plan_get');
       expect(streamOptions.allowedToolIds).toContain('agsdl_get');
       expect(streamOptions.allowedToolIds).toContain('agsdl_update');
       expect(streamOptions.allowedToolIds).not.toContain('strategy_update');
@@ -200,7 +201,7 @@ export const registerArchitectStrategyScenarios = (
         allowedToolIds: string[];
         messages: Array<{ content: string }>;
       }>();
-      expect(String(streamOptions.messages[0]?.content)).toContain('This is a direct-only plan.');
+      expect(String(streamOptions.messages[0]?.content)).toContain('agsdl_get');
       expect(String(streamOptions.messages[0]?.content)).not.toContain('Git workflow for plans is strict');
       expect(streamOptions.allowedToolIds).not.toContain('git_status');
       expect(streamOptions.allowedToolIds).not.toContain('git_diff');
@@ -233,7 +234,7 @@ export const registerArchitectStrategyScenarios = (
       });
 
       const streamOptions = getLatestStreamOptions<{ messages: Array<{ content: string }> }>();
-      expect(String(streamOptions.messages[0]?.content)).toContain('This is a direct-only plan.');
+      expect(String(streamOptions.messages[0]?.content)).toContain('agsdl_get');
       expect(String(streamOptions.messages[0]?.content)).not.toContain('Git workflow for plans is strict');
     });
 
@@ -454,7 +455,7 @@ export const registerArchitectStrategyScenarios = (
       };
       expect(streamOptions.allowedToolIds).toContain('agsdl_get');
       expect(streamOptions.allowedToolIds).toContain('agsdl_update');
-      expect(streamOptions.allowedToolIds).toContain('plan_update');
+      expect(streamOptions.allowedToolIds).not.toContain('plan_update');
       expect(streamOptions.allowedToolIds).not.toContain('strategy_delete');
     });
 

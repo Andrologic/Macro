@@ -1,3 +1,5 @@
+export type FlowDocumentContract = 'agsdl-0.3.0' | 'agsdl-0.4.0';
+
 export interface DesignMetadata {
   version: 1;
   kind: 'system' | 'blueprint';

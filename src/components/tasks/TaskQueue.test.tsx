@@ -2,13 +2,11 @@ import { afterEach,beforeEach,describe,expect,it,mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot,type Root } from 'react-dom/client';
 import { services } from '../../services';
-import { buildReviewTaskSummary } from '../../services/implementMultiRepoSummary';
 import {
 DEFAULT_IMPLEMENT_VIEW_FILTERS,
 } from '../../services/viewFilterPreferences';
 import type { useAppStore as UseAppStoreHook } from '../../stores/useAppStore';
 import type { useChatStore as UseChatStoreHook } from '../../stores/useChatStore';
-import type { useFileChangesStore as UseFileChangesStoreHook } from '../../stores/useFileChangesStore';
 import type { useTaskStore as UseTaskStoreHook } from '../../stores/useTaskStore';
 import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import {
@@ -20,7 +18,6 @@ import type { ProjectGitFlowSettings,TaskStatus } from '../../types';
 
 let useAppStore!: typeof UseAppStoreHook;
 let useChatStore!: typeof UseChatStoreHook;
-let useFileChangesStore!: typeof UseFileChangesStoreHook;
 let useTaskStore!: typeof UseTaskStoreHook;
 let TaskQueueComponent!: typeof import('./TaskQueue').TaskQueue;
 let importCounter = 0;
@@ -159,13 +156,6 @@ const loadTaskQueueModules = async () => {
     ...chatStoreModule,
   }));
 
-  const fileChangesStoreModule = await import(
-    `../../stores/useFileChangesStore.ts?task-queue-file-changes-store-test=${importCounter}`
-  );
-  mock.module('../../stores/useFileChangesStore', () => ({
-    ...fileChangesStoreModule,
-  }));
-
   const architectGitFlowServiceModule = await import(
     `../../services/architectGitFlowService.ts?task-queue-git-flow-service-test=${importCounter}`
   );
@@ -186,7 +176,6 @@ const loadTaskQueueModules = async () => {
   ({ TaskQueue: TaskQueueComponent } = await import(`./TaskQueue.tsx?task-queue-test=${importCounter}`));
   ({ useAppStore } = appStoreModule);
   ({ useChatStore } = chatStoreModule);
-  ({ useFileChangesStore } = fileChangesStoreModule);
   ({ useTaskStore } = taskStoreModule);
 };
 
@@ -301,7 +290,6 @@ describe('TaskQueue', () => {
   let initialAppState: ReturnType<typeof useAppStore.getState> | null = null;
   let initialChatState: ReturnType<typeof useChatStore.getState> | null = null;
   let initialTaskState: ReturnType<typeof useTaskStore.getState> | null = null;
-  let initialFileChangesState: ReturnType<typeof useFileChangesStore.getState> | null = null;
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
 
@@ -406,10 +394,6 @@ describe('TaskQueue', () => {
       selectedConversationId: 'conversation-1',
     });
 
-    useFileChangesStore.setState({
-      ...useFileChangesStore.getState(),
-      currentTaskId: null,
-    });
   };
 
   const getLastVirtualListKeys = () =>
@@ -484,7 +468,6 @@ describe('TaskQueue', () => {
     initialAppState = useAppStore.getState();
     initialChatState = useChatStore.getState();
     initialTaskState = useTaskStore.getState();
-    initialFileChangesState = useFileChangesStore.getState();
     container = document.createElement('div');
     container.style.height = '900px';
     container.style.width = '480px';
@@ -508,9 +491,6 @@ describe('TaskQueue', () => {
     }
     if (initialTaskState) {
       useTaskStore.setState(initialTaskState, true);
-    }
-    if (initialFileChangesState) {
-      useFileChangesStore.setState(initialFileChangesState, true);
     }
     removeTauriRuntimeMock();
     mock.restore();
@@ -654,6 +634,7 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
     ).not.toBeNull();
+    expect(document.body.querySelector('aside[data-tour-id="operate-executions"]')).not.toBeNull();
     expect(document.body.querySelector('h2')).toBeNull();
   });
 
@@ -1057,7 +1038,7 @@ describe('TaskQueue', () => {
     expect(useViewFilterStore.getState().implement.status).toBe('waiting');
   });
 
-  it('shows review next actions for one and multiple repositories without reusing another task summary', async () => {
+  it('shows the review action for one and multiple repositories', async () => {
     for (const projectIds of [['project-1'], ['project-1', 'project-2']]) {
       await act(async () => {
         seedTasks([makeTask('review', 'InReview', {
@@ -1069,65 +1050,12 @@ describe('TaskQueue', () => {
         await flushRender();
       });
       expect(getTaskCardNextAction()?.textContent).toBe('Next: open the review');
-      const repositories = projectIds.map((projectId) => ({
-        id: `${projectId}::${projectId}`, projectId, branchName: 'feature/review', repoPath: `/tmp/${projectId}`,
-        stats: { pendingVisibleFileCount: 1, validatedStagedFileCount: 0 }, commitState: 'idle' as const,
-      }));
-      const publishSummary = async (reviewRepositories: Parameters<typeof buildReviewTaskSummary>[0]) => {
-        await act(async () => {
-          useFileChangesStore.setState({ currentTaskId: 'review', currentTaskLoadState: 'ready', isLoading: false,
-            reviewSummary: buildReviewTaskSummary(reviewRepositories) });
-          await flushRender();
-        });
-      };
-      await publishSummary(repositories);
-      expect(getTaskCardNextAction()?.textContent).toBe('Next: validate Project One');
-      await publishSummary(repositories.map((repository) => ({ ...repository,
-        stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 1 } })));
-      expect(getTaskCardNextAction()?.textContent).toBe('Next: commit Project One');
-      await publishSummary(repositories.map((repository, index) => ({ ...repository,
-        commitState: index === 0 ? 'committing' : 'idle',
-        stats: { pendingVisibleFileCount: index === 0 ? 0 : 1, validatedStagedFileCount: index === 0 ? 1 : 0 },
-      })));
-      expect(getTaskCardNextAction()?.textContent).toBe('Next: open the review');
-      if (projectIds.length > 1) {
-        await publishSummary(repositories.map((repository, index) => ({ ...repository,
-          commitState: index === 0 ? 'committed' : 'idle' })));
-        expect(getTaskCardNextAction()?.textContent).toBe('Next: validate Project Two');
-      }
-      await publishSummary(repositories.map((repository) => ({ ...repository, commitState: 'committed' })));
-      expect(getTaskCardNextAction()?.textContent).toBe('Next: open the review');
-      await publishSummary(repositories.map((repository) => ({ ...repository, commitState: 'no_changes' })));
-      expect(getTaskCardNextAction()?.textContent).toBe('Next: open the review');
-      await act(async () => { useFileChangesStore.setState({ currentTaskId: 'another-task' }); await flushRender(); });
-      expect(getTaskCardNextAction()?.textContent).toBe('Next: open the review');
-      await act(async () => { useFileChangesStore.setState({ currentTaskId: 'review', isLoading: true }); await flushRender(); });
-      expect(getTaskCardNextAction()?.textContent).toBe('Next: open the review');
     }
   });
 
-  it('uses Git commit for a direct task whose execution mode is Git', async () => {
-    seedTasks([makeTask('direct', 'InReview', { task_kind: 'direct', execution_targets: [{
-      projectId: 'project-1', branchName: 'main', worktreeKey: 'root', executionMode: 'git', executionKind: 'repository_root',
-    }] })]);
-    useFileChangesStore.setState({ currentTaskId: 'direct', currentTaskLoadState: 'ready', isLoading: false,
-      reviewSummary: buildReviewTaskSummary([{ id: 'project-1::root', projectId: 'project-1', branchName: 'main',
-        repoPath: '/tmp/project-1', stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 1 }, commitState: 'idle' }]) });
+  it('describes finalization for plans', async () => {
+    seedTasks([makeTask('finalize', 'InReview', { task_source: 'plan_finalization' })]);
     await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
-    expect(getTaskCardNextAction()?.textContent).toBe('Next: commit Project One');
-  });
-
-  it('describes acceptance for direct reviews and finalization for plans', async () => {
-    seedTasks([makeTask('direct', 'InReview', { execution_targets: [{ projectId: 'project-1', branchName: '', worktreeKey: 'direct-key', executionMode: 'direct' }] })]);
-    useFileChangesStore.setState({ currentTaskId: 'direct', currentTaskLoadState: 'ready', isLoading: false,
-      reviewSummary: buildReviewTaskSummary([{ id: 'project-1::direct-key', projectId: 'project-1', branchName: 'direct',
-        repoPath: '/tmp/project-1', stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 1 }, commitState: 'idle' }]) });
-    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
-    expect(getTaskCardNextAction()?.textContent).toBe('Next: accept changes in Project One');
-    await act(async () => {
-      useTaskStore.setState({ tasks: [makeTask('finalize', 'InReview', { task_source: 'plan_finalization' })] as never });
-      await flushRender();
-    });
     expect(getTaskCardNextAction()?.textContent).toBe('Next: finalize the plan');
   });
 
@@ -1364,6 +1292,24 @@ describe('TaskQueue', () => {
     });
 
     expect(notifyMock.actionRequired).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers no branch remediation actions in the demo queue', async () => {
+    seedStores('Pending');
+    const message = 'Base branch develop is missing';
+    useTaskStore.setState({
+      lastError: message,
+      missingBaseBranchIssue: {
+        kind: 'missing_base_branch', taskId: 'task-1', projectId: 'project-1',
+        repoPath: '/tmp/project-1', targetBranchName: 'develop', missingRef: 'develop', message,
+      },
+    });
+    const { default: DemoTaskQueue } = await import('../../demo/DemoTaskQueue');
+    await act(async () => {
+      root?.render(<DemoTaskQueue />);
+      await flushRender();
+    });
+    expect(notifyMock.actionRequired).not.toHaveBeenCalled();
   });
 
   it('scopes the toast notification key to the selected task id', async () => {

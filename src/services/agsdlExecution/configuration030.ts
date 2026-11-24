@@ -1,6 +1,6 @@
-import { Graph, analyse_joins } from '../../vendor/agsdl/v0.3/graph.mjs';
-import { equal, loadHarnessModule, validateExact, type HarnessModule030 } from '../../vendor/agsdl/v0.3/reader.mjs';
-import { validate as validateValue } from '../../vendor/agsdl/v0.3/valueschema.mjs';
+import { Graph, analyse_joins } from '../../vendor/agsdl/v0.4/graph.mjs';
+import { equal, loadHarnessModule, validateExact, type HarnessModule030 } from '../../vendor/agsdl/v0.4/reader.mjs';
+import { validate as validateValue } from '../../vendor/agsdl/v0.4/valueschema.mjs';
 import type { ExactJsonText, StepAddress } from './contracts';
 import type { AgentObservation030, CapabilityObservation030, CapturedRegistry030, FrozenAgentConfiguration030, HarnessObservation030 } from './contracts030';
 import { at, decode, fail, has, NumberToken, record, text, type ExactObject, type ExactValue } from './exact';
@@ -94,7 +94,7 @@ function settings(value: unknown, pointer: string): ExactJsonText {
 
 function moduleFromJson(moduleJson: ExactJsonText, pointer: string): HarnessModule030 {
   try { return loadHarnessModule(new TextEncoder().encode(moduleJson)); }
-  catch { return fail('HARNESS_MODULE', pointer, 'Invalid AgSDL 0.3 harness module.'); }
+  catch { return fail('HARNESS_MODULE', pointer, 'Invalid AgSDL harness module.'); }
 }
 
 /** Pure transport capture. Only the authenticated native host may supply input.

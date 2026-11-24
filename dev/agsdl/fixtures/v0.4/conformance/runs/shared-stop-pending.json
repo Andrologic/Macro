@@ -1,0 +1,123 @@
+{
+  "description": "A stop join withdraws the shared pending fan-out before either element can start.",
+  "document": {
+    "contract": "agsdl-0.4.0",
+    "id": "shared-stop-pending-diagnostic",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "read-only",
+        "results": {
+          "items": {
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "worker": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "o",
+      "steps": {
+        "o": {
+          "type": "agent",
+          "agent": "lead",
+          "next": {
+            "approve": [
+              {
+                "step": "a",
+                "each": [
+                  "results",
+                  "items"
+                ],
+                "concurrency": 1,
+                "max": 3
+              },
+              "j1"
+            ]
+          }
+        },
+        "a": {
+          "type": "agent",
+          "agent": "worker",
+          "instance": "new",
+          "next": {
+            "one": "j1",
+            "two": "j2"
+          }
+        },
+        "j1": {
+          "type": "join",
+          "remaining": "stop",
+          "quorum": {
+            "count": 1,
+            "accept": [
+              "approve"
+            ]
+          },
+          "next": {
+            "reached": [],
+            "missed": []
+          }
+        },
+        "j2": {
+          "type": "join",
+          "remaining": "finish",
+          "quorum": {
+            "count": 2,
+            "accept": [
+              "two"
+            ]
+          },
+          "next": {
+            "reached": [],
+            "missed": []
+          }
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Choose how to run the shared fan-out."
+  },
+  "timeline": [
+    {
+      "work": "o",
+      "returns": {
+        "text": "",
+        "choice": "approve",
+        "results": {
+          "items": [
+            "first",
+            "second"
+          ]
+        }
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "o": 1
+    },
+    "joins": [
+      {
+        "join": "j1",
+        "outcome": "reached"
+      },
+      {
+        "join": "j2",
+        "outcome": "missed"
+      }
+    ],
+    "failures": [],
+    "cancelled": []
+  }
+}

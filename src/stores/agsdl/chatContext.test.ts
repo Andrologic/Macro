@@ -154,3 +154,25 @@ it('captures historical runtime data only while the destination and draft remain
   selected = 'other';
   await expect(captureAgsdlChatContext(context, 'conversation-a', () => true, hidden)).rejects.toThrow('owner or draft');
 });
+
+it("attaches a blueprint pointer only to its editable conversation", async () => {
+  const { useArchitectLibraryStore } = await import("../useArchitectLibraryStore");
+  const draft = { id: "blueprint-a", projectId: "library", name: "Review", archived: false, revision: 4,
+    conversationId: selected, history: null, origin: null, document: { source: '{"agents":{"reviewer":{}}}', annexes: {} } };
+  useArchitectLibraryStore.setState({ draft, versionNumber: null });
+  useAgsdlStore.getState().openBlueprintDocument(draft);
+  const attach = () => prepareAgsdlChatContext({ blueprintId: draft.id }, { path: "/agents/reviewer", title: "Reviewer" });
+  await attach();
+  const context = getAgsdlContext(refs)!;
+  const hidden = serializeAgsdlChatContext(context)!;
+  expect(context).toMatchObject({ blueprintId: draft.id, conversationId: selected, persistedRevision: 4 });
+  expect(hidden).toContain('"blueprint_id":"blueprint-a"');
+  expect(hidden).not.toContain("target_branch");
+  expect(isAgsdlChatContextCurrent(context)).toBe(true);
+  selected = "conversation-b";
+  await expect(attach()).rejects.toThrow("conversation");
+  selected = draft.conversationId;
+  useArchitectLibraryStore.setState({ versionNumber: 1 });
+  await expect(attach()).rejects.toThrow("conversation");
+  expect(refs).toHaveLength(1);
+});

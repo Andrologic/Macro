@@ -33,3 +33,33 @@ it('preserves native consumption and fallback facts in the monitor', () => {
   expect(runMessages030(updated)[0].message).toEqual(message);
   expect(runMessages030(updated)[0].workText).toBe('Pris en compte');
 });
+
+it('sends a named instance reply only to its retained selector', async () => {
+  const run = graphless();
+  const instance = { ...run.state.instances[0], selectorKind: 'named', selectorName: 'review', discarded: false };
+  const named = { ...run, state: { ...run.state, instances: [instance] } };
+  await sendRunMessage030(named, 'worker', 'queue', 'Reply', instance.id);
+  expect(requests.at(-1)).toMatchObject({ scope: run.state.scope, instance: 'review', agentName: 'worker' });
+  const count = requests.length;
+  await expect(sendRunMessage030(named, 'worker', 'queue', 'Reply', 'absent')).rejects.toThrow();
+  await expect(sendRunMessage030(run, 'worker', 'queue', 'Reply', instance.id)).rejects.toThrow();
+  const flow = inspectionFixture030();
+  await expect(sendRunMessage030({ ...named, capture: flow.capture }, 'worker', 'queue', 'Reply', instance.id)).rejects.toThrow();
+  expect(requests).toHaveLength(count);
+});
+
+it('lets a held flow thread resume through steer or queue on its exact selector', async () => {
+  const base = inspectionFixture030();
+  const currentActivationId = 'active-hold';
+  const instance = { ...base.state.instances[0], selectorKind: 'named', selectorName: 'review', currentActivationId, discarded: false };
+  const run = { ...base, state: { ...base.state, stopping: false, instances: [instance],
+    operatorWorks: { [currentActivationId]: { kind: 'held' as const } } } };
+  expect(messageTargets030(run)).toEqual([]);
+  expect(messageTargets030(run, 'another-instance')).toEqual([]);
+  expect(messageTargets030({ ...run, state: { ...run.state,
+    instances: [{ ...instance, selectorKind: 'new' }] } }, instance.id)).toEqual([]);
+  for (const delivery of ['steer', 'queue'] as const) {
+    await sendRunMessage030(run, 'worker', delivery, 'Continue', instance.id, `retry-${delivery}`);
+    expect(requests.at(-1)).toMatchObject({ delivery, instance: 'review', deliveryId: `retry-${delivery}` });
+  }
+});

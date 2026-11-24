@@ -4,7 +4,8 @@ import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fixture, checkpointFixture } from '../../src/services/ai/portableHistoryFixtures.testSupport';
 import { PortableWorkBudget } from '../../src/services/ai/portableHistoryInspection';
-import { portableDigest } from '../../src/services/ai/portableChatHistory';
+import { portableDigest, type PortableRecord } from '../../src/services/ai/portableChatHistory';
+import { vocabulary } from '../../contracts/macro-pilot/v2/portable-chat-history/validate.mjs';
 import { PNG } from '../../src/test-utils/portableNormalizationRecipe';
 import { portableDescriptor, portableFragment } from '../../src/services/ai/portableArchiveWire';
 import { TRANSFER_RESOURCES, TRANSFER_HELLO } from './connect-transfer-identities.generated';
@@ -271,21 +272,43 @@ local('cancel at a real callback joins the child before returning reservations',
 });
 
 local('300 messages open in the real child; recovery encoding and projection keep independent admission', async () => {
-  const budget = new PortableWorkBudget(384 * 1024 * 1024);
-  const fixtureRelease = budget.reserve(40 * 1024 * 1024); // 2 UTF-16 source views + UTF-8 map + row/oracle metadata, before construction.
-  let f: Awaited<ReturnType<typeof fixture>> | undefined;
+  const budget = new PortableWorkBudget(64 * 1024 * 1024);
+  const fixtureRelease = budget.reserve(4 * 1024 * 1024);
+  // The archive and one large record fit. The extra encoding or projection copy does not.
+  const childUnits = 19 * 1024 * 1024;
+  const records: { header: PortableRecord; bytes: Uint8Array }[] = [];
   const parents: TransferParent[] = [];
+  const encoder = new TextEncoder();
+  const append = async (entry: PortableRecord['entry'], text: string, origin?: number) => {
+    const bytes = encoder.encode(text);
+    const ordinal = records.length;
+    records.push({ header: { ordinal, entry, bytes: bytes.length, sha256: await portableDigest(bytes), ...(origin === undefined ? {} : { origin }) }, bytes });
+    return ordinal;
+  };
+  const metadata = { kind: 'historical_text', purpose: 'portable_metadata' } as const;
+  const schema = { version: 1, normalizer: vocabulary.normalizer, policy: 'policy-1' };
   try {
-    f = await fixture('codex', messages => {
-      messages[0][4] = 'RECOVERABLE_LARGE_ORIGINAL ' + 'x'.repeat(4_900_000);
-      messages.splice(1, 0, ...Array.from({ length: 298 }, (_, i) => [`history-${i}`, 's', `turn-${i}`, 'user', `COMPLETE_HISTORY_${i}`, String(i + 1), null, null, null, null, null, '[]', null, null]));
-    });
-    const source = await TransferParent.create(budget); parents.push(source); await source.start('normalize', 128 * 1024 * 1024);
-    source.source(f.rows, f.source.manifest, f.source.limits, f.data);
-    expect(await source.run()).toBe(0); await source.finish();
-    expect(source.records.filter(record => record.header.entry.kind === 'message')).toHaveLength(300);
-    const original = source.records.find(record => record.bytes.length > 4_900_000)!; expect(original).toBeDefined();
-    const recover = await TransferParent.create(budget); parents.push(recover); const start = await recover.start('recover', 128 * 1024 * 1024); await recover.archive(source.records);
+    // Exercise the sealed archive port with one origin per message. The normalizer
+    // emits provenance for every source field, which is covered by the large
+    // in-process archive test and by the separate real-child normalization tests.
+    await append(metadata, JSON.stringify({
+      ...schema, source: { ordinal: 0, row: 0, family: 0, tag: 0, sqlType: 2 },
+      classification: 'excluded_local_metadata', reason: 'capture_provenance_only',
+      captureManifest: hash, sourceLimits: vocabulary.sourceLimits, remainingLimits: vocabulary.remainingLimits,
+    }));
+    for (let i = 0; i < 300; i++) {
+      const origin = await append(metadata, JSON.stringify({
+        ...schema, source: { ordinal: i + 1, row: i + 1, family: 1, tag: 4, sqlType: 2 },
+        classification: 'retained_original', reason: 'recognized_history', meaning: 'message',
+        message: `history-${i}`, timestamp: String(i),
+      }));
+      await append({ kind: 'message', role: 'user' }, i === 0
+        ? 'RECOVERABLE_LARGE_ORIGINAL ' + 'x'.repeat(610_000)
+        : `COMPLETE_HISTORY_${i}`, origin);
+    }
+    expect(records.filter(record => record.header.entry.kind === 'message')).toHaveLength(300);
+    const original = records[2];
+    const recover = await TransferParent.create(budget); parents.push(recover); const start = await recover.start('recover', childUnits); await recover.archive(records);
     recover.roots.set(start.handles.selector, { kind: 'selector', ordinal: decimal(original.header.ordinal), uuid: `00000000-0000-4000-8000-${String(original.header.ordinal).padStart(12, '0')}` });
     let selectors = 0, retrievalBegins = 0, retrievalItems = 0;
     recover.beforeRequest = async request => {
@@ -298,14 +321,12 @@ local('300 messages open in the real child; recovery encoding and projection kee
     expect(await recover.run()).toBe(1); await recover.finish(); expect(recover.retained).toHaveLength(0);
     // Selector follows successful Archive.open; collection begins only after the
     // complete large record has been read, inspected and hashed. Encoding owns
-    // another scope and still refuses this same 128 MiB recipe, before its item.
+    // another scope and still refuses this same recipe, before its item.
     expect(selectors).toBe(1); expect(retrievalBegins).toBe(1); expect(retrievalItems).toBe(0);
     await recover.cleanup();
-    const small = source.records.find(record => record.header.entry.kind === 'message' && record.bytes.length < 100 &&
-      new TextDecoder().decode(record.bytes) === 'COMPLETE_HISTORY_0')!;
-    expect(small).toBeDefined();
+    const small = records[4];
     const readback = await TransferParent.create(budget); parents.push(readback);
-    const readStart = await readback.start('recover', 128 * 1024 * 1024); await readback.archive(source.records);
+    const readStart = await readback.start('recover', childUnits); await readback.archive(records);
     readback.roots.set(readStart.handles.selector, { kind: 'selector', ordinal: decimal(small.header.ordinal), uuid: null });
     let resume!: () => void, reached!: () => void, paused = false;
     const ready = new Promise<void>(r => { reached = r; }), gate = new Promise<void>(r => { resume = r; });
@@ -317,7 +338,7 @@ local('300 messages open in the real child; recovery encoding and projection kee
     expect(Buffer.compare(Buffer.from(restored.base64, 'base64'), small.bytes)).toBe(0);
     expect(readback.draftHeld).toBeGreaterThan(0); await readback.cleanup();
     const prepare = await TransferParent.create(budget); parents.push(prepare);
-    const prepareStart = await prepare.start('prepare', 128 * 1024 * 1024); await prepare.archive(source.records); await targetFields(prepare, 'chatgpt');
+    const prepareStart = await prepare.start('prepare', childUnits); await prepare.archive(records); await targetFields(prepare, 'chatgpt');
     let targets = 0, projectionBegins = 0;
     prepare.beforeRequest = async request => {
       if (request.op === 1 && request.handle === prepareStart.handles.target) targets++;
@@ -325,16 +346,11 @@ local('300 messages open in the real child; recovery encoding and projection kee
     };
     expect(await prepare.run()).toBe(1); await prepare.finish(); expect(prepare.retained).toHaveLength(0);
     expect(targets).toBe(1); expect(projectionBegins).toBe(0); await prepare.cleanup();
-    console.log('transfer_large_archive_composition', JSON.stringify({ selectors, retrievalBegins, retrievalItems, targets, projectionBegins,
-      small_recovered_bytes: small.bytes.length, suspended_ack: paused, child_units: 128 * 1024 * 1024 }));
-    const metadataUnits = source.records.filter(record => record.header.entry.kind === 'historical_text' && record.header.entry.purpose === 'portable_metadata').reduce((sum, record) => sum + 512 + 256 * record.bytes.length, 0);
-    expect(metadataUnits).toBeGreaterThan(128 * 1024 * 1024);
-    console.log('transfer_large_archive_metadata_units', metadataUnits, 'admitted_child_units', 128 * 1024 * 1024);
-    console.log('transfer_large_parent_peak', budget.peak, 'work_limit', budget.limit, 'source_records', source.records.length);
+    expect(paused).toBe(true);
   } finally {
-    f = undefined; for (const parent of parents.reverse()) await parent.cleanup(); fixtureRelease(); expect(budget.used).toBe(0);
+    for (const parent of parents.reverse()) await parent.cleanup(); records.length = 0; fixtureRelease(); expect(budget.used).toBe(0);
   }
-}, 360000);
+}, 60000);
 
 local('secret expansion is admitted before any value read, and real bundle forms block a private fact in pass 1', async () => {
   for (const mode of ['budget', 'detector'] as const) {

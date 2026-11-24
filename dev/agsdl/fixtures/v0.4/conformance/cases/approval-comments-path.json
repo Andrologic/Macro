@@ -1,0 +1,38 @@
+{
+  "contract": "agsdl-0.4.0",
+  "id": "approval-comments-path",
+  "agents": {
+    "writer": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "approve",
+    "steps": {
+      "approve": {
+        "type": "approval",
+        "next": {
+          "revise": {
+            "step": "revise",
+            "message": {
+              "resources": {
+                "note": {
+                  "from": [
+                    "message",
+                    "comments",
+                    "comment"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "revise": {
+        "type": "agent",
+        "agent": "writer"
+      }
+    }
+  }
+}

@@ -130,6 +130,12 @@ pub enum BackendError {
 
     #[error("Validation error: {0}")]
     Validation(String),
+    #[error("{0}")]
+    AgsdlUpgrade(String),
+    #[error("{}", diagnostic.message)]
+    Architect {
+        diagnostic: Box<crate::architect_library::Diagnostic>,
+    },
 
     #[error("Revision conflict: {message}")]
     RevisionConflict { message: String },
@@ -180,6 +186,8 @@ impl BackendError {
             BackendError::NotFound(_) => "NotFound",
             BackendError::PermissionDenied(_) => "PermissionDenied",
             BackendError::Validation(_) => "Validation",
+            BackendError::Architect { .. } => "ARCHITECT_PROJECT_ERROR",
+            BackendError::AgsdlUpgrade(_) => "AGSDL_UPGRADE_INVALID",
             BackendError::RevisionConflict { .. } => "REVISION_CONFLICT",
             BackendError::ToolExecutionCancelled { .. } => "TOOL_EXECUTION_CANCELLED",
             BackendError::ToolExecutionTimeout { .. } => "TOOL_EXECUTION_TIMEOUT",
@@ -189,6 +197,7 @@ impl BackendError {
 
     pub fn message(&self) -> &str {
         match self {
+            BackendError::Architect { diagnostic } => &diagnostic.message,
             BackendError::Io { message, .. }
             | BackendError::Database { message }
             | BackendError::Git { message }
@@ -223,6 +232,7 @@ impl BackendError {
             | BackendError::Internal { message } => message,
             BackendError::NotFound(message)
             | BackendError::PermissionDenied(message)
+            | BackendError::AgsdlUpgrade(message)
             | BackendError::Validation(message) => message,
         }
     }
@@ -437,7 +447,9 @@ impl Serialize for BackendError {
         let mut state = serializer.serialize_struct("BackendError", 3)?;
         state.serialize_field("code", self.code())?;
         state.serialize_field("message", self.message())?;
-        if let BackendError::GitObjectMissing {
+        if let BackendError::Architect { diagnostic } = self {
+            state.serialize_field("details", diagnostic)?;
+        } else if let BackendError::GitObjectMissing {
             object_id,
             operation,
             repository_path: _,

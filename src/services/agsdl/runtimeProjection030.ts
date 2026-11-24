@@ -1,3 +1,4 @@
+import type { OperateRunFacts } from '../../types/generated/ipc/OperateRunFacts';
 import type { NativeFact030, RunCapture030, RunRead030, RunStateUi030 } from '../../types/agsdlRunUi030';
 import type { RuntimeProjectionScope030 } from '../../types/generated/ipc/RuntimeProjectionScope030';
 import type { RuntimeProjectionQuery030 } from '../../types/generated/ipc/RuntimeProjectionQuery030';
@@ -40,7 +41,9 @@ export async function loadRuntimeProjection030(scope: RuntimeProjectionQuery030,
         !equalScope(page.scope, { ...expected, snapshotId: page.scope.snapshotId }) ||
         (first && !equalScope(page.scope, first.scope)) || page.flowInvocationId !== flowInvocationId || !page.flowInvocationId ||
         !/^(0|[1-9][0-9]*)$/.test(page.total) || page.items.length > 100 ||
-        (first && (page.revision !== first.revision || page.total !== first.total || page.stopping !== first.stopping || page.verdict !== first.verdict)) ||
+        (first && (page.revision !== first.revision || page.total !== first.total || page.stopping !== first.stopping || page.verdict !== first.verdict ||
+          !!page.paused !== !!first.paused || !!page.interruptedWhilePaused !== !!first.interruptedWhilePaused ||
+          (page.terminationUncertain === true) !== (first.terminationUncertain === true))) ||
         (offset > 0 && page.items.length === 0)) throw new Error('Invalid runtime projection page');
     first ??= structuredClone(page);
     for (const item of page.items) {
@@ -81,16 +84,23 @@ export interface RunInspectionAccess030 {
   getSnapshot(): RunMonitorSnapshot030;
   subscribe(listener: () => void): () => void;
   refreshHistory(): Promise<void>;
+  refreshCatalog?(): Promise<void>;
   refreshRun(systemStartId: string): Promise<void>;
 }
 
 export interface RunInspection030 {
+  readonly inbox?: OperateRunFacts;
+  readonly observation?: { readonly order: number; readonly atMs: number };
   readonly capture: RunCapture030;
   readonly state: RunStateUi030;
 }
 export type RunHistoryEntry030 = Pick<RunInspection030['state'], 'scope' | 'verdict' | 'physicalPending' | 'humans' | 'chronology'> & {
   readonly capture: RunInspection030['capture'];
   readonly interruptedAt?: string | null;
+  readonly stopping?: boolean;
+  readonly paused?: boolean;
+  readonly inbox?: OperateRunFacts;
+  readonly observation?: { readonly order: number; readonly atMs: number };
 };
 export interface RunReadFailure030 {
   readonly kind: 'conflict' | 'scope' | 'notFound' | 'transport' | 'uncertain';

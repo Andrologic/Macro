@@ -119,7 +119,7 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
 
     const header = requireContainer().querySelector('[data-chat-conversation-header]');
     const taskContext = header?.querySelector('[data-testid="implement-active-task-context"]');
-    expect(header?.textContent).toContain('Implement - Clarify active context');
+    expect(header?.textContent).toContain('Operate - Clarify active context');
     expect(taskContext?.textContent).toContain('Plan: Macro 0.1.4');
     expect(taskContext?.textContent).toContain('Project: API');
     expect(taskContext?.textContent).toContain('Branch: feature/active-context');

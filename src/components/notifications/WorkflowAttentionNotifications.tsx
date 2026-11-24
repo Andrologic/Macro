@@ -1,8 +1,9 @@
-import { claimHumanAttention030 } from '../../services/agsdl/humanAttention030';
+import { claimHumanAttention030, notifiedHumanRequests030, subscribeRunHumanRequests030 } from '../../services/agsdl/humanAttention030';
 import { useEffect, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useAppStore } from '../../stores/useAppStore';
+import { confirmedBlueprintDraft, useArchitectLibraryStore } from '../../stores/useArchitectLibraryStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useNotificationCenterStore } from '../../stores/useNotificationCenterStore';
 import { resolveTaskReference } from '../../services/durableIdentity';
@@ -16,22 +17,23 @@ import {
   type WorkflowAttentionEvent,
 } from '../../services/workflowAttentionEvents';
 import { getScopedProjectIds } from '../../services/globalProjects';
+import { demoWorkflowJourney } from '../../services/operateWorkspace';
 import { initializeDesktopNotifications, isAppForeground } from '../../services/desktopNotifications';
 import { openWorkflowNotificationContext } from '../../services/openWorkflowNotificationContext';
 import type { WorkflowNotificationNavigation } from '../../services/workflowNotificationNavigation';
 import { notify } from '../ui/toastService';
 import { useAgsdlTranslation } from '../agsdl/useAgsdlTranslation';
-import { WorkflowRunView030 } from '../architect/ArchitectStrategyPanel';
+import { WorkflowRunView030 } from '../agsdl/WorkflowRunView030';
 import { Dialog } from '../ui/Dialog';
 import { getWorkflowRunAccess030, subscribeWorkflowRunAccess030, workflowRunAccessSnapshot030,
-  subscribeWorkflowRunTarget030, workflowRunTargetSnapshot030, openWorkflowRun030, type WorkflowRunRegistration030 } from '../../services/workflowAgentTasks';
-import { humanRequestKey030 } from '../../services/agsdl/humanRequests030';
+  subscribeWorkflowRunTarget030, workflowRunTargetSnapshot030, workflowRunOpenSequence030, openWorkflowRun030, type WorkflowRunRegistration030 } from '../../services/workflowAgentTasks';
+import { humanRequestKey030, sameHumanScope030 } from '../../services/agsdl/humanRequests030';
+import { isOperateRequestSnoozed } from '../../services/operateInboxModel';
+import { retainedRunValue030 } from '../../services/agsdl/runtimeProjection030';
 import type { RunHumanRequest030 } from '../../types/agsdlRunUi030';
-import { sameWorkflowSource030 as sameSource } from '../../services/workflowAgentTasks';
 
 export function emitRunAttentionNotification030(request: RunHumanRequest030, t: TFunction, conversationId?: string): void {
-  if (request.state.kind !== 'open' || request.content.kind === 'unclassified' ||
-      request.content.kind === 'question' && request.content.answerContract.kind !== 'available' || !claimHumanAttention030(request)) return;
+  if (!claimHumanAttention030(request)) return;
   const target = { scope: request.scope, requestId: request.id, ...(conversationId ? { conversationId } : {}) };
   notify.actionRequired(t('agsdl.shell030.attention', { ns: 'agsdl' }), {
     description: t('agsdl.shell030.attentionBody', { ns: 'agsdl' }),
@@ -41,45 +43,32 @@ export function emitRunAttentionNotification030(request: RunHumanRequest030, t: 
   });
 }
 export function subscribeRunAttention030(registrations: readonly WorkflowRunRegistration030[], t: TFunction) {
-  const subscriptions = registrations.map(({ access, scope }) => {
-    const check = () => {
-      const snapshot = access.getSnapshot();
-      if (snapshot.history.kind !== 'ready') return;
-      for (const read of Object.values(snapshot.runs)) {
-        if (read.kind !== 'ready' || read.value.state.humans.kind !== 'ready') continue;
-        const { capture } = read.value;
-        const humans = read.value.state.humans;
-        if (humans.kind !== 'ready') continue;
-        if (capture.source.owner.projectId !== scope.owner.projectId || capture.source.owner.planId !== scope.owner.planId ||
-            capture.source.owner.branch !== scope.owner.branch) continue;
-        for (const request of humans.value) {
-          if (request.scope.systemStartId !== capture.systemStartId || !sameSource(request.scope.source, capture.source)) continue;
-          const key = humanRequestKey030(request);
-          if (request.state.kind !== 'open') {
-            const center = useNotificationCenterStore.getState();
-            const item = center.items.find(item => item.id === `human030:${key}`);
-            if (item?.sessionToastId != null) notify.dismiss(item.sessionToastId);
-            if (item) center.removeItem(item.id);
-            continue;
-          }
-          if (request.content.kind === 'unclassified') continue;
-          emitRunAttentionNotification030(request, t, scope.conversationId);
-        }
-      }
-    };
-    const unsubscribe = access.subscribe(check); check(); return unsubscribe;
+  return subscribeRunHumanRequests030(registrations, (request, conversationId, inspection) => {
+    const snoozed = isOperateRequestSnoozed(inspection, request);
+    if (request.state.kind === 'open' && !snoozed) {
+      emitRunAttentionNotification030(request, t, conversationId);
+      return;
+    }
+    if (snoozed) notifiedHumanRequests030.delete(humanRequestKey030(request));
+    const center = useNotificationCenterStore.getState();
+    const item = center.items.find(item => item.id === `human030:${humanRequestKey030(request)}`);
+    if (item?.sessionToastId != null) notify.dismiss(item.sessionToastId);
+    if (item) center.removeItem(item.id);
   });
-  return () => subscriptions.forEach(unsubscribe => unsubscribe());
 }
 
 const getAttentionContext = () => {
   const appState = useAppStore.getState();
   const taskState = useTaskStore.getState();
+  const libraryDraft = appState.mode === 'Architect' && !demoWorkflowJourney
+    ? confirmedBlueprintDraft(useArchitectLibraryStore.getState())
+    : null;
   return {
     appForeground: isAppForeground(),
     mode: appState.mode,
     selectedTaskId: appState.selectedTaskId,
     selectedConversationId: useChatStore.getState().selectedConversationId,
+    architectLibraryConversationId: libraryDraft?.conversationId ?? null,
     selectedGroupId: appState.selectedGroupId,
     selectedProjectId: appState.selectedProjectId,
     scopedProjectIds: getScopedProjectIds(
@@ -261,17 +250,23 @@ export const WorkflowAttentionNotifications = () => {
   const { t } = useTranslation();
   const { t: runT } = useAgsdlTranslation();
   const registrations = useSyncExternalStore(subscribeWorkflowRunAccess030, workflowRunAccessSnapshot030, workflowRunAccessSnapshot030);
-  const target = useSyncExternalStore(subscribeWorkflowRunTarget030, workflowRunTargetSnapshot030, workflowRunTargetSnapshot030);
+  const opening = useSyncExternalStore(subscribeWorkflowRunTarget030, workflowRunOpenSequence030, workflowRunOpenSequence030);
+  const target = workflowRunTargetSnapshot030();
   useEffect(() => subscribeToWorkflowAttentionNotifications(t), [t]);
   useEffect(() => subscribeRunAttention030(registrations, runT), [registrations, runT]);
-  const bundle = target ? (registrations.find(item => Object.values(item.access.getSnapshot().runs).some(read =>
-    read.kind === 'ready' && read.value.capture.systemStartId === target.scope.systemStartId && sameSource(read.value.capture.source, target.scope.source)))
-    ?? registrations.find(item => item.scope.owner.projectId === target?.scope.source.owner.projectId && item.scope.owner.planId === target.scope.source.owner.planId &&
-      item.scope.owner.branch === target.scope.source.owner.branch && item.scope.conversationId === target.conversationId)) : undefined;
+  const owner = target?.scope.source.owner;
+  const candidates = target && owner ? registrations.filter(({ scope }) => scope.owner.projectId === owner.projectId &&
+    scope.owner.planId === owner.planId && scope.owner.branch === owner.branch &&
+    (target.conversationId === undefined || scope.conversationId === target.conversationId)) : [];
+  const bundle = target ? candidates.find(({ access }) => {
+    const read = access.getSnapshot().runs[target.scope.systemStartId];
+    const run = read && retainedRunValue030(read);
+    return run && sameHumanScope030(run.capture, target.scope) && sameHumanScope030(run.state.scope, target.scope);
+  }) ?? candidates.find(({ scope }) => scope.conversationId === target.conversationId) : undefined;
   useEffect(() => { if (target && !bundle) { try { getWorkflowRunAccess030({ owner: target.scope.source.owner, conversationId: target.conversationId }); } catch { /* The dedicated view reports unavailable access. */ } } }, [target, bundle]);
   return target ? <Dialog title={runT('agsdl.shell030.executions')} onClose={() => openWorkflowRun030(null)} closeOnBackdropClick
     panelClassName="flex h-[min(90vh,960px)] w-[min(94vw,1000px)] min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
     <header className="flex items-center justify-between border-b border-border p-3 text-sm"><h2>{runT('agsdl.shell030.executions')}</h2><button type="button" onClick={() => openWorkflowRun030(null)}>{runT('agsdl.shell030.close')}</button></header>
-    {bundle ? <WorkflowRunView030 bundle={bundle} target={target} /> : <p role="status" className="p-3 text-xs">{runT('agsdl.shell030.unavailable')}</p>}
+    {bundle ? <WorkflowRunView030 key={opening} bundle={bundle} target={target} initialInstanceId={target.instanceId} /> : <p role="status" className="p-3 text-xs">{runT('agsdl.shell030.unavailable')}</p>}
   </Dialog> : null;
 };

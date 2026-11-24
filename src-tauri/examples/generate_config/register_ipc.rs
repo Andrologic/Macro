@@ -42,6 +42,9 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::execution::RunPage030>("execution")?;
     registry.add::<ipc_contracts::execution::PublicRunSummary030>("execution")?;
     registry.add::<ipc_contracts::execution::PhaseCount030>("execution")?;
+    registry.add::<ipc_contracts::execution::OperateInboxAction>("execution")?;
+    registry.add::<ipc_contracts::execution::OperateRunFacts>("execution")?;
+    registry.add::<ipc_contracts::execution::OperateThreadFacts>("execution")?;
     registry.add::<ipc_contracts::execution::ClaudeStatus>("execution")?;
     registry.add::<ipc_contracts::execution::CodexStatus>("execution")?;
     registry.add::<ipc_contracts::execution::NativeModelChoice>("execution")?;

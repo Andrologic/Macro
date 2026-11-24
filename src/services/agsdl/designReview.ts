@@ -1,3 +1,4 @@
+import { isFlowDocumentContract } from "./contract";
 import { clone,decimal,NumberToken,parse } from "../../vendor/agsdl/shared/values.mjs";
 import { defaultDesign,readDesign,type AgsdlEnvelopeMetadata } from "./design";
 import { keyId,list,object,pointerPart,readDocument,text } from "./document";
@@ -30,7 +31,7 @@ function withoutPrompt(value: Record<string, unknown>, agentLike = false) {
 interface Participant { card: ViewerCard; parts: Record<DesignChangeAspect, unknown> }
 interface Snapshot { participants: Map<string, Participant>; residual: Record<string, unknown>; doc: Record<string, unknown>; coveredCatalogs?: Record<string, Set<string>> }
 function snapshot(source: string, metadata?: AgsdlEnvelopeMetadata): Snapshot {
-  if (readDocument(source).contract === 'agsdl-0.3.0') return snapshot030(source, metadata);
+  if (isFlowDocumentContract(readDocument(source).contract)) return snapshot030(source, metadata);
   const doc = readDocument(source), residual = clone(doc);
   const viewer = projectViewer(source);
   const definitions = list(doc.definitions).map(object), relations = list(doc.relations).map(object);
@@ -123,7 +124,7 @@ export function reviewDesignChanges(before: string, after: string, beforeMetadat
       }
     }
     for (const [id, { card }] of old.participants) if (!next.participants.has(id) && !(id.startsWith("definition:") && list(next.doc.definitions).some(value => keyId(object(value).key) === keyId(card.details.key) && stable(value) === stable(card.details)))) changes.push({ kind: "removed", title: card.title, before: card.mission });
-    const configurationValue = (doc: Record<string, unknown>) => doc.contract === 'agsdl-0.3.0'
+    const configurationValue = (doc: Record<string, unknown>) => isFlowDocumentContract(doc.contract)
       ? Object.fromEntries(Object.entries(object(doc.agents)).map(([name, value]) => {
         const { instructions: _instructions, resources: _resources, title: _title, description: _description, ...configuration } = object(value);
         return [name, configuration];

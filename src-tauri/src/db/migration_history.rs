@@ -1,5 +1,5 @@
 //! Published migration identities, including the two incompatible version-10 branches.
-use super::*;
+use super::{architect_library::storage_index as architect_artifacts, *};
 
 const LEDGER_SCHEMA: &str = "CREATE TABLE migration_identity_history (version INTEGER NOT NULL, name TEXT NOT NULL, applied_at TEXT NOT NULL, PRIMARY KEY(version,name))";
 
@@ -19,6 +19,7 @@ async fn validate_ledger(c: &mut SqliteConnection) -> DbResult<()> {
     Ok(())
 }
 
+// Migrations installed by the SQL-only pool initialization.
 pub(crate) const NAMES: &[&str] = &[
     "001_initial",
     "002_disable_unconfigured_default_providers",
@@ -65,10 +66,33 @@ pub(crate) const NAMES: &[&str] = &[
     "043_connect_archive_lifecycle",
     "044_connect_target_abort",
     "045_connect_target_activation",
+    "046_architect_library",
+    "047_architect_legacy_import",
+    "048_operate_inbox",
 ];
 
+fn canonical_name(version: i64) -> Option<&'static str> {
+    if version == architect_artifacts::VERSION {
+        return Some(architect_artifacts::NAME);
+    }
+    if version == crate::architect_launch::SCHEMA_VERSION {
+        return Some(crate::architect_launch::SCHEMA_NAME);
+    }
+    if version == crate::architect_launch::OWNER_SCHEMA_VERSION {
+        return Some(crate::architect_launch::OWNER_SCHEMA_NAME);
+    }
+    if version == crate::architect_launch::schedule::SCHEMA_VERSION {
+        return Some(crate::architect_launch::schedule::SCHEMA_NAME);
+    }
+    if version == operate_inbox::DELETE_SCHEMA_VERSION {
+        return Some(operate_inbox::DELETE_SCHEMA_NAME);
+    }
+    let index = usize::try_from(version).ok()?.checked_sub(1)?;
+    NAMES.get(index).copied()
+}
+
 pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {
-    if version > 0 && NAMES.get((version - 1) as usize) == Some(&name) {
+    if canonical_name(version) == Some(name) {
         return Ok(vec![version]);
     }
     let versions = match (version, name) {
@@ -158,7 +182,7 @@ pub(super) async fn normalize(c: &mut SqliteConnection) -> DbResult<()> {
     validate_ledger(c).await?;
     for (v, n, date) in &rows {
         let targets = destinations(*v, n)?;
-        if targets != [*v] || NAMES[(*v - 1) as usize] != n {
+        if targets != [*v] || canonical_name(*v) != Some(n.as_str()) {
             sqlx::query("INSERT INTO migration_identity_history VALUES (?,?,?) ON CONFLICT(version,name) DO NOTHING")
                 .bind(v)
                 .bind(n)
@@ -194,7 +218,7 @@ pub(super) async fn normalize(c: &mut SqliteConnection) -> DbResult<()> {
             // does not replace an earlier tool-results stamp or its timestamp.
             sqlx::query("INSERT OR IGNORE INTO schema_migrations VALUES (?,?,?)")
                 .bind(target)
-                .bind(NAMES[(target - 1) as usize])
+                .bind(canonical_name(target).expect("known migration target"))
                 .bind(date)
                 .execute(&mut *c)
                 .await?;
@@ -208,6 +232,11 @@ pub(crate) async fn remove_reference_schema(
     c: &mut SqliteConnection,
     versions: &[i64],
 ) -> DbResult<()> {
+    if !versions.contains(&48) {
+        operate_inbox::remove_reference_schema(c).await?;
+    } else if !versions.contains(&operate_inbox::DELETE_SCHEMA_VERSION) {
+        operate_inbox::remove_delete_reference_schema(c).await?;
+    }
     if !versions.contains(&42) {
         restore_execution020_reference(c).await?;
     }

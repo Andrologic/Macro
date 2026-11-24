@@ -77,3 +77,11 @@ it('keeps confirmation locked until native preparation settles', async () => {
   expect(document.querySelector('[role="dialog"]')).toBeNull();
   expect(schedule).toHaveBeenCalledTimes(1);
 });
+it('describes what a backup holds for a product that runs agentic systems, not code checkpoints', () => {
+  const text = container.textContent ?? '';
+  expect(text).toContain('Architect library');
+  expect(text).toContain('runs and their history');
+  expect(text).toContain('working folders Macro created');
+  expect(text).toContain('Credentials never travel to another computer');
+  expect(text).not.toMatch(/code checkpoints|Project folders and their Git history/);
+});

@@ -1,4 +1,4 @@
-import { activateComposerDraftWriter, drainComposerDraftWrites } from './chat/chatLocalSessionState';
+import { activateComposerDraftWriter, drainComposerDraftWrites, readComposerDraftsFromStorage } from './chat/chatLocalSessionState';
 import { reservePilotAction } from '../services/macroPilot/actionReservations';
 import { createGitCommitDto } from '../test-utils/gitCommit';
 import { loadQueuedSubmissions } from './chat/chatQueuedSubmissions';
@@ -1586,6 +1586,9 @@ useTaskStoreMock.subscribe = (
 };
 
 const registerUseChatStoreMocks = async () => {
+  // These fixtures exercise plan-based Architect, retained by the demo.
+  mock.module('../services/operateWorkspace', () => ({ demoWorkflowJourney: true, isOperateWorkspace: (mode: string) => mode === 'Implement' }));
+
   mock.restore();
 
   // The store scenarios exercise tool policy and execution. Dispatch and
@@ -3151,6 +3154,181 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     mock.restore();
   });
 
+  it('opens a blueprint conversation and edits only its document without repository scope', async () => {
+    mock.module('../services/operateWorkspace', () => ({ demoWorkflowJourney: false, isOperateWorkspace: (mode: string) => mode === 'Implement' }));
+    const { architectLibrary } = await import('../services/ipc/architectLibrary');
+    const { useArchitectLibraryStore: library } = await import('./useArchitectLibraryStore');
+    const { useAgsdlStore: editor, agsdlSessionKey } = await import('./useAgsdlStore');
+    const { createExampleDocument } = await import('../services/agsdl/examples');
+    const previousGroups = appState.projectGroups;
+    const previousLibrary = library.getState();
+    try {
+      appState.selectedGroupId = null;
+      appState.selectedProjectId = null;
+      appState.projectGroups = [];
+      appState.activeArchitectPlanId = null;
+      appState.activePlanContext = null;
+      await useChatStoreScenarioContext.enableRealProjectExecutionContext();
+      const a = { id: 'first', projectId: 'library', name: 'Same', archived: false, history: null, revision: 1,
+        origin: null, document: createExampleDocument('feature'), conversationId: 'first-chat' };
+      const b = { ...a, id: 'second', conversationId: 'second-chat', document: createExampleDocument('release') };
+      const drafts = new Map([a,b].map(draft => [draft.id, draft]));
+      const readDraft = spyOn(architectLibrary, 'getDraft').mockImplementation(async id => drafts.get(id)!);
+      const { document, revision } = a;
+      spyOn(architectLibrary, 'getVersion').mockResolvedValue({ blueprintId: a.id, revision, document, number: 1, note: null });
+      spyOn(architectLibrary, 'listBlueprints').mockResolvedValue([a,b]);
+      spyOn(architectLibrary, 'listVersions').mockResolvedValue([]);
+      const ensure = spyOn(architectLibrary, 'ensureConversation').mockImplementation(async id => drafts.get(id)!);
+      const save = spyOn(architectLibrary, 'saveDraft').mockImplementation(async (id, revision, document) =>
+        ({ ...drafts.get(id)!, document, revision: revision + 1 }));
+      chatSnapshotConversations = [a,b].map(draft => ({ ...createChatSnapshotConversation(draft.conversationId), project_id: null, group_id: null }));
+      await library.getState().selectBlueprint(a.projectId,a.id);
+      const { useChatStore: chat } = await loadChatStore();
+      chat.setState(createIdleChatStoreState({ conversations: [] }));
+      expect(await chat.getState().ensureConversationForCurrentMode()).toBe(a.conversationId);
+      expect(chat.getState().activeContextKey).toBe(JSON.stringify(["Architect", a.id, null]));
+      const target = { blueprintId: a.id };
+      const session = editor.getState().sessions[agsdlSessionKey(target)];
+      const scopedStarted = createDeferred<void>();
+      const scopedReady = createDeferred<ScopedTurnConfiguration | null>();
+      const configuration = await import('../services/configurationClient');
+      const originalLoad = configuration.loadScopedTurnConfiguration;
+      const load = spyOn(configuration, 'loadScopedTurnConfiguration').mockImplementationOnce(async () => {
+        scopedStarted.resolve();
+        return scopedReady.promise;
+      }).mockImplementation(originalLoad);
+      const sending = chat.getState().sendMessage({ conversationId: a.conversationId, content: 'Review this selection',
+        contextRefs: [{ id: 'selection', kind: 'agsdl', title: 'Document',
+          agsdl: { ...target, document: 'agsdl', id: 'selection', title: 'Document', path: '',
+            conversationId: a.conversationId, version: session.version, persistedRevision: session.persistedRevision } }] });
+      try {
+        await Promise.race([scopedStarted.promise, sending]);
+        editor.getState().replace(target, b.document.source);
+        scopedReady.resolve(null);
+        await expect(sending).rejects.toThrow('agsdl.staleChatSelection');
+        expect(chat.getState().getConversationMessages(a.conversationId)).toHaveLength(0);
+        expect(streamChatMock).not.toHaveBeenCalled();
+        editor.setState({ sessions: {} });
+        editor.getState().openBlueprintDocument(a);
+      } finally {
+        scopedReady.resolve(null);
+        load.mockRestore();
+      }
+
+      const tool = await sendArchitectMessageAndGetToolHandler(chat, { conversationId: a.conversationId, content: 'Edit this blueprint' });
+      const read = JSON.parse(String(await tool('agsdl_get', {})));
+      expect(read.blueprint_id).toBe(a.id);
+      expect(read.source).toBe(a.document.source);
+      await tool('agsdl_update', { blueprint_id: a.id, expected_revision: read.revision, source: b.document.source });
+      expect(save).toHaveBeenCalledWith(a.id, 1, expect.objectContaining({ source: b.document.source }));
+      await library.getState().selectVersion(1);
+      const readResult = Promise.withResolvers<typeof a>();
+      readDraft.mockImplementationOnce(() => readResult.promise);
+      const back = library.getState().selectVersion(null);
+      const assertChatBlocked = async () => {
+        const calls = ensure.mock.calls.length;
+        expect(await chat.getState().ensureConversationForCurrentMode()).toBeNull();
+        expect(ensure.mock.calls).toHaveLength(calls);
+        await expect(chat.getState().sendMessage({ conversationId: a.conversationId, content: 'Send while returning' }))
+          .rejects.toThrow('Open the editable blueprint');
+        expect(chat.getState().selectedConversationId).toBeNull();
+      };
+      await assertChatBlocked();
+      readResult.reject(new Error('Unable to read the draft'));
+      await back;
+      await assertChatBlocked();
+      await library.getState().selectVersion(null);
+      expect(await chat.getState().ensureConversationForCurrentMode()).toBe(a.conversationId);
+      await library.getState().selectBlueprint(b.projectId,b.id);
+      expect(await chat.getState().ensureConversationForCurrentMode()).toBe(b.conversationId);
+      await tool('agsdl_update', { blueprint_id: a.id, expected_revision: read.revision, source: a.document.source }, 'late-update');
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(getArchitectPlanMock).not.toHaveBeenCalled();
+      expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+      expect(syncArchitectPlanChatFromConversationMock).not.toHaveBeenCalled();
+    } finally {
+      appState.projectGroups = previousGroups;
+      useRealProjectExecutionContextForTest = false;
+      library.setState(previousLibrary);
+    }
+  });
+
+  it('recovers a repaired blueprint composer draft only with owner evidence and current selections', async () => {
+    mock.module('../services/operateWorkspace', () => ({ demoWorkflowJourney: false, isOperateWorkspace: (mode: string) => mode === 'Implement' }));
+    const { architectLibrary } = await import('../services/ipc/architectLibrary');
+    const { useArchitectLibraryStore: library } = await import('./useArchitectLibraryStore');
+    const { useAgsdlStore: editor, agsdlSessionKey } = await import('./useAgsdlStore');
+    const { createExampleDocument } = await import('../services/agsdl/examples');
+    const previousLibrary = library.getState();
+    const previousSessions = editor.getState().sessions;
+    try {
+      await useChatStoreScenarioContext.enableRealProjectExecutionContext();
+      const blueprint = {
+        id: 'first', projectId: 'library', name: 'Design', archived: false, history: null, revision: 1,
+        origin: null, document: createExampleDocument('feature'), conversationId: 'old-chat',
+      };
+      const repaired = { ...blueprint, conversationId: 'private-chat' };
+      chatSnapshotConversations = [blueprint, repaired].map(draft => ({
+        ...createChatSnapshotConversation(draft.conversationId), project_id: null, group_id: null,
+      }));
+      // The backend may already have repaired the chat on a previous open.
+      library.setState({ draft: repaired, projectId: blueprint.projectId, blueprintId: blueprint.id, draftStatus: 'idle', versionNumber: null });
+      const { useChatStore: chat } = await loadChatStore();
+      const ensure = spyOn(architectLibrary, 'ensureConversation');
+      const fromKey = 'conversation:old-chat';
+      const toKey = 'conversation:private-chat';
+      const image = { id: 'image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AA==', createdAt: '2026-01-01' };
+      editor.setState({ sessions: {} });
+      for (const test of [
+        { owned: true, selection: 'none', moved: true },
+        { owned: false, selection: 'current', moved: true },
+        { owned: false, selection: 'none', moved: false },
+        { owned: false, selection: 'stale', moved: false },
+        { owned: false, selection: 'missing-path', moved: false },
+        { owned: true, selection: 'other-blueprint', moved: false },
+        { owned: true, selection: 'current', moved: false, existing: true },
+        { owned: true, selection: 'stale', moved: true },
+      ]) {
+        editor.getState().openBlueprintDocument(blueprint);
+        const session = editor.getState().sessions[agsdlSessionKey({ blueprintId: blueprint.id })];
+        const selection = { id: 'selection', kind: 'agsdl' as const, title: 'Document', data: {
+          id: 'selection', title: 'Document', document: 'agsdl' as const,
+          blueprintId: test.selection === 'other-blueprint' ? 'second' : blueprint.id,
+          conversationId: blueprint.conversationId, version: session.version,
+          persistedRevision: test.selection === 'stale' ? 0 : session.persistedRevision,
+          path: test.selection === 'missing-path' ? '/no-such-field' : '',
+        } };
+        const saved = { text: 'Find the original note', images: [image],
+          contextRefs: test.selection === 'none' ? [] : [selection] };
+        const newer = { text: 'Keep my new draft', images: [], contextRefs: [] };
+        chat.setState(createIdleChatStoreState({
+          composerDraftsByContextKey: { [fromKey]: saved, ...(test.existing ? { [toKey]: newer } : {}) },
+        }));
+        ensure.mockResolvedValue({ ...repaired, draftRecovery: {
+          fromConversationId: blueprint.conversationId, toConversationId: repaired.conversationId, owned: test.owned,
+        } });
+        const selected = await chat.getState().ensureConversationForCurrentMode();
+        expect(chat.getState().lastError).toBeNull();
+        expect(selected).toBe(repaired.conversationId);
+        expect(chat.getState().getComposerDraftForContext(fromKey)).toEqual(test.moved ? null : saved);
+        expect(chat.getState().getComposerDraftForContext(toKey)).toEqual(test.existing ? newer : test.moved ? {
+          ...saved,
+          contextRefs: test.selection === 'current'
+            ? [{ ...selection, data: { ...selection.data, conversationId: repaired.conversationId } }]
+            : [],
+        } : null);
+      }
+      await drainComposerDraftWrites();
+      const persisted = readComposerDraftsFromStorage();
+      expect(persisted[fromKey]).toBeUndefined();
+      expect(persisted[toKey]).toEqual({ text: 'Find the original note', images: [image], contextRefs: [] });
+    } finally {
+      useRealProjectExecutionContextForTest = false;
+      library.setState(previousLibrary);
+      editor.setState({ sessions: previousSessions });
+    }
+  });
+
   it('keeps native workflow Tasks out of legacy conversation creation and provider dispatch', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task:agsdl:v1:run:agent';
@@ -3850,35 +4028,18 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     } finally { stop(); if (id) clearConflictAssistantContext(id); }
   });
 
-  it.each(['selected', 'task-read', 'conversation-read'])('preserves a selected inspection against remembered task restoration at %s', async phase => {
+  it('keeps an explicit conflict inspection selected during context restoration', async () => {
     const chat = await setupConflictConversation();
-    taskStoreState.tasks = phase === 'conversation-read' ? [] : [createImplementTask()];
-    const stored = { architectConversationId: null, implementConversationId: 'task-conv', lastTaskId: 'task-1' };
-    const entered = createDeferred<void>();
-    const read = createDeferred<typeof stored>();
-    const late = phase !== 'selected';
-    let reads = 0;
-    getLocalProjectContextStateMock.mockImplementation(async () => {
-      if (phase === 'conversation-read' && ++reads === 1) return { ...stored, lastTaskId: null };
-      entered.resolve();
-      return late ? read.promise : stored;
-    });
-    if (late) chat.setState({ selectedConversationId: null });
+    taskStoreState.tasks = [createImplementTask()];
+    chat.setState({ selectedConversationId: null });
     try {
-      const pending = chat.getState().ensureConversationForCurrentMode();
-      if (late) {
-        await entered.promise;
-        taskStoreState.tasks = [createImplementTask()];
-        expect(await chat.getState().selectConversation('conflict-store')).toBe(true);
-        read.resolve(stored);
-      }
-      expect(await pending).toBe('conflict-store');
+      const restoring = chat.getState().ensureConversationForCurrentMode();
+      expect(await chat.getState().selectConversation('conflict-store')).toBe(true);
+      expect(await restoring).toBe('conflict-store');
+      expect(await chat.getState().ensureConversationForCurrentMode()).toBe('conflict-store');
       expect(appState.selectedTaskId).toBeNull();
-      expect(chat.getState().selectedConversationId).toBe('conflict-store');
       expect(streamChatMock).not.toHaveBeenCalled();
-    } finally { read.resolve(stored); getLocalProjectContextStateMock.mockImplementation(async () => ({
-      architectConversationId: 'project-architect-conversation', implementConversationId: null, lastTaskId: null,
-    })); clearConflictAssistantContext('conflict-store'); }
+    } finally { clearConflictAssistantContext('conflict-store'); }
   });
 
   it.each(['task', 'project', 'group', 'mode', 'path'])('does not retain inspection selection after real %s navigation', async change => {
@@ -4148,6 +4309,79 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     expect(useChatStore.getState().selectedConversationId).toBe(conversation.id);
     expect(useChatStore.getState().selectedConversationContextKey).toBe('Chat::none::none::none');
+  });
+
+  it.each(['Implement', 'Chat', 'Architect'] as const)(
+    'does not reopen a historical Implement task when chat restoration runs late in %s',
+    async (mode) => {
+      const { useChatStore } = await loadChatStore();
+      const scope = createLifecycleScope();
+      tauriAvailable = true;
+      appState.mode = mode;
+      const legacy = createChatSnapshotConversation('legacy-implement', {
+        scope_mode: 'Implement', task_id: 'task-1', message_count: 1,
+      });
+      const chat = { ...createChatSnapshotConversation('current-chat', { scope_mode: 'Chat' }),
+        group_id: null, project_id: null };
+      chatSnapshotConversations = [legacy, chat];
+      chatSnapshotMessages = [{
+        id: 'legacy-question', conversation_id: legacy.id, role: 'assistant',
+        content: 'Choose a direction.\n[quick-replies]\n- First\n- Second\n- Third\n[/quick-replies]',
+        created_at: '2026-10-01T00:00:00Z',
+      }];
+      getChatBootstrapSnapshotMock.mockImplementationOnce(async () => ({
+        conversations: chatSnapshotConversations, messages_by_conversation_id: {
+          [legacy.id]: chatSnapshotMessages,
+        },
+      }));
+      try {
+        await useChatStore.getState().initializeCritical(scope);
+        expect(useChatStore.getState().getActiveQuestionnaire(legacy.id)?.mode).toBe('pending_reply');
+        const providerReady = createDeferred<void>();
+        const restore = providerReady.promise.then(() => useChatStore.getState().reapplySelectionForCurrentContext(scope));
+        const previousTasks = taskStoreState.tasks;
+        taskStoreState.tasks = [createImplementTask({ status: 'Pending' })];
+        emitTaskStoreUpdate(previousTasks);
+        providerReady.resolve();
+        await restore;
+        expect(appState.selectedTaskId).toBeNull();
+        expect(useChatStore.getState().selectedConversationId).toBe(mode === 'Chat' ? chat.id : null);
+        expect(taskStoreState.startTask).not.toHaveBeenCalled();
+        expect(streamChatMock).not.toHaveBeenCalled();
+        const pilot = reservePilotAction({ taskId: 'task-1' });
+        try {
+          expect((await useChatStore.getState().ensurePilotTaskConversation('task-1', pilot.token)).id).toBe(legacy.id);
+          expect(useChatStore.getState().selectedConversationId).toBe(mode === 'Chat' ? chat.id : null);
+        } finally { pilot.release(); }
+      } finally {
+        scope.stop();
+        await useChatStore.getState().drainSubscriptions();
+      }
+    },
+  );
+
+  it('retains an interrupted Implement worktree replay journal during Chat startup', async () => {
+    const { getAgentCodeReplayRecoveryKey } = await import('../services/agentCodeCheckpoints');
+    const { useChatStore } = await loadChatStore();
+    const scope = createLifecycleScope();
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const id = 'interrupted-implement';
+    chatSnapshotConversations = [createChatSnapshotConversation(id, { scope_mode: 'Implement', task_id: 'task-1' })];
+    const key = getAgentCodeReplayRecoveryKey(id);
+    const marker = JSON.stringify({
+      version: 1, conversationId: id, phase: 'pending', rollbackPreview: { affectedFiles: [] },
+    });
+    appSettingValues.set(key, marker);
+    try {
+      await useChatStore.getState().initialize(scope);
+      expect(appSettingValues.get(key)).toBe(marker);
+      expect(dbDeleteAppSettingMock).not.toHaveBeenCalledWith(key);
+      expect(useChatStore.getState().conversations).not.toContainEqual(expect.objectContaining({ id }));
+    } finally {
+      scope.stop();
+      await useChatStore.getState().drainSubscriptions();
+    }
   });
 
   it('stops hydration before replay recovery or publication after a delayed snapshot', async () => {

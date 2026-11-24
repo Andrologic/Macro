@@ -4,7 +4,7 @@ Cette documentation s'adresse aux agents qui travaillent dans Macro, ainsi
 qu'aux agents qui doivent expliquer ou vérifier son fonctionnement. Elle décrit
 les préconditions, les responsabilités et les preuves attendues.
 
-Pour exécuter une première modification, lire la
+Pour vérifier un premier système AgSDL, lire la
 [prise en main agents](getting-started.md). Pour accompagner une personne dans
 l'interface, utiliser le [guide utilisateur](../user-guide/getting-started.md).
 
@@ -12,9 +12,9 @@ l'interface, utiliser le [guide utilisateur](../user-guide/getting-started.md).
 
 | Travail demandé | Référence à consulter |
 | --- | --- |
-| Réaliser une tâche autonome et rendre un résultat vérifiable | [Prise en main agents](getting-started.md) |
+| Vérifier la conception et l’exécution d’un système AgSDL | [Prise en main agents](getting-started.md) |
 | Modifier le code de Macro | [Instructions du dépôt](../../AGENTS.md), puis [contribution](../../CONTRIBUTING.md) |
-| Modifier Architect, Implement, Chat, Git ou les métadonnées | [Spécification fonctionnelle](../functional-spec.md) et [architecture technique](../technical-architecture.md) |
+| Modifier Architect, Operate, Chat ou les métadonnées | [Spécification fonctionnelle](../functional-spec.md) et [architecture technique](../technical-architecture.md) |
 | Diagnostiquer le démarrage, la reprise ou la finalisation d'une tâche | [Workflows des tâches et des plans](../task-plan-workflows.md) |
 | Lire ou modifier la configuration | [Contrat de configuration](../configuration.md), notamment l'accès des agents |
 | Adapter les résultats d'outils MCP | [Résultats des outils MCP](../mcp-tool-results.md) |

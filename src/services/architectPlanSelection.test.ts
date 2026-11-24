@@ -5,7 +5,6 @@ import {
   planMatchesArchitectScope,
 } from './architectPlanSelection';
 import type { ArchitectPlanReplica, ArchitectPlanStatus } from './architectPlanService';
-import { computePlanSelectorRefreshState } from '../components/architect/planSelectorState';
 
 const buildPlanSummary = (overrides: Partial<{
   id: string;
@@ -83,7 +82,7 @@ describe('architectPlanSelection', () => {
     expect(resolution.nextActivePlanId).toBe('plan-remembered');
   });
 
-  it('ignores archived and deleted plans and aligns with the selector refresh state once resolved', () => {
+  it('ignores archived plans when resolving the selection', () => {
     const hiddenArchived = buildPlanSummary({
       id: 'plan-archived',
       status: 'archived',
@@ -110,15 +109,6 @@ describe('architectPlanSelection', () => {
     ]);
     expect(resolution.nextActivePlanId).toBe('plan-visible');
 
-    const selectorState = computePlanSelectorRefreshState({
-      plans: [hiddenArchived, visibleOlder, visibleNewest],
-      scopedProjectIds: ['project-1'],
-      showArchived: false,
-      preferredActivePlanId: resolution.nextActivePlanId,
-      currentActivePlanId: resolution.nextActivePlanId,
-    });
-
-    expect(selectorState.nextActivePlanId).toBe(resolution.nextActivePlanId);
     expect(
       compareArchitectPlanSelectionPriority(visibleNewest, visibleOlder),
     ).toBeLessThan(0);

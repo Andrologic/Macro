@@ -284,7 +284,9 @@ mod tests {
             expected_revision: revision,
             title: None,
             project_id: None,
-            execute_before: (chrono::Utc::now() + chrono::Duration::seconds(10)).to_rfc3339(),
+            // Expiry tests supply their own deadlines. Recovery can take
+            // longer than a delivery window when migrations run in parallel.
+            execute_before: "2100-01-01T00:00:00Z".into(),
         }
     }
     #[tokio::test]

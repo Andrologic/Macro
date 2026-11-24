@@ -1,0 +1,126 @@
+{
+  "description": "Two steers reach the same work. Their delivery ranks follow the order of confirmation.",
+  "document": {
+    "contract": "agsdl-0.4.0",
+    "id": "steer-confirmation-order",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "dev": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "start",
+      "steps": {
+        "start": {
+          "type": "agent",
+          "agent": "lead",
+          "next": [
+            "work",
+            "ping",
+            "ping2"
+          ]
+        },
+        "work": {
+          "type": "agent",
+          "agent": "dev"
+        },
+        "ping": {
+          "type": "call",
+          "command": "./check-release-notes.sh",
+          "next": {
+            "step": "nudge",
+            "message": {
+              "prompt": "Also update the changelog."
+            }
+          }
+        },
+        "nudge": {
+          "type": "agent",
+          "agent": "dev",
+          "delivery": "steer",
+          "next": []
+        },
+        "ping2": {
+          "type": "call",
+          "command": "./check-release-notes.sh",
+          "next": {
+            "step": "nudge",
+            "message": {
+              "prompt": "Summarize the release."
+            }
+          }
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "start",
+      "returns": {
+        "text": "Release 2.0."
+      }
+    },
+    {
+      "work": "ping",
+      "command": {
+        "exitCode": 0
+      }
+    },
+    {
+      "work": "ping2",
+      "command": {
+        "exitCode": 0
+      }
+    },
+    {
+      "steer": {
+        "to": "nudge",
+        "nth": 2,
+        "outcome": "received"
+      }
+    },
+    {
+      "steer": {
+        "to": "nudge",
+        "nth": 1,
+        "outcome": "received"
+      }
+    },
+    {
+      "work": "work",
+      "returns": {
+        "text": "Released, changelog updated."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "start": 1,
+      "work": 1,
+      "ping": 1,
+      "ping2": 1
+    },
+    "messages": [
+      {
+        "to": "nudge",
+        "nth": 1,
+        "prompt": "Summarize the release."
+      },
+      {
+        "to": "nudge",
+        "nth": 2,
+        "prompt": "Also update the changelog."
+      }
+    ],
+    "failures": []
+  }
+}

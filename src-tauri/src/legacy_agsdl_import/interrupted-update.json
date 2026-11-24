@@ -1,0 +1,278 @@
+[
+  {
+    "id": "plan:v1:develop:plan-1:update:1795346578314:kekt89oz5yg",
+    "workspaceKey": "/repos/api|/repos/web",
+    "branchName": "develop",
+    "planId": "plan-1",
+    "operation": "update",
+    "phase": "applying",
+    "payload": {
+      "targets": [
+        {
+          "scope": {
+            "scopeKey": "repo:/repos/web",
+            "projectId": "web",
+            "repoPath": "/repos/web",
+            "workspacePath": "/repos/web",
+            "source": "project",
+            "workspaceScope": "metadata"
+          },
+          "action": "upsert",
+          "plan": {
+            "id": "plan-1",
+            "slug": "plan-1",
+            "title": "plan-1",
+            "description": "after-0",
+            "status": "validated",
+            "targetBranch": "develop",
+            "conversationId": "conversation-1",
+            "projectId": "web",
+            "projectIds": [
+              "web",
+              "api"
+            ],
+            "createdAt": "2026-03-15T00:00:00.000Z",
+            "updatedAt": "2026-11-22T11:22:58.314Z",
+            "nodes": [
+              {
+                "id": "task-api",
+                "title": "Implement API",
+                "type": "task",
+                "status": "completed",
+                "dependencies": [],
+                "projectId": "api",
+                "projectIds": [
+                  "api"
+                ]
+              }
+            ],
+            "predictedBranches": [],
+            "agsdl": {
+              "source": "{ \"contract\":\"agsdl-0.3.0\" }\r\n",
+              "revision": 3,
+              "annexes": {
+                "notes.txt": "notes\r\n"
+              }
+            },
+            "planKind": "feature",
+            "targetBranchesByProjectId": {
+              "web": "develop",
+              "api": "develop"
+            },
+            "contextProjectIds": [],
+            "expectedProjectIds": [
+              "web",
+              "api"
+            ],
+            "revision": 2,
+            "availableProjectIds": [
+              "web",
+              "api"
+            ],
+            "missingProjectIds": [],
+            "replicationState": "healthy",
+            "replicas": [
+              {
+                "scopeKey": "repo:/repos/web",
+                "projectId": "web",
+                "repoPath": "/repos/web",
+                "workspacePath": "/repos/web",
+                "source": "project",
+                "updatedAt": "2026-03-15T00:00:00.000Z",
+                "missing": false
+              },
+              {
+                "scopeKey": "repo:/repos/api",
+                "projectId": "api",
+                "repoPath": "/repos/api",
+                "workspacePath": "/repos/api",
+                "source": "project",
+                "updatedAt": "2026-03-15T00:00:00.000Z",
+                "missing": false
+              }
+            ],
+            "hasReplicaDivergence": false
+          },
+          "executionModesByProjectId": {
+            "web": "git",
+            "api": "git"
+          },
+          "index": {
+            "version": 3,
+            "activePlanId": "plan-1",
+            "plans": [
+              {
+                "id": "plan-1",
+                "slug": "plan-1",
+                "title": "plan-1",
+                "description": "after-0",
+                "planKind": "feature",
+                "status": "validated",
+                "targetBranch": "develop",
+                "targetBranchesByProjectId": {
+                  "web": "develop",
+                  "api": "develop"
+                },
+                "conversationId": "conversation-1",
+                "projectId": "web",
+                "projectIds": [
+                  "web",
+                  "api"
+                ],
+                "contextProjectIds": [],
+                "expectedProjectIds": [
+                  "web",
+                  "api"
+                ],
+                "createdAt": "2026-03-15T00:00:00.000Z",
+                "updatedAt": "2026-11-22T11:22:58.314Z",
+                "revision": 2,
+                "hasAgsdl": true,
+                "nodeCount": 1,
+                "predictedBranchCount": 0,
+                "chatMessageCount": 0
+              }
+            ],
+            "reservedPlanSlugs": [
+              "plan-1"
+            ]
+          }
+        },
+        {
+          "scope": {
+            "scopeKey": "repo:/repos/api",
+            "projectId": "api",
+            "repoPath": "/repos/api",
+            "workspacePath": "/repos/api",
+            "source": "project",
+            "workspaceScope": "metadata"
+          },
+          "action": "upsert",
+          "plan": {
+            "id": "plan-1",
+            "slug": "plan-1",
+            "title": "plan-1",
+            "description": "after-0",
+            "status": "validated",
+            "targetBranch": "develop",
+            "conversationId": "conversation-1",
+            "projectId": "web",
+            "projectIds": [
+              "web",
+              "api"
+            ],
+            "createdAt": "2026-03-15T00:00:00.000Z",
+            "updatedAt": "2026-11-22T11:22:58.314Z",
+            "nodes": [
+              {
+                "id": "task-api",
+                "title": "Implement API",
+                "type": "task",
+                "status": "completed",
+                "dependencies": [],
+                "projectId": "api",
+                "projectIds": [
+                  "api"
+                ]
+              }
+            ],
+            "predictedBranches": [],
+            "agsdl": {
+              "source": "{ \"contract\":\"agsdl-0.3.0\" }\r\n",
+              "revision": 3,
+              "annexes": {
+                "notes.txt": "notes\r\n"
+              }
+            },
+            "planKind": "feature",
+            "targetBranchesByProjectId": {
+              "web": "develop",
+              "api": "develop"
+            },
+            "contextProjectIds": [],
+            "expectedProjectIds": [
+              "web",
+              "api"
+            ],
+            "revision": 2,
+            "availableProjectIds": [
+              "web",
+              "api"
+            ],
+            "missingProjectIds": [],
+            "replicationState": "healthy",
+            "replicas": [
+              {
+                "scopeKey": "repo:/repos/web",
+                "projectId": "web",
+                "repoPath": "/repos/web",
+                "workspacePath": "/repos/web",
+                "source": "project",
+                "updatedAt": "2026-03-15T00:00:00.000Z",
+                "missing": false
+              },
+              {
+                "scopeKey": "repo:/repos/api",
+                "projectId": "api",
+                "repoPath": "/repos/api",
+                "workspacePath": "/repos/api",
+                "source": "project",
+                "updatedAt": "2026-03-15T00:00:00.000Z",
+                "missing": false
+              }
+            ],
+            "hasReplicaDivergence": false
+          },
+          "executionModesByProjectId": {
+            "web": "git",
+            "api": "git"
+          },
+          "index": {
+            "version": 3,
+            "activePlanId": "plan-1",
+            "plans": [
+              {
+                "id": "plan-1",
+                "slug": "plan-1",
+                "title": "plan-1",
+                "description": "after-0",
+                "planKind": "feature",
+                "status": "validated",
+                "targetBranch": "develop",
+                "targetBranchesByProjectId": {
+                  "web": "develop",
+                  "api": "develop"
+                },
+                "conversationId": "conversation-1",
+                "projectId": "web",
+                "projectIds": [
+                  "web",
+                  "api"
+                ],
+                "contextProjectIds": [],
+                "expectedProjectIds": [
+                  "web",
+                  "api"
+                ],
+                "createdAt": "2026-03-15T00:00:00.000Z",
+                "updatedAt": "2026-11-22T11:22:58.314Z",
+                "revision": 2,
+                "hasAgsdl": true,
+                "nodeCount": 1,
+                "predictedBranchCount": 0,
+                "chatMessageCount": 0
+              }
+            ],
+            "reservedPlanSlugs": [
+              "plan-1"
+            ]
+          }
+        }
+      ],
+      "commitMessage": "chore(metadata): update architect plan plan-1"
+    },
+    "createdAt": "2026-11-22T11:22:58.314Z",
+    "updatedAt": "2026-11-22T11:22:58.315Z",
+    "lastError": "injected-cut-0"
+  }
+]
