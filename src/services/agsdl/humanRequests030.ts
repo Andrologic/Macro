@@ -30,8 +30,10 @@ export function nativeCommandSummary030(raw: string): { command: string; file: s
 }
 
 function visibleControls(text: string): string {
-  return text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, char =>
-    '\\u' + char.codePointAt(0)!.toString(16).padStart(4, '0'));
+  return text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, char => {
+    const code = char.codePointAt(0)!.toString(16);
+    return code.length > 4 ? '\\u{' + code + '}' : '\\u' + code.padStart(4, '0');
+  });
 }
 
 const MCP_ARGUMENT_PREVIEW_LIMIT = 4096;
@@ -155,7 +157,7 @@ export function runHumanView030(request: RunHumanRequest030, labels: { plan: str
   switch (content.kind) {
     case 'flowChoice': return { kind: 'approval', title: content.title, description: content.description,
       message: content.messageJson, choices: content.choices.map(value => ({ value, label: value })) };
-    case 'actionApproval': return { kind: 'actionApproval', title: content.title, message: content.actionJson };
+    case 'actionApproval': return { kind: 'actionApproval', title: visibleControls(content.title), message: content.actionJson };
     case 'plan': return { kind: 'plan', title: labels.plan, message: content.plan };
     case 'question': return { kind: 'question', title: labels.question, message: content.question, description: content.expectedResponse };
     case 'unclassified': return humanRequestView030({ content: content.content }, labels);
