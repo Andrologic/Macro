@@ -147,7 +147,7 @@ updateConversationScope,updateMessage,upsertConversationCitation,upsertConversat
 } from "./ipc/conversations";
 
 export {
-fsCopy,fsCreateDir,fsDelete,fsExists,fsListDir,fsMove,fsReadFile,
+fsDelete,fsExists,fsListDir,fsReadFile,
 fsReadFileWithOptions,fsSearchFiles,
 fsStat,fsWriteFile
 } from "./ipc/filesystem";

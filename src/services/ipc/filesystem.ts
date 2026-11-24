@@ -134,37 +134,3 @@ export async function fsDelete(params: {
     expectedRevision: params.expectedRevision ?? null,
   });
 }
-
-export async function fsCreateDir(params: {
-  path: string;
-  recursive?: boolean;
-  workspaceScope?: WorkspaceScope;
-  workspacePath?: string | null;
-}): Promise<void> {
-  return invoke("fs_create_dir", {
-    path: params.path,
-    recursive: params.recursive ?? null,
-    workspaceScope: params.workspaceScope ?? null,
-    workspacePath: params.workspacePath ?? null,
-  });
-}
-
-export async function fsCopy(params: {
-  src: string;
-  dest: string;
-}): Promise<number> {
-  return invoke<number>("fs_copy", {
-    src: params.src,
-    dest: params.dest,
-  });
-}
-
-export async function fsMove(params: {
-  src: string;
-  dest: string;
-}): Promise<void> {
-  return invoke("fs_move", {
-    src: params.src,
-    dest: params.dest,
-  });
-}

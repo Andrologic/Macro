@@ -752,7 +752,6 @@ mod tests {
             profile_access_refused(read_file_internal(&root, path.clone(), Some(true)).await);
             profile_access_refused(read_file_internal(&root, path.clone(), None).await);
             profile_access_refused(stat_internal(&root, path.clone()).await);
-            profile_access_refused(copy_path_internal(&root, path, "copy.txt".into()).await);
         }
         profile_access_refused(exists_internal(&root, "parents/data/future".into()).await);
         profile_access_refused(
@@ -764,12 +763,6 @@ mod tests {
                 Some(true),
             )
             .await,
-        );
-        profile_access_refused(
-            create_dir_internal(&root, "config/future".into(), Some(true)).await,
-        );
-        profile_access_refused(
-            move_path_internal(&root, "parents".into(), "elsewhere".into()).await,
         );
         profile_access_refused(
             delete_path_internal_with_revision(&root, "parents".into(), Some(true), None).await,
@@ -794,7 +787,14 @@ mod tests {
                 read_file_internal(&root, "alias/providers.json".into(), Some(true)).await,
             );
             profile_access_refused(
-                create_dir_internal(&root, "alias/missing/child".into(), Some(true)).await,
+                write_file_internal(
+                    &root,
+                    "alias/missing/child".into(),
+                    "fixture".into(),
+                    Some(true),
+                    None,
+                )
+                .await,
             );
         }
 
