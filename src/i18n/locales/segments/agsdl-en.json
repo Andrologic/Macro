@@ -11,6 +11,7 @@
       "add": "Add a field",
       "definitionHelp": "Use unique keys of up to 64 characters, starting with a letter and containing only A–Z, 0–9 or underscores. Each field needs a label of up to 80 characters.",
       "invalidDefinition": "The launch field definitions are invalid.",
+      "noEntry": "Launch fields require a flow with an entry step.",
       "invalidValues": "Fill in the required fields and check the values.",
       "chooseBoolean": "Choose a value",
       "yes": "Yes",

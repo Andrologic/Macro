@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { executionInput } from "../../services/agsdl/executionView";
 import { readLaunchFields } from "../../services/agsdl/launchFields";
 import type { MacroSettingsChange } from "../../services/ipc/architectLibrary";
 import { projectSettings } from "../../stores/agsdl/projectEdits";
@@ -64,6 +65,8 @@ export function ProjectMacroSettings({ target, agentId }: { target: BlueprintDoc
   }
   const folderMode = settings.workingFolderMode;
   const fields = readLaunchFields(settings.launchFields);
+  let hasEntry = false;
+  try { hasEntry = executionInput(session.source).hasEntry; } catch { /* The projection may be incomplete. */ }
   const startRequired = settings.startMessageRequired ?? true;
   const folderLabel = t(folderMode === "atLaunch" ? "agsdl.library.folderAtLaunch" : "agsdl.library.folderPerExecution");
   const heading = "m-0 text-[11px] font-medium text-muted-foreground";
@@ -71,6 +74,7 @@ export function ProjectMacroSettings({ target, agentId }: { target: BlueprintDoc
     <section className="space-y-1"><h4 className={heading}>{t("agsdl.library.workingFolderMode")}</h4><p className="!m-0">{folderLabel}</p>
       <p className="!m-0 text-xs text-muted-foreground">{t(`agsdl.architect.launch.folderHelp.${folderMode}`)}</p></section>
     <section className="space-y-1"><h4 className={heading}>{t("agsdl.architect.launch.startMessage")}</h4>
+      {fields && !hasEntry && <p className="!m-0 text-muted-foreground">{t("agsdl.launch.fields.noEntry")}</p>}
       {fields ? <ul className="!m-0 list-none !p-0">
         {fields.fields.map(field => <li key={field.key}>{field.label} · {field.key} · {t(`agsdl.launch.fields.types.${field.type}`)}
           {field.required && ` · ${t("agsdl.launch.fields.required")}`}</li>)}
@@ -114,8 +118,9 @@ export function ProjectMacroSettings({ target, agentId }: { target: BlueprintDoc
         <button type="submit" className="agsdl-link" disabled={hint === undefined || disabled}>{t("agsdl.save")}</button>
       </form>}
     </section>
-    <ProjectLaunchFields key={JSON.stringify(fields ?? null)} fields={fields?.fields ?? []} disabled={disabled}
+    {hasEntry ? <ProjectLaunchFields key={JSON.stringify(fields ?? null)} fields={fields?.fields ?? []} disabled={disabled}
       onSave={schema => void persist({ launchFields: schema })} />
+      : <p className="!m-0 text-muted-foreground">{t("agsdl.launch.fields.noEntry")}</p>}
     <div className="min-h-4">{feedback}</div>
   </div>;
 }

@@ -313,7 +313,11 @@ async fn launch_fields_are_versioned_and_validated_at_archive_admission() {
         .unwrap();
     let schema = json!({
         "version": "macro-launch-fields/1",
-        "fields": [{"key":"ticket", "label":"Ticket", "type":"number", "required":true}]
+        "fields": [
+            {"key":"ticket", "label":"Ticket", "type":"number", "required":true},
+            {"key":"note", "label":"Note", "type":"text", "required":true},
+            {"key":"send", "label":"Send", "type":"boolean", "required":true}
+        ]
     });
     let batch = serde_json::from_value(json!({
         "files": [], "settings": {"launchFields": &schema}
@@ -390,13 +394,20 @@ async fn launch_fields_are_versioned_and_validated_at_archive_admission() {
         launch_values: Some(values),
         ..request(version.clone(), plan.consent_token.clone())
     };
-    let error = start::launch(runtime(), make_request(json!({"ticket":"12"})))
+    let note = "Note \"citée\"\nDeuxième ligne";
+    for ticket in [json!("12"), json!(9_007_199_254_740_993_u64)] {
+        let error = start::launch(
+            runtime(),
+            make_request(json!({"ticket":ticket,"note":note,"send":false})),
+        )
         .await
         .unwrap_err();
-    assert_eq!(error.code, "INVALID_LAUNCH_VALUES");
-    assert_eq!(error.pointer, "/launchValues/ticket");
+        assert_eq!(error.code, "INVALID_LAUNCH_VALUES");
+        assert_eq!(error.pointer, "/launchValues/ticket");
+    }
 
-    let run = start::launch(runtime(), make_request(json!({"ticket":12})))
+    let values = json!({"ticket":12.25,"note":note,"send":false});
+    let run = start::launch(runtime(), make_request(values.clone()))
         .await
         .unwrap();
     let entry: String = sqlx::query_scalar(
@@ -407,7 +418,10 @@ async fn launch_fields_are_versioned_and_validated_at_archive_admission() {
     .await
     .unwrap();
     let message: Value = serde_json::from_str(&entry).unwrap();
-    assert_eq!(message["prompt"], r#"{"ticket":12}"#);
+    assert_eq!(
+        serde_json::from_str::<Value>(message["prompt"].as_str().unwrap()).unwrap(),
+        values
+    );
     crate::agsdl_host_capture::test_codex_observations030()
         .lock()
         .unwrap()

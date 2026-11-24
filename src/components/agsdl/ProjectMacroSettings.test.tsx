@@ -9,6 +9,7 @@ const target = { blueprintId: "p" };
 const manifest = '{"projectFormat":"agsdl-project-1","contract":"agsdl-0.4.0","id":"p","title":"T","agents":{"review":{"file":"agents/review.json"}}}';
 const agent = '{"harness":"codex","permissions":"read-only","description":"D"}';
 let revision: number;
+let hasEntry: boolean;
 let settings: MacroProjectSettings;
 let saves: ProjectBatch[];
 let failSave: boolean;
@@ -20,7 +21,7 @@ function projectView(): ProjectView {
     revision, settings, diagnostics: [],
     files: [file("agsdl.json", manifest), file("agents/review.json", agent)],
     projection: {
-      source: '{"contract":"agsdl-0.4.0","id":"p","title":"T","agents":{"review":' + agent + "}}",
+      source: '{"contract":"agsdl-0.4.0","id":"p","title":"T","agents":{"review":' + agent + "}" + (hasEntry ? ' ,"flow":{"entry":"review","steps":{"review":{"type":"agent","agent":"review"}}}' : "") + "}",
       origins: { "/agents/review": { file: "agents/review.json", pointer: "" } },
     },
   };
@@ -32,7 +33,7 @@ const draft = (): BlueprintDraft => {
 };
 
 beforeEach(() => {
-  revision = 1; saves = []; failSave = false;
+  revision = 1; saves = []; failSave = false; hasEntry = true;
   settings = { schemaVersion: 1, hiddenAgentIds: [], workingFolderMode: "perExecution" };
   useAgsdlStore.getState().openBlueprintDocument(draft());
   spyOn(architectLibrary, "getDraft").mockImplementation(async () => draft());
@@ -143,4 +144,15 @@ it("saves a validated launch schema and can remove it", async () => {
   await flush();
   expect(saves.at(-1)?.settings).toEqual({ launchFields: null });
   expect(required().checked).toBe(true);
+});
+
+
+it("explains why a system without an entry step cannot use launch fields", async () => {
+  hasEntry = false;
+  useAgsdlStore.setState({ sessions: {} });
+  useAgsdlStore.getState().openBlueprintDocument(draft());
+  await mount();
+  expect(view.host.querySelector('form[aria-label="Launch fields"]')).toBeNull();
+  expect(view.host.textContent).toContain("Launch fields require a flow with an entry step.");
+  expect(saves).toEqual([]);
 });

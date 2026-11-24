@@ -34,13 +34,27 @@ export function readLaunchFields(stored: unknown): LaunchFields | undefined {
   return { version: stored.version, fields: stored.fields };
 }
 
+function decimalIdentity(raw: string): string | undefined {
+  const match = /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:e([+-]?\d+))?$/i.exec(raw);
+  if (!match) return undefined;
+  const fraction = match[3] ?? match[4] ?? "";
+  const digits = `${match[2] ?? ""}${fraction}`.replace(/^0+/, "");
+  if (digits === "") return "0";
+  const significant = digits.replace(/0+$/, "");
+  const exponent = Number(match[5] ?? 0) - fraction.length + digits.length - significant.length;
+  if (!Number.isSafeInteger(exponent)) return undefined;
+  return `${match[1] === "-" ? "-" : ""}${significant}e${exponent}`;
+}
+
 export function launchFieldValue(field: LaunchField, raw: string): LaunchValues[string] | undefined {
   if (!/[^\p{White_Space}]/u.test(raw)) return undefined;
   switch (field.type) {
     case "text": return utf8.encode(raw).byteLength <= MAX_TEXT_BYTES ? raw : undefined;
     case "number": {
       const number = Number(raw);
-      return Number.isFinite(number) ? number : undefined;
+      if (!Number.isFinite(number) || (Number.isInteger(number) && !Number.isSafeInteger(number))) return undefined;
+      const decimal = decimalIdentity(raw.trim());
+      return decimal !== undefined && decimal === decimalIdentity(number.toString()) ? number : undefined;
     }
     case "boolean": return raw === "true" ? true : raw === "false" ? false : undefined;
   }

@@ -11,6 +11,7 @@
       "add": "Añadir un campo",
       "definitionHelp": "Usa claves únicas de hasta 64 caracteres que empiecen por una letra y solo contengan letras de A a Z, números o guiones bajos. Cada campo necesita una etiqueta de hasta 80 caracteres.",
       "invalidDefinition": "Las definiciones de los campos de inicio no son válidas.",
+      "noEntry": "Los campos de inicio requieren un flujo con un paso de entrada.",
       "invalidValues": "Rellena los campos obligatorios y revisa los valores.",
       "chooseBoolean": "Elegir un valor",
       "yes": "Sí",

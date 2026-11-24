@@ -70,7 +70,10 @@ impl LaunchFields {
                     FieldType::Text => value.as_str().is_some_and(|text| {
                         !text.trim().is_empty() && text.len() <= MAX_TEXT_BYTES
                     }),
-                    FieldType::Number => value.as_f64().is_some_and(f64::is_finite),
+                    FieldType::Number => value.as_f64().is_some_and(|number| {
+                        number.is_finite()
+                            && (number.fract() != 0.0 || number.abs() <= 9_007_199_254_740_991.0)
+                    }),
                     FieldType::Boolean => value.is_boolean(),
                 },
             };

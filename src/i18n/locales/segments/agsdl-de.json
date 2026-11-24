@@ -11,6 +11,7 @@
       "add": "Feld hinzufügen",
       "definitionHelp": "Verwende eindeutige Schlüssel mit höchstens 64 Zeichen. Sie müssen mit einem Buchstaben beginnen und dürfen nur Buchstaben von A bis Z, Ziffern oder Unterstriche enthalten. Jedes Feld braucht eine Bezeichnung mit höchstens 80 Zeichen.",
       "invalidDefinition": "Die Startfelddefinitionen sind ungültig.",
+      "noEntry": "Startfelder erfordern einen Ablauf mit einem Einstiegsschritt.",
       "invalidValues": "Fülle die Pflichtfelder aus und überprüfe die eingegebenen Werte.",
       "chooseBoolean": "Wert auswählen",
       "yes": "Ja",
