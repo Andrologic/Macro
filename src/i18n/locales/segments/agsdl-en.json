@@ -46,7 +46,14 @@
     "mcp": {
       "title": "MCP tools",
       "remoteHint": "This server can use its own permissions and receive data sent by the flow or an agent.",
-      "configureDelivery": "Credential delivery for {{server}}",
+      "configureRemote": "Connection to {{server}}",
+      "addressScope": "Address scope",
+      "allowedAddresses": "Allowed addresses · {{scope}}",
+      "scope": {
+        "public": "Public internet",
+        "privateNetwork": "Private network",
+        "thisComputer": "This computer"
+      },
       "bearer": "Bearer token",
       "header": "Named HTTP header",
       "headerName": "HTTP header for {{name}}",
@@ -68,6 +75,9 @@
       }
     },
     "blocker": {
+      "mcpPrivateNetworkRequired": "Choose Private network to connect to “{{subject}}”.",
+      "mcpAddressScopeMismatch": "The selected address scope does not match the endpoint for “{{subject}}”.",
+      "mcpAddressUnsupported": "The address for “{{subject}}” cannot be used as an MCP destination.",
       "mcpSecretDeliveryRequired": "Choose how to send each credential for “{{subject}}”.",
       "mcpSecretHeader": "An HTTP header for “{{subject}}” has an invalid or reserved name.",
       "mcpSecretHeaderConflict": "Choose a different HTTP header for each credential for “{{subject}}”. Bearer uses Authorization.",

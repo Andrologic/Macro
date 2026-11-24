@@ -872,16 +872,16 @@ fn requirements(
                     blockers.push(Blocker::new("mcpEndpointUnsupported", id));
                     continue;
                 };
-                launch_mcp.remote_setup.insert(
-                    id.clone(),
-                    mcp::RemoteSetup::new(&parsed, &server.required_secrets),
-                );
                 let default = mcp::RemoteSettings::default();
                 let settings = configuration
                     .remote_mcp
                     .get(id)
                     .and_then(|endpoints| endpoints.get(parsed.as_str()))
                     .unwrap_or(&default);
+                launch_mcp.remote_setup.insert(
+                    id.clone(),
+                    mcp::RemoteSetup::new(&parsed, &server.required_secrets, settings),
+                );
                 match mcp::RemoteGrant::new(parsed, &server.required_secrets, settings) {
                     Ok(grant) => {
                         launch_mcp.remote.insert(id.clone(), grant);

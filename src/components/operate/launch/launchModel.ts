@@ -79,7 +79,8 @@ export function classifyBlocker({ code, subject, codexPlatform }: Blocker): Bloc
   const technical = [code, subject].filter(Boolean).join(" · ");
   if (code === "modelUnavailable") return { kind: "model", agent: subject };
   if (code === "workingFolderRequired") return { kind: "folder" };
-  if (["mcpRemoteUnsupported", "mcpEndpointUnsupported", "mcpSecretDeliveryRequired", "mcpSecretHeader", "mcpSecretHeaderConflict"].includes(code))
+  if (["mcpRemoteUnsupported", "mcpEndpointUnsupported", "mcpSecretDeliveryRequired", "mcpSecretHeader", "mcpSecretHeaderConflict",
+    "mcpPrivateNetworkRequired", "mcpAddressScopeMismatch", "mcpAddressUnsupported"].includes(code))
     return { kind: "mcpRemote", server: subject, technical, textKey: code };
   if (code === "codexUnavailable") return { kind: "codex", ...codexBlocker(subject, codexPlatform), technical };
   return { kind: "author", textKey: authorCodes.has(code) ? code : "unknown", subject, technical };
@@ -93,7 +94,8 @@ export function failureCode(failure: unknown): string {
 export function isRecheckFailure(code: string): boolean {
   return ["WORKING_FOLDER_IN_USE", "WORKING_FOLDER_CHANGED", "WORKING_FOLDER_UNAVAILABLE", "workingFolderRequired",
     "CONSENT_REQUIRED", "MODEL_UNAVAILABLE", "MCP_SECRETS_UNAVAILABLE",
-    "mcpSecretDeliveryRequired", "mcpSecretHeader", "mcpSecretHeaderConflict"].includes(code) ||
+    "mcpSecretDeliveryRequired", "mcpSecretHeader", "mcpSecretHeaderConflict",
+    "mcpPrivateNetworkRequired", "mcpAddressScopeMismatch", "mcpAddressUnsupported"].includes(code) ||
     code.startsWith("CODEX_");
 }
 

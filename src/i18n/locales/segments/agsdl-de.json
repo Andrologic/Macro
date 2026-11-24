@@ -46,7 +46,14 @@
     "mcp": {
       "title": "MCP-Werkzeuge",
       "remoteHint": "Dieser Server nutzt seine eigenen Berechtigungen und kann Daten vom Ablauf oder von einem Agenten empfangen.",
-      "configureDelivery": "Übermittlung der Zugangsdaten für {{server}}",
+      "configureRemote": "Verbindung mit {{server}}",
+      "addressScope": "Netzwerkbereich",
+      "allowedAddresses": "Erlaubte Adressen · {{scope}}",
+      "scope": {
+        "public": "Öffentliches Internet",
+        "privateNetwork": "Privates Netzwerk",
+        "thisComputer": "Dieser Computer"
+      },
       "bearer": "Bearer-Token",
       "header": "Benannter HTTP-Header",
       "headerName": "HTTP-Header für {{name}}",
@@ -68,6 +75,9 @@
       }
     },
     "blocker": {
+      "mcpPrivateNetworkRequired": "Wählen Sie „Privates Netzwerk“, um sich mit „{{subject}}“ zu verbinden.",
+      "mcpAddressScopeMismatch": "Der gewählte Netzwerkbereich passt nicht zur Adresse von „{{subject}}“.",
+      "mcpAddressUnsupported": "Die Adresse von „{{subject}}“ kann nicht als MCP-Ziel verwendet werden.",
       "mcpSecretDeliveryRequired": "Wählen Sie, wie jeder Zugangsschlüssel für „{{subject}}“ gesendet wird.",
       "mcpSecretHeader": "Ein HTTP-Header für „{{subject}}“ hat einen ungültigen oder reservierten Namen.",
       "mcpSecretHeaderConflict": "Wählen Sie für jeden Zugangsschlüssel für „{{subject}}“ einen anderen HTTP-Header. Bearer verwendet Authorization.",

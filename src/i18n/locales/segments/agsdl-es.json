@@ -46,7 +46,14 @@
     "mcp": {
       "title": "Herramientas MCP",
       "remoteHint": "Este servidor usa sus propios permisos y puede recibir datos del flujo o de un agente.",
-      "configureDelivery": "Envío de credenciales para {{server}}",
+      "configureRemote": "Conexión a {{server}}",
+      "addressScope": "Ámbito de red",
+      "allowedAddresses": "Direcciones permitidas · {{scope}}",
+      "scope": {
+        "public": "Internet público",
+        "privateNetwork": "Red privada",
+        "thisComputer": "Este equipo"
+      },
       "bearer": "Token Bearer",
       "header": "Encabezado HTTP con nombre",
       "headerName": "Encabezado HTTP para {{name}}",
@@ -68,6 +75,9 @@
       }
     },
     "blocker": {
+      "mcpPrivateNetworkRequired": "Elige Red privada para conectar con «{{subject}}».",
+      "mcpAddressScopeMismatch": "El ámbito de red elegido no coincide con la dirección de «{{subject}}».",
+      "mcpAddressUnsupported": "La dirección de «{{subject}}» no se puede usar como destino MCP.",
       "mcpSecretDeliveryRequired": "Elige cómo enviar cada credencial para «{{subject}}».",
       "mcpSecretHeader": "Un encabezado HTTP para «{{subject}}» tiene un nombre no válido o reservado.",
       "mcpSecretHeaderConflict": "Elige un encabezado HTTP diferente para cada credencial de «{{subject}}». Bearer usa Authorization.",

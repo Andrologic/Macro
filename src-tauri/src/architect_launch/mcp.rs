@@ -5,7 +5,10 @@ use crate::agsdl_permissions::{
 };
 use argentic_runtime::host::{McpHttpAuthorizer, McpHttpSecret};
 use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 use url::{Host, Url};
 
 #[derive(Default)]
@@ -209,6 +212,7 @@ impl LaunchMcp {
                         grant.url.clone(),
                         RemoteSettings {
                             delivery: grant.delivery.clone(),
+                            address_scope: Some(grant.address_scope),
                         },
                     )]),
                 )
@@ -230,6 +234,64 @@ pub(crate) type RemoteConfigurations = BTreeMap<String, BTreeMap<String, RemoteS
 pub(crate) struct RemoteSettings {
     #[serde(default)]
     pub delivery: BTreeMap<String, SecretDelivery>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address_scope: Option<AddressScope>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum AddressScope {
+    Public,
+    PrivateNetwork,
+    ThisComputer,
+}
+
+fn address_scope(address: IpAddr) -> Option<AddressScope> {
+    let address = address.to_canonical();
+    if address.is_unspecified() || address.is_multicast() {
+        return None;
+    }
+    if address.is_loopback() {
+        return Some(AddressScope::ThisComputer);
+    }
+    let private = match address {
+        IpAddr::V4(ip) => {
+            let [first, second, ..] = ip.octets();
+            ip.is_private() || ip.is_link_local() || (first == 100 && (64..=127).contains(&second))
+        }
+        IpAddr::V6(ip) => ip.is_unique_local() || ip.is_unicast_link_local(),
+    };
+    if private {
+        Some(AddressScope::PrivateNetwork)
+    } else {
+        crate::commands::mcp::ip_is_public(address).then_some(AddressScope::Public)
+    }
+}
+
+fn literal_address(url: &Url) -> Option<IpAddr> {
+    match url.host()? {
+        Host::Ipv4(ip) => Some(ip.into()),
+        Host::Ipv6(ip) => Some(IpAddr::from(ip).to_canonical()),
+        Host::Domain(_) => None,
+    }
+}
+
+fn fixed_address_scope(url: &Url) -> std::result::Result<Option<AddressScope>, &'static str> {
+    if let Some(address) = literal_address(url) {
+        return address_scope(address)
+            .map(Some)
+            .ok_or("mcpAddressUnsupported");
+    }
+    let host = url.host_str().unwrap_or_default().trim_end_matches('.');
+    Ok((host == "localhost" || host.ends_with(".localhost")).then_some(AddressScope::ThisComputer))
+}
+
+fn default_scope(url: &Url) -> AddressScope {
+    if fixed_address_scope(url) == Ok(Some(AddressScope::ThisComputer)) {
+        AddressScope::ThisComputer
+    } else {
+        AddressScope::Public
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,10 +306,11 @@ pub(crate) enum SecretDelivery {
 pub(super) struct RemoteSetup {
     url: String,
     suggestions: BTreeMap<String, SecretDelivery>,
+    address_scope: AddressScope,
 }
 
 impl RemoteSetup {
-    pub(super) fn new(url: &Url, names: &[String]) -> Self {
+    pub(super) fn new(url: &Url, names: &[String], settings: &RemoteSettings) -> Self {
         let bearer = names
             .iter()
             .find(|name| *name == "TOKEN" || name.ends_with("_TOKEN"));
@@ -272,6 +335,7 @@ impl RemoteSetup {
         Self {
             url: url.as_str().into(),
             suggestions,
+            address_scope: settings.address_scope.unwrap_or_else(|| default_scope(url)),
         }
     }
 }
@@ -282,6 +346,7 @@ pub(super) struct RemoteGrant {
     url: String,
     #[serde(skip)]
     parsed_url: Url,
+    address_scope: AddressScope,
     #[serde(serialize_with = "serialize_delivery")]
     delivery: BTreeMap<String, SecretDelivery>,
 }
@@ -333,6 +398,18 @@ impl RemoteGrant {
         names: &[String],
         settings: &RemoteSettings,
     ) -> std::result::Result<Self, &'static str> {
+        let address_scope = settings
+            .address_scope
+            .unwrap_or_else(|| default_scope(&parsed_url));
+        if let Some(fixed) = fixed_address_scope(&parsed_url)? {
+            if fixed != address_scope {
+                return Err(if fixed == AddressScope::PrivateNetwork {
+                    "mcpPrivateNetworkRequired"
+                } else {
+                    "mcpAddressScopeMismatch"
+                });
+            }
+        }
         let mut used = BTreeSet::new();
         let mut delivery = BTreeMap::new();
         for name in names {
@@ -358,6 +435,7 @@ impl RemoteGrant {
         Ok(Self {
             url: parsed_url.as_str().into(),
             parsed_url,
+            address_scope,
             delivery,
         })
     }
@@ -371,24 +449,14 @@ impl RemoteGrant {
     }
 
     fn covers(&self, url: &Url, addresses: &[SocketAddr], names: &[String]) -> bool {
+        let literal = literal_address(url);
         url == &self.parsed_url
             && !addresses.is_empty()
             && addresses.iter().all(|address| {
-                self.parsed_url.port_or_known_default() == Some(address.port())
-                    && match self.parsed_url.host() {
-                        Some(Host::Ipv4(ip)) => {
-                            address.ip() == ip
-                                && !ip.is_unspecified()
-                                && !ip.is_multicast()
-                                && !ip.is_broadcast()
-                        }
-                        Some(Host::Ipv6(ip)) => {
-                            address.ip() == ip && !ip.is_unspecified() && !ip.is_multicast()
-                        }
-                        Some(Host::Domain("localhost")) => address.ip().is_loopback(),
-                        Some(Host::Domain(_)) => crate::commands::mcp::ip_is_public(address.ip()),
-                        None => false,
-                    }
+                let ip = address.ip().to_canonical();
+                url.port_or_known_default() == Some(address.port())
+                    && literal.is_none_or(|literal| literal == ip)
+                    && address_scope(ip) == Some(self.address_scope)
             })
             && names.len() == self.delivery.len()
             && self.delivery.keys().all(|name| names.contains(name))

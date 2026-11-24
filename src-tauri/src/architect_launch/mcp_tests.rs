@@ -134,6 +134,7 @@ fn remote_settings() -> mcp::RemoteSettings {
                 },
             ),
         ]),
+        address_scope: None,
     }
 }
 
@@ -551,6 +552,85 @@ async fn endpoint_consent_matches_exact_revision_destination_and_secret_names() 
     assert!(authorize(&other, "issues", &url, &public, &names).is_none());
     let mixed = [public[0], "127.0.0.1:443".parse().unwrap()];
     assert!(authorize(&source, "issues", &url, &mixed, &names).is_none());
+}
+
+#[tokio::test]
+async fn remote_mcp_scope_checks_every_pinned_address_and_changes_consent() {
+    use mcp::AddressScope::{PrivateNetwork, ThisComputer};
+    let data = tempfile::tempdir().unwrap();
+    let endpoint = "https://mcp.intranet.invalid/issues";
+    let project = loopback_review_project(data.path(), endpoint, false);
+    let (pool, version) = import_archive_fixture(data.path(), project.path()).await;
+    let input = VersionInput::read(&pool, &Storage::new(data.path()), version)
+        .await
+        .unwrap();
+    let preview = input.preview().unwrap();
+    let names = &preview.mcp_servers["issues"].required_secrets;
+    let url = url::Url::parse(endpoint).unwrap();
+    let source = input.source_revision();
+    let mut configuration = remote_configuration(endpoint);
+    let prepare = |configuration: &LaunchConfiguration| {
+        let (blockers, launch_mcp) = requirements(
+            &input,
+            &preview,
+            &json!({"agsdlHostPermissions":"workspace"}),
+            &serde_json::from_value(json!("workspace")).unwrap(),
+            data.path(),
+            LOCAL_MCP_SUPPORTED,
+            configuration,
+        )
+        .unwrap();
+        assert!(blockers.is_empty());
+        let consent = permissions(&input, &preview, &launch_mcp).unwrap();
+        (consent, mcp::authorizer(source.clone(), launch_mcp.remote))
+    };
+    let (public_consent, public) = prepare(&configuration);
+    configuration
+        .remote_mcp
+        .get_mut("issues")
+        .unwrap()
+        .get_mut(endpoint)
+        .unwrap()
+        .address_scope = Some(PrivateNetwork);
+    let (private_consent, private) = prepare(&configuration);
+    assert!(!public_consent.covers(&private_consent));
+    assert!(!private_consent.covers(&public_consent));
+
+    let lan = "192.168.1.10:443".parse().unwrap();
+    let mapped_lan = "[::ffff:192.168.1.11]:443".parse().unwrap();
+    let internet = "8.8.8.8:443".parse().unwrap();
+    assert!(public(&source, "issues", &url, &[internet], names).is_some());
+    assert!(public(&source, "issues", &url, &[lan], names).is_none());
+    assert!(private(&source, "issues", &url, &[lan, mapped_lan], names).is_some());
+    for rejected in [
+        internet,
+        "127.0.0.1:443".parse().unwrap(),
+        "[::ffff:0.0.0.0]:443".parse().unwrap(),
+        "224.0.0.1:443".parse().unwrap(),
+        "192.168.1.10:80".parse().unwrap(),
+    ] {
+        assert!(private(&source, "issues", &url, &[lan, rejected], names).is_none());
+    }
+
+    let mut settings = mcp::RemoteSettings::default();
+    let ip = url::Url::parse("https://[::ffff:192.168.1.10]/mcp").unwrap();
+    assert_eq!(
+        mcp::RemoteGrant::new(ip.clone(), &[], &settings).err(),
+        Some("mcpPrivateNetworkRequired")
+    );
+    settings.address_scope = Some(PrivateNetwork);
+    assert!(mcp::RemoteGrant::new(ip, &[], &settings).is_ok());
+    settings.address_scope = Some(ThisComputer);
+    for invalid in [
+        "https://[::ffff:0.0.0.0]",
+        "https://[ff02::1]",
+        "https://255.255.255.255",
+    ] {
+        assert_eq!(
+            mcp::RemoteGrant::new(invalid.parse().unwrap(), &[], &settings).err(),
+            Some("mcpAddressUnsupported")
+        );
+    }
 }
 
 #[tokio::test]

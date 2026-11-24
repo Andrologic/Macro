@@ -46,7 +46,14 @@
     "mcp": {
       "title": "MCP ツール",
       "remoteHint": "このサーバーは独自の権限で動作し、フローやエージェントが送信するデータを受け取ります。",
-      "configureDelivery": "{{server}} への認証情報の送信方法",
+      "configureRemote": "{{server}} への接続",
+      "addressScope": "アドレスの範囲",
+      "allowedAddresses": "許可するアドレス · {{scope}}",
+      "scope": {
+        "public": "公開インターネット",
+        "privateNetwork": "プライベートネットワーク",
+        "thisComputer": "このコンピューター"
+      },
       "bearer": "Bearer トークン",
       "header": "名前付き HTTP ヘッダー",
       "headerName": "{{name}} 用の HTTP ヘッダー",
@@ -68,6 +75,9 @@
       }
     },
     "blocker": {
+      "mcpPrivateNetworkRequired": "「{{subject}}」に接続するには、プライベートネットワークを選択してください。",
+      "mcpAddressScopeMismatch": "選択したアドレス範囲が「{{subject}}」のエンドポイントと一致しません。",
+      "mcpAddressUnsupported": "「{{subject}}」のアドレスは MCP の接続先に使用できません。",
       "mcpSecretDeliveryRequired": "「{{subject}}」の認証情報ごとに送信方法を選択してください。",
       "mcpSecretHeader": "「{{subject}}」の HTTP ヘッダー名が無効、または予約済みです。",
       "mcpSecretHeaderConflict": "「{{subject}}」の認証情報ごとに異なる HTTP ヘッダーを指定してください。Bearer は Authorization を使用します。",

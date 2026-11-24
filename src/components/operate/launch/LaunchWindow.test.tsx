@@ -279,7 +279,7 @@ it("shows the endpoint, credential delivery and tool decisions before consent", 
   install(() => preview({
     consentToken: "review",
     permissions: remotePermissions,
-    remoteMcp: { issues: { url: remoteEndpoint, delivery: { ISSUES_TOKEN: "Authorization: Bearer" } } },
+    remoteMcp: { issues: { url: remoteEndpoint, addressScope: "public", delivery: { ISSUES_TOKEN: "Authorization: Bearer" } } },
     agentMcp: { reviewer: { issues: {
       equipped: true, default: "deny", tools: { read: "allow", lookup: "ask", remove: "deny" },
       agentDefault: "deny", agentPatterns: {}, hostDefault: "allow", hostPatterns: {},
@@ -294,6 +294,7 @@ it("shows the endpoint, credential delivery and tool decisions before consent", 
   expect(dialog().textContent).toContain("You have not approved what this version can do yet");
   expect(dialog().textContent).toContain(remoteEndpoint);
   expect(dialog().textContent).toContain("Send ISSUES_TOKEN in Authorization: Bearer");
+  expect(dialog().textContent).toContain("Allowed addresses · Public internet");
   expect(dialog().textContent).toContain("reviewer");
   expect(dialog().textContent).toContain("read · Allowed");
   expect(dialog().textContent).toContain("lookup · Approval required");
@@ -317,8 +318,8 @@ it("requires explicit delivery choices and sends the selected header to launch",
       permissions: remotePermissions,
       consentToken: complete ? "explicit-delivery" : null,
       blockers: complete ? [] : [{ code: "mcpSecretDeliveryRequired", subject: "issues" }],
-      remoteMcpSetup: { issues: { url: remoteEndpoint, suggestions } },
-      remoteMcp: complete ? { issues: { url: remoteEndpoint, delivery: { ISSUES_TOKEN: "Authorization: Bearer", CLIENT_TOKEN: "x-team-key" } } } : {},
+      remoteMcpSetup: { issues: { url: remoteEndpoint, addressScope: "public", suggestions } },
+      remoteMcp: complete ? { issues: { url: remoteEndpoint, addressScope: "public", delivery: { ISSUES_TOKEN: "Authorization: Bearer", CLIENT_TOKEN: "x-team-key" } } } : {},
     });
   });
   await show();
@@ -338,6 +339,33 @@ it("requires explicit delivery choices and sends the selected header to launch",
   });
 });
 
+it("asks for consent to the selected network scope even for a server with no credentials", async () => {
+  install(args => {
+    const configuration = (args.configuration as LaunchConfiguration | null) ?? { workingFolder: null };
+    const addressScope = configuration.remoteMcp?.issues[remoteEndpoint]?.addressScope ?? "public";
+    return preview({
+      configuration,
+      remoteMcpSetup: { issues: { url: remoteEndpoint, addressScope, suggestions: {} } },
+      remoteMcp: { issues: { url: remoteEndpoint, addressScope, delivery: {} } },
+      consentToken: addressScope === "privateNetwork" ? "private-addresses" : null,
+    });
+  });
+  await show();
+  const scope = dialog().querySelector("fieldset select") as HTMLSelectElement;
+  expect(scope.value).toBe("public");
+  await act(async () => {
+    scope.value = "privateNetwork";
+    scope.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await flush();
+  await click(primary());
+  expect(dialog().textContent).toContain("Allowed addresses · Private network");
+  expect(started()).toEqual([]);
+  await click(primary());
+  expect(started()[0].consentToken).toBe("private-addresses");
+  expect(started()[0].configuration.remoteMcp?.issues[remoteEndpoint].addressScope).toBe("privateNetwork");
+});
+
 it("keeps the credential entry and consent separate for a new endpoint", async () => {
   let stored = false;
   install(args => {
@@ -346,7 +374,7 @@ it("keeps the credential entry and consent separate for a new endpoint", async (
     return preview({
       version, permissions: remotePermissions,
       consentToken: version.number === 2 ? "new-endpoint-consent" : null,
-      remoteMcp: { issues: { url, delivery: { ISSUES_TOKEN: "Authorization: Bearer" } } },
+      remoteMcp: { issues: { url, addressScope: "public", delivery: { ISSUES_TOKEN: "Authorization: Bearer" } } },
       secrets: [{ server: "issues", name: "ISSUES_TOKEN", stored }],
     });
   }, (command, args) => {

@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import type { LaunchPreview, McpSecretDelivery, McpToolEffect, RemoteMcpSettings } from "../../../services/ipc/architectLaunch";
+import type { LaunchPreview, McpAddressScope, McpSecretDelivery, McpToolEffect, RemoteMcpSettings } from "../../../services/ipc/architectLaunch";
 import { DisclosureSummary } from "../../agsdl/DisclosureSummary";
 import { useAgsdlTranslation } from "../../agsdl/useAgsdlTranslation";
 
@@ -7,6 +7,8 @@ import { Button } from "../../ui/Button";
 import { Input } from "../../ui/Input";
 import { Select } from "../../ui/Select";
 import { selectClass } from "./launchModel";
+
+const addressScopes: readonly McpAddressScope[] = ["public", "privateNetwork", "thisComputer"];
 
 function DeliveryRow({ name, suggestion, selected, onApply }: {
   name: string;
@@ -46,16 +48,24 @@ export function LaunchMcpSettings({ preview, disabled, onChange }: {
 }) {
   const { t } = useAgsdlTranslation();
   return Object.entries(preview.remoteMcpSetup).map(([server, setup]) => {
-    if (!Object.keys(setup.suggestions).length) return null;
     const configuration = preview.configuration.remoteMcp;
     const settings = configuration && Object.hasOwn(configuration, server) ? configuration[server][setup.url] : undefined;
     return <fieldset key={JSON.stringify([server, setup.url])} disabled={disabled} className="space-y-2 rounded-md border border-border px-3 py-2">
-      <legend className="px-1 font-medium">{t("agsdl.launch.mcp.configureDelivery", { server })}</legend>
+      <legend className="px-1 font-medium">{t("agsdl.launch.mcp.configureRemote", { server })}</legend>
       <p className="!m-0 break-all font-mono">{setup.url}</p>
+      <label className="flex flex-wrap items-center gap-2">
+        <span>{t("agsdl.launch.mcp.addressScope")}</span>
+        <Select fullWidth={false} className={selectClass} value={setup.addressScope} onChange={event => {
+          const addressScope = addressScopes.find(scope => scope === event.target.value);
+          if (addressScope) onChange(server, setup.url, { delivery: {}, ...settings, addressScope });
+        }}>
+          {addressScopes.map(scope => <option key={scope} value={scope}>{t("agsdl.launch.mcp.scope." + scope)}</option>)}
+        </Select>
+      </label>
       {Object.entries(setup.suggestions).map(([name, suggestion]) => {
         const selected = settings && Object.hasOwn(settings.delivery, name) ? settings.delivery[name] : undefined;
         return <DeliveryRow key={JSON.stringify([name, selected])} name={name} suggestion={suggestion} selected={selected}
-          onApply={delivery => onChange(server, setup.url, { delivery: { ...settings?.delivery, [name]: delivery } })} />;
+          onApply={delivery => onChange(server, setup.url, { ...settings, delivery: { ...settings?.delivery, [name]: delivery } })} />;
       })}
     </fieldset>;
   });
@@ -85,6 +95,7 @@ export function LaunchMcpDetails({ preview, expanded = false }: { preview: Launc
         <p className="!m-0 font-medium">{id}</p>
         {remote && <>
           <p className="!m-0 break-all font-mono">{remote.url}</p>
+          <p className="!m-0">{t("agsdl.launch.mcp.allowedAddresses", { scope: t("agsdl.launch.mcp.scope." + remote.addressScope) })}</p>
           <p className="!m-0 text-muted-foreground">{t("agsdl.launch.mcp.remoteHint")}</p>
           {Object.entries(remote.delivery).map(([name, header]) =>
             <p key={name} className="!m-0">{t("agsdl.launch.mcp.delivery", { name, header })}</p>)}

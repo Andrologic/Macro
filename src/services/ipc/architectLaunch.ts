@@ -11,7 +11,10 @@ export interface LaunchConfiguration {
 
 export type McpSecretDelivery = { type: "bearer" } | { type: "header"; name: string };
 
+export type McpAddressScope = "public" | "privateNetwork" | "thisComputer";
+
 export interface RemoteMcpSettings {
+  addressScope?: McpAddressScope;
   delivery: Record<string, McpSecretDelivery>;
 }
 
@@ -49,8 +52,8 @@ export interface LaunchPreview {
   consentToken: string | null;
   secrets: LaunchSecret[];
   agentMcp: Record<string, Record<string, AgentMcpAccess>>;
-  remoteMcp: Record<string, { url: string; delivery: Record<string, string> }>;
-  remoteMcpSetup: Record<string, { url: string; suggestions: Record<string, McpSecretDelivery> }>;
+  remoteMcp: Record<string, { url: string; delivery: Record<string, string>; addressScope: McpAddressScope }>;
+  remoteMcpSetup: Record<string, { url: string; suggestions: Record<string, McpSecretDelivery>; addressScope: McpAddressScope }>;
 }
 
 export interface LaunchRequest {

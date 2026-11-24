@@ -62,7 +62,7 @@ export function ArchiveRunSecrets({ version, onClose }: { version: VersionKey; o
     {failed && <p role="alert" className="!m-0 text-red-500">{t("agsdl.launch.failed")}{" "}
       <button type="button" className="agsdl-link" onClick={() => setRevision(current => current + 1)}>{t("agsdl.retry")}</button></p>}
     {preview && !preview.secrets.length && <p className="!m-0 text-muted-foreground">
-      {t(preview.blockers.some(blocker => blocker.code.startsWith("mcpSecret"))
+      {t(preview.blockers.some(blocker => Object.hasOwn(preview.remoteMcpSetup, blocker.subject))
         ? "agsdl.launch.mcp.configureInLaunch" : "agsdl.launch.noSecrets")}
     </p>}
     {preview?.secrets.map(secret => <SecretRow key={JSON.stringify([secret.server, secret.name])}

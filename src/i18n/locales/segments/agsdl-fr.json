@@ -46,7 +46,14 @@
     "mcp": {
       "title": "Outils MCP",
       "remoteHint": "Ce serveur utilise ses propres permissions et peut recevoir les données envoyées par le flux ou par un agent.",
-      "configureDelivery": "Envoi des secrets pour {{server}}",
+      "configureRemote": "Connexion à {{server}}",
+      "addressScope": "Périmètre réseau",
+      "allowedAddresses": "Adresses autorisées · {{scope}}",
+      "scope": {
+        "public": "Internet public",
+        "privateNetwork": "Réseau privé",
+        "thisComputer": "Cet ordinateur"
+      },
       "bearer": "Jeton Bearer",
       "header": "En-tête HTTP nommé",
       "headerName": "En-tête HTTP pour {{name}}",
@@ -68,6 +75,9 @@
       }
     },
     "blocker": {
+      "mcpPrivateNetworkRequired": "Choisissez Réseau privé pour vous connecter à « {{subject}} ».",
+      "mcpAddressScopeMismatch": "Le périmètre réseau choisi ne correspond pas à l’adresse de « {{subject}} ».",
+      "mcpAddressUnsupported": "L’adresse de « {{subject}} » ne peut pas servir de destination MCP.",
       "mcpSecretDeliveryRequired": "Choisissez comment envoyer chaque secret pour « {{subject}} ».",
       "mcpSecretHeader": "Un en-tête HTTP pour « {{subject}} » porte un nom invalide ou réservé.",
       "mcpSecretHeaderConflict": "Choisissez un en-tête HTTP différent pour chaque secret de « {{subject}} ». Bearer utilise Authorization.",

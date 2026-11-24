@@ -577,11 +577,9 @@ impl StartAuthority030 for ArchiveStart<'_> {
         for (server, endpoints) in &self.configuration.remote_mcp {
             let saved = saved.remote_mcp.entry(server.clone()).or_default();
             for (url, settings) in endpoints {
-                saved
-                    .entry(url.clone())
-                    .or_default()
-                    .delivery
-                    .extend(settings.delivery.clone());
+                let saved = saved.entry(url.clone()).or_default();
+                saved.delivery.extend(settings.delivery.clone());
+                saved.address_scope = settings.address_scope;
             }
         }
         sqlx::query("INSERT INTO architect_launch_configurations(blueprint_id,configuration_json) VALUES (?,?)
