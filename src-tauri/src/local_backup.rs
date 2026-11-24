@@ -571,6 +571,49 @@ pub(crate) async fn remove_reference_e_schema(
     Ok(())
 }
 
+/// Let the pinned runtime materialize its lazy recovery schema on a disposable
+/// database. Compare only objects absent from its initial schema, and never
+/// execute DDL read from the archive.
+async fn argentic_optional_schema() -> Result<BTreeMap<String, Vec<String>>> {
+    let engine = argentic_runtime::sqlite::memory()
+        .await
+        .map_err(|e| e.to_string())?;
+    let query = "SELECT tbl_name,sql FROM sqlite_schema WHERE sql IS NOT NULL
+        ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END, name";
+    let before: BTreeSet<(String, String)> = sqlx::query_as::<_, (String, String)>(query)
+        .fetch_all(&engine)
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .collect();
+    seed_paused_schema_probe(&engine).await?;
+    argentic_runtime::api::interrupt_previous_runs(&engine)
+        .await
+        .map_err(|e| e.message)?;
+    let after: Vec<(String, String)> = sqlx::query_as(query)
+        .fetch_all(&engine)
+        .await
+        .map_err(|e| e.to_string())?;
+    engine.close().await;
+    let mut optional = BTreeMap::<String, Vec<String>>::new();
+    for (table, ddl) in after {
+        if !before.contains(&(table.clone(), ddl.clone())) {
+            optional.entry(table).or_default().push(ddl);
+        }
+    }
+    Ok(optional)
+}
+
+async fn seed_paused_schema_probe(pool: &sqlx::SqlitePool) -> Result<()> {
+    sqlx::raw_sql(r#"
+        INSERT INTO engine_flow030_runs VALUES ('schema','flow','snapshot','epoch','{}',
+            '{"versions":{"contract":"agsdl-0.4.0"}}','{"paused":true}');
+        INSERT INTO engine_flow030_owners VALUES ('schema','flow','snapshot','epoch','1','previous','live',
+            '0000000000000000000000000000000000000000000000000000000000000000');
+    "#).execute(pool).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 async fn check_database(path: &Path) -> Result<()> {
     let mut db = SqliteConnection::connect_with(
         &SqliteConnectOptions::new()
@@ -795,8 +838,35 @@ async fn check_database(path: &Path) -> Result<()> {
             .await
             .map_err(|e| e.to_string())?;
     }
-    let tables: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetch_all(&mut db).await.map_err(|e| e.to_string())?;
-    let expected: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetch_all(&reference).await.map_err(|e| e.to_string())?;
+    let table_query = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name";
+    let tables: Vec<String> = sqlx::query_scalar(table_query)
+        .fetch_all(&mut db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut expected: Vec<String> = sqlx::query_scalar(table_query)
+        .fetch_all(&reference)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut optional_tables = BTreeSet::new();
+    if versions.contains(&41)
+        && tables
+            .iter()
+            .any(|table| expected.binary_search(table).is_err())
+    {
+        for (table, ddl) in argentic_optional_schema().await? {
+            if tables.contains(&table) && !expected.contains(&table) {
+                for statement in ddl {
+                    sqlx::raw_sql(sqlx::AssertSqlSafe(statement))
+                        .execute(&reference)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                optional_tables.insert(table.clone());
+                expected.push(table);
+            }
+        }
+        expected.sort();
+    }
     if tables != expected {
         return Err("Backup database tables do not match this Macro version".into());
     }
@@ -809,7 +879,8 @@ async fn check_database(path: &Path) -> Result<()> {
                 | "architect_versions"
                 | "architect_library_originals"
                 | "architect_version_uses"
-        ) || table.starts_with("engine_")
+        ) || optional_tables.contains(&table)
+            || table.starts_with("engine_")
             || table.starts_with("operate_inbox_")
             || table.starts_with("architect_launch_")
             || table == "migration_identity_history"
@@ -2427,6 +2498,55 @@ pub fn local_backup_acknowledge(app: tauri::AppHandle) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn exports_after_restarting_a_paused_030_run_and_rejects_changed_optional_ddl() {
+        let (temp, data, config) = profile().await;
+        let database = data.join("macro.db");
+        let pool = crate::db::create_pool(&database).await.unwrap();
+        seed_paused_schema_probe(&pool).await.unwrap();
+        pool.close().await;
+
+        let reopened = crate::db::create_pool(&database).await.unwrap();
+        argentic_runtime::api::interrupt_previous_runs(&reopened)
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_flow030_interruption_clock")
+                .fetch_one(&reopened)
+                .await
+                .unwrap(),
+            1
+        );
+        reopened.close().await;
+        let target = temp.path().join("restarted.zip");
+        schedule_backup(
+            &data,
+            &config,
+            Request {
+                operation: "export".into(),
+                path: target.to_str().unwrap().into(),
+                browser: BTreeMap::new(),
+            },
+        )
+        .await
+        .unwrap();
+        process_startup(&data, &config).await.unwrap();
+        load_restore_archive(&target, &data).await.unwrap();
+
+        let mut connection = connection(&database).await.unwrap();
+        sqlx::raw_sql("DROP TABLE engine_flow030_interruption_clock;
+            CREATE TABLE engine_flow030_interruption_clock (
+                system_id TEXT PRIMARY KEY NOT NULL REFERENCES engine_flow030_interruptions(system_id),
+                ticket_json TEXT
+            )").execute(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        let error = check_database(&database).await.unwrap_err();
+        assert!(
+            error.contains("engine_flow030_interruption_clock"),
+            "{error}"
+        );
+    }
+
     use super::*;
     fn assert_empty_policy(data: &Path) {
         let value: serde_json::Value =
